@@ -396,9 +396,63 @@ The resume command accepts the same recovery-relevant controls as launch:
 | `--max-cost-usd`, `--max-tokens`, `--max-duration`, `--max-iterations`, `--max-parallel-branches` | Raise or replace effective workflow caps. Already-consumed accounting remains charged. Zero means inherit. |
 | `--permission`, `--permission-allow`, `--permission-ask`, `--permission-deny` | Rebuild the tool-permission policy; an allow rule can authorize the call that previously paused or failed. |
 | `--model`, `--backend` | Re-apply selector-based execution overrides. Launch-time rules are stored for display but are not automatically re-applied to the resumed executor. |
+| `--sandbox`, `--sandbox-default-image`, `--sandbox-host-state` | Replace the launch-time isolation choice persisted on the run. Empty inherits the launch's decision (a run launched with `--sandbox none` refuses docker on resume too); non-empty overrides it on purpose. |
+| `--merge-into`, `--branch-name`, `--merge-strategy`, `--auto-merge` | Replace the launch-time worktree-finalization choice persisted on the run. Empty inherits; non-empty overrides. |
 | `--auto-resume N` | Retry eligible transient/rate-limit failures, or budget/timeout failures when a larger cap was supplied, with bounded backoff and forfait-cap checks. |
 | `--force` | Permit a source-hash mismatch. |
 | `--force-stale` | Take over an orphaned local `running` run after the staleness guard passes. |
+
+### The launch's decisions travel with the run
+
+Every launch-time CLI override falls into one of three verdicts on
+resume — each row is a **field** of `Run` (`pkg/store/run.go`) or a
+runtime option that reads it back. Silently-lost overrides
+(marked ✗) meant a resume changed the isolation, storage-branch or
+merge behaviour behind the operator's back; ADR-based work brings each
+into the "persisted-and-replayed" column (✓). Fixed at #1435 and
+#1366.
+
+| Launch flag / knob | Persisted at launch (field on `Run`) | Replayed on resume | Notes |
+|---|---|---|---|
+| `--sandbox` | ✓ `SandboxOverride` | ✓ CLI resume + studio resume | Cloud runner reads its own `cfg.SandboxOverride` (architectural — the pod IS the isolation boundary). |
+| `--sandbox-default-image` | ✓ `SandboxDefaultImage` | ✓ | Cloud runner reads `msg.SandboxImage`. |
+| `--sandbox-host-state` | ✓ `SandboxHostState` | ✓ | Cloud runner defaults come from `cfg.SandboxHostState`. |
+| `--merge-into` | ✓ `MergeInto` | ✓ CLI + studio + cloud runner | Empty means "current" for local resumes. Cloud runner reads it back at pickup (`pkg/runner/loop.go`'s engine options) so a `--merge-into none` launch stays `none` on redelivery — Philosophy #3 (cloud-native by construction). |
+| `--branch-name` | ✓ `BranchName` | ✓ CLI + studio + cloud runner | Fixes half of #1366 alongside `Run.Name`. Cloud runner replays it too. |
+| `--merge-strategy` | ✓ `MergeStrategy` | ✓ CLI + studio + cloud runner | Was persisted before this PR; readback added here for all three surfaces. |
+| `--auto-merge` | ✓ `AutoMerge` | ✓ CLI + studio + cloud runner | Was persisted before this PR; readback added here for all three surfaces. |
+| `--var` | ✓ `Inputs` | ✓ | Replayed as run inputs. |
+| `--preset` | ✓ `Preset` | ✓ | Replayed. |
+| `--skill` | ✓ `ExtraSkills` | ✓ | Conversational-bot dock relies on this. |
+| `--model` / `--backend` / `--effort-for` | ✓ `ModelOverrides` | ✓ | Executor spec re-reads them; CLI can layer explicit overrides. |
+| `--fallback` | ✓ `Fallback` | ✓ | Usage-window auto-retries rely on this. |
+| `--permission*` | ✓ `PermissionOverride`, `PermissionMode` | ✓ | The strongest-precedence gate mode. |
+| `--max-cost-usd` etc. | ✓ `BudgetOverrides` | ✓ | Merged with any explicit resume `--max-*`. |
+| `--recipe` | ✓ (via compile) | (no resume equivalent) | Recipe is applied at launch; the compiled workflow persists. |
+| `--auto-memory` | ✗ (not persisted) | Recomputed on purpose | Resume `--auto-memory` re-states it; env `ITERION_AUTO_MEMORY` decides otherwise. |
+| `--compress` | ✗ | Recomputed on purpose | The rewriter chain is process-scoped; a resume re-resolves it from workflow + env. |
+| `--loop-budget-guard` | ✗ | Recomputed on purpose | Resume `--loop-budget-guard` re-states it. |
+| `--supervisors` | ✗ | Recomputed on purpose | Resume `--supervisors` re-states it. |
+| `--repo-devbox` | ✗ | Recomputed on purpose | Resume `--repo-devbox` re-states it. |
+| `--review-mode` | ✗ | Recomputed on purpose | The topology is applied at compile; a resume re-uses the resulting `Inputs`. |
+| `--skip-mcp-health` | ✗ | Recomputed on purpose | An MCP server that was down at launch may be up on resume — respect the operator's fresh choice. |
+
+The chokepoint is `pkg/cli/resume.go` on the CLI side and
+`pkg/runview/service_launch.go` (`Resume` + `engineOptions`) on the
+studio/HTTP side, both reading the `Run` fields and layering explicit
+resume flags over them. `pkg/runtime/engine_options.go`'s
+`WithFilePath` absolutises its input at the chokepoint, so a caller
+that hands a relative `--file examples/foo.bot` no longer leaks the
+relative form into the sandbox bind-mount source (`bundleResourceDir`
+derives from `e.filePath`).
+
+**Answers that survived a failed resume.** A resume that fails AFTER
+recording the operator's answers (the classic case: sandbox start
+refused a mount; recordHumanAnswers already ran) does not re-ask on
+the next resume: `resumeFromFailure` scans the interactions store for
+a non-retired answered blocking-pause interaction on the restart
+node, seeds its answers as the node's output and advances to the
+first outgoing edge. Fixes the third defect of #1435.
 
 When raising a budget, choose a cap above the amount already consumed. Merely
 repeating the old cap causes the re-executed node to hit the same guard.

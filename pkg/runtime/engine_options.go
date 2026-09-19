@@ -272,10 +272,21 @@ func WithExecutionContext(c *store.ExecutionContext) EngineOption {
 	}
 }
 
-// WithFilePath records the absolute .bot source path on the run
-// metadata so that resume (and the run console) can re-locate the
-// workflow without the caller having to thread it back through the
-// API. Optional — empty string is ignored.
+// WithFilePath records the .bot source path on the run metadata so
+// resume (and the run console) can re-locate the workflow without the
+// caller threading it back through the API. Optional — empty string is
+// ignored.
+//
+// The value is stored VERBATIM: the launcher's meaning survives on the
+// run doc (a bundle-relative name from a studio launch, an absolute
+// path from `iterion run --file …`, a stored-bot cache path from the
+// server), and readers of `Run.FilePath` (`pkg/runview/workflow_path.go`
+// resolver, `pkg/server/run_delegation.go`'s git describe, the
+// dispatcher, the studio) see the same shape the launcher wrote. The
+// docker bind-mount source — the half of #1435 that refused a
+// non-absolute path — is absolutised at its OWN chokepoint
+// (`bundleResourceDir` in `pkg/runtime/sandbox_devbox.go`) so the fix
+// lives where the mount is built, not on the persisted metadata.
 func WithFilePath(path string) EngineOption {
 	return func(e *Engine) { e.filePath = path }
 }

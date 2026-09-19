@@ -612,7 +612,16 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	run.Error = ""
 	run.FailureCode = ""
 	run.Checkpoint = cp
-	run.UpdatedAt = time.Now().UTC()
+	now = time.Now().UTC()
+	run.UpdatedAt = now
+	// Stamp the rewind epoch so the resume-side helper
+	// advancePastAnsweredHumanNodeOnResume (pkg/runtime) refuses to reuse
+	// an interaction whose AnsweredAt is older than this rewind — the
+	// fact that gates a stale-answer replay of the pivot's human gate
+	// (#1435 gate finding Rac891d). The retire step below is the sibling
+	// layer: the answered blocking-pause interaction on the pivot is
+	// marked retired so the check has TWO independent refusals to cross.
+	run.LastRewindAt = &now
 	// The claim stamped FinishedAt and advanced the version. SaveRun refuses
 	// if another writer changed the run while the rewind was being prepared.
 
@@ -650,12 +659,19 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	for _, id := range invalidated {
 		retireNodes[id] = true
 	}
-	if n, rerr := store.RetireAsyncInteractions(ctx, s.store, run.ID, retireNodes); rerr != nil {
+	// includeBlocking: rewind also retires the invalidated nodes'
+	// answered blocking-pause interactions (Kind == "") — the sibling
+	// layer of Run.LastRewindAt for the class the gate's Rac891d
+	// finding named. Without this, a rewind onto a human gate would
+	// leave its previously-answered interaction alive, and the resume-
+	// side advance helper (pkg/runtime) would pick up the stale
+	// answers on the very node the operator rewound to reconsider.
+	if n, rerr := store.RetireInteractions(ctx, s.store, run.ID, retireNodes, true); rerr != nil {
 		if s.logger != nil {
-			s.logger.Warn("rewind: retire async interactions for %s: %v", run.ID, rerr)
+			s.logger.Warn("rewind: retire interactions for %s: %v", run.ID, rerr)
 		}
 	} else if n > 0 && s.logger != nil {
-		s.logger.Info("rewind: retired %d abandoned async question(s)", n)
+		s.logger.Info("rewind: retired %d abandoned question(s)", n)
 	}
 
 	// Append-only audit. events.jsonl is never truncated — the dropped
