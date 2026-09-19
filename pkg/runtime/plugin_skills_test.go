@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +43,7 @@ func TestMirrorPluginContributions_SameNameCollisionIsLoudAndReportedOnce(t *tes
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	owned, err := mirrorPluginContributions(workDir, nil, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestMirrorPluginContributions_SelfCollisionNamesThePluginOnce(t *testing.T)
 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
-	owned, err := mirrorPluginContributions(t.TempDir(), nil, logger)
+	owned, _, err := mirrorPluginContributions(t.TempDir(), nil, logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestMirrorPluginContributions_CollisionWarningTellsTheTruthWhenTheWorkspace
 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
-	owned, err := mirrorPluginContributions(workDir, nil, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestMirrorPluginContributions_IdenticalContributionsCollideSilently(t *test
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	if _, err := mirrorPluginContributions(workDir, nil, logger); err != nil {
+	if _, _, err := mirrorPluginContributions(workDir, nil, logger); err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
 	if logs := buf.String(); strings.Contains(logs, "is contributed by both") {
@@ -216,7 +217,7 @@ func TestMirrorPluginContributions_DirectoryFormSkillKeepsItsName(t *testing.T) 
 	}
 
 	workDir := t.TempDir()
-	owned, err := mirrorPluginContributions(workDir, nil, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestMirrorPluginContributions_SkillLandsInBothForms(t *testing.T) {
 	installPack(t, home, "the-pack", "skills/graphify.md", "content\n")
 
 	workDir := t.TempDir()
-	owned, err := mirrorPluginContributions(workDir, nil, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestMirrorPluginContributions_SkillLandsInBothForms(t *testing.T) {
 // red.
 func TestMirrorInjectedPluginFiles_SkillLandsInBothForms(t *testing.T) {
 	workDir := t.TempDir()
-	owned, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+	owned, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy.md", Content: []byte("playbook\n")},
 	}, nil)
 	if err != nil {
@@ -344,7 +345,7 @@ func TestMirrorInjectedPluginFiles_SkillLandsInBothForms(t *testing.T) {
 // directory-form Stat below goes red on files that must not exist.
 func TestMirrorInjectedPluginFiles_CommandsAndAgentsAreFlat(t *testing.T) {
 	workDir := t.TempDir()
-	_, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+	_, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "commands", Name: "deploy.md", Content: []byte("a command")},
 		{Kind: "agents", Name: "scout.md", Content: []byte("an agent")},
 	}, nil)
@@ -380,7 +381,7 @@ func TestMirrorInjectedPluginFiles_DuplicatePayloadIsLoudAndReportedOnce(t *test
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	owned, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+	owned, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy.md", Content: []byte("A version\n")},
 		{Kind: "skills", Name: "deploy.md", Content: []byte("B version\n")},
 	}, logger)
@@ -417,7 +418,7 @@ func TestMirrorInjectedPluginFiles_DuplicateIdenticalBytesStillWarn(t *testing.T
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	if _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+	if _, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy.md", Content: []byte("same body\n")},
 		{Kind: "skills", Name: "deploy.md", Content: []byte("same body\n")},
 	}, logger); err != nil {
@@ -458,7 +459,7 @@ func TestMirrorPluginContributions_UppercaseMdExtensionMirrorsBothShapes(t *test
 	}
 
 	workDir := t.TempDir()
-	owned, err := mirrorPluginContributions(workDir, nil, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions returned an error on an .MD-extension skill: %v", err)
 	}
@@ -520,7 +521,7 @@ func TestMirrorPluginContributions_OneMalformedNameDoesNotDiscardOtherPlugins(t 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	owned, err := mirrorPluginContributions(workDir, nil, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, logger)
 	if err != nil {
 		t.Fatalf("one malformed plugin file aborted the whole pass: %v", err)
 	}
@@ -555,7 +556,7 @@ func TestMirrorInjectedPluginFiles_OneMalformedEntryDoesNotDiscardTheRest(t *tes
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	_, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+	_, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "broken", Content: []byte("no extension")},
 		{Kind: "skills", Name: "kept.md", Content: []byte("still lands\n")},
 	}, logger)
@@ -567,5 +568,151 @@ func TestMirrorInjectedPluginFiles_OneMalformedEntryDoesNotDiscardTheRest(t *tes
 	}
 	if logs := buf.String(); !strings.Contains(logs, "broken") {
 		t.Errorf("malformed entry not named in the WARN; logs = %q", logs)
+	}
+}
+
+// The house doctrine — no silent fallback — restated for the mirror pass.
+// PR1's blanket WARN+continue swallowed genuine I/O failures (ENOTDIR when
+// R0ab502 [medium] on #1500, superseding the earlier fatal class: plugin
+// contributions are AMBIENT — instance-level enablement no `.bot`
+// declares — and pkg/plugin/registry.go's own rule is "a broken
+// third-party plugin must not brick iterion". A hostile workspace
+// checkout planting a regular file at `.claude/skills/<stem>` (MkdirAll →
+// ENOTDIR) must not disable every plugin-enabled run against that repo.
+// The plugin tier treats BOTH error classes as soft: WARN naming the
+// class, skip the entry — and drop `complete` so the pruner skips
+// (Rf979b4's safety preserved: an un-mirrored entry leaves last pass's
+// file un-refreshed, and an incomplete pass never blesses a prune).
+// Bundle and library keep the fatal class — those skills the `.bot`
+// itself declares.
+//
+// Test: plant a plain FILE at .claude/skills/deploy so MkdirAll(deploy)
+// hits ENOTDIR. No error escapes; complete=false comes back.
+//
+// Mutation: restore `return nil, false, fmt.Errorf(...)` on the I/O arm
+// and this test reddens (err becomes non-nil).
+func TestMirrorPluginContributions_IOFailureOnAmbientSkillIsSoftAndIncomplete(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	installPack(t, home, "the-pack", "skills/deploy.md", "playbook\n")
+
+	workDir := t.TempDir()
+	block := filepath.Join(workDir, ".claude", "skills")
+	if err := os.MkdirAll(block, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(block, "deploy"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	owned, complete, err := mirrorPluginContributions(workDir, nil, nil)
+	if err != nil {
+		t.Fatalf("ambient-tier I/O error aborted the run: %v", err)
+	}
+	if complete {
+		t.Errorf("complete=true despite a skipped entry — the pruner would run on a partial pass")
+	}
+	if len(owned) != 0 {
+		t.Errorf("owned = %v, want none — the obstructed skill did not land", owned)
+	}
+}
+
+// Cloud-path twin: same soft + incomplete contract on the injected wire.
+func TestMirrorInjectedPluginFiles_IOFailureOnPayloadSkillIsSoftAndIncomplete(t *testing.T) {
+	workDir := t.TempDir()
+	block := filepath.Join(workDir, ".claude", "skills")
+	if err := os.MkdirAll(block, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(block, "deploy"), []byte("planted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	owned, complete, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "skills", Name: "deploy.md", Content: []byte("payload\n")},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ambient-tier I/O error aborted the run: %v", err)
+	}
+	if complete {
+		t.Errorf("complete=true despite a skipped entry")
+	}
+	if len(owned) != 0 {
+		t.Errorf("owned = %v, want none", owned)
+	}
+}
+
+// The soft half of the split. A malformed name (validation error from
+// `skillDestDirForm`) skips the ONE entry with a WARN naming it, and
+// unrelated entries still land. Same as the round-2 medium's regression
+// test, restated against the split-out predicate so a future refactor
+// cannot lose the soft branch.
+func TestMirrorPluginContributions_ValidationErrorSkipsOneEntryFatal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+
+	// Plugin A: a name that fails validation (no .md extension).
+	brokenDir := filepath.Join(home, "plugins", "a-broken")
+	if err := os.MkdirAll(filepath.Join(brokenDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "skills", "no-extension"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "plugin.yaml"),
+		[]byte("name: a-broken\nversion: 1.0.0\nschema_version: 1\ndefault_enabled: true\ncontributes:\n  skills:\n    - skills/no-extension\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Plugin B: legitimate.
+	goodDir := filepath.Join(home, "plugins", "z-good")
+	if err := os.MkdirAll(filepath.Join(goodDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goodDir, "skills", "kept.md"), []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goodDir, "plugin.yaml"),
+		[]byte("name: z-good\nversion: 1.0.0\nschema_version: 1\ndefault_enabled: true\ncontributes:\n  skills:\n    - skills/kept.md\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	workDir := t.TempDir()
+	_, _, err := mirrorPluginContributions(workDir, nil, logger)
+	if err != nil {
+		t.Fatalf("validation error was FATAL instead of soft: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "skills", "kept", "SKILL.md")); err != nil {
+		t.Fatalf("z-good's skill did not land: %v", err)
+	}
+	if logs := buf.String(); !strings.Contains(logs, "validation") || !strings.Contains(logs, "no-extension") {
+		t.Errorf("skip WARN missing or does not label as validation; logs = %q", logs)
+	}
+}
+
+// The predicate itself. `isSkillValidationError` returns true for the
+// sentinel and false for wrapped I/O — nothing accidental in-between.
+func TestIsSkillValidationError_OnlyForTheSentinel(t *testing.T) {
+	// Positive: skillDestDirForm's own return.
+	_, _, _, err := skillDestDirForm("d", "m", "no-extension")
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !isSkillValidationError(err) {
+		t.Fatalf("skillDestDirForm returned a non-validation error: %v (%T)", err, err)
+	}
+	// Wrapped through a fmt.Errorf %w: still recognised.
+	wrapped := fmt.Errorf("upstream: %w", err)
+	if !isSkillValidationError(wrapped) {
+		t.Fatal("wrapped validation error not recognised via errors.As")
+	}
+	// Negative: a bare I/O error must NOT read as validation.
+	if isSkillValidationError(os.ErrPermission) {
+		t.Fatal("os.ErrPermission read as validation")
+	}
+	if isSkillValidationError(fmt.Errorf("mkdir: no space left on device")) {
+		t.Fatal("ENOSPC-shaped fmt.Errorf read as validation")
 	}
 }

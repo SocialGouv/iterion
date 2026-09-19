@@ -102,14 +102,38 @@ reaches its runs. Two consequences worth knowing:
 - Enablement of *installed* plugins stays **global per instance**. For a
   **team-scoped, private** plugin see the next section.
 
-**The mirror never prunes.** A skill mirrored into a workspace stays there once
-its source is renamed, removed or disabled: nothing walks `.claude/skills/` to
-drop a file whose name no longer appears in what the run mirrored
-(`ClearSkillTierMarkers` clears the per-pass tier sidecars, not the files or
-their `.sha256` markers). A stale copy is inert for `claude_code`, which
-discovers only the `<name>/SKILL.md` directory form — but `claw` resolves a flat
-`<name>.md` too, and will keep offering it under its old name. In a persistent
-workspace, delete it by hand; a run in a fresh checkout never sees one.
+**The mirror prunes orphans in run-owned worktrees.** A skill (or command
+or agent) whose source is renamed, removed or disabled upstream leaves its
+copy behind unless the mirror actively drops it. At the end of every mirror
+pass — launch AND resume — `pruneWorkspaceMirror` walks
+`.claude/{skills,commands,agents}/.iterion-managed/` and removes every
+marker whose `.tier` sidecar was not refreshed this pass AND whose
+destination file still hashes to the marker AND which carries iterion's
+`.iterion-wrote` provenance sidecar. That predicate is exactly
+`reconcileSkillFile`'s "refresh-vs-shadow" test plus a provenance stamp:
+a matching hash with the sidecar means iterion wrote the file and the
+operator did not edit it, so pruning it takes nobody's work. Anything
+else — a file with no marker, a file the operator edited (hash diverged),
+a file that already vanished, or a file mirrored by an iterion OLDER than
+the provenance sidecar (see below) — is left alone. The sweep runs by
+default only when the workspace is a **run-owned** worktree
+(`worktree: auto`, where a stale mirror file has no operator
+interpretation). A `worktree: none` / direct-mode run against the
+operator's own checkout skips pruning — an orphan there costs one unused
+file; a false-positive prune costs an operator's edit. The escape hatch
+is greppable and opt-in: `ITERION_PRUNE_MIRROR_IN_CHECKOUT=1`.
+
+**Pre-upgrade leftovers are exempt — delete by hand.** The
+`.iterion-wrote` sidecar only exists on files this version wrote. A
+workspace whose mirrors predate it carries none, and an orphan (its
+source is gone) can never be re-mirrored into acquiring one — so those
+stale copies stay un-pruned by design. Backfilling the sidecar for every
+hash-matching pre-upgrade file would also stamp provenance onto an
+operator's byte-identical copy of a skill and make THAT prunable, which
+is the delete the sidecar exists to prevent. In a persistent workspace,
+delete a pre-upgrade leftover by hand; any file whose upstream content
+changes gets refreshed into full provenance and prunes normally from
+then on.
 
 **Same-name collisions across enabled plugins are loud.** Two plugins
 contributing one file name land on one destination — the mirror keeps

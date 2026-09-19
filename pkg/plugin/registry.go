@@ -148,12 +148,25 @@ type Registry struct {
 	// config holds per-plugin operator config values (plugin name → key → value),
 	// persisted alongside enable state in plugins.yaml.
 	config map[string]map[string]string
+	// loadSkips names every installed plugin that could not be loaded —
+	// an unreadable or unparseable plugin.yaml. Empty for a healthy home.
+	// Consumers whose decision depends on having SEEN every installed
+	// plugin (the skill-mirror pass deciding whether its workspace prune
+	// is safe) must treat a non-empty list as "the enumeration is
+	// partial", not as "nothing enabled".
+	loadSkips []string
+}
+
+// LoadSkips returns one human-readable reason per installed plugin that
+// could not be loaded. Empty when the home is healthy.
+func (r *Registry) LoadSkips() []string {
+	return r.loadSkips
 }
 
 // Load builds a registry from the embedded builtins and the installed plugins
 // under <iterion-home>/plugins/, applying the persisted enable state. A
-// malformed installed plugin is skipped (logged by the caller via the returned
-// error slice); a malformed builtin is a programming error and fails the load.
+// malformed installed plugin is skipped and recorded on the registry
+// (LoadSkips); a malformed builtin is a programming error and fails the load.
 func Load() (*Registry, error) {
 	home := store.GlobalIterionDataDir()
 	r := &Registry{home: home}
@@ -222,8 +235,15 @@ func (r *Registry) loadBuiltins() error {
 }
 
 // loadInstalled scans <home>/plugins/*/plugin.yaml. Errors on individual
-// plugins are swallowed (a broken third-party plugin must not brick iterion);
-// a builtin of the same name takes precedence and the installed copy is skipped.
+// plugins are swallowed for the RUN (a broken third-party plugin must not
+// brick iterion) but RECORDED on the registry: a caller whose decision
+// depends on "did I see every plugin that is installed?" — the skill-mirror
+// pass deciding whether its workspace prune is safe — must be able to tell
+// "no plugins" from "some plugins unreadable", and a bare empty Enabled()
+// cannot (#1500 R2-F1 HIGH: the pruner deleted a broken-declared plugin's
+// files because the skip was silent). A builtin of the same name takes
+// precedence and the installed copy is skipped WITHOUT recording a load
+// skip — that is shadowing, not breakage.
 func (r *Registry) loadInstalled() {
 	base := filepath.Join(r.home, pluginsSubdir)
 	entries, err := os.ReadDir(base)
@@ -241,10 +261,17 @@ func (r *Registry) loadInstalled() {
 		dir := filepath.Join(base, e.Name())
 		data, err := os.ReadFile(filepath.Join(dir, ManifestFile))
 		if err != nil {
+			r.loadSkips = append(r.loadSkips, fmt.Sprintf("%s: read %s: %v", e.Name(), ManifestFile, err))
 			continue
 		}
 		m, err := ParseManifest(data)
-		if err != nil || have[m.Name] {
+		if err != nil {
+			r.loadSkips = append(r.loadSkips, fmt.Sprintf("%s: parse %s: %v", e.Name(), ManifestFile, err))
+			continue
+		}
+		if have[m.Name] {
+			// Builtin (or an earlier installed dir) shadows this copy —
+			// deliberate, not a breakage.
 			continue
 		}
 		have[m.Name] = true

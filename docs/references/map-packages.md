@@ -146,7 +146,7 @@
 | `pkg/orgusage` | meters per-org (tenant) monthly run launches and LLM spend, and enforces the launch-time caps. | `Counter` | 3 · 21 |
 | `pkg/pat` | implements personal access tokens — long-lived bearer credentials for programmatic API access (CI jobs, SDKs, curl) where the 15-minute JWT +… | `Store` | 3 · 25 |
 | `pkg/platformcfg` | holds platform-scoped runtime-settings families beyond the usage caps that established the doctrine (ADR-090): env var = deployment default, DB… | `CASStore`, `Store` | 2 · 38 |
-| `pkg/plugin` | implements iterion's plugin ecosystem: declarative, out-of-process extensions described by a `plugin.yaml` manifest with typed contribution points. | — | 8 · 66 |
+| `pkg/plugin` | implements iterion's plugin ecosystem: declarative, out-of-process extensions described by a `plugin.yaml` manifest with typed contribution points. | — | 8 · 67 |
 | `pkg/pluginsource` | persists ORG-PRIVATE plugin bindings: "this team's runs get the plugin living in this git repository". | `Store` | 5 · 39 |
 | `pkg/projectenv` | builds immutable per-project process environments for a unified local Studio. | — | 1 · 1 |
 | `pkg/queue` | defines the message contract exchanged between the iterion server (publisher) and the iterion runner (consumer). | — | 1 · 30 |
@@ -161,7 +161,7 @@
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — | 30 · 32 |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — | 1 · 8 |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
-| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 235 |
+| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 236 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
 | `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 51 · 345 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |
