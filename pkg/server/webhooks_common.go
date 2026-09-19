@@ -58,7 +58,7 @@ func (s *Server) verifyWebhookHMACBody(w http.ResponseWriter, r *http.Request, c
 // refresh is skipped and the periodic forge→board sweep reconciles the
 // board, so correctness is preserved and the request never blocks.
 //
-// Held on the Server (lazily built in forgeProjectionSem()) rather than
+// Held on the Server (forgeProjSem, pre-allocated in New) rather than
 // as a package var, so per-test state does not leak across independent
 // Server instances — the pre-fix package-scoped semaphore made
 // `-shuffle=on -count=3` observe slots that survived across tests
@@ -948,6 +948,20 @@ func (s *Server) scheduleForgeBoardProjection(repo string) {
 	case sem <- struct{}{}:
 		if _, started := s.tryGoUntilShutdown("server.forgeBoardProjection", func(ctx context.Context) {
 			defer func() { <-sem }()
+			// Shutdown started between the tryGoUntilShutdown registration
+			// and this fn running — close(s.shutdown) has fired and the
+			// fn's ctx is already cancelled. Skip the doomed
+			// ListSyncEnabledForRepo call (it would return a generic
+			// "context canceled" and pollute the log) and emit an
+			// explicit deferred-to-sweep record instead — #1477
+			// follow-up question 2. The periodic forge→board sweep
+			// reconciles the card on its next tick.
+			if err := ctx.Err(); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("webhooks: forge→board fast-path projection for %s deferred to the forge→board sweep (shutdown started before dispatch)", repo)
+				}
+				return
+			}
 			// 30s happy-path ceiling on top of the shutdown-aware ctx. On
 			// SIGTERM this cancels early with the outer ctx; on a slow
 			// Mongo it cancels after 30s.
@@ -955,11 +969,18 @@ func (s *Server) scheduleForgeBoardProjection(repo string) {
 			defer cancel()
 			s.projectForgeWebhookToBoard(pctx, repo)
 		}); !started {
-			// The shutdown already joined its background loops; the fn was
-			// not called, so the deferred slot release inside it never
-			// runs. Release it here so the concurrency cap does not leak
-			// on a process that is being kept alive by a hung Shutdown.
+			// The shutdown already signalled or joined its background
+			// loops; the fn was not called, so the deferred slot release
+			// inside it never runs — release it here so the concurrency
+			// cap does not leak on a process kept alive by a hung
+			// Shutdown. And RECORD the cut delivery (#1345): the
+			// deferred-to-sweep warn names the repo so an operator can
+			// attribute it; the periodic forge→board sweep reconciles
+			// the card on its next tick.
 			<-sem
+			if s.logger != nil {
+				s.logger.Warn("webhooks: forge→board fast-path projection for %s deferred to the forge→board sweep (shutdown started before dispatch)", repo)
+			}
 		}
 	default:
 		// Concurrency cap reached — skip the fast path; the periodic

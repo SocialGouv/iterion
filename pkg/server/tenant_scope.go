@@ -10,11 +10,13 @@ import (
 )
 
 // tenantScopeHeader is the wire name of the cross-team scope header a caller
-// (typically the CLI) sends to override the JWT's active team on a route
-// that scopes by tenant — the counterpart of the `?team_id=` query. Set by
-// `iterion remote --team <id>` / `ITERION_REMOTE_TEAM` and by the studio's
-// team switcher. The name is stable and greppable so a middleware sweep,
-// an audit log or a `curl -H` reproduce every scoped call.
+// sends to override the JWT's active team on a route that scopes by tenant —
+// the counterpart of the `?team_id=` query. The CLI's
+// `iterion remote runs stats|repos --team <id>` sends the query form; the
+// header exists for callers whose base URL is assembled for them
+// (ITERION_REMOTE_TEAM) and for future surfaces. The name is stable and
+// greppable so a middleware sweep, an audit log or a `curl -H` reproduce
+// every scoped call.
 const tenantScopeHeader = "X-Iterion-Team"
 
 // resolveTenantScope resolves the tenant a caller wants to read from an

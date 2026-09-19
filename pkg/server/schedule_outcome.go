@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -75,10 +76,18 @@ func (s *Server) handleScheduleOutcomeEvent(ctx context.Context, ev trigger.Even
 	// platform-level consumer (queue-group "schedule-outcome" on cloud),
 	// not scoped to any one tenant.
 	run, err := rs.LoadRun(store.WithoutTenantFilter(ctx), runID)
-	if err != nil || run == nil {
-		// A load error is not the subscriber's problem — the run may have
-		// been purged already. Silent: the schedule's LastFireAt still
-		// carries the dispatch fact.
+	if err != nil {
+		// A purged run is expected (retention window) and stays silent —
+		// the schedule's LastFireAt still carries the dispatch fact. Any
+		// OTHER load error is an outage, not a purge: warn so a transient
+		// store failure is visible instead of silently dropping the
+		// stamp (there is no sweep on this path to replay it).
+		if !errors.Is(err, store.ErrRunNotFound) && s.logger != nil {
+			s.logWarn("server: schedule-outcome: load run %s: %v", runID, err)
+		}
+		return nil
+	}
+	if run == nil {
 		return nil
 	}
 	// Non-scheduled runs (manual, webhook, board, chain) skip: no schedule

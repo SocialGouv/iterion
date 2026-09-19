@@ -667,11 +667,16 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		mux:          newRecordingMux(),
 		addrReady:    make(chan struct{}),
 		shutdown:     make(chan struct{}),
-		// Pre-allocate the projection semaphore so scheduleForgeBoardProjection
-		// stays lock-free — a per-webhook stateMu.Lock (a lazy init would
-		// need one) would queue behind any project-switch writer and stall
-		// /api/bots, /api/server/info and the pipeline board (#1477
-		// follow-up round MEDIUM).
+		// Pre-allocate the projection semaphore so its ACQUIRE stays
+		// lock-free — a per-webhook send to a pre-built chan is atomic.
+		// scheduleForgeBoardProjection still enters tryGoUntilShutdown
+		// after the acquire, and THAT takes stateMu briefly to append
+		// the bgWorker (inherent to every registered loop); a lazy
+		// semaphore init would have added a SECOND stateMu.Lock on the
+		// same delivery, queueing behind any project-switch writer and
+		// stalling /api/bots, /api/server/info and the pipeline board.
+		// Pre-allocating drops that second lock; the
+		// tryGoUntilShutdown lock stays.
 		forgeProjSem:        make(chan struct{}, forgeProjectionSemCap),
 		authSvc:             cfg.AuthService,
 		signer:              cfg.AuthSigner,

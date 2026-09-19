@@ -381,7 +381,8 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | triggers.scheduler | schedule-kind subscriptions tick on their cron | triggers | covered-deterministic | pkg/trigger/scheduler_test.go, pkg/trigger/scheduler_gate_test.go | |
 | triggers.eventbus-inproc | in-process event bus delivery | triggers | covered-deterministic | pkg/eventbus/inproc_test.go | |
 | triggers.eventbus-nats | NATS event bus on the separate ITERION_EVENTS stream | triggers | covered-deterministic | pkg/eventbus/nats_test.go | needs a NATS endpoint; skips cleanly without one |
-| triggers.cloudsched | cloud recurring-bot scheduler with a multi-replica CAS ticker | triggers | covered-deterministic | pkg/cloudsched/cloudsched_test.go | |
+| triggers.cloudsched | cloud recurring-bot scheduler with a multi-replica CAS ticker | triggers | covered-deterministic | pkg/cloudsched/cloudsched_test.go | includes `assertMarkRunOutcomeContract` running the LastRun* back-write property against both twins (#1426) |
+| triggers.schedule-outcome | run terminal outcome back-written onto the schedule record via the eventbus | triggers | covered-deterministic | pkg/server/schedule_outcome_test.go | success clears a previous failure, failure stamps error + code (a `SANDBOX_DRIVER_UNAVAILABLE` from #1425's runtime path lands here), a non-scheduled run does NOT mutate any schedule, a missing run is a silent no-op |
 | triggers.retry-policy | `usage_window` retry policy resolution across all layers | triggers | covered-deterministic | pkg/retrypolicy/policy_test.go | |
 | webhooks.gitlab | GitLab MR open/reopen + `/revi` note re-review launches | webhooks | covered-deterministic | pkg/server/webhooks_gitlab_test.go, pkg/webhooks/webhooks_test.go | |
 | webhooks.github | GitHub PR events launch the configured bot | webhooks | covered-deterministic | pkg/server/webhooks_github_test.go | |

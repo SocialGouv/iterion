@@ -90,9 +90,10 @@ type ScheduledBot struct {
 	// timeout tag). LastRunError is the free-text message the operator
 	// reads; a caller can dispatch on the code without parsing the
 	// message (dashboards colour-coding by code) but the message stays
-	// the authoritative record. Both are cleared on a successful run so
-	// the schedule's health surface tracks the LAST outcome, not the
-	// last FAILURE.
+	// the authoritative record. Both are cleared on any terminal outcome
+	// that carries no error — a finished run, and a cancelled one (an
+	// operator cancel is a decision, not a defect) — so the schedule's
+	// health surface tracks the LAST outcome, not the last FAILURE.
 	LastRunID        string     `bson:"last_run_id,omitempty" json:"last_run_id,omitempty"`
 	LastRunStatus    string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
 	LastRunError     string     `bson:"last_run_error,omitempty" json:"last_run_error,omitempty"`

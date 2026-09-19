@@ -18,6 +18,23 @@ export interface ScheduledBot {
   disabled?: boolean;
   next_fire_at: string;
   last_fire_at?: string;
+  // Launch-time verdict of the last tick — pre-existing on the server
+  // record but not previously mirrored in the studio type. Empty when
+  // the tick succeeded; a message says why the launch itself was
+  // refused (org-gate denial, run-service refusal).
+  last_error?: string;
+  last_error_at?: string;
+  // Terminal outcome of the last RUN this schedule launched (#1426).
+  // last_error above is the launch decision; these are the run result.
+  // All empty until the first run reaches a terminal status.
+  // last_run_error_code is a stable machine-readable classifier
+  // (e.g. "sandbox_refused") so dashboards can dispatch on it without
+  // parsing last_run_error. Cleared on a successful run.
+  last_run_id?: string;
+  last_run_status?: string;
+  last_run_error?: string;
+  last_run_error_code?: string;
+  last_run_at?: string;
   created_by?: string;
   created_at: string;
   updated_at: string;
