@@ -9,6 +9,7 @@ import ServerUnreachable from "@/components/shared/ServerUnreachable";
 // initial download covers only the shell + AuthGate. The eager imports
 // below are the always-needed shell pieces (Login lives off the auth
 // gate; everything else is conditional on a route match).
+import { RequireSuperAdmin } from "@/auth/RequireSuperAdmin";
 const HomeView = lazy(() => import("@/components/Home/HomeView"));
 const WhatsNextView = lazy(() => import("@/components/WhatsNext/WhatsNextView"));
 const EditorTabsView = lazy(() => import("@/components/Editor/EditorTabsView"));
@@ -629,19 +630,29 @@ function AuthedApp() {
               <RepoDetailView />
             </ErrorBoundary>
           </Route>
-          <Route path="/admin" component={OrgsAdminPage} />
-          <Route path="/admin/orgs" component={OrgsAdminPage} />
-          <Route path="/admin/users" component={UsersAdminPage} />
-          <Route path="/admin/llm-credentials" component={PlatformLlmCredsPage} />
-          <Route path="/admin/settings/usage-caps" component={UsageCapsPage} />
-          <Route path="/admin/settings/bot-roles" component={BotRolesPage} />
-          <Route path="/admin/settings/sandbox" component={SandboxPage} />
-          <Route path="/admin/settings/bot-vars" component={BotVarsPage} />
-          <Route path="/admin/settings/platform-credentials" component={PlatformCredentialsSettingsPage} />
-            <Route path="/admin/bots" component={PlatformBotsPage} />
-          <Route path="/admin/audit" component={AuditAdminPage} />
-          <Route path="/admin/dlq" component={DLQAdminPage} />
-          <Route path="/admin/spend" component={CredentialSpendPage} />
+          {/* The whole admin console behind one authorization gate
+              (RequireSuperAdmin). `nest` makes the inner paths relative to
+              /admin; each page keeps its own super-admin/cloud check as
+              defense-in-depth. */}
+          <Route path="/admin" nest>
+            <RequireSuperAdmin>
+              <Switch>
+                <Route path="/" component={OrgsAdminPage} />
+                <Route path="/orgs" component={OrgsAdminPage} />
+                <Route path="/users" component={UsersAdminPage} />
+                <Route path="/llm-credentials" component={PlatformLlmCredsPage} />
+                <Route path="/settings/usage-caps" component={UsageCapsPage} />
+                <Route path="/settings/bot-roles" component={BotRolesPage} />
+                <Route path="/settings/sandbox" component={SandboxPage} />
+                <Route path="/settings/bot-vars" component={BotVarsPage} />
+                <Route path="/settings/platform-credentials" component={PlatformCredentialsSettingsPage} />
+                <Route path="/bots" component={PlatformBotsPage} />
+                <Route path="/audit" component={AuditAdminPage} />
+                <Route path="/dlq" component={DLQAdminPage} />
+                <Route path="/spend" component={CredentialSpendPage} />
+              </Switch>
+            </RequireSuperAdmin>
+          </Route>
           {serverInfo?.native_tracker_enabled ? (
             <Route path="/board/labels">
               <ErrorBoundary area="Board labels view">
