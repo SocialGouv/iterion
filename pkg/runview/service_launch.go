@@ -704,12 +704,23 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		runName = store.GenerateRunName(spec.FilePath + ":" + spec.RunID)
 	}
 
-	// Finalization params for resume: empty (no override). The original
-	// launch's choice cannot be re-derived (we don't persist the
-	// MergeInto/BranchName decisions on the run), so resume uses
-	// engine defaults. If we ever surface "edit finalization on
-	// resume" we'd plumb a ResumeSpec field here.
-	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
+	// Finalization params for resume: replayed from the run record, the
+	// same doctrine that governs ModelOverrides and the budget ask. The
+	// launch's decisions are persisted at launch (engine_run.go's
+	// SaveRun block) so a resume rebuilt from scratch — the studio's
+	// dock is one resume per operator message, and cloud resumes fire
+	// unattended on quota reopen — replays the same worktree behaviour
+	// the launch took. Without this, a run launched with `--merge-into
+	// none` on the CLI and resumed through the studio would silently
+	// merge on completion, and its storage branch would be named by run
+	// id (finalizeOptions.runID fallback) instead of run name (#1366).
+	resumeFin := finalizationOpts{
+		mergeInto:     r.MergeInto,
+		branchName:    r.BranchName,
+		mergeStrategy: r.MergeStrategy,
+		autoMerge:     r.AutoMerge,
+	}
+	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
@@ -723,6 +734,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
 			compiled:                cs,
 			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
+			// The launch's sandbox choices, replayed off the record so
+			// the studio's in-process resume respects `--sandbox none`
+			// the same way the CLI resume now does (#1435).
+			sandboxOverride:          r.SandboxOverride,
+			sandboxDefaultImage:      r.SandboxDefaultImage,
+			sandboxHostStateOverride: r.SandboxHostState,
 		},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
@@ -1179,6 +1196,16 @@ type launchExtras struct {
 	// permission is the strongest-precedence run-level gate choice. It is
 	// supplied on launch and replayed from the run document on resume.
 	permission string
+	// sandboxOverride, sandboxDefaultImage, sandboxHostStateOverride are
+	// the launch-time --sandbox / --sandbox-default-image /
+	// --sandbox-host-state choices, persisted on the run at launch
+	// (engine_run.go) and replayed here on resume so a run launched
+	// with `--sandbox none` on a docker host resumes without docker
+	// through the studio too, not just through the CLI. Empty means
+	// the launch declared no override.
+	sandboxOverride          string
+	sandboxDefaultImage      string
+	sandboxHostStateOverride string
 	// budgetAsk mirrors LaunchSpec.Budget: the operator's launch-time
 	// budget ask, handed to the engine so the run doc persists it as the
 	// replay source every resume surface reads (runtime.WithBudgetAsk).
@@ -1222,6 +1249,21 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	// stays neutral, mirroring the engine's own contract.
 	if s.sandboxDefault != "" {
 		opts = append(opts, runtime.WithSandboxDefault(s.sandboxDefault))
+	}
+	// Launch-time sandbox choices persisted on the run (#1435). On
+	// resume, ex.sandboxOverride is read from r.SandboxOverride (see
+	// service_launch.Resume); on launch it is read from LaunchSpec. A
+	// non-empty override wins over the workflow's own `sandbox:` block
+	// as it does on the CLI. Empty leaves the workflow + default tier
+	// to decide, same as before.
+	if ex.sandboxOverride != "" {
+		opts = append(opts, runtime.WithSandboxOverride(ex.sandboxOverride))
+	}
+	if ex.sandboxDefaultImage != "" {
+		opts = append(opts, runtime.WithSandboxDefaultImage(ex.sandboxDefaultImage))
+	}
+	if ex.sandboxHostStateOverride != "" {
+		opts = append(opts, runtime.WithSandboxHostStateOverride(ex.sandboxHostStateOverride))
 	}
 	if ex.loopBudgetGuard != "" {
 		opts = append(opts, runtime.WithLoopBudgetGuard(ex.loopBudgetGuard))

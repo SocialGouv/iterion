@@ -744,6 +744,36 @@ type Run struct {
 	// separately because it outranks node and workflow declarations and must
 	// be replayed verbatim on every local or cloud resume.
 	PermissionOverride string `json:"permission_override,omitempty" bson:"permission_override,omitempty"`
+	// SandboxOverride is the operator's launch-time --sandbox choice
+	// ("none", "auto", explicit driver name). Persisted verbatim so
+	// resume/rewind replay the isolation decision the launch took: a run
+	// launched with --sandbox none on a docker-equipped host must NOT be
+	// resumed inside docker just because the resume process saw one on
+	// PATH. Empty means the launch declared no override; resume/rewind
+	// then falls back to ITERION_SANDBOX_DEFAULT then the workflow's
+	// sandbox: block, as at launch.
+	SandboxOverride string `json:"sandbox_override,omitempty" bson:"sandbox_override,omitempty"`
+	// SandboxDefaultImage is the operator's launch-time
+	// --sandbox-default-image (ITERION_SANDBOX_DEFAULT_IMAGE at launch).
+	// Persisted for the same reason as SandboxOverride: sandbox: auto on
+	// resume must resolve the same image the launch resolved, not
+	// whatever the resume process's env now says.
+	SandboxDefaultImage string `json:"sandbox_default_image,omitempty" bson:"sandbox_default_image,omitempty"`
+	// SandboxHostState is the operator's launch-time --sandbox-host-state
+	// ("auto" or "none"). Persisted so resume respects the launch-time
+	// isolation of ~/.iterion and ~/.claude; a run launched with none on
+	// a multi-tenant runner must not silently bind host state on resume.
+	SandboxHostState string `json:"sandbox_host_state,omitempty" bson:"sandbox_host_state,omitempty"`
+	// MergeInto is the operator's launch-time --merge-into choice for
+	// worktree:auto runs ("", "current", "none", or a branch name).
+	// Persisted so resume/rewind's finalize honours the launch's merge
+	// target: a --merge-into none launched run must not silently merge
+	// on resume just because the operator did not repeat the flag.
+	MergeInto string `json:"merge_into,omitempty" bson:"merge_into,omitempty"`
+	// BranchName is the operator's launch-time --branch-name override
+	// for the worktree finalization's storage branch. Persisted so a
+	// resume creates the same branch name the launch would have.
+	BranchName string `json:"branch_name,omitempty" bson:"branch_name,omitempty"`
 	// ModelOverrides captures launch-time per-node/-group backend+model+
 	// provider pins (studio dropdowns / CLI --model/--backend / HTTP
 	// model_overrides) so the run's Overview can show what it was

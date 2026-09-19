@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -276,7 +277,22 @@ func WithExecutionContext(c *store.ExecutionContext) EngineOption {
 // metadata so that resume (and the run console) can re-locate the
 // workflow without the caller having to thread it back through the
 // API. Optional — empty string is ignored.
+//
+// A relative input is absolutised against the process's cwd at the
+// call site: the field's contract IS absolute, and a caller handing a
+// relative path (an operator's `--file examples/foo.bot`, a subbot
+// runner joining a bundle-relative name) would otherwise leak the
+// relative form into every derived path — the docker bind-mount for the
+// bot's resource dir takes `filepath.Dir(filePath)` as given, and docker
+// refuses a non-absolute mount source. The absolutisation happens ONCE
+// here so both `iterion run` and `iterion resume` cross the same
+// chokepoint; a caller that already resolved the path pays nothing.
 func WithFilePath(path string) EngineOption {
+	if path != "" && !filepath.IsAbs(path) {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+	}
 	return func(e *Engine) { e.filePath = path }
 }
 
