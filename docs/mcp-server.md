@@ -66,6 +66,22 @@ annotation is **truthful about capability** (so clients can gate
 auto-approval on it): `remote_api` reports `readOnlyHint: false` even
 though read-only mode restricts it to GET.
 
+**Arguments are checked strictly, for every client.** Each tool's
+`inputSchema` declares `additionalProperties: false`, and the server
+keeps that promise: an `arguments` key the tool does not declare is a
+**tool error** (`isError: true`, naming the unknown key and the accepted
+ones), never a silent drop — a `vras` sent for `vars` used to validate a
+bot with no vars at all and report it clean. (Keys match their declared
+spelling case-insensitively — encoding/json's rule — on the struct-decoded
+tools; `remote_issue_update`'s allow-list is an exact match.) This is the
+contract for third-party MCP clients too: a client that decorates `arguments` with
+keys of its own must strip them before the call (the MCP `_meta` field
+travels beside `arguments`, not inside it, and is not affected). The
+caller is usually a model acting on the result, so a warning inside a
+successful result would be the silent drop again; refusing is the
+answer a caller can act on. (The `local_board_*` tools route through
+the board's own decoder and do not declare `additionalProperties`.)
+
 ## The two tool families
 
 ### `local_*` — this machine
@@ -211,6 +227,7 @@ export ITERION_REMOTE_TOKEN=iap_…   # a PAT
 | `local_run_get` says `executing: false` on a running doc | The runner died without reaching a terminal status (SIGKILL, reboot). `local_run_cancel` repairs it to `failed_resumable`; `local_resume` continues it. |
 | `local_run_cancel` refuses with "ambiguous state" | The recorded pid is alive but nothing holds the run lock — runner still booting or pid recycled. Retry in a moment; the refusal is what keeps a recycled pid from being signalled. |
 | The server exits after a huge request | A single JSON-RPC line beyond 4 MB poisons the stdio framing; the server sends a `-32700` explaining it, then exits. Keep large payloads (vars, answers) in files and pass paths. |
+| A call fails with `invalid arguments: unknown field "…"` | The tool does not declare that key (every schema is `additionalProperties: false`); the message lists the accepted keys. Fix the call — the key is never dropped silently, whatever the client. |
 
 ## Security notes
 
