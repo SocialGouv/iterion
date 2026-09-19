@@ -8,9 +8,14 @@ import (
 // died says a pass ended neither finished, nor at a fail node the bot
 // declared, nor at the bot's own ceiling — the one reading of a death, for
 // the parent's passes and the children's alike. A pass out of time is a
-// death here: what it would have met is unknown.
+// death here: what it would have met is unknown. A pass that finished
+// only because a `best_effort` fan-out let a branch's death through the
+// collector is a death too: DeadBranches names them (dry-run #1325).
 func (p Pass) died() bool {
-	return p.Status != "finished" && !p.Deliberate && !p.Ceiling
+	if p.Status != "finished" && !p.Deliberate && !p.Ceiling {
+		return true
+	}
+	return len(p.DeadBranches) > 0
 }
 
 // Clean reports whether the passes met nothing to fix: every pass — of the
@@ -53,7 +58,11 @@ func (r *Report) timedOut() bool {
 	return false
 }
 
-// writePass is the one line of a pass, the program's or a child's.
+// writePass is the one line of a pass, the program's or a child's. A dead
+// branch reads its own line beneath, one per branch, with the classifier's
+// code (when the error carried one) and the message the branch's event
+// carried — a fan-out whose branches all die reads as `finished` in the
+// pass status, and the branches beneath are where the deaths are named.
 func writePass(b *strings.Builder, label string, p Pass) {
 	fmt.Fprintf(b, "  %s %-5v %s — %d nodes, %d edges", label, p.Bias, p.Status, len(p.Nodes), len(p.Edges))
 	if p.Deliberate {
@@ -69,6 +78,19 @@ func writePass(b *strings.Builder, label string, p Pass) {
 		fmt.Fprintf(b, " — %s", p.Failure)
 	}
 	b.WriteString("\n")
+	for _, d := range p.DeadBranches {
+		fmt.Fprintf(b, "    dead branch %s", d.Branch)
+		if d.Node != "" {
+			fmt.Fprintf(b, " (from %s)", d.Node)
+		}
+		if d.Code != "" {
+			fmt.Fprintf(b, " [%s]", d.Code)
+		}
+		if d.Error != "" {
+			fmt.Fprintf(b, ": %s", d.Error)
+		}
+		b.WriteString("\n")
+	}
 }
 
 // Render is the human reading of the report.

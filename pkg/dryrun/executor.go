@@ -61,6 +61,11 @@ type Executor struct {
 	bias     bool
 	fixtures map[string]map[string]any
 	shell    ShellChecker
+	// arrayFields[nodeID][fieldName] holds a `json`-typed output field a
+	// downstream position reads as an array (a fan_out_each `over:`, an
+	// array-op expression). Computed once at construction, so a node's
+	// output shape is the same on every crossing of a loop.
+	arrayFields map[string]map[string]bool
 	// path is the main file this workflow came from; children resolves a
 	// child's source beside it; simulate runs a child under the node that
 	// hands it work (nil at the depth cap).
@@ -125,9 +130,11 @@ func (x *Executor) ChildRuns() []childRun {
 
 // NewExecutor builds the executor of one pass over wf. bias decides the
 // shape of a bool or an enum; fixtures, when given, answer the nodes they
-// name; shell holds shell text (nil: unchecked, and said).
+// name; shell holds shell text (nil: unchecked, and said). The array
+// consumers of every output field are walked once here — a `json` field a
+// downstream position reads as an array takes the array shape.
 func NewExecutor(wf *ir.Workflow, bias bool, fixtures map[string]map[string]any, shell ShellChecker) *Executor {
-	return &Executor{wf: wf, bias: bias, fixtures: fixtures, shell: shell}
+	return &Executor{wf: wf, bias: bias, fixtures: fixtures, shell: shell, arrayFields: arrayConsumers(wf)}
 }
 
 // SetVars receives the run's vars from the engine (its varsSetter seam),
@@ -407,7 +414,7 @@ func (x *Executor) output(id, schema string) map[string]any {
 		x.shaped = append(x.shaped, id)
 		x.mu.Unlock()
 	}
-	return Synthesize(sch, x.bias)
+	return SynthesizeAt(sch, x.bias, x.arrayFields[id])
 }
 
 // fixtureKeys reports a fixture that names no node of this program: a
