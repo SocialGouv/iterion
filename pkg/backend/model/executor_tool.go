@@ -657,10 +657,11 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 		}
 	}
-	// The canonical tree-noise pathspecs, engine-owned and unconditional:
-	// a run without a devbox.json carries them just the same — the scope
-	// gates read this list (#1464).
-	cmd.Env = append(cmd.Env, treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
+	// The canonical tree-noise pathspecs, engine-owned: a run without a
+	// devbox.json carries them just the same (#1464) — but the run's own
+	// env wins when it set the variable itself, as everywhere else
+	// (verdict 2, R05b122).
+	cmd.Env = append(cmd.Env, extraTreeNoiseEnv(e.runExtraEnv)...)
 
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
@@ -734,9 +735,14 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	// The canonical tree-noise pathspecs, engine-owned and unconditional:
-	// a run without a devbox.json carries them just the same (#1464).
-	cmd.Env = append(cmd.Env, treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
+	// The canonical tree-noise pathspecs, engine-owned: a run without a
+	// devbox.json carries them just the same (#1464) — but an operator or a
+	// workflow that set the variable themselves wins, as on the sandbox seed
+	// and the agent task (verdict 2, R05b122: one run, one list, whichever
+	// surface gates the tree).
+	if _, set := env[treenoise.TreeNoiseEnvVar]; !set {
+		cmd.Env = append(cmd.Env, extraTreeNoiseEnv(e.runExtraEnv)...)
+	}
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}

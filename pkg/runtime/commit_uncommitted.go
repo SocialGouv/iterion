@@ -60,6 +60,12 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w", err)
 	}
 	if clean {
+		// "Clean" means nothing but tree noise: the operator's git status
+		// still SHOWS the drift, so the refusal must say why the gesture
+		// declines anyway — the lock is not the run's work (verdict 2).
+		if out, perr := runGit(r.WorkDir, "status", "--porcelain"); perr == nil && strings.TrimSpace(out) != "" {
+			return fmt.Errorf("runtime: commit-uncommitted: workdir %q is dirty with tree noise only — nothing of the run's to commit (see git status)", r.WorkDir)
+		}
 		return fmt.Errorf("runtime: commit-uncommitted: workdir %q has no changes to commit", r.WorkDir)
 	}
 

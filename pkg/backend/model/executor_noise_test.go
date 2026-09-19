@@ -96,3 +96,46 @@ func TestExtraTreeNoiseEnvStepsAsideForARunValue(t *testing.T) {
 		t.Fatalf("extraTreeNoiseEnv without a run value = %q, want exactly the canonical entry", got)
 	}
 }
+
+// One run, one list, whichever surface gates the tree (verdict 2,
+// R05b122): when the run's own env or the node's env map already carries
+// ITERION_TREE_NOISE, the host tool commands keep that value instead of
+// appending the engine's entry after it — the same step-aside the sandbox
+// seed and the agent task do.
+func TestToolNodeCommandsStepAsideForARunOrNodeValue(t *testing.T) {
+	e := &ClawExecutor{}
+	e.SetRunExtraEnv([]string{"ITERION_TREE_NOISE=':(exclude,top)vendor'"})
+
+	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	entries := envEntries(cmd.Env, "ITERION_TREE_NOISE")
+	if len(entries) != 1 || entries[0] != "':(exclude,top)vendor'" {
+		t.Fatalf("shell command ITERION_TREE_NOISE entries = %q, want exactly the run's value", entries)
+	}
+
+	nodeEnv := map[string]string{treenoise.TreeNoiseEnvVar: "':(exclude,top)node'"}
+	cmd = e.toolNodeCommand(context.Background(), "true", nodeEnv)
+	entries = envEntries(cmd.Env, "ITERION_TREE_NOISE")
+	// The node's env map is appended after the run's env, and the child
+	// dedups last-wins — what matters is that the most specific value is
+	// the one the child sees, not that the argv carries one entry.
+	if len(entries) == 0 || entries[len(entries)-1] != "':(exclude,top)node'" {
+		t.Fatalf("shell command with a node-env value = %q, want the node's value last", entries)
+	}
+
+	sc := e.toolNodeScriptCommand(context.Background(), "python3", "scope_check.py")
+	entries = envEntries(sc.Env, "ITERION_TREE_NOISE")
+	if len(entries) != 1 || entries[0] != "':(exclude,top)vendor'" {
+		t.Fatalf("script command ITERION_TREE_NOISE entries = %q, want exactly the run's value", entries)
+	}
+}
+
+func envEntries(env []string, key string) []string {
+	prefix := key + "="
+	out := []string{}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			out = append(out, strings.TrimPrefix(entry, prefix))
+		}
+	}
+	return out
+}
