@@ -535,7 +535,31 @@ func devboxInstallSnippet(projects []devboxProject) string {
 			continue
 		}
 		if pr.stageFrom == "" {
+			// In-place install of the workspace: the repository's devbox.lock
+			// stays what the run found it. `devbox install` rewrites the lock's
+			// plugin metadata when the image's registry is newer than the pin,
+			// and the run's own gates (scope, clean tree) would read the tracked
+			// file as the pass's change (#1459). The pre-install copy lives
+			// under /tmp, never beside the lock. A lock devbox CREATES in a
+			// repository that tracks none is removed for the same reason.
+			lock := shellquote.Quote(pr.dir + "/" + devboxLockName)
+			rewrote := shellquote.Quote(fmt.Sprintf(
+				"iterion: devbox rewrote %s/%s (plugin metadata drift in this image); restored to the repository's content so the worktree stays what the run found it",
+				pr.dir, devboxLockName))
+			created := shellquote.Quote(fmt.Sprintf(
+				"iterion: devbox created %s/%s, a file the repository does not track; removed so the worktree stays clean",
+				pr.dir, devboxLockName))
+			// `_had` carries the snapshot's outcome explicitly: 0 = no lock
+			// before, 1 = snapshot taken, 2 = the copy FAILED. A failed copy
+			// must never read as "the repository tracks no lock" — that
+			// branch removes the file.
+			unsaved := shellquote.Quote(fmt.Sprintf(
+				"iterion: could not copy %s/%s to /tmp before devbox install; whatever devbox writes to it stays in the worktree",
+				pr.dir, devboxLockName))
+			fmt.Fprintf(&b, "  _lk=%s; _pre=\"/tmp/iterion-devbox-lock-pre-$$\"; rm -f \"$_pre\"; _had=0\n", lock)
+			fmt.Fprintf(&b, "  if [ -f \"$_lk\" ]; then if cp \"$_lk\" \"$_pre\"; then _had=1; else _had=2; echo %s >&2; fi; fi\n", unsaved)
 			fmt.Fprintf(&b, "  devbox install -c %s || echo %s >&2\n", dir, fail)
+			fmt.Fprintf(&b, "  if [ \"$_had\" = 1 ]; then if ! cmp -s \"$_lk\" \"$_pre\"; then cp \"$_pre\" \"$_lk\"; echo %s >&2; fi; elif [ \"$_had\" = 0 ] && [ -f \"$_lk\" ]; then rm -f \"$_lk\"; echo %s >&2; fi; rm -f \"$_pre\"\n", rewrote, created)
 			continue
 		}
 		// Staged copy out of the read-only bundle mount. The lock is

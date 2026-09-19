@@ -444,8 +444,10 @@ func TestDevboxInstallSnippet_BestEffortAndPOSIX(t *testing.T) {
 	})
 
 	// One "what is now missing" message per project, plus the
-	// devbox-absent branch.
-	if n := strings.Count(snippet, ">&2"); n != 3 {
+	// devbox-absent branch, plus the three devbox.lock notices of the
+	// in-place repo install (snapshot failed; rewritten → restored;
+	// created → removed).
+	if n := strings.Count(snippet, ">&2"); n != 6 {
 		t.Errorf("every failure path must report to stderr; got %d redirects in:\n%s", n, snippet)
 	}
 	if !strings.Contains(snippet, "command -v devbox") {

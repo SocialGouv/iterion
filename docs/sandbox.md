@@ -602,7 +602,11 @@ otherwise read as an agent bug.
 
 Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
-`errors` on the host target when something failed) so you can audit
+`errors` on the host target when something failed, and `lock_kept` when
+the repo's `devbox.lock` had to be put back after the install — devbox
+rewrites its plugin metadata on a host whose registry is newer than the
+pin, and the run's gates would read the tracked file as the pass's own
+change, #1459) so you can audit
 what was picked up — and see when a declared toolchain could **not**
 be provisioned. A source that EXISTS and was deliberately declined is
 named on the same event, with its own reason:

@@ -14,8 +14,11 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -175,9 +178,15 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 	}
 
 	var errs []string
+	// lockKept records what keepRepoDevboxLock had to undo after the repo's
+	// install: the operator reads it in the event, next to the errors.
+	var lockKept []string
 	emitOutcome := func(projects []hostDevboxProject, binDirs []string, path string) {
 		payload := map[string]any{
 			"target": "host",
+		}
+		if len(lockKept) > 0 {
+			payload["lock_kept"] = lockKept
 		}
 		if skippedRepo != "" {
 			payload["skipped_sources"] = []string{"repo"}
@@ -265,10 +274,45 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 			strings.Join(labels, "+"), strings.Join(configs, ", "), strings.Join(binDirs, ", "))
 	}
 	for _, pr := range projects {
+		// The repo installs IN PLACE, in the run's worktree: what `devbox
+		// install` writes there, the run's own gates read as the pass's work.
+		var lockBefore []byte
+		hadLock := false
+		keepLock := pr.label == "repo"
+		if keepLock {
+			data, err := os.ReadFile(filepath.Join(pr.dir, devboxLockName))
+			switch {
+			case err == nil:
+				lockBefore, hadLock = data, true
+			case errors.Is(err, fs.ErrNotExist):
+				// The repository tracks no lock: one the install creates is removed below.
+			default:
+				// Unreadable is not absent: a read error here must not turn into
+				// "created by devbox" after the install and remove a tracked file.
+				keepLock = false
+				errs = append(errs, fmt.Sprintf("read the repo %s before install: %v — whatever devbox writes to it stays in the worktree", devboxLockName, err))
+				if e.logger != nil {
+					e.logger.Warn("runtime: host devbox: %s", errs[len(errs)-1])
+				}
+			}
+		}
 		if instErr := runHostDevboxInstall(ctx, devboxBin, pr.dir, e.logger); instErr != nil {
 			errs = append(errs, fmt.Sprintf("install failed for the %s %s: %v — the packages it declares are NOT on PATH for this run", pr.label, devboxConfigName, instErr))
 			if e.logger != nil {
 				e.logger.Warn("runtime: host devbox: %s", errs[len(errs)-1])
+			}
+		}
+		if keepLock {
+			if note, err := keepRepoDevboxLock(filepath.Join(pr.dir, devboxLockName), lockBefore, hadLock); err != nil {
+				errs = append(errs, fmt.Sprintf("keep the repo %s: %v — the worktree carries devbox's rewrite of it", devboxLockName, err))
+				if e.logger != nil {
+					e.logger.Warn("runtime: host devbox: %s", errs[len(errs)-1])
+				}
+			} else if note != "" {
+				lockKept = append(lockKept, note)
+				if e.logger != nil {
+					e.logger.Warn("runtime: host devbox: %s", note)
+				}
 			}
 		}
 	}
@@ -303,6 +347,48 @@ func stageHostDevboxConfig(srcDir, dstDir string) error {
 		return copyRegularFile(lockSrc, filepath.Join(dstDir, devboxLockName))
 	}
 	return nil
+}
+
+// keepRepoDevboxLock puts the repository's devbox.lock back to what the run
+// found it, after `devbox install` ran in place in the worktree.
+//
+// devbox rewrites the lock's plugin metadata (`plugin_version`) whenever the
+// host's plugin registry is newer than the pin — one line on a laptop with a
+// fresh devbox, on a runner image rebuilt with one — and creates a lock in a
+// repository that tracks none. Either way the tracked tree differs before
+// the first node runs, and every gate that reads the tree as the pass's own
+// work — a campaign's scope gate, a clean-tree precheck, a whole-tree
+// commit — refuses honest work for a file the bot never touched (#1459).
+// The installed profile is unaffected: the resolved store paths are the
+// same, only the metadata moved. The repository's pin stays the
+// repository's; the note says what was undone. A lock the install left
+// untouched yields no note and no write.
+func keepRepoDevboxLock(path string, before []byte, hadLock bool) (string, error) {
+	after, err := os.ReadFile(path)
+	switch {
+	case hadLock && err == nil && bytes.Equal(after, before):
+		return "", nil
+	case hadLock && err != nil:
+		// Removed: put the pinned content back.
+		if werr := os.WriteFile(path, before, 0o644); werr != nil {
+			return "", werr
+		}
+		return fmt.Sprintf("devbox install removed %s; restored to the repository's pinned content so the worktree stays what the run found it", path), nil
+	case hadLock:
+		// Rewritten: restore the pinned content.
+		if werr := os.WriteFile(path, before, 0o644); werr != nil {
+			return "", werr
+		}
+		return fmt.Sprintf("devbox install rewrote %s (%d → %d bytes: plugin metadata drift on this host); restored to the repository's pinned content so the worktree stays what the run found it", path, len(before), len(after)), nil
+	case err == nil:
+		// Created in a repository that tracks none: remove it.
+		if rerr := os.Remove(path); rerr != nil {
+			return "", rerr
+		}
+		return fmt.Sprintf("devbox install created %s, a file the repository does not track; removed so the worktree stays clean", path), nil
+	default:
+		return "", nil
+	}
 }
 
 // copyRegularFile copies src to dst (0644).
