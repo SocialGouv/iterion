@@ -691,10 +691,28 @@ func (e *Engine) emitBranchNodeFailed(ctx context.Context, runID, branchID, node
 // Prometheus parallel-branches gauge) rely on it to track in-flight
 // concurrency. result is taken by pointer so the deferred read sees the
 // branch's final state.
+//
+// When result.err carries a typed cause, the event names it so an
+// observer can tell the death's family without parsing the message: the
+// runtime error's Code (`code`), the LoopDeclined.Reason it carries
+// (`declined` — a ceiling reason under CeilingReason, the program's
+// design otherwise), and whether it wraps ErrDeliberateFailure
+// (`deliberate` — the branch ended at a declared `fail` node). A dry
+// run reads them to tell a dead branch from a ceiling and a declared
+// refusal (dry-run #1325); other observers ignore them.
 func (e *Engine) emitBranchFinishedDefer(ctx context.Context, runID, branchID, startNodeID string, result *branchResult) {
 	data := map[string]any{}
 	if result.err != nil {
 		data["error"] = result.err.Error()
+		if code := errorCode(result.err); code != "" {
+			data["code"] = code
+		}
+		if reason := declinedReason(result.err); reason != "" {
+			data["declined"] = reason
+		}
+		if errors.Is(result.err, ErrDeliberateFailure) {
+			data["deliberate"] = true
+		}
 	}
 	if result.joinNodeID != "" {
 		data["join_node"] = result.joinNodeID
@@ -703,6 +721,38 @@ func (e *Engine) emitBranchFinishedDefer(ctx context.Context, runID, branchID, s
 		e.logger.Warn("branch %s: failed to emit branch_finished: %v", branchID, err)
 		result.eventErrors++
 	}
+}
+
+// errorCode is the FailureCode-equivalent an error carries: the
+// RuntimeError.Code when the error is one, `BUDGET_EXCEEDED` when it
+// wraps the ErrBudgetExceeded sentinel (which the trunk's storage layer
+// stamps FailureBudgetExceeded on — checkPreExecBudget writes a plain
+// `%w`-wrapped sentinel, not a typed RuntimeError, and the classifier
+// must read it the same way). Empty when neither. Kept next to the
+// message on branch_finished so a reader knows the death's family
+// without parsing (PR #1491 review Rdabb2b: the branch classifier
+// equals the trunk's ceilingOf).
+func errorCode(err error) string {
+	var rt *RuntimeError
+	if errors.As(err, &rt) && rt != nil {
+		return string(rt.Code)
+	}
+	if errors.Is(err, ErrBudgetExceeded) {
+		return string(store.FailureBudgetExceeded)
+	}
+	return ""
+}
+
+// declinedReason is the LoopDeclined.Reason an error carries: the loop
+// decline the death follows — a ceiling reason under CeilingReason, the
+// program's design (`loop_cap`) otherwise. Empty when the error follows
+// no decline.
+func declinedReason(err error) string {
+	var d *LoopDeclined
+	if errors.As(err, &d) && d != nil {
+		return d.Reason
+	}
+	return ""
 }
 
 // checkPreExecBudget emits budget_exceeded and sets result.err (returning

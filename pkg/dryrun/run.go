@@ -81,6 +81,27 @@ type Pass struct {
 	// Nodes are the nodes started, in order; Edges the edges selected.
 	Nodes []string `json:"nodes"`
 	Edges []Edge   `json:"edges"`
+	// DeadBranches names the branches of a fan-out whose end was neither a
+	// ceiling the dry run's shapes imposed (CeilingReason on the decline
+	// they carried) nor a declared `fail` node (Deliberate) — a death of
+	// the program, whatever the fan-out's `await` mode did with it. A
+	// `best_effort` fan-out finishes the run even when every branch dies,
+	// so the pass's Status reads `finished`; the dead branches are the one
+	// place that death is named. Under `wait_all` the trunk's death
+	// travels through the collector already, and the pass has none.
+	DeadBranches []DeadBranch `json:"dead_branches,omitempty"`
+}
+
+// DeadBranch names one branch a pass saw die of the program: the branch
+// that carried it, the node the branch started at, and the classifier's
+// word on the death — the RuntimeError code, the message the branch's
+// event carried. A branch that ended at a declared `fail` node or a
+// ceiling reason is not here.
+type DeadBranch struct {
+	Branch string `json:"branch"`
+	Node   string `json:"node,omitempty"`
+	Code   string `json:"code,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // ChildPass is one pass of a simulated child, under the node that handed
@@ -306,6 +327,39 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 			// would credit a router no pass reached.
 			from, _ := evt.Data["from"].(string)
 			pass.Edges = append(pass.Edges, Edge{From: from, To: evt.NodeID})
+		case store.EventBranchFinished:
+			// A branch that ended at a declared `fail` node (`deliberate`) or
+			// at a run's-circumstances ceiling (a budget the run spent, a
+			// loop decline the shapes imposed) is not a death of the
+			// program: the split is the same one ceilingOf makes on the
+			// trunk's stored FailureCode + LoopDeclined.Reason, applied
+			// here to the fields emitBranchFinishedDefer emitted for the
+			// branch (PR #1491 review Rdabb2b — one predicate for both).
+			// Any other error is a dead branch: a `best_effort` collector
+			// finishes the pass but the death still stands, and the dry
+			// run names it — otherwise a fan-out whose branches all die
+			// reads as `finished` and clean (#1325). Recording is scoped
+			// to `best_effort` alone (see below): a `wait_all` fan-out
+			// propagates the death through the collector and the pass's
+			// own status carries it.
+			errMsg, _ := evt.Data["error"].(string)
+			if errMsg == "" {
+				break
+			}
+			if deliberate, _ := evt.Data["deliberate"].(bool); deliberate {
+				break
+			}
+			code, _ := evt.Data["code"].(string)
+			declined, _ := evt.Data["declined"].(string)
+			if ceilingOf(store.FailureCode(code), declined) {
+				break
+			}
+			pass.DeadBranches = append(pass.DeadBranches, DeadBranch{
+				Branch: evt.BranchID,
+				Node:   evt.NodeID,
+				Code:   code,
+				Error:  errMsg,
+			})
 		}
 	}
 	eng := runtime.New(&sim, st, x,
@@ -350,6 +404,21 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	pass.Deliberate = errors.Is(runErr, runtime.ErrDeliberateFailure)
 	pass.Nodes = append([]string(nil), pass.Nodes...)
 	pass.Edges = append([]Edge(nil), pass.Edges...)
+	// DeadBranches is scoped to passes where a collector swallowed a
+	// branch's death: `best_effort` (and, structurally, any await mode
+	// that lets the run finish around a failed branch) reads
+	// Status=`finished` but with a branch that died. A `wait_all`
+	// fan-out propagates the death onto the trunk — Status is
+	// `failed_*` and Pass.Failure carries the story — so keeping the
+	// per-branch echo here is noise and prints twice (PR #1491 review,
+	// the question). Same for a trunk that ended at a declared `fail`
+	// or a ceiling: the top-level story is the one to read (dry-run
+	// #1325, doc contract on Pass.DeadBranches).
+	if pass.Status != "finished" || pass.Deliberate || pass.Ceiling {
+		pass.DeadBranches = nil
+	} else {
+		pass.DeadBranches = append([]DeadBranch(nil), pass.DeadBranches...)
+	}
 	return pass, x, nil
 }
 
@@ -366,6 +435,18 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 func ceilingOf(code store.FailureCode, declined string) bool {
 	if code == store.FailureBudgetExceeded {
 		return true
+	}
+	// A branch's error today always carries a RuntimeError code around
+	// its LoopDeclined (edges.go wraps every decline before setting
+	// result.err), so this predicate agrees with the trunk's storage
+	// layer. But a caller that hands a bare `&LoopDeclined{...}` — no
+	// wrapping code — is a reasonable future shape, and the decline
+	// reason still stands on its own: fall back to CeilingReason(declined)
+	// when no code came through. Symmetric with what the storage layer
+	// would stamp if the wrapping were on the way (PR #1491 review
+	// robustness note).
+	if code == "" {
+		return runtime.CeilingReason(declined)
 	}
 	// The decline travels only on a death with no edge left — under the
 	// node's own code, or the fan-out's catch-all when its branches' codes
@@ -391,17 +472,21 @@ func implicitTerminal(id string, n ir.Node) bool {
 }
 
 // launchInputs is what the launch supplies: the caller's inputs, and a
-// shape for every var without a default the caller left out.
+// shape for every var without a default the caller left out. A `json` var
+// a downstream array-shaped position reads takes the array shape, so a
+// fan_out_each `over: "{{vars.x}}"` fires on the true pass and an
+// array-op expression over `vars.x` does not die on the object shape.
 func launchInputs(wf *ir.Workflow, given map[string]any, bias bool) map[string]any {
 	inputs := map[string]any{}
 	for k, v := range given {
 		inputs[k] = v
 	}
+	arrayVars := arrayConsumedVars(wf)
 	for name, v := range wf.Vars {
 		if _, ok := inputs[name]; ok || v == nil || v.HasDefault {
 			continue
 		}
-		inputs[name] = VarValue(v, bias)
+		inputs[name] = VarValue(v, bias, arrayVars[name])
 	}
 	return inputs
 }
