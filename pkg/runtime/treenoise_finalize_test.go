@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // runOutputPaths decides what counts as the pass's work; the tree-noise list
@@ -108,12 +110,14 @@ func TestFinalizeWorktree_WipBankLeavesTheTreeNoiseOut(t *testing.T) {
 	writeFile(t, filepath.Join(wt, "devbox.lock"), "plugin_version: 0.0.5\n")
 	writeFile(t, filepath.Join(wt, "real.md"), "the pass's work\n")
 
+	var logBuf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &logBuf)
 	res := finalizeWorktree(worktreeContext{
 		repoRoot:       repo,
 		wtPath:         wt,
 		originalBranch: "main",
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "wip-noise-test", runID: "run_n", autoMerge: true, mergeStrategy: "merge"}, nil)
+	}, finalizeOptions{runName: "wip-noise-test", runID: "run_n", autoMerge: true, mergeStrategy: "merge"}, logger)
 
 	if !res.WipBanked {
 		t.Fatalf("expected WipBanked=true, got %+v", res)
@@ -124,6 +128,16 @@ func TestFinalizeWorktree_WipBankLeavesTheTreeNoiseOut(t *testing.T) {
 	}
 	if strings.Contains(show, ".claude") {
 		t.Fatalf("banked commit carries the .claude/ mirror:\n%s", show)
+	}
+	// The banked commit never carries the noise, so the log must NAME what
+	// was set aside — a silent exclusion is the failure mode the split
+	// exists to close (verdict 8). The iterlog line cap may truncate a long
+	// list, so the assertions hold on its head: the set-aside phrase and
+	// the FIRST noise entry.
+	for _, want := range []string{"tree noise set aside", "devbox.lock"} {
+		if !strings.Contains(logBuf.String(), want) {
+			t.Fatalf("finalize log misses %q:\n%s", want, logBuf.String())
+		}
 	}
 	lockShow, lockErr := gittest.Try(repo, "show", res.FinalCommit+":devbox.lock")
 	if lockErr == nil && strings.Contains(lockShow, "0.0.5") {

@@ -180,31 +180,33 @@ func porcelainPaths(porcelain string) []string {
 // it never removes a file, and never touches what the run committed.
 func runOutputPaths(porcelain string) []string {
 	var out []string
-	for _, line := range strings.Split(porcelain, "\n") {
-		if len(line) < 4 {
-			continue
+	for _, path := range porcelainPaths(porcelain) {
+		if !treenoise.IsNoise(path) {
+			out = append(out, path)
 		}
-		// Porcelain v1 is `XY<space><path>`, and a rename reads
-		// `<old> -> <new>`. The destination is what exists on disk, so it
-		// is the one that decides.
-		path := line[3:]
-		if i := strings.Index(path, " -> "); i >= 0 {
-			path = path[i+4:]
-		}
-		// Non-ASCII paths come back quoted under core.quotePath. Only the
-		// quoting is stripped; the C-style escapes inside are left as git
-		// wrote them, since nothing here needs to open the file.
-		path = strings.TrimSpace(path)
-		if len(path) >= 2 && strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"") {
-			path = path[1 : len(path)-1]
-		}
-		if path == "" || treenoise.IsNoise(path) {
-			continue
-		}
-		out = append(out, path)
 	}
 	return out
 }
+
+// noisePaths returns the porcelain paths the noise list sets aside — the
+// complement of runOutputPaths. The wip bank's warn line names them, so a
+// banked commit never silently swallows what it excluded (verdict 8).
+func noisePaths(porcelain string) []string {
+	work := map[string]bool{}
+	for _, p := range runOutputPaths(porcelain) {
+		work[p] = true
+	}
+	var out []string
+	for _, p := range porcelainPaths(porcelain) {
+		if !work[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// runOutputPaths returns the porcelain entries that stand for work the RUN
+// produced, dropping the scaffolding iterion mirrored in itself.
 
 func runGitInDir(workdir string, args ...string) error {
 	out, err := runGit(workdir, args...)
