@@ -401,8 +401,10 @@ given, never by guessing. Loop until `valid` is true, then `iterion validate
 no shell, no workspace — and `exec` names every `{{…}}` a prompt or a
 command would have sent unresolved, every command `bash -n` refuses, the
 nodes and edges no pass reached, and the nodes whose output was only a shape;
-fix those too (`--fixtures` answers nodes with recorded outputs; `exec.clean`
-false means a pass died or a finding stands). Then
+fix those too (`--fixtures` answers nodes with recorded outputs; `exec.failing`
+true means a pass died or a finding stands; `exec.clean` false with `failing`
+false means an expression rested on a shaped `json` value and could not be
+decided — give the value with `--var` or a fixture). Then
 `iterion diagram` to check the shape, and only then run; `iterion fmt <file>`
 (`--check` in CI) rewrites the file in its canonical form and refuses one it
 cannot rewrite without changing the program; `iterion fix <file>` applies the

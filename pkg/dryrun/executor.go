@@ -33,6 +33,13 @@ const (
 	// production validator's word, the one a real run would apply — or
 	// names no node of the program.
 	KindFixture Kind = "fixture"
+	// KindInconclusive: an expression failed while reading a value the dry
+	// run invented — a `json` field it shaped, a `json` var no launch value
+	// filled, a value derived from one — so the failure decided nothing
+	// about the program. The finding names the value and what would decide
+	// it; the field it computed reads as a shape in turn, and the pass goes
+	// on. Not a defect: Report.Failing reads past it, Report.Clean does not.
+	KindInconclusive Kind = "inconclusive"
 )
 
 // Finding is one thing the dry run met, at a node.
@@ -61,11 +68,15 @@ type Executor struct {
 	bias     bool
 	fixtures map[string]map[string]any
 	shell    ShellChecker
-	// arrayFields[nodeID][fieldName] holds a `json`-typed output field a
-	// downstream position reads as an array (a fan_out_each `over:`, an
-	// array-op expression). Computed once at construction, so a node's
-	// output shape is the same on every crossing of a loop.
-	arrayFields map[string]map[string]bool
+	// iterated[nodeID][field] holds an output field a downstream iteration
+	// reads (a fan_out_each `over:`, a foreach, a lambda combinator's
+	// collection): a `json` field there is shaped as a one-element list.
+	// Computed once at construction, so a node's output shape is the same
+	// on every crossing of a loop.
+	iterated map[string]map[string]bool
+	// given are the launch values the caller supplied for vars: the
+	// program's own values, never invented (Options.Inputs).
+	given map[string]any
 	// path is the main file this workflow came from; children resolves a
 	// child's source beside it; simulate runs a child under the node that
 	// hands it work (nil at the depth cap).
@@ -89,6 +100,10 @@ type Executor struct {
 	shaped   []string
 	pinned   []string
 	findings []Finding
+	// undecided[nodeID][field] holds the compute fields whose expression
+	// could not be decided in this pass: their value is a shape, invented
+	// in turn (Inconclusive).
+	undecided map[string]map[string]bool
 }
 
 // declaredSecrets resolves a declared secret to a placeholder — the value a
@@ -130,11 +145,11 @@ func (x *Executor) ChildRuns() []childRun {
 
 // NewExecutor builds the executor of one pass over wf. bias decides the
 // shape of a bool or an enum; fixtures, when given, answer the nodes they
-// name; shell holds shell text (nil: unchecked, and said). The array
-// consumers of every output field are walked once here — a `json` field a
-// downstream position reads as an array takes the array shape.
+// name; shell holds shell text (nil: unchecked, and said). The iterations
+// of every output field are walked once here — a `json` field a
+// downstream iteration reads takes the one-element list shape.
 func NewExecutor(wf *ir.Workflow, bias bool, fixtures map[string]map[string]any, shell ShellChecker) *Executor {
-	return &Executor{wf: wf, bias: bias, fixtures: fixtures, shell: shell, arrayFields: arrayConsumers(wf)}
+	return &Executor{wf: wf, bias: bias, fixtures: fixtures, shell: shell, iterated: iteratedFields(wf)}
 }
 
 // SetVars receives the run's vars from the engine (its varsSetter seam),
@@ -414,7 +429,7 @@ func (x *Executor) output(id, schema string) map[string]any {
 		x.shaped = append(x.shaped, id)
 		x.mu.Unlock()
 	}
-	return SynthesizeAt(sch, x.bias, x.arrayFields[id])
+	return SynthesizeAt(sch, x.bias, x.iterated[id])
 }
 
 // fixtureKeys reports a fixture that names no node of this program: a

@@ -89,8 +89,9 @@ type Pass struct {
 	// the program, whatever the fan-out's `await` mode did with it. A
 	// `best_effort` fan-out finishes the run even when every branch dies,
 	// so the pass's Status reads `finished`; the dead branches are the one
-	// place that death is named. Under `wait_all` the trunk's death
-	// travels through the collector already, and the pass has none.
+	// place that death is named, each branch once (Crossings counts the
+	// times). Under `wait_all` the trunk's death travels through the
+	// collector already, and the pass has none.
 	DeadBranches []DeadBranch `json:"dead_branches,omitempty"`
 }
 
@@ -98,12 +99,34 @@ type Pass struct {
 // that carried it, the node the branch started at, and the classifier's
 // word on the death — the RuntimeError code, the message the branch's
 // event carried. A branch that ended at a declared `fail` node or a
-// ceiling reason is not here.
+// ceiling reason is not here. Crossings counts how many times the pass saw
+// the branch die: a fan-out inside a loop ends the branch once per
+// crossing, under the shapes the same way each time, and the branch is
+// named once.
 type DeadBranch struct {
-	Branch string `json:"branch"`
-	Node   string `json:"node,omitempty"`
-	Code   string `json:"code,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Branch    string `json:"branch"`
+	Node      string `json:"node,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Crossings int    `json:"crossings,omitempty"`
+}
+
+// recordDeadBranch adds a branch's death to the pass, or counts one more
+// crossing of a branch already named — a fan-out inside a loop ends the
+// branch once per crossing, sequentially (the collector joins before the
+// loop's back-edge), so the kept code and message are the latest
+// crossing's.
+func (p *Pass) recordDeadBranch(d DeadBranch) {
+	for i := range p.DeadBranches {
+		if p.DeadBranches[i].Branch == d.Branch {
+			p.DeadBranches[i].Crossings++
+			p.DeadBranches[i].Code = d.Code
+			p.DeadBranches[i].Error = d.Error
+			return
+		}
+	}
+	d.Crossings = 1
+	p.DeadBranches = append(p.DeadBranches, d)
 }
 
 // ChildPass is one pass of a simulated child, under the node that handed
@@ -118,8 +141,8 @@ type ChildPass struct {
 	Pass
 }
 
-// Report is what two passes met. Its JSON carries `clean` as well: the
-// verdict of Clean.
+// Report is what two passes met. Its JSON carries `clean` and `failing`
+// as well: the verdicts of Clean and Failing.
 type Report struct {
 	Passes []Pass `json:"passes"`
 	// Children are the passes of every child simulated, in node order then
@@ -139,13 +162,16 @@ type Report struct {
 	UnvisitedEdges []Edge   `json:"unvisited_edges,omitempty"`
 }
 
-// MarshalJSON adds the verdict, `clean`, to the report's fields.
+// MarshalJSON adds the verdicts, `clean` and `failing`, to the report's
+// fields: a CI job that tolerates an undecided expression reads `failing`,
+// one that does not reads `clean`.
 func (r Report) MarshalJSON() ([]byte, error) {
 	type plain Report
 	return json.Marshal(struct {
 		plain
-		Clean bool `json:"clean"`
-	}{plain(r), r.Clean()})
+		Clean   bool `json:"clean"`
+		Failing bool `json:"failing"`
+	}{plain(r), r.Clean(), r.Failing()})
 }
 
 // coverage is what the passes reached of one program.
@@ -348,6 +374,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	x := NewExecutor(&sim, bias, opts.Fixtures, shell)
 	x.path = opts.Path
 	x.children = opts.Children
+	x.given = opts.Inputs
 	if depth < maxChildDepth {
 		x.simulate = func(ctx context.Context, child *ir.Workflow, path, node string) (Pass, *Executor, error) {
 			childOpts := opts
@@ -401,7 +428,14 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 			if ceilingOf(store.FailureCode(code), declined) {
 				break
 			}
-			pass.DeadBranches = append(pass.DeadBranches, DeadBranch{
+			if code == string(store.FailureCancelled) {
+				// A branch the fan-out's own stop ended (the budget's
+				// cancelOnFirstFailure, the run cancelled, a deadline) died
+				// of the run's circumstances — the same family the trunk
+				// reads as its own code — not of the program.
+				break
+			}
+			pass.recordDeadBranch(DeadBranch{
 				Branch: evt.BranchID,
 				Node:   evt.NodeID,
 				Code:   code,
@@ -410,7 +444,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		}
 	}
 	eng := runtime.New(&sim, st, x,
-		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true, BranchesRunToTheirEnd: true}),
+		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true, BranchesRunToTheirEnd: true, Invented: x}),
 		runtime.WithEventObserver(observe),
 		runtime.WithSandboxOverride("none"),
 		runtime.WithWorkDir(workDir),
@@ -451,17 +485,14 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	pass.Deliberate = errors.Is(runErr, runtime.ErrDeliberateFailure)
 	pass.Nodes = append([]string(nil), pass.Nodes...)
 	pass.Edges = append([]Edge(nil), pass.Edges...)
-	// DeadBranches is scoped to passes where a collector swallowed a
-	// branch's death: `best_effort` (and, structurally, any await mode
-	// that lets the run finish around a failed branch) reads
-	// Status=`finished` but with a branch that died. A `wait_all`
-	// fan-out propagates the death onto the trunk — Status is
-	// `failed_*` and Pass.Failure carries the story — so keeping the
-	// per-branch echo here is noise and prints twice (PR #1491 review,
-	// the question). Same for a trunk that ended at a declared `fail`
-	// or a ceiling: the top-level story is the one to read (dry-run
-	// #1325, doc contract on Pass.DeadBranches).
-	if pass.Status != "finished" || pass.Deliberate || pass.Ceiling {
+	// DeadBranches is nil-ed only where the trunk's own program death is
+	// the story: a `wait_all` fan-out propagates the death onto the trunk
+	// (Status is `failed_*`, Pass.Failure carries it) and the per-branch
+	// echo would print twice. Every other pass keeps the branch deaths —
+	// a collector swallowed them (`best_effort` finishing at `done`),
+	// whatever the trunk's own end beside them was: a declared `fail` or
+	// a ceiling on the trunk does not un-die the branches (#1325).
+	if pass.Status != "finished" && !pass.Deliberate && !pass.Ceiling {
 		pass.DeadBranches = nil
 	} else {
 		pass.DeadBranches = append([]DeadBranch(nil), pass.DeadBranches...)
@@ -520,20 +551,19 @@ func implicitTerminal(id string, n ir.Node) bool {
 
 // launchInputs is what the launch supplies: the caller's inputs, and a
 // shape for every var without a default the caller left out. A `json` var
-// a downstream array-shaped position reads takes the array shape, so a
-// fan_out_each `over: "{{vars.x}}"` fires on the true pass and an
-// array-op expression over `vars.x` does not die on the object shape.
+// a downstream iteration reads takes the one-element list shape, so a
+// fan_out_each `over: "{{vars.x}}"` enters its body on both passes.
 func launchInputs(wf *ir.Workflow, given map[string]any, bias bool) map[string]any {
 	inputs := map[string]any{}
 	for k, v := range given {
 		inputs[k] = v
 	}
-	arrayVars := arrayConsumedVars(wf)
+	iterated := iteratedVars(wf)
 	for name, v := range wf.Vars {
 		if _, ok := inputs[name]; ok || v == nil || v.HasDefault {
 			continue
 		}
-		inputs[name] = VarValue(v, bias, arrayVars[name])
+		inputs[name] = VarValue(v, bias, iterated[name])
 	}
 	return inputs
 }

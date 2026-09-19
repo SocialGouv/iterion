@@ -734,11 +734,20 @@ func (e *Engine) emitBranchFinishedDefer(ctx context.Context, runID, branchID, s
 // equals the trunk's ceilingOf).
 func errorCode(err error) string {
 	var rt *RuntimeError
-	if errors.As(err, &rt) && rt != nil {
+	if errors.As(err, &rt) && rt != nil && rt.Code != "" {
 		return string(rt.Code)
 	}
 	if errors.Is(err, ErrBudgetExceeded) {
 		return string(store.FailureBudgetExceeded)
+	}
+	if stoppedBranch(err) {
+		// A branch the fan-out's own stop ended — the budget's
+		// cancelOnFirstFailure, the run cancelled, a deadline — was ended
+		// by the run's circumstances, and the cancelled run's code is what
+		// the storage layer stamps on such an end. A wrapper with an empty
+		// code falls through to the sentinels, so a stop the typed error
+		// carries still reads.
+		return string(store.FailureCancelled)
 	}
 	return ""
 }

@@ -182,57 +182,23 @@ type Ref struct {
 	Path      []string
 }
 
-// builtinArrayShape describes which argument positions of an array-op
-// builtin iterate their argument as an array. firstArgOnly says only
-// argument 0 is iterated (a `contains(arr, needle)` needle stays a
-// scalar); false means every argument is (a variadic `concat(a, b, c…)`).
-// A builtin absent from the map iterates none of its arguments.
-type builtinArrayShape struct{ firstArgOnly bool }
-
-// arrayContextBuiltins names the builtins whose arguments the evaluator
-// iterates: they die on a non-array (`concat() argument 1 is
-// map[string]interface {}, want array` — the shape a dry run gives a
-// `json`-typed output field). Read only by ArrayContextRefs, and grown by
-// hand next to the registry above so a new array-shaped builtin does not
-// silently escape the shape rule.
-var arrayContextBuiltins = map[string]builtinArrayShape{
-	"concat":   {}, // variadic, every arg an array
-	"min":      {}, // variadic, every arg an array
-	"max":      {}, // variadic, every arg an array
-	"length":   {firstArgOnly: true},
-	"unique":   {firstArgOnly: true},
-	"contains": {firstArgOnly: true}, // (arr, needle) — needle is a value
-	"join":     {firstArgOnly: true}, // (arr, sep) — sep is a string
-	"tail":     {firstArgOnly: true}, // (arr, n) — n is an int
-	"sort":     {firstArgOnly: true},
-	"slice":    {firstArgOnly: true}, // (arr, from, to)
-	"sum":      {firstArgOnly: true},
-	"flatten":  {firstArgOnly: true},
-}
-
-// ArrayContextRefs returns the refs read in an array-shaped position:
-// the collection argument of a `map`/`filter`/`reduce`, the receiver of
-// an INTEGER-LITERAL subscript (`recv[0]`), or an argument of a builtin
-// from arrayContextBuiltins. The dry run uses them to shape a `json`-
-// typed output field as an array when a downstream expression would
-// otherwise die on the object shape it defaulted to.
-//
-// The rule is: **assert array only where an integer literal or a
-// known-array-op position leaves no doubt** — a string-literal subscript
-// (map access), a dynamic subscript (`m[vars.k]`, `arr[i]`) and a
-// non-array-op function call all stay unmarked, and the flag does not
-// travel through a non-asserting form onto its children. Marking a
-// dynamic subscript's receiver as array would kill a legal
-// `m[vars.k]` on a `json` map with a strict-blocking EXPRESSION_FAILED
-// false positive — the class this rule exists to remove
-// (PR #1491 review R4399d8 + R085325).
-func (a *AST) ArrayContextRefs() []Ref {
+// IteratedRefs returns the refs an expression ITERATES: the collection
+// argument of a `map`/`filter`/`reduce`, the one position where the
+// evaluator walks a value element by element. The dry run shapes a
+// `json`-typed field read there as a one-element list, so the body runs
+// once and its coverage holds on both passes. Every other position leaves
+// the field's shape alone — a builtin or a subscript that cannot digest
+// the object shape fails, and the dry run reads a failure that rests on a
+// shape as inconclusive, never as the program's death (a shape the dry run
+// picked for one consumer contradicted another every time it tried:
+// PR #1491, three verdicts).
+func (a *AST) IteratedRefs() []Ref {
 	if a == nil || a.root == nil {
 		return nil
 	}
 	seen := make(map[string]struct{})
 	var refs []Ref
-	walkArrayContextBound(a.root, false, nil, func(r Ref) {
+	walkIteratedBound(a.root, false, nil, func(r Ref) {
 		key := r.Namespace + ":" + joinPath(r.Path)
 		if _, ok := seen[key]; ok {
 			return
@@ -243,84 +209,40 @@ func (a *AST) ArrayContextRefs() []Ref {
 	return refs
 }
 
-// isIntLiteralSubscript reports whether a subscript node is a positive
-// or negative integer literal — the two shapes the parser produces for
-// `arr[0]` (litInt) and `arr[-1]` (unaryNode `-` around a litInt).
-// Anything else (a string literal, a path, a call, a comparison) is
-// either map access or a dynamic index that cannot be typed statically.
-func isIntLiteralSubscript(n node) bool {
-	switch v := n.(type) {
-	case litInt:
-		return true
-	case *unaryNode:
-		if v.op != "-" {
-			return false
-		}
-		_, isInt := v.child.(litInt)
-		return isInt
-	}
-	return false
-}
-
-// walkArrayContextBound walks the AST carrying an in-array flag; every
-// pathNode reached with the flag set is emitted through fn. Lambda-bound
-// parameters are excluded from the emission, like walkRefsBound.
-func walkArrayContextBound(n node, inArray bool, bound map[string]bool, fn func(Ref)) {
+// walkIteratedBound walks the AST carrying an iterated flag; every pathNode
+// reached with the flag set is emitted through fn. The flag is set on the
+// collection of a lambda combinator alone and travels through a unary or
+// binary operator only — never through a function call (the call's result
+// is what the combinator iterates, its arguments are read in their own
+// positions), a subscript (one element, or a map key), a reduce's init
+// (the accumulator's seed) or a lambda body (one element per invocation).
+// Lambda-bound parameters are excluded from the emission, like
+// walkRefsBound.
+func walkIteratedBound(n node, iterated bool, bound map[string]bool, fn func(Ref)) {
 	switch v := n.(type) {
 	case pathNode:
 		if bound[v.namespace] {
 			return
 		}
-		if inArray {
+		if iterated {
 			fn(Ref{Namespace: v.namespace, Path: append([]string(nil), v.path...)})
 		}
 	case *unaryNode:
-		walkArrayContextBound(v.child, inArray, bound, fn)
+		walkIteratedBound(v.child, iterated, bound, fn)
 	case *binaryNode:
-		walkArrayContextBound(v.left, inArray, bound, fn)
-		walkArrayContextBound(v.right, inArray, bound, fn)
+		walkIteratedBound(v.left, iterated, bound, fn)
+		walkIteratedBound(v.right, iterated, bound, fn)
 	case *funcCallNode:
-		// The array flag does not travel through a function call: a
-		// non-array-op sitting under an array-op reads its own arguments in
-		// their own context (a `length(keys(json))` marks the array position
-		// of `length`, not the map argument of `keys` below it). An array-op
-		// re-asserts the flag on the argument positions its own signature
-		// iterates.
-		shape, isArrayOp := arrayContextBuiltins[v.name]
-		for i, a := range v.args {
-			argInArray := false
-			if isArrayOp && (!shape.firstArgOnly || i == 0) {
-				argInArray = true
-			}
-			walkArrayContextBound(a, argInArray, bound, fn)
+		for _, a := range v.args {
+			walkIteratedBound(a, false, bound, fn)
 		}
 	case *indexNode:
-		// Only an INTEGER-LITERAL subscript asserts the receiver as an
-		// array (a bare `rows[0]` marks `rows`; a negative `rows[-1]`
-		// counts too — the parser wraps it in a `unaryNode{-}` around a
-		// litInt; `length(rows)` also marks `rows` through the funcCall
-		// arm above). A string-literal subscript (`recv.field` /
-		// `recv["field"]`) is map access. A DYNAMIC subscript
-		// (`m[vars.k]`, `arr[i]`, `outputs.plan.cfg[vars.key]`) cannot
-		// be typed statically — evalIndex handles both map and array at
-		// runtime — so the receiver stays UNMARKED: shaping it as an
-		// array would kill a legal `m[vars.k]` on a `json` map with an
-		// EXPRESSION_FAILED false positive, the class this PR removes
-		// (PR #1491 review R085325). The array flag does not travel
-		// through the indexNode onto the receiver either — the whole
-		// indexNode is one element of the outer array, not the outer
-		// array itself (PR #1491 review R4399d8).
-		recvArray := isIntLiteralSubscript(v.index)
-		walkArrayContextBound(v.recv, recvArray, bound, fn)
-		walkArrayContextBound(v.index, false, bound, fn)
+		walkIteratedBound(v.recv, false, bound, fn)
+		walkIteratedBound(v.index, false, bound, fn)
 	case *lambdaCombNode:
-		// The collection is iterated as an array. The init seed of a reduce
-		// is a plain scalar/object (the accumulator), and the body produces
-		// ONE element per invocation — neither is an array by construction,
-		// so the flag does not travel to them.
-		walkArrayContextBound(v.coll, true, bound, fn)
+		walkIteratedBound(v.coll, true, bound, fn)
 		if v.init != nil {
-			walkArrayContextBound(v.init, false, bound, fn)
+			walkIteratedBound(v.init, false, bound, fn)
 		}
 		nb := make(map[string]bool, len(bound)+len(v.params))
 		for k := range bound {
@@ -329,7 +251,7 @@ func walkArrayContextBound(n node, inArray bool, bound map[string]bool, fn func(
 		for _, p := range v.params {
 			nb[p] = true
 		}
-		walkArrayContextBound(v.body, false, nb, fn)
+		walkIteratedBound(v.body, false, nb, fn)
 	}
 }
 

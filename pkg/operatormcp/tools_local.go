@@ -20,7 +20,7 @@ func localTools() []Tool {
 	return []Tool{
 		{
 			Name:        "local_validate",
-			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns the validation result JSON including diagnostics; valid:false is a normal outcome, not a tool error. With exec:true a program that compiles is also run under a dry run (no model, no shell, no workspace) and the result carries `exec`: the references left unresolved, the shell text bash refuses, the nodes and edges no pass reached. The dry run is read-only in effect: it writes to a temporary store it removes, runs no command of the bot (bash -n parses the text), touches no workspace.",
+			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns the validation result JSON including diagnostics; valid:false is a normal outcome, not a tool error. With exec:true a program that compiles is also run under a dry run (no model, no shell, no workspace) and the result carries `exec`: the references left unresolved, the shell text bash refuses, the nodes and edges no pass reached, the expressions left `inconclusive` on a shaped json value (kind `inconclusive` under findings), and two verdicts — `clean` (nothing to fix, nothing undecided) and `failing` (a pass died or a defect finding stands). The dry run is read-only in effect: it writes to a temporary store it removes, runs no command of the bot (bash -n parses the text), touches no workspace.",
 			ReadOnly:    true,
 			InputSchema: json.RawMessage(`{
   "type": "object",
