@@ -213,9 +213,9 @@ func TestEngineRun_HostDevbox_RepoDevboxOffSkipsOnlyTheRepo(t *testing.T) {
 	if len(rec.installs) != 1 {
 		t.Fatalf("the bot's own devbox.json must still install, installs=%v (bot dir %s)", rec.installs, botDir)
 	}
-	if len(execRec.runExtraEnv) != 1 ||
-		strings.Contains(execRec.runExtraEnv[0], filepath.Join(workDir, filepath.FromSlash(devboxProfileBin))) {
-		t.Errorf("the repo profile must stay off the run's PATH, got %v", execRec.runExtraEnv)
+	if len(execRec.engineEnv) != 1 ||
+		strings.Contains(execRec.engineEnv[0], filepath.Join(workDir, filepath.FromSlash(devboxProfileBin))) {
+		t.Errorf("the repo profile must stay off the run's PATH, got %v", execRec.engineEnv)
 	}
 	data := devboxEvent(t, s, runID)
 	if data == nil {

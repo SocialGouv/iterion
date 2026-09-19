@@ -1,7 +1,9 @@
 package supervise
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -173,5 +175,59 @@ func TestHookInstallNonObjectHooksKey(t *testing.T) {
 	}
 	if root["keep"] != true {
 		t.Error("unrelated key dropped")
+	}
+}
+
+// TestInstallHookQuotesABinaryPathWithSpaces: the hook command is a shell
+// line in the target repo's settings, and the engine-binary resolver
+// absolutises its result — a path carrying a space (or any shell
+// metacharacter) must reach the settings file quoted, or the hook the
+// repo runs is a broken fragment of a path.
+//
+// Mutation seen red: revert InstallHook's cmd to the unquoted
+// `proc.LocateIterionBinary() + " " + hookDrainSubcommand` concat — the
+// command line is then two arguments and a stray word.
+func TestInstallHookQuotesABinaryPathWithSpaces(t *testing.T) {
+	repo := t.TempDir()
+	binDir := filepath.Join(repo, "my tools")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", bin)
+
+	path, changed, err := InstallHook(repo, HookScopeLocal)
+	if err != nil || !changed {
+		t.Fatalf("InstallHook = (%q, %v, %v)", path, changed, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("settings do not parse: %v\n%s", err, raw)
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	stopBlocks, _ := hooks["Stop"].([]any)
+	if len(stopBlocks) == 0 {
+		t.Fatalf("no Stop block in the settings:\n%s", raw)
+	}
+	stopHooks, _ := stopBlocks[0].(map[string]any)["hooks"].([]any)
+	if len(stopHooks) == 0 {
+		t.Fatalf("no Stop hook entries in the settings:\n%s", raw)
+	}
+	got, _ := stopHooks[0].(map[string]any)["command"].(string)
+	want := "'" + bin + "' " + hookDrainSubcommand
+	if got != want {
+		t.Fatalf("hook command = %q, want the quoted %q", got, want)
+	}
+	// And the quoted line runs: whatever the binary is, the shell must
+	// resolve it as ONE word and execute it.
+	if out, runErr := exec.Command("sh", "-c", got).CombinedOutput(); runErr != nil {
+		t.Fatalf("the quoted hook command does not run: %v (out: %s)", runErr, out)
 	}
 }

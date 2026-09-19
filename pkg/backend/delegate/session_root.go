@@ -14,7 +14,19 @@ import (
 func SessionFilesRoot(ctx context.Context, task Task, backend string) string {
 	switch backend {
 	case BackendClaudeCode:
-		if env := anthropicCredEnvForCLI(ctx, task.ProviderHint, !task.Hostless()); env != nil {
+		env := anthropicCredEnvForCLI(ctx, task.ProviderHint, !task.Hostless())
+		// A forfait-suppressed env (providerHint=="zai", no z.ai key)
+		// names NO session root: its CLI runs with a POISONED
+		// CLAUDE_CONFIG_DIR it cannot write transcripts under — the
+		// node is expected to die on "no credential" before any
+		// transcript exists — and the ambient default here would point
+		// pack/unpack/HasSession at the OPERATOR'S OWN config dir for
+		// a session the run never wrote. Every caller degrades on ""
+		// (pack ErrNotExist, unpack ErrNotExist, HasSession false).
+		if env != nil && isForfaitSuppressed(env) {
+			return ""
+		}
+		if env != nil {
 			if d := env["CLAUDE_CONFIG_DIR"]; d != "" {
 				return d
 			}

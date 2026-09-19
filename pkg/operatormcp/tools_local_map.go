@@ -146,7 +146,7 @@ func handleLocalMapFind(_ context.Context, s *Server, raw json.RawMessage) (stri
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_map_find", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.Query == "" {
@@ -172,7 +172,7 @@ func handleLocalMapNeighbours(_ context.Context, s *Server, raw json.RawMessage)
 		ID    string `json:"id"`
 		Limit int    `json:"limit"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_map_neighbours", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.ID == "" {
@@ -214,7 +214,7 @@ func handleLocalMapImpact(_ context.Context, s *Server, raw json.RawMessage) (st
 		Depth int    `json:"depth"`
 		Limit int    `json:"limit"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_map_impact", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.ID == "" {
@@ -241,7 +241,7 @@ func handleLocalMapPath(_ context.Context, s *Server, raw json.RawMessage) (stri
 		From string `json:"from"`
 		To   string `json:"to"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("local_map_path", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.From == "" || args.To == "" {
