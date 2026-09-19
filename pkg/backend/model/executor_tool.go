@@ -650,8 +650,9 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	// container env (the same dir is bind-mounted there). The run-level
 	// env (the launch surface's layer plus the engine's PATH composition)
 	// is appended after the inherited env so on a duplicate key it wins.
+	cmd.Env = os.Environ()
 	if runLevelEnv := e.processExtraEnv(); e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
-		cmd.Env = append(os.Environ(), runLevelEnv...)
+		cmd.Env = append(cmd.Env, runLevelEnv...)
 		if e.artifactFilesDir != "" {
 			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 		}
@@ -744,20 +745,18 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	proc.TerminateGroupOnCancel(cmd)
 	cmd.Stdin = stdin
 	runLevelEnv := e.processExtraEnv()
-	if len(env) > 0 || e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
-		cmd.Env = os.Environ()
-		// Run-level env (the launch surface's layer plus the engine's
-		// PATH composition) — appended after the inherited env so on a
-		// duplicate key it wins.
-		cmd.Env = append(cmd.Env, runLevelEnv...)
-		// Host path only: sandboxed commands already see the variable from
-		// the container env (the same dir is bind-mounted there).
-		if e.artifactFilesDir != "" {
-			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
-		}
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	cmd.Env = os.Environ()
+	// Run-level env (the launch surface's layer plus the engine's
+	// PATH composition) — appended after the inherited env so on a
+	// duplicate key it wins.
+	cmd.Env = append(cmd.Env, runLevelEnv...)
+	// Host path only: sandboxed commands already see the variable from
+	// the container env (the same dir is bind-mounted there).
+	if e.artifactFilesDir != "" {
+		cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	// The canonical tree-noise pathspecs, engine-owned: a run without a
 	// devbox.json carries them just the same (#1464) — but the operator,
