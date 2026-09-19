@@ -32,6 +32,14 @@ worked. A five-minute write-up now saves the next session (or the next dev)
 the hours this one spent.
 
 **Operational runbook index** (the discovery entry point — extend it):
+- [docs/repo-map-and-graph.md](../repo-map-and-graph.md) — read it when a
+  task starts with "where is…", "what else uses…" or "what breaks if I
+  change…". The committed maps (`docs/references/map-*.md`, rewritten by
+  `task map:gen`, gated by `task map:check`) and the on-demand graph
+  (`iterion map build|find|neighbours|path|impact|rank`, and the
+  `local_map_*` MCP tools) — including how a `.bot` queries it from a
+  `tool` node, and the list of what it deliberately is **not** (no
+  embeddings, Go-only symbols, name-resolved edges).
 - [docs/connector-identities.md](../connector-identities.md) — connector
   regeneration identity locks, authored renames, retired names and recovery
   after an interrupted package replacement.
