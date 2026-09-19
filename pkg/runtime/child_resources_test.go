@@ -283,13 +283,16 @@ func TestChildResourcesHostDevboxIsPerRunAndBareFileHasNoBundle(t *testing.T) {
 	}
 	parentEx := &envRecordingExecutor{stubExecutor: newStubExecutor()}
 	parentEx.on("before", func(map[string]any) (map[string]any, error) {
-		if len(parentEx.runExtraEnv) != 1 || !strings.Contains(parentEx.runExtraEnv[0], "/parent/") {
+		// The staged bot project is a private per-run dir named after
+		// the run (`iterion-devbox-<runID>-<random>`, directly under the
+		// temp dir): the run id in the name is what tells the two apart.
+		if len(parentEx.engineEnv) != 1 || !strings.Contains(parentEx.engineEnv[0], "/iterion-devbox-parent-") {
 			return nil, errors.New("parent devbox missing")
 		}
 		return map[string]any{}, nil
 	})
 	parent := New(resourceWorkflow("child"), st, parentEx, WithWorkDir(work), WithBundle(parentBundle), WithSandboxOverride("none"), WithSubbotRunner(func(ctx context.Context, req SubbotRequest) (map[string]any, error) {
-		parentEnv := append([]string(nil), parentEx.runExtraEnv...)
+		parentEnv := append([]string(nil), parentEx.engineEnv...)
 		for _, bare := range []bool{false, true} {
 			id, b := "child", childBundle
 			if bare {
@@ -298,10 +301,10 @@ func TestChildResourcesHostDevboxIsPerRunAndBareFileHasNoBundle(t *testing.T) {
 			ex := &envRecordingExecutor{stubExecutor: newStubExecutor()}
 			ex.on("before", func(map[string]any) (map[string]any, error) {
 				if bare {
-					if len(ex.runExtraEnv) != 0 {
+					if len(ex.engineEnv) != 0 {
 						return nil, errors.New("bare step inherited sibling bundle devbox")
 					}
-				} else if len(ex.runExtraEnv) != 1 || !strings.Contains(ex.runExtraEnv[0], "/child/") || strings.Contains(ex.runExtraEnv[0], "/parent/") {
+				} else if len(ex.engineEnv) != 1 || !strings.Contains(ex.engineEnv[0], "/iterion-devbox-child-") || strings.Contains(ex.engineEnv[0], "/iterion-devbox-parent-") {
 					return nil, errors.New("child devbox not isolated")
 				}
 				return map[string]any{}, nil
@@ -310,7 +313,7 @@ func TestChildResourcesHostDevboxIsPerRunAndBareFileHasNoBundle(t *testing.T) {
 			if err := child.Run(ctx, id, nil); err != nil {
 				return nil, err
 			}
-			if !reflect.DeepEqual(parentEnv, parentEx.runExtraEnv) {
+			if !reflect.DeepEqual(parentEnv, parentEx.engineEnv) {
 				return nil, errors.New("child changed parent executor PATH")
 			}
 			assertResourceBody(t, work, "parent")

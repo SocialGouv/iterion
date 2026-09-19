@@ -168,14 +168,26 @@ type ClawExecutor struct {
 	// route their subprocess invocations through it when set.
 	sandbox sandbox.Run
 
-	// runExtraEnv is a list of KEY=value process-environment additions
-	// applied to every HOST-spawned command of the run — tool nodes,
-	// delegate CLI spawns (via Task.ExtraEnv), and the claw bash
-	// builtin. The engine pushes it via SetRunExtraEnv on runs without
-	// a sandbox (host devbox provisioning: the profile bin dirs
-	// prepended to PATH). Nil on sandboxed runs — the container env is
-	// settled at container creation.
+	// runExtraEnv is the LAUNCH-SURFACE layer of the run-level
+	// process-environment additions (KEY=value entries) applied to
+	// every HOST-spawned command of the run — tool nodes, delegate CLI
+	// spawns (via Task.ExtraEnv), and the claw bash builtin. The launch
+	// surface (runview, the dispatcher) pushes its project environment
+	// snapshot here through SetRunExtraEnv, before the engine starts.
+	// Nil on sandboxed runs — the container env is settled at container
+	// creation.
 	runExtraEnv []string
+
+	// engineExtraEnv is the ENGINE layer of the same seam: what the
+	// run's own provisioning composes on top of the launch-surface layer
+	// (host devbox provisioning's PATH — engine shim, devbox profile bin
+	// dirs, then the base PATH; pkg/runtime/devbox_host.go). Kept apart
+	// from runExtraEnv so a producer that composes on the launch-surface
+	// value (GetRunExtraEnvValue) always reads the base and never its own
+	// previous composition: a second provisioning of one executor
+	// replaces this layer instead of stacking on it. processExtraEnv
+	// merges the two, this layer winning on a duplicate key.
+	engineExtraEnv []string
 
 	// sessions holds per-(runID, nodeID) accumulated message lists
 	// so the recovery dispatcher's CompactAndRetry path has
@@ -253,13 +265,56 @@ type ClawExecutor struct {
 	hostSecretErr     error
 }
 
-// SetRunExtraEnv installs run-level process-environment additions
-// (KEY=value entries) applied to every host-spawned command of the run.
-// The engine calls this once per run, before the first node executes,
-// from host devbox provisioning (pkg/runtime/devbox_host.go); the same
-// happens-before as SetSandbox makes a mutex unnecessary.
+// SetRunExtraEnv installs the launch surface's run-level
+// process-environment additions (KEY=value entries) applied to every
+// host-spawned command of the run — the project environment snapshot
+// runview and the dispatcher push once per run, right after the executor
+// is built and before the engine starts. Entries merge by key, the newest
+// value wins. The same happens-before as SetSandbox makes a mutex
+// unnecessary.
 func (e *ClawExecutor) SetRunExtraEnv(env []string) {
 	e.runExtraEnv = mergeProcessEnv(e.runExtraEnv, env)
+}
+
+// SetEngineExtraEnv installs the engine's own run-level additions — what
+// host devbox provisioning (pkg/runtime/devbox_host.go) composes on top
+// of the launch-surface layer: the run's PATH, engine shim first, devbox
+// profile bin dirs next, the launch surface's or the process PATH last.
+// Entries merge by key, the newest value wins, and this layer takes
+// precedence over SetRunExtraEnv's on a duplicate key. The engine calls
+// this at run start, before the first node executes; a second call
+// (one executor provisioned twice) replaces the layer's PATH instead of
+// stacking on it, because the composition reads the launch-surface
+// layer (GetRunExtraEnvValue), never this one.
+func (e *ClawExecutor) SetEngineExtraEnv(env []string) {
+	e.engineExtraEnv = mergeProcessEnv(e.engineExtraEnv, env)
+}
+
+// GetRunExtraEnvValue returns the LAUNCH-SURFACE value stored for key
+// (SetRunExtraEnv), or "" when the key is not present. The engine's own
+// layer is deliberately invisible here: a producer that composes on the
+// returned value (devbox_host.go's PATH prepend) reads the same base on
+// every call, so provisioning one executor twice composes from the launch
+// surface's PATH again instead of prepending to its own previous
+// composition. Same happens-before as the setters; no mutex.
+func (e *ClawExecutor) GetRunExtraEnvValue(key string) string {
+	prefix := key + "="
+	for _, entry := range e.runExtraEnv {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
+}
+
+// processExtraEnv is the run-level environment every host-spawned
+// command receives: the launch-surface layer with the engine layer
+// merged over it (the engine's PATH wins over the project's).
+func (e *ClawExecutor) processExtraEnv() []string {
+	if len(e.engineExtraEnv) == 0 {
+		return e.runExtraEnv
+	}
+	return mergeProcessEnv(e.runExtraEnv, e.engineExtraEnv)
 }
 
 func mergeProcessEnv(base, overlay []string) []string {

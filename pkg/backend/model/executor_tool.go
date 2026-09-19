@@ -646,11 +646,11 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	// toolNodeCommand.
 	proc.TerminateGroupOnCancel(cmd)
 	// Host path only: sandboxed commands already see the variable from the
-	// container env (the same dir is bind-mounted there). runExtraEnv
-	// carries run-level provisioning (devbox profile PATH), appended
-	// after the inherited env so on a duplicate key it wins.
-	if e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
-		cmd.Env = append(os.Environ(), e.runExtraEnv...)
+	// container env (the same dir is bind-mounted there). The run-level
+	// env (the launch surface's layer plus the engine's PATH composition)
+	// is appended after the inherited env so on a duplicate key it wins.
+	if runLevelEnv := e.processExtraEnv(); e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
+		cmd.Env = append(os.Environ(), runLevelEnv...)
 		if e.artifactFilesDir != "" {
 			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 		}
@@ -715,11 +715,13 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	// work. Signal the whole group instead.
 	proc.TerminateGroupOnCancel(cmd)
 	cmd.Stdin = stdin
-	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
+	runLevelEnv := e.processExtraEnv()
+	if len(env) > 0 || e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
 		cmd.Env = os.Environ()
-		// Run-level provisioning (devbox profile PATH) — appended after
-		// the inherited env so on a duplicate key it wins.
-		cmd.Env = append(cmd.Env, e.runExtraEnv...)
+		// Run-level env (the launch surface's layer plus the engine's
+		// PATH composition) — appended after the inherited env so on a
+		// duplicate key it wins.
+		cmd.Env = append(cmd.Env, runLevelEnv...)
 		// Host path only: sandboxed commands already see the variable from
 		// the container env (the same dir is bind-mounted there).
 		if e.artifactFilesDir != "" {

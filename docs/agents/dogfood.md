@@ -64,17 +64,33 @@ live-tree-editing bot: launch it via a CLI `iterion run` (a separate process
 watchexec's restart can't cancel) or against a non-watchexec studio
 (`iterion studio` from the built binary), not the `task studio:dev` backend.
 
-**Keep the installed binary fresh — delegated subprocesses use it, not the
-running code.** Bot capabilities that run out-of-process — the `__mcp-board`
-server (board.* tools), the sandboxed `__claw-runner`, the `__mcp-ask-user`
-server — are spawned via `proc.LocateIterionBinary()`. Under `task studio:dev`
-(`go run`) the studio's own `os.Executable()` is a volatile build path, so
-LocateIterionBinary **falls back to the installed `/usr/bin/iterion`** (then
-`/usr/local/bin`, `~/.local/bin`). If that install is older than your working
-tree, agents silently get the **stale** capability set — e.g. a dogfood run saw
-the board MCP advertise only 7 tools (no `set_bot`/`list_labels`) because the
-installed binary predated them, and the agent (correctly) fell back to routing by
-`assignee`. After adding or changing any delegated capability, **reinstall the
+**Keep the installed binary fresh — delegated subprocesses AND a bot's own
+shell tools use it, not the running code.** Bot capabilities that run
+out-of-process — the `__mcp-board` server (board.* tools), the sandboxed
+`__claw-runner`, the `__mcp-ask-user` server — are spawned via
+`proc.LocateIterionBinary()`. **The same resolver also feeds the run's PATH**
+on host runs (`--sandbox none` and every cloud run whose runner pod is the
+isolation boundary): a per-run shim directory holding one `iterion`
+symlink to the engine binary is prepended to PATH — never the binary's
+whole directory, which also holds node/go/git/devbox the bot's devbox
+pins — via [pkg/runtime/devbox_host.go](../../pkg/runtime/devbox_host.go)'s
+`provisionHostDevbox`, so a bot's shell tools (a `tool` node's `command:`,
+claw's `diagnostic_shell`, a `claude_code` Bash call) resolve `iterion` to
+THIS engine — not to whatever `iterion` sits earlier on the operator's
+ambient PATH. Sandboxed runs bind-mount `/usr/local/bin/iterion` into the
+image, so the container's own iterion serves there instead. Under `task
+studio:dev` (`go run`) the studio's own `os.Executable()` is a volatile build
+path, so LocateIterionBinary **falls back to the installed
+`/usr/bin/iterion`** (then `/usr/local/bin`, `~/.local/bin`). If that install
+is older than your working tree, agents silently get the **stale** capability
+set — e.g. a dogfood run saw the board MCP advertise only 7 tools (no
+`set_bot`/`list_labels`) because the installed binary predated them, and the
+agent (correctly) fell back to routing by `assignee`. A separate wave-4
+dogfood of copilot spent twenty minutes hunting a C145 warning that its
+shell's `iterion validate` did not print, because `~/.local/bin/iterion` was
+v3.112.2 while the engine was the branch build (#1384; now closed at the
+chokepoint above). After adding or changing any delegated capability, OR
+after building a fresh engine you want a shelling bot to see, **reinstall the
 binary** or export `ITERION_BIN=<fresh binary>` for the studio process —
 otherwise the gap reads as an agent/bot bug when it's a stale binary.
 
