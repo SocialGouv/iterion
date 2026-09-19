@@ -435,6 +435,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/platform-credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/platform-credentials */
+        get: operations["getAdminSettingsPlatformCredentials"];
+        /** PUT /api/admin/settings/platform-credentials */
+        put: operations["putAdminSettingsPlatformCredentials"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/sandbox": {
         parameters: {
             query?: never;
@@ -6070,6 +6088,23 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        BotRoles: {
+            brancher?: string;
+            implementer?: string;
+            revi_converse?: string;
+            reviewer?: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+        };
+        BotVars: {
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+            vars: {
+                [key: string]: string;
+            };
+        };
         BoundLabelField: {
             field_id: string;
             name: string;
@@ -6756,6 +6791,14 @@ export interface components {
             reserved: number;
             waiting: number;
         };
+        PlatformCredentials: {
+            enforce?: boolean;
+            orgs: string[];
+            teams: string[];
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+        };
         ProjectSyncConflict: {
             /** Format: date-time */
             at?: string;
@@ -6962,6 +7005,19 @@ export interface components {
             work_dir?: string;
             workflow_name: string;
         };
+        Sandbox: {
+            default_image?: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+        };
+        Settings: {
+            five_hour_pct?: number;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+            week_pct?: number;
+        };
         StatusMapping: {
             state: string;
             status: string;
@@ -7090,6 +7146,11 @@ export interface components {
             };
             sync_every_seconds?: number;
         };
+        botRolesSettingsView: {
+            effective: components["schemas"]["effectiveBotRoles"];
+            origin: string;
+            stored?: components["schemas"]["BotRoles"];
+        };
         botSourceForkReq: {
             from: string;
         };
@@ -7140,6 +7201,11 @@ export interface components {
             version: number;
             warnings?: string[];
         };
+        botVarsSettingsView: {
+            origin: string;
+            propagation_bound_seconds: number;
+            stored?: components["schemas"]["BotVars"];
+        };
         createApiKeyReq: {
             bots?: string[];
             is_default?: boolean;
@@ -7157,6 +7223,40 @@ export interface components {
             expires_in_days?: number;
             name: string;
             team_id?: string;
+        };
+        credentialUsageListView: {
+            credentials: components["schemas"]["credentialUsageView"][];
+            estimated_usd: number;
+            metered_usd: number;
+            month: string;
+            scope: components["schemas"]["credentialUsageScope"];
+        };
+        credentialUsageScope: {
+            fingerprint?: string;
+            repo?: string;
+            team_id?: string;
+            tier?: string;
+        };
+        credentialUsageView: {
+            aggregate_tokens: number;
+            backends?: string[];
+            cost_usd: number;
+            fingerprint: string;
+            input_tokens: number;
+            month: string;
+            nature: string;
+            output_tokens: number;
+            provider: string;
+            repo_id?: string;
+            runs: number;
+            tenant_id?: string;
+            tier: string;
+        };
+        effectiveBotRoles: {
+            brancher: string;
+            implementer: string;
+            revi_converse: string;
+            reviewer: string;
         };
         forgeAvatarReq: {
             force?: boolean;
@@ -7370,6 +7470,11 @@ export interface components {
                 [key: string]: string;
             };
         };
+        platformCredentialsSettingsView: {
+            enforced: boolean;
+            origin: string;
+            stored?: components["schemas"]["PlatformCredentials"];
+        };
         previewBackendOption: {
             unavailable_reason?: string;
             warning?: string;
@@ -7416,8 +7521,23 @@ export interface components {
             compress: components["schemas"]["previewEffectiveKnob"];
             permission: components["schemas"]["previewEffectiveKnob"];
         };
+        sandboxSettingsView: {
+            effective_default_image: string;
+            origin: string;
+            stored?: components["schemas"]["Sandbox"];
+        };
         setOrgStatusReq: {
             reason?: string;
+            status: string;
+        };
+        teamSummaryView: {
+            created_at?: string;
+            id: string;
+            launch_rate_per_min?: number;
+            max_concurrent_runs?: number;
+            name: string;
+            personal?: boolean;
+            slug: string;
             status: string;
         };
         updateApiKeyReq: {
@@ -7433,6 +7553,21 @@ export interface components {
             monthly_run_quota?: number;
             name?: string;
             slug?: string;
+        };
+        usageCapsView: {
+            effective: {
+                five_hour_mode: string;
+                five_hour_pct: number;
+                week_mode: string;
+                week_pct: number;
+            };
+            env: {
+                five_hour_pct: number;
+                week_pct: number;
+            };
+            propagation_bound_seconds: number;
+            record?: components["schemas"]["Settings"];
+            source: string;
         };
         usageReadingsClearedView: {
             deleted: number;
@@ -7648,12 +7783,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["credentialUsageListView"];
+                };
             };
         };
     };
@@ -8064,12 +8201,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        teams: components["schemas"]["teamSummaryView"][];
+                    };
+                };
             };
         };
     };
@@ -8102,12 +8243,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botRolesSettingsView"];
+                };
             };
         };
     };
@@ -8120,12 +8263,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botRolesSettingsView"];
+                };
             };
         };
     };
@@ -8138,12 +8283,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botVarsSettingsView"];
+                };
             };
         };
     };
@@ -8156,12 +8303,54 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botVarsSettingsView"];
+                };
+            };
+        };
+    };
+    getAdminSettingsPlatformCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["platformCredentialsSettingsView"];
+                };
+            };
+        };
+    };
+    putAdminSettingsPlatformCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["platformCredentialsSettingsView"];
+                };
             };
         };
     };
@@ -8174,12 +8363,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["sandboxSettingsView"];
+                };
             };
         };
     };
@@ -8192,12 +8383,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["sandboxSettingsView"];
+                };
             };
         };
     };
@@ -8210,12 +8403,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["usageCapsView"];
+                };
             };
         };
     };
@@ -8228,12 +8423,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["usageCapsView"];
+                };
             };
         };
     };

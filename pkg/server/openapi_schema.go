@@ -85,6 +85,31 @@ func routeSchemas() map[string]routeOp {
 		// stored readings after a provider reset the ledger cannot see.
 		"DELETE /api/admin/usage-readings/{fingerprint}": {response: usageReadingsClearedView{}},
 
+		// Platform runtime settings (super-admin) — DB-backed overrides of the
+		// operational env vars, effective without restart. Each GET returns the
+		// stored record + resolved effective + origin; each PUT applies MERGE
+		// semantics with a raw-map body (left untyped) and answers with the GET
+		// view.
+		"GET /api/admin/settings/usage-caps":           {response: usageCapsView{}},
+		"PUT /api/admin/settings/usage-caps":           {response: usageCapsView{}},
+		"GET /api/admin/settings/bot-roles":            {response: botRolesSettingsView{}},
+		"PUT /api/admin/settings/bot-roles":            {response: botRolesSettingsView{}},
+		"GET /api/admin/settings/sandbox":              {response: sandboxSettingsView{}},
+		"PUT /api/admin/settings/sandbox":              {response: sandboxSettingsView{}},
+		"GET /api/admin/settings/bot-vars":             {response: botVarsSettingsView{}},
+		"PUT /api/admin/settings/bot-vars":             {response: botVarsSettingsView{}},
+		"GET /api/admin/settings/platform-credentials": {response: platformCredentialsSettingsView{}},
+		"PUT /api/admin/settings/platform-credentials": {response: platformCredentialsSettingsView{}},
+
+		// Per-credential usage (super-admin) — cross-tenant spend by
+		// tier/fingerprint/repo (query params, not typed by the generator).
+		"GET /api/admin/credentials/usage": {response: credentialUsageListView{}},
+
+		// Super-admin org → teams drill-down.
+		"GET /api/admin/orgs/{id}/teams": {response: struct {
+			Teams []teamSummaryView `json:"teams"`
+		}{}},
+
 		// Platform bot overrides (super-admin) — the DB-backed bot catalog.
 		"GET /api/admin/bots":              {response: botSourceListView{}},
 		"GET /api/admin/bots/{slug}":       {response: botSourceView{}},
