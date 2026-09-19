@@ -38,11 +38,15 @@ type cursorLoadFailureStore struct {
 
 type cursorMissingRunStore struct {
 	store.RunStore
-	loads int
+	// One timestamp per poll, so a test can read the delay BETWEEN polls rather
+	// than count them. A count only bounds the loop through the ratio of the
+	// poll timer to the deadline timer, and honouring either is the scheduler's
+	// business, not the code's.
+	at []time.Time
 }
 
 func (s *cursorMissingRunStore) LoadRun(context.Context, string) (*store.Run, error) {
-	s.loads++
+	s.at = append(s.at, time.Now())
 	return nil, store.ErrRunNotFound
 }
 
@@ -175,9 +179,11 @@ func TestCoordinatorWaitsForFreshRunBeforeRestoringCursor(t *testing.T) {
 
 func TestCoordinatorStopsWaitingWhenFreshRunNeverAppears(t *testing.T) {
 	oldPoll, oldMaxPoll, oldWait := cursorInitialRunPoll, cursorInitialRunMaxPoll, cursorInitialRunWait
-	cursorInitialRunPoll = 5 * time.Millisecond
-	cursorInitialRunMaxPoll = 10 * time.Millisecond
-	cursorInitialRunWait = 35 * time.Millisecond
+	// Wide enough that one stalled sleep cannot swallow the whole budget and
+	// leave a single poll behind: the floor below needs two to measure a gap.
+	cursorInitialRunPoll = 10 * time.Millisecond
+	cursorInitialRunMaxPoll = 20 * time.Millisecond
+	cursorInitialRunWait = 200 * time.Millisecond
 	t.Cleanup(func() {
 		cursorInitialRunPoll, cursorInitialRunMaxPoll, cursorInitialRunWait = oldPoll, oldMaxPoll, oldWait
 	})
@@ -189,14 +195,36 @@ func TestCoordinatorStopsWaitingWhenFreshRunNeverAppears(t *testing.T) {
 	if c.restoreCursor() {
 		t.Fatal("cursor restoration succeeded for a run that never appeared")
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > 10*cursorInitialRunWait {
 		t.Fatalf("cursor restoration exceeded its bounded wait: %s", elapsed)
 	}
 	if c.cursorReady {
 		t.Fatal("cursor remained ready after the initial-run deadline")
 	}
-	if missing.loads < 2 || missing.loads > 8 {
-		t.Fatalf("cursor store loads = %d, want bounded backoff polling", missing.loads)
+
+	// Read the GAPS between polls, never their number. Counting bounded the
+	// loop only through the ratio of two timers the scheduler is free to fire
+	// late: on CI this counted 14 polls inside a 35 ms budget that took 130 ms,
+	// and reddened a package nothing had touched. A gap can only GROW when the
+	// machine is slow, so each assertion below fails for a change in the loop
+	// and never for load.
+	if len(missing.at) < 2 {
+		t.Fatalf("cursor store polled %d time(s), want a retry before giving up", len(missing.at))
+	}
+	var widest time.Duration
+	for i := 1; i < len(missing.at); i++ {
+		gap := missing.at[i].Sub(missing.at[i-1])
+		if gap < cursorInitialRunPoll {
+			t.Fatalf("poll %d landed %s after the previous one, under the %s floor: the loop is spinning",
+				i+1, gap, cursorInitialRunPoll)
+		}
+		if gap > widest {
+			widest = gap
+		}
+	}
+	if widest < cursorInitialRunMaxPoll {
+		t.Fatalf("widest gap between polls = %s, never reaching the %s cap: the delay is not backing off",
+			widest, cursorInitialRunMaxPoll)
 	}
 }
 
