@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.172.0](https://github.com/SocialGouv/iterion/compare/v3.171.0...v3.172.0) (2026-09-19)
+
+### Features
+
+* **studio:** credential spend admin screen ([#1444](https://github.com/SocialGouv/iterion/issues/1444)) ([#1463](https://github.com/SocialGouv/iterion/issues/1463)) ([5905af0](https://github.com/SocialGouv/iterion/commit/5905af01e71437a60376ef28f9c352be7b227583)), references [#1441](https://github.com/SocialGouv/iterion/issues/1441) [#641](https://github.com/SocialGouv/iterion/issues/641) [#1441](https://github.com/SocialGouv/iterion/issues/1441) [#1087](https://github.com/SocialGouv/iterion/issues/1087) [#1441](https://github.com/SocialGouv/iterion/issues/1441)
+
+    <details><summary>why</summary>
+
+    The cloud super-admin console exposes six pages, but several requireSuperAdmin endpoints exist and are tested with no client to reach them. This adds the API/client layer the remaining admin screens (T2–T5) depend on, schema-first so the wrappers carry the generated OpenAPI types rather than hand-rolled shapes.
+
+    </details>
+
 ## [3.171.0](https://github.com/SocialGouv/iterion/compare/v3.170.0...v3.171.0) (2026-09-19)
 
 ### Features
