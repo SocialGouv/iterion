@@ -101,6 +101,8 @@
 ## heuristics degrade silently when nothing is derivable.
 ## ─────────────────────────────────────────────────────────────────
 
+dsl: 2
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 

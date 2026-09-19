@@ -1,0 +1,25 @@
+## Guard fixture — a tool's script reads an input no incoming edge maps.
+dsl: 2
+
+prompt work:
+  Do the work.
+
+schema probe_out:
+  ok: bool
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  user: work
+
+tool probe:
+  output: probe_out
+  language: py
+  script: |
+    import json
+    value = {{input.script_never}}
+    print(json.dumps({"ok": bool(value)}))
+
+workflow tool_script:
+  entry: seed
+  seed -> probe
+  probe -> done

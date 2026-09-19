@@ -1,0 +1,29 @@
+## Guard fixture — a judge's system and user prompts each read an input no incoming edge maps.
+dsl: 2
+
+prompt work:
+  Do the work.
+
+prompt judge_sys:
+  You judge what the previous node produced: {{input.judge_sys_never}}
+
+prompt judge_user:
+  Judge what the previous node produced: {{input.judge_never}}
+
+schema verdict:
+  approved: bool
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  user: work
+
+judge review:
+  model: "anthropic/claude-sonnet-4-6"
+  system: judge_sys
+  user: judge_user
+  output: verdict
+
+workflow judge_prompt:
+  entry: seed
+  seed -> review
+  review -> done

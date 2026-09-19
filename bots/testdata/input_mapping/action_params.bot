@@ -1,0 +1,24 @@
+## Guard fixture — a connector action's params read an input no incoming edge maps.
+dsl: 2
+
+prompt work:
+  Do the work.
+
+schema comment_out:
+  ok: bool
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  user: work
+
+tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+    body: "{{input.action_never}}"
+  output: comment_out
+
+workflow action_params:
+  entry: seed
+  seed -> comment
+  comment -> done

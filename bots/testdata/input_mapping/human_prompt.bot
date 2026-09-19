@@ -1,0 +1,30 @@
+## Guard fixture — a human node's instructions and its LLM system prompt each read an input no incoming edge maps.
+dsl: 2
+
+prompt work:
+  Do the work.
+
+prompt gate_instructions:
+  Decide on what the previous node produced: {{input.human_never}}
+
+prompt gate_sys:
+  You stand in for the human on what the previous node produced: {{input.gate_sys_never}}
+
+schema decision:
+  approve: bool
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  user: work
+
+human gate:
+  instructions: gate_instructions
+  system: gate_sys
+  model: "anthropic/claude-sonnet-4-6"
+  output: decision
+  interaction: llm_or_human
+
+workflow human_prompt:
+  entry: seed
+  seed -> gate
+  gate -> done
