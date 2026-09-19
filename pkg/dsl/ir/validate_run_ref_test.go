@@ -17,7 +17,7 @@ agent check:
   output: verdict
 
 tool say:
-  command: "git add -A -- ':/' {{run.tree_noise}}"
+  command: "git add -A -- ':/' $ITERION_TREE_NOISE"
 
 workflow w:
   worktree: none

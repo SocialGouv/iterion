@@ -78,8 +78,8 @@ func TestBuildTaskCarriesTheTreeNoiseEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "treenoise.TreeNoiseEnvVar") {
-		t.Fatalf("executor_build_task.go no longer appends the tree-noise env to Task.ExtraEnv — an agent's own bash loses the list on an unsandboxed run")
+	if !strings.Contains(string(src), "extraTreeNoiseEnv(e.runExtraEnv)") {
+		t.Fatalf("executor_build_task.go no longer wires the tree-noise env into Task.ExtraEnv — an agent's own bash loses the list on an unsandboxed run")
 	}
 }
 
