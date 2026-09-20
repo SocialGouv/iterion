@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.175.2](https://github.com/SocialGouv/iterion/compare/v3.175.1...v3.175.2) (2026-09-20)
+
+### Bug Fixes
+
+* **resume:** the launch's decisions travel with the run — sandbox mode, merge target and branch name survive a resume, and answers survive a failed one ([#1490](https://github.com/SocialGouv/iterion/issues/1490)) ([f3223b8](https://github.com/SocialGouv/iterion/commit/f3223b85a00fc210aeafb5fa8a7967881bb05db9)), references [#1435](https://github.com/SocialGouv/iterion/issues/1435) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1435](https://github.com/SocialGouv/iterion/issues/1435) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#3](https://github.com/SocialGouv/iterion/issues/3) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1366](https://github.com/SocialGouv/iterion/issues/1366)
+
+    <details><summary>why</summary>
+
+    The class: every launch-time override iterion run accepts must either be persisted on the run and replayed on resume, or recomputed on purpose (documented). Two facets of one class were paying the ticket tax: --sandbox at launch was silently ignored by resume (docker on a host that saw one), and --merge-into / --branch-name / auto-merge choices were dropped between the CLI launch and the studio's resume. A third, smaller one on the way: answers of a resume that failed AFTER recording them (a…
+
+    </details>
+
 ## [3.175.1](https://github.com/SocialGouv/iterion/compare/v3.175.0...v3.175.1) (2026-09-19)
 
 ### Bug Fixes
