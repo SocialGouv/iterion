@@ -42,6 +42,8 @@ when_to_use: |
   deserialisation, path traversal, misconfig). Emits findings to the
   board; does not fix. Pre-release hardening / PR-scope review.
 author: SocialGouv (devthejo) — bots/sec-audit-source/main.bot
+category: verify
+tags: [security, read-only]
 schema_version: 1
 
 dispatch_vars:

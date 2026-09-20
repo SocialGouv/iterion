@@ -29,6 +29,7 @@ export interface BuilderDraft {
   // Carried through from a template spec (not directly editable in the
   // four-field form) so template-provided routing metadata isn't lost.
   whenToUse: string;
+  category: string;
   capabilities: string[];
   model: string;
   backend: string;
@@ -59,6 +60,7 @@ export function emptyDraft(): BuilderDraft {
     description: "",
     instructions: "",
     whenToUse: "",
+    category: "",
     capabilities: [],
     model: "",
     backend: "",
@@ -98,6 +100,7 @@ export function draftFromTemplate(t: BotTemplate): BuilderDraft {
     description: s.description ?? "",
     instructions: s.instructions ?? "",
     whenToUse: s.when_to_use ?? "",
+    category: s.category ?? "",
     capabilities: s.capabilities ?? [],
     model: s.model ?? "",
     backend: s.backend ?? "",
@@ -149,6 +152,7 @@ export function buildCreateSpec(
     ...(draft.icon ? { icon: draft.icon } : {}),
     ...(draft.description.trim() ? { description: draft.description.trim() } : {}),
     ...(draft.whenToUse.trim() ? { when_to_use: draft.whenToUse.trim() } : {}),
+    ...(draft.category ? { category: draft.category } : {}),
     ...(draft.model.trim() ? { model: draft.model.trim() } : {}),
     ...(draft.backend ? { backend: draft.backend } : {}),
     ...(draft.skills.length > 0 ? { skills: draft.skills } : {}),

@@ -183,6 +183,8 @@ when_to_use: |
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
 author: SocialGouv (devthejo) — branch-improve-loop/main.bot
+category: harden
+tags: [ships-code, code-review]
 schema_version: 1
 
 dispatch_vars:

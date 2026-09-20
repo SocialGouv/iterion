@@ -53,6 +53,8 @@ when_to_use: |
   close a specific gap on a feature. Prefer feature_dev when the work is
   greenfield (no existing partial implementation to preserve).
 author: SocialGouv (devthejo) — feature-gap-fill/main.bot
+category: build
+tags: [ships-code]
 schema_version: 1
 
 dispatch_vars:

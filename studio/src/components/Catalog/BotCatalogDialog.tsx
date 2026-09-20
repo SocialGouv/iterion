@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
 import type { BotEntryWithSchema } from "@/api/bots";
@@ -9,6 +9,7 @@ import {
 } from "@/components/Catalog/importActions";
 import { useAuth } from "@/auth/AuthContext";
 import { Button, Dialog, Input } from "@/components/ui";
+import { groupBotsByCategory } from "@/lib/botTaxonomy";
 import { botVisual } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -136,6 +137,9 @@ export function BotCatalogDialog({
   };
 
   const rows = bots ?? [];
+  // Grouped like the gallery — the manager reads by department ("where is
+  // my verify crew?"), not alphabetically across the whole fleet.
+  const groups = useMemo(() => groupBotsByCategory(rows), [rows]);
 
   return (
     <Dialog
@@ -268,8 +272,18 @@ export function BotCatalogDialog({
         {!loading && rows.length === 0 && (
           <p className="px-1 py-4 text-sm text-fg-subtle">No bots discovered in this workspace.</p>
         )}
-        <ul className="space-y-0.5">
-          {rows.map((b) => {
+        {groups
+          .filter((g) => g.bots.length > 0)
+          .map((g) => (
+            <section key={g.category.slug || "uncategorized"} className="mb-1">
+              <div className="px-2 pb-1 pt-2 text-xs font-medium text-fg-muted">
+                {g.category.title}{" "}
+                <span className="font-normal text-fg-subtle">
+                  — {g.category.tagline} · {g.bots.length}
+                </span>
+              </div>
+              <ul className="space-y-0.5">
+          {g.bots.map((b) => {
             const enabled = b.enabled !== false;
             const identity = botVisual(b);
             const label = b.display_name?.trim();
@@ -344,7 +358,9 @@ export function BotCatalogDialog({
               </li>
             );
           })}
-        </ul>
+              </ul>
+            </section>
+          ))}
       </div>
     </Dialog>
   );

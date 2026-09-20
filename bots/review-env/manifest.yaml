@@ -37,6 +37,8 @@ when_to_use: |
   bot's skill and credential), or on a platform with no deploy-target
   plugin attached: it will refuse loudly rather than improvise one.
 author: SocialGouv (devthejo) — review-env/main.bot
+category: operate
+tags: [deploy, env]
 schema_version: 1
 
 launch:

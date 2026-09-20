@@ -67,6 +67,15 @@ routing by setting `--assignee` and mapping it through
 
 ## Decision tree — pick `assignee` per roadmap item
 
+**Route by category first.** The persona table in the generated region
+carries a Category column and the reference cards are grouped under it —
+the six-verb spine, in lifecycle order: **build** (ship new capability) ·
+**verify** (judge the code, touch nothing) · **harden** (strengthen what
+exists) · **document** (align words with code) · **operate** (run the
+delivery machinery) · **steer** (judge the direction, converse). Naming the
+category for the item narrows the candidates before the tree walks; a card
+without a category sits in Uncategorized, visibly last.
+
 Walk top-to-bottom; first match wins.
 
 | If the work sounds like… | → `assignee` |

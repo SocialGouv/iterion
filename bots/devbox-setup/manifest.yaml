@@ -29,6 +29,8 @@ when_to_use: |
   code now needs (new language, runtime bump, added e2e). Produces a pinned
   `devbox.json` + `devbox.lock`; it does not change source.
 author: SocialGouv (devthejo) — devbox-setup/main.bot
+category: build
+tags: [env, tooling]
 schema_version: 1
 
 invocations:

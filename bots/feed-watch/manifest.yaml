@@ -48,6 +48,8 @@ when_to_use: |
   → webhook scenario one-for-one. Not for one-shot research questions
   (use a plain research bot) and it never edits code.
 author: SocialGouv (devthejo) — bots/feed-watch/main.bot
+category: operate
+tags: [scheduled]
 schema_version: 1
 
 invocations:

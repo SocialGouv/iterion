@@ -37,6 +37,8 @@ when_to_use: |
   baseline. Reports back on the forge and the board; does not fix. For a
   MALWARE-focused gate use the companion bot supply-shield (Shieldy).
 author: SocialGouv (devthejo) — bots/supply-shield-cve/main.bot
+category: verify
+tags: [security, supply-chain]
 schema_version: 1
 
 dispatch_vars:

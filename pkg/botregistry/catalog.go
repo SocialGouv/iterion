@@ -28,13 +28,15 @@ const (
 )
 
 // RenderCatalogBlock renders the generated catalog region: a persona ↔
-// assignee table followed by one reference card per ENABLED bot. Cards
-// derive entirely from each bot's manifest (persona, description,
-// triggers, capabilities, when_to_use) plus its workflow-declared vars,
-// so the output stays current as bots are edited. Disabled bots are
-// omitted. selfName marks the catalog's owning bot ("(this bot)") and
-// workdir relativises the printed paths. entries are assumed sorted by
-// name (List guarantees this) for deterministic output.
+// assignee table followed by one reference card per ENABLED bot, grouped
+// under their declared category (canonical order, Uncategorized last) so
+// a router narrows by intent before reading cards. Cards derive entirely
+// from each bot's manifest (persona, description, tags, triggers,
+// capabilities, when_to_use) plus its workflow-declared vars, so the
+// output stays current as bots are edited. Disabled bots are omitted.
+// selfName marks the catalog's owning bot ("(this bot)") and workdir
+// relativises the printed paths. entries are assumed sorted by name
+// (List guarantees this) for deterministic output.
 func RenderCatalogBlock(entries []EntryWithSchema, selfName, workdir string) string {
 	enabled := make([]EntryWithSchema, 0, len(entries))
 	for _, e := range entries {
@@ -47,25 +49,71 @@ func RenderCatalogBlock(entries []EntryWithSchema, selfName, workdir string) str
 	b.WriteString("## The team — persona ↔ assignee\n\n")
 	b.WriteString("When you emit an `assignee`, always use the **technical name** (the\n")
 	b.WriteString("dispatcher routes on it), never the persona.\n\n")
-	b.WriteString("| Persona | `assignee` (technical name) |\n")
-	b.WriteString("|---|---|\n")
+	b.WriteString("| Persona | `assignee` (technical name) | Category |\n")
+	b.WriteString("|---|---|---|\n")
 	for _, e := range enabled {
 		persona := strings.TrimSpace(e.DisplayName)
 		if persona == "" {
 			persona = "—"
 		}
+		category := e.Category
+		if category == "" {
+			category = "—"
+		}
 		if selfName != "" && NormalizeName(e.Name) == NormalizeName(selfName) {
-			fmt.Fprintf(&b, "| %s | `%s` (this bot) |\n", persona, e.Name)
+			fmt.Fprintf(&b, "| %s | `%s` (this bot) | %s |\n", persona, e.Name, category)
 		} else {
-			fmt.Fprintf(&b, "| %s | `%s` |\n", persona, e.Name)
+			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", persona, e.Name, category)
 		}
 	}
 	b.WriteString("\n## Bot reference\n")
-	for _, e := range enabled {
-		b.WriteString("\n")
-		renderCatalogCard(&b, e, workdir)
+	for _, group := range groupByCategory(enabled) {
+		if len(group.bots) == 0 {
+			continue // an empty category is noise in a routing document
+		}
+		fmt.Fprintf(&b, "\n### %s — %s\n", group.title, group.tagline)
+		for _, e := range group.bots {
+			b.WriteString("\n")
+			renderCatalogCard(&b, e, workdir)
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// catalogGroup is one category section of the reference: the bots whose
+// declared category matches, in name order.
+type catalogGroup struct {
+	slug    string
+	title   string
+	tagline string
+	bots    []EntryWithSchema
+}
+
+// groupByCategory buckets enabled bots into the canonical category order
+// (bundle.BotCategories) with an Uncategorized group — titled, never
+// hidden — appended last. Empty groups are kept in the result; the
+// renderer decides whether to print them (the routing document skips
+// them, fixed-landmark UIs show them).
+func groupByCategory(entries []EntryWithSchema) []catalogGroup {
+	groups := make([]catalogGroup, 0, len(bundle.BotCategories)+1)
+	for _, c := range bundle.BotCategories {
+		groups = append(groups, catalogGroup{slug: c.Slug, title: c.Title, tagline: c.Tagline})
+	}
+	groups = append(groups, catalogGroup{
+		title:   "Uncategorized",
+		tagline: "no category declared — visible, never hidden",
+	})
+	for _, e := range entries {
+		idx := len(groups) - 1
+		for i := range bundle.BotCategories {
+			if e.Category == groups[i].slug {
+				idx = i
+				break
+			}
+		}
+		groups[idx].bots = append(groups[idx].bots, e)
+	}
+	return groups
 }
 
 // renderCatalogCard writes one bot's reference card.
@@ -91,6 +139,9 @@ func renderCatalogCard(b *strings.Builder, e EntryWithSchema, workdir string) {
 	}
 	if len(e.Triggers) > 0 {
 		b.WriteString("- **Triggers**: " + strings.Join(e.Triggers, ", ") + "\n")
+	}
+	if len(e.Tags) > 0 {
+		b.WriteString("- **Tags**: " + strings.Join(e.Tags, ", ") + "\n")
 	}
 	if v := renderCatalogVars(e.Vars); v != "" {
 		b.WriteString("- **Vars**: " + v + "\n")

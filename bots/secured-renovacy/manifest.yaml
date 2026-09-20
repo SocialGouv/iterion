@@ -55,6 +55,8 @@ when_to_use: |
   aligns consuming code on breaking changes. Ask before running with
   major_policy: attempt.
 author: SocialGouv (devthejo) — secured-renovacy/main.bot
+category: harden
+tags: [deps, upgrade, ships-code]
 schema_version: 1
 
 dispatch_vars:

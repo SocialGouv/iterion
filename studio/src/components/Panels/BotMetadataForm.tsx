@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { BotEntryWithSchema, BotPatch } from "@/api/bots";
-import { CheckboxField, TagListField, TextField } from "@/components/Panels/forms/FormField";
+import {
+  CheckboxField,
+  SelectField,
+  TagListField,
+  TextField,
+} from "@/components/Panels/forms/FormField";
 import { Button } from "@/components/ui/Button";
 import { EmojiPicker } from "@/components/ui/EmojiPicker";
+import { BOT_CATEGORIES } from "@/lib/botTaxonomy";
 import { botIdentity } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
@@ -19,6 +25,8 @@ interface Draft {
   version: string;
   icon: string;
   enabled: boolean; // edits the MANIFEST default (manifest_enabled)
+  category: string; // "" = Uncategorized
+  tags: string[];
 }
 
 function toDraft(b: BotEntryWithSchema): Draft {
@@ -31,6 +39,8 @@ function toDraft(b: BotEntryWithSchema): Draft {
     version: b.version ?? "",
     icon: b.icon ?? "",
     enabled: b.manifest_enabled !== false,
+    category: b.category ?? "",
+    tags: b.tags ?? [],
   };
 }
 
@@ -44,6 +54,8 @@ function toPatch(d: Draft): BotPatch {
     version: d.version.trim(),
     icon: d.icon.trim(),
     enabled: d.enabled,
+    category: d.category,
+    tags: d.tags,
   };
 }
 
@@ -218,6 +230,24 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
         values={draft.triggers}
         onChange={(v) => update("triggers", v)}
         placeholder="Add trigger…"
+      />
+      <SelectField
+        label="Category"
+        value={draft.category}
+        onChange={(v) => update("category", v)}
+        allowEmpty
+        emptyLabel="Uncategorized (visible, never hidden)"
+        options={BOT_CATEGORIES.map((c) => ({
+          value: c.slug,
+          label: `${c.title} — ${c.tagline}`,
+        }))}
+        help="The navigation spine every bot picker groups by. Six closed slugs; an unknown value shows as Uncategorized everywhere."
+      />
+      <TagListField
+        label="Tags"
+        values={draft.tags}
+        onChange={(v) => update("tags", v)}
+        placeholder="Add tag (security, deps, read-only…) — reuse before inventing"
       />
       <div className="grid grid-cols-2 gap-2">
         <TextField label="Author" value={draft.author} onChange={(v) => update("author", v)} />

@@ -14,6 +14,11 @@ description: {{yquote .Description}}
 # reads it (via the generated bot catalog) to route tasks to this bot.
 when_to_use: {{yquote .WhenToUse}}
 {{- end}}
+{{- if .Category}}
+# The navigation-spine slug every bot picker groups by (build, verify,
+# harden, document, operate, steer).
+category: {{yquote .Category}}
+{{- end}}
 enabled: true
 schema_version: 1
 {{- if .EngineFloor}}

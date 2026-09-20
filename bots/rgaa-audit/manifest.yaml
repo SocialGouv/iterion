@@ -38,6 +38,8 @@ when_to_use: |
   conformance tracking. For FIXING accessibility issues, use Willy
   (whole-improve-loop) with the rgaa preset.
 author: SocialGouv (devthejo) — bots/rgaa-audit/main.bot
+category: verify
+tags: [a11y, read-only]
 schema_version: 1
 
 capabilities: [board.create, board.label, board.read]

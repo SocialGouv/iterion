@@ -26,6 +26,8 @@ when_to_use: |
   code (that is Billy or Featurly), NOT for triaging issues on the
   board.
 author: SocialGouv (devthejo) — revi-converse/main.bot
+category: verify
+tags: [code-review, conversational, read-only]
 schema_version: 1
 triggers: [revi-converse, ask, converse]
 

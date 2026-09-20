@@ -86,6 +86,8 @@ when_to_use: |
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
 author: SocialGouv (devthejo) — feature-dev/main.bot
+category: build
+tags: [ships-code, git]
 schema_version: 1
 
 dispatch_vars:

@@ -185,6 +185,8 @@ when_to_use: |
   review-pr), and not for proactively opening update PRs (that is
   Renovacy / secured-renovacy).
 author: SocialGouv (devthejo) — bots/dep-update-guard/main.bot
+category: harden
+tags: [deps, security]
 schema_version: 1
 
 dispatch_vars:

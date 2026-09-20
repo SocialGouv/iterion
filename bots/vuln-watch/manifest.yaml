@@ -46,6 +46,8 @@ when_to_use: |
   supply-shield-cve), not a code audit (use sec-audit-*); it never
   edits code.
 author: SocialGouv (devthejo) — bots/vuln-watch/main.bot
+category: operate
+tags: [security, scheduled]
 schema_version: 1
 
 invocations:

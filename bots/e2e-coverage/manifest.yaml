@@ -73,6 +73,8 @@ when_to_use: |
   tests). Endy's axis is the FEATURE-level e2e completeness of the
   whole application, made checkable by the matrix.
 author: SocialGouv (devthejo) — e2e-coverage/main.bot
+category: harden
+tags: [tests, ships-code]
 schema_version: 1
 
 triggers:

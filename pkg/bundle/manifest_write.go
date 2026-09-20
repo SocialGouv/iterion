@@ -42,6 +42,15 @@ type ManifestPatch struct {
 	// declares its own `## triggers:` frontmatter, discovery overlays it
 	// over the manifest value (see botregistry.parseBundle).
 	Triggers *[]string
+	// Category sets the manifest's navigation-spine slug (empty string
+	// clears it back to Uncategorized). Form-normalized (trim + lowercase)
+	// but NOT validated against the closed set here — an unknown slug is
+	// bundlelint's soft diagnostic, not a write error.
+	Category *string
+	// Tags is nil for "no change"; a non-nil slice (even empty) sets the
+	// manifest's tag list. Form-normalized (trim + lowercase + dedup);
+	// unknown tags stay declared (bundlelint warns softly).
+	Tags *[]string
 	// Forge is nil for "no change"; a non-nil pointer rewrites the whole
 	// `forge:` block (forge-access requirements). Reserved for a future
 	// studio Integrations editor — the value is encoded with its yaml
@@ -136,6 +145,16 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	}
 	if patch.Triggers != nil {
 		if err := setMapField(root, "triggers", *patch.Triggers, false, ""); err != nil {
+			return nil, err
+		}
+	}
+	if patch.Category != nil {
+		if err := setMapField(root, "category", normalizeBotCategory(*patch.Category), false, "when_to_use"); err != nil {
+			return nil, err
+		}
+	}
+	if patch.Tags != nil {
+		if err := setMapField(root, "tags", normalizeBotTagList(*patch.Tags), false, "category"); err != nil {
 			return nil, err
 		}
 	}

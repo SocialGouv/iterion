@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { referenceDragProps } from "@/lib/chatDock/dragReference";
 import { useQuery } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 
 import type { BotEntryWithSchema, ImportScriptResult } from "@/api/bots";
 import { importBotScript } from "@/api/bots";
@@ -29,6 +29,7 @@ import {
 } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { botVisual } from "@/lib/personas";
+import { groupBotsByCategory, type BotCategory } from "@/lib/botTaxonomy";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
@@ -39,6 +40,20 @@ import { useUIStore } from "@/store/ui";
  * with client-side search, import (.botz / git repo), and the entry to
  * the builder (/bots/new). Card click → the bot's home page.
  */
+// The curated scenario shortcuts — the taxonomy's human front door. They
+// apply a category/tag VIEW rather than jumping to a named bot, so they
+// resolve in any workspace, not just ours.
+type WantTo = { label: string; emoji: string } & (
+  | { category: string }
+  | { tag: string }
+);
+const WANT_TO: WantTo[] = [
+  { label: "Ship a feature", emoji: "🚢", category: "build" },
+  { label: "Audit my repo", emoji: "🛡️", tag: "security" },
+  { label: "Modernize", emoji: "⬆️", tag: "upgrade" },
+  { label: "Ask the crew", emoji: "🧭", category: "steer" },
+];
+
 export default function BotsView() {
   const [, setLocation] = useLocation();
   const bots = useBotsStore((s) => s.bots);
@@ -58,6 +73,49 @@ export default function BotsView() {
   const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled === true);
 
   const [query, setQuery] = useState("");
+
+  // The taxonomy filters live in the URL (?category=verify&tag=security,deps
+  // — tags comma-listed), so a "view by tag" is a shareable link, not a
+  // local toggle. wouter's useSearch reports the raw query string.
+  const search = useSearch();
+  const activeCategory = useMemo(() => {
+    const c = new URLSearchParams(search).get("category")?.trim();
+    return c || null;
+  }, [search]);
+  const activeTags = useMemo(
+    () =>
+      (new URLSearchParams(search).get("tag") ?? "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean),
+    [search],
+  );
+  const applyFilters = (category: string | null, tags: string[]) => {
+    const p = new URLSearchParams();
+    if (category) p.set("category", category);
+    if (tags.length > 0) p.set("tag", tags.join(","));
+    const qs = p.toString();
+    setLocation(qs ? `/bots?${qs}` : "/bots");
+  };
+  const toggleTag = (t: string) =>
+    applyFilters(
+      activeCategory,
+      activeTags.includes(t)
+        ? activeTags.filter((x) => x !== t)
+        : [...activeTags, t],
+    );
+
+  // Tag counts over the WHOLE fleet (not the filtered rows): a chip's
+  // number answers "how many bots carry this", stable while filtering.
+  const tagCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const b of bots ?? []) {
+      for (const t of b.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    );
+  }, [bots]);
 
   const [uploadingBotz, setUploadingBotz] = useState(false);
   const botzFileRef = useRef<HTMLInputElement | null>(null);
@@ -159,13 +217,25 @@ export default function BotsView() {
   const rows = useMemo(() => {
     const all = bots ?? [];
     const q = query.trim().toLowerCase();
-    if (!q) return all;
-    return all.filter((b) =>
-      [b.name, b.display_name ?? "", b.description ?? ""].some((s) =>
-        s.toLowerCase().includes(q),
-      ),
-    );
-  }, [bots, query]);
+    return all.filter((b) => {
+      if (
+        q &&
+        ![b.name, b.display_name ?? "", b.description ?? ""].some((s) =>
+          s.toLowerCase().includes(q),
+        )
+      ) {
+        return false;
+      }
+      if (activeCategory && (b.category ?? "") !== activeCategory) return false;
+      // Tags narrow (AND): a bot must carry every active tag.
+      if (activeTags.some((t) => !(b.tags ?? []).includes(t))) return false;
+      return true;
+    });
+  }, [bots, query, activeCategory, activeTags]);
+
+  const groups = useMemo(() => groupBotsByCategory(rows), [rows]);
+  const filtering =
+    query.trim() !== "" || activeCategory !== null || activeTags.length > 0;
 
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -207,6 +277,62 @@ export default function BotsView() {
           </span>
         )}
       </div>
+
+      {tagCounts.length > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-1"
+          role="group"
+          aria-label="Filter by tag"
+        >
+          {tagCounts.map(([tag, count]) => {
+            const on = activeTags.includes(tag);
+            return (
+              <button
+                key={tag}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggleTag(tag)}
+                className={`rounded-full border px-2 py-0.5 text-micro leading-none transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                  on
+                    ? "border-accent/60 bg-accent-soft text-fg-default"
+                    : "border-border-default bg-surface-2 text-fg-muted hover:border-border-strong hover:text-fg-default"
+                }`}
+              >
+                {tag} <span className="text-fg-subtle">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* "I want to…" — the scenario shortcuts (the taxonomy's human front
+          door). Each applies a category/tag view rather than jumping to a
+          named bot, so they work in any workspace, not just ours. Shown
+          only on the unfiltered view — once filtering, they are noise. */}
+      {!filtering && (
+        <div
+          className="flex flex-wrap items-center gap-2 text-caption text-fg-subtle"
+          role="group"
+          aria-label="I want to…"
+        >
+          <span>I want to…</span>
+          {WANT_TO.map((s) => (
+            <button
+              key={s.label}
+              type="button"
+              onClick={() =>
+                applyFilters(
+                  "category" in s ? (s.category as string) : null,
+                  "tag" in s ? [s.tag as string] : [],
+                )
+              }
+              className="rounded-md border border-border-default bg-surface-2 px-2 py-1 text-xs text-fg-default transition-colors hover:border-border-strong hover:bg-surface-3 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            >
+              {s.emoji} {s.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {botsError && (
         <InlineBanner tone="danger" title="Couldn't load bots">
@@ -268,16 +394,45 @@ export default function BotsView() {
           }
         />
       ) : (
-        <ul className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
-          {rows.map((b) => (
-            <BotCard
-              key={b.name}
-              bot={b}
-              triggerCount={triggerCounts?.[b.name] ?? 0}
-              onOpen={() => setLocation(`/bots/${encodeURIComponent(b.name)}`)}
-            />
-          ))}
-        </ul>
+        groups
+          .filter((g) => !filtering || g.bots.length > 0)
+          .map((g: { category: BotCategory; bots: BotEntryWithSchema[] }) => (
+            <section key={g.category.slug || "uncategorized"} className="flex flex-col gap-2">
+              <button
+                type="button"
+                aria-pressed={activeCategory === g.category.slug}
+                title={
+                  activeCategory === g.category.slug
+                    ? "Clear the category filter"
+                    : "Show only this category"
+                }
+                onClick={() =>
+                  applyFilters(
+                    activeCategory === g.category.slug ? null : g.category.slug || null,
+                    activeTags,
+                  )
+                }
+                className="flex items-baseline gap-2 self-start rounded text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              >
+                <h2 className="text-sm font-medium text-fg-default">
+                  {g.category.title}
+                </h2>
+                <span className="text-caption text-fg-subtle">
+                  — {g.category.tagline} · {g.bots.length}
+                </span>
+              </button>
+              <ul className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
+                {g.bots.map((b) => (
+                  <BotCard
+                    key={b.name}
+                    bot={b}
+                    triggerCount={triggerCounts?.[b.name] ?? 0}
+                    onOpen={() => setLocation(`/bots/${encodeURIComponent(b.name)}`)}
+                  />
+                ))}
+              </ul>
+            </section>
+          ))
       )}
 
       <RepoImportDialog
@@ -311,6 +466,9 @@ function BotCard({
   const enabled = bot.enabled !== false;
   const kinds = [...new Set((bot.invocations ?? []).map((i) => i.kind))];
   const presetCount = bot.presets?.entries?.length ?? 0;
+  const presetNames = (bot.presets?.entries ?? [])
+    .map((p) => p.display_name?.trim() || p.name)
+    .filter((n): n is string => Boolean(n));
   return (
     <li
       className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
@@ -354,15 +512,34 @@ function BotCard({
           <p className="text-xs italic text-fg-subtle">No description.</p>
         )}
         <div className="mt-auto flex flex-wrap items-center gap-1">
+          {(bot.tags ?? []).map((t) => (
+            <Badge key={t}>{t}</Badge>
+          ))}
           {kinds.map((k) => (
             <Badge key={k} variant="info">
               {k}
             </Badge>
           ))}
-          {presetCount > 0 && (
-            <Badge>
-              {presetCount} preset{presetCount === 1 ? "" : "s"}
-            </Badge>
+          {/* Presets are the tree's third level: name them (up to three)
+              instead of only counting — a specialization you can see is
+              one you can launch. */}
+          {presetNames.length > 0 && presetNames.length <= 3 ? (
+            presetNames.map((n) => (
+              <Badge key={n} variant="accent">
+                ◦ {n}
+              </Badge>
+            ))
+          ) : (
+            <>
+              {presetNames.length > 3 && (
+                <Badge variant="accent">◦ {presetNames[0]}</Badge>
+              )}
+              {presetCount > 0 && (
+                <Badge>
+                  {presetCount} preset{presetCount === 1 ? "" : "s"}
+                </Badge>
+              )}
+            </>
           )}
           {triggerCount > 0 && (
             <Badge variant="accent">

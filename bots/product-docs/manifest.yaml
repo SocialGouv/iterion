@@ -99,6 +99,8 @@ when_to_use: |
   developers — and the topology second: docs repo here, N source
   repos there.
 author: SocialGouv (devthejo) — product-docs/main.bot
+category: document
+tags: [docs]
 schema_version: 1
 
 triggers:

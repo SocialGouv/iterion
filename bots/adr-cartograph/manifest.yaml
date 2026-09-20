@@ -51,6 +51,8 @@ when_to_use: |
   --var rechallenge_after_days=90 to invite re-challenge on ADRs older
   than that.
 author: SocialGouv (devthejo) — adr-cartograph/main.bot
+category: document
+tags: [docs, architecture]
 schema_version: 1
 
 dispatch_vars:
