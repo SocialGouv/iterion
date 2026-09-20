@@ -82,7 +82,9 @@ export default function BotsView() {
   const { activeCategory, activeTags } = useMemo(() => {
     const p = new URLSearchParams(search);
     return {
-      activeCategory: p.get("category")?.trim() || null,
+      // Case is owned HERE, once: a shared "?category=Verify" matches the
+      // same bots as "verify" — on every consumer below.
+      activeCategory: p.get("category")?.trim().toLowerCase() || null,
       activeTags: (p.get("tag") ?? "")
         .split(",")
         .map((t) => t.trim())
@@ -373,9 +375,12 @@ export default function BotsView() {
           <Spinner /> Loading bots…
         </div>
       ) : rows.length === 0 && !botsError ? (
-        filtering ? (
-          // A full fleet behind a filter that matches nothing is a different
-          // state than an empty workspace — and it must offer the way out.
+        // The category/tag view owns its own zero state: a full fleet
+        // behind a filter that matches nothing is a different state than
+        // an empty workspace, and it must offer the way out. (Query-only
+        // zero-match keeps the search branch below — Clear filters would
+        // be a no-op there, since the query is not in the URL.)
+        activeCategory !== null || activeTags.length > 0 ? (
           <EmptyState
             title="No bots match these filters"
             message="Clear a tag or the category filter to widen the view."

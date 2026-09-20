@@ -50,9 +50,11 @@ export function groupBotsByCategory<T extends { category?: string }>(
 ): { category: BotCategory; bots: T[] }[] {
   const bySlug = new Map<string, T[]>();
   for (const b of bots) {
-    const slug = BOT_CATEGORIES.some((c) => c.slug === b.category)
-      ? (b.category as string)
-      : "";
+    // The seam owns FORM (trim + lowercase), mirroring bundle.GroupByCategory:
+    // a value produced outside the manifest loader groups like one that
+    // went through it.
+    const declared = (b.category ?? "").trim().toLowerCase();
+    const slug = BOT_CATEGORIES.some((c) => c.slug === declared) ? declared : "";
     const list = bySlug.get(slug) ?? [];
     list.push(b);
     bySlug.set(slug, list);

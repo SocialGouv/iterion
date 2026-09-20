@@ -45,6 +45,15 @@ describe("groupBotsByCategory", () => {
     expect(uncat?.bots.map((b) => b.name)).toEqual(["odd"]);
   });
 
+  it("owns FORM: an uppercase or padded slug groups with its canonical section", () => {
+    const groups = groupBotsByCategory([
+      { name: "x", category: "VERIFY" },
+      { name: "y", category: " build " },
+    ]);
+    expect(groups.find((g) => g.category.slug === "verify")?.bots.map((b) => b.name)).toEqual(["x"]);
+    expect(groups.find((g) => g.category.slug === "build")?.bots.map((b) => b.name)).toEqual(["y"]);
+  });
+
   it("keeps input order within a group", () => {
     const groups = groupBotsByCategory([
       { name: "b", category: "verify" },

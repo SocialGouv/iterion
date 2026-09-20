@@ -31,7 +31,8 @@ type BotsListOptions struct {
 
 	// Categories keeps only bots whose declared category matches one of
 	// the slugs (form-normalized like the manifest). The pseudo-slug
-	// "uncategorized" selects bots with no category. Empty = all.
+	// "uncategorized" selects the Uncategorized GROUP — bots with no
+	// category or an unknown slug. Empty = all.
 	Categories []string
 
 	// Tags keeps only bots carrying EVERY listed tag (narrowing — the

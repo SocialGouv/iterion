@@ -43,6 +43,23 @@ func TestCatalogBotsDeclareKnownCategory(t *testing.T) {
 					path, tag)
 			}
 		}
+		// The safety pair is EXCLUSIVE by definition: a run either commits
+		// into the target repo's history or it writes nothing anywhere.
+		// Both at once is a contradiction the vocabulary refuses. (Neither
+		// is legitimate for bots that never target a repository — the
+		// conversational and board-only crew.)
+		hasShips, hasReadonly := false, false
+		for _, tag := range m.Tags {
+			switch tag {
+			case "ships-code":
+				hasShips = true
+			case "read-only":
+				hasReadonly = true
+			}
+		}
+		if hasShips && hasReadonly {
+			t.Errorf("%s: carries both ships-code and read-only — the safety pair is exclusive", path)
+		}
 	}
 }
 
