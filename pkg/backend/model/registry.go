@@ -19,6 +19,7 @@ import (
 	foundryprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/foundry"
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
+	zaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/zai"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -175,6 +176,35 @@ func (r *Registry) registerDefaults() {
 			APIKey:  apiKey,
 			Model:   modelID,
 			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
+		}))
+	}
+	// z.ai: GLM models through z.ai's Anthropic-compatible endpoint, under
+	// their OWN name. The provider is claw's zai package (Anthropic wire,
+	// base https://api.z.ai/api/anthropic, account key as x-api-key). The
+	// env fallback names the key explicitly (ZAI_API_KEY) rather than
+	// borrowing the ANTHROPIC_* pair: a spec like "zai/glm-5.3" must not
+	// depend on env redirections the registry cannot see — measured in
+	// production 2026-09-19, where a run died on `unknown provider "zai"`
+	// and looped on auto-resume. ZAI_BASE_URL overrides the endpoint (the
+	// bigmodel.cn gateway answers on the same wire).
+	r.providers["zai"] = func(modelID string) (api.APIClient, error) {
+		apiKey := os.Getenv("ZAI_API_KEY")
+		if apiKey == "" {
+			return nil, fmt.Errorf("zai: no credential — set ZAI_API_KEY (or use a zai BYOK key)")
+		}
+		p := zaiprovider.New()
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: os.Getenv("ZAI_BASE_URL"),
+		}))
+	}
+	r.providersWithKey["zai"] = func(modelID, apiKey string) (api.APIClient, error) {
+		p := zaiprovider.New()
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: os.Getenv("ZAI_BASE_URL"),
 		}))
 	}
 	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
