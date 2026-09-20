@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,6 +10,32 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 )
+
+// catalogTemplates finds every catalog template the way discovery walks —
+// recursively under bots/ AND examples/ — so the snapshot/restore set
+// covers everything RegenerateWhatsNextCatalog's own write set can reach.
+func catalogTemplates(repoRoot string) ([]string, error) {
+	var templates []string
+	for _, root := range []string{"bots", "examples"} {
+		rootDir := filepath.Join(repoRoot, root)
+		walkErr := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return filepath.SkipDir // examples/ may not exist
+				}
+				return err
+			}
+			if !d.IsDir() && d.Name() == "iterion-bot-catalog-static.md" {
+				templates = append(templates, path)
+			}
+			return nil
+		})
+		if walkErr != nil && !os.IsNotExist(walkErr) {
+			return nil, walkErr
+		}
+	}
+	return templates, nil
+}
 
 // TestCommittedCatalogIsFresh fails when the committed generated catalog
 // (bots/whats-next/skills/iterion-bot-catalog.md) no longer matches what the
@@ -25,8 +52,11 @@ func TestCommittedCatalogIsFresh(t *testing.T) {
 	}
 	// Every bundle shipping the static template owns a generated catalog
 	// (whats-next, issue-triage, …) — snapshot each committed copy, regen
-	// all of them, and compare in place.
-	templates, err := filepath.Glob(filepath.Join(repoRoot, "bots", "*", "iterion-bot-catalog-static.md"))
+	// all of them, and compare in place. The snapshot set is derived the
+	// same way discovery walks (recursively under bots/ AND examples/):
+	// a template the snapshot misses is one regen rewrites without the
+	// guard ever snapshotting or restoring it.
+	templates, err := catalogTemplates(repoRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,14 +89,20 @@ func TestCommittedCatalogIsFresh(t *testing.T) {
 		}
 		regenerated[genPath] = b
 	}
-	var stale []string
+	var stale, restoreFailed []string
 	for genPath, before := range committed {
 		if writeErr := os.WriteFile(genPath, before, 0o644); writeErr != nil {
-			t.Logf("restore committed catalog %s: %v", genPath, writeErr)
+			// A restore that cannot happen re-opens the silent-dirty-tree
+			// class this guard exists to kill — loud, never a Logf.
+			restoreFailed = append(restoreFailed, fmt.Sprintf("%s: %v", genPath, writeErr))
 		}
 		if regenErr == nil && string(regenerated[genPath]) != string(before) {
 			stale = append(stale, genPath)
 		}
+	}
+	if len(restoreFailed) > 0 {
+		sort.Strings(restoreFailed)
+		t.Fatalf("could not restore the committed catalogs after regenerating: %s — the working tree may hold regenerated content; restore with `git checkout -- <paths>`", strings.Join(restoreFailed, ", "))
 	}
 	if regenErr != nil {
 		t.Fatalf("regenerate: %v", regenErr)

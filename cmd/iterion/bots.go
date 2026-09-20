@@ -249,7 +249,7 @@ the materialized .botz copy. Local Git bundle changes must be committed unless
 func init() {
 	botsListCmd.Flags().StringSlice("paths", nil, "Directories or .bot files to scan (default: bots, examples)")
 	botsListCmd.Flags().String("format", "json", "Output format: json|markdown|skill|tree")
-	botsListCmd.Flags().StringSlice("category", nil, "Keep bots in these categories (build, verify, harden, document, operate, steer, uncategorized)")
+	botsListCmd.Flags().StringSlice("category", nil, "Keep bots in these categories (build, verify, harden, document, operate, steer; or \"uncategorized\" — selects the no/unknown-category group)")
 	botsListCmd.Flags().StringSlice("tag", nil, "Keep bots carrying ALL these tags (e.g. --tag security --tag read-only)")
 	botsRegenCatalogCmd.Flags().String("workdir", "", "Workspace root to scan (default: current directory)")
 	botsCreateCmd.Flags().String("template", "blank", "Template to start from (see `iterion bots templates`)")
