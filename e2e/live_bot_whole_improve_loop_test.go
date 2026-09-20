@@ -158,7 +158,7 @@ func Multiply(a, b int) int {
 //
 // Expected duration: 30-90 min, $10-30.
 func TestLive_VibeReviewAlternating_Real(t *testing.T) {
-	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	tr := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -208,6 +208,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	t.Logf("Run finished in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tr, s, runID)
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {

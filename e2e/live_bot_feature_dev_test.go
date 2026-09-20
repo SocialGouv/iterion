@@ -137,7 +137,7 @@ func TestLive_FeatureDev(t *testing.T) {
 // Requires: claude CLI + OPENAI_API_KEY.
 // Expected duration: 20-60 min, $5-15.
 func TestLive_FeatureDev_Real(t *testing.T) {
-	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	tr := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -191,6 +191,7 @@ func TestLive_FeatureDev_Real(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	t.Logf("Run finished in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tr, s, runID)
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {

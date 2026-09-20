@@ -33,7 +33,7 @@ import (
 // reasoning. Expect 30 min – 2 h, $5–50. The bot itself caps at 12 h /
 // $100; the test context wraps at 3 h.
 func TestLive_SecuredRenovacy(t *testing.T) {
-	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	tr := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -121,6 +121,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
 	t.Logf("Run finished in %s", elapsed.Round(time.Second))
+	feedLedgerCost(t, tr, s, runID)
 
 	acceptable, reason := liveRunResultAcceptable(runErr)
 	if !acceptable {
@@ -152,7 +153,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 //
 // Expected duration: 1-3h, $20-80. Heavy — docker required.
 func TestLive_SecuredRenovacy_Real(t *testing.T) {
-	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	tr := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -235,6 +236,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	t.Logf("Run finished in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tr, s, runID)
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {
@@ -272,7 +274,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 // containing a node-ipc-related advisory) MUST fire. Failure on all
 // three means the heuristic is silently broken.
 func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
-	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	tr := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -346,6 +348,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	t.Logf("Run finished in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tr, s, runID)
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {

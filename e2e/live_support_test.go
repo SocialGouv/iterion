@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/botreplay"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -205,6 +206,22 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 		reason:       reason,
 		ledger:       tracker,
 	}
+}
+
+// feedLedgerCost prices the run into the tracker of a test that bypasses
+// runBotLive (the _Real / secured-renovacy direct-hook tests). The
+// ledger's cost column exists so "is this target worth re-running now?"
+// is answerable — and it is most expensive to answer exactly where this
+// matters. CollectMetrics failure is logged, never fatal: the row keeps
+// cost 0 rather than failing a run whose assertions held.
+func feedLedgerCost(t *testing.T, tr *liveledger.Tracker, s store.RunStore, runID string) {
+	t.Helper()
+	rm, err := benchmark.CollectMetrics(context.Background(), s, runID, "", "")
+	if err != nil {
+		t.Logf("[liveledger] CollectMetrics failed (%v) — row keeps cost 0", err)
+		return
+	}
+	tr.SetCost(rm.TotalCostUSD)
 }
 
 // deadCredentialReason reports why a run failed on an unusable credential,

@@ -38,10 +38,21 @@ func TestEveryLiveTestRecordsToTheLedger(t *testing.T) {
 	}
 	declared := declaredTestFuncs(sources)
 	hooks := bodyScopedHooks(sources)
-
+	// Live-tagged tests also exist outside e2e/ (pkg/webhooks/gitlab,
+	// bots). A target naming one must not redden as drift — the
+	// function EXISTS; it is the TARGET that would run zero tests,
+	// because every test:live target invokes `go test ./e2e/...`, and
+	// and the drift branch below words that case separately.
+	liveOutside, err := liveTaggedFuncsOutside(root, e2eDir)
+	if err != nil {
+		t.Fatalf("walk live-tagged test files outside e2e: %v", err)
+	}
 	var specific []string
 	var drifted []string
 	for _, tt := range targets {
+		// Classified against the E2E declarations only: a prefix of an
+		// outside-e2e function must stay drift-shaped (the target runs
+		// zero tests), not melt into the aggregate bucket.
 		sp, dr := classifyRunPattern(tt.RunPattern, declared)
 		specific = append(specific, sp...)
 		drifted = append(drifted, dr...)
@@ -50,10 +61,22 @@ func TestEveryLiveTestRecordsToTheLedger(t *testing.T) {
 	if len(specific) < 10 {
 		t.Fatalf("only %d target(s) named a specific test function — the Taskfile parser is probably wrong or the -run patterns changed shape", len(specific))
 	}
-	if len(drifted) > 0 {
-		sort.Strings(drifted)
+	sort.Strings(drifted)
+	var outside, driftedReal []string
+	for _, name := range drifted {
+		if liveOutside[name] {
+			outside = append(outside, name)
+			continue
+		}
+		driftedReal = append(driftedReal, name)
+	}
+	if len(outside) > 0 {
+		t.Fatalf("the following -run pattern member(s) name live-tagged test functions OUTSIDE e2e/ — test:live targets run `go test ./e2e/...`, so the target would run ZERO tests; move the test under e2e/ or point the target at the package that owns it:\n  - %s",
+			strings.Join(outside, "\n  - "))
+	}
+	if len(driftedReal) > 0 {
 		t.Fatalf("the following -run pattern member(s) name no declared test function — the target would run ZERO tests while its ledger row waits forever for a run that cannot happen:\n  - %s",
-			strings.Join(drifted, "\n  - "))
+			strings.Join(driftedReal, "\n  - "))
 	}
 
 	// The hook is a property of the TEST, not of the target: every
@@ -138,6 +161,44 @@ func declaredTestFuncs(sources map[string]string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// liveTaggedFuncsOutside walks root for _test.go files carrying the
+// `live` build tag OUTSIDE skipDir (the e2e tree the hook universe
+// covers) and collects the test functions they declare. Hidden and
+// generated trees are skipped, as TestEveryGitCallerSanitizesEnv does.
+func liveTaggedFuncsOutside(root, skipDir string) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if path == skipDir {
+				return filepath.SkipDir
+			}
+			if name != "." && (strings.HasPrefix(name, ".") || name == "vendor" || name == "studio" || name == "node_modules" || name == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(string(b), "//go:build live") {
+			return nil
+		}
+		for _, m := range funcHeaderRE.FindAllStringSubmatch(string(b), -1) {
+			out[m[1]] = true
+		}
+		return nil
+	})
+	return out, err
 }
 
 // bodyScopedHooks parses every source file and reports, per function,
@@ -295,5 +356,47 @@ func TestLive_ViaHarness(t *testing.T) {
 	}
 	if !hooks["TestLive_ViaHarness"] {
 		t.Fatal("runBotLive in the body was not seen")
+	}
+}
+
+// The repo-wide lookup behind the drift check: live-tagged functions
+// outside e2e/ are FOUND (no false drift), non-live files are not, and
+// the skipped trees are skipped.
+func TestLiveTaggedFuncsOutside(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, src string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("pkg/webhooks/gitlab/client_live_test.go", "//go:build live\n\npackage gitlab\n\nfunc TestLive_GitlabClient(t *testing.T) {}\n")
+	// A live-tagged file whose NAME carries no "live": kills the
+	// filter-by-filename mutant.
+	write("pkg/a/thing_test.go", "//go:build live\n\npackage a\n\nfunc TestLive_UnnamedFile(t *testing.T) {}\n")
+	// A build tag WITHOUT live: kills the any-"//go:build" mutant.
+	write("pkg/webhooks/integration_x_test.go", "//go:build integration\n\npackage webhooks\n\nfunc TestLive_IntegrationOnly(t *testing.T) {}\n")
+	write("pkg/webhooks/plain_test.go", "package webhooks\n\nfunc TestLive_NotLiveTagged(t *testing.T) {}\n")
+	write("e2e/inner_live_test.go", "//go:build live\n\npackage e2e\n\nfunc TestLive_InsideE2E(t *testing.T) {}\n")
+	write("vendor/example/x_live_test.go", "//go:build live\n\npackage x\n\nfunc TestLive_Vendored(t *testing.T) {}\n")
+
+	got, err := liveTaggedFuncsOutside(root, filepath.Join(root, "e2e"))
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if !got["TestLive_GitlabClient"] || !got["TestLive_UnnamedFile"] {
+		t.Fatalf("live-tagged functions outside e2e not found: %v", got)
+	}
+	if got["TestLive_NotLiveTagged"] || got["TestLive_IntegrationOnly"] {
+		t.Fatal("a file without the live build tag leaked into the live set")
+	}
+	if got["TestLive_InsideE2E"] {
+		t.Fatal("the e2e tree must be skipped — it is the hook universe's own source")
+	}
+	if got["TestLive_Vendored"] {
+		t.Fatal("vendored trees must be skipped")
 	}
 }
