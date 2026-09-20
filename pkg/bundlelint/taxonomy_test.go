@@ -28,19 +28,19 @@ func TestCheckBotTaxonomy_WarnsOnUnknownCategoryAndTags(t *testing.T) {
 		}
 	}
 	if cat == nil {
-		t.Fatalf("no C240 for unknown category %q; got %+v", m.Category, diags)
+		t.Fatalf("no C270 for unknown category %q; got %+v", m.Category, diags)
 	}
 	if cat.Severity != SeverityWarning {
-		t.Errorf("C240 severity = %v, want warning (an unknown choice is never a rejection)", cat.Severity)
+		t.Errorf("C270 severity = %v, want warning (an unknown choice is never a rejection)", cat.Severity)
 	}
 	if !strings.Contains(cat.Hint, "build") || !strings.Contains(cat.Hint, "steer") {
-		t.Errorf("C240 hint = %q, want it to name the known slugs", cat.Hint)
+		t.Errorf("C270 hint = %q, want it to name the known slugs", cat.Hint)
 	}
 	if tag == nil {
-		t.Fatalf("no C241 for unknown tag; got %+v", diags)
+		t.Fatalf("no C271 for unknown tag; got %+v", diags)
 	}
 	if tag.Severity != SeverityWarning {
-		t.Errorf("C241 severity = %v, want warning", tag.Severity)
+		t.Errorf("C271 severity = %v, want warning", tag.Severity)
 	}
 	// The known tag must NOT be flagged: one warning per unknown tag only.
 	for _, d := range diags {

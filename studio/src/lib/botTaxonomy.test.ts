@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   BOT_CATEGORIES,
   groupBotsByCategory,
-  KNOWN_BOT_TAGS,
+  presetDisplayName,
 } from "@/lib/botTaxonomy";
 
 describe("groupBotsByCategory", () => {
@@ -73,10 +73,9 @@ describe("the vocabulary contract", () => {
     }
   });
 
-  it("has no duplicate or malformed tags", () => {
-    expect(new Set(KNOWN_BOT_TAGS).size).toBe(KNOWN_BOT_TAGS.length);
-    for (const t of KNOWN_BOT_TAGS) {
-      expect(t).toMatch(/^[a-z0-9-]+$/);
-    }
+  it("falls back from display_name to the preset name", () => {
+    expect(presetDisplayName({ display_name: "  Strict  ", name: "strict" })).toBe("Strict");
+    expect(presetDisplayName({ display_name: "   ", name: "strict" })).toBe("strict");
+    expect(presetDisplayName({ name: "strict" })).toBe("strict");
   });
 });

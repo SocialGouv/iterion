@@ -1405,7 +1405,7 @@ destructive board changes.
 - **Vars**: `initial_message` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/whats-next/main.bot`
 
-### Uncategorized — no category declared — visible, never hidden
+### Uncategorized — visible, never hidden
 
 ### `heartbeat` — Heartbeat (always-on demo)
 

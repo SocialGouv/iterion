@@ -332,15 +332,25 @@ func (l *LaunchHints) normalized() *LaunchHints {
 // normalizeNameList trims each entry, drops empties, and dedupes
 // keeping first-occurrence order. Returns nil when nothing survives.
 func normalizeNameList(names []string) []string {
+	return normalizeStringList(names, false)
+}
+
+// normalizeStringList is the shared list normalizer: trim, optionally
+// lowercase, drop empties, dedupe keeping first occurrence. Nil when
+// nothing survives.
+func normalizeStringList(values []string, lower bool) []string {
 	var out []string
-	seen := make(map[string]bool, len(names))
-	for _, n := range names {
-		n = strings.TrimSpace(n)
-		if n == "" || seen[n] {
+	seen := make(map[string]bool, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if lower {
+			v = strings.ToLower(v)
+		}
+		if v == "" || seen[v] {
 			continue
 		}
-		seen[n] = true
-		out = append(out, n)
+		seen[v] = true
+		out = append(out, v)
 	}
 	return out
 }

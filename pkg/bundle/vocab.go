@@ -1,6 +1,9 @@
 package bundle
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // BotCategory is one entry of the CLOSED vocabulary a bot's manifest
 // `category:` may declare — the spine of every bot navigation surface
@@ -36,6 +39,53 @@ var BotCategories = []BotCategory{
 // unclassified bot stays visible, never hidden.
 const UncategorizedSlug = ""
 
+// UncategorizedCategory is the display metadata of that trailing group —
+// declared HERE, next to the closed set, so no renderer re-authors the
+// title or tagline (the drift this replaces shipped once already).
+var UncategorizedCategory = BotCategory{
+	Slug:    UncategorizedSlug,
+	Title:   "Uncategorized",
+	Tagline: "visible, never hidden",
+}
+
+// CategoryGroup is one category section of a grouped view: the entries
+// whose declared category matches Category.Slug, in input order.
+type CategoryGroup[T any] struct {
+	Category BotCategory
+	Bots     []T
+}
+
+// GroupByCategory buckets entries into the canonical category order
+// (BotCategories) with the Uncategorized group appended last. Every group
+// is returned — an empty canonical category is a landmark worth keeping;
+// the renderer decides whether to print it (a routing document skips
+// empties, fixed-landmark UIs show them). This is the ONE grouping
+// implementation: display surfaces consume it with a one-line accessor,
+// they never re-derive the order or the placement.
+func GroupByCategory[T any](entries []T, categoryOf func(T) string) []CategoryGroup[T] {
+	groups := make([]CategoryGroup[T], 0, len(BotCategories)+1)
+	for _, c := range BotCategories {
+		groups = append(groups, CategoryGroup[T]{Category: c})
+	}
+	groups = append(groups, CategoryGroup[T]{Category: UncategorizedCategory})
+	for _, e := range entries {
+		category := categoryOf(e)
+		placed := false
+		for i := range BotCategories {
+			if category == BotCategories[i].Slug {
+				groups[i].Bots = append(groups[i].Bots, e)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			last := len(groups) - 1
+			groups[last].Bots = append(groups[last].Bots, e)
+		}
+	}
+	return groups
+}
+
 // BotCategoryBySlug returns the category with the given slug.
 func BotCategoryBySlug(slug string) (BotCategory, bool) {
 	for _, c := range BotCategories {
@@ -48,12 +98,7 @@ func BotCategoryBySlug(slug string) (BotCategory, bool) {
 
 // IsKnownBotTag reports whether the tag is in the curated seed.
 func IsKnownBotTag(tag string) bool {
-	for _, t := range KnownBotTags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(KnownBotTags, tag)
 }
 
 // KnownBotTagsJoined joins the curated seed for lint messages.
@@ -70,6 +115,16 @@ func KnownBotCategorySlugs() string {
 	return strings.Join(slugs, ", ")
 }
 
+// NormalizeBotCategory is the form normalization applied to a declared
+// category AND to a `--category` filter value — one function so both
+// always meet in the same form.
+func NormalizeBotCategory(c string) string { return normalizeBotCategory(c) }
+
+// NormalizeBotTagList is normalizeBotTagList exported for filter values;
+// its dedupe is harmless on filter input (a repeated --tag narrows the
+// same way).
+func NormalizeBotTagList(tags []string) []string { return normalizeBotTagList(tags) }
+
 // normalizeBotCategory normalizes the FORM of a declared category
 // (trim + lowercase) without touching its VALUE: an unknown slug stays
 // declared, visibly, for lint and the Uncategorized group to name.
@@ -81,17 +136,7 @@ func normalizeBotCategory(c string) string {
 // dedupes keeping first-occurrence order. Returns nil when nothing
 // survives, so an effectively-empty tag list serialises as absent.
 func normalizeBotTagList(tags []string) []string {
-	var out []string
-	seen := make(map[string]bool, len(tags))
-	for _, t := range tags {
-		t = strings.ToLower(strings.TrimSpace(t))
-		if t == "" || seen[t] {
-			continue
-		}
-		seen[t] = true
-		out = append(out, t)
-	}
-	return out
+	return normalizeStringList(tags, true)
 }
 
 // KnownBotTags is the curated seed of the OPEN tag vocabulary a bot's

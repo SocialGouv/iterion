@@ -296,7 +296,7 @@ func CheckConsistency(in Input) []Diag {
 }
 
 // checkBotTaxonomy holds the manifest's declared category and tags against
-// the navigation vocabulary (C240, C241). Warnings only: an unknown value
+// the navigation vocabulary (C270, C271). Warnings only: an unknown value
 // stays declared and the bot stays visible — the check names the known set
 // so the fix is a one-glance edit, never a silent rewrite.
 func checkBotTaxonomy(diags *[]Diag, m *bundle.Manifest) {

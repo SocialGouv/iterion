@@ -29,7 +29,11 @@ import {
 } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { botVisual } from "@/lib/personas";
-import { groupBotsByCategory, type BotCategory } from "@/lib/botTaxonomy";
+import {
+  groupBotsByCategory,
+  presetDisplayName,
+  type BotCategory,
+} from "@/lib/botTaxonomy";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
@@ -43,11 +47,7 @@ import { useUIStore } from "@/store/ui";
 // The curated scenario shortcuts — the taxonomy's human front door. They
 // apply a category/tag VIEW rather than jumping to a named bot, so they
 // resolve in any workspace, not just ours.
-type WantTo = { label: string; emoji: string } & (
-  | { category: string }
-  | { tag: string }
-);
-const WANT_TO: WantTo[] = [
+const WANT_TO: { label: string; emoji: string; category?: string; tag?: string }[] = [
   { label: "Ship a feature", emoji: "🚢", category: "build" },
   { label: "Audit my repo", emoji: "🛡️", tag: "security" },
   { label: "Modernize", emoji: "⬆️", tag: "upgrade" },
@@ -78,18 +78,16 @@ export default function BotsView() {
   // — tags comma-listed), so a "view by tag" is a shareable link, not a
   // local toggle. wouter's useSearch reports the raw query string.
   const search = useSearch();
-  const activeCategory = useMemo(() => {
-    const c = new URLSearchParams(search).get("category")?.trim();
-    return c || null;
-  }, [search]);
-  const activeTags = useMemo(
-    () =>
-      (new URLSearchParams(search).get("tag") ?? "")
+  const { activeCategory, activeTags } = useMemo(() => {
+    const p = new URLSearchParams(search);
+    return {
+      activeCategory: p.get("category")?.trim() || null,
+      activeTags: (p.get("tag") ?? "")
         .split(",")
         .map((t) => t.trim())
         .filter(Boolean),
-    [search],
-  );
+    };
+  }, [search]);
   const applyFilters = (category: string | null, tags: string[]) => {
     const p = new URLSearchParams();
     if (category) p.set("category", category);
@@ -321,10 +319,7 @@ export default function BotsView() {
               key={s.label}
               type="button"
               onClick={() =>
-                applyFilters(
-                  "category" in s ? (s.category as string) : null,
-                  "tag" in s ? [s.tag as string] : [],
-                )
+                applyFilters(s.category ?? null, s.tag ? [s.tag] : [])
               }
               className="rounded-md border border-border-default bg-surface-2 px-2 py-1 text-xs text-fg-default transition-colors hover:border-border-strong hover:bg-surface-3 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             >
@@ -466,9 +461,7 @@ function BotCard({
   const enabled = bot.enabled !== false;
   const kinds = [...new Set((bot.invocations ?? []).map((i) => i.kind))];
   const presetCount = bot.presets?.entries?.length ?? 0;
-  const presetNames = (bot.presets?.entries ?? [])
-    .map((p) => p.display_name?.trim() || p.name)
-    .filter((n): n is string => Boolean(n));
+  const presetNames = (bot.presets?.entries ?? []).map(presetDisplayName);
   return (
     <li
       className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
@@ -523,23 +516,15 @@ function BotCard({
           {/* Presets are the tree's third level: name them (up to three)
               instead of only counting — a specialization you can see is
               one you can launch. */}
-          {presetNames.length > 0 && presetNames.length <= 3 ? (
-            presetNames.map((n) => (
-              <Badge key={n} variant="accent">
-                ◦ {n}
-              </Badge>
-            ))
-          ) : (
-            <>
-              {presetNames.length > 3 && (
-                <Badge variant="accent">◦ {presetNames[0]}</Badge>
-              )}
-              {presetCount > 0 && (
-                <Badge>
-                  {presetCount} preset{presetCount === 1 ? "" : "s"}
-                </Badge>
-              )}
-            </>
+          {presetNames.slice(0, presetCount > 3 ? 1 : 3).map((n) => (
+            <Badge key={n} variant="accent">
+              ◦ {n}
+            </Badge>
+          ))}
+          {presetCount > 3 && (
+            <Badge>
+              {presetCount} preset{presetCount === 1 ? "" : "s"}
+            </Badge>
           )}
           {triggerCount > 0 && (
             <Badge variant="accent">

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -60,7 +61,7 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 			return err
 		}
 		warnDiscoveryErrors(opts.ErrW, diags)
-		entries = filterBots(entries, opts.Categories, opts.Tags)
+		entries = filterByTaxonomy(entries, func(e BotEntry) botregistry.Entry { return e }, opts.Categories, opts.Tags)
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(entries)
@@ -70,7 +71,7 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 			return err
 		}
 		warnDiscoveryErrors(opts.ErrW, diags)
-		return renderBotsMarkdown(w, filterBots(entries, opts.Categories, opts.Tags))
+		return renderBotsMarkdown(w, filterByTaxonomy(entries, func(e BotEntry) botregistry.Entry { return e }, opts.Categories, opts.Tags))
 	case "skill":
 		// The skill catalog wants the per-bot vars too, so use the
 		// schema-augmented list and the shared catalog renderer (the same
@@ -81,89 +82,49 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 			return err
 		}
 		warnDiscoveryErrors(opts.ErrW, diags)
-		return renderBotsSkill(w, filterSchemaBots(entries, opts.Categories, opts.Tags))
+		return renderBotsSkill(w, filterByTaxonomy(entries, func(e botregistry.EntryWithSchema) botregistry.Entry { return e.Entry }, opts.Categories, opts.Tags))
 	case "tree":
 		entries, diags, err := botregistry.ListWithSchemaDiagnostics(botregistry.ListOptions{Paths: opts.Paths})
 		if err != nil {
 			return err
 		}
 		warnDiscoveryErrors(opts.ErrW, diags)
-		return renderBotsTree(w, filterSchemaBots(entries, opts.Categories, opts.Tags))
+		return renderBotsTree(w, filterByTaxonomy(entries, func(e botregistry.EntryWithSchema) botregistry.Entry { return e.Entry }, opts.Categories, opts.Tags))
 	default:
 		return fmt.Errorf("bots: unknown format %q (json|markdown|skill|tree)", opts.Format)
 	}
 }
 
-// normalizedTaxonomyFilters form-normalizes the CLI's --category/--tag
-// values the same way the manifest loader normalizes declarations, so
-// `--category Verify` matches `category: verify`.
-func normalizedTaxonomyFilters(values []string) []string {
-	var out []string
-	for _, v := range values {
-		if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-// filterBots applies the taxonomy filters to a plain entry list.
-func filterBots(entries []BotEntry, categories, tags []string) []BotEntry {
-	categories = normalizedTaxonomyFilters(categories)
-	tags = normalizedTaxonomyFilters(tags)
+// filterByTaxonomy applies the taxonomy filters to any entry list. One
+// implementation over an accessor: BotEntry and botregistry.Entry are the
+// same type (alias), EntryWithSchema embeds it — the accessor is a
+// one-liner either way.
+func filterByTaxonomy[T any](entries []T, entryOf func(T) botregistry.Entry, categories, tags []string) []T {
+	categories = bundle.NormalizeBotTagList(categories) // trim + lowercase + dedup — the declared form
+	tags = bundle.NormalizeBotTagList(tags)
 	if len(categories) == 0 && len(tags) == 0 {
 		return entries
 	}
-	out := make([]BotEntry, 0, len(entries))
+	out := make([]T, 0, len(entries))
 	for _, e := range entries {
-		if botMatchesTaxonomy(e, categories, tags) {
+		if botMatchesTaxonomy(entryOf(e), categories, tags) {
 			out = append(out, e)
 		}
 	}
 	return out
 }
 
-// filterSchemaBots is filterBots over the schema-augmented list.
-func filterSchemaBots(entries []botregistry.EntryWithSchema, categories, tags []string) []botregistry.EntryWithSchema {
-	categories = normalizedTaxonomyFilters(categories)
-	tags = normalizedTaxonomyFilters(tags)
-	if len(categories) == 0 && len(tags) == 0 {
-		return entries
-	}
-	out := make([]botregistry.EntryWithSchema, 0, len(entries))
-	for _, e := range entries {
-		if botMatchesTaxonomy(e.Entry, categories, tags) {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-// botMatchesTaxonomy reports whether one bot passes the filters: any
+// botMatchesTaxonomy reports whether one bot passes the filters: ANY
 // requested category (the pseudo-slug "uncategorized" matches an empty
-// declared category) and every requested tag.
+// declared category) and EVERY requested tag.
 func botMatchesTaxonomy(e botregistry.Entry, categories, tags []string) bool {
-	for _, c := range categories {
-		if c == "uncategorized" {
-			if e.Category == "" {
-				continue
-			}
-			return false
-		}
-		if e.Category == c {
-			continue
-		}
+	if len(categories) > 0 && !slices.ContainsFunc(categories, func(c string) bool {
+		return e.Category == c || (c == "uncategorized" && e.Category == "")
+	}) {
 		return false
 	}
 	for _, t := range tags {
-		found := false
-		for _, bt := range e.Tags {
-			if bt == t {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(e.Tags, t) {
 			return false
 		}
 	}
@@ -199,12 +160,12 @@ func BotsRegenCatalog(workdir string) (string, error) {
 func renderBotsMarkdown(w io.Writer, entries []BotEntry) error {
 	fmt.Fprintln(w, "# Bots")
 	fmt.Fprintln(w)
-	for _, group := range groupBotsForDisplay(entries) {
-		if len(group.bots) == 0 {
+	for _, group := range bundle.GroupByCategory(entries, func(e BotEntry) string { return e.Category }) {
+		if len(group.Bots) == 0 {
 			continue
 		}
-		fmt.Fprintf(w, "## %s — %s\n\n", group.title, group.tagline)
-		for _, e := range group.bots {
+		fmt.Fprintf(w, "## %s — %s\n\n", group.Category.Title, group.Category.Tagline)
+		for _, e := range group.Bots {
 			if e.DisplayName != "" {
 				fmt.Fprintf(w, "### %s · `%s`\n\n", e.DisplayName, e.Name)
 			} else {
@@ -214,9 +175,6 @@ func renderBotsMarkdown(w io.Writer, entries []BotEntry) error {
 				fmt.Fprintf(w, "%s\n\n", e.Description)
 			}
 			fmt.Fprintf(w, "- Path: `%s`\n", e.Path)
-			if e.Category != "" {
-				fmt.Fprintf(w, "- Category: %s\n", e.Category)
-			}
 			if len(e.Tags) > 0 {
 				fmt.Fprintf(w, "- Tags: %s\n", strings.Join(e.Tags, ", "))
 			}
@@ -238,9 +196,9 @@ func renderBotsMarkdown(w io.Writer, entries []BotEntry) error {
 // level — the bot's presets as named leaves. This is the "what exists"
 // view: one screen answering the whole shape of the fleet.
 func renderBotsTree(w io.Writer, entries []botregistry.EntryWithSchema) error {
-	for _, group := range groupSchemaBotsForDisplay(entries) {
-		fmt.Fprintf(w, "%s — %s (%d)\n", group.title, group.tagline, len(group.bots))
-		for _, e := range group.bots {
+	for _, group := range bundle.GroupByCategory(entries, func(e botregistry.EntryWithSchema) string { return e.Category }) {
+		fmt.Fprintf(w, "%s — %s (%d)\n", group.Category.Title, group.Category.Tagline, len(group.Bots))
+		for _, e := range group.Bots {
 			icon := strings.TrimSpace(e.Icon)
 			label := e.DisplayName
 			if strings.TrimSpace(label) == "" {
@@ -272,74 +230,6 @@ func presetNames(e botregistry.EntryWithSchema) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-// botDisplayGroup is one category section shared by the tree and markdown
-// renderers.
-type botDisplayGroup struct {
-	title   string
-	tagline string
-	bots    []BotEntry
-}
-
-// groupBotsForDisplay buckets bots into canonical category order with the
-// Uncategorized group last. Groups are returned populated or not — the
-// renderer decides whether an empty category is a landmark worth a line.
-func groupBotsForDisplay(entries []BotEntry) []botDisplayGroup {
-	groups := make([]botDisplayGroup, 0, len(bundle.BotCategories)+1)
-	for _, c := range bundle.BotCategories {
-		groups = append(groups, botDisplayGroup{title: c.Title, tagline: c.Tagline})
-	}
-	groups = append(groups, botDisplayGroup{title: "Uncategorized", tagline: "visible, never hidden"})
-	for _, e := range entries {
-		placeBySlug(groups, e)
-	}
-	return groups
-}
-
-// placeBySlug appends e to the group whose slug matches e.Category, or to
-// the trailing Uncategorized group.
-func placeBySlug(groups []botDisplayGroup, e BotEntry) {
-	for i := range bundle.BotCategories {
-		if e.Category == bundle.BotCategories[i].Slug {
-			groups[i].bots = append(groups[i].bots, e)
-			return
-		}
-	}
-	last := len(groups) - 1
-	groups[last].bots = append(groups[last].bots, e)
-}
-
-// schemaDisplayGroup is botDisplayGroup over the schema-augmented entries
-// (the tree needs presets).
-type schemaDisplayGroup struct {
-	title   string
-	tagline string
-	bots    []botregistry.EntryWithSchema
-}
-
-// groupSchemaBotsForDisplay is groupBotsForDisplay over EntryWithSchema.
-func groupSchemaBotsForDisplay(entries []botregistry.EntryWithSchema) []schemaDisplayGroup {
-	groups := make([]schemaDisplayGroup, 0, len(bundle.BotCategories)+1)
-	for _, c := range bundle.BotCategories {
-		groups = append(groups, schemaDisplayGroup{title: c.Title, tagline: c.Tagline})
-	}
-	groups = append(groups, schemaDisplayGroup{title: "Uncategorized", tagline: "visible, never hidden"})
-	for _, e := range entries {
-		placed := false
-		for i := range bundle.BotCategories {
-			if e.Category == bundle.BotCategories[i].Slug {
-				groups[i].bots = append(groups[i].bots, e)
-				placed = true
-				break
-			}
-		}
-		if !placed {
-			last := len(groups) - 1
-			groups[last].bots = append(groups[last].bots, e)
-		}
-	}
-	return groups
 }
 
 // renderBotsSkill emits a self-contained SKILL.md catalog: the standard

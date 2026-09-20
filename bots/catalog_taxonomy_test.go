@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -14,7 +13,7 @@ import (
 // navigation spine: every shipped bot manifest declares a category from
 // the closed six-slug set, and every declared tag is in the curated seed.
 // The bundlelint consistency gate next door already reddens UNKNOWN
-// values (C240/C241 surface as warnings there); this test closes the
+// values (C270/C271 surface as warnings there); this test closes the
 // ABSENT-category hole — a shipped bot silently drifting to Uncategorized
 // is a catalog regression, not a legitimate state.
 func TestCatalogBotsDeclareKnownCategory(t *testing.T) {
@@ -50,7 +49,9 @@ func TestCatalogBotsDeclareKnownCategory(t *testing.T) {
 // TestBotTaxonomyVocabularyParity holds the studio's TS mirror of the
 // navigation vocabulary to the Go source of truth (pkg/bundle/vocab.go).
 // The mirror drives display order on every studio surface; two
-// hand-synced copies without a guard drift in silence.
+// hand-synced copies without a guard drift in silence. Only the
+// CATEGORIES are mirrored — the tag seed's consumers are Go-only, so a
+// TS copy would be a third source with no reader.
 func TestBotTaxonomyVocabularyParity(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "studio", "src", "lib", "botTaxonomy.ts"))
 	if err != nil {
@@ -67,37 +68,4 @@ func TestBotTaxonomyVocabularyParity(t *testing.T) {
 			t.Errorf("mirror category[%d] = %q, want %q (canonical ORDER is part of the contract)", i, m[1], bundle.BotCategories[i].Slug)
 		}
 	}
-
-	tags := regexp.MustCompile(`"([a-z0-9-]+)"`).FindAllStringSubmatch(tagsBlock(t, src), -1)
-	if len(tags) != len(bundle.KnownBotTags) {
-		t.Fatalf("studio mirror declares %d tags, Go declares %d", len(tags), len(bundle.KnownBotTags))
-	}
-	for i, m := range tags {
-		if m[1] != bundle.KnownBotTags[i] {
-			t.Errorf("mirror tag[%d] = %q, want %q", i, m[1], bundle.KnownBotTags[i])
-		}
-	}
-}
-
-// tagsBlock extracts the KNOWN_BOT_TAGS array literal so the tag regex
-// cannot match slugs or titles elsewhere in the file.
-func tagsBlock(t *testing.T, src string) string {
-	t.Helper()
-	start := strings.Index(src, "KNOWN_BOT_TAGS")
-	if start < 0 {
-		t.Fatal("mirror does not declare KNOWN_BOT_TAGS")
-	}
-	// The type annotation (`readonly string[]`) also brackets — start at
-	// the `=` so the located `[ … ]` is the literal, not the type.
-	eq := strings.Index(src[start:], "=")
-	if eq < 0 {
-		t.Fatal("KNOWN_BOT_TAGS declaration has no initializer")
-	}
-	rest := src[start+eq:]
-	open := strings.Index(rest, "[")
-	close := strings.Index(rest, "]")
-	if open < 0 || close < open {
-		t.Fatal("KNOWN_BOT_TAGS array literal not found")
-	}
-	return rest[open : close+1]
 }

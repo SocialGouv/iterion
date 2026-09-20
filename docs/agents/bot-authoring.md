@@ -127,7 +127,7 @@ decide) and is part of the contract — every grouped surface renders it in
 this order. Adding a seventh slug is a **product decision** documented
 here and in the vocabulary file, never an opportunistic manifest edit.
 An unknown value is never rejected or rewritten: the bot lands in the
-visible **Uncategorized** group, last, and bundlelint emits C240 (a
+visible **Uncategorized** group, last, and bundlelint emits C270 (a
 warning) naming the known slugs. Absence is different: a SHIPPED bot
 without a category is a catalog regression —
 `bots/catalog_taxonomy_test.go` fails the build on it.
@@ -138,7 +138,7 @@ without a category is a catalog regression —
 categories; `iterion bots list --tag a --tag b` ANDs them, the studio
 chips narrow the gallery, and `?tag=…` on `/bots` is a shareable view.
 Governance is the label-vocabulary lesson: **reuse before inventing**.
-An unseeded tag stays declared (never a load error) and emits C241
+An unseeded tag stays declared (never a load error) and emits C271
 (warning) — but the shipped-catalog consistency gate
 (`bots/bundle_consistency_test.go`) holds the fleet to zero warnings, so
 a new tag on a catalog bot means seeding `vocab.go` in the same change.

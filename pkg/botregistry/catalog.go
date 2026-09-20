@@ -67,53 +67,17 @@ func RenderCatalogBlock(entries []EntryWithSchema, selfName, workdir string) str
 		}
 	}
 	b.WriteString("\n## Bot reference\n")
-	for _, group := range groupByCategory(enabled) {
-		if len(group.bots) == 0 {
+	for _, group := range bundle.GroupByCategory(enabled, func(e EntryWithSchema) string { return e.Category }) {
+		if len(group.Bots) == 0 {
 			continue // an empty category is noise in a routing document
 		}
-		fmt.Fprintf(&b, "\n### %s — %s\n", group.title, group.tagline)
-		for _, e := range group.bots {
+		fmt.Fprintf(&b, "\n### %s — %s\n", group.Category.Title, group.Category.Tagline)
+		for _, e := range group.Bots {
 			b.WriteString("\n")
 			renderCatalogCard(&b, e, workdir)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-// catalogGroup is one category section of the reference: the bots whose
-// declared category matches, in name order.
-type catalogGroup struct {
-	slug    string
-	title   string
-	tagline string
-	bots    []EntryWithSchema
-}
-
-// groupByCategory buckets enabled bots into the canonical category order
-// (bundle.BotCategories) with an Uncategorized group — titled, never
-// hidden — appended last. Empty groups are kept in the result; the
-// renderer decides whether to print them (the routing document skips
-// them, fixed-landmark UIs show them).
-func groupByCategory(entries []EntryWithSchema) []catalogGroup {
-	groups := make([]catalogGroup, 0, len(bundle.BotCategories)+1)
-	for _, c := range bundle.BotCategories {
-		groups = append(groups, catalogGroup{slug: c.Slug, title: c.Title, tagline: c.Tagline})
-	}
-	groups = append(groups, catalogGroup{
-		title:   "Uncategorized",
-		tagline: "no category declared — visible, never hidden",
-	})
-	for _, e := range entries {
-		idx := len(groups) - 1
-		for i := range bundle.BotCategories {
-			if e.Category == groups[i].slug {
-				idx = i
-				break
-			}
-		}
-		groups[idx].bots = append(groups[idx].bots, e)
-	}
-	return groups
 }
 
 // renderCatalogCard writes one bot's reference card.

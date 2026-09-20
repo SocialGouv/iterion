@@ -136,7 +136,7 @@ export function BotCatalogDialog({
     setLocation(`/integrations?tab=forges&bot=${encodeURIComponent(botName)}`);
   };
 
-  const rows = bots ?? [];
+  const rows = useMemo(() => bots ?? [], [bots]);
   // Grouped like the gallery — the manager reads by department ("where is
   // my verify crew?"), not alphabetically across the whole fleet.
   const groups = useMemo(() => groupBotsByCategory(rows), [rows]);

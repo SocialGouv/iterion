@@ -1,10 +1,12 @@
 /**
- * The bot navigation vocabulary — studio-side mirror of the Go source of
- * truth in pkg/bundle/vocab.go (BotCategories + KnownBotTags). A Go test
- * (bots/catalog_taxonomy_test.go) asserts slug/tag parity AND order; edit
- * both together. The category set is CLOSED: a seventh slug is a product
- * decision, not an opportunistic edit. The tag seed is OPEN: reusing an
- * existing tag beats inventing one (the label-vocabulary lesson).
+ * The bot navigation vocabulary — studio-side mirror of the CATEGORIES in
+ * pkg/bundle/vocab.go (BotCategories). A Go test (bots/catalog_taxonomy_test.go)
+ * asserts slug parity AND order; edit both together. The category set is
+ * CLOSED: a seventh slug is a product decision, not an opportunistic edit.
+ * The tag seed is deliberately NOT mirrored — its only consumers are
+ * Go-side (the C271 lint hint, the fleet gate); when a second studio
+ * consumer needs it, serve the vocabulary from the API instead of
+ * re-creating a third copy.
  */
 export interface BotCategory {
   slug: string;
@@ -31,32 +33,14 @@ export const UNCATEGORIZED = {
   tagline: "visible, never hidden",
 } satisfies BotCategory;
 
-export const KNOWN_BOT_TAGS: readonly string[] = [
-  "ships-code",
-  "read-only",
-  "code-review",
-  "security",
-  "supply-chain",
-  "deps",
-  "upgrade",
-  "docs",
-  "tests",
-  "a11y",
-  "observability",
-  "architecture",
-  "strategy",
-  "planning",
-  "conversational",
-  "scheduled",
-  "board",
-  "deploy",
-  "env",
-  "tooling",
-  "git",
-  "triage",
-  "human-in-the-loop",
-  "programme",
-];
+/**
+ * The display name of a preset: its trimmed display_name, else its name —
+ * the one place this rule lives (the gallery card and the presets card
+ * both render it).
+ */
+export function presetDisplayName(p: { display_name?: string; name: string }): string {
+  return p.display_name?.trim() || p.name;
+}
 
 // groupBotsByCategory buckets bots into canonical category order with the
 // Uncategorized group last. All six categories are returned (stable

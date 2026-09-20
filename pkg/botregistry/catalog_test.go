@@ -67,7 +67,7 @@ func TestRenderCatalogBlock_GroupsByCategoryUncategorizedLast(t *testing.T) {
 	buildAt := strings.Index(block, "### Build — ship new capability")
 	verifyAt := strings.Index(block, "### Verify — judge the code, touch nothing")
 	steerAt := strings.Index(block, "### Steer — judge the direction, converse")
-	uncatAt := strings.Index(block, "### Uncategorized — no category declared — visible, never hidden")
+	uncatAt := strings.Index(block, "### Uncategorized — visible, never hidden")
 	if buildAt < 0 || verifyAt < 0 || steerAt < 0 || uncatAt < 0 {
 		t.Fatalf("missing a group heading\n---\n%s", block)
 	}
