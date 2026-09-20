@@ -186,7 +186,7 @@ when_to_use: |
   Renovacy / secured-renovacy).
 author: SocialGouv (devthejo) — bots/dep-update-guard/main.bot
 category: harden
-tags: [deps, security]
+tags: [deps, security, ships-code]
 schema_version: 1
 
 dispatch_vars:

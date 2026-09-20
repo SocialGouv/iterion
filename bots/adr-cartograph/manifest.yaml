@@ -52,7 +52,7 @@ when_to_use: |
   than that.
 author: SocialGouv (devthejo) — adr-cartograph/main.bot
 category: document
-tags: [docs, architecture]
+tags: [docs, architecture, ships-code]
 schema_version: 1
 
 dispatch_vars:

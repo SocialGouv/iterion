@@ -477,7 +477,7 @@ before it lands).
   build/test/e2e reproducibly), or when its toolchain drifted from what the
   code now needs (new language, runtime bump, added e2e). Produces a pinned
   `devbox.json` + `devbox.lock`; it does not change source.
-- **Tags**: env, tooling
+- **Tags**: env, tooling, ships-code
 - **Vars**: `workspace_dir` (string)
 - **Path**: `bots/devbox-setup/main.bot`
 
@@ -713,7 +713,7 @@ packages.jsonl` for host-wide cross-repo dedup.
   default; pass scope_mode=full for a whole-tree audit. Reports back on
   the forge and the board; does not fix. For a CVE-focused gate use the
   companion bot supply-shield-cve (Vulny).
-- **Tags**: security, supply-chain
+- **Tags**: security, supply-chain, read-only
 - **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield/main.bot`
 
@@ -746,7 +746,7 @@ a CVE tomorrow as advisories land. Point `cache_path` at
   Diff-scoped by default; pass scope_mode=full for a whole-tree CVE
   baseline. Reports back on the forge and the board; does not fix. For a
   MALWARE-focused gate use the companion bot supply-shield (Shieldy).
-- **Tags**: security, supply-chain
+- **Tags**: security, supply-chain, read-only
 - **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield-cve/main.bot`
 
@@ -850,7 +850,7 @@ audit ran and the build is green before anything is committed.
   alignment onto the PR branch. Not for human PRs (use Revi /
   review-pr), and not for proactively opening update PRs (that is
   Renovacy / secured-renovacy).
-- **Tags**: deps, security
+- **Tags**: deps, security, ships-code
 - **Vars**: `arm_automerge` (bool), `automerge_method` (string), `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `verify_timeout_s` (int), `workspace_dir` (string)
 - **Path**: `bots/dep-update-guard/main.bot`
 
@@ -931,7 +931,7 @@ target repo's own devbox/devcontainer.
   tests for new code (that is a test-coverage bot's job), and do NOT use it to
   encode intended behaviour — it records the status quo, bugs included, which
   is exactly what a migration must preserve.
-- **Tags**: tests
+- **Tags**: tests, ships-code
 - **Vars**: `adversarial` (bool), `max_passes` (int), `min_corpus` (int), `mutation_floor` (int), `oracle_dir` (string), `scratch_dir` (string), `source_issue_ref` (string), `surface_scope` (string), `workspace_dir` (string)
 - **Path**: `bots/golden-master/main.bot`
 
@@ -1128,7 +1128,7 @@ type:adr-rechallenge issues (aged ADRs) and type:feature-gap issues
   cadence to keep docs/adr/ honest against the code. Use
   --var rechallenge_after_days=90 to invite re-challenge on ADRs older
   than that.
-- **Tags**: docs, architecture
+- **Tags**: docs, architecture, ships-code
 - **Vars**: `adr_dir` (string), `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diff_since` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (int), `rechallenge_after_days` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/adr-cartograph/main.bot`
 
@@ -1179,7 +1179,7 @@ doc-verification-checklist, forge-mr-create.
   the actual state of the repo — or when a repo has NO docs yet and
   needs an initial set authored from the code. Fixes and writes the
   DOCS only (never code logic) and commits.
-- **Tags**: docs
+- **Tags**: docs, ships-code
 - **Vars**: `base_ref` (string), `bundle_self_path` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `source_branch` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
@@ -1245,7 +1245,7 @@ container image and puts it live through the operator-attached
   developers — and the topology second: docs repo here, N source
   repos there.
 - **Triggers**: product-docs, functional-docs, doc-produit
-- **Tags**: docs
+- **Tags**: docs, ships-code
 - **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_image` (string), `publish_registry_user` (string), `publish_slug` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/product-docs/main.bot`
 
@@ -1280,7 +1280,7 @@ Ships 2 skills: wiki-authoring (the operating playbook) and okf-format
   edits source. Reach for Doki (docs-refresh) instead when the goal is to
   fix a repo's EXISTING hand-authored docs (README/docs/**) against the
   code, editing them in place.
-- **Tags**: docs
+- **Tags**: docs, ships-code
 - **Vars**: `bundle_self_path` (string), `code_scope_globs` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (int), `okf_version` (string), `scope_notes` (string), `wiki_cache_path` (string), `wiki_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/wiki-gen/main.bot`
 
@@ -1431,7 +1431,7 @@ the run, a source silent for too long is announced on the sinks.
   digest (use feed-watch), not a PR dependency gate (use
   supply-shield-cve), not a code audit (use sec-audit-*); it never
   edits code.
-- **Tags**: security, scheduled
+- **Tags**: security, scheduled, ships-code
 - **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `inventory_path` (string), `kev_max_age_days` (int), `max_alerts_per_run` (int), `max_version_lookups` (int), `max_version_seconds` (int), `mode` (string), `observe_window_days` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/vuln-watch/main.bot`
 

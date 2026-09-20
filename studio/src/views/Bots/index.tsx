@@ -30,6 +30,7 @@ import {
 import { errorMessage } from "@/lib/errorHints";
 import { botVisual } from "@/lib/personas";
 import {
+  BOT_CATEGORIES,
   groupBotsByCategory,
   presetDisplayName,
   type BotCategory,
@@ -224,7 +225,20 @@ export default function BotsView() {
       ) {
         return false;
       }
-      if (activeCategory && (b.category ?? "") !== activeCategory) return false;
+      // Same membership as the CLI: "uncategorized" (or any unknown slug in
+      // a shared link) selects exactly the Uncategorized GROUP — the bots
+      // the trailing section displays. Case is owned here too: a shared
+      // "?category=Verify" still matches.
+      if (activeCategory) {
+        const declared = (b.category ?? "").trim().toLowerCase();
+        if (activeCategory === "uncategorized") {
+          if (declared !== "" && BOT_CATEGORIES.some((c) => c.slug === declared)) {
+            return false;
+          }
+        } else if (declared !== activeCategory) {
+          return false;
+        }
+      }
       // Tags narrow (AND): a bot must carry every active tag.
       if (activeTags.some((t) => !(b.tags ?? []).includes(t))) return false;
       return true;
@@ -359,63 +373,77 @@ export default function BotsView() {
           <Spinner /> Loading bots…
         </div>
       ) : rows.length === 0 && !botsError ? (
-        <EmptyState
-          title={query ? "No bots match your search" : "No bots discovered in this workspace"}
-          message={
-            query
-              ? "Try a different name or description."
-              : cloud
-                ? "This server's catalog is git-managed. Browse the marketplace to find bots to run."
-                : "Create one with the builder, or import a bundle from a .botz file or a git repository."
-          }
-          action={
-            !query ? (
-              cloud ? (
-                marketplaceEnabled ? (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => setLocation("/marketplace")}
-                  >
-                    Browse marketplace
+        filtering ? (
+          // A full fleet behind a filter that matches nothing is a different
+          // state than an empty workspace — and it must offer the way out.
+          <EmptyState
+            title="No bots match these filters"
+            message="Clear a tag or the category filter to widen the view."
+            action={
+              <Button variant="secondary" size="sm" onClick={() => applyFilters(null, [])}>
+                Clear filters
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            title={query ? "No bots match your search" : "No bots discovered in this workspace"}
+            message={
+              query
+                ? "Try a different name or description."
+                : cloud
+                  ? "This server's catalog is git-managed. Browse the marketplace to find bots to run."
+                  : "Create one with the builder, or import a bundle from a .botz file or a git repository."
+            }
+            action={
+              !query ? (
+                cloud ? (
+                  marketplaceEnabled ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => setLocation("/marketplace")}
+                    >
+                      Browse marketplace
+                    </Button>
+                  ) : undefined
+                ) : (
+                  <Button variant="primary" size="sm" onClick={() => setLocation("/bots/new")}>
+                    New bot
                   </Button>
-                ) : undefined
-              ) : (
-                <Button variant="primary" size="sm" onClick={() => setLocation("/bots/new")}>
-                  New bot
-                </Button>
-              )
-            ) : undefined
-          }
-        />
+                )
+              ) : undefined
+            }
+          />
+        )
       ) : (
         groups
           .filter((g) => !filtering || g.bots.length > 0)
           .map((g: { category: BotCategory; bots: BotEntryWithSchema[] }) => (
             <section key={g.category.slug || "uncategorized"} className="flex flex-col gap-2">
-              <button
-                type="button"
-                aria-pressed={activeCategory === g.category.slug}
-                title={
-                  activeCategory === g.category.slug
-                    ? "Clear the category filter"
-                    : "Show only this category"
-                }
-                onClick={() =>
-                  applyFilters(
-                    activeCategory === g.category.slug ? null : g.category.slug || null,
-                    activeTags,
-                  )
-                }
-                className="flex items-baseline gap-2 self-start rounded text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-              >
-                <h2 className="text-sm font-medium text-fg-default">
+              <h2 className="self-start text-sm font-medium text-fg-default">
+                <button
+                  type="button"
+                  aria-pressed={activeCategory === (g.category.slug || "uncategorized")}
+                  title={
+                    activeCategory === (g.category.slug || "uncategorized")
+                      ? "Clear the category filter"
+                      : "Show only this category"
+                  }
+                  onClick={() => {
+                    // The Uncategorized section toggles the pseudo-slug, not
+                    // "" — clearing the filter would make the control a lie.
+                    const slug = g.category.slug || "uncategorized";
+                    applyFilters(activeCategory === slug ? null : slug, activeTags);
+                  }}
+                  className="flex items-baseline gap-2 rounded text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                >
                   {g.category.title}
-                </h2>
-                <span className="text-caption text-fg-subtle">
-                  — {g.category.tagline} · {g.bots.length}
-                </span>
-              </button>
+                  <span className="font-normal text-caption text-fg-subtle">
+                    — {g.category.tagline} · {g.bots.length}
+                  </span>
+                </button>
+              </h2>
               <ul className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
                 {g.bots.map((b) => (
                   <BotCard
@@ -460,8 +488,8 @@ function BotCard({
   const label = bot.display_name?.trim() || bot.name;
   const enabled = bot.enabled !== false;
   const kinds = [...new Set((bot.invocations ?? []).map((i) => i.kind))];
-  const presetCount = bot.presets?.entries?.length ?? 0;
-  const presetNames = (bot.presets?.entries ?? []).map(presetDisplayName);
+  const presetEntries = bot.presets?.entries ?? [];
+  const presetCount = presetEntries.length;
   return (
     <li
       className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
@@ -515,10 +543,11 @@ function BotCard({
           ))}
           {/* Presets are the tree's third level: name them (up to three)
               instead of only counting — a specialization you can see is
-              one you can launch. */}
-          {presetNames.slice(0, presetCount > 3 ? 1 : 3).map((n) => (
-            <Badge key={n} variant="accent">
-              ◦ {n}
+              one you can launch. Keys are the TECHNICAL names: display
+              names can collide. */}
+          {presetEntries.slice(0, presetCount > 3 ? 1 : 3).map((p) => (
+            <Badge key={p.name} variant="accent">
+              ◦ {presetDisplayName(p)}
             </Badge>
           ))}
           {presetCount > 3 && (

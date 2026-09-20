@@ -30,7 +30,7 @@ when_to_use: |
   `devbox.json` + `devbox.lock`; it does not change source.
 author: SocialGouv (devthejo) — devbox-setup/main.bot
 category: build
-tags: [env, tooling]
+tags: [env, tooling, ships-code]
 schema_version: 1
 
 invocations:

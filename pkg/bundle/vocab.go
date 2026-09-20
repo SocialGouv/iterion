@@ -55,13 +55,30 @@ type CategoryGroup[T any] struct {
 	Bots     []T
 }
 
+// IsUncategorizedSlug reports whether a DECLARED slug lands in the
+// Uncategorized group on every grouped surface — no category at all, or
+// one the closed set does not know. The FILTERS use the same predicate
+// (`--category uncategorized`, `?category=uncategorized`): a filter and
+// the grouping it navigates must never disagree about who is in the
+// group.
+func IsUncategorizedSlug(slug string) bool {
+	if slug == "" {
+		return true
+	}
+	_, ok := BotCategoryBySlug(slug)
+	return !ok
+}
+
 // GroupByCategory buckets entries into the canonical category order
-// (BotCategories) with the Uncategorized group appended last. Every group
-// is returned — an empty canonical category is a landmark worth keeping;
-// the renderer decides whether to print it (a routing document skips
-// empties, fixed-landmark UIs show them). This is the ONE grouping
-// implementation: display surfaces consume it with a one-line accessor,
-// they never re-derive the order or the placement.
+// (BotCategories) with the Uncategorized group appended last. The seam
+// owns FORM: an accessor value is normalized (trim + lowercase) before
+// placement, so an entry built outside the manifest loader groups the
+// same as one that went through it. Every group is returned — an empty
+// canonical category is a landmark worth keeping; the renderer decides
+// whether to print it (a routing document skips empties, fixed-landmark
+// UIs show them). This is the ONE grouping implementation: display
+// surfaces consume it with a one-line accessor, they never re-derive the
+// order or the placement.
 func GroupByCategory[T any](entries []T, categoryOf func(T) string) []CategoryGroup[T] {
 	groups := make([]CategoryGroup[T], 0, len(BotCategories)+1)
 	for _, c := range BotCategories {
@@ -69,7 +86,7 @@ func GroupByCategory[T any](entries []T, categoryOf func(T) string) []CategoryGr
 	}
 	groups = append(groups, CategoryGroup[T]{Category: UncategorizedCategory})
 	for _, e := range entries {
-		category := categoryOf(e)
+		category := normalizeBotCategory(categoryOf(e))
 		placed := false
 		for i := range BotCategories {
 			if category == BotCategories[i].Slug {
@@ -143,8 +160,15 @@ func normalizeBotTagList(tags []string) []string {
 // manifest `tags:` draws from. Tags are orthogonal facets (domain,
 // safety, modality) — the category is the intent spine, tags are how
 // views slice across it. The set is deliberately open: a new tag is a
-// lint warning (reuse before inventing), never a rejection. This list
-// mirrors studio/src/lib/botTaxonomy.ts — update both together.
+// lint warning (reuse before inventing), never a rejection.
+//
+// The safety pair is the launch-decision facet and has a WRITTEN
+// boundary: `ships-code` = the bot's run commits into the TARGET repo's
+// history (source, docs, wiki, config files, versioned state — anything
+// a `git log` will show); `read-only` = the run writes nothing anywhere
+// (verdicts go to the board/chat, never a commit). Documented in
+// docs/agents/bot-authoring.md; the fleet gate holds the annotations to
+// this boundary.
 var KnownBotTags = []string{
 	// Safety — the launch-decision facet: does it touch the tree?
 	"ships-code",

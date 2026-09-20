@@ -47,7 +47,7 @@ when_to_use: |
   edits code.
 author: SocialGouv (devthejo) — bots/vuln-watch/main.bot
 category: operate
-tags: [security, scheduled]
+tags: [security, scheduled, ships-code]
 schema_version: 1
 
 invocations:

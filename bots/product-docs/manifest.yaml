@@ -100,7 +100,7 @@ when_to_use: |
   repos there.
 author: SocialGouv (devthejo) — product-docs/main.bot
 category: document
-tags: [docs]
+tags: [docs, ships-code]
 schema_version: 1
 
 triggers:

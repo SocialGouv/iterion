@@ -40,7 +40,7 @@ when_to_use: |
   companion bot supply-shield-cve (Vulny).
 author: SocialGouv (devthejo) — bots/supply-shield/main.bot
 category: verify
-tags: [security, supply-chain]
+tags: [security, supply-chain, read-only]
 schema_version: 1
 
 dispatch_vars:

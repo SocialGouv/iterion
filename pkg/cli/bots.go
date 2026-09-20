@@ -54,6 +54,8 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 		opts.Format = "json"
 	}
 
+	warnUnknownTaxonomyValues(opts.ErrW, opts.Categories, opts.Tags)
+
 	switch opts.Format {
 	case "json":
 		entries, diags, err := botregistry.ListWithDiagnostics(botregistry.ListOptions{Paths: opts.Paths})
@@ -62,6 +64,9 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 		}
 		warnDiscoveryErrors(opts.ErrW, diags)
 		entries = filterByTaxonomy(entries, func(e BotEntry) botregistry.Entry { return e }, opts.Categories, opts.Tags)
+		if entries == nil {
+			entries = []BotEntry{} // a filtered-to-empty list is [], not null
+		}
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(entries)
@@ -114,12 +119,37 @@ func filterByTaxonomy[T any](entries []T, entryOf func(T) botregistry.Entry, cat
 	return out
 }
 
+// warnUnknownTaxonomyValues names filter values the vocabulary does not
+// know, so a typo is distinguishable from "no such bots exist" — a
+// silent empty result is a wrong-negative the operator cannot see.
+func warnUnknownTaxonomyValues(w io.Writer, categories, tags []string) {
+	if w == nil {
+		return
+	}
+	for _, c := range bundle.NormalizeBotTagList(categories) {
+		if c != "uncategorized" {
+			if _, ok := bundle.BotCategoryBySlug(c); !ok {
+				fmt.Fprintf(w, "bots: unknown category %q — known: %s (+ \"uncategorized\")\n", c, bundle.KnownBotCategorySlugs())
+			}
+		}
+	}
+	for _, t := range bundle.NormalizeBotTagList(tags) {
+		if !bundle.IsKnownBotTag(t) {
+			fmt.Fprintf(w, "bots: unseeded tag %q — matching anyway; known seed: %s\n", t, bundle.KnownBotTagsJoined())
+		}
+	}
+}
+
 // botMatchesTaxonomy reports whether one bot passes the filters: ANY
-// requested category (the pseudo-slug "uncategorized" matches an empty
-// declared category) and EVERY requested tag.
+// requested category (the pseudo-slug "uncategorized" selects exactly the
+// Uncategorized GROUP — no category or an unknown one — so the filter and
+// the grouping agree) and EVERY requested tag.
 func botMatchesTaxonomy(e botregistry.Entry, categories, tags []string) bool {
 	if len(categories) > 0 && !slices.ContainsFunc(categories, func(c string) bool {
-		return e.Category == c || (c == "uncategorized" && e.Category == "")
+		if c == "uncategorized" {
+			return bundle.IsUncategorizedSlug(e.Category)
+		}
+		return e.Category == c
 	}) {
 		return false
 	}

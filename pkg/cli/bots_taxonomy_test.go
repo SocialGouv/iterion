@@ -59,6 +59,23 @@ func TestBotsList_TagFilterIsAND(t *testing.T) {
 	}
 }
 
+func TestBotsList_UncategorizedFilterCatchesUnknownSlug(t *testing.T) {
+	// The uncategorized FILTER must select exactly the Uncategorized
+	// GROUP: bots with no category AND bots whose declared slug the set
+	// does not know. A filter that misses the unknown-slug bot disagrees
+	// with the tree/markdown/gallery that display it there.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "pilot", "manifest.yaml"), "name: pilot\ndescription: declares an unknown slug.\ncategory: pilot\n")
+	writeFile(t, filepath.Join(dir, "pilot", "main.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, "bare", "manifest.yaml"), "name: bare\ndescription: no category.\n")
+	writeFile(t, filepath.Join(dir, "bare", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	out := listJSON(t, BotsListOptions{Paths: []string{dir}, Categories: []string{"uncategorized"}})
+	if !strings.Contains(out, `"pilot"`) || !strings.Contains(out, `"bare"`) {
+		t.Errorf("uncategorized filter must return the whole Uncategorized group (unknown slug + absent), got:\n%s", out)
+	}
+}
+
 func TestBotsList_FormatTreeGroupsAndIndentsPresets(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "revi", "manifest.yaml"), "name: revi\ndisplay_name: Revi\ncategory: verify\n")

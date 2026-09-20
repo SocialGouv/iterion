@@ -44,8 +44,8 @@ function toDraft(b: BotEntryWithSchema): Draft {
   };
 }
 
-function toPatch(d: Draft): BotPatch {
-  return {
+function toPatch(d: Draft, baseline: Draft): BotPatch {
+  const patch: BotPatch = {
     display_name: d.display_name.trim(),
     description: d.description,
     when_to_use: d.when_to_use,
@@ -54,9 +54,19 @@ function toPatch(d: Draft): BotPatch {
     version: d.version.trim(),
     icon: d.icon.trim(),
     enabled: d.enabled,
-    category: d.category,
-    tags: d.tags,
   };
+  // The taxonomy keys are omitted while they are empty in BOTH draft and
+  // baseline: a save on a legacy/uncategorized bot must not stamp
+  // `category: ""` + `tags: []` into a manifest that never had them. A
+  // non-empty draft (or a change away from a non-empty baseline) sends
+  // the key — the empty string still clears, per the PATCH contract.
+  if (d.category || baseline.category) {
+    patch.category = d.category;
+  }
+  if (d.tags.length > 0 || baseline.tags.length > 0) {
+    patch.tags = d.tags;
+  }
+  return patch;
 }
 
 /**
@@ -99,6 +109,10 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+  const baselineRef = useRef(baseline);
+  useEffect(() => {
+    baselineRef.current = baseline;
+  }, [baseline]);
   // Last patch acknowledged by the server (or errored — no auto-retry
   // until the user edits again, the error stays visible instead).
   const settledPatchRef = useRef<string | null>(null);
@@ -120,7 +134,7 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
     try {
       await saveBot(bot.name, patch);
       settledPatchRef.current = JSON.stringify(patch);
-      if (JSON.stringify(toPatch(draftRef.current)) === settledPatchRef.current) {
+      if (JSON.stringify(toPatch(draftRef.current, baselineRef.current)) === settledPatchRef.current) {
         touchedRef.current = false;
       }
       setSavedFlash(true);
@@ -133,9 +147,9 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
   };
 
   useEffect(() => {
-    const patch = toPatch(draft);
+    const patch = toPatch(draft, baseline);
     const json = JSON.stringify(patch);
-    if (json === JSON.stringify(toPatch(baseline)) || json === settledPatchRef.current) {
+    if (json === JSON.stringify(toPatch(baseline, baseline)) || json === settledPatchRef.current) {
       pendingRef.current = null;
       return;
     }
@@ -237,10 +251,17 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
         onChange={(v) => update("category", v)}
         allowEmpty
         emptyLabel="Uncategorized (visible, never hidden)"
-        options={BOT_CATEGORIES.map((c) => ({
-          value: c.slug,
-          label: `${c.title} — ${c.tagline}`,
-        }))}
+        options={[
+          // An out-of-vocabulary stored value would render a blank select:
+          // surface it as its own labelled entry instead of hiding it.
+          ...(draft.category && !BOT_CATEGORIES.some((c) => c.slug === draft.category)
+            ? [{ value: draft.category, label: `${draft.category} — unknown; shows as Uncategorized` }]
+            : []),
+          ...BOT_CATEGORIES.map((c) => ({
+            value: c.slug,
+            label: `${c.title} — ${c.tagline}`,
+          })),
+        ]}
         help="The navigation spine every bot picker groups by. Six closed slugs; an unknown value shows as Uncategorized everywhere."
       />
       <TagListField

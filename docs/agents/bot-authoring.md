@@ -144,6 +144,16 @@ An unseeded tag stays declared (never a load error) and emits C271
 a new tag on a catalog bot means seeding `vocab.go` in the same change.
 Third-party bundles feel only the soft lint.
 
+The safety pair carries a WRITTEN boundary — the tag answers "what will
+this run leave behind?", and a bot with neither tag is an annotation
+bug: `ships-code` = the run COMMITS into the target repo's history
+(source, docs, wiki, config, versioned state — anything `git log`
+shows: golden-master is ships-code even though its product is a test
+net, because it commits; the two supply-shields are read-only even
+though they read dependencies deeply, because a finding goes to the
+board and no commit exists); `read-only` = the run writes nothing
+anywhere.
+
 Two things to know:
 
 - **Strict decoding makes the two keys load-breaking for older builds**

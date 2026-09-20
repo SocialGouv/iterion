@@ -42,7 +42,7 @@ when_to_use: |
   is exactly what a migration must preserve.
 author: SocialGouv (devthejo) — golden-master/main.bot
 category: harden
-tags: [tests]
+tags: [tests, ships-code]
 schema_version: 1
 
 dispatch_vars:

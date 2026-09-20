@@ -128,6 +128,45 @@ func TestWriteManifest_CategoryAndTagsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGroupByCategory_OwnsFormAndUncategorizedMembership(t *testing.T) {
+	type bot struct{ name, category string }
+	groups := GroupByCategory(
+		[]bot{
+			{"upper", "BUILD"},
+			{"spaced", "  verify "},
+			{"unknown", "pilot"},
+			{"empty", ""},
+		},
+		func(b bot) string { return b.category },
+	)
+	find := func(slug string) []string {
+		for _, g := range groups {
+			if g.Category.Slug == slug {
+				names := make([]string, 0, len(g.Bots))
+				for _, b := range g.Bots {
+					names = append(names, b.name)
+				}
+				return names
+			}
+		}
+		return nil
+	}
+	// The seam normalizes the accessor's FORM: "BUILD" groups with build.
+	if got := find("build"); len(got) != 1 || got[0] != "upper" {
+		t.Errorf("build group = %v, want [upper] (form owned by the seam)", got)
+	}
+	if got := find("verify"); len(got) != 1 || got[0] != "spaced" {
+		t.Errorf("verify group = %v, want [spaced]", got)
+	}
+	// Unknown slug and empty land together, in the trailing group.
+	if got := find(""); len(got) != 2 || got[0] != "unknown" || got[1] != "empty" {
+		t.Errorf("uncategorized group = %v, want [unknown empty]", got)
+	}
+	if !IsUncategorizedSlug("") || !IsUncategorizedSlug("pilot") || IsUncategorizedSlug("build") {
+		t.Error("IsUncategorizedSlug disagrees with the grouping placement")
+	}
+}
+
 func TestBotCategoryVocabulary(t *testing.T) {
 	if len(BotCategories) != 6 {
 		t.Fatalf("got %d categories, want the closed set of 6", len(BotCategories))

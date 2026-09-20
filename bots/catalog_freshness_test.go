@@ -3,6 +3,8 @@ package bots
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -43,25 +45,36 @@ func TestCommittedCatalogIsFresh(t *testing.T) {
 
 	// RegenerateWhatsNextCatalog writes atomically to each SOURCE path, so
 	// render the expected content by regenerating and comparing — restoring
-	// the committed bytes if they differ, to keep the working tree untouched
-	// by a failing test.
+	// EVERY committed copy before failing, with a deterministic list of the
+	// stale paths. Restore-then-Fatalf INSIDE the loop left the second
+	// stale file holding regenerated content (abort-on-first) and named a
+	// map-order-dependent path: a failing guard dirtied the checkout it
+	// exists to protect.
 	if _, err := botregistry.RegenerateWhatsNextCatalog(repoRoot); err != nil {
 		t.Fatalf("regenerate: %v", err)
 	}
+	var stale []string
 	for genPath, before := range committed {
 		regenerated, err := os.ReadFile(genPath)
 		if err != nil {
 			t.Fatalf("read regenerated catalog %s: %v", genPath, err)
 		}
 		if string(regenerated) != string(before) {
-			// Leave the tree as the test found it: a failing guard must not
-			// itself dirty the checkout.
-			if writeErr := os.WriteFile(genPath, before, 0o644); writeErr != nil {
-				t.Logf("restore committed catalog: %v", writeErr)
-			}
-			t.Fatalf("committed catalog is STALE vs the current manifests.\n"+
-				"Every run-start regen will dirty the worktree (and wip-bank clean runs).\n"+
-				"Fix: run `iterion bots regen-catalog` and commit %s with your manifest change.", genPath)
+			stale = append(stale, genPath)
 		}
+	}
+	// Restore FIRST, every file, then report: the guard leaves the tree
+	// exactly as it found it even when multiple catalogs are stale.
+	for _, genPath := range stale {
+		if writeErr := os.WriteFile(genPath, committed[genPath], 0o644); writeErr != nil {
+			t.Logf("restore committed catalog %s: %v", genPath, writeErr)
+		}
+	}
+	if len(stale) > 0 {
+		sort.Strings(stale)
+		t.Fatalf("committed catalog(s) STALE vs the current manifests: %s.\n"+
+			"Every run-start regen will dirty the worktree (and wip-bank clean runs).\n"+
+			"Fix: run `iterion bots regen-catalog` and commit the listed file(s) with your manifest change.",
+			strings.Join(stale, ", "))
 	}
 }
