@@ -104,12 +104,25 @@ func (s *Server) resolveResumeBotAtVersion(ctx context.Context, botSourceTenant,
 	bs, err := s.botSources.GetByVersion(store.WithTenant(ctx, botSourceTenant), botSourceTenant, pinnedRowID, version)
 	if err != nil {
 		if errors.Is(err, botsource.ErrNotFound) {
-			// The pinned identity is gone (the row deleted, its slug
-			// re-authored as a NEW row whose versions cannot serve this pin,
-			// or the store reset): an explicit refusal, never a fall-through
-			// to the current row — that would recompute the blast radius in
-			// a program the preview never certified (#1381).
-			return nil, fmt.Errorf("the stored bot version this preview certified (tenant %s, row %s, version %d) no longer exists; re-propose the rewind against the current version: %w", botSourceTenant, pinnedRowID, version, err)
+			// The pinned (row, version) pair has no snapshot. Deletion is
+			// NOT a cause — history is retained across Delete precisely so
+			// the pin still serves what the preview certified. What remains:
+			// the snapshot was never written (the CAS winner's snapshot
+			// write failed — a permanent hole no later write backfills — or
+			// a concurrent write raced it), or the history itself was reset.
+			// Probe the row to say which — an explicit refusal either way,
+			// never a fall-through to the current row, which would
+			// recompute the blast radius in a program the preview never
+			// certified (#1381). A probe blip is typed transient for
+			// consistency with the resolution seam below; the mission
+			// records either error as a rejected receipt.
+			cause := "the store's version history does not carry it (history reset)"
+			if cur, gerr := s.botSources.Get(store.WithTenant(ctx, botSourceTenant), pinnedRowID); gerr == nil {
+				cause = fmt.Sprintf("the row is at version %d but its snapshot is missing (a write raced it, or its snapshot write failed)", cur.Version)
+			} else if !errors.Is(gerr, botsource.ErrNotFound) {
+				return nil, fmt.Errorf("%w: resolve stored bot %s/%s at version %d: %v", errResumeResolveTransient, botSourceTenant, pinnedRowID, version, gerr)
+			}
+			return nil, fmt.Errorf("the stored bot version this preview certified (tenant %s, row %s, version %d) has no snapshot — %s; re-propose the rewind against the current version: %w", botSourceTenant, pinnedRowID, version, cause, err)
 		}
 		return nil, fmt.Errorf("%w: resolve stored bot %s/%s at version %d: %v", errResumeResolveTransient, botSourceTenant, pinnedRowID, version, err)
 	}

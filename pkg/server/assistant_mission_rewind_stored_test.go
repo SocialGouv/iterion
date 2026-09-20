@@ -452,10 +452,11 @@ workflow target:
   alpha -> beta
   beta -> done
 `
-	if _, err := srv.botSources.Create(store.WithTenant(ctx, "t1"), botsource.BotSource{
+	live, err := srv.botSources.Create(store.WithTenant(ctx, "t1"), botsource.BotSource{
 		TenantID: "t1", Slug: "shared",
 		Files: map[string]string{botsource.MainBotFile: goneFixture},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	const runID = "mission-pin-gone-target"
@@ -493,7 +494,9 @@ workflow target:
 		Receipts: []assistantmission.ActionReceipt{{
 			ID: "mission-pin-gone-receipt", Action: assistantmission.ActionRewind, Digest: "gone",
 			AssistantRunID: watch.AssistantRunID, ExpectedPivot: "alpha", SourceVersion: 42,
-			SourceID: "mission-pin-gone-row",
+			// The LIVE row's id: the refusal must probe it and name the
+			// raced-snapshot cause, not send the operator after a deletion.
+			SourceID: live.ID,
 			State:    assistantmission.ReceiptPrepared, CreatedAt: now, UpdatedAt: now,
 		}},
 		ProposalFrontier: map[string]int{}, CreatedAt: now, UpdatedAt: now,
@@ -515,6 +518,12 @@ workflow target:
 	}
 	if !strings.Contains(r.Error, "42") {
 		t.Errorf("refusal = %q — it must name the pinned version it could not resolve", r.Error)
+	}
+	// The probe distinguishes the cause: the row still exists (at version 1),
+	// so the refusal must say the SNAPSHOT is what is missing — not send the
+	// operator chasing a deletion that never happened.
+	if !strings.Contains(r.Error, "its snapshot is missing") {
+		t.Errorf("refusal = %q — a live row must be named as the missing-snapshot cause", r.Error)
 	}
 	rewound, err := srv.runs.RunStore().LoadRun(ctx, runID)
 	if err != nil {
@@ -567,5 +576,80 @@ func TestAssistantMissionRewind_RejectsWhenTheStoredBotCannotBeResolved(t *testi
 	}
 	if path != "" {
 		t.Errorf("path = %q beside an error, want empty", path)
+	}
+}
+
+// The OTHER refusal cause: the pinned row itself is gone from the store (a
+// history reset), so the probe cannot name a raced write — the refusal must
+// say the history does not carry the version, and the checkpoint must stay
+// untouched.
+func TestAssistantMissionRewind_NamesAResetWhenTheRowIsGone(t *testing.T) {
+	srv, _ := newTestServer(t)
+	srv.botSources = botsource.NewMemoryStore()
+	srv.cfg.Mode = "cloud"
+	ctx := context.Background()
+
+	const runID = "mission-row-gone-target"
+	if _, err := srv.runs.RunStore().CreateRun(ctx, runID, "target", nil); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := srv.runs.RunStore().LoadRun(ctx, runID)
+	target.FilePath = "bots/shared/main.bot"
+	target.BotSourceTier, target.BotSourceTenant = store.BotSourceTierTeam, "t1"
+	target.Status = store.RunStatusFailedResumable
+	target.Checkpoint = &store.Checkpoint{NodeID: "beta", Outputs: map[string]map[string]any{
+		"setup": {"value": "ok"}, "alpha": {"value": "ok"}, "beta": {"value": "stale"},
+	}}
+	if err := srv.runs.RunStore().SaveRun(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+
+	seedRun(t, srv, "mission-row-gone-assistant", "assistant", store.RunStatusPausedWaitingHuman)
+	now := time.Now().UTC()
+	watch := runwatch.Watch{ID: "mission-row-gone-watch", OwnerID: "local", TargetRunID: runID,
+		AssistantRunID: "mission-row-gone-assistant", Mode: runwatch.ModePropose, State: runwatch.WatchActive,
+		CreatedAt: now, UpdatedAt: now}
+	if err := srv.assistantWatches.CreateWatch(ctx, watch); err != nil {
+		t.Fatal(err)
+	}
+	mission := assistantmission.Mission{
+		Version: 1, ID: "mission-row-gone", InvocationKey: "goal:" + runID, OperatorID: "local",
+		TargetRunID: runID, WatchID: watch.ID, AssistantRunID: watch.AssistantRunID,
+		Policy: assistantmission.Policy{Actions: []string{assistantmission.ActionRewind}, TTLSeconds: 600,
+			ExpiresAt: now.Add(10 * time.Minute), MaxActions: 1, ContractVersion: assistantmission.ContractVersion},
+		State:      assistantmission.StateActive,
+		Activation: &assistantmission.DeliveryReceipt{ID: "activated", Kind: "assistant-mission-started", State: assistantmission.ReceiptSucceeded},
+		Receipts: []assistantmission.ActionReceipt{{
+			ID: "mission-row-gone-receipt", Action: assistantmission.ActionRewind, Digest: "gone-row",
+			AssistantRunID: watch.AssistantRunID, ExpectedPivot: "alpha", SourceVersion: 1,
+			SourceID: "row-that-never-was",
+			State:    assistantmission.ReceiptPrepared, CreatedAt: now, UpdatedAt: now,
+		}},
+		ProposalFrontier: map[string]int{}, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := srv.assistantMissions.CreateOrGet(ctx, mission); err != nil {
+		t.Fatal(err)
+	}
+	coord := &assistantMissionCoordinator{server: srv, runs: srv.runs, watches: srv.assistantWatches,
+		missions: srv.assistantMissions, worker: "test-worker"}
+	coord.attempt(ctx, mission.ID)
+
+	got, err := srv.assistantMissions.Get(ctx, assistantmission.Scope{OperatorID: "local", TargetRunID: runID}, mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.Receipts[0]
+	if r.State != assistantmission.ReceiptRejected {
+		t.Fatalf("receipt state = %q — the apply ran against a row the store cannot name", r.State)
+	}
+	if !strings.Contains(r.Error, "history does not carry it") {
+		t.Errorf("refusal = %q — a vanished row must be named as the history-reset cause", r.Error)
+	}
+	rewound, err := srv.runs.RunStore().LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewound.Checkpoint == nil || rewound.Checkpoint.NodeID != "beta" || len(rewound.Checkpoint.Outputs) != 3 {
+		t.Fatalf("the refused apply must leave the checkpoint untouched, got %#v", rewound.Checkpoint)
 	}
 }

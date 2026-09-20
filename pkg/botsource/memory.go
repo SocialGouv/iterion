@@ -64,11 +64,18 @@ func (m *MemoryStore) Create(_ context.Context, s BotSource) (BotSource, error) 
 	return s, nil
 }
 
-func (m *MemoryStore) Get(_ context.Context, id string) (BotSource, error) {
+func (m *MemoryStore) Get(ctx context.Context, id string) (BotSource, error) {
+	// Same sentinel-scoping defense as MongoStore.Get: a read without a
+	// tenant ctx fails closed, and a mismatched one sees a foreign row as
+	// absent — the twins must not diverge.
+	ctxTenant, ok := store.TenantFromContext(ctx)
+	if !ok || ctxTenant == "" {
+		return BotSource{}, ErrTenantMissing
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	s, ok := m.byID[id]
-	if !ok {
+	if !ok || s.TenantID != ctxTenant {
 		return BotSource{}, ErrNotFound
 	}
 	return s, nil

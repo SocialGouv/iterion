@@ -106,14 +106,19 @@ func (s *MongoStore) Create(ctx context.Context, bs BotSource) (BotSource, error
 	if bs.Origin == "" {
 		bs.Origin = "tenant"
 	}
+	// The snapshot lands BEFORE the row: the id is freshly minted and the
+	// version is always 1, so an insert that fails after a landed snapshot
+	// (a slug conflict, a blip) leaves only an orphan snapshot — dead data
+	// no pin can ever name — while the reverse order would report a failure
+	// for a row that exists and wedge the slug's retry on ErrSlugConflict.
+	if err := s.snapshotVersion(ctx, bs); err != nil {
+		return BotSource{}, err
+	}
 	if _, err := s.coll.InsertOne(ctx, bs); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return BotSource{}, ErrSlugConflict
 		}
 		return BotSource{}, fmt.Errorf("botsource: insert: %w", err)
-	}
-	if err := s.snapshotVersion(ctx, bs); err != nil {
-		return BotSource{}, err
 	}
 	return bs, nil
 }
