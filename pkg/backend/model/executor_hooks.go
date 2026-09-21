@@ -52,8 +52,20 @@ type DelegateInfo struct {
 	ParseFallback      bool          // true if structured output fell back to text wrapper
 	FormattingPassUsed bool          // true if two-pass execution was used (tools + schema)
 	Error              error         // non-nil for OnDelegateError
-	Attempt            int           // 1-based retry number (for OnDelegateRetry)
-	Delay              time.Duration // backoff delay (for OnDelegateRetry)
+	// Attempt is the 1-based retry number on OnDelegateRetry. A schema
+	// re-ask also carries it on its own OnDelegateStarted /
+	// OnDelegateFinished / OnDelegateError (always 2: the first answer
+	// was attempt 1), beside Reask — so a reader can tell the re-ask's
+	// events from the delegation's, which fire once per node dispatch.
+	Attempt int
+	Delay   time.Duration // backoff delay (for OnDelegateRetry)
+	// Reask names how a schema re-ask continued the model's work — one of
+	// the Reask* constants (continue_conversation / resume_session /
+	// restart). Set on the OnDelegateRetry that announces it, on the
+	// re-ask's own lifecycle hooks, and on the transport retries the re-ask
+	// itself pays (told apart from the announcement by their backoff delay
+	// and error); empty on every other delegation.
+	Reask string
 	// CostUSD is the delegation's LLM spend, read back from the `_cost_usd`
 	// the backend annotated onto its output — the CLI's own figure when it
 	// reports one, else the token estimate. Zero means the price table did

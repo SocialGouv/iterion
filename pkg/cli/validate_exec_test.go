@@ -224,6 +224,44 @@ func TestRunValidate_StrictFailsANotCleanDryRun(t *testing.T) {
 	}
 }
 
+// A dry run whose only finding is an expression left inconclusive on a
+// shape is not clean, but it is not failing either: --strict prints it
+// and exits 0, and the JSON carries both verdicts so a CI job can choose.
+func TestRunValidate_StrictDoesNotFailAnInconclusiveDryRun(t *testing.T) {
+	inTempWorkspace(t)
+	bot := "schema v:\n  items: json\n\nagent a:\n  model: \"m\"\n  output: v\n\nschema t:\n  n: json\n\ncompute tally:\n  output: t\n  expr:\n    n: \"sum(outputs.a.items)\"\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: a\n  a -> tally\n  tally -> done\n"
+	if err := os.WriteFile("undecided.bot", []byte(bot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out := jsonPrinter()
+	if err := RunValidateWith("undecided.bot", jp, ValidateOptions{Strict: true}); err != nil {
+		t.Fatalf("--strict failed on an inconclusive dry run: %v\n%s", err, out.String())
+	}
+	var res ValidateResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil || res.Exec == nil {
+		t.Fatalf("the result was not printed: %v\n%s", err, out.String())
+	}
+	if res.Exec.Clean() || res.Exec.Failing() || len(res.Exec.Inconclusive()) != 1 {
+		t.Fatalf("the report should be undecided, neither clean nor failing: %+v", res.Exec)
+	}
+	var raw struct {
+		Exec map[string]any `json:"exec"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if clean, failing := raw.Exec["clean"], raw.Exec["failing"]; clean != false || failing != false {
+		t.Fatalf("the JSON does not carry both verdicts (clean=%v failing=%v):\n%s", clean, failing, out.String())
+	}
+	hp, hout := testPrinter()
+	if err := RunValidateWith("undecided.bot", hp, ValidateOptions{Strict: true}); err != nil {
+		t.Fatalf("--strict (human) failed on an inconclusive dry run: %v", err)
+	}
+	if !strings.Contains(hout.String(), "inconclusive (1)") || !strings.Contains(hout.String(), "outputs.a.items") {
+		t.Fatalf("the inconclusive is not printed under its heading:\n%s", hout.String())
+	}
+}
+
 // --exec-timeout bounds a pass; a pass that runs out of time is said so in
 // the report and, under --strict, named as the bound's doing.
 func TestRunValidate_ExecTimeoutIsTheOperators(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/liveledger"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -32,6 +33,7 @@ func TestLive_VibeReviewAlternating(t *testing.T) {
 	requireCLI(t, "claude")
 	requireBinaryInPath(t, "docker")
 	requireOpenAI(t)
+	liveledger.Track(t)
 
 	wf := compileFixture(t, "whole-improve-loop/main.bot")
 
@@ -156,6 +158,7 @@ func Multiply(a, b int) int {
 //
 // Expected duration: 30-90 min, $10-30.
 func TestLive_VibeReviewAlternating_Real(t *testing.T) {
+	tr := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -205,6 +208,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	t.Logf("Run finished in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tr, s, runID)
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {

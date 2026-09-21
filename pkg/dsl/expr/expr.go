@@ -182,6 +182,79 @@ type Ref struct {
 	Path      []string
 }
 
+// IteratedRefs returns the refs an expression ITERATES: the collection
+// argument of a `map`/`filter`/`reduce`, the one position where the
+// evaluator walks a value element by element. The dry run shapes a
+// `json`-typed field read there as a one-element list, so the body runs
+// once and its coverage holds on both passes. Every other position leaves
+// the field's shape alone — a builtin or a subscript that cannot digest
+// the object shape fails, and the dry run reads a failure that rests on a
+// shape as inconclusive, never as the program's death (a shape the dry run
+// picked for one consumer contradicted another every time it tried:
+// PR #1491, three verdicts).
+func (a *AST) IteratedRefs() []Ref {
+	if a == nil || a.root == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var refs []Ref
+	walkIteratedBound(a.root, false, nil, func(r Ref) {
+		key := r.Namespace + ":" + joinPath(r.Path)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, r)
+	})
+	return refs
+}
+
+// walkIteratedBound walks the AST carrying an iterated flag; every pathNode
+// reached with the flag set is emitted through fn. The flag is set on the
+// collection of a lambda combinator alone and travels through a unary or
+// binary operator only — never through a function call (the call's result
+// is what the combinator iterates, its arguments are read in their own
+// positions), a subscript (one element, or a map key), a reduce's init
+// (the accumulator's seed) or a lambda body (one element per invocation).
+// Lambda-bound parameters are excluded from the emission, like
+// walkRefsBound.
+func walkIteratedBound(n node, iterated bool, bound map[string]bool, fn func(Ref)) {
+	switch v := n.(type) {
+	case pathNode:
+		if bound[v.namespace] {
+			return
+		}
+		if iterated {
+			fn(Ref{Namespace: v.namespace, Path: append([]string(nil), v.path...)})
+		}
+	case *unaryNode:
+		walkIteratedBound(v.child, iterated, bound, fn)
+	case *binaryNode:
+		walkIteratedBound(v.left, iterated, bound, fn)
+		walkIteratedBound(v.right, iterated, bound, fn)
+	case *funcCallNode:
+		for _, a := range v.args {
+			walkIteratedBound(a, false, bound, fn)
+		}
+	case *indexNode:
+		walkIteratedBound(v.recv, false, bound, fn)
+		walkIteratedBound(v.index, false, bound, fn)
+	case *lambdaCombNode:
+		walkIteratedBound(v.coll, true, bound, fn)
+		if v.init != nil {
+			walkIteratedBound(v.init, false, bound, fn)
+		}
+		nb := make(map[string]bool, len(bound)+len(v.params))
+		for k := range bound {
+			nb[k] = true
+		}
+		for _, p := range v.params {
+			nb[p] = true
+		}
+		walkIteratedBound(v.body, false, nb, fn)
+	}
+}
+
 func joinPath(p []string) string {
 	out := ""
 	for i, s := range p {

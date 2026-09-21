@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/liveledger"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -67,6 +68,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
 	requireBinaryInPath(t, "go")
+	liveledger.Track(t)
 
 	// Build the stdio MCP test server so list_mcp_resources +
 	// read_mcp_resource have something real to discover.

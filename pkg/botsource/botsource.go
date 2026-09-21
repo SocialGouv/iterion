@@ -102,6 +102,16 @@ type Store interface {
 	Create(ctx context.Context, s BotSource) (BotSource, error)
 	Get(ctx context.Context, id string) (BotSource, error)
 	GetBySlug(ctx context.Context, tenantID, slug string) (BotSource, error)
+	// GetByVersion reads a PAST version of one row by its IDENTITY — the
+	// (id, version) pair a two-pass consumer (the assistant mission's
+	// rewind preview and apply, #1381) pins when the preview certifies the
+	// content. Keying on the row id, not the slug, keeps a
+	// delete-and-recreate of the same slug from aliasing incarnations: a
+	// recreated row carries a new id and can never serve a pin taken on
+	// the old one. Version history is retained on Delete: a pinned version
+	// outliving its row is deliberate — the preview certified that
+	// content, and the apply is safe acting on exactly it.
+	GetByVersion(ctx context.Context, tenantID, id string, version int) (BotSource, error)
 	Update(ctx context.Context, s BotSource) (BotSource, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]BotSource, error)

@@ -964,10 +964,17 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	}
 }
 
-// putDelegateModelFields copies the model/window fields onto an event
-// payload, omitting empties and zeros so observers can tell "unknown"
-// from a measured empty by the key's absence — the CostUSD precedent.
+// putDelegateModelFields copies the model/window fields — and the attempt /
+// re-ask markers of a schema re-ask — onto an event payload, omitting
+// empties and zeros so observers can tell "unknown" from a measured empty
+// by the key's absence — the CostUSD precedent.
 func putDelegateModelFields(data map[string]any, info DelegateInfo) {
+	if info.Reask != "" {
+		data["reask"] = info.Reask
+		if info.Attempt > 0 {
+			data["attempt"] = info.Attempt
+		}
+	}
 	if info.DeclaredModel != "" {
 		data["declared_model"] = info.DeclaredModel
 	}
@@ -1146,6 +1153,15 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 		"exit_code":   info.ExitCode,
 	}
 	putDelegateModelFields(data, info)
+	// Same rule as delegate_finished: omitted when the price table did not
+	// know the model. The org-metering accumulator reads delegate_finished
+	// alone today — a delegation that ends here is unbilled there, the
+	// pre-existing shape for every failed attempt; the event carries the
+	// figure so a reader that closes that gap (and the schema re-ask, whose
+	// error event prices the re-ask's own marginal) sees it.
+	if info.CostUSD > 0 {
+		data["cost_usd"] = info.CostUSD
+	}
 	if info.Error != nil {
 		data["error"] = info.Error.Error()
 	}

@@ -67,6 +67,13 @@ interface DocumentState {
    *  over what the author wrote. Cleared by a parse of the buffer that comes
    *  back whole. */
   salvaged: boolean;
+  /** True once the path was SET to null — File → New, Import, Start blank:
+   *  the document follows no file. A fresh store's null path is not that:
+   *  it means "not resolved yet", and a tab keeps the file param its load is
+   *  for through that window. The two nulls decide the tab's params
+   *  (TabBindingSync): a detached document drops them, an unresolved one
+   *  leaves them. Cleared by binding a path. */
+  detached: boolean;
   // Cached so cloud-mode launch/resume can pass it inline. Updated on
   // openFile / saveFile / parseSource; null otherwise.
   currentSource: string | null;
@@ -243,6 +250,7 @@ export function createDocumentStore() {
   issues: [],
   currentFilePath: null,
   salvaged: false,
+  detached: false,
   currentSource: null,
   unit: null,
   _generation: 0,
@@ -261,8 +269,10 @@ export function createDocumentStore() {
       issues: issues ?? [],
     }),
   // A new file is a new program: whatever the last one salvaged says nothing
-  // about this one, so the flag is dropped with the unit.
-  setCurrentFilePath: (currentFilePath) => set({ currentFilePath, unit: null, salvaged: false }),
+  // about this one, so the flag is dropped with the unit. A null path here is
+  // a detachment — told apart from a fresh store's null by `detached`.
+  setCurrentFilePath: (currentFilePath) =>
+    set({ currentFilePath, unit: null, salvaged: false, detached: currentFilePath === null }),
   setSalvaged: (salvaged) => set({ salvaged }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),

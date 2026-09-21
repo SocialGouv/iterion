@@ -27,13 +27,12 @@ export interface ExampleTargetStore {
  * `"feature-dev/main.bot"`) and apply it to `store`.
  *
  * Binds `currentFilePath` to the path the server names — a file inside the
- * workspace — else to `bots/<name>`, where a save of the one program lands;
- * BEFORE `markSaved()`
- * so the freshly-loaded state is the clean saved baseline AND the Run button
- * enables immediately (otherwise it stays disabled with "Save the workflow
- * first to launch a run"). Keeps the example's `source` + `diagnostics` so
- * Save and cloud-mode resume work without a re-open, and binds the unit of
- * a bot in several files.
+ * workspace — else to `bots/<name>`, where a save of the one program lands,
+ * BEFORE `markSaved()`, so the freshly-loaded state is the clean saved
+ * baseline: bound and saved, it is what the Run button launches by path
+ * (`launchRefusal`), unless it is a salvage. Keeps the example's `source` +
+ * `diagnostics` so Save and cloud-mode resume work without a re-open, and
+ * binds the unit of a bot in several files.
  *
  * Throws if the load fails; callers decide how to surface that. Returns the
  * loaded result.

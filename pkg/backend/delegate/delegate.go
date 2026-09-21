@@ -732,6 +732,18 @@ type Task struct {
 	// ask_user call, sent back to the LLM as the tool_result content.
 	ResumeAnswer string
 
+	// ContinueConversation, when non-nil, is a COMPLETED conversation the
+	// backend replays as it ended, with UserPrompt as its next user turn —
+	// the executor's schema re-ask, which tells the model what its answer
+	// lacked instead of running the whole turn again. Nothing in it is
+	// pending, so it is mutually exclusive with ResumeConversation (a
+	// PAUSED conversation, answered by a tool_result). Same opaque shape as
+	// ResumeConversation; read by claw, which runs such a task in-process
+	// only (the executor strips its tools, so the turn never needs the
+	// sandbox — and an in-container runner that predates the field would
+	// otherwise run the user turn without the conversation it refers to).
+	ContinueConversation json.RawMessage
+
 	// SharedStateDir is a directory reachable at the SAME absolute path from
 	// the host and from inside the sandbox, and which is NOT part of the target
 	// repository's checkout — the host `~/.iterion` that host_state

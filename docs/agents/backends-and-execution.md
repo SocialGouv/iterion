@@ -37,7 +37,15 @@ conversation** (`session: inherit` / `inherit_if_available` / `fork` —
 cross-backend meaning. The third is why a node that must survive a
 fall-through WITHOUT losing its thread builds its ladder from different
 *providers* inside ONE backend rather than from different backends —
-Copi's claw ladder is the shipped example. Two route properties extend the chain (ADR-091):
+Copi's claw ladder is the shipped example. On any route, an answer that
+fails the node's `output:` schema on a fixable shape (a missing required
+field, text instead of JSON — the fallback model did not write the
+primary's schema habits) gets ONE re-ask with the validation error, in the
+conversation (claw) or session (claude_code/codex/pi) it came from, before
+the node fails; `delegate_retry.reask` names the mode, and the re-ask's own
+`delegate_*` events carry `attempt: 2`
+([the schema re-ask](../backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask)).
+Two route properties extend the chain (ADR-091):
 `action: skip` is a TERMINAL degrade — the node completes with a
 zero-value output stamped `_skipped` instead of failing the run (the
 "continue and ignore" half of an optional-peer policy; "pause and

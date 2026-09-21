@@ -72,10 +72,12 @@ type ValidateOptions struct {
 	// included; zero is a minute. A pass that runs out of time is said so in
 	// the report (`timed_out`), apart from a death of the program.
 	ExecTimeout time.Duration
-	// Strict fails the command when the dry run's report is not clean —
-	// a pass died, or a reference, shell or fixture finding stands — the
-	// switch a CI gate flips; without it the exit code is the compiler's,
-	// and `exec.clean` in the JSON is the report's word.
+	// Strict fails the command when the dry run's report is failing — a
+	// pass died, or a reference, shell or fixture finding stands — the
+	// switch a CI gate flips; an expression the dry run could not decide
+	// on a shape (`inconclusive`) is printed, not failed. Without it the
+	// exit code is the compiler's, and `exec.clean` / `exec.failing` in
+	// the JSON are the report's word.
 	Strict   bool
 	Fixtures string
 	// Vars and Preset give the dry run its launch values — `--var k=v` and
@@ -520,16 +522,17 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	if result.ExecError != "" {
 		return dryRunFailed(p, result.ExecError)
 	}
-	if opts.Strict && result.Exec != nil && !result.Exec.Clean() {
+	if opts.Strict && result.Exec != nil && result.Exec.Failing() {
 		return dryRunNotClean(p, result.Exec)
 	}
 	return nil
 }
 
-// dryRunNotClean is the error of a dry run whose report is not clean under
-// --strict, returned AFTER the result was printed: in JSON mode it is
-// marked ErrReported and the CLI prints nothing more. A pass that ran out
-// of time is named as the bound's doing, with the flag that raises it.
+// dryRunNotClean is the error of a dry run whose report is failing under
+// --strict — a death or a defect finding, never an inconclusive expression
+// alone — returned AFTER the result was printed: in JSON mode it is marked
+// ErrReported and the CLI prints nothing more. A pass that ran out of time
+// is named as the bound's doing, with the flag that raises it.
 func dryRunNotClean(p *Printer, report *dryrun.Report) error {
 	if p.Format == OutputJSON {
 		return fmt.Errorf("dry run not clean: %w", ErrReported)

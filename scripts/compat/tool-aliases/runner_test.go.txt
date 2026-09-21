@@ -1,0 +1,28 @@
+package runner
+import (
+ "context"
+ "encoding/json"
+ "errors"
+ "os"
+ "testing"
+ iterlog "github.com/SocialGouv/iterion/pkg/log"
+ "github.com/SocialGouv/iterion/pkg/queue"
+ "github.com/SocialGouv/iterion/pkg/store"
+)
+func TestAliasCompatibilityOldRunner(t *testing.T) {
+ pinEngineBuild(t,"v3.143.0+882c76afbb")
+ dir:=os.Getenv("ITERION_ALIAS_COMPAT_DIR");if dir==""{t.Fatal("ITERION_ALIAS_COMPAT_DIR required")}
+ body,err:=os.ReadFile(dir+"/message.json");if err!=nil{t.Fatal(err)}
+ var msg queue.RunMessage;if err:=json.Unmarshal(body,&msg);err!=nil{t.Fatal(err)}
+ if err:=msg.Validate();err!=nil{t.Fatalf("old queue refused compatible envelope: %v",err)}
+ if _,err:=loadWorkflow(context.Background(),&msg,nil);err!=nil{t.Fatalf("old AST/IR reader: %v",err)}
+ st,err:=store.New(t.TempDir());if err!=nil{t.Fatal(err)}
+ ctx:=context.Background();if _,err:=st.CreateRun(ctx,msg.RunID,msg.WorkflowName,nil);err!=nil{t.Fatal(err)}
+ if msg.BotBundle==nil||len(msg.BotBundle.Snapshot)==0 {t.Fatal("new publisher dropped the manifest snapshot")}
+ r:=&Runner{cfg:Config{Store:st,WorkDir:t.TempDir(),Logger:iterlog.Nop()}}
+ err=r.executeRun(ctx,&msg,nil)
+ if !errors.Is(err,ErrBotRequiresNewerEngine){t.Fatalf("old executeRun: %v",err)}
+ run,err:=st.LoadRun(ctx,msg.RunID);if err!=nil{t.Fatal(err)}
+ if run.Status!=store.RunStatusFailed||run.FailureCode!=store.FailureBotRequiresNewerEngine {t.Fatalf("old verdict: %s/%s",run.Status,run.FailureCode)}
+ t.Logf("old executeRun refused published AST before tools/models: %s/%s",run.Status,run.FailureCode)
+}

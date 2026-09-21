@@ -669,12 +669,12 @@ func sameStringSet(a, b []string) bool {
 // in pkg/bundle, so an author, an operator and a pod cannot read the same
 // manifest three different ways.
 // checkSyntaxFloor holds the manifest's engine floor against what the
-// bundle's sources use (C252): a profile above 1, `import` or a `contract`
-// needs a declared `requires.iterion` at or above the release that reads it
-// (bundle.CheckSyntaxFloor, the predicate the push admission shares) — a
-// floor declared but lower leaves every runner between the two admitting a
-// bundle it cannot parse. The remedy names that release, or this build when
-// the release has none on record.
+// bundle's sources use (C252): a profile above 1, `import`, a `contract`,
+// or a Claw tool alias needs a declared `requires.iterion` at or above the
+// release that reads it (bundle.CheckSyntaxFloor, the predicate the push
+// admission shares) — a floor declared but lower leaves every runner
+// between the two admitting a bundle it cannot parse. The remedy names that
+// release, or this build when the release has none on record.
 func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequirements, build string) {
 	pf := bundle.CheckSyntaxFloor(m, req)
 	if pf.OK {
@@ -690,10 +690,14 @@ func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequir
 		}
 	}
 	uses := req.Describe()
-	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: a runner older than the release that reads it re-parses a subbot child, a fragment or the contract as text and fails at that parse", uses)
+	consequence := "a runner older than the release that reads it re-parses a subbot child, a fragment or the contract as text and fails at that parse"
+	if req.UsesToolAliases() {
+		consequence = "a runner older than the release that reads it keeps resolving the aliased spellings as exact tools or unique MCP shorthand only, and the node's tool list fails at dispatch"
+	}
+	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: %s", uses, consequence)
 	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest, so such a runner refuses the bundle at admission instead", floor)
 	if pf.Declared != "" {
-		msg = fmt.Sprintf("the bundle uses %s but requires.iterion %q does not reach %s, the release that reads it: a runner between the two re-parses a subbot child, a fragment or the contract as text and fails at that parse", uses, pf.Declared, floor)
+		msg = fmt.Sprintf("the bundle uses %s but requires.iterion %q does not reach %s, the release that reads it: %s", uses, pf.Declared, floor, consequence)
 		hint = fmt.Sprintf("raise it to `requires: { iterion: \">= %s\" }`", floor)
 	}
 	*diags = append(*diags, Diag{Code: DiagProfileNeedsFloor, Severity: SeverityWarning, Field: "requires.iterion", Message: msg, Hint: hint})

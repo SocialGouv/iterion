@@ -35,7 +35,7 @@
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.6 |
 | `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 1 · 8 | 2.0.1 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 1 · 8 | 0.1.2 |
-| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.3 |
+| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.4 |
 | `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 1 · 2 | 0.2.3 |
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 1 · 11 | 0.1.2 |
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 1 · 11 | 0.1.2 |

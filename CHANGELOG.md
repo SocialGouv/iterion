@@ -3,6 +3,78 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.179.0](https://github.com/SocialGouv/iterion/compare/v3.178.4...v3.179.0) (2026-09-21)
+
+### Features
+
+* **backend:** the schema re-ask and the tool-alias floor ([#1546](https://github.com/SocialGouv/iterion/issues/1546)) ([2cb6c6d](https://github.com/SocialGouv/iterion/commit/2cb6c6da2c948eb9673331a6288547bdae524838)), references [#1385](https://github.com/SocialGouv/iterion/issues/1385) [#1155](https://github.com/SocialGouv/iterion/issues/1155) [#1276](https://github.com/SocialGouv/iterion/issues/1276) [#1155](https://github.com/SocialGouv/iterion/issues/1155) [#1155](https://github.com/SocialGouv/iterion/issues/1155)
+
+    <details><summary>why</summary>
+
+    When an LLM node's structured output fails its output: schema on a shape one more ask can fix (a parse fallback, or a missing required field), the executor re-asks the model ONCE with the validation error, continuing the work instead of repeating the turn: claw replays the conversation it just completed (a new delegate.Task.ContinueConversation, tools off, in-process, refused over the sandbox runner so an old runner can never receive it); claude_code/codex/pi resume the answer's session by id;…
+
+    </details>
+
+## [3.178.4](https://github.com/SocialGouv/iterion/compare/v3.178.3...v3.178.4) (2026-09-21)
+
+### Bug Fixes
+
+* **server,botsource:** a mission rewind's apply resolves the bot identity the preview pinned ([#1515](https://github.com/SocialGouv/iterion/issues/1515)) ([9f38fd2](https://github.com/SocialGouv/iterion/commit/9f38fd2edaf689623b5d51338b5a8e7a16f379d7)), references [#1381](https://github.com/SocialGouv/iterion/issues/1381)
+
+    <details><summary>why</summary>
+
+    The assistant mission rewinds in two coordinator passes: the preview resolves the stored bot at its current botsource row and computes the pivot; the apply re-resolved independently and computed the blast radius in whatever the slug carried by then. A republish — or a delete plus re-author under the same slug — between the two passes moved the destruction onto a graph the preview never saw, on a receipt that reported success; ExpectedPivot guards the pivot's NAME, and any of those graphs name…
+
+    </details>
+
+## [3.178.3](https://github.com/SocialGouv/iterion/compare/v3.178.2...v3.178.3) (2026-09-21)
+
+### Bug Fixes
+
+* **bots:** a Seki pass publishes only its own deep scan, the anti-facade gate counts the trio only, and an exhausted backlog reads as a note ([#1473](https://github.com/SocialGouv/iterion/issues/1473)) ([4c5bf44](https://github.com/SocialGouv/iterion/commit/4c5bf4463c48a5bf47f0a00089a5beb7d27b9543)), references [#1331](https://github.com/SocialGouv/iterion/issues/1331) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1333](https://github.com/SocialGouv/iterion/issues/1333) [#1328](https://github.com/SocialGouv/iterion/issues/1328) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1331](https://github.com/SocialGouv/iterion/issues/1331) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1323](https://github.com/SocialGouv/iterion/issues/1323) [pre-#1322](https://github.com/pre-/issues/1322) [#1333](https://github.com/SocialGouv/iterion/issues/1333) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1475](https://github.com/SocialGouv/iterion/issues/1475)
+
+    <details><summary>why</summary>
+
+    Three fixes in the class "a pass reports on facts that are not its own", travelling together because they share the manifest bump.
+
+    </details>
+
+## [3.178.2](https://github.com/SocialGouv/iterion/compare/v3.178.1...v3.178.2) (2026-09-21)
+
+### Bug Fixes
+
+* **studio:** the Run gate and the tab binding stop lying about an unbound buffer ([#1531](https://github.com/SocialGouv/iterion/issues/1531)) ([ce784c8](https://github.com/SocialGouv/iterion/commit/ce784c8a6145cca624b02f5e818e42b02f75cc50)), references [#1334](https://github.com/SocialGouv/iterion/issues/1334) [#1334](https://github.com/SocialGouv/iterion/issues/1334) [#1326](https://github.com/SocialGouv/iterion/issues/1326) [#1326](https://github.com/SocialGouv/iterion/issues/1326) [#1519](https://github.com/SocialGouv/iterion/issues/1519) [#1519](https://github.com/SocialGouv/iterion/issues/1519)
+
+    <details><summary>why</summary>
+
+    A tab remembered its file in tab.params.file, written by TabBindingSync only ever non-null (`if (!path) return`): a tab that stopped following anything kept the PREVIOUS name, and a remount — /editor is a wouter route, the per-tab stores survive — re-fetched that file over the author's unsaved work (#1334). The same staleness held a draft param, whose re-apply would overwrite the canvas with the draft.
+
+    </details>
+
+## [3.178.1](https://github.com/SocialGouv/iterion/compare/v3.178.0...v3.178.1) (2026-09-21)
+
+### Bug Fixes
+
+* **dryrun:** shape json outputs by their consumers, and name a best_effort fan-out's dead branches ([#1491](https://github.com/SocialGouv/iterion/issues/1491)) ([1b93cde](https://github.com/SocialGouv/iterion/commit/1b93cde4d165ece8df10d05cad1a032e6f4dc680)), references [#1318](https://github.com/SocialGouv/iterion/issues/1318) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1325](https://github.com/SocialGouv/iterion/issues/1325) [#1318](https://github.com/SocialGouv/iterion/issues/1318) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1325](https://github.com/SocialGouv/iterion/issues/1325) [#1325](https://github.com/SocialGouv/iterion/issues/1325) [#1434](https://github.com/SocialGouv/iterion/issues/1434)
+
+    <details><summary>why</summary>
+
+    A `json`-typed output field a downstream position reads AS AN ARRAY takes the array shape now — empty on the false pass, one-element on the true pass. The rule fires at one seam (dryrun.Value), read from a workflow scan (arrayConsumers / arrayConsumedVars) that enumerates the two iteration surfaces of the DSL (fan_out_each `over:` refs and Foreach.CollectionRefs) at their exact leaf refs, the edge-expression array-context refs and the compute-expression array-context refs (through a new…
+
+    </details>
+
+## [3.178.0](https://github.com/SocialGouv/iterion/compare/v3.177.0...v3.178.0) (2026-09-21)
+
+### Features
+
+* **live:** the last-green ledger answers "do the live e2e still pass?" for free, and the DRAFT stabilisation plan ([#1511](https://github.com/SocialGouv/iterion/issues/1511)) ([b59914d](https://github.com/SocialGouv/iterion/commit/b59914db4f6bac3a57445b252e63cdd4c913670b)), references [#1424](https://github.com/SocialGouv/iterion/issues/1424) [#1422](https://github.com/SocialGouv/iterion/issues/1422) [#1424](https://github.com/SocialGouv/iterion/issues/1424) [#1422](https://github.com/SocialGouv/iterion/issues/1422)
+
+    <details><summary>why</summary>
+
+    The plan #1424 asks for, as a DRAFT: per core surface, what is already free (measured from the coverage matrix's 387 rows), what must become free, what must stay paid and why, and the budget one stabilisation pass costs. Candidate order DSL → runtime → backends → bots, ranked by what breaks the most when it moves; no engine change, no new tests for tests' sake.
+
+    </details>
+
 ## [3.177.0](https://github.com/SocialGouv/iterion/compare/v3.176.0...v3.177.0) (2026-09-21)
 
 ### Features

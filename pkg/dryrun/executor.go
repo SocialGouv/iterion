@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -33,6 +34,13 @@ const (
 	// production validator's word, the one a real run would apply — or
 	// names no node of the program.
 	KindFixture Kind = "fixture"
+	// KindInconclusive: an expression failed while reading a value the dry
+	// run invented — a `json` field it shaped, a `json` var no launch value
+	// filled, a value derived from one — so the failure decided nothing
+	// about the program. The finding names the value and what would decide
+	// it; the field it computed reads as a shape in turn, and the pass goes
+	// on. Not a defect: Report.Failing reads past it, Report.Clean does not.
+	KindInconclusive Kind = "inconclusive"
 )
 
 // Finding is one thing the dry run met, at a node.
@@ -61,6 +69,15 @@ type Executor struct {
 	bias     bool
 	fixtures map[string]map[string]any
 	shell    ShellChecker
+	// iterated[nodeID][field] holds an output field a downstream iteration
+	// reads (a fan_out_each `over:`, a foreach, a lambda combinator's
+	// collection): a `json` field there is shaped as a one-element list.
+	// Computed once at construction, so a node's output shape is the same
+	// on every crossing of a loop.
+	iterated map[string]map[string]bool
+	// given are the launch values the caller supplied for vars: the
+	// program's own values, never invented (Options.Inputs).
+	given map[string]any
 	// path is the main file this workflow came from; children resolves a
 	// child's source beside it; simulate runs a child under the node that
 	// hands it work (nil at the depth cap).
@@ -84,6 +101,97 @@ type Executor struct {
 	shaped   []string
 	pinned   []string
 	findings []Finding
+	// produced holds every node the pass saw finish — simulated nodes and
+	// the engine-internal ones (computes, routers) alike, from the event
+	// stream. A producer absent from it has output nothing on this pass: a
+	// read of its output failed on absence, not on a shape (Inconclusive).
+	produced map[string]bool
+	// What the pass observed of each declared loop's crossings: how many
+	// edges of the name fired, and the source of the latest and of the
+	// previous one. `loop.<name>.previous_output` is the snapshot of the
+	// crossing BEFORE the latest (the first crossing stages only the
+	// current output), taken from the edge the pass selected — the consult
+	// reads this instead of guessing from the workflow's edge list.
+	loopCrossings map[string]int
+	loopPrevSrc   map[string]string
+	loopLastSrc   map[string]string
+	// undecided[nodeID][field] holds the compute fields whose expression
+	// could not be decided in this pass: their value is a shape, invented
+	// in turn (Inconclusive).
+	undecided map[string]map[string]bool
+}
+
+// markProduced records a node the pass saw finish.
+func (x *Executor) markProduced(node string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.produced == nil {
+		x.produced = map[string]bool{}
+	}
+	x.produced[node] = true
+}
+
+// hasProduced reports whether the node finished on this pass.
+func (x *Executor) hasProduced(node string) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.produced[node]
+}
+
+// recordLoopCrossing mirrors the engine's loop bookkeeping for one selected
+// loop edge: each crossing rotates the previous snapshot's source behind the
+// latest one. No reset here — the engine resets a loop's counter on a
+// NON-loop edge entering a body node from outside the body
+// (recordTrunkEdge), and this method only ever sees loop edges:
+// `ir.Loop.Entries` is by construction the set of the loop-bearing
+// back-edges' targets, so testing it here fired on every crossing and
+// pinned the crossings at one (PR #1491 review R651a94).
+func (x *Executor) recordLoopCrossing(name, from, to string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.loopCrossings == nil {
+		x.loopCrossings = map[string]int{}
+		x.loopPrevSrc = map[string]string{}
+		x.loopLastSrc = map[string]string{}
+	}
+	x.loopCrossings[name]++
+	x.loopPrevSrc[name] = x.loopLastSrc[name]
+	x.loopLastSrc[name] = from
+}
+
+// recordTrunkEdge mirrors the engine's loop re-entry for one selected
+// non-loop edge: entering a loop's body from outside it, at one of the
+// loop's entries, resets the loop's crossings — the engine drops the
+// snapshots with the counter, so the previous_output story starts over.
+func (x *Executor) recordTrunkEdge(from, to string) {
+	if x.wf == nil {
+		return
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for name, loop := range x.wf.Loops {
+		if loop == nil || len(loop.Body) == 0 || loop.Body[from] || !loop.Body[to] {
+			continue
+		}
+		if x.loopCrossings[name] > 0 && loop.Entries[to] {
+			x.loopCrossings[name] = 0
+			x.loopPrevSrc[name] = ""
+			x.loopLastSrc[name] = ""
+		}
+	}
+}
+
+// previousOutputSource names the node whose output the loop's
+// previous_output snapshot holds, and whether a snapshot exists: the first
+// crossing stages only the current output, so the snapshot appears with the
+// second.
+func (x *Executor) previousOutputSource(name string) (string, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.loopCrossings[name] < 2 || x.loopPrevSrc[name] == "" {
+		return "", false
+	}
+	return x.loopPrevSrc[name], true
 }
 
 // declaredSecrets resolves a declared secret to a placeholder — the value a
@@ -125,9 +233,11 @@ func (x *Executor) ChildRuns() []childRun {
 
 // NewExecutor builds the executor of one pass over wf. bias decides the
 // shape of a bool or an enum; fixtures, when given, answer the nodes they
-// name; shell holds shell text (nil: unchecked, and said).
+// name; shell holds shell text (nil: unchecked, and said). The iterations
+// of every output field are walked once here — a `json` field a
+// downstream iteration reads takes the one-element list shape.
 func NewExecutor(wf *ir.Workflow, bias bool, fixtures map[string]map[string]any, shell ShellChecker) *Executor {
-	return &Executor{wf: wf, bias: bias, fixtures: fixtures, shell: shell}
+	return &Executor{wf: wf, bias: bias, fixtures: fixtures, shell: shell, iterated: iteratedFields(wf)}
 }
 
 // SetVars receives the run's vars from the engine (its varsSetter seam),
@@ -298,8 +408,28 @@ func (x *Executor) prompt(id, where, name string, input, vars map[string]any, td
 // unresolved reports a reference kept as written. A declared secret never
 // reaches it: the prompt resolver renders it as a placeholder
 // (declaredSecrets) and the command renderer as the guard's placeholder.
+// A reference the consult proves to rest on a value the dry run invented —
+// an item a fan-out drew from a shaped collection — is inconclusive, not a
+// defect: the render names the value and what would decide it, and the
+// verdict reads it the way it reads every undecided expression.
 func (x *Executor) unresolved(id, where, ref string) {
+	if why, ok := x.inventedRenderRef(ref); ok {
+		x.add(Finding{Node: id, Kind: KindInconclusive, Where: where, Detail: fmt.Sprintf("{{%s}} renders a shape: %s", ref, why)})
+		return
+	}
 	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, x.whyUnresolved(ref))})
+}
+
+// inventedRenderRef answers whether a rendered reference rests on a value
+// the dry run invented: the ref reads `namespace.path…`, and only the
+// namespaces the provenance walk knows answer. A nodeless render ref reads
+// the producer the ref itself names.
+func (x *Executor) inventedRenderRef(ref string) (string, bool) {
+	ns, rest, _ := strings.Cut(ref, ".")
+	if ns == "" || rest == "" {
+		return "", false
+	}
+	return x.invented("", expr.Ref{Namespace: ns, Path: strings.Split(rest, ".")}, nil)
 }
 
 // reporter is the renderer's listener for one place of a node: each
@@ -407,7 +537,7 @@ func (x *Executor) output(id, schema string) map[string]any {
 		x.shaped = append(x.shaped, id)
 		x.mu.Unlock()
 	}
-	return Synthesize(sch, x.bias)
+	return SynthesizeAt(sch, x.bias, x.iterated[id])
 }
 
 // fixtureKeys reports a fixture that names no node of this program: a

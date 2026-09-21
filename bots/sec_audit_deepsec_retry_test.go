@@ -131,6 +131,11 @@ func runRetryBlock(t *testing.T, stdout string, exitCode int) ([]string, string)
 		"LOG_DIR=" + logDir + "\n" +
 		"DSW=" + dsw + "\n" +
 		"CLAUDE_BIN=/bin/true\nCONC=4\nPROC_ARGS=\nAGENT_ARGS=\nERRS=\n" +
+		// The block resolves the run-id meta root off DEEPSEC_DATA_ROOT with a
+		// bare reference and a data fallback: the node body runs without set -u,
+		// where unset reads empty and the fallback fires. This harness is
+		// stricter, so it models the unset case explicitly.
+		"DEEPSEC_DATA_ROOT=\n" +
 		deepsecRetryBlock(t) + "\n" +
 		"printf 'ERRS=%s\\n' \"$ERRS\"\n"
 

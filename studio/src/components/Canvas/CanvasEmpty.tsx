@@ -43,7 +43,7 @@ export default function CanvasEmpty() {
   const handleLoadExample = async (name: string) => {
     try {
       // Shared helper: load + bind the path the server names, else
-      // bots/<name> (so Run enables) + keep the example's
+      // bots/<name> (where a save lands) + keep the example's
       // source/diagnostics + markSaved. Same path as RecentFilesPanel and
       // Toolbar.handlePickFile.
       await openExampleIntoStore(name, {

@@ -524,6 +524,11 @@ func (b *meteredUnparseableBackend) Execute(_ context.Context, _ delegate.Task) 
 // delegation. Both of that function's post-dispatch returns were bare nils, so
 // the sub-test below drives the other one — unparseable prose after the text
 // wrapper — through the same assertion.
+//
+// A router's schema failure is re-asked once like an agent's, so the bill the
+// run must book is TWO served generations; the prose case also pays the
+// last-resort extraction, a direct claw call — scripted here on a provider of
+// its own, so the test never reaches the host's credentials.
 func TestPostDispatchRouterValidationFailureStillBooksItsSpend(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "metered_invalid_router",
@@ -546,17 +551,28 @@ func TestPostDispatchRouterValidationFailureStillBooksItsSpend(t *testing.T) {
 		Budget:  &ir.Budget{MaxTokens: 1_000_000},
 	}
 
+	// The last-resort extraction picks its provider off the environment and
+	// serves it from the claw registry: a scripted narrating client, so the
+	// extraction runs, fails, and is billed — without a host credential.
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
 	for _, tc := range []struct {
 		name    string
 		backend delegate.Backend
+		// tokens the run must book: two served generations, plus the
+		// extraction's own 250 on the prose case.
+		tokens int
 	}{
-		{"schema invalid", &meteredInvalidBackend{}},
-		{"unparseable after the text wrapper", &meteredUnparseableBackend{}},
+		{"schema invalid", &meteredInvalidBackend{}, 44_000},
+		{"unparseable after the text wrapper", &meteredUnparseableBackend{}, 44_250},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := delegate.NewRegistry()
 			reg.Register("metered_stub", tc.backend)
-			exec := model.NewClawExecutor(model.NewRegistry(), wf,
+			clawReg := model.NewRegistry()
+			clawReg.Register("anthropic", func(string) (api.APIClient, error) { return narratingClawClient{}, nil })
+			exec := model.NewClawExecutor(clawReg, wf,
 				model.WithBackendRegistry(reg),
 				model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
 			)
@@ -575,14 +591,37 @@ func TestPostDispatchRouterValidationFailureStillBooksItsSpend(t *testing.T) {
 			if r.Checkpoint == nil {
 				t.Fatal("no checkpoint to read the budget from")
 			}
-			if r.Checkpoint.BudgetTokensUsed != 22_000 {
-				t.Fatalf("the served router session's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+			if r.Checkpoint.BudgetTokensUsed != tc.tokens {
+				t.Fatalf("the served router sessions' tokens never reached the run: %d, want %d", r.Checkpoint.BudgetTokensUsed, tc.tokens)
 			}
-			if r.Checkpoint.BudgetCostUSD != 3.30 {
-				t.Fatalf("the served router session's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+			// Two per-call figures of $3.30 sum; the extraction adds whatever
+			// its model is priced at.
+			if r.Checkpoint.BudgetCostUSD < 6.60 {
+				t.Fatalf("the served router sessions' cost never reached the run: %v, want >= 6.60", r.Checkpoint.BudgetCostUSD)
 			}
 		})
 	}
+}
+
+// narratingClawClient is a claw provider that answers a structured call with
+// prose — the shape on which the last-resort extraction gives up.
+type narratingClawClient struct{}
+
+func (narratingClawClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	events := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 200},
+		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "I would rather narrate."}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 50}},
+		{Type: api.EventMessageStop},
+	}
+	ch := make(chan api.StreamEvent, len(events))
+	for _, ev := range events {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
 }
 
 // A fan-out branch is where the most expensive agent work in a run tends to

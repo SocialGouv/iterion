@@ -4,14 +4,14 @@
 // owns the var-values form state plus the field buckets derived from
 // the parsed document.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import * as filesApi from "@/api/client";
 import { errorMessage } from "@/lib/errorHints";
 import type { IterDocument } from "@/api/types";
 
 import { defaultStringFor } from "@/components/shared/VarFieldInput";
-import { salvageRefusal } from "@/lib/salvage";
+import { launchRefusal, pristineBuffer } from "@/lib/launch";
 import { useDocumentStore } from "@/store/document";
 
 import { type LLMNode } from "./ModelOverridesSection";
@@ -32,8 +32,6 @@ export function useLaunchDoc(
   // off Source). Also lets a fresh local buffer launch before its first
   // save.
   const storeDocument = useDocumentStore((s) => s.document);
-  const salvaged = useDocumentStore((s) => s.salvaged);
-  const storeUnit = useDocumentStore((s) => s.unit);
   // Pristine-buffer detection: the document store initializes with a
   // default scaffold document (createEmptyDocument), so `storeDocument`
   // is never null — a bare deep-link to /runs/new would otherwise
@@ -41,13 +39,22 @@ export function useLaunchDoc(
   // workflow". A buffer only counts as a real launch candidate once the
   // user opened a file (currentFilePath set) or edited the scaffold
   // (generation moved past the last-saved mark).
-  const editorFilePath = useDocumentStore((s) => s.currentFilePath);
-  const editorDirty = useDocumentStore(
-    (s) => s._generation !== s._savedGeneration,
-  );
-  const noSource = !filePath && editorFilePath === null && !editorDirty;
+  const pristine = useDocumentStore(pristineBuffer);
+  const noSource = !filePath && pristine;
+  // Why the buffer cannot be launched inline — the predicate behind the
+  // toolbar's Run button, so this view refuses exactly what that disables.
+  const refusal = useDocumentStore(launchRefusal);
   const [confirmedDiskPath, setConfirmedDiskPath] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+
+  // The effect writes the store (currentSource), so every dep that changes
+  // identity per render re-runs it — an inline onError would turn the load
+  // into an unparse-per-render loop. The callback is invoked, never
+  // captured: the latest one reaches the effect through a ref.
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   useEffect(() => {
     // A confirmation belongs to one exact ?file= load. Never carry it over
@@ -68,21 +75,28 @@ export function useLaunchDoc(
       // A pristine store buffer (never opened, never edited) is NOT a
       // launchable workflow — the render below shows a picker empty
       // state instead, so don't unparse the scaffold here.
-      if (noSource) return;
-      if (!storeDocument) {
-        onError("No workflow to launch — open or write one in the editor first.");
+      if (noSource) {
+        setDoc(null);
         return;
       }
       // A salvaged buffer is the program MINUS the region the parser could
       // not read. Launching it loses no bytes — it RUNS a workflow the
       // author never wrote, at real cost, and the run's report gives no
-      // sign of what is missing. The harshest of the six, so the same
-      // refusal covers it.
-      const refusal = salvageRefusal({ salvaged, unit: storeUnit });
+      // sign of what is missing. The harshest of the six sites that hand
+      // the document out as the program, so the same refusal covers it; a
+      // document with error diagnostics is refused here too, before the
+      // form, with the count the server would refuse it with after.
       if (refusal) {
-        onError(refusal);
+        // The store keeps living while the form is up (this route reads the
+        // active tab's store): a refusal that arrives after the form
+        // mounted clears it, instead of leaving a refused document
+        // launchable under the error banner.
+        setDoc(null);
+        onErrorRef.current(refusal);
         return;
       }
+      // Narrowing only: launchRefusal already refused a missing document.
+      if (!storeDocument) return;
       let cancelled = false;
       filesApi
         .unparse(storeDocument)
@@ -96,7 +110,7 @@ export function useLaunchDoc(
           setValues(initial);
         })
         .catch((e) => {
-          if (!cancelled) onError(errorMessage(e));
+          if (!cancelled) onErrorRef.current(errorMessage(e));
         });
       return () => {
         cancelled = true;
@@ -116,12 +130,12 @@ export function useLaunchDoc(
         setValues(initial);
       })
       .catch((e) => {
-        if (!cancelled) onError(errorMessage(e));
+        if (!cancelled) onErrorRef.current(errorMessage(e));
       });
     return () => {
       cancelled = true;
     };
-  }, [filePath, noSource, onError, setCurrentSource, storeDocument, salvaged, storeUnit]);
+  }, [filePath, noSource, refusal, setCurrentSource, storeDocument]);
 
   // The full declared field list. Progressive-disclosure bucketing
   // (primary / bot options / auto) happens in LaunchView via

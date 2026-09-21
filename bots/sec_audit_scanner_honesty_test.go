@@ -177,7 +177,13 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 		t.Helper()
 		dir := t.TempDir()
 		scanDir, ws, stubs := filepath.Join(dir, "scan"), filepath.Join(dir, "ws"), filepath.Join(dir, "bin")
-		out := filepath.Join(scanDir, "deepsec.json")
+		// vars.deepsec_out is the BASE template; the node inserts $RUN_ID
+		// between its dirname and basename (#1322) so two passes over one
+		// scratch never write to the same file. The base is what the .bot
+		// substitutes; the runPath is where the export ACTUALLY lives.
+		base := filepath.Join(scanDir, "deepsec.json")
+		const runID = "honesty-test"
+		runPath := filepath.Join(scanDir, "deepsec-out-"+runID, "deepsec.json")
 		if err := os.MkdirAll(ws, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -189,14 +195,19 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 		for ref, val := range map[string]string{
 			"{{vars.scan_dir}}":              scanDir,
 			"{{vars.workspace_dir}}":         ws,
-			"{{vars.deepsec_out}}":           out,
+			"{{vars.deepsec_out}}":           base,
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
 			"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
-			// The node keys its log directory on the run id so two runs sharing
-			// the workspace scratch cannot truncate each other's logs — and it
+			// 0 disables the per-run scratch prune. The test asserts what
+			// the node leaves on disk; retention is exercised in its own
+			// test and would otherwise sweep files the fixture depends on.
+			"{{vars.scan_dir_ttl_days}}": "0",
+			// The node keys its log directory AND its export path on the run
+			// id so two runs sharing the workspace scratch cannot truncate
+			// each other's logs or overwrite each other's exports — and it
 			// refuses to start without one.
-			"{{run.id}}": "honesty-test",
+			"{{run.id}}": runID,
 			// Empty: this test is about what the node leaves on disk, so it
 			// takes deepsec's historical provider route. Which agent runs is
 			// exercised in TestDeepsecAgentSelectionReachesTheCommandLine.
@@ -208,7 +219,7 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 		if strings.Contains(rendered, "{{") {
 			t.Fatalf("unsubstituted ref left in the command near %q", rendered[strings.Index(rendered, "{{"):])
 		}
-		return lastJSONLine(t, runShell(t, rendered, stubs)), out
+		return lastJSONLine(t, runShell(t, rendered, stubs)), runPath
 	}
 
 	t.Run("a failed step with nothing exported drops the file and the claim", func(t *testing.T) {

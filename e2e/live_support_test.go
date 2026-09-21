@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/botreplay"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/liveledger"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -76,6 +78,12 @@ type liveResult struct {
 	runErr       error
 	elapsed      time.Duration
 	reason       string
+	// ledger carries the row that pkg/liveledger.Track set up at
+	// t.Cleanup; assessQuality feeds it the aggregate CostUSD once
+	// benchmark.CollectMetrics has run. Nil for tests that skip
+	// runBotLive (they must call liveledger.Track themselves —
+	// TestEveryLiveTestRecordsToTheLedger enforces it).
+	ledger *liveledger.Tracker
 }
 
 // runBotLive executes spec end-to-end and returns the loaded result. It
@@ -84,6 +92,14 @@ type liveResult struct {
 // set), so callers can assume a usable result on return.
 func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	t.Helper()
+	// The last-green ledger: hooked here so every live test that goes
+	// through runBotLive records a row on t.Cleanup (pass or fail, panel
+	// or no panel), keyed by the Taskfile target the operator invoked.
+	// See #1422 and pkg/liveledger. Tests that don't use runBotLive must
+	// call liveledger.Track(t) themselves — the class enum test at
+	// TestEveryLiveTestRecordsToTheLedger enforces it.
+	tracker := liveledger.Track(t)
+	tracker.SetStartedAt(time.Now().UTC())
 	if spec.workspaceDir == "" {
 		t.Fatalf("runBotLive: workspaceDir must be set (seed it before calling)")
 	}
@@ -188,7 +204,24 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 		runErr:       runErr,
 		elapsed:      elapsed,
 		reason:       reason,
+		ledger:       tracker,
 	}
+}
+
+// feedLedgerCost prices the run into the tracker of a test that bypasses
+// runBotLive (the _Real / secured-renovacy direct-hook tests). The
+// ledger's cost column exists so "is this target worth re-running now?"
+// is answerable — and it is most expensive to answer exactly where this
+// matters. CollectMetrics failure is logged, never fatal: the row keeps
+// cost 0 rather than failing a run whose assertions held.
+func feedLedgerCost(t *testing.T, tr *liveledger.Tracker, s store.RunStore, runID string) {
+	t.Helper()
+	rm, err := benchmark.CollectMetrics(context.Background(), s, runID, "", "")
+	if err != nil {
+		t.Logf("[liveledger] CollectMetrics failed (%v) — row keeps cost 0", err)
+		return
+	}
+	tr.SetCost(rm.TotalCostUSD)
 }
 
 // deadCredentialReason reports why a run failed on an unusable credential,

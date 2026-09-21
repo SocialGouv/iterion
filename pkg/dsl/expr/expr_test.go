@@ -252,6 +252,107 @@ func TestExpr_Refs(t *testing.T) {
 	}
 }
 
+// IteratedRefs surfaces the refs an expression ITERATES — the collection of
+// a lambda combinator — and nothing else: a builtin's argument, a
+// subscript's receiver, a lambda body or a reduce's init are read, not
+// iterated, and the dry run leaves their shape alone (a failure there is
+// inconclusive, not a death). Each negative case is the mutation that
+// would put a guess back: marking a builtin's argument reshapes a `json`
+// field another expression reads as a map.
+func TestExpr_IteratedRefs(t *testing.T) {
+	cases := []struct {
+		src          string
+		wantIterated []string // Namespace.Path the expression iterates
+		wantPlain    []string // refs the expression reads but does not iterate
+	}{
+		{
+			src:          `map(outputs.plan.items, x => x.id)`,
+			wantIterated: []string{"outputs.plan.items"},
+		},
+		{
+			src:          `filter(vars.batch, x => x.ok)`,
+			wantIterated: []string{"vars.batch"},
+		},
+		{
+			src:          `reduce(outputs.a.rows, outputs.a.seed, (acc, x) => acc + x.n)`,
+			wantIterated: []string{"outputs.a.rows"},
+			wantPlain:    []string{"outputs.a.seed"},
+		},
+		{
+			// A builtin reads its argument; only the combinator iterates.
+			// `length` measures a map as well as a list, `keys` reads a
+			// map: marking either argument would shape a `json` field as a
+			// list for the other.
+			src:       `length(outputs.a.cfg) > 0 && length(keys(outputs.a.cfg)) > 0`,
+			wantPlain: []string{"outputs.a.cfg"},
+		},
+		{
+			src:       `concat(outputs.a.items, outputs.b.items)`,
+			wantPlain: []string{"outputs.a.items", "outputs.b.items"},
+		},
+		{
+			src:       `sum(outputs.a.scores) + min(outputs.a.scores) + max(outputs.b.scores)`,
+			wantPlain: []string{"outputs.a.scores", "outputs.b.scores"},
+		},
+		{
+			src:       `contains(outputs.plan.tags, vars.needle) || join(outputs.report.lines, vars.sep) == ""`,
+			wantPlain: []string{"outputs.plan.tags", "vars.needle", "outputs.report.lines", "vars.sep"},
+		},
+		{
+			// A subscript reads one element, or a map key — never the list.
+			src:       `outputs.plan.items[0].name == outputs.plan.cfg[vars.key] && outputs.a.rows[-1] != ""`,
+			wantPlain: []string{"outputs.plan.items", "outputs.plan.cfg", "vars.key", "outputs.a.rows"},
+		},
+		{
+			// The iterated flag does not travel through a function call: the
+			// call's result is iterated, its arguments are read.
+			src:       `map(concat(outputs.a.items, outputs.b.items), x => x)`,
+			wantPlain: []string{"outputs.a.items", "outputs.b.items"},
+		},
+		{
+			// A lambda body produces one element per invocation, a reduce
+			// init is the accumulator's seed: neither is iterated.
+			src:          `map(outputs.a.items, x => vars.tag) != reduce(outputs.b.items, vars.seed, (acc, x) => acc)`,
+			wantIterated: []string{"outputs.a.items", "outputs.b.items"},
+			wantPlain:    []string{"vars.tag", "vars.seed"},
+		},
+		{
+			src:       `outputs.plan.ok && vars.mode == "on"`,
+			wantPlain: []string{"outputs.plan.ok", "vars.mode"},
+		},
+	}
+	joinRef := func(r Ref) string {
+		s := r.Namespace
+		for _, p := range r.Path {
+			s += "." + p
+		}
+		return s
+	}
+	for _, tc := range cases {
+		ast, err := Parse(tc.src)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.src, err)
+		}
+		got := map[string]bool{}
+		for _, r := range ast.IteratedRefs() {
+			got[joinRef(r)] = true
+		}
+		for _, want := range tc.wantIterated {
+			if !got[want] {
+				t.Errorf("%s: expected iterated ref %q, got %v", tc.src, want, got)
+			}
+		}
+		for _, plain := range tc.wantPlain {
+			if got[plain] {
+				t.Errorf("%s: %q surfaced as iterated but the expression only reads it", tc.src, plain)
+			}
+		}
+		if len(got) != len(tc.wantIterated) {
+			t.Errorf("%s: iterated refs %v, want exactly %v", tc.src, got, tc.wantIterated)
+		}
+	}
+}
+
 func TestExpr_ParseErrors(t *testing.T) {
 	bad := []string{
 		"1 +",

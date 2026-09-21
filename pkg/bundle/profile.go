@@ -2,14 +2,16 @@ package bundle
 
 import (
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
 // sourceState is what a reader could do with a subbot child's source.
@@ -121,7 +123,7 @@ func isRootEntry(rel string) bool {
 
 func walkSyntax(entries []string, read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
-	var declaredBy, unread, importedBy, contractedBy []string
+	var declaredBy, unread, importedBy, contractedBy, aliasBy []string
 	visited := map[string]bool{}
 	var visit func(rel string)
 	visit = func(rel string) {
@@ -171,6 +173,9 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 			if f.AST != nil && len(f.AST.Contracts) > 0 {
 				contractedBy = append(contractedBy, f.Name)
 			}
+			if f.AST != nil && len(aliasUses(f.AST)) > 0 {
+				aliasBy = append(aliasBy, f.Name)
+			}
 			p := f.Profile
 			switch {
 			case p > profile:
@@ -208,7 +213,61 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 	unread = slices.Compact(slices.Sorted(slices.Values(unread)))
 	importedBy = slices.Compact(slices.Sorted(slices.Values(importedBy)))
 	contractedBy = slices.Compact(slices.Sorted(slices.Values(contractedBy)))
-	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, Unread: unread}
+	aliasBy = slices.Compact(slices.Sorted(slices.Values(aliasBy)))
+	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, Unread: unread}
+}
+
+// aliasUses collects the tool-name spellings of one file's AST that resolve
+// only through the Claw alias tier (toolcatalog.BuiltinAlias): the
+// agent/judge `tools:` and `tool_policy:` lists, the workflow-level
+// `tool_policy:`, a Verified Action's rung-4 `agent_tools:`, and a tool
+// node's `command:` spelled as a bare registry-tool name. The exact
+// spellings only — a pattern, a ${VAR} or an mcp-qualified name is resolved
+// where it is used, exactly as the runtime resolves it. `capabilities:` is
+// not a tool list: host rights are C081's domain and never alias.
+func aliasUses(f *ast.File) []string {
+	var out []string
+	add := func(list []string) {
+		for _, n := range list {
+			if toolcatalog.BuiltinAlias(n) != "" {
+				out = append(out, n)
+			}
+		}
+	}
+	for _, a := range f.Agents {
+		add(a.Tools)
+		add(a.ToolPolicy)
+	}
+	for _, j := range f.Judges {
+		add(j.Tools)
+		add(j.ToolPolicy)
+	}
+	for _, g := range f.Groups {
+		for _, a := range g.Agents {
+			add(a.Tools)
+			add(a.ToolPolicy)
+		}
+		for _, j := range g.Judges {
+			add(j.Tools)
+			add(j.ToolPolicy)
+		}
+		for _, t := range g.Tools {
+			add([]string{t.Command})
+			if t.Recovery != nil {
+				add(t.Recovery.AgentTools)
+			}
+		}
+	}
+	for _, t := range f.Tools {
+		add([]string{t.Command})
+		if t.Recovery != nil {
+			add(t.Recovery.AgentTools)
+		}
+	}
+	for _, w := range f.Workflows {
+		add(w.ToolPolicy)
+	}
+	return out
 }
 
 // MaxSyntaxProfile is MaxSyntaxRequirements projected on the profile.
@@ -238,7 +297,11 @@ type SyntaxRequirements struct {
 	// public contract needs the release that reads one
 	// (parser.ContractSince), whatever its profile.
 	ContractedBy []string
-	Unread       []string
+	// AliasBy names the files that spell a Claw tool alias (`Read`, `Bash`,
+	// `Grep`) in a tool list: the names resolve only on a runner carrying
+	// the alias resolver (ToolAliasesSince), whatever their profile.
+	AliasBy []string
+	Unread  []string
 }
 
 // UsesImport reports whether any source of the bundle imports.
@@ -246,6 +309,10 @@ func (r SyntaxRequirements) UsesImport() bool { return len(r.ImportedBy) > 0 }
 
 // UsesContract reports whether any source of the bundle declares a contract.
 func (r SyntaxRequirements) UsesContract() bool { return len(r.ContractedBy) > 0 }
+
+// UsesToolAliases reports whether any source of the bundle spells a Claw
+// tool alias in a tool list.
+func (r SyntaxRequirements) UsesToolAliases() bool { return len(r.AliasBy) > 0 }
 
 // Asks reports whether the sources use anything a floor is asked for — the
 // one predicate the push admission, `validate` and the scaffold read, so a
@@ -267,6 +334,9 @@ func (r SyntaxRequirements) Describe() string {
 	}
 	if r.UsesContract() {
 		parts = append(parts, fmt.Sprintf("`contract` (%s)", strings.Join(r.ContractedBy, ", ")))
+	}
+	if r.UsesToolAliases() {
+		parts = append(parts, fmt.Sprintf("the Claw tool alias (%s)", strings.Join(r.AliasBy, ", ")))
 	}
 	return strings.Join(parts, " and ")
 }
@@ -352,6 +422,12 @@ var syntaxFloors = []syntaxFloor{
 		pins: map[string]string{"parser.ContractSince": parser.ContractSince},
 		need: func(req SyntaxRequirements) (string, string, bool) {
 			return parser.ContractSince, "contract", req.UsesContract()
+		},
+	},
+	{
+		pins: map[string]string{"bundle.ToolAliasesSince": ToolAliasesSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return ToolAliasesSince, "the Claw tool alias", req.UsesToolAliases()
 		},
 	},
 }

@@ -16,6 +16,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -641,6 +643,20 @@ func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []any
 	}
 	arr, err := coerceToArray(e.resolveRef(fe.CollectionRefs[0], sc), fe.Name, fe.CollectionRaw)
 	if err != nil {
+		// A simulation may know the failure rests on a value it made up: the
+		// simulated collection stands in, so the body is crossed and its
+		// bindings resolve instead of the foreach reading as silently empty.
+		if standIn, inconclusive := e.inconclusiveExpression(ExpressionFailure{
+			NodeID:     fe.Name,
+			Source:     fe.CollectionRaw,
+			Refs:       exprRefsOf(fe.CollectionRefs),
+			Collection: "foreach",
+			Err:        err,
+		}); inconclusive {
+			if list, ok := standIn.([]any); ok {
+				return list
+			}
+		}
 		return nil
 	}
 	return arr
@@ -806,6 +822,11 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 // (`{{run.id}}` renders from TemplateData), and deliberately not the ctx
 // RUN IDENTITY that execContext adds: see there.
 func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveScope) context.Context {
+	var manifest *bundle.Manifest
+	if e.bundle != nil {
+		manifest = e.bundle.Manifest
+	}
+	ctx = tool.WithBuiltinAliases(ctx, bundle.AllowsToolAliases(manifest))
 	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }
 
