@@ -119,7 +119,9 @@ answer ([backends.md](backends.md#a-schema-invalid-answer-gets-one-more-turn-the
 validation `error`, and closes with its own `delegate_finished` /
 `delegate_error` marked `attempt: 2` and the same `reask`, priced at the
 re-ask's own `tokens` and at the `cost_usd` it added (on a backend whose
-cost is a session total, the difference). The delegation's own
+cost is a session total, the difference). A transport retry the re-ask
+itself pays is a further `delegate_retry` carrying the same `reask` and a
+backoff `delay_ms`. The delegation's own
 `delegate_started` / `delegate_finished` pair fires once, around the first
 answer, and never carries `reask`.
 

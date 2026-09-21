@@ -294,9 +294,17 @@ workflow probe:
 			}); err != nil {
 				t.Fatal(err)
 			}
+			var deniedTool string
 			ex := model.NewClawExecutor(model.NewRegistry(), cr.Workflow,
 				model.WithToolRegistry(tr),
 				model.WithToolPolicy(tool.BuildChecker(tc.policy, nil, nil)),
+				model.WithEventHooks(model.EventHooks{
+					OnToolCall: func(nodeID string, info model.LLMToolCallInfo) {
+						if info.Error != nil {
+							deniedTool = info.ToolName
+						}
+					},
+				}),
 				model.WithWorkDir(workspace),
 				model.WithLogger(iterlog.Nop()),
 			)
@@ -325,6 +333,76 @@ workflow probe:
 			}
 			if runErr == nil || !strings.Contains(runErr.Error(), "denied") {
 				t.Fatalf("a policy covering neither spelling must deny: %v", runErr)
+			}
+			// The denial names what the node ASKED for, not the identity the
+			// check matched as — a supervise monitor keys the spelling.
+			if deniedTool != "Read" {
+				t.Fatalf("the denial event names %q, want the raw spelling Read", deniedTool)
+			}
+		})
+	}
+}
+
+// A policy verdict on a tool-node command must not depend on unrelated
+// registry state: the identity walk is the ALIAS tier only, so a bare MCP
+// shorthand compares as written whether or not an earlier node booted that
+// server. Mutating the walk back to the full resolver reddens the
+// booted-registry case.
+func TestToolNodePolicyVerdictIsIndependentOfRegistryState(t *testing.T) {
+	pinEngineBuild(t, "v"+bundle.ToolAliasesSince)
+	const source = `tool call_issue:
+  command: create_issue
+workflow probe:
+  entry: call_issue
+  worktree: none
+  call_issue -> done
+`
+	parsed := parser.Parse("shorthand.bot", source)
+	if len(parsed.Diagnostics) > 0 {
+		t.Fatalf("parse: %v", parsed.Diagnostics)
+	}
+	cr := ir.Compile(parsed.File)
+	if cr.HasErrors() {
+		t.Fatalf("compile: %v", cr.Diagnostics)
+	}
+	for _, booted := range []bool{false, true} {
+		name := "unbooted"
+		if booted {
+			name = "booted"
+		}
+		t.Run(name, func(t *testing.T) {
+			workspace := t.TempDir()
+			tr := tool.NewRegistry()
+			probeRan := filepath.Join(workspace, "probe-ran")
+			if err := tr.RegisterBuiltin("create_issue", "probe builtin", nil, func(_ context.Context, _ json.RawMessage) (string, error) {
+				return "ok", os.WriteFile(probeRan, []byte("1"), 0600)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if booted {
+				if err := tr.RegisterMCP("github", "create_issue", "an MCP tool of the same spelling", nil, func(_ context.Context, _ json.RawMessage) (string, error) {
+					return "mcp", nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ex := model.NewClawExecutor(model.NewRegistry(), cr.Workflow,
+				model.WithToolRegistry(tr),
+				model.WithToolPolicy(tool.BuildChecker([]string{"create_issue"}, nil, nil)),
+				model.WithWorkDir(workspace),
+				model.WithLogger(iterlog.Nop()),
+			)
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := New(cr.Workflow, st, ex,
+				WithWorkDir(workspace),
+				WithLogger(iterlog.Nop()),
+				WithBundle(requireBundle(t, ">= "+bundle.ToolAliasesSince)),
+			)
+			if err := e.Run(context.Background(), "shorthand-"+name, nil); err != nil {
+				t.Fatalf("a bare shorthand's policy verdict must not depend on registry state (booted=%v): %v", booted, err)
 			}
 		})
 	}

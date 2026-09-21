@@ -121,11 +121,20 @@ func TestAliasDetectionCoversTheOtherToolLists(t *testing.T) {
 	if req := MaxSyntaxRequirements(registryCommand); !req.UsesToolAliases() {
 		t.Fatalf("tool node command: %+v", req)
 	}
-	// An unquoted `command: Bash -c "ls"` parses as the bare word `Bash` —
-	// exactly what the resolver aliases at runtime — so it asks, like the
-	// bare spelling it is. What never asks: a quoted multi-word command (an
-	// exact match against the whole string fails), a template ref, a
-	// canonical name.
+	// A group's tool nodes expand into the file's own at compile time
+	// (expand_groups appends them), so the walk must see them too — a group
+	// is not a place to hide a command from the floor.
+	groupCommand := map[string]string{
+		"main.bot": "group g:\n  tool t:\n    command: Read\n\nworkflow w:\n  entry: t\n  t -> done\n\nuse g as g\n",
+	}
+	if req := MaxSyntaxRequirements(groupCommand); !req.UsesToolAliases() {
+		t.Fatalf("grouped tool node command: %+v", req)
+	}
+	// An unquoted multi-word command never reaches a resolver at all — the
+	// compiler refuses it (E012, unknown property) — so the case that
+	// matters is the bare word, which is what the resolver aliases. What
+	// never asks: a quoted multi-word command (an exact match against the
+	// whole string fails), a template ref, a canonical name.
 	for name, src := range map[string]string{
 		"quoted multi-word": "workflow w:\n  entry: t\n\ntool t:\n  command: \"Read this file\"\n",
 		"template ref":      "workflow w:\n  entry: t\n\ntool t:\n  command: ${TOOL}\n",

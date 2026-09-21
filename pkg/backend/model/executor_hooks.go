@@ -61,8 +61,10 @@ type DelegateInfo struct {
 	Delay   time.Duration // backoff delay (for OnDelegateRetry)
 	// Reask names how a schema re-ask continued the model's work — one of
 	// the Reask* constants (continue_conversation / resume_session /
-	// restart). Set on the OnDelegateRetry that announces it and on the
-	// re-ask's own lifecycle hooks; empty on every other delegation.
+	// restart). Set on the OnDelegateRetry that announces it, on the
+	// re-ask's own lifecycle hooks, and on the transport retries the re-ask
+	// itself pays (told apart from the announcement by their backoff delay
+	// and error); empty on every other delegation.
 	Reask string
 	// CostUSD is the delegation's LLM spend, read back from the `_cost_usd`
 	// the backend annotated onto its output — the CLI's own figure when it

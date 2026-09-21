@@ -251,6 +251,12 @@ func aliasUses(f *ast.File) []string {
 			add(j.Tools)
 			add(j.ToolPolicy)
 		}
+		for _, t := range g.Tools {
+			add([]string{t.Command})
+			if t.Recovery != nil {
+				add(t.Recovery.AgentTools)
+			}
+		}
 	}
 	for _, t := range f.Tools {
 		add([]string{t.Command})

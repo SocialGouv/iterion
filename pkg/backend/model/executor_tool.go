@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -134,15 +135,17 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 	toolName := node.Command
 
 	// Policy check before resolution — fail fast on denied tools, and never
-	// pay an MCP boot for one. The check matches on the tool's IDENTITY, not
-	// the spelling the node wrote: when the alias tier can resolve it, the
-	// check sees the same canonical name guardTool checks on the agent path
-	// (a policy allowlisting `read_file` covers `command: Read`, and a policy
-	// naming `Read` covers the canonical spelling it resolves to). Read-only:
-	// unresolved or floor-less names keep the raw spelling, so a legacy
-	// bundle's policy compares exactly what it spelled.
+	// pay an MCP boot for one. The check matches on the tool's IDENTITY for
+	// alias spellings: a policy allowlisting `read_file` covers
+	// `command: Read`, and a policy naming `Read` covers the canonical
+	// spelling it resolves to — the same canonical name guardTool checks on
+	// the agent path. The walk is the ALIAS tier only: a bare MCP shorthand
+	// or an mcp__ FQN keeps the spelling it wrote, so a policy verdict never
+	// depends on whether an unrelated node happened to boot that server
+	// earlier in the run. The denial event and message name the RAW
+	// spelling, what the node actually asked for.
 	policyName, policyQualified := e.toolNodePolicyIdentity(ctx, toolName)
-	if err := e.checkToolNodePolicy(ctx, node, policyName, policyQualified); err != nil {
+	if err := e.checkToolNodePolicy(ctx, node, policyName, policyQualified, toolName); err != nil {
 		return nil, err
 	}
 
@@ -326,7 +329,7 @@ func (e *ClawExecutor) runToolNodeCore(
 	resolve func() string,
 	buildCmd func(resolved string) (cmd *exec.Cmd, cleanup func(), err error),
 ) (recipeResult, error) {
-	if err := e.checkToolNodePolicy(ctx, node, toolName, toolName); err != nil {
+	if err := e.checkToolNodePolicy(ctx, node, toolName, toolName, toolName); err != nil {
 		return recipeResult{}, err
 	}
 
@@ -455,7 +458,7 @@ func scriptToolNodeToolName(node *ir.ToolNode) string {
 // resolve an alias. On denial it emits OnToolCall with the policy error,
 // matching failed executed tool calls, and returns an error wrapped with
 // node and tool context.
-func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNode, toolName, qualifiedName string) error {
+func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNode, matchName, qualifiedName, rawName string) error {
 	if e.toolPolicy == nil {
 		return nil
 	}
@@ -463,7 +466,7 @@ func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNod
 		Ctx:               ctx,
 		NodeID:            node.ID,
 		NodeKind:          ir.NodeTool.String(),
-		ToolName:          toolName,
+		ToolName:          matchName,
 		QualifiedToolName: qualifiedName,
 		Vars:              e.vars,
 		// Derived from the NODE rather than passed by each call site: this
@@ -476,31 +479,28 @@ func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNod
 	if err := e.toolPolicy.CheckContext(pctx); err != nil {
 		if e.hooks.OnToolCall != nil {
 			e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
-				ToolName: toolName,
+				ToolName: rawName,
 				Error:    err,
 			})
 		}
-		return fmt.Errorf("model: tool node %q: tool %q denied: %w", node.ID, toolName, err)
+		return fmt.Errorf("model: tool node %q: tool %q denied: %w", node.ID, rawName, err)
 	}
 	return nil
 }
 
 // toolNodePolicyIdentity resolves the identity a tool node's policy check
-// matches on: the canonical name the alias tier resolves the node's
-// spelling to, or the spelling itself when nothing resolves it. Read-only —
-// it never boots an MCP server; the policy gate runs before the real
-// resolution so a denied tool never pays a server boot.
+// matches on for an ALIAS spelling: the canonical name the alias tier
+// resolves it to. Every other spelling — a canonical name, a bare MCP
+// shorthand, an mcp__ FQN — compares exactly as written, so a policy
+// verdict never depends on unrelated registry state (which MCP servers
+// happened to boot earlier in the run). Read-only: it never boots an MCP
+// server; the policy gate runs before the real resolution so a denied tool
+// never pays a server boot.
 func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) (string, string) {
-	if e.toolRegistry == nil {
+	if e.toolRegistry == nil || !tool.BuiltinAliasesEnabled(ctx) || toolcatalog.BuiltinAlias(name) == "" {
 		return name, name
 	}
-	var td *tool.ToolDef
-	var err error
-	if tool.BuiltinAliasesEnabled(ctx) {
-		td, err = e.toolRegistry.ResolveWithAliases(name)
-	} else {
-		td, err = e.toolRegistry.Resolve(name)
-	}
+	td, err := e.toolRegistry.ResolveWithAliases(name)
 	if err != nil || td == nil {
 		return name, name
 	}
