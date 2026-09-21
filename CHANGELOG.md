@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.177.0](https://github.com/SocialGouv/iterion/compare/v3.176.0...v3.177.0) (2026-09-21)
+
+### Features
+
+* **review-pr:** the reviewer runs on z.ai glm-5.3 while the claude forfait is capped ([#1519](https://github.com/SocialGouv/iterion/issues/1519)) ([8b6b60f](https://github.com/SocialGouv/iterion/commit/8b6b60f1454364405478bc06aefc8fbebd6593b9)), references [pre-#1390](https://github.com/pre-/issues/1390)
+
+    <details><summary>why</summary>
+
+    The merge gate's reviewer fleet is parked: the deployment's Anthropic forfait is under a multi-day cap, and every PR in this repo crosses this bot. All four reviewer nodes (reviewer_claude, reviewer_gpt and both glance twins) are pinned to provider "zai" + model "glm-5.3".
+
+    </details>
+
 ## [3.176.0](https://github.com/SocialGouv/iterion/compare/v3.175.2...v3.176.0) (2026-09-21)
 
 ### Features
