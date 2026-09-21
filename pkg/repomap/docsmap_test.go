@@ -13,10 +13,10 @@ import (
 // same-page target.
 func TestReanchorRewritesTheTargetsAQuotedLinkCarries(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		page   string
-		quote  string
-		want   string
+		name  string
+		page  string
+		quote string
+		want  string
 	}{
 		{
 			// docs/async-interaction.md:136, quoted on the map.
