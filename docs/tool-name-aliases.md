@@ -2,7 +2,7 @@
 
 Claw accepts the exact spellings `Read`, `Bash`, and `Grep` as `read_file`, `bash`,
 and `grep` when the bundle declares `requires.iterion` at or above
-`bundle.ToolAliasesSince` — **3.177.0**, the release that first ships the
+`bundle.ToolAliasesSince` — **3.179.0**, the release that first ships the
 resolver. Canonical names continue to work in a plain `.bot` or on older
 engines. This is engine-version-dependent behavior in both DSL profiles; it is
 not a profile-1 lowering that an older reader can reproduce.
@@ -22,7 +22,7 @@ floor at merge is therefore not a memory task; run `devbox run -- go test
 ```yaml
 # manifest.yaml
 requires:
-  iterion: ">= 3.177.0"
+  iterion: ">= 3.179.0"
 ```
 
 Declaring the floor is what turns the resolver on; the same declaration is

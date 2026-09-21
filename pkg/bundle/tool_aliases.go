@@ -11,7 +11,7 @@ package bundle
 // the number cannot rot the way 3.144.0 and 3.146.0 did while the resolver
 // waited on a branch, and a release taken without the resolver turns the test
 // red instead of shipping a floor that admits a runner without the feature.
-const ToolAliasesSince = "3.177.0"
+const ToolAliasesSince = "3.179.0"
 
 // AllowsToolAliases makes requires.iterion the explicit opt-in to the newer
 // resolution semantics. Old files without this floor retain MCP-only shorthand
