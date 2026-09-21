@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.181.0](https://github.com/SocialGouv/iterion/compare/v3.180.2...v3.181.0) (2026-09-21)
+
+### Features
+
+* **bots:** the tree-noise list reaches the bots ([#1530](https://github.com/SocialGouv/iterion/issues/1530)) ([9a9cd77](https://github.com/SocialGouv/iterion/commit/9a9cd778e91e2820a8409759529a9f4fef9e1de1))
+
+    <details><summary>why</summary>
+
+    The catalogue migrates from the literal `':(exclude,top).claude'` exclusion to the canonical channels the engine provisions (the engine half landed in 13db0dd47):
+
+    </details>
+
 ## [3.180.2](https://github.com/SocialGouv/iterion/compare/v3.180.1...v3.180.2) (2026-09-21)
 
 ### Bug Fixes
