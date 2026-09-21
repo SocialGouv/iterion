@@ -1,7 +1,9 @@
 name: wiki-gen
 display_name: Wikky
 icon: 📖
-version: 1.0.3
+version: 1.0.4
+## 1.0.4 — the skill's stale links and anchors are repaired by the tree-wide
+## link burn-down (#1233); no behaviour change.
 ## 1.0.3 — the commit instruction excludes the `.claude/` scaffold iterion
 ## mirrors into the worktree, and the scan's dirty-tree read and the wiki's scope
 ## check leave it out (#1364); the bundle's skill says the same.

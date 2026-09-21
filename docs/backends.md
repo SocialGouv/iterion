@@ -77,12 +77,12 @@ from a plausible one (#1417). The cells:
 
 | Backend | Structured output (`schema:`/`output:`) | Permission gate `ask` | Session resume / fork | Tool events & cost | `{{outputs.*}}` / `{{run.*}}` | Sandbox | MCP servers | ask_user |
 |---|---|---|---|---|---|---|---|---|
-| `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | engine-side | unknown | unknown | unknown |
-| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | engine-side | unknown | proven | proven |
-| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | engine-side | proven (readonly) | unwired (gap) | unknown |
-| `pi` | unknown | unknown | unknown | unknown | engine-side | unknown | unknown | unknown |
-| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | engine-side | unknown | unwired (gap) | unknown |
-| `grok` | unknown | refused (C176) | unwired (gap) | unknown | engine-side | unknown | unwired (gap) | unknown |
+| `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | proven | unknown | unknown | unknown |
+| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | unknown | unknown | proven | proven |
+| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | unknown | proven (readonly) | unwired (gap) | unknown |
+| `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
+| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown |
+| `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown |
 
 The citations, per cell that is not self-evident from the table:
 
@@ -107,11 +107,11 @@ The citations, per cell that is not self-evident from the table:
   Claw's session *resume*
   (conversation rehydration) is wired but not live-asserted; only the
   fork half of its cell is proven.
-- **claude_code.** The one proven cell is session resume:
+- **claude_code.** Two cells are proven. Session resume:
   `TestLive_Lite_SessionInheritValidation`
   (`task test:live:session-inherit`) requires `fix._session_id ==
-  implement._session_id` — `--resume` really continued the CLI session.
-  Fork is wired (`WithForkSession`) but unasserted. Structured output is
+  implement._session_id` — `--resume` really continued the CLI session. The outputs column,
+  by the same test (below). Fork is wired (`WithForkSession`) but unasserted. Structured output is
   wired natively (`WithOutputFormat` plus a two-pass fallback,
   `pkg/backend/delegate/claude_code.go`) and the ask gate, cost metering
   (provider-computed `TotalCostUSD`), sandbox, MCP forwarding and
@@ -148,14 +148,20 @@ The citations, per cell that is not self-evident from the table:
   that drops the field when the model is unpriced — the
   `delegate_*`-at-$0 risk), sandbox and ask_user (prompt-fallback only)
   are wired at best and unproven: unknown.
-- **`{{outputs.*}}` / `{{run.*}}` is engine-side** for every backend:
-  the executor resolves templates before any backend sees the prompt
-  (`pkg/backend/model/executor_template.go`) — one resolver, not six.
-  It is exercised live through `claude_code`
-  (`test:live:session-inherit` asserts cross-node mapped outputs) and
-  `claw` (`test:live:full`); a per-backend proof would be a live run on
-  that backend, not a different resolver. `interaction: async`
-  (`ask_user_async`) is refused outright for codex/kimi/grok (C267).
+- **`{{outputs.*}}` / `{{run.*}}`.** The resolver is engine-side — the
+  executor substitutes templates before any backend sees the prompt
+  (`pkg/backend/model/executor_template.go`), one resolver for six
+  backends — but what a template reads is what the backend's delegate
+  captured into the node's output, and that capture is per backend. The
+  `claude_code` cell is proven by `TestLive_Lite_SessionInheritValidation`
+  (`task test:live:session-inherit`): the `fix` node's session id arrives
+  through its edge as `{{outputs.implement._session_id}}` and the test
+  requires the session the CLI resumed to be that exact id — a template
+  left unresolved could not have resumed it. No claw-pinned live fixture
+  maps an output across nodes (the exhaustive-DSL fixture's unpinned
+  nodes float to host detection), so every other cell stays unknown.
+  `interaction: async` (`ask_user_async`) is refused outright for
+  codex/kimi/grok (C267).
 
 The open parity gaps, in one list: codex/kimi/grok MCP servers;
 kimi/grok session resume/fork (silent, unguarded); pi's print-mode
