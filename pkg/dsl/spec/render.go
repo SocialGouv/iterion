@@ -84,7 +84,11 @@ func Render(what string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("dsl-spec region: unknown kind %q", kind)
 		}
-		return Table(k), nil
+		// A `block → [kind](#kind)` link resolves on the reference page,
+		// where every kind has a heading; a table spliced into another page
+		// (dsl-grammar.md, beside the reference in docs/references/) has no
+		// such heading to offer, so its links point at the reference instead.
+		return strings.ReplaceAll(Table(k), "](#", "](dsl-properties.md#"), nil
 	}
 	return "", fmt.Errorf("dsl-spec region: unknown region %q", what)
 }

@@ -182,12 +182,12 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
-| `fallbacks` | block → [fallback](#fallback) | Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused |
-| `mcp` | block → [mcp](#mcp) | MCP servers active for the node |
-| `compaction` | block → [compaction](#compaction) | Context-compaction thresholds of the node's session |
-| `memory` | block → [memory](#memory) | iterion's shared-memory tools and scopes for the node |
-| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
-| `cursors` | block → [cursors](#cursors) | Prompt-engineering dials activated on the node (docs/cursors.md) |
+| `fallbacks` | block → [fallback](dsl-properties.md#fallback) | Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused |
+| `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the node |
+| `compaction` | block → [compaction](dsl-properties.md#compaction) | Context-compaction thresholds of the node's session |
+| `memory` | block → [memory](dsl-properties.md#memory) | iterion's shared-memory tools and scopes for the node |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](dsl-properties.md#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `cursors` | block → [cursors](dsl-properties.md#cursors) | Prompt-engineering dials activated on the node (docs/cursors.md) |
 <!-- dsl-spec:end -->
 
 Nested blocks:
@@ -261,7 +261,7 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
-| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](dsl-properties.md#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `permission` | ident | Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
@@ -269,10 +269,10 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `goal` | string | Verified action: what the command is for, in one line |
 | `postcondition` | string | Verified action: command whose exit code is the truth oracle at every rung |
 | `policy` | ident — `required`, `recover`, `best_effort` | Verified action: required (default), recover or best_effort (C103–C106) |
-| `recovery` | block → [recovery](#recovery) | Verified action: the self-heal ladder's bounds |
+| `recovery` | block → [recovery](dsl-properties.md#recovery) | Verified action: the self-heal ladder's bounds |
 | `action` | ident | Connector operation to call, `connector.resource.verb` — exclusive with command:/script: (ADR-098, C260) |
 | `connection` | ident | The connection binding that authenticates the action (C261) |
-| `params` | block → [params](#params) | The action's arguments, by the operation's own parameter keys |
+| `params` | block → [params](dsl-properties.md#params) | The action's arguments, by the operation's own parameter keys |
 | `retry` | string | Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266) |
 | `timeout` | string | Action: bound on one call, e.g. "30s" (C265). Inert without `action:` (C266) |
 <!-- dsl-spec:end -->
@@ -335,13 +335,13 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 |---|---|---|
 | `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
-| `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
-| `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
-| `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |
-| `resources` | block → [resources](#resources) | Named semaphores and pools nodes lease with needs: |
-| `mcp` | block → [mcp](#mcp) | MCP servers active for the run |
-| `compaction` | block → [compaction](#compaction) | Default compaction thresholds |
-| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `vars` | block → [vars](dsl-properties.md#vars) | Workflow-scoped vars (merged with the file's) |
+| `attachments` | block → [attachments](dsl-properties.md#attachments) | Workflow-scoped attachments |
+| `budget` | block → [budget](dsl-properties.md#budget) | Run caps, each overridable by the matching run flag |
+| `resources` | block → [resources](dsl-properties.md#resources) | Named semaphores and pools nodes lease with needs: |
+| `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the run |
+| `compaction` | block → [compaction](dsl-properties.md#compaction) | Default compaction thresholds |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](dsl-properties.md#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
 | `worktree` | ident — `auto`, `none` | auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place |
 | `default_backend` | string | Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
@@ -437,10 +437,10 @@ workflow feature_dev:
 | `display_name` | string | Explicit human-readable name |
 | `responsibility` | string | The single responsibility this bot fulfils |
 | `version` | int | Public contract version, 1 or more (C300); defaults to 1 |
-| `inputs` | block → [contract.ports](#contractports) | Named typed values and files the bot takes; each one is a declared var (C300) |
-| `outputs` | block → [contract.ports](#contractports) | Named typed values and files the bot produces on success; each one names the node and field that produce it (C301) |
-| `criteria` | block → [contract.criteria](#contractcriteria) | Deterministic registered checks on a port; prose is not executable |
-| `effects` | block → [contract.effects](#contracteffects) | Visible effects, including paid operations |
+| `inputs` | block → [contract.ports](dsl-properties.md#contractports) | Named typed values and files the bot takes; each one is a declared var (C300) |
+| `outputs` | block → [contract.ports](dsl-properties.md#contractports) | Named typed values and files the bot produces on success; each one names the node and field that produce it (C301) |
+| `criteria` | block → [contract.criteria](dsl-properties.md#contractcriteria) | Deterministic registered checks on a port; prose is not executable |
+| `effects` | block → [contract.effects](dsl-properties.md#contracteffects) | Visible effects, including paid operations |
 <!-- dsl-spec:end -->
 
 A port (an `inputs:` / `outputs:` entry, `name: type`):
@@ -455,7 +455,7 @@ A port (an `inputs:` / `outputs:` entry, `name: type`):
 | `min_items` | int | Minimum array cardinality (C300 on an input, C301 on an output) |
 | `max_items` | int | Maximum array cardinality (C300 on an input, C301 on an output) |
 | `from` | ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
-| `file` | block → [contract.file](#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
+| `file` | block → [contract.file](dsl-properties.md#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
 <!-- dsl-spec:end -->
 
 A port's `file:` block:
