@@ -105,7 +105,15 @@ router fan:
 
 judge reviewer_claude:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  ## Pinned to z.ai's Anthropic-compatible facade while this deployment's
+  ## Anthropic forfait is capped. `provider: "zai"` forces the ZAI_API_KEY
+  ## credential even when an Anthropic credential is present, and the bare
+  ## "glm-5.3" is why the backend must stay claude_code: claw reads no
+  ## provider hint and rejects a bare GLM id (`invalid spec` — it needs a
+  ## `provider/` prefix). `_model`/`_backend` keep naming what actually
+  ## served; the ITERION_VIBE_MODEL_CLAUDE dial returns with the pin lift.
+  provider: "zai"
+  model: "glm-5.3"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: review_output
   system: review_system
@@ -121,48 +129,29 @@ judge reviewer_claude:
   ## every run.
   readonly: true
   fallbacks:
-    ## GLM, the claude family's other server, when this instance's
-    ## Anthropic credential cannot serve. Without it the operator's only
-    ## recourse was to point the GPT slot's model at GLM — spending the
-    ## cross-family check to buy capacity, on the bot whose product IS
-    ## that check.
+    ## Same-provider rescue: the primary IS z.ai now (see above), so this
+    ## route is the OLDER GLM id, tried only when glm-5.3 itself hard-fails
+    ## beyond its retry budget — z.ai refusing the id, or the shared z.ai
+    ## credential erroring in place. A spent z.ai window fails both routes
+    ## and the run fails loudly, which is correct: there is no third
+    ## server to fall to. Nothing is silent — `_backend`/`_model` name
+    ## what served and the published review's run table carries them.
     ##
-    ## No `backend:` on purpose: the route stays on claude_code, which is
-    ## the ONE backend that honours a provider hint
-    ## (providerFallbackEligible). `provider: zai` then forces the z.ai
-    ## facade — ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN from the run's
-    ## zai credential — even when Anthropic credentials are present
-    ## (anthropicCredEnvForCLI). Routing this to claw instead would read
-    ## the hint nowhere, resolve `anthropic/…` back to the credential
-    ## that just failed, and cross a backend boundary that costs this
-    ## node an explicit tools: list — which on claude_code is NOT inert,
-    ## it installs --disallowedTools and takes Task/WebFetch/Skill off
-    ## the PRIMARY path. The hint keeps the whole thing on one backend.
+    ## No `backend:` on purpose: the route stays on claude_code, the ONE
+    ## backend that honours a provider hint (providerFallbackEligible).
+    ## Pinning the element to claw would read the hint nowhere — claw
+    ## derives its provider from the model-spec prefix, so the element
+    ## would either resolve a credential that just failed or die as
+    ## `invalid spec` on a bare GLM id.
     ##
-    ## What each trigger is FOR — an instance with ONLY a z.ai key is
-    ## not among them: claude_code resolves z.ai itself (the BYOK z.ai
-    ## pair is case 1 of anthropicCredEnvForCLI's precedence), so the
-    ## primary is already credentialed there and this route stays shut.
-    ##   usage_window — an Anthropic credential that OUTRANKS z.ai and
-    ##     whose window is spent. The production case.
-    ##   auth        — an Anthropic credential present but rejected or
-    ##     expired: it still takes precedence, so the CLI uses it and
-    ##     401s. Not in the default trigger set, named here on purpose:
-    ##     the shipped default sends auth to a human because re-auth is
-    ##     usually the cure, and parking the review gate while a second
-    ##     credentialed route is DECLARED is the limitation, not the
-    ##     safety. (AuthFailedRecipe still catches what the chain cannot
-    ##     serve — the chain is tried first, not bypassed.)
-    ##   unavailable — the resolved credential cannot reach the model.
-    ## With NO credential at all the route has none either, and the run
-    ## fails loudly, which is correct.
-    ## Nothing is silent: `_backend`/`_model` name what served and the
-    ## published review's run table carries them.
-    ## One dial for both tiers, because the rescue is deliberately the
-    ## same on both (see reviewer_claude_glance). An account entitled to
-    ## a different GLM id — or one z.ai renames — repoints it without
-    ## re-releasing the bot; element models are ${VAR:-default}-expanded
-    ## at dispatch like the node's own.
+    ## `auth` stays named deliberately although it is not in the default
+    ## trigger set: a rejected z.ai credential must divert here (and from
+    ## there to a human) rather than park the review gate on a route that
+    ## is DECLARED. One dial for both tiers — the rescue is deliberately
+    ## the same on both (see reviewer_claude_glance) — and element models
+    ## are ${VAR:-default}-expanded at dispatch like the node's own, so
+    ## an account on another GLM id repoints it without re-releasing the
+    ## bot.
     glm:
       provider: "zai"
       model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}"
@@ -170,24 +159,24 @@ judge reviewer_claude:
       on: [usage_window, auth, unavailable]
 
 judge reviewer_gpt:
-  ## Explicit backend pin: "openai/gpt-5.5" only resolves via claw.
-  ## Without it the auto-resolver routes through claude_code, which
-  ## doesn't recognise openai/* models and the schema validator fails.
-  ## Both env-overridable so an instance without a usable OpenAI quota
-  ## can run the second reviewer on the Claude forfait instead
-  ## (ITERION_VIBE_BACKEND_GPT=claude_code +
-  ## ITERION_VIBE_MODEL_GPT=claude-sonnet-5 — cross-model diversity
-  ## when cross-vendor isn't available).
-  backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
+  ## Pinned to the z.ai facade exactly like the claude slot (see
+  ## reviewer_claude): `provider: "zai"` is honoured on claude_code and
+  ## nowhere else, so the backend moves with the model. "gpt" stays the
+  ## slot's LABEL — the reviewer self-reports `family: "gpt"` from its
+  ## prompt, which is what merge_reviews keys on, and that plumbing is
+  ## untouched.
+  backend: "claude_code"
+  provider: "zai"
+  model: "glm-5.3"
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   output: review_output
   system: review_system
   user: review_user_gpt
   session: fresh
-  ## Read-only toolset only (no write_file / file_edit): the claw
-  ## reviewer can run git + read the workspace but has no structured
-  ## path to edit it.
+  ## Read-only toolset only (no write_file / file_edit): on claude_code a
+  ## non-empty tools: list installs --disallowedTools with the complement,
+  ## so this reviewer keeps bash/read/glob/grep and has no structured path
+  ## to edit the workspace.
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
 
@@ -199,11 +188,17 @@ judge reviewer_gpt:
 ## and fails). So a runtime-selectable model needs a second, differently
 ## pinned node, picked by the SAME `topology` router that already picks
 ## the family — never a new engine branch. Same prompts/schema/read-only
-## posture as their full-strength counterparts; only the model/effort
-## differ, and only topology's edges decide which of the two ever runs.
+## posture as their full-strength counterparts; under the z.ai pin only
+## the effort dial differs (the model dial returns when the pin lifts),
+## and only topology's edges decide which of the two ever runs.
 judge reviewer_claude_glance:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE_GLANCE:-claude-sonnet-5}"
+  ## Same z.ai pin as reviewer_claude (see there). While the pin holds,
+  ## glance's frugality lives in its reasoning_effort and its tier's
+  ## drafting floor / finding cap / board silence — not in a smaller
+  ## model.
+  provider: "zai"
+  model: "glm-5.3"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium}"
   output: review_output
   system: review_system
@@ -211,11 +206,9 @@ judge reviewer_claude_glance:
   session: fresh
   readonly: true
   fallbacks:
-    ## The glance tier is a cheaper PRIMARY, not a cheaper rescue: this
-    ## route reads the SAME dial as reviewer_claude's, because a smaller
-    ## z.ai id is not one this repo has measured, and a rescue that
-    ## guesses a model id fails on the spec instead of the credential.
-    ## See reviewer_claude for why the route carries no `backend:`.
+    ## Same route and dial as reviewer_claude — the older GLM id when
+    ## glm-5.3 hard-fails. See there for why the route carries no
+    ## `backend:`.
     glm:
       provider: "zai"
       model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}"
@@ -223,8 +216,11 @@ judge reviewer_claude_glance:
       on: [usage_window, auth, unavailable]
 
 judge reviewer_gpt_glance:
-  backend: "${ITERION_VIBE_BACKEND_GPT_GLANCE:-claw}"
-  model: "${ITERION_VIBE_MODEL_GPT_GLANCE:-openai/gpt-5.4-mini}"
+  ## Same z.ai pin as reviewer_gpt (see there); glance's frugality is its
+  ## reasoning_effort and its tier's caps, not the model.
+  backend: "claude_code"
+  provider: "zai"
+  model: "glm-5.3"
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium}"
   output: review_output
   system: review_system
