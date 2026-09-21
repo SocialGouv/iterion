@@ -1,7 +1,61 @@
 name: sec-audit-source
 display_name: Seki
 icon: 🛡️
-version: 0.1.3
+version: 0.1.4
+## 0.1.4 — a pass no longer publishes a neighbour's deepsec export as its own
+## (deepsec_out becomes a per-run subdirectory keyed on {{run.id}}, #1322); the
+## deep scan no longer counts toward the min_generic hard-fail floor so two
+## dead always-on scanners still stop the run once deepsec is present (#1333);
+## and a fully-analysed workspace whose persistent backlog is exhausted renders
+## a plain note ("this pass added nothing; the findings below come from earlier
+## passes over this workspace") rather than two coverage warnings at once
+## (#1328). Follow-up (PR #1473, revi verdict 1): cap_findings now takes the
+## producer's deepsec json_paths through an input schema and harvests the
+## per-run export explicitly (the class fix's fifth reader — without it the
+## array-shaped export disappears from findings_budget.inline, the only
+## transport triage reads on non-sandboxed backends); RUN_ID rejects "." and
+## ".." explicitly so those path-navigation segments cannot recreate the
+## shared slot or place the export above scan_dir; scan_dir_ttl_days (default
+## 30, 0 disables) prunes stale per-run subdirs at scanner entry.
+## Follow-up (PR #1473, revi verdict 2): the per-run export subdir carries
+## the deepsec-out- prefix so the retention sweep positively matches
+## deepsec-out-* + deepsec-logs-* rather than deny-listing three names — an
+## operator-set scan_dir now leaves every other directory alone (Re56aa9).
+## Rule 3a is also suppressed when files_processed=0 && deepsec_finding_count>0
+## so the healthiest fully-analysed state renders one NOTE (from 3b) rather
+## than two banners.
+## Follow-up (PR #1473, revi verdict 3): cap_findings sorts the harvest file
+## list by basename after appending the deepsec path so the deep scan
+## interleaves with the other scanners the way the pre-per-run glob did (an
+## append-last order lets a generic layer that fills the budget cut the deep
+## scan off inline entirely — R6ee3b1). The 3b NOTE drops the withdrawn
+## "backlog exhausted" claim (no field distinguishes it from "nothing
+## eligible"; R76c175) and names only the observable fact: this pass added
+## nothing new, findings come from earlier passes. Rule 3a's EXCEPTION now
+## also keys on the process step having succeeded — a run whose process
+## failed at the first file while the export dumps prior findings must
+## still show the ⚠ cap banner (revi verdict 3 question).
+## Follow-up (PR #1473, revi verdict 4): cap_findings no longer has a read
+## path to the pre-0.1.4 shared slot scan_dir/<basename(deepsec_out)> -- the
+## deep scan enters its harvest only through the producer's json_paths, the
+## envelope's deepsec_harvest names the file or the fact that none was
+## published, and the two orphan guards of verdicts 1 and 3 go with the path
+## they guarded (Rf73c6f). run_deepsec_scanner removes the pre-0.1.4 orphan
+## file once a pass is past its preflight, whatever scan_dir_ttl_days says (the sweep prunes
+## directories only). scan_health clamps a min_generic_scanners above the
+## trio's size to 3 and says so (min_generic_requested / min_generic_clamped,
+## a NOTE in the report) instead of hard-failing every run.
+## Follow-up (PR #1473, revi verdict 5): the retention sweep moved below
+## the RUN_ID guards and above the node/deepsec preflight, so a workspace
+## whose deepsec later becomes unavailable still reclaims the per-run dirs
+## earlier passes left (R58b272).
+## An array-shaped deep-scan export thinned by findings_cap_per_file now
+## moves the same accounts a dict-shaped export moves (total_raw / kept /
+## capped, per_scanner, truncated), and deepsec_harvest names both counts
+## when the cap dropped findings (R58b272) -- a capped deep scan is never
+## reported as complete. The one-shot removal of the pre-0.1.4 slot is
+## scoped to scan_dir: a deepsec_out pointed elsewhere names an operator's
+## file the pass leaves alone (R46d8a4).
 ## 0.1.3 — prepare_branch no longer reads iterion's `.claude/` scaffold as the
 ## operator's work in flight, its stash leaves the scaffold in place and is recorded
 ## only once it is confirmed on top, and a finding's revert neither cleans nor checks

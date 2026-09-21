@@ -61,6 +61,17 @@ type capOut struct {
 
 // capFixture builds a scan dir holding two scanner files, and returns a runner
 // that executes the shipped body against it at a given inline budget.
+//
+// deepsec's per-pass export lives OUTSIDE the top-level glob cap_findings
+// walks over scan_dir (its file is keyed on {{run.id}}, cf. #1322), and
+// travels in through the producer's json_paths -- the fixture writes it
+// under scan_dir/deepsec-out-<run.id>/deepsec.json and feeds cap_findings DEEPSEC_PATHS
+// with that exact path. Writing it flat under scan_dir would model a
+// legacy configuration and hide the wire: the reader that mattered was the
+// harvest of json_paths.deepsec, and a fixture at scan_dir/deepsec.json
+// certifies only the glob.
+const deepsecRunID = "cap-fixture-run"
+
 func capFixture(t *testing.T) func(budget string) capOut {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
@@ -72,7 +83,8 @@ func capFixture(t *testing.T) func(budget string) capOut {
 		t.Fatal(err)
 	}
 	scanDir := filepath.Join(dir, "scan")
-	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+	perRunDir := filepath.Join(scanDir, "deepsec-out-"+deepsecRunID)
+	if err := os.MkdirAll(perRunDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,9 +104,12 @@ func capFixture(t *testing.T) func(budget string) capOut {
 	writeJSON(t, filepath.Join(scanDir, "trivy.json"), map[string]any{"Issues": mk(8, "medium")})
 	// deepsec exports a bare ARRAY (JSON.stringify of a findings array), not
 	// an object with a findings key. That shape has nothing to rewrite, so it
-	// never entered the capping path — and skipping it here by shape would
-	// drop the deepest scanner from the payload without a word.
-	writeJSON(t, filepath.Join(scanDir, "deepsec.json"), mk(5, "critical"))
+	// never entered the capping path -- and skipping it here by shape would
+	// drop the deepest scanner from the payload without a word. Its file lives
+	// at scanDir/deepsec-out-<run.id>/deepsec.json (per #1322) and reaches cap_findings
+	// through DEEPSEC_PATHS.
+	deepsecFile := filepath.Join(perRunDir, "deepsec.json")
+	writeJSON(t, deepsecFile, mk(5, "critical"))
 
 	return func(budget string) capOut {
 		t.Helper()
@@ -102,7 +117,11 @@ func capFixture(t *testing.T) func(budget string) capOut {
 		// from a fresh copy — otherwise the second run caps already-capped
 		// input and the counts drift for a reason the test does not control.
 		fresh := t.TempDir()
-		for _, name := range []string{"semgrep.json", "trivy.json", "deepsec.json"} {
+		freshPerRun := filepath.Join(fresh, "deepsec-out-"+deepsecRunID)
+		if err := os.MkdirAll(freshPerRun, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"semgrep.json", "trivy.json"} {
 			b, err := os.ReadFile(filepath.Join(scanDir, name))
 			if err != nil {
 				t.Fatal(err)
@@ -111,8 +130,26 @@ func capFixture(t *testing.T) func(budget string) capOut {
 				t.Fatal(err)
 			}
 		}
+		b, err := os.ReadFile(deepsecFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		freshDeepsec := filepath.Join(freshPerRun, "deepsec.json")
+		if err := os.WriteFile(freshDeepsec, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths, err := json.Marshal(map[string]string{"deepsec": freshDeepsec})
+		if err != nil {
+			t.Fatal(err)
+		}
 		cmd := exec.Command("python3", scriptPath)
-		cmd.Env = append(os.Environ(), "SCAN_DIR="+fresh, "CAP=50", "INLINE_MAX="+budget)
+		cmd.Env = append(os.Environ(),
+			"SCAN_DIR="+fresh,
+			"CAP=50",
+			"INLINE_MAX="+budget,
+			"DEEPSEC_PATHS="+string(paths),
+			"DEEPSEC_OUT="+filepath.Join(fresh, "deepsec.json"),
+		)
 		raw, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("cap_findings exited non-zero (%v): %q", err, raw)
@@ -136,8 +173,8 @@ func TestInlineFindings_OffByDefault(t *testing.T) {
 	if got.InlineTruncated {
 		t.Fatal("nothing was carried, so nothing was truncated")
 	}
-	if got.TotalKept != 20 {
-		t.Fatalf("the capping itself must be unchanged: want 20 kept, got %d", got.TotalKept)
+	if got.TotalKept != 25 {
+		t.Fatalf("the capping itself must be unchanged: want 25 kept (semgrep 12 + trivy 8 + the 5-finding array export, which moves the same totals as every dict export since R58b272), got %d", got.TotalKept)
 	}
 }
 
