@@ -440,7 +440,7 @@ was handed (HEAD unmoved, working tree clean) that refuses a decline from any
 pass which committed or edited anything — that run ships its work through the
 ordinary tail instead. See `bots/branch-improve-loop/main.bot`.
 
-## One gate, several bots
+## <a name="one-gate"></a>One gate, several bots
 
 A required check applies to **every** pull request. So on a repo where
 different bots review different PRs — a dependency guard (Vetty) on the
