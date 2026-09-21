@@ -249,3 +249,83 @@ func TestToolAliasesAreRebuiltOnFreshEngineResume(t *testing.T) {
 		t.Fatalf("calls across fresh resume: %d / %d", first.calls, next.calls)
 	}
 }
+
+// A tool node's `command:` spelling is a member of the alias class, and its
+// policy check must match on the tool's IDENTITY, not the spelling: with the
+// floor declared, a policy allowlisting either spelling admits the node, and
+// a policy covering the tool under no spelling denies it. Mutating the
+// identity resolution away (the raw spelling compared against resolved
+// patterns) reddens the two allow cases.
+func TestToolNodeAliasPolicyMatchesTheResolvedIdentity(t *testing.T) {
+	pinEngineBuild(t, "v"+bundle.ToolAliasesSince)
+	for _, tc := range []struct {
+		policy []string
+		wantOK bool
+	}{
+		{[]string{"Read"}, true},
+		{[]string{"read_file"}, true},
+		{[]string{"Bash", "Grep"}, false},
+	} {
+		t.Run(strings.Join(tc.policy, ","), func(t *testing.T) {
+			const source = `tool readproof:
+  command: Read
+workflow probe:
+  entry: readproof
+  worktree: none
+  readproof -> done
+`
+			parsed := parser.Parse("toolnode.bot", source)
+			if len(parsed.Diagnostics) > 0 {
+				t.Fatalf("parse: %v", parsed.Diagnostics)
+			}
+			cr := ir.Compile(parsed.File)
+			if cr.HasErrors() {
+				t.Fatalf("compile: %v", cr.Diagnostics)
+			}
+			workspace := t.TempDir()
+			tr := tool.NewRegistry()
+			// The alias tier requires a registered OriginBuiltin; a probe
+			// tool registered under the canonical name keeps the test on
+			// the POLICY identity — the thing under test — instead of the
+			// real read_file's input contract.
+			probeRan := filepath.Join(workspace, "probe-ran")
+			if err := tr.RegisterBuiltin("read_file", "probe builtin", nil, func(_ context.Context, _ json.RawMessage) (string, error) {
+				return "ok", os.WriteFile(probeRan, []byte("1"), 0600)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ex := model.NewClawExecutor(model.NewRegistry(), cr.Workflow,
+				model.WithToolRegistry(tr),
+				model.WithToolPolicy(tool.BuildChecker(tc.policy, nil, nil)),
+				model.WithWorkDir(workspace),
+				model.WithLogger(iterlog.Nop()),
+			)
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := New(cr.Workflow, st, ex,
+				WithWorkDir(workspace),
+				WithLogger(iterlog.Nop()),
+				WithBundle(requireBundle(t, ">= "+bundle.ToolAliasesSince)),
+			)
+			runErr := e.Run(context.Background(), "toolnode-alias", nil)
+			if tc.wantOK {
+				if runErr != nil {
+					t.Fatalf("the alias spelling must execute under this policy: %v", runErr)
+				}
+				if b, err := os.ReadFile(probeRan); err != nil || string(b) != "1" {
+					t.Fatalf("the resolved tool never executed: %q %v", b, err)
+				}
+				run, err := st.LoadRun(context.Background(), "toolnode-alias")
+				if err != nil || run.Status != store.RunStatusFinished {
+					t.Fatalf("run: %+v %v", run, err)
+				}
+				return
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), "denied") {
+				t.Fatalf("a policy covering neither spelling must deny: %v", runErr)
+			}
+		})
+	}
+}

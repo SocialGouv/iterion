@@ -28,20 +28,9 @@ requires:
 Declaring the floor is what turns the resolver on; the same declaration is
 what the floor predicate at push admission, `validate`'s C252, `dsl migrate`
 and the scaffold ask for when a bundle's sources spell an alias in `tools:`,
-`tool_policy:` or `recovery: agent_tools:` — so an author is told the floor is
-missing before the bundle is written to a runner that cannot serve it.
-
-Claw accepts the exact spellings `Read`, `Bash`, and `Grep` as `read_file`, `bash`,
-and `grep` when the bundle declares `requires.iterion` at or above the release
-containing this feature. Canonical names continue to work in a plain `.bot` or
-on older engines. This is engine-version-dependent behavior in both DSL profiles;
-it is not a profile-1 lowering that an older reader can reproduce.
-
-```yaml
-# manifest.yaml
-requires:
-  iterion: ">= 3.177.0"
-```
+`tool_policy:`, a tool node's `command:` or `recovery: agent_tools:` — so an
+author is told the floor is missing before the bundle is written to a runner
+that cannot serve it.
 
 ```iterion
 agent inspect:

@@ -547,7 +547,7 @@ marked `attempt: 2`:
 |---|---|---|
 | `claw`, in-process or sandboxed | `continue_conversation` | The conversation it just completed — its own answer as the last assistant turn — then the validation error as a user turn: one schema-forced call, tools off, run in-process (nothing in it touches the workspace) |
 | `claude_code`, `codex`, `pi` | `resume_session` | The session the answer ran in, resumed by id (never forked, never best-effort), with the validation error as the new prompt; the backend's own structured-output pass runs on top |
-| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get |
+| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get. One exception, reachable only when the capture itself failed (an in-container runner without the capture sink): a claw node resumed from a pause replays the pause behind the restart and the appended error is dropped with the prompt — the turn runs again without the feedback |
 
 **Budget: one re-ask.** A re-ask that comes back as unstructured text still
 gets the last-resort extraction (a direct claw call over that text, below); a

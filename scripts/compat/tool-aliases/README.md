@@ -23,9 +23,9 @@ ITERION_ALIAS_COMPAT_DIR=/tmp/tool-alias-compat devbox run -- go test \
 Remove only the two copied test files afterward. The captured `message.json` and
 `main.bot` contain fixture data only and may be kept as evidence. The producer
 embeds a real immutable bundle snapshot whose manifest uses
-`bundle.ToolAliasesSince` (currently the **unset 9999.0.0 sentinel**, so the
-probe exercises a floor no runner satisfies — set the real release before
-reading anything into a green result). The old reader has
+`bundle.ToolAliasesSince` — re-run this probe at the merge if the release that
+first ships the resolver is not the one the constant names when you read this
+(the release test holds the pin; see docs/tool-name-aliases.md). The old reader has
 no bundle store fallback: the manifest it refuses must come from those published
 bytes. The old build is pinned separately in its harness.
 

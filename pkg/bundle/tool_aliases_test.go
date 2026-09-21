@@ -97,9 +97,11 @@ func TestAliasSpellingsAskForTheAliasFloorByTheOnePredicate(t *testing.T) {
 	}
 }
 
-// A workflow-level `tool_policy:` and a Verified Action's rung-4
-// `agent_tools:` are the other tool lists the resolver reads; each ask for
-// the alias floor the same way.
+// A workflow-level `tool_policy:`, a Verified Action's rung-4
+// `agent_tools:`, and a tool node's `command:` spelled as a bare alias are
+// the other lists the resolver reads; each ask for the alias floor the same
+// way. A command that is not exactly an alias spelling (a shell command, a
+// template ref) never asks.
 func TestAliasDetectionCoversTheOtherToolLists(t *testing.T) {
 	policy := map[string]string{
 		"main.bot": "workflow w:\n  entry: a\n  tool_policy: [Bash]\n\nagent a:\n  backend: claw\n  model: test/test-model\n",
@@ -112,5 +114,25 @@ func TestAliasDetectionCoversTheOtherToolLists(t *testing.T) {
 	}
 	if req := MaxSyntaxRequirements(recovery); !req.UsesToolAliases() {
 		t.Fatalf("recovery agent_tools: %+v", req)
+	}
+	registryCommand := map[string]string{
+		"main.bot": "workflow w:\n  entry: t\n\ntool t:\n  command: Read\n",
+	}
+	if req := MaxSyntaxRequirements(registryCommand); !req.UsesToolAliases() {
+		t.Fatalf("tool node command: %+v", req)
+	}
+	// An unquoted `command: Bash -c "ls"` parses as the bare word `Bash` —
+	// exactly what the resolver aliases at runtime — so it asks, like the
+	// bare spelling it is. What never asks: a quoted multi-word command (an
+	// exact match against the whole string fails), a template ref, a
+	// canonical name.
+	for name, src := range map[string]string{
+		"quoted multi-word": "workflow w:\n  entry: t\n\ntool t:\n  command: \"Read this file\"\n",
+		"template ref":      "workflow w:\n  entry: t\n\ntool t:\n  command: ${TOOL}\n",
+		"canonical":         "workflow w:\n  entry: t\n\ntool t:\n  command: read_file\n",
+	} {
+		if req := MaxSyntaxRequirements(map[string]string{"main.bot": src}); req.UsesToolAliases() {
+			t.Errorf("%s asks for the alias floor: %+v", name, req)
+		}
 	}
 }

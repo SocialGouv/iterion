@@ -538,3 +538,54 @@ func TestReaskMarginalCost(t *testing.T) {
 		t.Errorf("a re-ask in another session is its own figure: %v, want 1.90", got)
 	}
 }
+
+// A transient error INSIDE the re-ask's own transport retry is still part of
+// the re-ask: its delegate_retry carries the reask marker, so a timeline
+// reader keys it to the re-ask's work instead of mistaking it for a
+// first-attempt retry. The announce and the in-place retry are told apart by
+// Delay — only the loop sets one. Mutating the marker away reddens the
+// mid-re-ask assertion while the announce stays marked.
+func TestSchemaReask_TransportRetryInsideTheReaskCarriesTheMarker(t *testing.T) {
+	transient := errors.New("fetch failed")
+	backend := &stubBackend{
+		results: []delegate.Result{
+			{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
+			{Output: map[string]any{"verdict": true, "reason": "because"}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
+			{Output: map[string]any{"verdict": true, "reason": "because"}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
+		},
+		errors: []error{nil, transient},
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, backend)
+	obs := &reaskObserver{}
+	exec := NewClawExecutor(NewRegistry(), verdictWorkflow(),
+		WithBackendRegistry(reg),
+		WithEventHooks(obs.hooks()),
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}),
+	)
+	output, err := exec.executeBackend(context.Background(), verdictJudge(delegate.BackendClaudeCode), map[string]any{})
+	if err != nil {
+		t.Fatalf("the re-ask's transport retry was supposed to carry it: %v", err)
+	}
+	if output["reason"] != "because" {
+		t.Fatalf("output = %v, want the re-asked answer", output)
+	}
+	announced, mid := 0, 0
+	for _, r := range obs.retries {
+		switch {
+		case r.Reask == ReaskResumeSession && r.Delay == 0:
+			announced++
+		case r.Delay > 0 && errors.Is(r.Error, transient):
+			mid++
+			if r.Reask != ReaskResumeSession {
+				t.Errorf("a mid-re-ask transport retry carries no reask marker: %+v", r)
+			}
+		}
+	}
+	if announced != 1 {
+		t.Errorf("the re-ask announced itself %d times, want once: %+v", announced, obs.retries)
+	}
+	if mid == 0 {
+		t.Fatalf("fixture produced no mid-re-ask transport retry: %+v", obs.retries)
+	}
+}

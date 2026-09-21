@@ -220,7 +220,8 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 // aliasUses collects the tool-name spellings of one file's AST that resolve
 // only through the Claw alias tier (toolcatalog.BuiltinAlias): the
 // agent/judge `tools:` and `tool_policy:` lists, the workflow-level
-// `tool_policy:`, and a Verified Action's rung-4 `agent_tools:`. The exact
+// `tool_policy:`, a Verified Action's rung-4 `agent_tools:`, and a tool
+// node's `command:` spelled as a bare registry-tool name. The exact
 // spellings only — a pattern, a ${VAR} or an mcp-qualified name is resolved
 // where it is used, exactly as the runtime resolves it. `capabilities:` is
 // not a tool list: host rights are C081's domain and never alias.
@@ -252,6 +253,7 @@ func aliasUses(f *ast.File) []string {
 		}
 	}
 	for _, t := range f.Tools {
+		add([]string{t.Command})
 		if t.Recovery != nil {
 			add(t.Recovery.AgentTools)
 		}

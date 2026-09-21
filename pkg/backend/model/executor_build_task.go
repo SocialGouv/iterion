@@ -739,7 +739,7 @@ func (e *ClawExecutor) validateAndRetry(
 	// transient-error backoff every other delegate call gets — a direct
 	// backend.Execute here skipped the retry budget and gave up on the
 	// first transient SDK hiccup.
-	retryResult, retryErr := e.retryDelegateLoop(ctx, f.id, backendName, sharesSession(&retryTask), func() (delegate.Result, error) {
+	retryResult, retryErr := e.retryDelegateLoopReask(ctx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {
 		return backend.Execute(ctx, retryTask)
 	})
 	// Whether the two attempts share one session decides how their figures

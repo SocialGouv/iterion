@@ -55,7 +55,7 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 		// success it never performed.
 		return nil, fmt.Errorf("model: tool node %q declares `action: %s` but this process has no connector catalog wired", node.ID, node.Action)
 	}
-	if err := e.checkToolNodePolicy(ctx, node, actionToolName(node)); err != nil {
+	if err := e.checkToolNodePolicy(ctx, node, actionToolName(node), actionToolName(node)); err != nil {
 		return nil, err
 	}
 
