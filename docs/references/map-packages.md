@@ -52,7 +52,7 @@
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` | 1 · 10 |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` | 1 · 3 |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` | 12 · 95 |
-| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 56 · 245 |
+| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 57 · 248 |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — | 1 · 13 |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — | 3 · 40 |
 | `pkg/backend/permissionhook` | adapts third-party CLI PreToolUse payloads to iterion's shared permission.Policy evaluator. | — | 1 · 5 |
@@ -61,10 +61,10 @@
 | `pkg/backend/secretguard` | protects secret values from leaking through an agent run. | — | 3 · 23 |
 | `pkg/backend/sessionpack` | packs and unpacks CLI session files for ADR-089 persist. | — | 3 · 6 |
 | `pkg/backend/thinktokens` | provides an approximate token count for extended-thinking (reasoning) text. | — | 1 · 1 |
-| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ToolChecker`, `WatchStore` | 17 · 81 |
+| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ToolChecker`, `WatchStore` | 19 · 84 |
 | `pkg/backend/tool/privacy` | implements two iterion built-in tools that detect and redact personally identifiable information (PII): - privacy_filter: detect or redact 5… | — | 3 · 14 |
 | `pkg/backend/tool/privacy/detector` | implements the pure-Go PII detection backend used by the privacy_filter / privacy_unfilter built-in tools. | `Rule` | 4 · 12 |
-| `pkg/backend/toolcatalog` | the compile-time view of a node's `tools:` list: which backends the list actually CONSTRAINS, and which bare tool names the run-time registry can… | — | 1 · 10 |
+| `pkg/backend/toolcatalog` | the compile-time view of a node's `tools:` list: which backends the list actually CONSTRAINS, and which bare tool names the run-time registry can… | — | 2 · 11 |
 | `pkg/backend/tooldisplay` | turns a tool call (name + raw JSON input) into the strings the engine renders in console logs and the per-node Tools tab. | — | 1 · 5 |
 | `pkg/benchmark` | implements a multi-recipe benchmark runner with isolated workspaces and comparable metrics collection. | — | 6 · 25 |
 | `pkg/benchmark/asymptote` | computes per-iteration quality scores from persisted runs and compares groups of runs (e.g. | — | 4 · 13 |
@@ -79,7 +79,7 @@
 | `pkg/botscaffold` | renders a new bot bundle (main.bot + manifest.yaml + README.md + the bundle layout directories) from a builder Spec. | — | 3 · 17 |
 | `pkg/botsource` | persists TEAM-AUTHORED bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image. | `Store` | 4 · 36 |
 | `pkg/brand` | embeds iterion's bot identity — the mascot avatar of the official `iterion-bot` GitHub account — so the server can upload it onto the accounts it… | — | 1 · 8 |
-| `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 19 · 157 |
+| `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 20 · 160 |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — | 2 · 38 |
 | `pkg/cli` | implements the iterion command-line interface. | — | 80 · 320 |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` | 1 · 10 |

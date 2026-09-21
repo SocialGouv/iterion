@@ -313,6 +313,7 @@
 | [`docs/test-waits.md`](../../docs/test-waits.md) | Waiting for engine state in tests | Issue #930 separates the condition a test asserts from how quickly its host can | — |
 | [`docs/thinking-metrics.md`](../../docs/thinking-metrics.md) | Thinking (reasoning) metrics | Iterion surfaces two per-node extended-thinking metrics for LLM nodes: | — |
 | [`docs/ticket-context.md`](../../docs/ticket-context.md) | Ticket conformance — plugging tracker tickets into a review | Revi (`bots/review-pr` ≥ 0.6.0) can verify that a PR actually delivers | — |
+| [`docs/tool-name-aliases.md`](../../docs/tool-name-aliases.md) | Claw tool-name aliases | Claw accepts the exact spellings `Read`, `Bash`, and `Grep` as `read_file`, `bash`, | — |
 | [`docs/ultracode.md`](../../docs/ultracode.md) | Ultracode | `reasoning_effort: ultracode` is the highest setting on the effort dial. | — |
 | [`docs/url-layout.md`](../../docs/url-layout.md) | URL layout — what answers at the root, and what lives under `/studio` | A deployment serves two things from one origin: the **product home** and the | — |
 | [`docs/usage-caps.md`](../../docs/usage-caps.md) | Usage caps — stop below the provider's wall | An LLM subscription ("forfait") meters two rolling windows, five hours and | — |
