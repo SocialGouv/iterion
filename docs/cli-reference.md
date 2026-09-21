@@ -31,6 +31,7 @@ This page maps every public top-level command in the current binary and document
 | `models` | Inspect resolved model capabilities and their source. |
 | `openapi` | Generate this build's OpenAPI 3.1 document offline. |
 | `plugin` | Install/configure/enable/run runtime plugins. |
+| `reliability` | Inspect and roll back the staged workflow-reliability rollout. |
 | `remote` | Authenticate to and drive a remote/cloud Iterion server. |
 | `report` | Generate a chronological run report. |
 | `resume` | Resume a paused, cancelled, or resumable failed run. |
@@ -701,6 +702,17 @@ iterion supervise uninstall-hook
 ```
 
 The watcher evaluates on turn boundaries/monitor matches and injects node-scoped steering for the next turn. Main flags are `--model`, `--system`, repeatable `--node`/`--monitor`, `--cooldown`, `--max-evals`, and `--claude-session` for a raw Claude Code session. A DSL `supervisor` declaration starts the same coordinator automatically. See [supervisors](supervisors.md).
+
+### `iterion reliability`
+
+```bash
+iterion reliability report                       # resolved rollout mode + a fleet baseline over the store
+iterion reliability report --run-id <id>         # one run's compatibility report
+iterion reliability report --json                # machine-readable
+iterion reliability rollback                     # print the non-destructive rollback plan
+```
+
+Read-only operator surface for the staged workflow-reliability rollout ([workflow-reliability-1006.md](workflow-reliability-1006.md)). `report` prints the mode the launch surfaces actually apply for this environment (`ITERION_RELIABILITY_MODE`, falling back to the older `ITERION_EXECUTION_CONTEXT_POLICY`), the retry-circuit settings, and either a fleet baseline over the store's runs or, with `--run-id`, one run's compatibility report — capture it before switching modes and again after, and compare. Run directories whose `run.json` cannot be loaded are listed as `unreadable` rather than skipped, since a baseline that under-counts silently is worse than none. `rollback` prints which variable to set and what evidence to keep; it mutates nothing, because the variables are read where the launch surfaces run (a pod spec, a service unit, a shell), which a one-shot CLI process cannot reach. Flags: `--store-dir`, `--run-id`.
 
 ## Remote, benchmarks, and utility commands
 
