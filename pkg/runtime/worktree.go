@@ -8,7 +8,7 @@
 // in place for inspection.
 //
 // On a successful run, finalizeWorktree promotes any commits the run
-// produced onto a persistent branch (default `iterion/run/<friendly>`)
+// produced onto a persistent branch (default `iterion/run/<runID>`, the stable key per #1366)
 // and best-effort fast-forwards the user's checked-out branch, then
 // removes the worktree directory. Without that promotion the commits
 // are reachable only via reflog and are eligible for GC.
@@ -309,7 +309,7 @@ type finalizeOptions struct {
 	runName string
 	runID   string
 	// branchName, when non-empty, overrides the default
-	// `iterion/run/<runName>` storage branch. Useful for landing each
+	// `iterion/run/<runID>` storage branch (the stable key, #1366). Useful for landing each
 	// run on a stable name (e.g. `feat/auto-fixes`).
 	branchName string
 	// mergeInto controls the best-effort merge target:
@@ -412,16 +412,25 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// as an explicit wip bank so the storage branch preserves it; the
 	// operator reviews it there (it is NEVER merged into their branch —
 	// see step 5).
-	if clean, cleanErr := workdirIsClean(wc.wtPath); cleanErr != nil {
+	porcelain, porcelainErr := runGit(wc.wtPath, "status", "--porcelain")
+	if porcelainErr != nil {
 		if logger != nil {
-			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", cleanErr)
+			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", porcelainErr)
 		}
-	} else if !clean {
+	} else if len(runOutputPaths(porcelain)) == 0 {
+		// Nothing of the run's to bank: clean, or tree noise only (the
+		// mirror, a drifted lock). The noise is NAMED, not silent — the
+		// operator reading the storage branch sees what was set aside
+		// (verdict 8).
+		if noise := noisePaths(porcelain); len(noise) != 0 && logger != nil {
+			logger.Info("runtime: finalize: tree noise set aside, nothing to bank: %s", strings.Join(noise, ", "))
+		}
+	} else {
 		msg := "wip(iterion): auto-banked uncommitted run output"
 		if opts.runName != "" {
 			msg += " (" + opts.runName + ")"
 		}
-		if err := runGitInDir(wc.wtPath, "add", "-A"); err != nil {
+		if err := runGitInDir(wc.wtPath, stageWorkArgs()...); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
 			}
@@ -437,7 +446,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				finalSHA = banked
 			}
 			if logger != nil {
-				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged)", shortSHA(finalSHA))
+				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged) — tree noise set aside: %s", shortSHA(finalSHA), strings.Join(noisePaths(porcelain), ", "))
 			}
 		}
 	}
@@ -452,11 +461,20 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	res.FinalCommit = finalSHA
 
 	// 3. Decide the storage branch name.
+	//
+	// The label MUST be the run id — the stable key. The friendly run
+	// name is derived from `(file_path + run_id)` at creation and is
+	// meant for display, not for keying: any consumer that looks up a
+	// run's finalize branch by run id has the id in hand and the name
+	// only as a downstream lookup. Half the runs used to be labelled by
+	// name (straight run) and half by id (post-resume), so the same
+	// consumer's query resolved for one and missed the other (#1366).
+	// Both paths now agree on the id.
 	branchName := opts.branchName
 	if branchName == "" {
-		label := opts.runName
+		label := opts.runID
 		if label == "" {
-			label = opts.runID
+			label = opts.runName
 		}
 		branchName = "iterion/run/" + label
 	}
@@ -985,7 +1003,7 @@ type DeferredMergeRequest struct {
 	// branch — see tryFastForward's guard rationale).
 	Target string
 	// BranchToMerge is the storage branch produced at finalization
-	// (e.g. "iterion/run/<friendly>"). Must point at a commit reachable
+	// (e.g. "iterion/run/<runID>"). Must point at a commit reachable
 	// from the run's FinalCommit.
 	BranchToMerge string
 	// FinalSHA is the SHA at the tip of BranchToMerge — passed in so

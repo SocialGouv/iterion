@@ -908,7 +908,7 @@ export interface CreateRunRequest {
   // when it matches the currently-checked-out branch).
   merge_into?: string;
   // For `worktree: auto` workflows: override the storage branch
-  // name (default `iterion/run/<friendly>`). Useful for landing
+  // name (default `iterion/run/<run id>`). Useful for landing
   // every run on a stable name (e.g. `feat/auto-fixes`).
   branch_name?: string;
   // For `worktree: auto` workflows: how to land the run's commits

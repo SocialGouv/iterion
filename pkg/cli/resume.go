@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -78,6 +79,28 @@ type ResumeOptions struct {
 	// like LoopBudgetGuard it is not persisted on the run, so a launch-time
 	// `off` must be repeated here or the workflow/env layer decides again.
 	RepoDevbox string
+	// Sandbox, SandboxDefaultImage, SandboxHostState override the
+	// launch-time sandbox choices persisted on the run at launch. Empty
+	// means "inherit the persisted value" (a `--sandbox none` at launch
+	// keeps its refusal to bind docker on resume); non-empty replaces it
+	// (`--sandbox docker` deliberately promotes an unsandboxed run to
+	// docker on this attempt). Without persistence, resume falls back to
+	// ITERION_SANDBOX_DEFAULT then the workflow's `sandbox:` block, same
+	// as the run path.
+	Sandbox             string
+	SandboxDefaultImage string
+	SandboxHostState    string
+	// MergeInto, BranchName, MergeStrategy, AutoMerge override the
+	// launch-time worktree-finalization choices persisted on the run.
+	// Same doctrine as the sandbox fields: empty inherits the run
+	// record's value, non-empty replaces it on purpose. AutoMerge is a
+	// pointer so the caller can distinguish "inherit" (nil) from
+	// "explicit false" (a launch that opted into auto-merge and a
+	// resume that wants to defer it to the UI).
+	MergeInto     string
+	BranchName    string
+	MergeStrategy string
+	AutoMerge     *bool
 	// ModelFor / BackendFor re-apply the launch-time per-node/-group model+
 	// backend overrides on resume (repeatable --model / --backend,
 	// "selector=value" or bare "value"). Resume does NOT persist the original
@@ -114,6 +137,15 @@ type ResumeOptions struct {
 func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions, p *Printer) error {
 	if opts.RunID == "" {
 		return fmt.Errorf("--run-id is required")
+	}
+	// Same early gate as `iterion run --branch-name`: refuse a malformed
+	// storage-branch override at the CLI seam so the operator gets
+	// `Bad flag: --branch-name` right away, not a late "invalid branch
+	// name" out of the finalize path. Mirrors run.go's validation site.
+	if opts.BranchName != "" {
+		if err := git.ValidateBranchName(opts.BranchName); err != nil {
+			return UserInputError(fmt.Errorf("--branch-name: %w", err))
+		}
 	}
 
 	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
@@ -293,14 +325,45 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
 		resumeOpts = append(resumeOpts, runtime.WithWorkspaceTracker(tracker))
 	}
+	// Read back the launch's decisions from the run record so the
+	// resume replays the same isolation, storage-branch and merge
+	// choices the launch took; a non-empty explicit resume flag replaces
+	// each on purpose. Same doctrine as MergeResumeBudgetAsk: the record
+	// is the source, the flag layers over it. Fixes the classes named in
+	// #1435 (sandbox mode) and #1366 (branch name / merge target).
+	sandboxOverride := pickString(opts.Sandbox, r.SandboxOverride)
+	sandboxDefaultImage := pickString(opts.SandboxDefaultImage, r.SandboxDefaultImage)
+	sandboxHostStateOverride := pickString(opts.SandboxHostState, r.SandboxHostState)
+	mergeInto := pickString(opts.MergeInto, r.MergeInto)
+	branchName := pickString(opts.BranchName, r.BranchName)
+	mergeStrategy := pickString(opts.MergeStrategy, string(r.MergeStrategy))
+	autoMerge := r.AutoMerge
+	if opts.AutoMerge != nil {
+		autoMerge = *opts.AutoMerge
+	}
+
 	eng := runtime.New(wf, s, executor, append(resumeOpts,
 		runtime.WithLogger(logger),
 		runtime.WithWorkflowHash(wfHash),
 		runtime.WithFilePath(iterFile),
 		runtime.WithForceResume(opts.Force),
 		// Sandbox-by-default: resumed runs re-resolve their sandbox with
-		// the same global default as `iterion run`.
+		// the same global default as `iterion run`, then apply the
+		// launch's persisted override so a run that refused a sandbox at
+		// launch is not silently sandboxed on resume just because the
+		// resume process saw docker on PATH.
+		runtime.WithSandboxOverride(sandboxOverride),
 		runtime.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
+		runtime.WithSandboxDefaultImage(sandboxDefaultImage),
+		runtime.WithSandboxHostStateOverride(sandboxHostStateOverride),
+		// Worktree finalization decisions from the launch record. Without
+		// these, the resumed engine finalises with runID (empty runName)
+		// as the branch label and skips the merge (default autoMerge=false).
+		runtime.WithRunName(r.Name),
+		runtime.WithMergeInto(mergeInto),
+		runtime.WithBranchName(branchName),
+		runtime.WithMergeStrategy(mergeStrategy),
+		runtime.WithAutoMerge(autoMerge),
 		runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
 		runtime.WithRepoDevbox(opts.RepoDevbox),
 		runtime.WithBundle(bundleHandle),
@@ -399,6 +462,20 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,
 	})
+}
+
+// pickString layers an explicit resume-time override over the record's
+// persisted launch-time value: a non-empty explicit wins, an empty
+// explicit inherits. The doctrine mirrors mergePersistedResumeBudget
+// for the budget ask — the record is the source of truth and the CLI
+// flag is an on-purpose replacement, so a resume that says nothing
+// keeps the launch's decision alive across restart, pickup and cloud
+// retry cycles.
+func pickString(explicit, persisted string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return persisted
 }
 
 // mergePersistedResumeBudget gives a rebuilt CLI engine the raw launch intent

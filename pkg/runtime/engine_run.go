@@ -419,7 +419,8 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		run = created
 	}
 	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
-		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil {
+		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil ||
+		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -443,6 +444,24 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			run.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
 		}
 		run.AutoMerge = e.autoMerge
+		// Launch-time overrides the resume path replays. Empty inputs
+		// preserve any prior value (a pickup path where the engine option
+		// was not re-supplied), same guard as ModelOverrides.
+		if e.sandboxOverride != "" {
+			run.SandboxOverride = e.sandboxOverride
+		}
+		if e.sandboxDefaultImage != "" {
+			run.SandboxDefaultImage = e.sandboxDefaultImage
+		}
+		if e.sandboxHostStateOverride != "" {
+			run.SandboxHostState = e.sandboxHostStateOverride
+		}
+		if e.mergeInto != "" {
+			run.MergeInto = e.mergeInto
+		}
+		if e.branchName != "" {
+			run.BranchName = e.branchName
+		}
 		if e.preset != "" {
 			run.Preset = e.preset
 		}
@@ -1015,8 +1034,12 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 			// The gate finalized COMMITS, but post-gate work may sit
 			// uncommitted in the worktree — removing it would destroy that
 			// work silently. Preserve instead; the operator recovers via the
-			// studio commit-and-finalize action.
-			if clean, cleanErr := workdirIsClean(wtCtx.wtPath); cleanErr == nil && !clean {
+			// studio commit-and-finalize action. The probe agrees with THAT
+			// gesture (mirror-only): a tracked-and-modified devbox.lock is
+			// dependency work the action would bank, so the worktree is
+			// preserved for it (verdict 9, R8e10f0).
+			porcelain, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain")
+			if porcelainErr == nil && len(commitWorkPaths(porcelain)) != 0 {
 				if e.logger != nil {
 					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
 				}

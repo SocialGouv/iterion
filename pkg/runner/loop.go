@@ -2293,6 +2293,26 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// fingerprints the delegate actually spent tokens on.
 	defer func() { r.recordOrgSpend(ctx, msg, usage) }()
 
+	// Read the run's persisted launch-time worktree-finalization
+	// decisions (Run.Name / MergeInto / BranchName / MergeStrategy /
+	// AutoMerge) so a cloud resume finalises with the same branch name
+	// and merge target the CLI/studio launch chose (#1366, PR #1490
+	// gate finding on the ticket gap). Best-effort: a load error just
+	// leaves the engine defaults, matching the pre-fix behaviour rather
+	// than failing the pickup. Sandbox override is intentionally NOT
+	// replayed here — the runner pod IS the isolation boundary, per
+	// docs/sandbox.md.
+	var finalizationRun *store.Run
+	finalCtx, finalCancel := context.WithTimeout(
+		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		5*time.Second)
+	if fr, ferr := r.cfg.Store.LoadRun(finalCtx, msg.RunID); ferr == nil {
+		finalizationRun = fr
+	} else {
+		r.cfg.Logger.Warn("runner: load run for finalization replay %s: %v — falling back to engine defaults", msg.RunID, ferr)
+	}
+	finalCancel()
+
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(msg.WorkflowHash),
@@ -2329,6 +2349,29 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	}
 	if msg.ExecutionContext != nil {
 		engineOpts = append(engineOpts, runtime.WithExecutionContext(msg.ExecutionContext))
+	}
+	// Replay the finalization decisions the launch took. Without these
+	// the cloud pod skips the merge (default autoMerge=false) and loses
+	// the operator's `--merge-into` / `--branch-name` / merge-strategy
+	// choices — a cloud resume of a run launched `--merge-into none`
+	// would silently merge anyway (#1366). The storage branch label
+	// itself is keyed on the run ID by finalizeWorktree (the stable
+	// key), so WithRunName here feeds display surfaces (the
+	// squash-commit title), not the branch name.
+	if finalizationRun != nil {
+		if finalizationRun.Name != "" {
+			engineOpts = append(engineOpts, runtime.WithRunName(finalizationRun.Name))
+		}
+		if finalizationRun.MergeInto != "" {
+			engineOpts = append(engineOpts, runtime.WithMergeInto(finalizationRun.MergeInto))
+		}
+		if finalizationRun.BranchName != "" {
+			engineOpts = append(engineOpts, runtime.WithBranchName(finalizationRun.BranchName))
+		}
+		if finalizationRun.MergeStrategy != "" {
+			engineOpts = append(engineOpts, runtime.WithMergeStrategy(string(finalizationRun.MergeStrategy)))
+		}
+		engineOpts = append(engineOpts, runtime.WithAutoMerge(finalizationRun.AutoMerge))
 	}
 	// Sandbox-run observer: registers the live sandbox Run so the mid-run
 	// credential refreshers can write rotated tokens THROUGH into the

@@ -502,10 +502,13 @@ type Server struct {
 	gateAutofixCancel func(context.Context)
 	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
 	outcomeRouterCancel func(context.Context)
+	// scheduleOutcomeCancel unsubscribes the schedule-outcome back-writer
+	// (#1426) at shutdown. Nil unless BOTH ScheduledBots and the eventbus
+	// were wired at boot.
+	scheduleOutcomeCancel func(context.Context)
 	// forgeProjSem bounds concurrent forge→board projection goroutines,
 	// held on the Server (not a package var) so tests spawning independent
-	// Server instances get independent semaphore state — see the
-	// forgeProjectionSem method (#1477 follow-up Q4).
+	// Server instances get independent semaphore state (#1477 follow-up Q4).
 	forgeProjSem chan struct{}
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
@@ -664,11 +667,16 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		mux:          newRecordingMux(),
 		addrReady:    make(chan struct{}),
 		shutdown:     make(chan struct{}),
-		// Pre-allocate the projection semaphore so scheduleForgeBoardProjection
-		// stays lock-free — a per-webhook stateMu.Lock (a lazy init would
-		// need one) would queue behind any project-switch writer and stall
-		// /api/bots, /api/server/info and the pipeline board (#1477
-		// follow-up round MEDIUM).
+		// Pre-allocate the projection semaphore so its ACQUIRE stays
+		// lock-free — a per-webhook send to a pre-built chan is atomic.
+		// scheduleForgeBoardProjection still enters tryGoUntilShutdown
+		// after the acquire, and THAT takes stateMu briefly to append
+		// the bgWorker (inherent to every registered loop); a lazy
+		// semaphore init would have added a SECOND stateMu.Lock on the
+		// same delivery, queueing behind any project-switch writer and
+		// stalling /api/bots, /api/server/info and the pipeline board.
+		// Pre-allocating drops that second lock; the
+		// tryGoUntilShutdown lock stays.
 		forgeProjSem:        make(chan struct{}, forgeProjectionSemCap),
 		authSvc:             cfg.AuthService,
 		signer:              cfg.AuthSigner,

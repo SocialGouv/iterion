@@ -50,6 +50,19 @@ func bundleResourceDir(b *bundle.Bundle, workflowPath string) string {
 		// working directory, which is not the bot's own resource dir.
 		return ""
 	}
+	// The docker driver refuses a non-absolute bind-mount source, and
+	// this dir flows straight to addOptionalBindMount → --mount source=…
+	// (pkg/runtime/sandbox_mounts.go). A relative workflowPath —
+	// `examples/human-in-the-loop.bot` on the CLI resume path (#1435)
+	// — would otherwise leak into the mount source. Absolutise at the
+	// chokepoint the bind-mount crosses so the persisted Run.FilePath
+	// stays as the caller stored it (unchanged by this fix — see
+	// docs/resume.md).
+	if !filepath.IsAbs(dir) {
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+	}
 	return dir
 }
 

@@ -815,7 +815,7 @@ func TestPiPrintModeAllowsAnUngatedNode(t *testing.T) {
 
 // A sandboxed pi run keeps its sessions inside the worktree (the container has
 // to see them), which makes them untracked files in the TARGET repo. Left
-// alone they flip workdirIsClean and ride finalizeWorktree's `git add -A` into
+// alone they make the worktree dirty and ride finalizeWorktree's `git add -A` into
 // a wip-bank commit, so a run that changed no code still lands a commit full
 // of pi transcripts — and scatters iterion's `.iterion/` into someone else's
 // tree. Same self-ignoring guard devbox uses for its generated profile.

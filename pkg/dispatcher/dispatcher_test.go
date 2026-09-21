@@ -18,10 +18,11 @@ import (
 // fakeTracker is a minimal in-memory Tracker used by the dispatcher
 // tests. Safe for concurrent use.
 type fakeTracker struct {
-	mu        sync.Mutex
-	issues    map[string]*tracker.Issue
-	claims    map[string]string
-	listCalls atomic.Int64
+	mu              sync.Mutex
+	issues          map[string]*tracker.Issue
+	claims          map[string]string
+	claimCallsPerID map[string]int64 // Claim(id, marker) count, per id — witness for "did dispatch re-Claim this issue?"
+	listCalls       atomic.Int64
 
 	panicListCandidates atomic.Bool
 
@@ -52,9 +53,35 @@ type fakeTracker struct {
 
 func newFakeTracker() *fakeTracker {
 	return &fakeTracker{
-		issues: map[string]*tracker.Issue{},
-		claims: map[string]string{},
+		issues:          map[string]*tracker.Issue{},
+		claims:          map[string]string{},
+		claimCallsPerID: map[string]int64{},
 	}
+}
+
+// claimCallsFor returns the number of times Claim was called for id.
+// Used by tests that need to prove dispatch did NOT re-claim a
+// tombstoned issue after a Refresh — a mechanism observation stronger
+// than reading `state.Running`, because Running reflects only the
+// tombstone's local presence, not what tracker calls dispatch made.
+func (f *fakeTracker) claimCallsFor(id string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.claimCallsPerID[id]
+}
+
+// isClaimedOnTracker reports whether the issue still carries a claim in
+// the fake tracker. The revert+Release that clear it run on the
+// off-actor finish worker AFTER finishRun publishes the freed-slot
+// snapshot, so a test that polls Running==0 cannot conclude the issue
+// is claimable again until it observes the Release here — a candidate
+// scan run before that point cannot contain the issue, and a tombstone
+// assertion over such a scan is vacuous.
+func (f *fakeTracker) isClaimedOnTracker(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.claims[id]
+	return ok
 }
 
 func (f *fakeTracker) add(iss tracker.Issue) {
@@ -128,6 +155,7 @@ func (f *fakeTracker) Comment(_ context.Context, _, _ string) error { return tra
 func (f *fakeTracker) Claim(_ context.Context, id, marker string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.claimCallsPerID[id]++
 	if cur, ok := f.claims[id]; ok && cur != marker {
 		return tracker.ErrClaimConflict
 	}

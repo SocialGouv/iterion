@@ -94,6 +94,17 @@ func (s *Server) handleRunsStats(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "no run store configured on this server")
 		return
 	}
+	// Scope: ?team_id= (or X-Iterion-Team) with a canViewTeam check when
+	// present, otherwise the JWT's active team. Without this, a caller
+	// could pass ?team_id=other and receive the active team's numbers
+	// silently — the #1419 shape: byte-identical answers across three
+	// tenants because the parameter went to net/http.ServeMux and never
+	// reached the handler. On refusal, resolveTenantScope wrote the 403
+	// and we must return.
+	_, ctx, ok := s.resolveTenantScope(w, r)
+	if !ok {
+		return
+	}
 	sinceDays := 30
 	if v := r.URL.Query().Get("since_days"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 365 {
@@ -102,13 +113,13 @@ func (s *Server) handleRunsStats(w http.ResponseWriter, r *http.Request) {
 	}
 	since := time.Now().UTC().AddDate(0, 0, -sinceDays)
 
-	runs, err := runsSvc.ListCtx(r.Context(), runview.ListFilter{Since: since})
+	runs, err := runsSvc.ListCtx(ctx, runview.ListFilter{Since: since})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
 
-	out := aggregateRunStats(r.Context(), runsSvc, runs, sinceDays, statsCache)
+	out := aggregateRunStats(ctx, runsSvc, runs, sinceDays, statsCache)
 	writeJSON(w, out)
 }
 

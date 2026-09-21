@@ -436,6 +436,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		botRunFilesDir = spec.Env[runFilesEnvVar]
 		spec.Env[runFilesEnvVar] = runFilesContainerPath
 	}
+	// Tool scripts find the canonical tree-noise pathspecs via
+	// $ITERION_TREE_NOISE (pkg/treenoise) so a scope gate filters the tree
+	// with the engine's list, not its own literal (#1464).
+	seedTreeNoiseEnv(spec)
 	seedDefaultLocale(spec)
 	// The bundle is a host bind and nothing else: a driver with no host
 	// filesystem would have it dropped below, leaving every promise made
@@ -1487,6 +1491,21 @@ func isVolatileBuildPath(p string) bool {
 // Returns "" when no binary can be located — the caller falls back to
 // expecting the sandbox image to ship its own copy on PATH.
 func locateHostIterionBinary() string {
+	p := locateHostIterionBinaryCandidate()
+	if p == "" {
+		return ""
+	}
+	// Same contract as proc.LocateIterionBinary: one absolute form — a
+	// relative ITERION_BIN would be read as a named volume by the
+	// container run, not a bind-mount source.
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
+func locateHostIterionBinaryCandidate() string {
 	if exe, err := os.Executable(); err == nil && !isVolatileBuildPath(exe) {
 		candidate := filepath.Join(filepath.Dir(exe), "iterion")
 		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {

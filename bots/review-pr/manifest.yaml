@@ -1,7 +1,25 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.5
+version: 0.9.6
+## 0.9.6 — the whole reviewer fleet is pinned to z.ai's GLM: `provider:
+## "zai"` + `model: "glm-5.3"` on all four reviewer nodes, because this
+## deployment's Anthropic forfait is capped and the merge gate must
+## still review. The gpt slot's backend moves WITH the pin (claw →
+## claude_code): `provider:` is a hint honoured on claude_code only —
+## claw derives its provider from the model-spec prefix and rejects a
+## bare GLM id with `invalid spec` — so a zai pin declared on claw is
+## inert at best and dead at worst. "gpt" stays a slot label: the
+## reviewer self-reports `family: "gpt"` from its prompt, which is all
+## merge_reviews keys on, so in dual/audit the cross-confirmation is
+## same-model while the pin holds. The claude slot keeps its glm-5.2
+## fallback route byte-for-byte — same provider now, older id, tried
+## only when glm-5.3 itself hard-fails. Glance's frugality is its
+## reasoning_effort and tier caps, not the model. Parked with the pin:
+## ITERION_VIBE_MODEL_CLAUDE, _CLAUDE_GLANCE, ITERION_VIBE_BACKEND_GPT,
+## ITERION_VIBE_MODEL_GPT, ITERION_VIBE_BACKEND_GPT_GLANCE,
+## ITERION_VIBE_MODEL_GPT_GLANCE — they return when the pin lifts; the
+## effort dials and ITERION_VIBE_MODEL_CLAUDE_FALLBACK stay live.
 ## 0.9.5 — the claude slot has somewhere to go. Both its nodes
 ## (reviewer_claude and its glance twin) declare a GLM fallback route,
 ## so an instance whose Anthropic credential is spent, expired or unable

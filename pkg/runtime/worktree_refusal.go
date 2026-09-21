@@ -71,7 +71,11 @@ func (e *Engine) reclaimEarlyRefusalWorktree(ctx context.Context, runID string, 
 	}
 	// Include ignored files: a clean ordinary git status says nothing about
 	// an ignored crash log. Only the engine's own skill scaffold is omitted,
-	// using the same rule as successful worktree finalization.
+	// using the same rule as successful worktree finalization — and the
+	// FULL noise list is right here, unlike the merge-destined commit path:
+	// a release restores the baseline by design, so a drifted devbox.lock
+	// (which re-derives from devbox.json on the next devbox run) is not work
+	// this run is keeping.
 	out, err := runGit(wc.wtPath, "status", "--porcelain", "--ignored=matching", "--untracked-files=all")
 	if err != nil || len(runOutputPaths(out)) != 0 {
 		return false

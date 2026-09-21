@@ -152,8 +152,11 @@ func TestFinalizeWorktree_HappyPath_FFCurrent(t *testing.T) {
 	if res.FinalCommit != finalSHA {
 		t.Errorf("FinalCommit = %q, want %q", res.FinalCommit, finalSHA)
 	}
-	if res.FinalBranch != "iterion/run/swift-cedar-a3f2" {
-		t.Errorf("FinalBranch = %q", res.FinalBranch)
+	// The storage branch is keyed on the run ID — the stable key
+	// (#1366): a consumer looking up the branch by id finds it whether
+	// the run was straight or post-resume.
+	if res.FinalBranch != "iterion/run/run_x" {
+		t.Errorf("FinalBranch = %q, want iterion/run/run_x", res.FinalBranch)
 	}
 	if res.MergedInto != "main" {
 		t.Errorf("MergedInto = %q, want main", res.MergedInto)
@@ -594,19 +597,20 @@ func TestRecoverFinalize_HappyPath(t *testing.T) {
 	if r.FinalCommit != finalSHA {
 		t.Errorf("FinalCommit = %q, want %q", r.FinalCommit, finalSHA)
 	}
-	if r.FinalBranch != "iterion/run/swift-cedar-a3f2" {
-		t.Errorf("FinalBranch = %q", r.FinalBranch)
+	// The storage branch is keyed on the run ID — the stable key (#1366).
+	if r.FinalBranch != "iterion/run/run_test_recover_finalize" {
+		t.Errorf("FinalBranch = %q, want iterion/run/run_test_recover_finalize", r.FinalBranch)
 	}
 	// And the run was persisted back: re-load and check.
 	r2, err := st.LoadRun(context.Background(), r.ID)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if r2.FinalCommit != finalSHA || r2.FinalBranch != "iterion/run/swift-cedar-a3f2" {
+	if r2.FinalCommit != finalSHA || r2.FinalBranch != "iterion/run/run_test_recover_finalize" {
 		t.Errorf("persisted final_* mismatch: %+v", r2)
 	}
 	// And the branch actually exists in the repo.
-	if got, _ := gittest.Try(repo, "rev-parse", "iterion/run/swift-cedar-a3f2"); got != finalSHA {
+	if got, _ := gittest.Try(repo, "rev-parse", "iterion/run/run_test_recover_finalize"); got != finalSHA {
 		t.Errorf("branch tip = %q, want %q", got, finalSHA)
 	}
 }
@@ -746,8 +750,9 @@ func TestRecoverFinalize_CancelledRun(t *testing.T) {
 	if r.FinalCommit != finalSHA {
 		t.Errorf("FinalCommit = %q, want %q", r.FinalCommit, finalSHA)
 	}
-	if r.FinalBranch != "iterion/run/fierce-oak-c9d4" {
-		t.Errorf("FinalBranch = %q", r.FinalBranch)
+	// The storage branch is keyed on the run ID — the stable key (#1366).
+	if r.FinalBranch != "iterion/run/run_cancelled_partial" {
+		t.Errorf("FinalBranch = %q, want iterion/run/run_cancelled_partial", r.FinalBranch)
 	}
 }
 

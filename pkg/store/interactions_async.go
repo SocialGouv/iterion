@@ -119,7 +119,23 @@ func sortInteractionsByRequestedAt(ins []*Interaction) {
 // an execution that is being replayed, so leaving them live would make
 // the replayed await_answers park on the union of old and new, or fold
 // pre-rewind answers into its output.
+//
+// Deprecated alias for RetireInteractions with includeBlocking=false —
+// kept so external callers depending on the name compile. New callers
+// should reach for RetireInteractions and choose their kind set.
 func RetireAsyncInteractions(ctx context.Context, rs RunStore, runID string, nodeIDs map[string]bool) (int, error) {
+	return RetireInteractions(ctx, rs, runID, nodeIDs, false)
+}
+
+// RetireInteractions marks every interaction of the given nodes as no
+// longer asked. When includeBlocking is true the ordinary blocking-pause
+// interactions (Kind == "", the human-gate answers a resume records) are
+// retired too — the case an in-place rewind onto the human gate needs,
+// so the resume-side helper advancePastAnsweredHumanNodeOnResume
+// (pkg/runtime) cannot pick up the pre-rewind answers a second time. In
+// pair with Run.LastRewindAt, this is the twin refusal #1435 gate
+// finding Rac891d asks for.
+func RetireInteractions(ctx context.Context, rs RunStore, runID string, nodeIDs map[string]bool, includeBlocking bool) (int, error) {
 	if len(nodeIDs) == 0 {
 		return 0, nil
 	}
@@ -134,7 +150,21 @@ func RetireAsyncInteractions(ctx context.Context, rs RunStore, runID string, nod
 		if err != nil {
 			return retired, fmt.Errorf("load interaction %s/%s: %w", runID, id, err)
 		}
-		if in.Kind != InteractionKindAsync || in.RetiredAt != nil || !nodeIDs[in.NodeID] {
+		if in.RetiredAt != nil || !nodeIDs[in.NodeID] {
+			continue
+		}
+		switch in.Kind {
+		case InteractionKindAsync:
+			// always retired — the historical scope of this call.
+		case "":
+			if !includeBlocking {
+				continue
+			}
+		default:
+			// Review dialogs and other typed kinds carry protocol state
+			// that a rewind cannot represent as "retire and re-ask".
+			// Left alone — the same rule that keeps rewind hands-off on
+			// non-async interactions before this fix.
 			continue
 		}
 		in.RetiredAt = &now

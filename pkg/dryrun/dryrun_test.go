@@ -467,6 +467,101 @@ func TestFanOutEdgesAreCovered(t *testing.T) {
 	}
 }
 
+// TestPassContentsSortIsStableUnderFanOut pins the promise of #1434:
+// each pass's Nodes and Edges are ordered by id / (from, to) before
+// emission, so a fan-out whose branches finish in different orders
+// yields byte-identical reports across runs. The report is a
+// document, not a trace — event arrival order stays in events.jsonl
+// with its timestamps.
+//
+// The forbidden alternative in this test: a pass whose Nodes/Edges
+// list is the raw arrival order — under a fan-out, that order is a
+// goroutine race, i.e. flaky. Simulating both arrival orders and
+// requiring byte-identical JSON is a witness that WOULD flake under
+// the raw order, so passing here proves the sort settled it.
+//
+// Mutation: comment out the sort.Strings / sortEdges body of
+// sortPassContents and this reddens: byte-identical is impossible on two
+// arrival orders. (Dropping the CALL SITE in Run does not redden this —
+// the test drives sortPassContents directly; the call sites are pinned by
+// TestDryRunReportsAreByteIdenticalAcrossRuns.)
+func TestPassContentsSortIsStableUnderFanOut(t *testing.T) {
+	// Two synthesized passes that reach the SAME sets in opposite
+	// arrival orders — the shape a fan-out produces on this repo
+	// (measured on examples/events/pingpong.bot: 2 of the 15 strict
+	// dry runs put ping first, 13 put pong first, before the fix).
+	// We build them directly rather than through Run() so the assertion
+	// isolates the report-emission contract: the sort must settle
+	// arrival order into id / (from, to) order.
+	orderA := Pass{
+		Bias:   true,
+		Status: "finished",
+		Nodes:  []string{"produce", "fork", "pong", "ping", "gather", "done"},
+		Edges: []Edge{
+			{From: "produce", To: "fork"},
+			{From: "fork", To: "pong"},
+			{From: "fork", To: "ping"},
+			{From: "pong", To: "gather"},
+			{From: "ping", To: "gather"},
+			{From: "gather", To: "done"},
+		},
+	}
+	orderB := Pass{
+		Bias:   true,
+		Status: "finished",
+		Nodes:  []string{"produce", "fork", "ping", "pong", "gather", "done"},
+		Edges: []Edge{
+			{From: "produce", To: "fork"},
+			{From: "fork", To: "ping"},
+			{From: "fork", To: "pong"},
+			{From: "ping", To: "gather"},
+			{From: "pong", To: "gather"},
+			{From: "gather", To: "done"},
+		},
+	}
+	sortPassContents(&orderA)
+	sortPassContents(&orderB)
+	jsonA, err := json.Marshal(orderA)
+	if err != nil {
+		t.Fatalf("marshal A: %v", err)
+	}
+	jsonB, err := json.Marshal(orderB)
+	if err != nil {
+		t.Fatalf("marshal B: %v", err)
+	}
+	if string(jsonA) != string(jsonB) {
+		t.Fatalf("two arrival orders yielded different reports; the sort did not settle them\n  A: %s\n  B: %s", jsonA, jsonB)
+	}
+	// The stable order the sort chose: nodes lexicographic, edges by
+	// (from, to). Pin it so a future refactor that changes the order
+	// (e.g. to some hand-picked topo) reddens this, forcing an
+	// explicit decision rather than a silent shift.
+	wantNodes := []string{"done", "fork", "gather", "ping", "pong", "produce"}
+	if got := orderA.Nodes; !equalStrings(got, wantNodes) {
+		t.Errorf("Nodes not lexicographic: got %v, want %v", got, wantNodes)
+	}
+	// (fork,ping) sorts before (fork,pong) alphabetically at the top
+	// of the list — the two siblings a fan-out reorders.
+	if got, want := orderA.Edges[0], (Edge{From: "fork", To: "ping"}); got != want {
+		t.Errorf("Edges[0] = %v, want %v (from,to sort)", got, want)
+	}
+	if got, want := orderA.Edges[1], (Edge{From: "fork", To: "pong"}); got != want {
+		t.Errorf("Edges[1] = %v, want %v (from,to sort)", got, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // A declared secret and a declared attachment are not unresolved
 // references: the prompt and the command render with a placeholder. A
 // script without a language runs under sh, which the images ship as dash:
@@ -1461,5 +1556,38 @@ func TestAChildInsideALoopIsSimulatedOnceAndCounted(t *testing.T) {
 	}
 	if out := r.Render(); !strings.Contains(out, "crossed 4 times") {
 		t.Fatalf("the crossings are not said:\n%s", out)
+	}
+}
+
+// TestDryRunReportsAreByteIdenticalAcrossRuns pins the #1434 promise at
+// the RUN level: the report a fan-out produces is a document — repeated
+// runs of the same bot marshal byte-identically, whatever order the
+// simulated branches finish in. It drives Run (not sortPassContents
+// directly) so the sort CALL SITES are pinned: with a call site dropped,
+// the arrival order leaks into the report and the eight runs then
+// disagree (measured with the call site dropped: two distinct node orders
+// over 20 live runs of pingpong.bot). The deterministic guard for the
+// comparator itself stays TestPassContentsSortIsStableUnderFanOut; this
+// test's witness is probabilistic — that is the shape of the defect it
+// pins, a goroutine race.
+func TestDryRunReportsAreByteIdenticalAcrossRuns(t *testing.T) {
+	wf := compileBot(t, fanBot)
+	var want string
+	for i := 0; i < 8; i++ {
+		r, err := Run(context.Background(), wf, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			want = string(raw)
+			continue
+		}
+		if string(raw) != want {
+			t.Fatalf("run %d's report differs from run 0's — the arrival order leaked into the document\n  run 0: %s\n  run %d: %s", i, want, i, raw)
+		}
 	}
 }

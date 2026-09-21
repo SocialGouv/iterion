@@ -184,11 +184,48 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	}()
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
+		// A gate replay that failed between the status flip (below) and
+		// the claim parks the run paused_waiting_human with the pause
+		// pointer ALREADY consumed by the first attempt — a plain
+		// resume would die on `LoadInteraction(runID, "")`. Consult the
+		// replay predicate here too: it re-finds the interaction,
+		// restores the pointer, and the replay re-runs through the
+		// pause path. A normal pause (pointer present) is untouched.
+		if r.Checkpoint != nil && r.Checkpoint.InteractionID == "" {
+			if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
+				return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+			}
+		}
 		return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		// paused_operator resumes via the same machinery as cancelled
 		// runs: checkpoint preserved, no pending interaction, restart
 		// from the node about to execute when the pause fired.
+		//
+		// #1435 third defect: when the checkpoint anchors on a human
+		// node whose blocking-pause interaction was already answered
+		// (the classic case: recordHumanAnswers ran, then the sandbox
+		// start failed and the run parked failed_resumable), REPLAY the
+		// recorded answers through the PAUSE PATH itself — the status
+		// flips back to paused_waiting_human and resumeFromPause runs
+		// unmodified, so recordHumanAnswers, the artifact publication,
+		// the markPreNodeBoundary parked-window close and the edge
+		// selection are THE pause path's code, not a copy that can
+		// drift (PR #1490 gate round 2, R62a836). A rewind-invalidated
+		// answer (Run.LastRewindAt at/after AnsweredAt, or the
+		// interaction retired) is refused by the predicate and the run
+		// re-asks. A non-empty caller --answer map (R60aa7e) is what
+		// gets recorded, correcting a stale stored answer.
+		//
+		// A durable mission resume (expectedResumeStatus) keeps its
+		// exact-status contract: the flip below would change the status
+		// out from under claimForResume's narrowed CAS, so those skip
+		// the replay and re-ask through resumeFromFailure.
+		if e.gateReplayAllowed() {
+			if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
+				return e.replayAnsweredGate(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+			}
+		}
 		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	case store.RunStatusQueued:
 		// Cloud resume: the publisher flips the run to queued BEFORE the
@@ -200,12 +237,19 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		// == nil there), and validateResumable rejects resuming a plain
 		// queued run — so the only way to reach Resume with queued is a
 		// publisher-flipped resumable run. Route by evidence: a pending
-		// interaction id means a human pause; otherwise resumeFromFailure —
+		// interaction id means a human pause; an answered human gate
+		// replays through the same pause path (same rationale as the
+		// failed_resumable case above); otherwise resumeFromFailure —
 		// which restarts from the checkpoint node, or from entry when a
 		// pre-first-node failure (e.g. a runner-side clone-prep error) left
 		// no checkpoint at all.
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
 			return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
+		}
+		if e.gateReplayAllowed() {
+			if replayAnswers, ok := e.answeredHumanGateReplay(ctx, r, answers); ok {
+				return e.replayAnsweredGate(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+			}
 		}
 		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	default:
@@ -963,10 +1007,17 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 
 	// Record answers on the interaction (LoadInteraction + WriteInteraction
 	// + emit human_answers_recorded). Fall back to the checkpoint's embedded
-	// questions if the interaction file has been deleted.
-	if err := e.recordHumanAnswers(ctx, r, cp, answers); err != nil {
+	// questions if the interaction file has been deleted. The effective
+	// answers replace the caller's map: a resume that ships none continues
+	// on the answers a previous attempt already recorded (Rcc9dd7).
+	answers, err := e.recordHumanAnswers(ctx, r, cp, answers)
+	if err != nil {
 		return err
 	}
+	// Stored answers resolved their file descriptors on the engine that
+	// recorded them; re-resolve on THIS engine so a retry on another pod
+	// seeds host-correct paths. Idempotent for non-file answers.
+	e.resolveFileAnswers(ctx, runID, answers)
 
 	// Store human answers as the output of the human node. Deep-copy
 	// the checkpoint's outputs so subsequent rs.outputs writes do not
@@ -995,7 +1046,7 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 	artifactRevisions := artifactState.revisions
 	artifacts := artifactState.artifacts
 	artifactOwners := artifactState.owners
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp)
+	artifactVersions, err = e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp)
 	if err != nil {
 		return err
 	}
@@ -1123,7 +1174,11 @@ func (e *Engine) resumeFromRecoveryPause(ctx context.Context, r *store.Run, cp *
 	if _, ok := e.workflow.Nodes[nodeID]; !ok {
 		return &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: nodeID, Message: fmt.Sprintf("runtime: recovery-paused node %q not found in workflow", nodeID)}
 	}
-	if err := e.recordHumanAnswers(ctx, r, cp, answers); err != nil {
+	// The effective answers are deliberately unused here: a recovery
+	// pause's acknowledgement is an audit trail on the interaction, never
+	// the failed node's output — the node re-executes from its own
+	// dispatch below.
+	if _, err := e.recordHumanAnswers(ctx, r, cp, answers); err != nil {
 		return err
 	}
 	resumeData := map[string]any{
@@ -1186,9 +1241,15 @@ func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *stor
 
 	answerCP := *cp
 	answerCP.NodeID = humanNodeID
-	if err := e.recordHumanAnswers(ctx, r, &answerCP, answers); err != nil {
+	// The effective answers feed the branch: a resume that ships none
+	// continues on the answers a previous attempt recorded (Rcc9dd7).
+	answers, err := e.recordHumanAnswers(ctx, r, &answerCP, answers)
+	if err != nil {
 		return err
 	}
+	// Re-resolve stored file descriptors on THIS engine — same rationale
+	// as the single-pause path above.
+	e.resolveFileAnswers(ctx, runID, answers)
 
 	parallel := newParallelExecutionState(cp.Parallel)
 	if err := parallel.setResumeAnswers(branchID, answers); err != nil {
@@ -1247,7 +1308,16 @@ func cloneResumeInputs(src map[string]any) map[string]any {
 // checkpoint's embedded questions if the on-disk file is missing), stamps
 // the operator's answers + AnsweredAt, writes the interaction back, and
 // emits human_answers_recorded. Shared resumeFromPause helper.
-func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]any) error {
+// recordHumanAnswers records the caller's answers on the pause
+// interaction and returns the EFFECTIVE answer map the pause path must
+// seed the human node with: the caller's map when one was supplied,
+// otherwise the answers already stored on the interaction. A resume that
+// records answers and then fails before the claim (materializeHumanArtifact,
+// the sandbox start) leaves them parked on disk with the run still
+// paused_waiting_human; a retry that ships none must continue on the
+// operator's recorded decision, not cross the gate on an empty seed
+// (Rcc9dd7).
+func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]any) (map[string]any, error) {
 	runID := r.ID
 	interaction, err := e.store.LoadInteraction(ctx, runID, cp.InteractionID)
 	if err != nil && cp.InteractionQuestions != nil {
@@ -1259,15 +1329,26 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 			Questions:   cp.InteractionQuestions,
 		}
 	} else if err != nil {
-		return fmt.Errorf("runtime: load interaction for resume: %w", err)
+		return nil, fmt.Errorf("runtime: load interaction for resume: %w", err)
+	}
+	// Preserve prior answers when the current resume passes none: a
+	// recovery-pause resume of a failed run whose previous attempt had
+	// already recorded answers (the sandbox-start failure of #1435, for
+	// instance — recordHumanAnswers ran before startSandbox blew up)
+	// must not silently wipe them by writing an empty answers map on
+	// top. Empty here means "no new answers supplied"; a caller that
+	// wants to overwrite ships the new map explicitly. The stored map is
+	// what the caller seeds with — see the return contract above.
+	if len(answers) == 0 && len(interaction.Answers) > 0 {
+		return cloneResumeInputs(interaction.Answers), nil
 	}
 	now := time.Now().UTC()
 	interaction.AnsweredAt = &now
 	interaction.Answers = answers
 	if err := e.store.WriteInteraction(ctx, interaction); err != nil {
-		return fmt.Errorf("runtime: write answered interaction: %w", err)
+		return nil, fmt.Errorf("runtime: write answered interaction: %w", err)
 	}
-	return e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, map[string]any{
+	return answers, e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, map[string]any{
 		"interaction_id": cp.InteractionID,
 		"answers":        answers,
 	})
@@ -1739,6 +1820,11 @@ var (
 // network cuts during plan, claude_code subprocess crashes, etc. Without
 // it, those runs are dead-on-arrival because validateResumable lets
 // them through but the engine refuses to resume.
+//
+// An answered human gate on the restart node does NOT come through
+// here: Engine.Resume's dispatch routes it to resumeFromPause via
+// answeredHumanGateReplay, so the transition is the pause path's own
+// code (PR #1490 gate round 2 — no duplicated mechanism to drift).
 func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared ...*resumeArtifactState) error {
 	runID := r.ID
 
@@ -1828,6 +1914,12 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	e.pushExecutorVars(rs.vars)
 
 	e.restampWorkflowSource(ctx, r)
+	// An answered human gate on the restart node never reaches this
+	// loop: Engine.Resume's dispatch routes it through
+	// answeredHumanGateReplay → resumeFromPause, so the transition is
+	// the pause path's own code and there is no second mechanism to
+	// drift (PR #1490 gate round 2, R62a836).
+
 	loopErr := e.execLoop(ctx, rs, restartNodeID)
 	e.evictRunSessions(runID, loopErr)
 	// Mirrors resumeFromPause: a worktree run that fails resumably and
@@ -3189,6 +3281,176 @@ func (e *Engine) currentLoopIterationPath(nodeID string, loopCounters map[string
 // tag their log output as [NodeID#iter/...].
 func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounters map[string]int) context.Context {
 	return model.WithLoopIteration(ctx, e.currentLoopIteration(nodeID, loopCounters))
+}
+
+// answeredHumanGateReplay decides whether a failed_resumable /
+// cancelled / paused_operator / queued run whose checkpoint anchors on
+// a HUMAN node should REPLAY the already-recorded answers instead of
+// re-executing the node: the store carries a non-retired ANSWERED
+// blocking-pause interaction for THIS iteration of the node, and that
+// answer is not stale (the run has not been rewound since it was
+// recorded).
+//
+// This is a PREDICATE only — it performs no transition of its own.
+// When it returns true the caller restores the pause pointer off
+// r.Checkpoint and routes through resumeFromPauseWithHostInputs, so
+// the ENTIRE transition (recordHumanAnswers + human_answers_recorded,
+// outputs seeding, materializeHumanArtifact + node_finished, the
+// markPreNodeBoundary parked-window close, claimForResume, edge
+// selection) is THE pause path's own code. The gate's round-2 HIGH
+// (R62a836) landed precisely because a first cut duplicated that
+// sequence and drifted; reuse is the fix — there is no second
+// mechanism to drift.
+//
+// The interaction is matched by EXACT ID (interactionIDForPause with
+// the checkpoint's loop counters): in a loop each iteration writes a
+// distinct interaction, and matching by node alone would reuse an
+// older iteration's answer. Freshness rides Run.LastRewindAt — a
+// rewind stamps it, and an interaction answered at or before that
+// stamp belongs to the execution the rewind replaced (gate finding
+// Rac891d); rewind's RetireInteractions(includeBlocking=true) is the
+// sibling refusal.
+//
+// A non-empty callerAnswers map (an explicit `--answer` on the failed
+// resume, gate finding R60aa7e) wins over the stored one and is what
+// recordHumanAnswers writes back — so the correction is persisted
+// through the SAME write + `human_answers_recorded` event the pause
+// path uses.
+func (e *Engine) answeredHumanGateReplay(ctx context.Context, r *store.Run, callerAnswers map[string]any) (map[string]any, bool) {
+	if e == nil || r == nil || r.Checkpoint == nil {
+		return nil, false
+	}
+	restartNodeID := r.Checkpoint.NodeID
+	if restartNodeID == "" {
+		return nil, false
+	}
+	node, ok := e.workflow.Nodes[restartNodeID]
+	if !ok {
+		return nil, false
+	}
+	hn, ok := node.(*ir.HumanNode)
+	if !ok {
+		return nil, false
+	}
+	// Only the default blocking-pause interaction is safe to replay.
+	// Review / LLM / auto interactions carry additional protocol state
+	// (turns, agent verdicts) that a stored answers map cannot
+	// represent; their own resume paths handle them.
+	if hn.Interaction != ir.InteractionHuman && hn.Interaction != ir.InteractionNone {
+		return nil, false
+	}
+	expectedID := e.interactionIDForPause(r.ID, restartNodeID, r.Checkpoint.LoopCounters)
+	in, loadErr := e.store.LoadInteraction(ctx, r.ID, expectedID)
+	if loadErr != nil || in == nil {
+		return nil, false
+	}
+	if in.NodeID != restartNodeID || in.RetiredAt != nil || in.AnsweredAt == nil {
+		return nil, false
+	}
+	if in.Kind != "" {
+		return nil, false
+	}
+	if len(in.Answers) == 0 {
+		return nil, false
+	}
+	// Freshness: an interaction answered at or before the last rewind
+	// belongs to the execution the rewind replaced. Reusing it would
+	// re-decide the very gate the operator rewound to reconsider.
+	if r.LastRewindAt != nil && !in.AnsweredAt.After(*r.LastRewindAt) {
+		return nil, false
+	}
+	// A rewind older than the stamp — a pre-LastRewindAt binary — left
+	// neither the timestamp nor a retired interaction; the run_rewound
+	// event in the append-only timeline is the only witness it left.
+	// Any rewind AFTER the answer refuses the replay, so an operator
+	// resuming a run rewound by an older engine is re-asked instead of
+	// silently continuing on the decision they rewound to reconsider.
+	if r.LastRewindAt == nil {
+		rewoundAfter, err := e.rewoundAfterAnswer(ctx, r.ID, *in.AnsweredAt)
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("runtime: run %q: cannot read the timeline for a rewind marker (%v); re-asking the human gate", r.ID, err)
+			}
+			return nil, false
+		}
+		if rewoundAfter {
+			return nil, false
+		}
+	}
+	// Restore the pause pointer off the checkpoint so the pause path's
+	// claimForResume → consumePausePointer pair works unchanged: the
+	// first attempt consumed it when it claimed the run, and the
+	// pointer is what makes this a REPLAY of that pause rather than a
+	// fresh ask.
+	r.Checkpoint.InteractionID = expectedID
+	if len(callerAnswers) > 0 {
+		// recordHumanAnswers writes non-empty answers over the stored
+		// ones (its empty-guard only protects a fresh interaction from
+		// an empty map) and emits human_answers_recorded — the
+		// correction rides the pause path's own audit trail.
+		return cloneResumeInputs(callerAnswers), true
+	}
+	return cloneResumeInputs(in.Answers), true
+}
+
+// gateReplayAllowed reports whether the caller's resume contract permits
+// the gate-replay status flip. A durable mission resume narrows its claim
+// CAS to one exact source status (expectedResumeStatus); any non-empty
+// expectedResumeStatus therefore refuses the flip outright. The arms that
+// consult this predicate always hold a run whose CURRENT status differs
+// from the narrowed one, so flipping into the expected status would
+// MANUFACTURE it rather than observe it — laundering a cancelled or
+// otherwise-moved run into a claim the CAS should reject (R132d97).
+// Missions whose narrowed status IS paused_waiting_human reach the
+// paused_waiting_human arm directly, where the wedged-recovery consult
+// runs without a flip and is not gated on the caller's contract.
+func (e *Engine) gateReplayAllowed() bool {
+	return e.expectedResumeStatus == ""
+}
+
+// replayAnsweredGate is the ONE flip into the gate replay: CAS the status
+// back to paused_waiting_human and route through the pause path with the
+// replayed answers. The flip states NO error text — a transition into a
+// non-failure status must not forge a failure message into Run.Error
+// (every other non-failure CAS in the tree passes ""), and the replay
+// rationale lives in the log line instead. If the replay then dies before
+// the claim, the run parks paused_waiting_human with an honest empty
+// Error the operator can retry, rather than a status note posing as the
+// failure diagnosis.
+func (e *Engine) replayAnsweredGate(ctx context.Context, r *store.Run, replayAnswers, hostInputs map[string]any, preparedArtifacts *resumeArtifactState) error {
+	runID := r.ID
+	if e.logger != nil {
+		e.logger.Info("runtime: run %q: answered human gate replay — reusing the recorded answer through the pause path (%s)", runID, r.Status)
+	}
+	flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
+	changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "", []store.RunStatus{r.Status})
+	flipCancel()
+	if ferr != nil {
+		return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
+	}
+	if !changed {
+		return fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID)
+	}
+	r.Status = store.RunStatusPausedWaitingHuman
+	return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+}
+
+// rewoundAfterAnswer reports whether the run's timeline carries a
+// run_rewound event newer than answeredAt — the marker a rewind writes
+// even when it predates the Run.LastRewindAt stamp, which is how the
+// first resume under this engine recognises a run rewound by an older
+// binary.
+func (e *Engine) rewoundAfterAnswer(ctx context.Context, runID string, answeredAt time.Time) (bool, error) {
+	events, err := e.store.LoadEvents(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("runtime: load events of run %q: %w", runID, err)
+	}
+	for _, ev := range events {
+		if ev.Type == store.EventRunRewound && ev.Timestamp.After(answeredAt) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // restampWorkflowSource refreshes Run.WorkflowSource to the text this
