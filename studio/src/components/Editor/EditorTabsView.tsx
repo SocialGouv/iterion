@@ -57,9 +57,16 @@ export default function EditorTabsView() {
   // tab exists and is active. Match on the file key alone — a draft tab
   // that was saved-as carries both `draft` and `file`, and paramsEqual
   // against `{file}` would miss it and open a duplicate.
+  //
+  // Two tabs may legally name the same file (the picker opens a tab per
+  // pick). The tab ON SCREEN naming X is the URL's tab — preferring an
+  // older tab with the same key would yank the author off the tab they
+  // opened the file in the moment its binding landed.
   useEffect(() => {
     if (!fileParam) return;
-    const existing = tabs.find((t) => t.params.file === fileParam);
+    const existing =
+      tabs.find((t) => t.id === activeTabId && t.params.file === fileParam) ??
+      tabs.find((t) => t.params.file === fileParam);
     if (existing) {
       ensureActive(existing.id);
       return;
@@ -70,10 +77,13 @@ export default function EditorTabsView() {
   // Same contract as `?file=`, keyed on `draft` so a tab that has since
   // been bound to a file (`{draft, file}`) is still THIS draft, not a
   // second "Draft" tab. Once bound, rewrite the URL to `?file=` so the
-  // file effect owns the rest of the session.
+  // file effect owns the rest of the session. The on-screen tab is
+  // preferred for the same reason as above.
   useEffect(() => {
     if (!draftParam || fileParam) return;
-    const existing = tabs.find((t) => t.params.draft === draftParam);
+    const existing =
+      tabs.find((t) => t.id === activeTabId && t.params.draft === draftParam) ??
+      tabs.find((t) => t.params.draft === draftParam);
     if (existing) {
       ensureActive(existing.id);
       const file = existing.params.file;
