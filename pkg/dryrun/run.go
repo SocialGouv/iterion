@@ -320,16 +320,21 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 	return r, nil
 }
 
-// sortPassContents orders a pass's Nodes by id and Edges by
-// (from, to) so a fan-out that reorders event arrival — the concurrent
-// goroutines of `fan_out` branches finishing in whichever order — does
-// not decide the report's byte layout. The set of nodes/edges reached
-// is a document about the program, not a trace of one run; the
-// observer stream in events.jsonl keeps the arrival order with its
-// timestamps.
+// sortPassContents orders a pass's Nodes by id, Edges by
+// (from, to) and DeadBranches by branch, so a fan-out that reorders event
+// arrival — the concurrent goroutines of `fan_out` branches finishing in
+// whichever order — does not decide the report's byte layout. The set of
+// nodes/edges reached, and the set of branches that died, are documents
+// about the program, not a trace of one run; the observer stream in
+// events.jsonl keeps the arrival order with its timestamps.
 func sortPassContents(p *Pass) {
 	sort.Strings(p.Nodes)
 	sortEdges(p.Edges)
+	// One entry per branch (recordDeadBranch dedupes by name), so the
+	// branch name is a total order.
+	sort.Slice(p.DeadBranches, func(i, j int) bool {
+		return p.DeadBranches[i].Branch < p.DeadBranches[j].Branch
+	})
 }
 
 // sortEdges puts edges in a stable order: from first, then to.

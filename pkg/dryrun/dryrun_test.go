@@ -2956,6 +2956,13 @@ func TestADeadBranchSurvivesADeclaredRefusalOnTheTrunk(t *testing.T) {
 	if len(p.DeadBranches) != 2 {
 		t.Fatalf("the branch deaths were dropped behind the refusal: %+v", p.DeadBranches)
 	}
+	// The report is a document (#1434): the branches' arrival order must
+	// not decide the dead branches' layout.
+	for i := 1; i < len(p.DeadBranches); i++ {
+		if p.DeadBranches[i-1].Branch > p.DeadBranches[i].Branch {
+			t.Fatalf("the dead branches are not in branch-name order, the arrival order leaked: %+v", p.DeadBranches)
+		}
+	}
 	for _, d := range p.DeadBranches {
 		if d.Code != "LOOP_EXHAUSTED" {
 			t.Fatalf("the branch did not die of the spent loop: %+v", d)
