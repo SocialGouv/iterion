@@ -20,9 +20,10 @@ const (
 	// operator's knobs — which a public face leaves out on purpose.
 	DiagContractManifestMismatch Code = "C254"
 	// DiagSubbotContractMismatch: a `subbot` node's `with:` misses an input
-	// the child's contract requires. The parent's `output:` schema is not
-	// held to the child's contract: a subbot's output is the child's
-	// terminal node output, which the contract's outputs do not define.
+	// the child's contract requires, or its `output:` schema names a field
+	// the child's contract does not produce — the runtime projects the
+	// subbot's output from the contract's ports (#1280), so the schema a
+	// parent (and a dry run) read is held to what actually arrives.
 	DiagSubbotContractMismatch Code = "C255"
 )
 
@@ -79,8 +80,12 @@ func checkContractManifest(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow) {
 // checkSubbotContracts holds each `subbot` node to its child's contract
 // (C255), for the children the caller read and compiled: a required input
 // — one whose var has no default, the compiler's word (C300) — that the
-// parent's `with:` does not pass. A child without a contract, or one the
-// caller could not read, is held to nothing (C253 names an unread child).
+// parent's `with:` does not pass, and the parent's `output:` schema held to
+// the contract's output ports — the runtime projects the subbot's output
+// from those ports (#1280), so a schema field no port produces never
+// arrives, and a scalar field typed differently declares a shape the child
+// does not send. A child without a contract, or one the caller could not
+// read, is held to nothing (C253 names an unread child).
 func checkSubbotContracts(diags *[]Diag, w *ir.Workflow, children map[string]*ir.PublicContract) {
 	if w == nil || len(children) == 0 {
 		return
@@ -120,5 +125,68 @@ func checkSubbotContracts(diags *[]Diag, w *ir.Workflow, children map[string]*ir
 				Hint:    hint,
 			})
 		}
+		// The output arm: the parent's `output:` schema against the child's
+		// ports. Types are compared only when BOTH sides spell a scalar
+		// builtin ("string", "bool", "int", "float", with their `[]` forms):
+		// a port typed with a schema name — or a file port — projects the
+		// producer's whole output object, and a parent's `json` field accepts
+		// it whatever its shape, so a literal comparison there would warn on
+		// a correct parent.
+		if sb.OutputSchema == "" {
+			continue
+		}
+		schema := w.Schemas[sb.OutputSchema]
+		if schema == nil {
+			continue
+		}
+		ports := map[string]*ir.PublicPort{}
+		for _, out := range cc.Outputs {
+			ports[out.Name] = out
+		}
+		produced := "its outputs: " + portNames(cc.Outputs)
+		if len(cc.Outputs) == 0 {
+			produced = "it declares no output"
+		}
+		for _, f := range schema.Fields {
+			out, ok := ports[f.Name]
+			if !ok {
+				*diags = append(*diags, Diag{
+					Code: DiagSubbotContractMismatch, Severity: SeverityWarning,
+					Field:   "subbot." + id + ".output." + f.Name,
+					Message: fmt.Sprintf("subbot %q: output schema %q expects field %q, which the child's contract %q does not produce (%s)", id, sb.OutputSchema, f.Name, cc.Name, produced),
+					Hint:    "name a field the child's contract produces, or add the output to the child's contract",
+				})
+				continue
+			}
+			if scalarPortType(out.Type) && scalarPortType(f.Type.String()) && out.Type != f.Type.String() {
+				*diags = append(*diags, Diag{
+					Code: DiagSubbotContractMismatch, Severity: SeverityWarning,
+					Field:   "subbot." + id + ".output." + f.Name,
+					Message: fmt.Sprintf("subbot %q: output schema %q expects field %q as %s, the child's contract %q produces it as %s", id, sb.OutputSchema, f.Name, f.Type.String(), cc.Name, out.Type),
+					Hint:    "give the parent's field the child's type",
+				})
+			}
+		}
 	}
+}
+
+// scalarPortType reports whether t spells one of the scalar builtins a
+// schema field and a contract port share — "string", "bool", "int", "float",
+// with their `[]` forms. Those are the only spellings a literal comparison
+// can judge: `json` accepts any shape, and a schema name names the child's
+// own declaration, not anything the parent can spell.
+func scalarPortType(t string) bool {
+	switch strings.TrimSuffix(t, "[]") {
+	case "string", "bool", "int", "float":
+		return true
+	}
+	return false
+}
+
+func portNames(ports []*ir.PublicPort) string {
+	names := make([]string, 0, len(ports))
+	for _, p := range ports {
+		names = append(names, p.Name)
+	}
+	return strings.Join(names, ", ")
 }

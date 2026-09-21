@@ -24,6 +24,23 @@ on GitLab — the issue-label → PR lineage).
 | `max_passes` | no | Continuation-loop cap (default 8) |
 | `open_mr` | no | Push the series + open a PR on convergence (default false) |
 | `mr_branch` / `mr_base` / `source_issue_ref` | no | PR wiring — see main.bot |
+| `plan_phase` | no | `on` (default) authors a plan before the campaign; `off` plans in stride |
+| `plan_review` | no | Cross-model peer review of the plan: `auto` (default; on when a second family is credentialed), `on`, `off` |
+| `plan_review_policy` | no | A mid-run peer failure: `skip` (default) proceeds unreviewed, loudly; `wait` parks the run |
+
+## Public contract
+
+The bot keeps a `contract featurly:` (main.bot, [ADR-099](../../docs/adr/099-public-contracts.md)),
+held to the program by the compiler: its inputs mirror the launch vars above
+(the operator- and host-owned ones — `workspace_dir`, `scratch_dir`,
+`failure_context`, `delegation_instructions` — are plumbing, not inputs), its
+outputs name the nodes that produce them (`campaign`, `verify_run`, `review`,
+`gate`, `finalize_mr` — the PR ports are declared `nullable`: their producer
+is the one node a finished run can skip), one criterion and its effects. `iterion validate
+bots/feature-dev/` renders it; `--json` returns it as `public_contract`.
+No criterion is evaluated at run time — by this bot or anywhere: a declared
+criterion is documentation for readers (and for the evaluators a future
+release will run), not a gate; the launch accepts an empty `feature_prompt`.
 
 ## Shape (v2 — one agent, minimal framing)
 

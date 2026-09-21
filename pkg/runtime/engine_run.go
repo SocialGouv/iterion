@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
@@ -420,7 +421,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 	}
 	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
 		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil ||
-		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" {
+		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -561,6 +562,21 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			if run.ExecutionContext == nil {
 				run.ExecutionContext = ctxContract
 			}
+		}
+		// The public contract the program EXECUTES rides the run doc, in its
+		// wire form, and mirrors it on every pass: stamped at launch, and a
+		// resume whose program dropped the contract clears it — a parent that
+		// re-attaches to this run as a finished `subbot` child projects the
+		// output from the contract of the pass that actually ran, never from
+		// a source recompiled after the fact (#1280, ADR-099).
+		if e.workflow.Contract != nil {
+			raw, err := json.Marshal(e.workflow.Contract)
+			if err != nil {
+				return nil, fmt.Errorf("runtime: encode run public contract: %w", err)
+			}
+			run.PublicContract = raw
+		} else {
+			run.PublicContract = nil
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)

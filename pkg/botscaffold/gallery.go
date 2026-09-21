@@ -334,5 +334,22 @@ func Templates() []Template {
 				Worktree: true,
 			},
 		},
+		{
+			ID:          "contract",
+			Icon:        "📜",
+			Name:        "Bot with a public contract",
+			Description: "One agent under a declared contract: inputs, outputs, a delivered file, checks and effects, held to the program.",
+			Spec: Spec{
+				Shape:        "contract",
+				Description:  "Carries a goal to a typed, published report under a public contract the compiler holds to the program.",
+				WhenToUse:    "Use when a parent subbot, another team or `iterion validate` must read what this bot takes and produces without opening its prompts (the goal stays optional to the contract, refused empty at entry).",
+				Instructions: "Describe the mission: what to do with the goal, and what the summary\nmust say.",
+				Vars: []VarSpec{
+					{Name: "goal", Type: "string", Default: "", Description: "REQUIRED, per run: what this run works on; left empty, the run refuses at entry (GOAL_UNSET) — the check the contract declares, enforced by the gate."},
+				},
+				// Read-only: the product is the run's published report, so
+				// the dial is off and the opt-out is written.
+			},
+		},
 	}
 }

@@ -2,15 +2,18 @@ package runview
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
@@ -159,15 +162,14 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		}
 		childExec.SetRunExtraEnv(s.runEnv)
 
-		// Capture the child's terminal-node output (the last node before Done)
-		// as the subbot's result, composing with the service's watch-stamping
-		// hook (WithOnNodeFinished is single-slot, so engineOptions' default
-		// would otherwise be lost). The callback fires concurrently when the
-		// child fans out parallel branches, so the capture is mutex-guarded.
-		var (
-			lastMu sync.Mutex
-			last   map[string]any
-		)
+		// Capture what the child emits — the terminal-node output (the last
+		// node before Done) a contractless subbot returns, plus the per-node
+		// outputs a contract's projection reads (#1280) — composing with the
+		// service's watch-stamping hook (WithOnNodeFinished is single-slot,
+		// so engineOptions' default would otherwise be lost). The callback
+		// fires concurrently when the child fans out parallel branches, so
+		// the capture is mutex-guarded.
+		var capture SubbotOutputCapture
 		var childContextSeed *store.ExecutionContext
 		if parent, loadErr := s.store.LoadRun(ctx, req.ParentRunID); loadErr == nil && parent != nil {
 			childContextSeed = parent.ExecutionContext.Clone()
@@ -204,11 +206,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// the ctx-carried depth keeps the recursion bounded.
 			runtime.WithSubbotRunner(s.subbotRunnerFor(childPath, runLogger)),
 			runtime.WithOnNodeFinished(func(runID, nodeID string, out map[string]any) {
-				if out != nil {
-					lastMu.Lock()
-					last = out
-					lastMu.Unlock()
-				}
+				capture.Record(nodeID, out)
 				s.stampWatchedFromOutput(runID, nodeID, out)
 			}),
 		)
@@ -266,8 +264,57 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			return nil, runErr
 		}
 		ClearSubbotChild(ctx, s.store, req)
-		return last, nil
+		if contract := childWf.Contract; contract != nil {
+			return subbotcontracts.ProjectOutput(contract, capture.ByNode()), nil
+		}
+		return capture.Terminal(), nil
 	}
+}
+
+// SubbotOutputCapture records what a child run emitted, node by node: the
+// last node_finished output — the terminal-node output a contractless subbot
+// has always returned — and the per-node outputs a contract's projection
+// reads (#1280). The engine fires the callback concurrently when the child
+// fans out parallel branches, so every access is mutex-guarded. A nil output
+// leaves the capture as it was, as the terminal-only capture did.
+type SubbotOutputCapture struct {
+	mu     sync.Mutex
+	last   map[string]any
+	byNode map[string]map[string]any
+}
+
+// Record one node_finished output of the child.
+func (c *SubbotOutputCapture) Record(nodeID string, out map[string]any) {
+	if out == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byNode == nil {
+		c.byNode = make(map[string]map[string]any)
+	}
+	c.byNode[nodeID] = out
+	c.last = out
+}
+
+// Terminal is the child's terminal-node output — the output of the last node
+// that finished.
+func (c *SubbotOutputCapture) Terminal() map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
+}
+
+// ByNode is the child's outputs keyed by node id, the last finish of a node
+// winning.
+func (c *SubbotOutputCapture) ByNode() map[string]map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	byNode := make(map[string]map[string]any, len(c.byNode))
+	for id, out := range c.byNode {
+		byNode[id] = out
+	}
+	return byNode
 }
 
 // RecordSubbotChild persists childRunID under req.ReattachKey on the parent
@@ -306,6 +353,12 @@ func ClearSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Subbot
 // authoritative — return them). handled=false means "no reusable child — the
 // caller spawns fresh"; the stale record, if any, has been cleared.
 //
+// The output of a reused child is projected from the contract pinned on the
+// CHILD's run doc at launch (#1280) — the one the run executed — so re-attach
+// never recompiles the child's source: a source that changed or vanished
+// while the parent was down changes nothing. A child with no pinned contract
+// (it kept none, or it ran on an older build) keeps the terminal semantics.
+//
 // Terminal semantics mirror AwaitSubbotTerminal: finished → its output;
 // paused/running/queued → park on it (external resume drives it to terminal);
 // failed/cancelled or a vanished child → spawn fresh.
@@ -330,10 +383,19 @@ func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Sub
 	}
 	switch child.Status {
 	case store.RunStatusFinished:
+		out, oerr := subbotChildOutput(ctx, rs, child)
+		if oerr != nil {
+			// An undecodable pin is unreachable through the stores — the FS
+			// store refuses to persist bytes that do not marshal, and the
+			// Mongo twin round-trips the pin byte-identically — so this arm
+			// exists for hand-edited docs. It fails loudly and KEEPS the
+			// record: silently re-shaping (or re-running) a finished child is
+			// the worse harm; the error names the child and the cause.
+			return nil, oerr, true
+		}
 		if logger != nil {
 			logger.Info("subbot: re-attaching to finished child run %s (answered while the parent was down)", childRunID)
 		}
-		out := subbotTerminalOutput(ctx, rs, child)
 		ClearSubbotChild(ctx, rs, req)
 		return out, nil, true
 	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
@@ -374,14 +436,15 @@ const subbotAwaitPollInterval = time.Second
 // fresh engine to completion in another goroutine/process; this waiter only
 // observes the store.
 //
-// Terminal semantics: finished → output; failed / failed_resumable /
-// cancelled → error (the parent branch fails; resuming the PARENT re-runs the
-// subbot node with a fresh child). A child that pauses again after a resume
-// (several human gates) simply keeps this waiter parked — each new pause
-// surfaces on the pipeline board like the first.
+// Terminal semantics: finished → the child's output, projected from the
+// contract pinned on its run doc when it keeps one (#1280); failed /
+// failed_resumable / cancelled → error (the parent branch fails; resuming the
+// PARENT re-runs the subbot node with a fresh child). A child that pauses
+// again after a resume (several human gates) simply keeps this waiter parked
+// — each new pause surfaces on the pipeline board like the first.
 //
-// Shared by the studio's in-process runner (subbotRunnerFor) and pkg/cli's
-// subbotRunnerForCLI so both surfaces behave identically.
+// Shared by every runner closure (studio, cloud pod, dispatcher, CLI) so all
+// surfaces behave identically.
 func AwaitSubbotTerminal(ctx context.Context, rs store.RunStore, childRunID string, logger *iterlog.Logger) (map[string]any, error) {
 	if logger != nil {
 		logger.Info("subbot child run %s paused for human input — answer it from the pipeline board (or `iterion resume --run-id %s`); the parent continues when the child finishes", childRunID, childRunID)
@@ -400,7 +463,7 @@ func AwaitSubbotTerminal(ctx context.Context, rs store.RunStore, childRunID stri
 		}
 		switch run.Status {
 		case store.RunStatusFinished:
-			return subbotTerminalOutput(ctx, rs, run), nil
+			return subbotChildOutput(ctx, rs, run)
 		case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 			msg := run.Error
 			if msg == "" {
@@ -412,15 +475,48 @@ func AwaitSubbotTerminal(ctx context.Context, rs store.RunStore, childRunID stri
 	}
 }
 
+// subbotChildOutput returns what a finished child's parent receives: the
+// output projected from the contract pinned on the child's run doc — the one
+// the run executed (#1280) — when it carries one, else the terminal-node
+// output the subbot has always returned.
+func subbotChildOutput(ctx context.Context, rs store.RunStore, run *store.Run) (map[string]any, error) {
+	if len(run.PublicContract) > 0 {
+		var contract ir.PublicContract
+		if err := json.Unmarshal(run.PublicContract, &contract); err != nil {
+			return nil, fmt.Errorf("subbot child %s: decode its pinned contract: %w", run.ID, err)
+		}
+		return subbotcontracts.ProjectOutput(&contract, subbotNodeOutputs(ctx, rs, run.ID)), nil
+	}
+	return subbotTerminalOutput(ctx, rs, run), nil
+}
+
+// subbotNodeOutputs collects every node_finished output of a run keyed by
+// node id, the last finish of a node winning — the same last-wins rule the
+// in-process capture applies. The payloads are the store's secret-scrubbed
+// copies, the form subbotTerminalOutput already reads.
+func subbotNodeOutputs(ctx context.Context, rs store.RunStore, runID string) map[string]map[string]any {
+	byNode := map[string]map[string]any{}
+	_ = rs.ScanEvents(ctx, runID, func(e *store.Event) bool {
+		if e.Type == store.EventNodeFinished && e.NodeID != "" {
+			if out, ok := e.Data["output"].(map[string]any); ok && out != nil {
+				byNode[e.NodeID] = out
+			}
+		}
+		return true
+	})
+	return byNode
+}
+
 // subbotTerminalOutput reconstructs a finished child's terminal-node output
 // from the store. The in-process capture (WithOnNodeFinished) is unavailable
-// once the child was resumed in another engine, and the run checkpoint is
-// cleared on finish — the durable record is events.jsonl: every node emits
-// node_finished with its (secret-scrubbed) output payload, so the LAST one is
-// exactly what the in-process capture would have held. Falls back to the
-// latest-written `publish:` artifact when the event payload is absent (legacy
-// events). A child with neither returns an empty map — the subbot's declared
-// output schema will flag missing fields if that matters.
+// once the child was resumed in another engine, so the durable record is
+// events.jsonl: every node emits node_finished with its (secret-scrubbed)
+// output payload, so the LAST one is exactly what the in-process capture
+// would have held (the run doc keeps its checkpoint on finish; the events
+// are read for their scrubbed payloads, not because the checkpoint is gone).
+// Falls back to the latest-written `publish:` artifact when the event payload
+// is absent (legacy events). A child with neither returns an empty map — the
+// subbot's declared output schema will flag missing fields if that matters.
 func subbotTerminalOutput(ctx context.Context, rs store.RunStore, run *store.Run) map[string]any {
 	var lastOutput map[string]any
 	_ = rs.ScanEvents(ctx, run.ID, func(e *store.Event) bool {

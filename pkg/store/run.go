@@ -674,6 +674,14 @@ type Run struct {
 
 	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
 	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
+	// PublicContract is the bound `contract` of the program this run
+	// executes, in its wire form — the engine stamps it at launch and
+	// mirrors it on every pass (a resume whose program dropped the contract
+	// clears it). A parent that re-attaches to a finished `subbot` child
+	// projects the output from THIS contract — the one the run executed —
+	// not from a source recompiled after the fact, which may have changed
+	// or vanished (#1280, ADR-099).
+	PublicContract json.RawMessage `json:"public_contract,omitempty" bson:"public_contract,omitempty"`
 	// ArtifactCompatibilityRevision records the workflow revision for which an
 	// operator explicitly accepted the source-derived portions of every
 	// retained artifact contract with --force. Artifact bodies remain immutable;

@@ -53,6 +53,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
 | `library` | the graph in `main.bot` (and its vars, when the spec has any), the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
+| `contract` | an entry gate (unset `goal` = typed refusal) → one agent with a typed, published output → a `contract` bound to the workflow: an input mirroring a var, outputs naming their producer (`from: work.summary`; a file port `from: work`), criteria on ports, effects |
 
 `blank`, `daily-digest`, `code-reviewer`, `docs-writer` and `issue-triager`
 render the single-agent workflow (one adaptive agent carrying the mission).
@@ -331,6 +332,9 @@ contract feature:
     opens_pr:
       description: "Opens a pull request on the repository"
 ```
+
+`iterion bots create <slug> --template contract` scaffolds a bot that keeps
+one (the `contract` row of the template table above).
 
 ## Property reference
 

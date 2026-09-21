@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -21,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 )
 
 // maxSubbotDepth bounds nested subbot recursion on a pod, as runview does
@@ -280,10 +280,11 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if childWorkDir == "" {
 			childWorkDir = workDir
 		}
-		var (
-			lastMu sync.Mutex
-			last   map[string]any
-		)
+		// Capture what the child emits — the terminal-node output a
+		// contractless subbot returns, plus the per-node outputs a contract's
+		// projection reads (#1280). The callback fires concurrently when the
+		// child fans out parallel branches, so the capture is mutex-guarded.
+		var capture runview.SubbotOutputCapture
 		// Sandbox-run observer: the mid-run credential refreshers write
 		// rotated tokens THROUGH into the child's container, and file
 		// secrets refresh — a child that outlives a token (a per-lot child
@@ -319,11 +320,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),
 			runtime.WithEventObserver(childUsage.observe),
 			runtime.WithOnNodeFinished(func(runID, nodeID string, out map[string]any) {
-				if out != nil {
-					lastMu.Lock()
-					last = out
-					lastMu.Unlock()
-				}
+				capture.Record(nodeID, out)
 			}),
 		}
 		// The child executes in the PARENT's sandbox when the parent has one:
@@ -389,9 +386,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, r.cfg.Store, req)
-		lastMu.Lock()
-		defer lastMu.Unlock()
-		return last, nil
+		if contract := childWf.Contract; contract != nil {
+			return subbotcontracts.ProjectOutput(contract, capture.ByNode()), nil
+		}
+		return capture.Terminal(), nil
 	}
 }
 

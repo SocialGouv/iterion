@@ -2,12 +2,33 @@ package runview
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// pinContract stamps the wire-form contract onto a child run doc, the way the
+// engine stamps it at launch (pkg/runtime/engine_run.go).
+func pinContract(t *testing.T, s store.RunStore, childID string, contract *ir.PublicContract) {
+	t.Helper()
+	raw, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatalf("marshal contract: %v", err)
+	}
+	r, err := s.LoadRun(context.Background(), childID)
+	if err != nil {
+		t.Fatalf("load child %s: %v", childID, err)
+	}
+	r.PublicContract = raw
+	if err := s.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("save child %s: %v", childID, err)
+	}
+}
 
 // mkChild creates a child run linked to parentID via ParentRunID/ParentNodeID
 // and drives it to the given terminal status, stamping a node_finished event
@@ -92,6 +113,80 @@ func TestReattachSubbotChild(t *testing.T) {
 		p, _ := s.LoadRun(ctx, "parent")
 		if _, ok := p.SubbotChildren["run_child"]; ok {
 			t.Errorf("record not cleared after consuming finished child: %v", p.SubbotChildren)
+		}
+	})
+
+	t.Run("finished contracted child → projected from the PINNED contract + clear record", func(t *testing.T) {
+		// A reused child that keeps a contract hands the parent the contract's
+		// ports projected from the child's per-node outputs (read from the
+		// run's events) — not its terminal-node output (#1280). The contract
+		// read is the one PINNED on the child's run doc at launch: the source
+		// is never touched (there is none in this subtest at all).
+		s := mustStore(t)
+		if _, err := s.CreateRun(ctx, "parent", "p", nil); err != nil {
+			t.Fatal(err)
+		}
+		mkChild(t, s, "parent", "run_child", "child-con", store.RunStatusFinished, map[string]any{"url": "https://forge/pr/9", "log": "noise"})
+		if err := s.SetSubbotChild(ctx, "parent", "run_child", "child-con"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendEvent(ctx, "child-con", store.Event{
+			Type:   store.EventNodeFinished,
+			NodeID: "verify",
+			Data:   map[string]any{"output": map[string]any{"passed": true}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		pinContract(t, s, "child-con", &ir.PublicContract{Name: "kid", Outputs: []*ir.PublicPort{
+			{Name: "url", Type: "string", FromNode: "terminal", FromField: "url"},
+			{Name: "passed", Type: "bool", FromNode: "verify", FromField: "passed"},
+			{Name: "verify_out", Type: "json", FromNode: "verify"},
+			{Name: "ghost", Type: "string", FromNode: "never_ran", FromField: "x"},
+		}})
+		out, err, handled := ReattachSubbotChild(ctx, s, newReq("parent", "run_child"), iterlog.Nop())
+		if !handled || err != nil {
+			t.Fatalf("handled=%v err=%v; want handled=true err=nil", handled, err)
+		}
+		want := map[string]any{
+			"url":        "https://forge/pr/9",
+			"passed":     true,
+			"verify_out": map[string]any{"passed": true},
+		}
+		if !reflect.DeepEqual(out, want) {
+			t.Fatalf("projected =\n%v\nwant\n%v", out, want)
+		}
+		if _, ok := out["ghost"]; ok {
+			t.Error("a port whose producer never ran must be an absent key")
+		}
+		p, _ := s.LoadRun(ctx, "parent")
+		if _, ok := p.SubbotChildren["run_child"]; ok {
+			t.Errorf("record not cleared after consuming the projected output: %v", p.SubbotChildren)
+		}
+	})
+
+	t.Run("finished child whose source has since vanished → still projected", func(t *testing.T) {
+		// The wedge the adversarial round executed (RVA1): with the contract
+		// read from a recompiled source, a parent whose child source changed
+		// or vanished while it was down failed EVERY future resume. The pin
+		// reads the child's own doc — the source is never touched, and this
+		// subtest ships no source file at all.
+		s := mustStore(t)
+		if _, err := s.CreateRun(ctx, "parent", "p", nil); err != nil {
+			t.Fatal(err)
+		}
+		mkChild(t, s, "parent", "run_child", "child-gone-src", store.RunStatusFinished, map[string]any{"url": "https://forge/pr/10", "log": "noise"})
+		if err := s.SetSubbotChild(ctx, "parent", "run_child", "child-gone-src"); err != nil {
+			t.Fatal(err)
+		}
+		pinContract(t, s, "child-gone-src", &ir.PublicContract{Name: "kid", Outputs: []*ir.PublicPort{
+			{Name: "url", Type: "string", FromNode: "terminal", FromField: "url"},
+		}})
+		out, err, handled := ReattachSubbotChild(ctx, s, newReq("parent", "run_child"), iterlog.Nop())
+		if !handled || err != nil {
+			t.Fatalf("handled=%v err=%v; want handled=true err=nil", handled, err)
+		}
+		if out["url"] != "https://forge/pr/10" {
+			t.Fatalf("projected = %v, want url read from the pinned contract", out)
 		}
 	})
 

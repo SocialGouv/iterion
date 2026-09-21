@@ -247,6 +247,105 @@ prompt persy_policy:
   Once the agent reports its structured termination output, you are
   done.
 
+## ─── Public contract (ADR-099) ──────────────────────────────────
+## The bot's face, read without opening its prompts, and held to THIS
+## program by the compiler: every input mirrors a var above (C300), every
+## output names the node and field that produce it (C301), every criterion
+## a port and a registered evaluator (C302). `iterion validate
+## bots/feature-dev/` renders it; `--json` returns it as `public_contract`.
+## The operator- and host-owned vars (workspace_dir, scratch_dir,
+## failure_context, delegation_instructions) are not inputs: they are the
+## launch's plumbing, not what a caller asks the bot for. The PR ports are
+## `nullable`: their producer, finalize_mr, runs only when open_mr is on
+## AND a push credential exists — the one producer a finished run can skip.
+contract featurly:
+  display_name: "Featurly"
+  responsibility: "Implements one feature end to end in verified, committed passes, and opens the pull request when asked"
+  version: 1
+  inputs:
+    feature_prompt: string
+      description: "The feature to build, with a clear, externally visible done-state"
+    open_mr: bool
+      description: "Push the series and open a pull request when the run ships: on convergence, or when max_passes is exhausted (read converged)"
+    mr_branch: string
+      description: "Branch to push and open the PR from (empty: derived from the run)"
+    mr_base: string
+      description: "Integration base the PR targets (empty: the repository's default branch)"
+    source_issue_ref: string
+      description: "Issue to post the PR URL back on: native:<id> or a forge issue URL"
+    max_passes: int
+      description: "Cap on loop-backs after the first pass (up to max_passes+1 campaign-then-verify passes); exhaustion ships what is banked"
+    baseline: string
+      description: "Known pre-existing failures the campaign skips (empty: established once, cheaply)"
+    plan_phase: string
+      description: "Author a plan before the campaign implements"
+    plan_review: string
+      description: "Cross-model peer review of the plan (auto: on when a second model family is credentialed)"
+    plan_review_policy: string
+      description: "What a mid-run peer failure does: skip the review, or wait for the window"
+  outputs:
+    feature_complete: bool
+      description: "The campaign's own done-oracle: every requirement of the prompt shipped"
+      from: campaign.feature_complete
+    work_remaining: string
+      description: "What the campaign left undone, precisely, when not complete"
+      from: campaign.work_remaining
+    needs_human: bool
+      description: "The campaign hit a genuine hard stop only a human can lift"
+      from: campaign.needs_human
+    summary: string
+      description: "The campaign's account of its last pass"
+      from: campaign.summary
+    build_passed: bool
+      description: "The deterministic verify gate's verdict on the committed tree — a real exit code, unless build_skipped"
+      from: verify_run.passed
+    build_skipped: bool
+      description: "No verify script existed for this pass: build_passed is then a default, not a verdict"
+      from: verify_run.skipped
+    review_clean: bool
+      description: "The in-loop adversarial review found no high-confidence defect in the diff, or skipped itself because the build was red — read with build_passed"
+      from: review.clean
+    converged: bool
+      description: "Build passed, review clean and feature complete; false when the loop was exhausted and the run shipped what it banked anyway"
+      from: gate.converged
+    pr_opened: bool
+      description: "A pull request was opened; null when the PR tail did not run. Read it first: the two ports below are only a PR's when it is true"
+      nullable: true
+      from: finalize_mr.opened
+    pr_url: string
+      description: "The pull request's URL when pr_opened; otherwise what the tail reported as its deliverable (a fresh repository's web URL, or nothing); null when the PR tail did not run"
+      nullable: true
+      from: finalize_mr.url
+    pr_branch: string
+      description: "The branch the tail pushed the series to — chosen before the push, so read pr_opened; null when the PR tail did not run"
+      nullable: true
+      from: finalize_mr.branch
+    pr_skipped_reason: string
+      description: "Why no pull request was opened, in the tail's own words (no push credential, nothing ahead of base, push rejected); empty when one was opened, null when the tail did not run"
+      nullable: true
+      from: finalize_mr.skipped_reason
+  criteria:
+    feature_prompt_is_not_empty:
+      kind: min_length
+      port: input.feature_prompt
+      params: {min: 1}
+  effects:
+    commits_in_a_worktree:
+      description: "Commits the feature slice by slice in a per-run git worktree; the finalizer lands them on iterion/run/<name> and fast-forwards the checked-out branch when it can"
+    opens_a_pull_request:
+      description: "With open_mr and a push credential: pushes the series and opens a pull request (merge request on GitLab)"
+    comments_on_the_source_issue:
+      description: "With source_issue_ref: posts the pull request's URL back on the issue"
+    files_findings_on_the_board:
+      description: "Files out-of-scope observations as cards on the native board (board.create)"
+    writes_the_scratch_dir:
+      description: "Writes the verify script and its log under scratch_dir, out of the target tree, and runs the repository's own build and tests"
+    asks_the_operator:
+      description: "May ask the operator questions: an async teach-back while it keeps working, or a blocking question that parks the run"
+    spends_llm_budget:
+      description: "Runs LLM agents up to the workflow budget (max_cost_usd, max_duration)"
+      paid: true
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow feature_dev:
@@ -260,6 +359,8 @@ workflow feature_dev:
   ## A re-dispatch's campaign reads `git log` and continues from the
   ## slices earlier passes banked either way.
   entry: workspace_probe
+  ## The public contract the program keeps (see the contract block above).
+  contract: featurly
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
   ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the

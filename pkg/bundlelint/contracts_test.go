@@ -60,13 +60,14 @@ func TestContractManifestMismatch(t *testing.T) {
 	}
 }
 
-// A subbot node is held to its child's contract on what it passes: a
-// required input — one whose var has no default (C300) — the with: block
-// does not pass is named, with a hint that forwards a parent var of that
-// name only when the parent declares one; an optional input is not asked
-// for. The parent's output: schema is not held: a subbot's output is the
-// child's terminal node output, which the contract's outputs do not
-// define. A child without a contract is held to nothing.
+// A subbot node is held to its child's contract on both what it passes and
+// what it reads: a required input — one whose var has no default (C300) —
+// the with: block does not pass is named, with a hint that forwards a parent
+// var of that name only when the parent declares one; an optional input is
+// not asked for. The parent's output: schema is held to the child's ports
+// too (#1280): the runtime projects the subbot's output from the contract,
+// so a schema field no port produces is named. A child without a contract is
+// held to nothing.
 func TestSubbotContractMismatch(t *testing.T) {
 	parent := wf("p", []string{"goal"}, nil, nil, &ir.SubbotNode{
 		BaseNode:     ir.BaseNode{ID: "child"},
@@ -91,12 +92,13 @@ func TestSubbotContractMismatch(t *testing.T) {
 	for _, d := range diags {
 		if d.Code == bundlelint.DiagSubbotContractMismatch {
 			fields = append(fields, d.Field)
-			if !strings.Contains(d.Hint, "with { depth: <value> }") || strings.Contains(d.Hint, "{{vars.depth}}") {
+			if strings.HasSuffix(d.Field, ".with.depth") &&
+				(!strings.Contains(d.Hint, "with { depth: <value> }") || strings.Contains(d.Hint, "{{vars.depth}}")) {
 				t.Errorf("the parent declares no var depth, yet the hint forwards one: %q", d.Hint)
 			}
 		}
 	}
-	if got := strings.Join(fields, " "); got != "subbot.child.with.depth" {
+	if got := strings.Join(fields, " "); got != "subbot.child.output.notes subbot.child.with.depth" {
 		t.Fatalf("C255 fields: %q\n%v", got, diags)
 	}
 	forwarding := wf("p", []string{"goal", "depth"}, nil, nil, parent.Nodes["child"])
@@ -106,5 +108,74 @@ func TestSubbotContractMismatch(t *testing.T) {
 	}
 	if diags := bundlelint.CheckConsistency(bundlelint.Input{Workflow: parent}); find(diags, bundlelint.DiagSubbotContractMismatch) != nil {
 		t.Fatal("a child without a contract was held to one")
+	}
+}
+
+// The output arm is sound where its first version (#1276) was not: a port
+// typed with the node's whole output schema — or a file port — projects the
+// producer's whole output object, so a parent field spelling `json` (or any
+// non-scalar) over such a port draws nothing, and a scalar mismatch is named
+// with the child's type.
+func TestSubbotContractOutputArm(t *testing.T) {
+	sb := &ir.SubbotNode{
+		BaseNode:     ir.BaseNode{ID: "child"},
+		Source:       "kids/k.bot",
+		OutputSchema: "result",
+	}
+	contract := func() *ir.PublicContract {
+		return &ir.PublicContract{Name: "kid", Outputs: []*ir.PublicPort{
+			{Name: "count", Type: "int", FromNode: "b", FromField: "count"},
+			{Name: "report", Type: "json", FromNode: "b", FromField: ""},
+			{Name: "bundle", Type: "json", File: &ir.PublicFile{MediaType: "application/zip"}, FromNode: "b"},
+		}}
+	}
+	run := func(t *testing.T, fields []*ir.SchemaField, child *ir.PublicContract) []string {
+		t.Helper()
+		parent := wf("p", nil, nil, nil, sb)
+		parent.Schemas = map[string]*ir.Schema{"result": {Name: "result", Fields: fields}}
+		var got []string
+		for _, d := range bundlelint.CheckConsistency(bundlelint.Input{Workflow: parent, SubbotContracts: map[string]*ir.PublicContract{"child": child}}) {
+			if d.Code == bundlelint.DiagSubbotContractMismatch {
+				got = append(got, d.Field)
+				if d.Severity != bundlelint.SeverityWarning {
+					t.Errorf("%s is a %s, want a warning", d.Field, d.Severity)
+				}
+			}
+		}
+		return got
+	}
+
+	if got := run(t, []*ir.SchemaField{
+		{Name: "count", Type: ir.FieldTypeInt},
+		{Name: "report", Type: ir.FieldTypeJSON},
+		{Name: "bundle", Type: ir.FieldTypeJSON},
+	}, contract()); got != nil {
+		t.Fatalf("an agreeing parent drew %v", got)
+	}
+
+	// A scalar spelled differently on the two sides is named.
+	if got := run(t, []*ir.SchemaField{{Name: "count", Type: ir.FieldTypeString}}, contract()); len(got) != 1 || got[0] != "subbot.child.output.count" {
+		t.Fatalf("scalar mismatch fields: %v", got)
+	}
+
+	// A schema-typed port under a json field: no literal comparison is
+	// possible, none is drawn.
+	schemaPort := contract()
+	schemaPort.Outputs[1] = &ir.PublicPort{Name: "report", Type: "rep", FromNode: "b"}
+	if got := run(t, []*ir.SchemaField{{Name: "report", Type: ir.FieldTypeJSON}}, schemaPort); got != nil {
+		t.Fatalf("a schema-named port under a json field drew %v", got)
+	}
+
+	// A parent with no output: schema is held to nothing on this arm.
+	bare := wf("p", nil, nil, nil, &ir.SubbotNode{BaseNode: ir.BaseNode{ID: "child"}, Source: "kids/k.bot"})
+	if diags := bundlelint.CheckConsistency(bundlelint.Input{Workflow: bare, SubbotContracts: map[string]*ir.PublicContract{"child": contract()}}); find(diags, bundlelint.DiagSubbotContractMismatch) != nil {
+		t.Fatal("a parent with no output schema drew an output-arm warning")
+	}
+
+	// A child contract that declares NO output: every field the parent's
+	// schema expects is named (the runtime projects an empty output).
+	childless := &ir.PublicContract{Name: "mute"}
+	if got := run(t, []*ir.SchemaField{{Name: "count", Type: ir.FieldTypeInt}}, childless); len(got) != 1 || got[0] != "subbot.child.output.count" {
+		t.Fatalf("zero-output contract fields: %v", got)
 	}
 }

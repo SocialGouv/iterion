@@ -22,7 +22,7 @@
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 1 · 7 | 3.5.9 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 1 · 5 | 0.4.2 |
 | `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 1 · 8 | 0.1.1 |
-| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.5.2 |
+| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.6.0 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.3.2 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1 · 3 | 1.6.1 |
 | `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 4 · 6 | 0.1.2 |
@@ -42,7 +42,7 @@
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 1 · 4 | 2.3.2 |
 | `ultra11y` | 🦮 Ally | Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a pull-request mode. | 1 · 3 | 0.1.2 |
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 1 · 1 | 0.1.1 |
-| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 1 · 11 | 0.3.2 |
+| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 1 · 11 | 0.3.3 |
 | `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 1 · 10 | 2.4.2 |
 | `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1 · 2 | 1.0.3 |
 

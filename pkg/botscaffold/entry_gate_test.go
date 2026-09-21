@@ -112,4 +112,28 @@ func TestEntryGatesRefuseAnUnfilledPlaceholder(t *testing.T) {
 			t.Errorf("verified-action %s: configured = %v, want %v", c.name, got, c.want)
 		}
 	}
+
+	// The contract shape: its gate ENFORCES the check its contract only
+	// declares (nothing evaluates a criterion at run time), so a gate that
+	// admits an empty goal would leave the declared check with no teeth.
+	contract := configuredExpr(t, "contract")
+	for _, c := range []struct {
+		name string
+		vars map[string]any
+		want bool
+	}{
+		{"empty default", map[string]any{"goal": ""}, false},
+		{"blank goal", map[string]any{"goal": " \t"}, false},
+		{"absent goal", map[string]any{}, false},
+		{"a goal", map[string]any{"goal": "ship the thing"}, true},
+	} {
+		got, err := evalGate(t, contract, c.vars)
+		if err != nil {
+			t.Errorf("contract %s: %v", c.name, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("contract %s: configured = %v, want %v", c.name, got, c.want)
+		}
+	}
 }

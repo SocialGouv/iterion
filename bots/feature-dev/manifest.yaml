@@ -1,7 +1,17 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.5.2
+version: 2.6.0
+## 2.6.0 — the bot keeps a PUBLIC CONTRACT (`contract featurly:` in main.bot,
+## ADR-099): its inputs mirror the launch vars, its outputs name the nodes
+## that produce them (campaign, verify_run, review, gate, finalize_mr — the
+## PR ports are declared nullable: their producer is the one node a
+## finished run can skip), one criterion and its effects;
+## `iterion validate bots/feature-dev/` renders it. No instruction changed.
+## No criterion is evaluated at run time — the declared check is
+## documentation, not a gate.
+## A bundle that declares a contract declares the engine floor that reads
+## one: `requires.iterion` moves to the release that first reads `contract`.
 ## 2.5.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
 ## and the commit instruction excludes it (#1364).
@@ -10,11 +20,13 @@ version: 2.5.2
 ## prompts (the plan phase, campaign, verify, review, finalize_mr,
 ## persy_policy — 55 in all) now reach the models as blank lines instead
 ## of being folded away by the profile-1 lexer. No instruction changed.
-## A bot in several files (`import "lib/…"` at the head of main.bot): a runner
-## older than the release that reads `import` would fail at its first parse of
-## a fragment — the floor keeps such a runner from admitting the bundle.
+## A bot in several files (`import "lib/…"` at the head of main.bot) that
+## keeps a `contract`: a runner older than the release that reads `import`
+## would fail at its first parse of a fragment, one older than the release
+## that reads `contract` (3.150.0, the higher of the two) at its first parse
+## of the main — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.145.0"
+  iterion: ">= 3.150.0"
 ## 2.5.0 — the entry precondition's refusal is a NAMED fail node
 ## (`workspace_not_a_repo`, code WORKSPACE_NOT_A_REPO, terminal), so the
 ## code reaches the RUN's own `failure_code` / `error` — read by `iterion
