@@ -7,6 +7,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // CommitUncommittedAndFinalize stages every change in a run's worktree
@@ -54,15 +55,23 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: commit message is required")
 	}
 
-	clean, err := workdirIsClean(r.WorkDir)
+	porcelain, err := runGit(r.WorkDir, "status", "--porcelain")
 	if err != nil {
-		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w", err)
+		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w (output: %s)", err, strings.TrimSpace(porcelain))
 	}
-	if clean {
+	// The probe agrees with THIS gesture's staging (verdict 5, R138690): a
+	// worktree whose only dirt is a tracked-and-modified devbox.lock is a
+	// lock-only bump the merge-destined commit carries — refusing it here
+	// left the studio's salvage action no path to bank it. Only the mirror
+	// is set aside; the wip bank keeps the fuller IsNoise probe.
+	if len(commitWorkPaths(porcelain)) == 0 {
+		if strings.TrimSpace(porcelain) != "" {
+			return fmt.Errorf("runtime: commit-uncommitted: workdir %q is dirty with tree noise only — nothing of the run's to commit (see git status)", r.WorkDir)
+		}
 		return fmt.Errorf("runtime: commit-uncommitted: workdir %q has no changes to commit", r.WorkDir)
 	}
 
-	if err := runGitInDir(r.WorkDir, "add", "-A"); err != nil {
+	if err := runGitInDir(r.WorkDir, commitStageArgs()...); err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: git add: %w", err)
 	}
 	if out, err := gitCommitMessage(r.WorkDir, message); err != nil {
@@ -75,21 +84,69 @@ func CommitUncommittedAndFinalize(
 	return RecoverFinalize(ctx, st, r, logger)
 }
 
-// workdirIsClean returns true when `git status --porcelain` reports nothing
-// once iterion's OWN scaffolding is set aside. See runOutputPaths for why that
-// exclusion exists and what it deliberately does not cover.
-func workdirIsClean(workdir string) (bool, error) {
-	out, err := runGit(workdir, "status", "--porcelain")
-	if err != nil {
-		return false, fmt.Errorf("git status: %w (output: %s)", err, strings.TrimSpace(out))
-	}
-	return len(runOutputPaths(out)) == 0, nil
+// stageWorkArgs stages the whole tree EXCEPT the canonical tree noise
+// (pkg/treenoise): the `.claude/` mirror and a drifted devbox.lock are not
+// the pass's work, and the WIP BANK's staging gesture agrees with the
+// cleanliness probe — never merged, the lock is derivable from devbox.json.
+// The operator-initiated commit-and-finalize deliberately disagrees: its
+// commit is merge-destined, so it stages a tracked-and-modified lock (see
+// commitStageArgs).
+func stageWorkArgs() []string {
+	args := []string{"add", "-A", "--", ":/"}
+	return append(args, treenoise.Pathspecs()...)
 }
 
-// scaffoldPrefix is where mirrorBundleSkills lays the bot's skills inside the
-// run worktree. What lives there is written BY iterion, at run start, from the
-// bundle — it is not something the run produced.
-const scaffoldPrefix = ".claude/"
+// commitStageArgs stages the tree for the OPERATOR-initiated commit-and-
+// finalize: the `.claude/` mirror stays excluded (iterion wrote it, the run
+// did not — deliverables under it are staged by name), but a
+// tracked-and-modified devbox.lock is STAGED here, not dropped: this
+// commit is merge-destined, and a dependency bot's lock bump is half its
+// deliverable — dropping it would merge devbox.json without its
+// resolution and destroy the bump with the worktree (verdict 3, R5478b3).
+// The wip bank keeps the fuller exclusion: it is never merged, and the
+// lock is derivable from devbox.json.
+func commitStageArgs() []string {
+	args := []string{"add", "-A", "--", ":/"}
+	return append(args, treenoise.MirrorPathspec())
+}
+
+// commitWorkPaths returns the porcelain entries the OPERATOR-initiated
+// commit-and-finalize would stage: everything except the engine's own
+// mirror — a tracked-and-modified devbox.lock IS the dependency work half
+// the merge-destined commit carries (verdict 3, R5478b3). The probe must
+// agree with this gesture, not with the wip bank's (verdict 5, R138690).
+func commitWorkPaths(porcelain string) []string {
+	var out []string
+	for _, path := range porcelainPaths(porcelain) {
+		if !treenoise.IsMirror(path) {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// porcelainPaths normalizes `git status --porcelain` output into the paths
+// it reports: rename arrows cut to the destination, outer quotes stripped.
+func porcelainPaths(porcelain string) []string {
+	var out []string
+	for _, line := range strings.Split(porcelain, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := line[3:]
+		if i := strings.Index(path, " -> "); i >= 0 {
+			path = path[i+4:]
+		}
+		path = strings.TrimSpace(path)
+		if len(path) >= 2 && strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"") {
+			path = path[1 : len(path)-1]
+		}
+		if path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
+}
 
 // runOutputPaths returns the porcelain entries that stand for work the RUN
 // produced, dropping the scaffolding iterion mirrored in itself.
@@ -112,28 +169,27 @@ const scaffoldPrefix = ".claude/"
 // it never removes a file, and never touches what the run committed.
 func runOutputPaths(porcelain string) []string {
 	var out []string
-	for _, line := range strings.Split(porcelain, "\n") {
-		if len(line) < 4 {
-			continue
+	for _, path := range porcelainPaths(porcelain) {
+		if !treenoise.IsNoise(path) {
+			out = append(out, path)
 		}
-		// Porcelain v1 is `XY<space><path>`, and a rename reads
-		// `<old> -> <new>`. The destination is what exists on disk, so it
-		// is the one that decides.
-		path := line[3:]
-		if i := strings.Index(path, " -> "); i >= 0 {
-			path = path[i+4:]
+	}
+	return out
+}
+
+// noisePaths returns the porcelain paths the noise list sets aside — the
+// complement of runOutputPaths. The wip bank's warn line names them, so a
+// banked commit never silently swallows what it excluded (verdict 8).
+func noisePaths(porcelain string) []string {
+	work := map[string]bool{}
+	for _, p := range runOutputPaths(porcelain) {
+		work[p] = true
+	}
+	var out []string
+	for _, p := range porcelainPaths(porcelain) {
+		if !work[p] {
+			out = append(out, p)
 		}
-		// Non-ASCII paths come back quoted under core.quotePath. Only the
-		// quoting is stripped; the C-style escapes inside are left as git
-		// wrote them, since nothing here needs to open the file.
-		path = strings.TrimSpace(path)
-		if len(path) >= 2 && strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"") {
-			path = path[1 : len(path)-1]
-		}
-		if path == "" || strings.HasPrefix(path, scaffoldPrefix) {
-			continue
-		}
-		out = append(out, path)
 	}
 	return out
 }

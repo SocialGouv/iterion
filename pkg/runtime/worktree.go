@@ -412,16 +412,25 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// as an explicit wip bank so the storage branch preserves it; the
 	// operator reviews it there (it is NEVER merged into their branch —
 	// see step 5).
-	if clean, cleanErr := workdirIsClean(wc.wtPath); cleanErr != nil {
+	porcelain, porcelainErr := runGit(wc.wtPath, "status", "--porcelain")
+	if porcelainErr != nil {
 		if logger != nil {
-			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", cleanErr)
+			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", porcelainErr)
 		}
-	} else if !clean {
+	} else if len(runOutputPaths(porcelain)) == 0 {
+		// Nothing of the run's to bank: clean, or tree noise only (the
+		// mirror, a drifted lock). The noise is NAMED, not silent — the
+		// operator reading the storage branch sees what was set aside
+		// (verdict 8).
+		if noise := noisePaths(porcelain); len(noise) != 0 && logger != nil {
+			logger.Info("runtime: finalize: tree noise set aside, nothing to bank: %s", strings.Join(noise, ", "))
+		}
+	} else {
 		msg := "wip(iterion): auto-banked uncommitted run output"
 		if opts.runName != "" {
 			msg += " (" + opts.runName + ")"
 		}
-		if err := runGitInDir(wc.wtPath, "add", "-A"); err != nil {
+		if err := runGitInDir(wc.wtPath, stageWorkArgs()...); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
 			}
@@ -437,7 +446,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				finalSHA = banked
 			}
 			if logger != nil {
-				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged)", shortSHA(finalSHA))
+				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged) — tree noise set aside: %s", shortSHA(finalSHA), strings.Join(noisePaths(porcelain), ", "))
 			}
 		}
 	}
