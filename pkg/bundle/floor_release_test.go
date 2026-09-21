@@ -23,6 +23,10 @@ var releaseNotesMarkers = map[string]string{
 	"parser.ProfileSince[2]": "",
 	"parser.ImportSince":     "import",
 	"parser.ContractSince":   "contract",
+	// The alias pin's release notes carry this PR's own merge subject
+	// (feat(claw): … tool aliases …); joined to the release test so the
+	// number cannot rot the way 3.144.0 and 3.146.0 did (#1155, Rda4616).
+	"bundle.ToolAliasesSince": "alias",
 }
 
 // A syntax floor is pinned to the release that will carry the syntax and

@@ -65,6 +65,7 @@ func TestEveryFloorTheTableAsksForIsPinned(t *testing.T) {
 		{Profile: parser.MaxProfile, DeclaredBy: []string{"main.bot"}},
 		{Profile: 1, ImportedBy: []string{"main.bot"}},
 		{Profile: 1, ContractedBy: []string{"main.bot"}},
+		{Profile: 1, AliasBy: []string{"main.bot"}},
 	}
 	for i, f := range syntaxFloors {
 		if len(f.pins) == 0 {

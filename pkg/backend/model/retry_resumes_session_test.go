@@ -58,7 +58,7 @@ func TestInProcessRetryResumesTheSessionTheDeadAttemptOpened(t *testing.T) {
 			return delegate.Result{SessionID: "s-live", Tokens: 1300, CostIsSessionTotal: true,
 				Output: map[string]any{"_tokens": 1300, "_cost_usd": 0.55}}, nil
 		},
-		func(prev delegate.Result) {
+		"", func(prev delegate.Result) {
 			if task.SessionID == "" && prev.SessionID != "" {
 				task.SessionID = prev.SessionID
 				task.SessionOptional = true

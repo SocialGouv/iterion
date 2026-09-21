@@ -112,6 +112,19 @@ and for workflows that never delegated. The event stream is the full history
 `max_output_tokens`; `model_drift` fires when the two model fields name
 different models).
 
+A schema re-ask — the one more turn a node gets after a schema-invalid
+answer ([backends.md](backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask))
+— is announced by a `delegate_retry` carrying `reask`
+(`continue_conversation` / `resume_session` / `restart`) beside the
+validation `error`, and closes with its own `delegate_finished` /
+`delegate_error` marked `attempt: 2` and the same `reask`, priced at the
+re-ask's own `tokens` and at the `cost_usd` it added (on a backend whose
+cost is a session total, the difference). A transport retry the re-ask
+itself pays is a further `delegate_retry` carrying the same `reask` and a
+backoff `delay_ms`. The delegation's own
+`delegate_started` / `delegate_finished` pair fires once, around the first
+answer, and never carries `reask`.
+
 `fingerprint` on each entry is the backend's provider-routing label for that
 session — `anthropic-oauth`, `anthropic-direct`, `anthropic-env`, or
 `facade:<base url>`. An Anthropic-shaped facade answers a `claude-*` id with

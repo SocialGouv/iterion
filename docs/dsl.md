@@ -187,6 +187,8 @@ schema review_result:
 
 Schemas define structured node inputs/outputs. Field types match variable types (`string`, `bool`, `int`, `float`, `json`, `string[]`); string fields may carry enum constraints. A seventh type, `file`, declares an operator-supplied binary and is valid only on a human node's `output_schema` — no model can produce one, so the compiler rejects it elsewhere with [C129](references/diagnostics.md). See [human-in-the-loop](human-in-the-loop.md).
 
+An LLM node's answer is held to its `output:` schema at the end of its turn. When it fails on a shape one more ask can fix — a required field missing, or text where JSON was expected — the executor re-asks the model **once**, with the validation error as its next input, in the conversation (`claw`) or session (`claude_code`, `codex`, `pi`) the answer came from; a type or enum mismatch, or a second invalid answer, fails the node. The re-ask is a real, billed turn and the run's events name it. See [the schema re-ask](backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask).
+
 ### Template namespaces
 
 | Reference | Meaning |
@@ -251,7 +253,7 @@ Important property groups:
 | Model execution | `model`, `backend`, `provider`, and the `claude_code`-compatible binary override `command`. See [backends](backends.md) and [delegation](delegation.md). |
 | Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `description`. |
 | Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only\|persist`, `interaction`, `interaction_prompt`, `interaction_model`. `persist` (ADR-089) resumes **this node's own** last CLI conversation on re-entry (claude_code / pi / codex); judges and humans stay graph nodes. Trunk-only (C243). |
-| Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. |
+| Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. The exact Claude spellings `Read`/`Bash`/`Grep` resolve on claw as `read_file`/`bash`/`grep` when the bundle declares the tool-alias engine floor; exact names and unique MCP shorthand win first. See [tool-name aliases](tool-name-aliases.md). |
 | Limits | `tool_max_steps`, `max_tokens`, `reasoning_effort`, `timeout`, `compaction`, `compress`. |
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
 | Backend-specific | `full_access` and `images` are honored by the Codex backend; other backends ignore them. |

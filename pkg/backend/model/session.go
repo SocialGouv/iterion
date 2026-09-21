@@ -368,6 +368,21 @@ func applySessionMessages(ctx context.Context, nodeID string, opts GenerationOpt
 	return opts
 }
 
+// applySessionMessagesForTask is applySessionMessages keyed by the task —
+// unless the task already carries its history explicitly: a paused
+// conversation being resumed (ResumeConversation) or a completed one being
+// continued (ContinueConversation). Both replay the very messages the store
+// holds, so prepending the store on top duplicated the history — measured
+// on a resumed node: its transient retries grew 11 → 22 → 33 messages, and
+// its schema retry replayed 91 stored messages followed by the 11 it was
+// resuming from.
+func applySessionMessagesForTask(ctx context.Context, task delegate.Task, opts GenerationOptions) GenerationOptions {
+	if len(task.ResumeConversation) > 0 || len(task.ContinueConversation) > 0 {
+		return opts
+	}
+	return applySessionMessages(ctx, taskSessionKey(task), opts)
+}
+
 // captureSessionMessages writes back the final accumulated messages
 // from a completed generation so the next retry of the same node can
 // resume from there. A nil result (failed call) is a no-op so we

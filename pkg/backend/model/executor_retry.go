@@ -207,7 +207,15 @@ func shouldRetryInPlace(err error, fallbackAccepts func(error) bool) bool {
 // (the schema-validation retry, direct one-shot dispatch) use it and get
 // the historical behaviour unchanged.
 func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, sharedSession bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn)
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, "")
+}
+
+// retryDelegateLoopReask is retryDelegateLoop for the schema re-ask: the
+// transport retries the re-ask itself pays carry the reask marker, so a
+// timeline reader keys them to the re-ask's work instead of mistaking them
+// for first-attempt retries.
+func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string, backendName string, sharedSession bool, reask string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, reask)
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
@@ -230,7 +238,7 @@ func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 // every attempt is independent, which is what every caller but the main
 // dispatch wants. A carry makes the attempts share a session the TASK never
 // named, which is why the fold asks the results too (see foldSameSession).
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), carryForward ...func(delegate.Result)) (delegate.Result, error) {
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), reask string, carryForward ...func(delegate.Result)) (delegate.Result, error) {
 	result, err := fn()
 	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
@@ -248,6 +256,7 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 				Attempt:     attempt,
 				Error:       err,
 				Delay:       delay,
+				Reask:       reask,
 			})
 		}
 
@@ -1060,7 +1069,7 @@ func (e *ClawExecutor) dispatchChain(
 		carriedSession := false
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
-		}, func(prev delegate.Result) {
+		}, "", func(prev delegate.Result) {
 			// An in-process retry stays in the SAME sandbox — the engine
 			// starts one per run, never per node (runtime: startSandbox is
 			// called from engine_run and resume only) — so the CLI session
@@ -1150,7 +1159,7 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.SessionFingerprint = ""
 				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
 					return backend.Execute(ctx, fresh)
-				})
+				}, "")
 				if freshErr == nil {
 					task = &fresh
 				}
