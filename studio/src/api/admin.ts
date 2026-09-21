@@ -28,6 +28,11 @@ export interface AdminUserOrgView {
   org_id: string;
   org_name?: string;
   org_slug?: string;
+  // The org's own lifecycle state. A suspended org denies every launch
+  // inside it, which is the first alternative answer to "why does this
+  // account see nothing?" — and one a roster of memberships cannot express.
+  status?: string;
+  purge_after?: string;
   role: OrgRole;
   personal?: boolean;
   joined_at?: string;
@@ -39,6 +44,9 @@ export interface AdminUserTeamView {
   team_slug?: string;
   org_id?: string;
   org_name?: string;
+  // The PARENT's state. `status` below is team-local, so a team reads
+  // `active` inside a suspended org while launching nothing.
+  org_status?: string;
   role: Role;
   status?: string;
   personal?: boolean;

@@ -7160,7 +7160,9 @@ export interface components {
             org_name?: string;
             org_slug?: string;
             personal?: boolean;
+            purge_after?: string;
             role: string;
+            status?: string;
         };
         adminUserSSOLinkView: {
             created_at?: string;
@@ -7173,6 +7175,7 @@ export interface components {
             missing_team?: boolean;
             org_id?: string;
             org_name?: string;
+            org_status?: string;
             orphan_grant?: boolean;
             personal?: boolean;
             role: string;

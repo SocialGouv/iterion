@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
@@ -51,15 +52,26 @@ func memberPath(base, userID string) string {
 //
 // fmt.Sprintf("%q") emits GO string syntax, which is not JSON: `\a`, `\v` and
 // `\xNN` are valid Go and invalid JSON, so an argument carrying a control
-// byte or invalid UTF-8 produced a malformed body and the operator read the
-// server's decode failure instead of "invalid role" / "invalid status". No
-// injection was ever possible — quote and backslash are escaped correctly by
-// both — the point is the diagnostic.
+// byte produced a malformed body and the operator read the server's decode
+// failure instead of "invalid role" / "invalid status". No injection was ever
+// possible — quote and backslash are escaped correctly by both — the point is
+// the diagnostic.
+//
+// The UTF-8 check is NOT decoration. json.Marshal does not fail on invalid
+// UTF-8: it substitutes U+FFFD, so `remote labels rename <from> <to>` with a
+// stray byte in argv would send a DIFFERENT string than the operator typed
+// and exit 0. Trading an explicit error for a silent substitution is the one
+// way this helper could be worse than the `%q` it replaced.
 //
 // One helper rather than a `%q` template per command: the hand-built form was
 // copied to seven call sites across four files, and the eighth would have
 // been copied too.
 func jsonBody(fields map[string]string) ([]byte, error) {
+	for k, v := range fields {
+		if !utf8.ValidString(v) {
+			return nil, fmt.Errorf("%s is not valid UTF-8 — it would be silently rewritten on the way out", k)
+		}
+	}
 	b, err := json.Marshal(fields)
 	if err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)

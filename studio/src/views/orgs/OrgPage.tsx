@@ -20,7 +20,7 @@ import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
 import { AddExistingMemberPanel } from "@/components/shared/AddExistingMemberPanel";
 import PanelLoading from "@/components/shared/PanelLoading";
 import { RoleSelect } from "@/components/shared/RoleSelect";
-import { ORG_ROLES } from "@/lib/roles";
+import { ORG_ROLES, confirmOwnerGrant } from "@/lib/roles";
 
 import {
   type OrgInvitationView,
@@ -247,6 +247,8 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
 
   const invite = async (ev: React.FormEvent) => {
     ev.preventDefault();
+    // Same ladder, same handover, slower door — see TeamPage.invite.
+    if (!(await confirmOwnerGrant(confirm, draft.role))) return;
     setBusy(true);
     setMutErr(null);
     try {

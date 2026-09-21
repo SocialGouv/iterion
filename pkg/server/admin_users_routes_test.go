@@ -254,6 +254,62 @@ func TestAdminUserDetail_OrphanGrantIsNamed(t *testing.T) {
 	}
 }
 
+// TestAdminUserDetail_NamesASuspendedOrg covers the FIRST alternative answer
+// to the question this page exists for.
+//
+// "This account signs in and sees nothing" has a second common cause that has
+// nothing to do with its memberships: its whole ORG is suspended, and the
+// launch gate denies every run inside it. `Team.Status` is team-LOCAL, so a
+// team in a suspended org still reads `active` — a roster rendered without
+// the org's own state looks perfectly healthy while nothing can run.
+func TestAdminUserDetail_NamesASuspendedOrg(t *testing.T) {
+	s := newOrgTestServer(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	seedOrg(t, s, "osus", "org-suspended")
+	o, err := s.authStore().GetOrg(ctx, "osus")
+	if err != nil {
+		t.Fatalf("get org: %v", err)
+	}
+	o.Status = identity.TeamStatusSuspended
+	if err := s.authStore().UpdateOrg(ctx, o); err != nil {
+		t.Fatalf("suspend org: %v", err)
+	}
+	if _, err := s.authStore().CreateTeam(ctx, identity.Team{
+		ID: "tsus", OrgID: "osus", Name: "TS", Slug: "ts", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	seedUser(t, s, identity.User{ID: "us", Email: "us@example.org"})
+	if err := s.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{
+		UserID: "us", OrgID: "osus", Role: identity.OrgRoleAdmin, JoinedAt: now,
+	}); err != nil {
+		t.Fatalf("seed org membership: %v", err)
+	}
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{
+		UserID: "us", TeamID: "tsus", Role: identity.RoleOwner, JoinedAt: now,
+	}); err != nil {
+		t.Fatalf("seed team membership: %v", err)
+	}
+
+	got := detailFor(t, s, "us")
+	if len(got.Orgs) != 1 || got.Orgs[0].Status != string(identity.TeamStatusSuspended) {
+		t.Fatalf("the org row must carry its status: %+v", got.Orgs)
+	}
+	// And the team row names its PARENT's state, because its own is local
+	// and would read `active` here — the misleading half.
+	if len(got.Teams) != 1 {
+		t.Fatalf("team row missing: %+v", got.Teams)
+	}
+	if got.Teams[0].Status != string(identity.TeamStatusActive) {
+		t.Fatalf("premise broken: the team's OWN status is local and should read active: %+v", got.Teams[0])
+	}
+	if got.Teams[0].OrgStatus != string(identity.TeamStatusSuspended) {
+		t.Fatalf("the team row must name its parent's suspension: %+v", got.Teams[0])
+	}
+}
+
 // TestAdminUserDetail_MissingTeamIsItsOwnDrift keeps the two dangling shapes
 // apart. A grant whose TEAM row is gone is a different failure from one whose
 // ORG MEMBERSHIP is missing — a half-finished cascade rather than a boundary

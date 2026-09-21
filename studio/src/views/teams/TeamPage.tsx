@@ -27,7 +27,7 @@ import { AddExistingMemberPanel } from "@/components/shared/AddExistingMemberPan
 import PanelLoading from "@/components/shared/PanelLoading";
 import { useTeamSubject } from "@/hooks/useTenantSubject";
 import { RoleSelect } from "@/components/shared/RoleSelect";
-import { TEAM_ROLES as ROLES, roleLabel } from "@/lib/roles";
+import { TEAM_ROLES as ROLES, confirmOwnerGrant, roleLabel } from "@/lib/roles";
 import { listOrgMembers } from "@/api/orgMembers";
 
 import AuditTab from "./tabs/AuditTab";
@@ -235,6 +235,11 @@ function Members({
 
   const invite = async (ev: React.FormEvent) => {
     ev.preventDefault();
+    // An invitation writes a role from the same ladder the add form does,
+    // `owner` included — it is the slower door to the same handover, not a
+    // different act. Guarding only the direct grant left the sentence
+    // "hand over ownership in one un-prompted click" true, by this route.
+    if (!(await confirmOwnerGrant(confirm, draft.role))) return;
     setBusy(true);
     setActionErr(null);
     try {

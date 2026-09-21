@@ -68,7 +68,6 @@ func TestRoleBodyIsJSON(t *testing.T) {
 		"adm\ain",          // BEL: valid Go escape, invalid JSON
 		"adm\vin",          // vertical tab: same
 		"adm\x00in",        // NUL
-		"adm\xe9in",        // invalid UTF-8
 		`member","x":true`, // the injection attempt
 		`back\slash`,       // a literal backslash
 		"quote\"inside",    // a literal quote
@@ -87,12 +86,35 @@ func TestRoleBodyIsJSON(t *testing.T) {
 			t.Fatalf("roleBody(%q) = %s, carries %d keys — the value escaped its field",
 				role, body, len(got))
 		}
-		// Invalid UTF-8 is replaced by the encoder (U+FFFD); every other
-		// input must round-trip exactly.
+		// Every accepted input round-trips EXACTLY. Anything that would not
+		// is refused above, not quietly rewritten.
 		if v, ok := got["role"].(string); !ok {
 			t.Fatalf("roleBody(%q) = %s, role is not a string", role, body)
-		} else if role != "adm\xe9in" && v != role {
+		} else if v != role {
 			t.Fatalf("roleBody(%q) round-trips to %q", role, v)
 		}
+	}
+}
+
+// TestRoleBodyRefusesInvalidUTF8 is the half that makes the encoder swap an
+// improvement rather than a trade. json.Marshal does NOT fail on invalid
+// UTF-8 — it substitutes U+FFFD — so without this check the CLI would send a
+// different string than the operator typed and exit 0, where the old `%q`
+// form at least produced a body the server rejected. A silent substitution is
+// worse than a confusing error.
+func TestRoleBodyRefusesInvalidUTF8(t *testing.T) {
+	for _, role := range []string{
+		"adm\xe9in",    // a lone continuation byte
+		"\xff",         // never valid anywhere in UTF-8
+		"ok\xc3",       // a truncated two-byte sequence
+		"\xed\xa0\x80", // a surrogate half, which UTF-8 forbids
+	} {
+		if _, err := roleBody(role); err == nil {
+			t.Fatalf("roleBody(%q) accepted invalid UTF-8 — it would be rewritten in flight", role)
+		}
+	}
+	// The control: a legitimate multi-byte string is NOT refused.
+	if _, err := roleBody("héllo-wörld-日本語"); err != nil {
+		t.Fatalf("roleBody refused valid multi-byte text: %v", err)
 	}
 }

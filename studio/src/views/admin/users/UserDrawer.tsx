@@ -301,6 +301,17 @@ function OrgsSection({
                     {o.org_slug ?? o.org_id}
                     {o.personal ? " · personal" : ""}
                   </div>
+                  {/* A suspended org denies every launch inside it, whatever
+                      the memberships say — the other reason an account
+                      "sees nothing". */}
+                  {o.status && o.status !== "active" && (
+                    <div className="text-caption text-warning-fg">
+                      organization {o.status}
+                      {o.purge_after
+                        ? ` — purged ${formatDateTime(o.purge_after)}`
+                        : " — nothing launches inside it"}
+                    </div>
+                  )}
                 </Td>
                 <Td>
                   <RoleSelect
@@ -493,6 +504,13 @@ function TeamsSection({
                     {t.personal ? " · personal" : ""}
                     {t.status && t.status !== "active" ? ` · ${t.status}` : ""}
                   </div>
+                  {/* The team's own status is LOCAL: it reads `active`
+                      inside a suspended org while launching nothing. */}
+                  {t.org_status && t.org_status !== "active" && (
+                    <div className="text-caption text-warning-fg">
+                      its organization is {t.org_status}
+                    </div>
+                  )}
                 </Td>
                 <Td className="text-fg-muted">
                   {t.org_name ?? t.org_id ?? "—"}

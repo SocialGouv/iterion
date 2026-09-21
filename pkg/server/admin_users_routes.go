@@ -33,12 +33,23 @@ import (
 // row as a blank cell with no name, no slug and no id. Omitting the field is
 // what makes "we do not know this one" expressible on the wire.
 type adminUserOrgView struct {
-	OrgID    string `json:"org_id"`
-	OrgName  string `json:"org_name,omitempty"`
-	OrgSlug  string `json:"org_slug,omitempty"`
-	Role     string `json:"role"`
-	Personal bool   `json:"personal,omitempty"`
-	JoinedAt string `json:"joined_at,omitempty"`
+	OrgID   string `json:"org_id"`
+	OrgName string `json:"org_name,omitempty"`
+	OrgSlug string `json:"org_slug,omitempty"`
+	// Status is the org's lifecycle state, and it is the FIRST alternative
+	// answer to the question this whole page exists for. A suspended org
+	// denies every launch inside it (`org_suspended`, launch_gate.go) — so
+	// an account whose org is suspended "sees nothing" for a reason that has
+	// nothing to do with its memberships, and a roster that renders without
+	// this field reads as perfectly healthy.
+	Status string `json:"status,omitempty"`
+	// PurgeAfter is set when Status is pending_deletion: the instant the
+	// nightly sweeper hard-purges the org. An admin grant in an org that
+	// disappears tomorrow is not an admin grant.
+	PurgeAfter string `json:"purge_after,omitempty"`
+	Role       string `json:"role"`
+	Personal   bool   `json:"personal,omitempty"`
+	JoinedAt   string `json:"joined_at,omitempty"`
 }
 
 type adminUserTeamView struct {
@@ -47,10 +58,15 @@ type adminUserTeamView struct {
 	TeamSlug string `json:"team_slug,omitempty"`
 	OrgID    string `json:"org_id,omitempty"`
 	OrgName  string `json:"org_name,omitempty"`
-	Role     string `json:"role"`
-	Status   string `json:"status,omitempty"`
-	Personal bool   `json:"personal,omitempty"`
-	JoinedAt string `json:"joined_at,omitempty"`
+	// OrgStatus is the PARENT's state. Team.Status is team-local, so a team
+	// reading `active` inside a suspended org launches nothing — the two
+	// causes stay separate fields rather than one folded value, for the same
+	// reason orphan_grant and missing_team are separate.
+	OrgStatus string `json:"org_status,omitempty"`
+	Role      string `json:"role"`
+	Status    string `json:"status,omitempty"`
+	Personal  bool   `json:"personal,omitempty"`
+	JoinedAt  string `json:"joined_at,omitempty"`
 	// OrphanGrant marks a team grant whose ORG MEMBERSHIP is missing. The
 	// invariant is that every team grant mirrors up to one; a console that
 	// silently repaired the display would hide exactly the drift an
@@ -165,6 +181,10 @@ func (s *Server) buildAdminUserDetail(ctx context.Context, u identity.User) (adm
 		// an account that merely "has no orgs".
 		if o, ok := orgsByID[om.OrgID]; ok {
 			v.OrgName, v.OrgSlug, v.Personal = o.Name, o.Slug, o.Personal
+			v.Status = string(o.EffectiveStatus())
+			if o.PurgeAfter != nil {
+				v.PurgeAfter = o.PurgeAfter.Format(time.RFC3339)
+			}
 		}
 		orgs = append(orgs, v)
 	}
@@ -181,6 +201,7 @@ func (s *Server) buildAdminUserDetail(ctx context.Context, u identity.User) (adm
 			v.OrgID = t.OrgID
 			if o, ok := orgsByID[t.OrgID]; ok {
 				v.OrgName = o.Name
+				v.OrgStatus = string(o.EffectiveStatus())
 			}
 			// A personal team sits in a personal org whose membership row
 			// follows the same rule as any other, so no exemption here.
