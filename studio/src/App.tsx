@@ -13,6 +13,9 @@ const HomeView = lazy(() => import("@/components/Home/HomeView"));
 const WhatsNextView = lazy(() => import("@/components/WhatsNext/WhatsNextView"));
 const EditorTabsView = lazy(() => import("@/components/Editor/EditorTabsView"));
 const LaunchView = lazy(() => import("@/components/Runs/LaunchView"));
+const LaunchDocStoreProvider = lazy(
+  () => import("@/components/Runs/launchView/LaunchDocStoreProvider"),
+);
 const RunsTabsView = lazy(() => import("@/components/Runs/RunsTabsView"));
 const BotsView = lazy(() => import("@/views/Bots"));
 const BotHomeView = lazy(() => import("@/views/Bots/BotHome"));
@@ -585,7 +588,9 @@ function AuthedApp() {
           <Switch>
           <Route path="/runs/new">
             <ErrorBoundary area="Launch view">
-              <LaunchView />
+              <LaunchDocStoreProvider>
+                <LaunchView />
+              </LaunchDocStoreProvider>
             </ErrorBoundary>
           </Route>
           <Route path="/runs/:id">

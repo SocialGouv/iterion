@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { editorDeepLinkTargetsDocument } from "./editorDeepLink";
 
 describe("editorDeepLinkTargetsDocument", () => {
-  it("accepts the visible tab already bound to the requested file", () => {
+  it("accepts the visible tab opened for the requested file", () => {
     expect(
       editorDeepLinkTargetsDocument(
         true,
@@ -31,5 +31,10 @@ describe("editorDeepLinkTargetsDocument", () => {
         "bots/town-dev/main.bot",
       ),
     ).toBe(false);
+  });
+
+  it("accepts a link with no file for the visible tab, whatever it holds", () => {
+    expect(editorDeepLinkTargetsDocument(true, null, null)).toBe(true);
+    expect(editorDeepLinkTargetsDocument(true, "bots/town-dev/main.bot", null)).toBe(true);
   });
 });

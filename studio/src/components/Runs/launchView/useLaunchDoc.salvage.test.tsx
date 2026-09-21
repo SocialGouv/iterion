@@ -63,4 +63,53 @@ describe("the inline launch of an editor buffer", () => {
     await waitFor(() => expect(api.unparse).toHaveBeenCalled());
     expect(onError).not.toHaveBeenCalled();
   });
+
+  // The same rule as the toolbar's Run button, read from the same predicate:
+  // a document the validator refused would fail at the server with the same
+  // errors, after the form was filled in.
+  it("refuses a document with error diagnostics, naming their count", async () => {
+    const onError = vi.fn();
+    const store = launchableStore(false);
+    store.getState().setDiagnostics(["e1", "e2"], []);
+
+    renderHook(() => useLaunchDoc("", onError), { wrapper: wrapperFor(store) });
+
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(String(onError.mock.calls[0]?.[0])).toMatch(/fix the 2 errors/i);
+    expect(api.unparse).not.toHaveBeenCalled();
+  });
+
+  // A buffer nothing was put in — a fresh tab, File → New, Start blank — is
+  // not a launch candidate: the view shows the picker's empty state instead
+  // of offering the scaffold as an "unsaved workflow".
+  it("reports no source for a pristine buffer, and neither errors nor unparses", async () => {
+    const onError = vi.fn();
+    const store = createDocumentStore();
+
+    const { result } = renderHook(() => useLaunchDoc("", onError), { wrapper: wrapperFor(store) });
+
+    expect(result.current.noSource).toBe(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onError).not.toHaveBeenCalled();
+    expect(api.unparse).not.toHaveBeenCalled();
+  });
+
+  // The store keeps living while the form is up (the launch route reads the
+  // active tab's store): a refusal arriving after the form mounted must
+  // clear it — a document the gate refuses must not stay launchable under
+  // the error banner.
+  it("clears a mounted form when the buffer gains a refusal", async () => {
+    const onError = vi.fn();
+    const store = launchableStore(false);
+
+    const { result } = renderHook(() => useLaunchDoc("", onError), { wrapper: wrapperFor(store) });
+
+    await waitFor(() => expect(result.current.doc).not.toBeNull());
+    expect(onError).not.toHaveBeenCalled();
+
+    store.getState().setDiagnostics(["e1"]);
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(String(onError.mock.calls[0]?.[0])).toMatch(/fix the 1 error/i);
+    expect(result.current.doc).toBeNull();
+  });
 });
