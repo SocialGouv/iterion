@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.178.0](https://github.com/SocialGouv/iterion/compare/v3.177.0...v3.178.0) (2026-09-21)
+
+### Features
+
+* **live:** the last-green ledger answers "do the live e2e still pass?" for free, and the DRAFT stabilisation plan ([#1511](https://github.com/SocialGouv/iterion/issues/1511)) ([b59914d](https://github.com/SocialGouv/iterion/commit/b59914db4f6bac3a57445b252e63cdd4c913670b)), references [#1424](https://github.com/SocialGouv/iterion/issues/1424) [#1422](https://github.com/SocialGouv/iterion/issues/1422) [#1424](https://github.com/SocialGouv/iterion/issues/1424) [#1422](https://github.com/SocialGouv/iterion/issues/1422)
+
+    <details><summary>why</summary>
+
+    The plan #1424 asks for, as a DRAFT: per core surface, what is already free (measured from the coverage matrix's 387 rows), what must become free, what must stay paid and why, and the budget one stabilisation pass costs. Candidate order DSL → runtime → backends → bots, ranked by what breaks the most when it moves; no engine change, no new tests for tests' sake.
+
+    </details>
+
 ## [3.177.0](https://github.com/SocialGouv/iterion/compare/v3.176.0...v3.177.0) (2026-09-21)
 
 ### Features
