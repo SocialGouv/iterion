@@ -23,6 +23,7 @@ import { Card } from "@/components/ui/Card";
 import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { RoleSelect } from "@/components/shared/RoleSelect";
 import type { Confirmer } from "@/hooks/useConfirm";
+import { confirmOwnerGrant } from "@/lib/roles";
 
 export interface MemberCandidate {
   user_id: string;
@@ -69,10 +70,18 @@ export function AddExistingMemberPanel({
   // enabled, one click from placing an account they can no longer see.
   const [picked, setPicked] = useState<MemberCandidate | null>(null);
 
-  const shown =
-    picked && !candidates.some((c) => c.user_id === picked.user_id)
-      ? [picked, ...candidates]
-      : candidates;
+  // The pin survives the search being CLEARED — the case it exists for,
+  // since committing a pick empties a server-backed list — but not the
+  // roster LOSING the account. A non-empty list is the signal the roster has
+  // spoken; if the pick is absent from it, the account went away between the
+  // pick and the click, and the selection is reconciled to nothing rather
+  // than left armed on an id the write would 404 on.
+  const rosterSpoke = candidates.length > 0;
+  const stale = picked != null && rosterSpoke && !candidates.some((c) => c.user_id === picked.user_id);
+  const shown = picked && !rosterSpoke ? [picked, ...candidates] : candidates;
+  // Derived, not held: the same reconciliation the drawer applies to its org
+  // pick. A stale selection disarms the button as well as leaving the list.
+  const effectiveUserID = stale ? "" : userID;
 
   const options: ComboboxOption<string>[] = shown.map((c) => ({
     value: c.user_id,
@@ -84,8 +93,13 @@ export function AddExistingMemberPanel({
   }));
 
   const submit = async () => {
-    if (!userID) return;
-    await onAdd(userID, role);
+    if (!effectiveUserID) return;
+    // The prompt belongs to the WRITE, not to the dropdown. Guarding the
+    // select guarded a gesture that writes nothing — and since the role is
+    // deliberately kept after a successful add (adding a batch of people is
+    // the actual gesture), the SECOND owner grant fired no prompt at all.
+    if (!(await confirmOwnerGrant(confirm, role))) return;
+    await onAdd(effectiveUserID, role);
     // Clear the selection, keep the role: adding a batch of people to one
     // team is the actual gesture, and re-picking the role each time is
     // where an operator mis-clicks.
@@ -106,7 +120,7 @@ export function AddExistingMemberPanel({
           <Combobox
             id="add-member-user"
             size="md"
-            value={userID}
+            value={effectiveUserID}
             options={options}
             placeholder={loading ? "Loading accounts…" : queryPlaceholder}
             disabled={busy}
@@ -127,14 +141,13 @@ export function AddExistingMemberPanel({
             value={role}
             roles={roles}
             disabled={busy}
-            confirm={confirm}
             onChange={setRole}
           />
         </div>
         <Button
           variant="primary"
           loading={busy}
-          disabled={!userID || busy}
+          disabled={!effectiveUserID || busy}
           onClick={() => void submit()}
         >
           {addLabel}

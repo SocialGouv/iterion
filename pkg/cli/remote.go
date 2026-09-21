@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,10 +157,54 @@ func (c *RemoteClient) doWithContentType(ctx context.Context, method, path strin
 	return c.doRequest(ctx, method, path, body, "", contentType)
 }
 
+// errDotSegment names a request whose path carries a `.` or `..` segment.
+var errDotSegment = errors.New("remote: request path contains a dot segment")
+
+// checkNoDotSegment refuses a path carrying a `.` or `..` segment.
+//
+// Every CLI command builds its URL by concatenating operator arguments into a
+// path, and Go's ServeMux CLEANS dot segments and answers 307 — which
+// net/http follows preserving method AND body. So `admin orgs delete
+// '../users/u-victim'` deleted a USER and the CLI exited 0. The server
+// re-authorises against the post-redirect path, so nothing is granted that
+// the caller did not already hold; what is lost is the operator's ability to
+// trust the target they typed.
+//
+// It lives here because this is the one function every request traverses:
+// ~100 mutating call sites build their own paths, and a per-site escape is a
+// guard that the next command added will not have. `url.PathEscape` at a call
+// site is still worth having — it keeps an id with a slash inside its own
+// segment — but it does NOT cover an id that IS `..`, since a dot is
+// unreserved and travels unescaped.
+//
+// Only a segment that IS a dot sequence is refused; a segment CONTAINING a
+// dot (`foo.bot`, an email, a version) is ordinary and must keep working.
+func checkNoDotSegment(path string) error {
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" {
+			continue
+		}
+		// Percent-decoded too: `%2e%2e` is the same segment spelled to slip
+		// past a raw comparison, and net/url decodes it before the mux sees it.
+		decoded := seg
+		if d, err := url.PathUnescape(seg); err == nil {
+			decoded = d
+		}
+		if seg == "." || seg == ".." || decoded == "." || decoded == ".." {
+			return fmt.Errorf("%w (%q) — an argument escaped its position in the URL; "+
+				"the request would have been redirected to a route you did not name", errDotSegment, seg)
+		}
+	}
+	return nil
+}
+
 func (c *RemoteClient) doRequest(ctx context.Context, method, path string, body []byte, bearer, contentType string) (int, []byte, error) {
 	u := strings.TrimRight(c.cfg.BaseURL, "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
+	}
+	if err := checkNoDotSegment(path); err != nil {
+		return 0, nil, err
 	}
 	u += path
 	var r io.Reader

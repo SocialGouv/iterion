@@ -46,6 +46,9 @@ export interface AdminUserTeamView {
   // A team grant with no matching org membership. The invariant says it
   // cannot happen; when it does, this is the row to act on.
   orphan_grant?: boolean;
+  // A grant whose team row is gone — a different drift, kept apart so the
+  // console names the one it actually found.
+  missing_team?: boolean;
 }
 
 export interface AdminUserSSOLinkView {

@@ -7170,6 +7170,7 @@ export interface components {
         };
         adminUserTeamView: {
             joined_at?: string;
+            missing_team?: boolean;
             org_id?: string;
             org_name?: string;
             orphan_grant?: boolean;

@@ -78,3 +78,29 @@ export function needsRoleChangeConfirm(
 export function needsRoleGrantConfirm(to: string): boolean {
   return to === "owner";
 }
+
+// confirmOwnerGrant asks before a grant that hands over control, and answers
+// true when the caller may proceed.
+//
+// It takes the CONFIRMER rather than living in a component because the guard
+// belongs to the WRITE: wired to a role `<select>` it guarded a gesture that
+// writes nothing, and — since a grant form deliberately keeps its role for
+// the next person — the second owner grant fired no prompt at all. Call it
+// immediately before the request, from whatever surface makes it.
+export async function confirmOwnerGrant(
+  confirm: ((o: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    confirmVariant?: "default" | "danger";
+  }) => Promise<boolean>) | undefined,
+  role: string,
+): Promise<boolean> {
+  if (!confirm || !needsRoleGrantConfirm(role)) return true;
+  return confirm({
+    title: "Grant ownership?",
+    message: `"${roleLabel(role)}" hands over control of this tenant. Grant it?`,
+    confirmLabel: "Grant owner",
+    confirmVariant: "danger",
+  });
+}

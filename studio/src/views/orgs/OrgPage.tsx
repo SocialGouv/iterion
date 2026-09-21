@@ -66,6 +66,7 @@ export default function OrgPage() {
     subject: org,
     loading: orgLoading,
     denied,
+    notFound: orgNotFound,
     error: orgError,
   } = useOrgSubject(orgID);
   const search = useSearch();
@@ -127,7 +128,9 @@ export default function OrgPage() {
           <p className="text-sm text-fg-muted">
             {denied
               ? "You do not have access to this organization."
-              : "This organization could not be found."}
+              : orgNotFound
+                ? "This organization does not exist."
+                : "This organization could not be loaded."}
           </p>
         )}
       </div>

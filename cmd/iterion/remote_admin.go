@@ -67,8 +67,11 @@ var remoteAdminOrgsCmd = &cobra.Command{
 			if len(args) != 3 {
 				return fmt.Errorf("usage: admin orgs status <org-id> <status>")
 			}
-			body := []byte(fmt.Sprintf(`{"status":%q}`, args[2]))
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/orgs/"+args[1]+"/status", body)
+			body, err := jsonBody(map[string]string{"status": args[2]})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/orgs/"+url.PathEscape(args[1])+"/status", body)
 		case "teams":
 			id, err := needID()
 			if err != nil {
@@ -407,8 +410,11 @@ every mutation lands on the platform audit log with a content digest.`,
 			if err != nil {
 				return err
 			}
-			body := []byte(fmt.Sprintf(`{"from":%q}`, slug))
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/bots/"+slug+"/fork", body)
+			body, err := jsonBody(map[string]string{"from": slug})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/bots/"+url.PathEscape(slug)+"/fork", body)
 		default:
 			return fmt.Errorf("unknown bots action %q (want push|show|pull|rm|fork)", action)
 		}

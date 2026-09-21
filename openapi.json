@@ -3669,6 +3669,9 @@
           "joined_at": {
             "type": "string"
           },
+          "missing_team": {
+            "type": "boolean"
+          },
           "org_id": {
             "type": "string"
           },

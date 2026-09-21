@@ -39,7 +39,7 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm, type Confirmer } from "@/hooks/useConfirm";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
-import { ORG_ROLES, TEAM_ROLES } from "@/lib/roles";
+import { ORG_ROLES, TEAM_ROLES, confirmOwnerGrant } from "@/lib/roles";
 
 export default function UserDrawer({
   userID,
@@ -365,7 +365,6 @@ function OrgsSection({
             value={role}
             roles={ORG_ROLES}
             disabled={busy}
-            confirm={confirm}
             onChange={(r) => setRole(r as OrgRole)}
           />
         </div>
@@ -374,10 +373,17 @@ function OrgsSection({
           loading={busy}
           disabled={!orgID || busy}
           onClick={() =>
-            void run(async () => {
-              await putOrgMember(orgID, userID, role);
-              setOrgID("");
-            })
+            void (async () => {
+              // The prompt guards the WRITE. On the select it guarded a
+              // gesture that writes nothing, and the role survives a
+              // successful add — so the next owner grant went out silent.
+              if (await confirmOwnerGrant(confirm, role)) {
+                await run(async () => {
+                  await putOrgMember(orgID, userID, role);
+                  setOrgID("");
+                });
+              }
+            })()
           }
         >
           Add to org
@@ -490,9 +496,16 @@ function TeamsSection({
                 </Td>
                 <Td className="text-fg-muted">
                   {t.org_name ?? t.org_id ?? "—"}
+                  {/* Two drifts, two sentences: naming the wrong one is
+                      worse than naming none. */}
                   {t.orphan_grant && (
                     <div className="text-caption text-danger">
                       no org membership — this grant should not exist
+                    </div>
+                  )}
+                  {t.missing_team && (
+                    <div className="text-caption text-danger">
+                      the team no longer exists — a half-finished cascade
                     </div>
                   )}
                 </Td>
@@ -581,7 +594,6 @@ function TeamsSection({
               value={role}
               roles={TEAM_ROLES}
               disabled={busy}
-              confirm={confirm}
               onChange={(r) => setRole(r as Role)}
             />
           </div>
@@ -593,10 +605,14 @@ function TeamsSection({
             // still-held teamID must not be submittable on its own.
             disabled={!teamID || orgID === "" || busy}
             onClick={() =>
-              void run(async () => {
-                await putTeamMember(teamID, userID, role);
-                setTeamID("");
-              })
+              void (async () => {
+                if (await confirmOwnerGrant(confirm, role)) {
+                  await run(async () => {
+                    await putTeamMember(teamID, userID, role);
+                    setTeamID("");
+                  });
+                }
+              })()
             }
           >
             Add to team

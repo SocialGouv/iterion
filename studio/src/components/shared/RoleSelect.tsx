@@ -6,16 +6,19 @@
 // that forgot to wrap its own write could hand over ownership of a tenant in
 // one un-prompted click.
 //
-// Two modes, and the type makes the second impossible to half-configure:
-//   - CHANGE (`confirmChangeFrom` + `confirm`): a demotion, a move across
-//     `config_editor`, or anything touching `owner` is confirmed first.
-//   - GRANT (`confirm` alone, or neither): nothing is being taken away, so
-//     only the `owner` half applies — installing an owner hands over control
-//     just as much as promoting one.
+// It guards a CHANGE only — a select that IS the write. Pass
+// `confirmChangeFrom` with the role currently held, and a demotion, a move
+// across `config_editor`, or anything touching `owner` is confirmed first.
+//
+// A select that merely picks a role to GRANT is a plain select here: the
+// write happens at a button further down the form, and a prompt on the
+// dropdown would guard a gesture that writes nothing — measured, it also
+// let the SECOND grant through unprompted, because the form keeps its role.
+// That guard lives at the write, in `confirmOwnerGrant`.
 
 import { Select } from "@/components/ui/Select";
 import type { Confirmer } from "@/hooks/useConfirm";
-import { needsRoleChangeConfirm, needsRoleGrantConfirm, roleLabel } from "@/lib/roles";
+import { needsRoleChangeConfirm, roleLabel } from "@/lib/roles";
 
 interface BaseProps {
   value: string;
@@ -32,7 +35,7 @@ interface BaseProps {
 // get it — the guard's whole purpose is that forgetting is not one prop away.
 type ConfirmProps =
   | { confirmChangeFrom: string; confirm: Confirmer }
-  | { confirmChangeFrom?: undefined; confirm?: Confirmer };
+  | { confirmChangeFrom?: undefined; confirm?: undefined };
 
 export function RoleSelect(props: BaseProps & ConfirmProps) {
   const {
@@ -61,14 +64,6 @@ export function RoleSelect(props: BaseProps & ConfirmProps) {
         // role, so there is nothing to revert by hand.
         if (!ok) return;
       }
-    } else if (confirm && needsRoleGrantConfirm(next)) {
-      const ok = await confirm({
-        title: "Grant ownership?",
-        message: `"${roleLabel(next)}" hands over control of this tenant. Grant it?`,
-        confirmLabel: "Grant owner",
-        confirmVariant: "danger",
-      });
-      if (!ok) return;
     }
     await onChange(next);
   };

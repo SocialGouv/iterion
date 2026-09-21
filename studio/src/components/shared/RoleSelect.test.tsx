@@ -17,14 +17,26 @@ function setup(over: {
   const onChange = vi.fn();
   const confirm = vi.fn(async () => over.answer ?? true);
   render(
-    <RoleSelect
-      value={over.value}
-      roles={over.roles}
-      ariaLabel="Role"
-      confirmChangeFrom={over.confirmChangeFrom}
-      confirm={confirm}
-      onChange={onChange}
-    />,
+    over.confirmChangeFrom != null ? (
+      <RoleSelect
+        value={over.value}
+        roles={over.roles}
+        ariaLabel="Role"
+        confirmChangeFrom={over.confirmChangeFrom}
+        confirm={confirm}
+        onChange={onChange}
+      />
+    ) : (
+      // A select that merely PICKS a role to grant: the write is a button
+      // elsewhere, so this one carries no confirmer at all — the type union
+      // refuses the half-configured shape.
+      <RoleSelect
+        value={over.value}
+        roles={over.roles}
+        ariaLabel="Role"
+        onChange={onChange}
+      />
+    ),
   );
   const select = screen.getByLabelText("Role");
   return { onChange, confirm, select };
@@ -104,25 +116,16 @@ describe("RoleSelect", () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
-  // …but the `owner` half applies on the grant path too. `handlePutTeamMember`
-  // accepts any valid role from a team admin, so installing an owner is
-  // reachable WITHOUT ever passing through the change path that prompts.
-  it("prompts before GRANTING owner, where no current role exists", async () => {
+  // Picking `owner` on a grant form is NOT the write: the write is a button
+  // further down. Prompting here guarded a gesture that changes nothing —
+  // and worse, a grant form keeps its role, so the next grant found the
+  // prompt already spent. That guard lives at the write; see
+  // AddExistingMemberPanel.test.tsx.
+  it("does not prompt when picking owner on a grant form", async () => {
     const { onChange, confirm, select } = setup({ value: "member", roles: TEAM_ROLES });
     fireEvent.change(select, { target: { value: "owner" } });
     await waitFor(() => expect(onChange).toHaveBeenCalledWith("owner"));
-    expect(confirm).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not grant owner when the prompt is declined", async () => {
-    const { onChange, confirm, select } = setup({
-      value: "member",
-      roles: TEAM_ROLES,
-      answer: false,
-    });
-    fireEvent.change(select, { target: { value: "owner" } });
-    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
-    expect(onChange).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   // config_editor is ORTHOGONAL to the ladder server-side (rank 0, ADR-078):

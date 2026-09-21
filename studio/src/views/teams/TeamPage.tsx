@@ -59,6 +59,7 @@ export default function TeamPage() {
     subject: team,
     loading: teamLoading,
     denied,
+    notFound: teamNotFound,
     error: teamError,
   } = useTeamSubject(teamID);
   const search = useSearch();
@@ -133,7 +134,9 @@ export default function TeamPage() {
           <p className="text-sm text-fg-muted">
             {denied
               ? "You do not have access to this team."
-              : "This team could not be found."}
+              : teamNotFound
+                ? "This team does not exist."
+                : "This team could not be loaded."}
           </p>
         )}
       </div>

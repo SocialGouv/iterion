@@ -47,20 +47,27 @@ func memberPath(base, userID string) string {
 	return base + "/" + url.PathEscape(userID)
 }
 
-// roleBody encodes a {"role": …} body with a real JSON encoder.
+// jsonBody encodes a flat string body with a real JSON encoder.
 //
-// fmt.Sprintf("%q") emits GO string syntax, which is not JSON: `\a`, `\v`,
-// `\xNN` are valid Go and invalid JSON, so a role carrying a control byte or
-// invalid UTF-8 produced a malformed body and the operator got the server's
-// decode failure instead of "invalid role". No injection was possible — the
-// point is the diagnostic.
-func roleBody(role string) ([]byte, error) {
-	b, err := json.Marshal(map[string]string{"role": role})
+// fmt.Sprintf("%q") emits GO string syntax, which is not JSON: `\a`, `\v` and
+// `\xNN` are valid Go and invalid JSON, so an argument carrying a control
+// byte or invalid UTF-8 produced a malformed body and the operator read the
+// server's decode failure instead of "invalid role" / "invalid status". No
+// injection was ever possible — quote and backslash are escaped correctly by
+// both — the point is the diagnostic.
+//
+// One helper rather than a `%q` template per command: the hand-built form was
+// copied to seven call sites across four files, and the eighth would have
+// been copied too.
+func jsonBody(fields map[string]string) ([]byte, error) {
+	b, err := json.Marshal(fields)
 	if err != nil {
-		return nil, fmt.Errorf("encode role: %w", err)
+		return nil, fmt.Errorf("encode request body: %w", err)
 	}
 	return b, nil
 }
+
+func roleBody(role string) ([]byte, error) { return jsonBody(map[string]string{"role": role}) }
 
 // rolesHint names the role vocabulary of a tenancy scope, for help text.
 // The server is the authority; this only spares a round trip to find out.
@@ -262,8 +269,11 @@ var remoteOrgsTeamsCmd = &cobra.Command{
 		case len(args) == 0:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case args[0] == "create" && len(args) == 2:
-			body := fmt.Sprintf(`{"name":%q}`, args[1])
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, []byte(body))
+			body, err := jsonBody(map[string]string{"name": args[1]})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
 		default:
 			return fmt.Errorf("usage: teams [create <name>]")
 		}

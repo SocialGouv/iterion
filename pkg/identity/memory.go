@@ -161,11 +161,23 @@ func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error)
 	return paginate(users, f.Page), nil
 }
 
-// maxUserQueryLen bounds the email arm. RFC 5321 caps an address at 254
-// bytes, so a longer prefix matches no stored email — and MongoDB refuses a
-// regex pattern past ~32 KB outright. Deciding it here keeps both stores on
-// one answer instead of one erroring while the other returns a clean page.
-const maxUserQueryLen = 254
+// maxUserQueryLen bounds the email arm at the STORE's limit, not at a
+// product rule nothing enforces.
+//
+// MongoDB refuses a regex pattern past ~32 KB. QuoteMeta at most doubles the
+// input, so 16 000 bytes can never produce a pattern the server rejects, and
+// both stores stay on one answer instead of one erroring while the other
+// returns a clean page.
+//
+// It is deliberately NOT 254 (the RFC 5321 address cap): nothing in this
+// codebase enforces that cap on write — `NormalizeEmail` only lowercases and
+// trims, and no CreateUser path checks a length — so a 292-byte address is
+// storable today, and a read cap of 254 would make such an account
+// unfindable by its own address through the only tool an operator has.
+// A read cap cannot create an invariant; it can only hide rows. (Lowercasing
+// is not length-preserving either — a Kelvin sign shrinks by two bytes — so
+// a tight cap would apply to a length the operator never typed.)
+const maxUserQueryLen = 16000
 
 // userQuery is UserFilter.Query split into the forms its arms compare
 // against, so none is recomputed per row.

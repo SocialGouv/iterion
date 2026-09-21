@@ -170,6 +170,24 @@ func runUserSearchSuite(t *testing.T, s Store) {
 		equal(t, ids(t, UserFilter{Query: "nobody"}), nil)
 	})
 
+	// A read cap cannot create an invariant it does not enforce. Nothing in
+	// this codebase bounds an address on write, so an address past the RFC
+	// 5321 cap of 254 bytes is storable — and capping the SEARCH there made
+	// such an account unfindable by its own address, through the only tool
+	// an operator has. The cap belongs at the store's real limit.
+	t.Run("an address longer than the RFC cap is still findable by itself", func(t *testing.T) {
+		long := strings.Repeat("l", 280) + "@example.test"
+		if _, err := s.CreateUser(ctx, User{
+			ID: "us-long", Email: long,
+			Status: UserStatusActive, CreatedAt: base.Add(50 * time.Second),
+		}); err != nil {
+			t.Fatalf("seed long-address user: %v — if the store started refusing this, "+
+				"move the cap back and enforce it on write", err)
+		}
+		equal(t, ids(t, UserFilter{Query: long}), []string{"us-long"})
+		equal(t, ids(t, UserFilter{Query: strings.Repeat("l", 280)}), []string{"us-long"})
+	})
+
 	// The axis this suite was blind to: the twins agreeing on a RESULT says
 	// nothing about them agreeing on an ERROR. MongoDB refuses a regex
 	// pattern carrying a NUL byte, and one past ~32 KB — both reachable

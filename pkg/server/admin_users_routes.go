@@ -51,11 +51,17 @@ type adminUserTeamView struct {
 	Status   string `json:"status,omitempty"`
 	Personal bool   `json:"personal,omitempty"`
 	JoinedAt string `json:"joined_at,omitempty"`
-	// OrphanGrant marks a team grant whose org membership is missing. The
+	// OrphanGrant marks a team grant whose ORG MEMBERSHIP is missing. The
 	// invariant is that every team grant mirrors up to one; a console that
 	// silently repaired the display would hide exactly the drift an
 	// operator opened this page to find.
 	OrphanGrant bool `json:"orphan_grant,omitempty"`
+	// MissingTeam marks a grant whose TEAM ROW is gone — a different drift,
+	// and kept a different field on purpose: one flag for two causes makes
+	// the console name the wrong one, which is worse than naming none.
+	// Both delete paths revoke memberships before the team row, so reaching
+	// this means a half-finished cascade.
+	MissingTeam bool `json:"missing_team,omitempty"`
 }
 
 type adminUserSSOLinkView struct {
@@ -182,11 +188,8 @@ func (s *Server) buildAdminUserDetail(ctx context.Context, u identity.User) (adm
 		} else {
 			// A grant whose TEAM row is gone is the same defect seen from the
 			// other end, and the more alarming one: unflagged it renders as a
-			// healthy grant that merely has no name. Both delete paths revoke
-			// memberships before the team row, so reaching this means a
-			// half-finished cascade — exactly what an operator opens this page
-			// to find.
-			v.OrphanGrant = true
+			// healthy grant that merely has no name.
+			v.MissingTeam = true
 		}
 		teams = append(teams, v)
 	}

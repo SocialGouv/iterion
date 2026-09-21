@@ -254,6 +254,46 @@ func TestAdminUserDetail_OrphanGrantIsNamed(t *testing.T) {
 	}
 }
 
+// TestAdminUserDetail_MissingTeamIsItsOwnDrift keeps the two dangling shapes
+// apart. A grant whose TEAM row is gone is a different failure from one whose
+// ORG MEMBERSHIP is missing — a half-finished cascade rather than a boundary
+// violation — and one flag for both makes the console state the wrong cause,
+// which is worse than stating none. This account IS an org member.
+func TestAdminUserDetail_MissingTeamIsItsOwnDrift(t *testing.T) {
+	s := newOrgTestServer(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	seedOrg(t, s, "o1", "org-one")
+	seedUser(t, s, identity.User{ID: "um", Email: "um@example.org"})
+	if err := s.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{
+		UserID: "um", OrgID: "o1", Role: identity.OrgRoleMember, JoinedAt: now,
+	}); err != nil {
+		t.Fatalf("seed org membership: %v", err)
+	}
+	// A grant on a team that does not exist.
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{
+		UserID: "um", TeamID: "t-vanished", Role: identity.RoleMember, JoinedAt: now,
+	}); err != nil {
+		t.Fatalf("seed team membership: %v", err)
+	}
+
+	got := detailFor(t, s, "um")
+	if len(got.Teams) != 1 {
+		t.Fatalf("the grant must still render: %+v", got.Teams)
+	}
+	if !got.Teams[0].MissingTeam {
+		t.Fatalf("a vanished team row must be named as one: %+v", got.Teams[0])
+	}
+	// And NOT as the other drift: this account holds the org membership.
+	if got.Teams[0].OrphanGrant {
+		t.Fatalf("the org membership exists — this is not an orphan grant: %+v", got.Teams[0])
+	}
+	if len(got.Orgs) != 1 || got.Orgs[0].OrgID != "o1" {
+		t.Fatalf("premise broken: the account must be an org member: %+v", got.Orgs)
+	}
+}
+
 // TestAdminUserDetail_OrderIsStable holds the row order as a decision
 // rather than as an accident. Both stores sort these lists by JoinedAt and
 // leave ties to a map walk, so seeding every membership at the SAME instant
