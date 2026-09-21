@@ -54,6 +54,109 @@ cannot speak to). The settled rules:
   every production switch doubles as a parity measurement, so switches
   stay observable (events carry the backend and the served model).
 
+### Per-backend capability matrix
+
+The status table says which backends are trusted; this matrix says what
+each one is **proven** to do. Only `claude_code` and `claw` are
+battle-tested, and a bot author must be able to tell a proven capability
+from a plausible one (#1417). The cells:
+
+- **proven** — a live e2e through the real backend asserts it, and the
+  test that would fail if it broke is named below. Not "the code exists".
+- **refused (C-code)** — the compiler refuses the capability on this
+  backend with a typed diagnostic; see
+  [the diagnostics reference](references/diagnostics.md).
+- **unwired (gap)** — no code path **and** no diagnostic guards it: the
+  parity rule above ("wired — or typed-refused — for the other") is not
+  yet honoured. Each one is a gap a session can pick up.
+- **unknown** — wired in code (path cited below), but no live e2e through
+  this backend exercises it yet. It may work; nothing has paid to find
+  out. Turning an unknown into proven costs one live e2e — extend
+  [the e2e coverage matrix](e2e-coverage-matrix.md), which stays the
+  single feature×coverage inventory.
+
+| Backend | Structured output (`schema:`/`output:`) | Permission gate `ask` | Session resume / fork | Tool events & cost | `{{outputs.*}}` / `{{run.*}}` | Sandbox | MCP servers | ask_user |
+|---|---|---|---|---|---|---|---|---|
+| `claude_code` | unknown | unknown | proven | unknown | engine-side | unknown | unknown | unknown |
+| `claw` | proven | proven | proven | proven | engine-side | unknown | proven | proven |
+| `codex` | proven | refused (C176) | unknown | unknown | engine-side | proven (readonly) | unwired (gap) | unknown |
+| `pi` | unknown | unknown | unknown | unknown | engine-side | unknown | unknown | unknown |
+| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | engine-side | unknown | unwired (gap) | unknown |
+| `grok` | unknown | refused (C176) | unwired (gap) | unknown | engine-side | unknown | unwired (gap) | unknown |
+
+The citations, per cell that is not self-evident from the table:
+
+- **claw, five proven cells.** Structured output:
+  `TestLive_Feat_Cursors` asserts the reviewer's output against its
+  schema (`task test:live`). Permission `ask`:
+  `TestLive_Feat_Permission_Ask`, the run lands `paused_waiting_human`
+  (`task test:live:feat:permission-ask`). Fork: `TestLive_Feat_Fork`
+  (`task test:live:feat:fork`). Cost and tool events:
+  `TestLive_Feat_Budget` crosses a $0.0001 cap with real spend
+  (`task test:live:feat:budget`), `TestLive_ClawToolCoverage`
+  (`task test:live:coverage`). MCP servers: `TestLive_Lite_ClawMCP`
+  round-trips a workflow-declared server (`task test:live:claw-mcp`).
+  ask_user: `TestLive_Full_ExhaustiveDSLCoverage` auto-answers an
+  `interaction: llm` question (`task test:live:full`),
+  `TestLive_Bot_Evolve` resumes on one (`task test:live:bot:evolve`).
+  Claw's session *resume* (conversation rehydration) is wired but not
+  live-asserted — its cell reads proven through the fork test, the
+  resume half stays unknown.
+- **claude_code.** The one proven cell is session resume:
+  `TestLive_Lite_SessionInheritValidation`
+  (`task test:live:session-inherit`) requires `fix._session_id ==
+  implement._session_id` — `--resume` really continued the CLI session.
+  Fork is wired (`WithForkSession`) but unasserted. Structured output is
+  wired natively (`WithOutputFormat` plus a two-pass fallback,
+  `pkg/backend/delegate/claude_code.go`) and the ask gate, cost metering
+  (provider-computed `TotalCostUSD`), sandbox, MCP forwarding and
+  ask_user (native MCP server) are all wired — none has a live e2e.
+- **codex.** Structured output and sandbox are proven by
+  `TestLive_Feat_CodexWebSearch`: the researcher's output is schema-
+  asserted, and under `readonly: true` the test fails if the node
+  creates a file. Its tool events are proven by the same test's
+  WebSearch lifecycle; the cost *figure* is only a token estimate, and
+  that estimate's accuracy is unproven — hence unknown. `ask` is
+  refused (C176): codex runs `bypassPermissions` and is absent from the
+  gate-enforcing table (`pkg/dsl/ir/validate_fallbacks.go`).
+- **pi.** Everything is wired through the embedded extension — gate,
+  ask_user, MCP servers, session fork, provider-computed cost — and all
+  of it on the **rpc transport only**; under `ITERION_PI_MODE=print` a
+  `permission:` node is refused at runtime *without a diagnostic code*
+  (`pkg/backend/delegate/pi.go`), which is its own parity gap. Nothing
+  pi does has a live e2e; every pi cell stays unknown.
+- **kimi / grok.** The gate is **deny-only** — an external `PreToolUse`
+  hook can hard-block but cannot pause the run — so `ask` is refused at
+  compile time (C176). The deny half *is* proven live with a filesystem
+  sentinel (`TestLive_Feat_Permission_Deny_Kimi`,
+  `TestLive_Feat_Permission_Deny_Grok`); the ask column is about
+  pausing, which this design cannot do. Session resume/fork is
+  **unwired**: the session id is parsed and stamped but never consumed —
+  the next call is silently fresh (`pkg/backend/delegate/cliagent.go`),
+  and a run-level fork fails with "no turn checkpoint"
+  (`pkg/runview/fork.go`). A `session: inherit` node on kimi compiles
+  and quietly loses continuity; no diagnostic says so. MCP servers are
+  unwired: workflow-declared `mcp:` blocks reach `claude_code` and `pi`
+  (forwarded) and `claw` (in-process) — nobody else
+  (`pkg/backend/model/executor_build_task.go`,
+  `mcpForwardingBackends`). Structured output, cost (token estimate
+  that drops the field when the model is unpriced — the
+  `delegate_*`-at-$0 risk), sandbox and ask_user (prompt-fallback only)
+  are wired at best and unproven: unknown.
+- **`{{outputs.*}}` / `{{run.*}}` is engine-side** for every backend:
+  the executor resolves templates before any backend sees the prompt
+  (`pkg/backend/model/executor_template.go`) — one resolver, not six.
+  It is exercised live through `claude_code`
+  (`test:live:session-inherit` asserts cross-node mapped outputs) and
+  `claw` (`test:live:full`); a per-backend proof would be a live run on
+  that backend, not a different resolver. `interaction: async`
+  (`ask_user_async`) is refused outright for codex/kimi/grok (C267).
+
+The open parity gaps, in one list: codex/kimi/grok MCP servers;
+kimi/grok session resume/fork (silent, unguarded); pi's print-mode
+runtime refusals without diagnostic codes; and every `unknown` cell,
+which is one live e2e away from proven.
+
 ## TL;DR
 
 If you have **at least one** of:
