@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.178.3](https://github.com/SocialGouv/iterion/compare/v3.178.2...v3.178.3) (2026-09-21)
+
+### Bug Fixes
+
+* **bots:** a Seki pass publishes only its own deep scan, the anti-facade gate counts the trio only, and an exhausted backlog reads as a note ([#1473](https://github.com/SocialGouv/iterion/issues/1473)) ([4c5bf44](https://github.com/SocialGouv/iterion/commit/4c5bf4463c48a5bf47f0a00089a5beb7d27b9543)), references [#1331](https://github.com/SocialGouv/iterion/issues/1331) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1333](https://github.com/SocialGouv/iterion/issues/1333) [#1328](https://github.com/SocialGouv/iterion/issues/1328) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1331](https://github.com/SocialGouv/iterion/issues/1331) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1322](https://github.com/SocialGouv/iterion/issues/1322) [#1323](https://github.com/SocialGouv/iterion/issues/1323) [pre-#1322](https://github.com/pre-/issues/1322) [#1333](https://github.com/SocialGouv/iterion/issues/1333) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1475](https://github.com/SocialGouv/iterion/issues/1475)
+
+    <details><summary>why</summary>
+
+    Three fixes in the class "a pass reports on facts that are not its own", travelling together because they share the manifest bump.
+
+    </details>
+
 ## [3.178.2](https://github.com/SocialGouv/iterion/compare/v3.178.1...v3.178.2) (2026-09-21)
 
 ### Bug Fixes
