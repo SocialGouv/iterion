@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -162,10 +164,28 @@ func (s *MongoStore) UpdateUser(ctx context.Context, u User) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.users, bson.M{"_id": u.ID}, u, ErrEmailAlreadyTaken, ErrNotFound, "identity: update user")
 }
 
-func (s *MongoStore) ListUsers(ctx context.Context, page Page) ([]User, error) {
-	skip, limit := mongoutil.NormalizePage(page.Offset, page.Limit, 50)
-	return mongoutil.FindPageSorted[User](ctx, s.users, bson.M{}, "created_at", skip, limit,
+func (s *MongoStore) ListUsers(ctx context.Context, f UserFilter) ([]User, error) {
+	skip, limit := mongoutil.NormalizePage(f.Offset, f.Limit, 50)
+	return mongoutil.FindPageSorted[User](ctx, s.users, userQueryFilter(f.Query), "created_at", skip, limit,
 		"identity: list users", "identity: decode users")
+}
+
+// userQueryFilter is the Mongo twin of matchesUserQuery — same meaning,
+// expressed as a query document. QuoteMeta is load-bearing: Query is
+// operator input reaching a `$regex`, so an unescaped `.*` would widen the
+// match to everyone and a pathological pattern would burn CPU in the
+// server. The email arm is anchored so the unique index on `email` serves
+// it; the id arm is an equality on the trimmed query (see matchesUserQuery
+// for why it is not lower-cased).
+func userQueryFilter(rawQuery string) bson.M {
+	q := strings.TrimSpace(rawQuery)
+	if q == "" {
+		return bson.M{}
+	}
+	return bson.M{"$or": []bson.M{
+		{"email": bson.M{"$regex": "^" + regexp.QuoteMeta(NormalizeEmail(q))}},
+		{"_id": q},
+	}}
 }
 
 func (s *MongoStore) UserCount(ctx context.Context) (int64, error) {

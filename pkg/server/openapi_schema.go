@@ -71,6 +71,24 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/admin/orgs/{id}":   {response: orgView{}},
 		"PATCH /api/admin/orgs/{id}": {request: updateOrgReq{}, response: orgView{}},
 
+		// User administration (super-admin). The detail route is one
+		// account's file — provenance, granted memberships, SSO links.
+		"GET /api/admin/users": {
+			response: struct {
+				Users  []UserView `json:"users"`
+				Offset int        `json:"offset"`
+				Limit  int        `json:"limit"`
+				Query  string     `json:"query,omitempty"`
+			}{},
+		},
+		"GET /api/admin/users/{id}":   {response: adminUserDetailView{}},
+		"PATCH /api/admin/users/{id}": {request: adminUpdateUserReq{}, response: UserView{}},
+
+		// One org, for anyone who may view it — the twin of GET
+		// /api/teams/{id}, and what lets a console resolve an org by id
+		// instead of by the caller's own membership tree.
+		"GET /api/orgs/{id}": {response: orgView{}},
+
 		// Platform LLM credentials (super-admin) — the DB-backed env fallback.
 		"GET /api/admin/llm/api-keys": {
 			response: struct {

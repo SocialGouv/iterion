@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -143,15 +144,37 @@ func paginate[T any](items []T, page Page) []T {
 	return items[offset:end]
 }
 
-func (m *MemoryStore) ListUsers(_ context.Context, page Page) ([]User, error) {
+func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	users := make([]User, 0, len(m.users))
 	for _, u := range m.users {
+		if !matchesUserQuery(u, f.Query) {
+			continue
+		}
 		users = append(users, u)
 	}
 	sort.Slice(users, func(i, j int) bool { return users[i].CreatedAt.Before(users[j].CreatedAt) })
-	return paginate(users, page), nil
+	return paginate(users, f.Page), nil
+}
+
+// matchesUserQuery is UserFilter.Query's predicate, stated once so this
+// store and the Mongo `$or` cannot drift apart in meaning.
+//
+// The id arm compares the TRIMMED query, not the normalized one: an email
+// is case-insensitive by construction (the unique index is on the
+// normalized form) but an id is an opaque token, and lower-casing it
+// before comparing would make an id containing an upper-case byte
+// unfindable.
+func matchesUserQuery(u User, rawQuery string) bool {
+	q := strings.TrimSpace(rawQuery)
+	if q == "" {
+		return true
+	}
+	if u.ID == q {
+		return true
+	}
+	return strings.HasPrefix(NormalizeEmail(u.Email), NormalizeEmail(q))
 }
 
 func (m *MemoryStore) UserCount(_ context.Context) (int64, error) {

@@ -534,7 +534,8 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /** GET /api/admin/users/{id} */
+        get: operations["getAdminUsersById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1698,6 +1699,25 @@ export interface paths {
         };
         /** GET /api/openapi.json */
         get: operations["getOpenapi.json"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id} */
+        get: operations["getOrgsById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7043,8 +7063,10 @@ export interface components {
             email: string;
             id: string;
             is_super_admin: boolean;
+            last_login_at?: string;
             name?: string;
             status: string;
+            updated_at?: string;
         };
         WatcherCursor: {
             consecutive_no_progress?: number;
@@ -7119,6 +7141,44 @@ export interface components {
             declared_root?: string;
             mode?: string;
             workspace_id?: string;
+        };
+        adminUpdateUserReq: {
+            is_super_admin?: boolean;
+            name?: string;
+            status?: string;
+        };
+        adminUserDetailView: {
+            has_password: boolean;
+            orgs: components["schemas"]["adminUserOrgView"][];
+            sso_links: components["schemas"]["adminUserSSOLinkView"][];
+            teams: components["schemas"]["adminUserTeamView"][];
+            user: components["schemas"]["UserView"];
+        };
+        adminUserOrgView: {
+            joined_at?: string;
+            org_id: string;
+            org_name: string;
+            org_slug: string;
+            personal?: boolean;
+            role: string;
+        };
+        adminUserSSOLinkView: {
+            created_at?: string;
+            email?: string;
+            provider: string;
+            subject: string;
+        };
+        adminUserTeamView: {
+            joined_at?: string;
+            org_id?: string;
+            org_name?: string;
+            orphan_grant?: boolean;
+            personal?: boolean;
+            role: string;
+            status?: string;
+            team_id: string;
+            team_name: string;
+            team_slug: string;
         };
         apiKeyView: {
             alive_runs?: number;
@@ -8465,12 +8525,41 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        limit: number;
+                        offset: number;
+                        query?: string;
+                        users: components["schemas"]["UserView"][];
+                    };
+                };
+            };
+        };
+    };
+    getAdminUsersById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["adminUserDetailView"];
+                };
             };
         };
     };
@@ -8483,14 +8572,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["adminUpdateUserReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UserView"];
+                };
             };
         };
     };
@@ -9983,6 +10078,28 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getOrgsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["orgView"];
+                };
             };
         };
     };

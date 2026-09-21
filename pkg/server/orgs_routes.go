@@ -16,6 +16,7 @@ import (
 // mutations require org admin (canManageOrg). SSO + audit org routes are
 // registered by org_sso_routes.go / audit_helper.go.
 func (s *Server) registerOrgRoutes() {
+	s.mux.Handle("GET /api/orgs/{id}", s.requireAuth(http.HandlerFunc(s.handleGetOrg)))
 	s.mux.Handle("GET /api/orgs/{id}/members", s.requireAuth(http.HandlerFunc(s.handleListOrgMembers)))
 	s.mux.Handle("PATCH /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgMember)))
 	s.mux.Handle("DELETE /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleRemoveOrgMember)))
@@ -33,6 +34,31 @@ func (s *Server) registerOrgRoutes() {
 // orgSettingsView is the org-admin-managed slice of Org settings — the
 // governance knobs an org runs itself, distinct from the super-admin
 // plan/budget fields (/api/admin/orgs) which stay the platform's contract.
+// handleGetOrg is the missing twin of GET /api/teams/{id}: one org, read
+// by anyone who may view it. Without it the only way to resolve an org by
+// id was the caller's own identity tree, so a super-admin who is not a
+// member of an org could not open its page at all — every API behind that
+// page would have answered, since canViewOrg short-circuits on
+// IsSuperAdmin.
+//
+// It serves toOrgView, quota fields included. That is not a new
+// disclosure: GET /api/orgs/{id}/usage already embeds the same view behind
+// the same canViewOrg gate.
+func (s *Server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("id")
+	if !s.canViewOrg(r.Context(), id, orgID) {
+		httpError(w, http.StatusForbidden, "not a member of this org")
+		return
+	}
+	o, err := s.authStore().GetOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	writeJSON(w, toOrgView(o))
+}
+
 type orgSettingsView struct {
 	RequireProvisionApproval bool `json:"require_provision_approval"`
 	// ProvisionApprovalScope narrows what the flag above parks: every
