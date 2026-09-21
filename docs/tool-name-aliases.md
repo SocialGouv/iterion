@@ -1,21 +1,35 @@
 # Claw tool-name aliases
 
-**Unreleased, and the floor is UNSET: `bundle.ToolAliasesSince` is `9999.0.0`,
-a sentinel.** No manifest can declare a floor at or above it, so the resolver is
-inert — aliases never resolve, whatever a bundle asks for. That is deliberate.
+Claw accepts the exact spellings `Read`, `Bash`, and `Grep` as `read_file`, `bash`,
+and `grep` when the bundle declares `requires.iterion` at or above
+`bundle.ToolAliasesSince` — **3.177.0**, the release that first ships the
+resolver. Canonical names continue to work in a plain `.bot` or on older
+engines. This is engine-version-dependent behavior in both DSL profiles; it is
+not a profile-1 lowering that an older reader can reproduce.
 
-Before merging, set the constant to the release that actually ships this
-resolver, re-run the compatibility probe with that floor, and only then take the
-PR out of draft. Do not publish an alias-using bundle before the runner image
-carrying that release has been deployed.
+The pin cannot rot again (it named 3.144.0, then 3.146.0, and both rotted —
+3.144.0, 3.144.1, 3.145.0 and 3.146.x shipped while the resolver sat on this
+branch): the floor is now an entry of the ONE syntax-floor table
+(`pkg/bundle/profile.go`, #1276), and `TestSyntaxFloorsNameReleasesThatExist`
+holds it like every parser floor — while uncut, exactly the next minor above
+the changelog's newest release; once cut, the release's notes must carry the
+word "alias", or the test reddens with the re-pin instruction. Re-deriving the
+floor at merge is therefore not a memory task; run `devbox run -- go test
+./pkg/bundle/ -run TestSyntaxFloorsNameReleasesThatExist` and do what it says.
 
-Why a sentinel rather than the next version number: the constant named 3.144.0,
-then 3.146.0, and both rotted within days — 3.144.0, 3.144.1, 3.145.0 and
-3.146.x all shipped while the resolver sat on this branch, each release turning
-the floor into a claim that a published runner carries a capability it does not.
-Releases move faster than a branch, so the number cannot be kept true by
-attention; a comment saying "provisional" did not stop it rotting twice. The
-sentinel makes the unfinished state **fail closed** instead of merely documented.
+## The manifest opt-in
+
+```yaml
+# manifest.yaml
+requires:
+  iterion: ">= 3.177.0"
+```
+
+Declaring the floor is what turns the resolver on; the same declaration is
+what the floor predicate at push admission, `validate`'s C252, `dsl migrate`
+and the scaffold ask for when a bundle's sources spell an alias in `tools:`,
+`tool_policy:` or `recovery: agent_tools:` — so an author is told the floor is
+missing before the bundle is written to a runner that cannot serve it.
 
 Claw accepts the exact spellings `Read`, `Bash`, and `Grep` as `read_file`, `bash`,
 and `grep` when the bundle declares `requires.iterion` at or above the release
@@ -24,10 +38,9 @@ on older engines. This is engine-version-dependent behavior in both DSL profiles
 it is not a profile-1 lowering that an older reader can reproduce.
 
 ```yaml
-# manifest.yaml — the finalized first release, once the constant names one.
-# While ToolAliasesSince is the 9999.0.0 sentinel, no value here enables aliases.
+# manifest.yaml
 requires:
-  iterion: ">= 3.147.0" # example only — replace with the shipping release
+  iterion: ">= 3.177.0"
 ```
 
 ```iterion
