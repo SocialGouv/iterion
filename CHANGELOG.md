@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.178.2](https://github.com/SocialGouv/iterion/compare/v3.178.1...v3.178.2) (2026-09-21)
+
+### Bug Fixes
+
+* **studio:** the Run gate and the tab binding stop lying about an unbound buffer ([#1531](https://github.com/SocialGouv/iterion/issues/1531)) ([ce784c8](https://github.com/SocialGouv/iterion/commit/ce784c8a6145cca624b02f5e818e42b02f75cc50)), references [#1334](https://github.com/SocialGouv/iterion/issues/1334) [#1334](https://github.com/SocialGouv/iterion/issues/1334) [#1326](https://github.com/SocialGouv/iterion/issues/1326) [#1326](https://github.com/SocialGouv/iterion/issues/1326) [#1519](https://github.com/SocialGouv/iterion/issues/1519) [#1519](https://github.com/SocialGouv/iterion/issues/1519)
+
+    <details><summary>why</summary>
+
+    A tab remembered its file in tab.params.file, written by TabBindingSync only ever non-null (`if (!path) return`): a tab that stopped following anything kept the PREVIOUS name, and a remount — /editor is a wouter route, the per-tab stores survive — re-fetched that file over the author's unsaved work (#1334). The same staleness held a draft param, whose re-apply would overwrite the canvas with the draft.
+
+    </details>
+
 ## [3.178.1](https://github.com/SocialGouv/iterion/compare/v3.178.0...v3.178.1) (2026-09-21)
 
 ### Bug Fixes
