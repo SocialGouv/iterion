@@ -26,7 +26,10 @@ func TestLive_Feat_Cursors(t *testing.T) {
 	// The sample ships unpinned so readers can run it on whatever they
 	// have; this proof is ABOUT claw, so the preference is pinned here —
 	// on a host where Claude Code is signed in, the default order
-	// (claude_code first) would otherwise prove the wrong backend.
+	// (claude_code first) would otherwise prove the wrong backend. The
+	// default override is cleared with it: it sits ABOVE the preference
+	// in the resolution order and would silently win.
+	t.Setenv("ITERION_DEFAULT_BACKEND", "")
 	t.Setenv("ITERION_BACKEND_PREFERENCE", "claw")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feat-cursors-*")

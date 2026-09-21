@@ -128,10 +128,9 @@ The same page carries the **per-backend capability matrix**: only
 `claude_code` and `claw` are battle-tested, and each capability cell is
 `proven` (a live e2e through the real backend), `refused` (a typed
 diagnostic), `unwired (gap)` or `unknown` — `claw` is the only backend
-whose structured output, ask gate, fork, cost metering and MCP servers
-are proven live, codex/kimi/grok carry unwired MCP and kimi/grok an
-unguarded session-resume gap, and ask_user has no live witness on any
-backend yet. The matrix and its citations:
+whose structured output, ask gate, fork, cost metering, MCP servers and
+ask_user are proven live, while codex/kimi/grok carry unwired MCP and
+kimi/grok an unguarded session-resume gap. The matrix and its citations:
 [per-backend capability matrix](backends.md#per-backend-capability-matrix).
 
 ## Isolation, permissions, and secrets

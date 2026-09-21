@@ -76,9 +76,9 @@ from a plausible one (#1417). The cells:
   single feature×coverage inventory.
 
 | Backend | Structured output (`schema:`/`output:`) | Permission gate `ask` | Session resume / fork | Tool events & cost | `{{outputs.*}}` / `{{run.*}}` | Sandbox | MCP servers | ask_user |
-|---|---|---|---|---|---|--- |---|---|
+|---|---|---|---|---|---|---|---|---|
 | `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | engine-side | unknown | unknown | unknown |
-| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | engine-side | unknown | proven | unknown |
+| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | engine-side | unknown | proven | proven |
 | `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | engine-side | proven (readonly) | unwired (gap) | unknown |
 | `pi` | unknown | unknown | unknown | unknown | engine-side | unknown | unknown | unknown |
 | `kimi` | unknown | refused (C176) | unwired (gap) | unknown | engine-side | unknown | unwired (gap) | unknown |
@@ -100,11 +100,11 @@ The citations, per cell that is not self-evident from the table:
   same estimator codex uses, and only `claude_code` and `pi` report
   provider-computed amounts. MCP servers: `TestLive_Lite_ClawMCP`
   round-trips a workflow-declared server (`task test:live:claw-mcp`).
-  ask_user is **not** among the proven cells: the native tool is wired
-  (`pkg/backend/tool/claw_builtins.go`), the live harness auto-answers
-  it in-process, and no live assertion would fail if the tool never
-  fired — the exhaustive-DSL fixture's `interaction: llm` question is
-  the human-node gate, a different mechanism. Claw's session *resume*
+  ask_user: `TestLive_ClawToolCoverage` puts `ask_user` in its
+  must-dispatch list — a run where the tool never fires, or never
+  succeeds, fails — and asserts the human's answer round-trips through
+  the model into the node's output schema (`task test:live:coverage`).
+  Claw's session *resume*
   (conversation rehydration) is wired but not live-asserted; only the
   fork half of its cell is proven.
 - **claude_code.** The one proven cell is session resume:

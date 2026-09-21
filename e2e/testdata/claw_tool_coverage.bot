@@ -18,7 +18,6 @@
 ##   - repl                    → besoin d'un runtime python/js
 ##   - notebook_edit           → besoin d'un .ipynb réel
 ##   - read_image / screenshot / computer_use → besoin X11
-##   - ask_user                → pauserait le workflow (incompatible test linéaire)
 ##   - worker_*                → worker = subprocess, lifecycle complexe
 ##                               (worker_create + worker_terminate testés
 ##                                via le smoke test au niveau dispatch)
