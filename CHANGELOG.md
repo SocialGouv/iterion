@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.179.0](https://github.com/SocialGouv/iterion/compare/v3.178.4...v3.179.0) (2026-09-21)
+
+### Features
+
+* **backend:** the schema re-ask and the tool-alias floor ([#1546](https://github.com/SocialGouv/iterion/issues/1546)) ([2cb6c6d](https://github.com/SocialGouv/iterion/commit/2cb6c6da2c948eb9673331a6288547bdae524838)), references [#1385](https://github.com/SocialGouv/iterion/issues/1385) [#1155](https://github.com/SocialGouv/iterion/issues/1155) [#1276](https://github.com/SocialGouv/iterion/issues/1276) [#1155](https://github.com/SocialGouv/iterion/issues/1155) [#1155](https://github.com/SocialGouv/iterion/issues/1155)
+
+    <details><summary>why</summary>
+
+    When an LLM node's structured output fails its output: schema on a shape one more ask can fix (a parse fallback, or a missing required field), the executor re-asks the model ONCE with the validation error, continuing the work instead of repeating the turn: claw replays the conversation it just completed (a new delegate.Task.ContinueConversation, tools off, in-process, refused over the sandbox runner so an old runner can never receive it); claude_code/codex/pi resume the answer's session by id;…
+
+    </details>
+
 ## [3.178.4](https://github.com/SocialGouv/iterion/compare/v3.178.3...v3.178.4) (2026-09-21)
 
 ### Bug Fixes
