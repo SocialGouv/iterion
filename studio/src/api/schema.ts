@@ -7596,6 +7596,7 @@ export interface components {
             launch_rate_per_min?: number;
             max_concurrent_runs?: number;
             name: string;
+            org_id?: string;
             personal?: boolean;
             slug: string;
             status: string;

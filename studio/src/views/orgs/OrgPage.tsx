@@ -18,6 +18,9 @@ import { useOrgSubject } from "@/hooks/useTenantSubject";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
 import { AddExistingMemberPanel } from "@/components/shared/AddExistingMemberPanel";
+import PanelLoading from "@/components/shared/PanelLoading";
+import { RoleSelect } from "@/components/shared/RoleSelect";
+import { ORG_ROLES } from "@/lib/roles";
 
 import {
   type OrgInvitationView,
@@ -40,8 +43,6 @@ import SSOTab from "@/views/teams/tabs/SSOTab";
 import UsageTab from "@/views/teams/tabs/UsageTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
 
-const ORG_ROLES: OrgRole[] = ["member", "admin", "owner"];
-
 type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing" | "governance";
 
 const TABS: Array<{ id: Tab; label: string }> = [
@@ -57,7 +58,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
 export default function OrgPage() {
   const params = useParams<{ id: string }>();
   const orgID = params.id;
-  const { activeOrgRole, user } = useAuth();
+  const { user } = useAuth();
   // Resolved through the shared subject hook rather than out of the
   // caller's own tree: a super-admin who is not a member still gets the
   // page, since every API behind it would answer for them.
@@ -79,11 +80,10 @@ export default function OrgPage() {
     navigate(`/orgs/${orgID}?tab=${t}`, { replace: true });
   };
 
-  // An org admin/owner (or a super-admin) may mutate.
-  // activeOrgRole describes the ACTIVE org, so it only stands in for a
-  // subject the caller is actually a member of; for an org reached by URL
-  // it would name a different tenant's role.
-  const orgRole = (org?.role || (org?.isMember ? activeOrgRole : null) || null) as OrgRole | null;
+  // An org admin/owner (or a super-admin) may mutate. The role comes from
+  // the subject: activeOrgRole describes the ACTIVE org, so for an org
+  // reached by URL it would name a different tenant's role.
+  const orgRole = (org?.role ?? null) as OrgRole | null;
   const canManage = !!user?.is_super_admin || hasOrgRole(orgRole, "admin");
 
   useHeaderSlot({
@@ -105,11 +105,7 @@ export default function OrgPage() {
   });
 
   if (orgLoading) {
-    return (
-      <div className="p-6">
-        <p className="text-sm text-fg-muted">Loading organization…</p>
-      </div>
-    );
+    return <PanelLoading label="Loading organization…" />;
   }
 
   if (!org) {
@@ -156,18 +152,17 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
   // tree: an invitation dropdown built from the tree is empty for a
   // super-admin who is not a member — which reads as "this org has no
   // team" rather than as "you were not asked".
+  // Only the invite form below reads it, and that form is admin-only —
+  // the sibling invitations query carries the same guard for the same
+  // reason (the endpoint answers a plain member, so nothing would surface
+  // the wasted call).
   const orgTeamsQuery = useQuery({
     queryKey: ["org-team-summaries", orgID],
     queryFn: () => listOrgTeamSummaries(orgID),
+    enabled: canManage,
+    staleTime: 30_000,
   });
-  const orgTeams = useMemo(
-    () =>
-      (orgTeamsQuery.data ?? []).map((t) => ({
-        team_id: t.id,
-        team_name: t.name,
-      })),
-    [orgTeamsQuery.data],
-  );
+  const orgTeams = orgTeamsQuery.data ?? [];
   const queryClient = useQueryClient();
   const membersQuery = useQuery<OrgMemberView[]>({
     queryKey: ["org-members", orgID],
@@ -215,12 +210,15 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     queryFn: () => listAdminUsers({ q: debouncedCandidateSearch, limit: 20 }),
     enabled: !!user?.is_super_admin && debouncedCandidateSearch !== "",
   });
+  // Depends on the query DATA, not on `members` — that is `… ?? []`, a
+  // fresh array each render, which would re-run this on every render in
+  // exactly the state where memoising was the point.
   const candidates = useMemo(() => {
-    const already = new Set(members.map((m) => m.user_id));
+    const already = new Set((membersQuery.data ?? []).map((m) => m.user_id));
     return (candidateQuery.data?.users ?? [])
       .filter((u) => !already.has(u.id))
       .map((u) => ({ user_id: u.id, email: u.email, name: u.name }));
-  }, [candidateQuery.data, members]);
+  }, [candidateQuery.data, membersQuery.data]);
   const { confirm, dialog } = useConfirm();
 
   // Post-mutation refresh: clear the shared error slot and refetch both lists.
@@ -266,18 +264,10 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     }
   };
 
-  const setRole = async (userID: string, currentRole: OrgRole, role: OrgRole) => {
-    if (role === currentRole) return;
-    const demotion = ORG_ROLES.indexOf(role) < ORG_ROLES.indexOf(currentRole);
-    if (demotion || currentRole === "owner" || role === "owner") {
-      const ok = await confirm({
-        title: "Change org role?",
-        message: `Change this member from "${currentRole}" to "${role}"? This takes effect immediately.`,
-        confirmLabel: "Change role",
-        confirmVariant: "danger",
-      });
-      if (!ok) return;
-    }
+  // The demotion / owner-handover prompt lives in RoleSelect, so every
+  // surface that writes a membership role inherits it instead of
+  // re-deriving it against its own ladder.
+  const setRole = async (userID: string, role: OrgRole) => {
     try {
       await updateOrgMemberRole(orgID, userID, role);
       reload();
@@ -330,6 +320,7 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
           busy={busy}
           roles={ORG_ROLES}
           defaultRole="member"
+          queryPlaceholder="Search by email prefix, or paste a user id…"
           emptyMessage={
             candidateSearch.trim() === ""
               ? "Type an email prefix to find an account."
@@ -401,8 +392,8 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
                 >
                   <option value="">No team (org only)</option>
                   {orgTeams.map((t) => (
-                    <option key={t.team_id} value={t.team_id}>
-                      + team: {t.team_name}
+                    <option key={t.id} value={t.id}>
+                      + team: {t.name}
                     </option>
                   ))}
                 </Select>
@@ -441,17 +432,14 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
                 <Td>{m.name ?? "—"}</Td>
                 <Td>
                   {canManage ? (
-                    <Select
+                    <RoleSelect
                       value={m.role}
-                      onChange={(e) => setRole(m.user_id, m.role, e.target.value as OrgRole)}
-                      aria-label={`Org role for ${m.email ?? m.user_id}`}
-                    >
-                      {ORG_ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </Select>
+                      roles={ORG_ROLES}
+                      ariaLabel={`Org role for ${m.email ?? m.user_id}`}
+                      confirmChangeFrom={m.role}
+                      confirm={confirm}
+                      onChange={(role) => setRole(m.user_id, role as OrgRole)}
+                    />
                   ) : (
                     m.role
                   )}
@@ -574,30 +562,14 @@ function OrgTeams({ orgID, canManage }: { orgID: string; canManage: boolean }) {
   const teamsQuery = useQuery({
     queryKey: ["org-team-summaries", orgID],
     queryFn: () => listOrgTeamSummaries(orgID),
+    staleTime: 30_000,
   });
+  const teams = teamsQuery.data ?? [];
   // The caller's own role still comes from the tree — it is caller-scoped
   // and the server's team row has no such field. Absent for someone who
   // holds no grant, which is the honest answer rather than a blank that
   // looks like a missing value.
-  const myRole = useMemo(() => {
-    const byID = new Map<string, string>();
-    for (const t of orgs.find((o) => o.org_id === orgID)?.teams ?? []) {
-      byID.set(t.team_id, t.role);
-    }
-    return byID;
-  }, [orgs, orgID]);
-  const teams = useMemo(
-    () =>
-      (teamsQuery.data ?? []).map((t) => ({
-        team_id: t.id,
-        team_name: t.name,
-        team_slug: t.slug,
-        personal: t.personal,
-        status: t.status,
-        role: myRole.get(t.id) ?? null,
-      })),
-    [teamsQuery.data, myRole],
-  );
+  const myTeams = orgs.find((o) => o.org_id === orgID)?.teams ?? [];
   const [draft, setDraft] = useState({ name: "", slug: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -652,28 +624,28 @@ function OrgTeams({ orgID, canManage }: { orgID: string; canManage: boolean }) {
               </Td>
             </Tr>
           )}
-          {teams.map((t) => (
-            <Tr key={t.team_id}>
-              <Td>
-                {/* The drill-down this list was missing: an org's teams are
-                    a way IN to them, not just an inventory. */}
-                <Link
-                  href={`/teams/${t.team_id}`}
-                  className="text-accent-text hover:underline"
-                >
-                  {t.team_name}
-                </Link>
-                {t.personal && (
-                  <span className="ml-2 text-xs text-fg-muted">personal</span>
-                )}
-                {t.status && t.status !== "active" && (
-                  <span className="ml-2 text-xs text-warning-fg">{t.status}</span>
-                )}
-              </Td>
-              <Td className="font-mono text-xs">{t.team_slug}</Td>
-              <Td className={t.role ? "" : "text-fg-muted"}>{t.role ?? "no grant"}</Td>
-            </Tr>
-          ))}
+          {teams.map((t) => {
+            const role = myTeams.find((m) => m.team_id === t.id)?.role ?? null;
+            return (
+              <Tr key={t.id}>
+                <Td>
+                  {/* The drill-down this list was missing: an org's teams are
+                      a way IN to them, not just an inventory. */}
+                  <Link href={`/teams/${t.id}`} className="text-accent-text hover:underline">
+                    {t.name}
+                  </Link>
+                  {t.personal && (
+                    <span className="ml-2 text-xs text-fg-muted">personal</span>
+                  )}
+                  {t.status && t.status !== "active" && (
+                    <span className="ml-2 text-xs text-warning-fg">{t.status}</span>
+                  )}
+                </Td>
+                <Td className="font-mono text-xs">{t.slug}</Td>
+                <Td className={role ? "" : "text-fg-muted"}>{role ?? "no grant"}</Td>
+              </Tr>
+            );
+          })}
         </TBody>
       </Table>
       {canManage && (

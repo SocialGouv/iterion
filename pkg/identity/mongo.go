@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -171,20 +170,22 @@ func (s *MongoStore) ListUsers(ctx context.Context, f UserFilter) ([]User, error
 }
 
 // userQueryFilter is the Mongo twin of matchesUserQuery — same meaning,
-// expressed as a query document. QuoteMeta is load-bearing: Query is
-// operator input reaching a `$regex`, so an unescaped `.*` would widen the
-// match to everyone and a pathological pattern would burn CPU in the
-// server. The email arm is anchored so the unique index on `email` serves
-// it; the id arm is an equality on the trimmed query (see matchesUserQuery
-// for why it is not lower-cased).
+// expressed as a query document, and reading the two arms from the same
+// normalizeUserQuery so the twins cannot disagree about what the query
+// means.
+//
+// QuoteMeta is load-bearing: Query is operator input reaching a `$regex`,
+// so an unescaped `.*` would widen the match to everyone and a
+// pathological pattern would burn CPU in the server. The email arm is
+// anchored so the unique index on `email` serves it.
 func userQueryFilter(rawQuery string) bson.M {
-	q := strings.TrimSpace(rawQuery)
-	if q == "" {
+	q := normalizeUserQuery(rawQuery)
+	if q.matchesAllRow {
 		return bson.M{}
 	}
 	return bson.M{"$or": []bson.M{
-		{"email": bson.M{"$regex": "^" + regexp.QuoteMeta(NormalizeEmail(q))}},
-		{"_id": q},
+		{"email": bson.M{"$regex": "^" + regexp.QuoteMeta(q.emailPrefix)}},
+		{"_id": q.id},
 	}}
 }
 

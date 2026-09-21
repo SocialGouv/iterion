@@ -31,9 +31,6 @@ func (s *Server) registerOrgRoutes() {
 	s.mux.Handle("PATCH /api/orgs/{id}/teams/{team_id}/caps", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgTeamCaps)))
 }
 
-// orgSettingsView is the org-admin-managed slice of Org settings — the
-// governance knobs an org runs itself, distinct from the super-admin
-// plan/budget fields (/api/admin/orgs) which stay the platform's contract.
 // handleGetOrg is the missing twin of GET /api/teams/{id}: one org, read
 // by anyone who may view it. Without it the only way to resolve an org by
 // id was the caller's own identity tree, so a super-admin who is not a
@@ -59,6 +56,9 @@ func (s *Server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, toOrgView(o))
 }
 
+// orgSettingsView is the org-admin-managed slice of Org settings — the
+// governance knobs an org runs itself, distinct from the super-admin
+// plan/budget fields (/api/admin/orgs) which stay the platform's contract.
 type orgSettingsView struct {
 	RequireProvisionApproval bool `json:"require_provision_approval"`
 	// ProvisionApprovalScope narrows what the flag above parks: every

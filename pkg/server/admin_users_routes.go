@@ -22,9 +22,9 @@ import (
 // active, no org, no team, NO PASSWORD. On this page that reads as a
 // signature (an SSO link, no password, an empty roster) instead of looking
 // like a broken deployment.
-func (s *Server) registerAdminUserRoutes() {
-	s.mux.Handle("GET /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetUser)))
-}
+//
+// The route itself is registered in auth_routes.go beside its three
+// /api/admin/users siblings.
 
 type adminUserOrgView struct {
 	OrgID    string `json:"org_id"`
@@ -128,27 +128,16 @@ func (s *Server) buildAdminUserDetail(ctx context.Context, u identity.User) (adm
 	// grant in. Those sets are supposed to be nested; resolving only the
 	// first would leave an orphan grant's org unnamed, which is the row an
 	// operator most needs to read.
-	orgIDSet := make(map[string]struct{}, len(orgMems)+len(teamMems))
-	orgIDs := make([]string, 0, len(orgMems)+len(teamMems))
-	addOrgID := func(id string) {
-		if id == "" {
-			return
-		}
-		if _, seen := orgIDSet[id]; seen {
-			return
-		}
-		orgIDSet[id] = struct{}{}
-		orgIDs = append(orgIDs, id)
-	}
+	orgIDs := make([]string, 0, len(orgMems)+len(teamsByID))
 	memberOfOrg := make(map[string]bool, len(orgMems))
 	for _, om := range orgMems {
-		addOrgID(om.OrgID)
+		orgIDs = append(orgIDs, om.OrgID)
 		memberOfOrg[om.OrgID] = true
 	}
 	for _, t := range teamsByID {
-		addOrgID(t.OrgID)
+		orgIDs = append(orgIDs, t.OrgID)
 	}
-	orgsByID, err := st.GetOrgsByIDs(ctx, orgIDs)
+	orgsByID, err := st.GetOrgsByIDs(ctx, uniqueStrings(orgIDs))
 	if err != nil {
 		return adminUserDetailView{}, err
 	}

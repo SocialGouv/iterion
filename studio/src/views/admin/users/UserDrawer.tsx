@@ -32,12 +32,14 @@ import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
-import { Select } from "@/components/ui/Select";
+import { RoleSelect } from "@/components/shared/RoleSelect";
 import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
-import { useConfirm } from "@/hooks/useConfirm";
+import PanelLoading from "@/components/shared/PanelLoading";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useConfirm, type Confirmer } from "@/hooks/useConfirm";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
-import { ORG_ROLES, TEAM_ROLES, roleLabel } from "@/lib/roles";
+import { ORG_ROLES, TEAM_ROLES } from "@/lib/roles";
 
 export default function UserDrawer({
   userID,
@@ -48,8 +50,10 @@ export default function UserDrawer({
 }) {
   const queryClient = useQueryClient();
   const { confirm, dialog } = useConfirm();
-  const [actionErr, setActionErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // The shared busy/error slot every "fire an API call from a button" site
+  // uses; the sibling org console wires it the same way.
+  const action = useAsyncAction();
+  const busy = action.busy;
 
   const detailQuery = useQuery({
     queryKey: ["admin-user", userID],
@@ -58,26 +62,21 @@ export default function UserDrawer({
   const detail = detailQuery.data ?? null;
 
   const err =
-    actionErr ??
+    action.error ??
     (detailQuery.error && !detailQuery.isFetching
       ? errorMessage(detailQuery.error)
       : null);
 
-  // Every mutation goes through one slot: refresh the account file AND the
-  // list behind it, since status and membership both show there.
-  const run = async (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    setActionErr(null);
-    try {
+  // Every mutation refreshes the account file. It does NOT invalidate the
+  // users list: this drawer only writes memberships, and that list renders
+  // email, name, status and super-admin — none of which a membership can
+  // change. The mutations that DO change status live on the page itself
+  // and invalidate there.
+  const run = (fn: () => Promise<unknown>) =>
+    action.run(async () => {
       await fn();
       await queryClient.invalidateQueries({ queryKey: ["admin-user", userID] });
-      void queryClient.invalidateQueries({ queryKey: ["admin-users"] });
-    } catch (e) {
-      setActionErr(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
   return (
     <Dialog
@@ -102,7 +101,7 @@ export default function UserDrawer({
       )}
 
       {detailQuery.isPending ? (
-        <p className="text-sm text-fg-muted p-2">Loading account…</p>
+        <PanelLoading label="Loading account…" />
       ) : detail == null ? (
         <EmptyState message="This account could not be loaded." />
       ) : (
@@ -219,8 +218,7 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 
 // ---- Organizations ----
 
-type Runner = (fn: () => Promise<unknown>) => Promise<void>;
-type Confirmer = ReturnType<typeof useConfirm>["confirm"];
+type Runner = (fn: () => Promise<unknown>) => Promise<unknown>;
 
 function OrgsSection({
   detail,
@@ -239,8 +237,16 @@ function OrgsSection({
     [detail.orgs],
   );
 
-  // Every org on the platform, minus the ones already granted.
-  const orgsQuery = useQuery({ queryKey: ["admin-orgs"], queryFn: listOrgs });
+  // Every org on the platform, minus the ones already granted. The key is
+  // the one the /admin/orgs console uses, so that page primes it; the
+  // staleTime keeps an operator triaging twenty accounts from re-fetching
+  // the whole platform org list twenty times for a picker they may never
+  // open.
+  const orgsQuery = useQuery({
+    queryKey: ["admin-orgs"],
+    queryFn: listOrgs,
+    staleTime: 60_000,
+  });
   const options = useMemo<ComboboxOption<string>[]>(
     () =>
       (orgsQuery.data ?? [])
@@ -297,22 +303,17 @@ function OrgsSection({
                   </div>
                 </Td>
                 <Td>
-                  <Select
+                  <RoleSelect
                     value={o.role}
+                    roles={ORG_ROLES}
                     disabled={busy}
-                    aria-label={`Org role for ${o.org_name ?? o.org_id}`}
-                    onChange={(e) =>
-                      void run(() =>
-                        updateOrgMemberRole(o.org_id, userID, e.target.value as OrgRole),
-                      )
+                    ariaLabel={`Org role for ${o.org_name ?? o.org_id}`}
+                    confirmChangeFrom={o.role}
+                    confirm={confirm}
+                    onChange={(role) =>
+                      run(() => updateOrgMemberRole(o.org_id, userID, role as OrgRole))
                     }
-                  >
-                    {ORG_ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </Select>
+                  />
                 </Td>
                 <Td className="text-fg-muted">
                   {o.joined_at ? formatDateTime(o.joined_at) : "—"}
@@ -358,19 +359,14 @@ function OrgsSection({
           <label htmlFor="user-add-org-role" className="sr-only">
             Organization role
           </label>
-          <Select
+          <RoleSelect
             size="md"
             id="user-add-org-role"
             value={role}
+            roles={ORG_ROLES}
             disabled={busy}
-            onChange={(e) => setRole(e.target.value as OrgRole)}
-          >
-            {ORG_ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </Select>
+            onChange={(r) => setRole(r as OrgRole)}
+          />
         </div>
         <Button
           variant="primary"
@@ -493,22 +489,15 @@ function TeamsSection({
                   )}
                 </Td>
                 <Td>
-                  <Select
+                  <RoleSelect
                     value={t.role}
+                    roles={TEAM_ROLES}
                     disabled={busy}
-                    aria-label={`Team role for ${t.team_name ?? t.team_id}`}
-                    onChange={(e) =>
-                      void run(() =>
-                        updateMemberRole(t.team_id, userID, e.target.value),
-                      )
-                    }
-                  >
-                    {TEAM_ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {roleLabel(r)}
-                      </option>
-                    ))}
-                  </Select>
+                    ariaLabel={`Team role for ${t.team_name ?? t.team_id}`}
+                    confirmChangeFrom={t.role}
+                    confirm={confirm}
+                    onChange={(role) => run(() => updateMemberRole(t.team_id, userID, role))}
+                  />
                 </Td>
                 <Td align="right">
                   <Button
@@ -578,19 +567,14 @@ function TeamsSection({
             <label htmlFor="user-add-team-role" className="sr-only">
               Team role
             </label>
-            <Select
+            <RoleSelect
               size="md"
               id="user-add-team-role"
               value={role}
+              roles={TEAM_ROLES}
               disabled={busy}
-              onChange={(e) => setRole(e.target.value as Role)}
-            >
-              {TEAM_ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {roleLabel(r)}
-                </option>
-              ))}
-            </Select>
+              onChange={(r) => setRole(r as Role)}
+            />
           </div>
           <Button
             variant="primary"

@@ -60,14 +60,14 @@ export default function TriggersView() {
 
   // Repo-first scope: the active repo narrows the list server-side
   // (ListByRepo also returns tenant-wide rows with no repo binding).
-  const { activeRepo, overview, enabled: repoScope } = useActiveRepo();
+  const { activeRepo, overview, enabled: repoScope, teamID } = useActiveRepo();
   const scopeRepo = repoScope && !overview ? (activeRepo?.repo_full_name ?? "") : "";
 
   // The header "New schedule" button only renders when SchedulesTab can
   // actually open its dialog: cloud team context (repoScope), manage
   // rights, and a schedule store present (SchedulesTab reports absence
   // up via onUnavailable). Otherwise the click would be a silent no-op.
-  const canManage = useCanManageTeam();
+  const canManage = useCanManageTeam(teamID ?? "");
   const [schedUnavailable, setSchedUnavailable] = useState(false);
   // Stable identity: SchedulesTab keys its unavailable-report effect on
   // this callback.

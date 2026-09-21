@@ -147,9 +147,12 @@ func paginate[T any](items []T, page Page) []T {
 func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	// Normalized once, not per user: the predicate is called for every row
+	// in the store.
+	q := normalizeUserQuery(f.Query)
 	users := make([]User, 0, len(m.users))
 	for _, u := range m.users {
-		if !matchesUserQuery(u, f.Query) {
+		if !matchesUserQuery(u, q) {
 			continue
 		}
 		users = append(users, u)
@@ -158,23 +161,37 @@ func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error)
 	return paginate(users, f.Page), nil
 }
 
+// userQuery is UserFilter.Query split into the two forms its two arms
+// compare against, so neither is recomputed per row.
+//
+// They differ on purpose: an email is case-insensitive by construction
+// (the unique index is on the normalized form) but an id is an opaque
+// token, and lower-casing it before comparing would make an id containing
+// an upper-case byte unfindable by its own id.
+type userQuery struct {
+	id            string // the trimmed query, compared verbatim
+	emailPrefix   string // the normalized query
+	matchesAllRow bool   // an empty query selects every user
+}
+
+func normalizeUserQuery(raw string) userQuery {
+	q := strings.TrimSpace(raw)
+	if q == "" {
+		return userQuery{matchesAllRow: true}
+	}
+	return userQuery{id: q, emailPrefix: NormalizeEmail(q)}
+}
+
 // matchesUserQuery is UserFilter.Query's predicate, stated once so this
 // store and the Mongo `$or` cannot drift apart in meaning.
-//
-// The id arm compares the TRIMMED query, not the normalized one: an email
-// is case-insensitive by construction (the unique index is on the
-// normalized form) but an id is an opaque token, and lower-casing it
-// before comparing would make an id containing an upper-case byte
-// unfindable.
-func matchesUserQuery(u User, rawQuery string) bool {
-	q := strings.TrimSpace(rawQuery)
-	if q == "" {
+func matchesUserQuery(u User, q userQuery) bool {
+	if q.matchesAllRow {
 		return true
 	}
-	if u.ID == q {
+	if u.ID == q.id {
 		return true
 	}
-	return strings.HasPrefix(NormalizeEmail(u.Email), NormalizeEmail(q))
+	return strings.HasPrefix(NormalizeEmail(u.Email), q.emailPrefix)
 }
 
 func (m *MemoryStore) UserCount(_ context.Context) (int64, error) {

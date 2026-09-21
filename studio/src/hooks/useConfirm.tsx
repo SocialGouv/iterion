@@ -8,8 +8,12 @@ export interface ConfirmOptions {
   confirmVariant?: "default" | "danger";
 }
 
+// Confirmer is the ask-half of useConfirm, named so a component can take
+// it as a prop without importing the hook's whole result shape.
+export type Confirmer = (options: ConfirmOptions) => Promise<boolean>;
+
 interface UseConfirmResult {
-  confirm: (options: ConfirmOptions) => Promise<boolean>;
+  confirm: Confirmer;
   dialog: ReactNode;
 }
 

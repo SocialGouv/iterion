@@ -20,6 +20,27 @@ import type { OrgTreeView, MembershipView } from "@/api/auth";
 import { getOrg, getTeam, type OrgView, type TeamSummary } from "@/api/orgs";
 import { useAuth } from "@/auth/AuthContext";
 
+/**
+ * The single "what did this caller get on team X" lookup.
+ *
+ * It walks `orgs`, NOT `useAuth().teams` — the latter is `activeOrg?.teams`
+ * (AuthContext), so a team the caller genuinely belongs to in a non-active
+ * org is absent from it. Two readers asking that question from two
+ * projections is how one of them starts answering differently from the
+ * other; this is the one both use.
+ */
+export function findTeamGrant(
+  orgs: OrgTreeView[],
+  teamID: string,
+): { org: OrgTreeView; team: MembershipView } | null {
+  if (!teamID) return null;
+  for (const org of orgs) {
+    const team = org.teams.find((t) => t.team_id === teamID);
+    if (team) return { org, team };
+  }
+  return null;
+}
+
 export interface OrgSubject {
   orgID: string;
   name: string;
@@ -39,15 +60,16 @@ export interface TeamSubject {
   role: MembershipView["role"] | null;
   personal: boolean;
   status?: string;
-  /** The owning org, when it is known (the tree knows it; the team row carries no org id). */
+  /** The owning org's id. Always known: the tree has it, and so does the API row. */
   orgID: string | null;
+  /** The owning org's NAME, which only the tree carries — null otherwise. */
+  orgName: string | null;
   isMember: boolean;
 }
 
 export interface SubjectResult<T> {
   subject: T | null;
   loading: boolean;
-  error: unknown;
   /**
    * True once we know the caller cannot see this subject at all — the tree
    * does not have it and the server refused. Distinct from `subject ==
@@ -90,50 +112,47 @@ export function useOrgSubject(orgID: string): SubjectResult<OrgSubject> {
         isMember: true,
       },
       loading: false,
-      error: null,
       denied: false,
     };
   }
   return {
     subject: query.data ? fromOrgView(query.data) : null,
     loading: query.isPending && orgID !== "",
-    error: query.error,
     denied: query.error != null,
   };
 }
 
 export function useTeamSubject(teamID: string): SubjectResult<TeamSubject> {
-  const { orgs, teams } = useAuth();
-  const inTree = teams.find((t) => t.team_id === teamID);
-  // The tree is also the only place the owning org is recorded: a team row
-  // from the API carries no org id, and the org is what a team's member
-  // picker and audit tab need.
-  const owningOrg = orgs.find((o) => o.teams.some((t) => t.team_id === teamID));
+  const { orgs } = useAuth();
+  const grant = findTeamGrant(orgs, teamID);
 
   const query = useQuery({
     queryKey: ["team-subject", teamID],
     queryFn: () => getTeam(teamID),
-    enabled: !inTree && teamID !== "",
+    enabled: grant == null && teamID !== "",
   });
 
-  if (inTree) {
+  if (grant) {
     return {
       subject: {
-        teamID: inTree.team_id,
-        name: inTree.team_name,
-        slug: inTree.team_slug,
-        role: inTree.role,
-        personal: inTree.personal ?? false,
-        orgID: owningOrg?.org_id ?? null,
+        teamID: grant.team.team_id,
+        name: grant.team.team_name,
+        slug: grant.team.team_slug,
+        role: grant.team.role,
+        personal: grant.team.personal ?? false,
+        orgID: grant.org.org_id,
+        orgName: grant.org.org_name,
         isMember: true,
       },
       loading: false,
-      error: null,
       denied: false,
     };
   }
   const t: TeamSummary | undefined = query.data;
   return {
+    // The team row carries its own org_id, so the non-member path resolves
+    // the parent too — which is what lets a super-admin act on a team they
+    // do not belong to rather than merely look at it.
     subject: t
       ? {
           teamID: t.id,
@@ -142,12 +161,12 @@ export function useTeamSubject(teamID: string): SubjectResult<TeamSubject> {
           role: null,
           personal: t.personal ?? false,
           status: t.status,
-          orgID: null,
+          orgID: t.org_id ?? null,
+          orgName: null,
           isMember: false,
         }
       : null,
     loading: query.isPending && teamID !== "",
-    error: query.error,
     denied: query.error != null,
   };
 }

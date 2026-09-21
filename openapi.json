@@ -5152,6 +5152,9 @@
           "name": {
             "type": "string"
           },
+          "org_id": {
+            "type": "string"
+          },
           "personal": {
             "type": "boolean"
           },

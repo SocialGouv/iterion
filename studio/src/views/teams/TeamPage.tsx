@@ -11,7 +11,6 @@ import { Tabs } from "@/components/ui/Tabs";
 import { useLocation, useParams, useSearch } from "wouter";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useCanManageTeam } from "@/hooks/useCanManageTeam";
-import { useAuth } from "@/auth/AuthContext";
 import {
   createInvitation,
   deleteInvitation,
@@ -25,8 +24,10 @@ import ApiKeysPanel from "@/views/account/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
 import { AddExistingMemberPanel } from "@/components/shared/AddExistingMemberPanel";
+import PanelLoading from "@/components/shared/PanelLoading";
 import { useTeamSubject } from "@/hooks/useTenantSubject";
-import { TEAM_ROLES as ROLES, isDemotion, roleLabel } from "@/lib/roles";
+import { RoleSelect } from "@/components/shared/RoleSelect";
+import { TEAM_ROLES as ROLES, roleLabel } from "@/lib/roles";
 import { listOrgMembers } from "@/api/orgMembers";
 
 import AuditTab from "./tabs/AuditTab";
@@ -51,7 +52,6 @@ const TABS: Array<{ id: Tab; label: string }> = [
 export default function TeamPage() {
   const params = useParams<{ id: string }>();
   const teamID = params.id;
-  const { activeOrg, activeRole } = useAuth();
   // Resolved through the shared subject hook rather than out of the
   // caller's own tree: a super-admin or an org admin who holds no grant on
   // this team still gets the page, since the server would answer for them.
@@ -82,20 +82,20 @@ export default function TeamPage() {
   // information. For the personal/default org (where org_name == team_name) the
   // prefix is pure redundancy ("SocialGouv / SocialGouv/socialgouv"), so we
   // collapse it to just the team name and drop the noisy /slug micro-suffix.
-  // The org crumb only applies to a team inside the ACTIVE org; for one
-  // reached from elsewhere it would name the wrong parent.
-  const showOrgCrumb =
-    !!activeOrg && team != null && team.isMember && activeOrg.org_name !== team.name;
-  // The role line describes the team on screen: activeRole is the role on
-  // the ACTIVE team, which is a different team whenever this page was
-  // reached by URL.
-  const shownRole = team?.isMember ? (team.role ?? activeRole) : team?.role;
+  //
+  // It names THIS team's org, carried by the subject. Reading the active
+  // org instead would label a team reached by URL with whichever tenant the
+  // operator happens to be switched into.
+  const orgCrumb =
+    team?.orgName && team.orgName !== team.name ? team.orgName : null;
+  // Same rule for the role line: the subject's role is the role on the team
+  // on screen, which is a different team from the active one whenever this
+  // page was reached by URL.
+  const shownRole = team?.role;
   useHeaderSlot({
     left: team ? (
       <span className="text-sm font-semibold">
-        {showOrgCrumb && (
-          <span className="text-fg-muted font-normal">{activeOrg!.org_name} / </span>
-        )}
+        {orgCrumb && <span className="text-fg-muted font-normal">{orgCrumb} / </span>}
         {team.name}
       </span>
     ) : (
@@ -111,11 +111,7 @@ export default function TeamPage() {
   });
 
   if (teamLoading) {
-    return (
-      <div className="p-6">
-        <p className="text-sm text-fg-muted">Loading team…</p>
-      </div>
-    );
+    return <PanelLoading label="Loading team…" />;
   }
 
   if (!team) {
@@ -152,9 +148,7 @@ export default function TeamPage() {
           {tab === "cred-pool" && (
             <CredPoolTab teamID={team.teamID} canManage={canManage} />
           )}
-          {tab === "audit" && (
-            <AuditTab teamID={team.teamID} ownerOrgID={team.orgID} canManage={canManage} />
-          )}
+          {tab === "audit" && <AuditTab teamID={team.teamID} canManage={canManage} />}
           {tab === "memory" && <MemoryTab teamID={team.teamID} />}
         </main>
       </div>
@@ -200,12 +194,15 @@ function Members({
   });
   const members = membersQuery.data ?? [];
   const invs = invitationsQuery.data ?? [];
+  // Depends on the query DATA, not on `members` — that is `… ?? []`, a
+  // fresh array each render, which would re-run this on every render in
+  // exactly the state where memoising was the point.
   const candidates = useMemo(() => {
-    const onTeam = new Set(members.map((m) => m.user_id));
+    const onTeam = new Set((membersQuery.data ?? []).map((m) => m.user_id));
     return (orgMembersQuery.data ?? [])
       .filter((m) => !onTeam.has(m.user_id))
       .map((m) => ({ user_id: m.user_id, email: m.email, name: m.name }));
-  }, [orgMembersQuery.data, members]);
+  }, [orgMembersQuery.data, membersQuery.data]);
   const fetching = membersQuery.isFetching || invitationsQuery.isFetching;
   const loadError = membersQuery.error ?? invitationsQuery.error;
   const err =
@@ -251,22 +248,10 @@ function Members({
     }
   };
 
-  const setRole = async (userID: string, currentRole: string, role: string) => {
-    if (role === currentRole) return;
-    // Confirm demotions and any change touching "owner" — these are the
-    // role edits that can lock someone out or hand over control. Routine
-    // promotions (e.g. member → admin) apply without a prompt.
-    if (isDemotion(currentRole, role) || currentRole === "owner" || role === "owner") {
-      const ok = await confirm({
-        title: "Change member role?",
-        message: `Change this member from "${currentRole}" to "${role}"? This takes effect immediately.`,
-        confirmLabel: "Change role",
-        confirmVariant: "danger",
-      });
-      // On cancel the controlled <Select> re-renders back to the server
-      // role (confirm's state change forces a re-render), so no manual revert.
-      if (!ok) return;
-    }
+  // The demotion / owner-handover prompt lives in RoleSelect, so every
+  // surface that writes a membership role inherits it instead of
+  // re-deriving it.
+  const setRole = async (userID: string, role: string) => {
     try {
       await updateMemberRole(teamID, userID, role);
       reload();
@@ -316,7 +301,7 @@ function Members({
           busy={busy}
           roles={ROLES}
           defaultRole="member"
-          roleLabel={roleLabel}
+          queryPlaceholder="Pick an org member…"
           emptyMessage="Every member of this organization is already on the team."
           addLabel="Add to team"
           onAdd={async (userID, role) => {
@@ -406,17 +391,14 @@ function Members({
                 <Td>{m.name ?? "—"}</Td>
                 <Td>
                   {canManage ? (
-                    <Select
+                    <RoleSelect
                       value={m.role}
-                      onChange={(e) => setRole(m.user_id, m.role, e.target.value)}
-                      aria-label={`Role for ${m.email ?? m.user_id}`}
-                    >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {roleLabel(r)}
-                        </option>
-                      ))}
-                    </Select>
+                      roles={ROLES}
+                      ariaLabel={`Role for ${m.email ?? m.user_id}`}
+                      confirmChangeFrom={m.role}
+                      confirm={confirm}
+                      onChange={(role) => setRole(m.user_id, role)}
+                    />
                   ) : (
                     roleLabel(m.role)
                   )}

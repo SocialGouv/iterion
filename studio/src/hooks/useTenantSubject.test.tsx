@@ -135,9 +135,41 @@ describe("useTeamSubject", () => {
     expect(getTeam).not.toHaveBeenCalled();
   });
 
+  // `useAuth().teams` is `activeOrg?.teams` — the ACTIVE org's teams only.
+  // Resolving from it would make a team the caller genuinely belongs to, in
+  // another org, look like a team they have no grant on.
+  it("finds a grant in a NON-ACTIVE org", () => {
+    identity.teams = []; // the active org's list, which does not contain t2
+    identity.orgs = [
+      {
+        org_id: "o1",
+        org_name: "Active",
+        org_slug: "active",
+        org_role: "member",
+        teams: [{ team_id: "t1", team_name: "One", team_slug: "one", role: "member" }],
+      },
+      {
+        org_id: "o2",
+        org_name: "Other",
+        org_slug: "other",
+        org_role: "member",
+        teams: [{ team_id: "t2", team_name: "Two", team_slug: "two", role: "admin" }],
+      },
+    ];
+    const { result } = renderHook(() => useTeamSubject("t2"), { wrapper });
+
+    expect(result.current.subject?.isMember).toBe(true);
+    expect(result.current.subject?.role).toBe("admin");
+    expect(result.current.subject?.orgID).toBe("o2");
+    expect(result.current.subject?.orgName).toBe("Other");
+    // And it did not pay for a request it did not need.
+    expect(getTeam).not.toHaveBeenCalled();
+  });
+
   it("falls back to the server for a team that is not in the tree", async () => {
     getTeam.mockResolvedValue({
       id: "t9",
+      org_id: "o9",
       name: "Other",
       slug: "other",
       status: "suspended",
@@ -147,16 +179,27 @@ describe("useTeamSubject", () => {
     await waitFor(() => expect(result.current.subject).not.toBeNull());
     expect(result.current.subject?.name).toBe("Other");
     expect(result.current.subject?.status).toBe("suspended");
-    // The team row carries no org id, and saying so beats inventing one.
-    expect(result.current.subject?.orgID).toBeNull();
+    // The team row carries its own org id, so the parent resolves for a
+    // non-member too — which is what lets a super-admin ACT on the team
+    // rather than only look at it.
+    expect(result.current.subject?.orgID).toBe("o9");
+    // The name is not on that row, and saying so beats inventing one.
+    expect(result.current.subject?.orgName).toBeNull();
   });
 });
 
 describe("useCanManageTeam", () => {
-  it("uses the ACTIVE team's role when no team is named", () => {
-    identity.activeRole = "admin";
-    identity.activeTeamID = "t1";
-    const { result } = renderHook(() => useCanManageTeam(), { wrapper });
+  it("reads the grant on the named team", () => {
+    identity.orgs = [
+      {
+        org_id: "o1",
+        org_name: "SDPC",
+        org_slug: "sdpc",
+        org_role: "member",
+        teams: [{ team_id: "t1", team_name: "One", team_slug: "one", role: "admin" }],
+      },
+    ];
+    const { result } = renderHook(() => useCanManageTeam("t1"), { wrapper });
     expect(result.current).toBe(true);
   });
 

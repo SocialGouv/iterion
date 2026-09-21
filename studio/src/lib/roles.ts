@@ -26,9 +26,30 @@ export function roleLabel(role: string): string {
   return role === "config_editor" ? "Config editor" : role;
 }
 
-// isDemotion reports whether moving from `from` to `to` lowers access, for
-// the confirm prompt. Unknown roles rank -1, so a change involving one is
-// treated as a demotion — a prompt too many beats a silent lockout.
-export function isDemotion(from: string, to: string): boolean {
-  return TEAM_ROLES.indexOf(to as Role) < TEAM_ROLES.indexOf(from as Role);
+// isDemotion reports whether moving from `from` to `to` lowers access on a
+// given ladder. Unknown roles rank -1, so a change involving one is treated
+// as a demotion — a prompt too many beats a silent lockout.
+export function isDemotion(
+  from: string,
+  to: string,
+  ladder: readonly string[] = TEAM_ROLES,
+): boolean {
+  return ladder.indexOf(to) < ladder.indexOf(from);
+}
+
+// needsRoleChangeConfirm names the role edits worth a prompt: any demotion,
+// and anything touching `owner` in either direction. Those are the two that
+// lock someone out or hand over control; a routine promotion is not.
+//
+// It lives beside the ladders rather than in a page, because every surface
+// that writes a membership role must apply the same rule — the super-admin
+// drawer reaches ANY org or team on the platform, so it is the one that can
+// least afford its own copy.
+export function needsRoleChangeConfirm(
+  from: string,
+  to: string,
+  ladder: readonly string[] = TEAM_ROLES,
+): boolean {
+  if (from === to) return false;
+  return isDemotion(from, to, ladder) || from === "owner" || to === "owner";
 }

@@ -72,7 +72,12 @@ func toOrgView(o identity.Org) orgView {
 // teamSummaryView is the lightweight team row used by the org teams
 // drill-down (super-admin) and the org self-serve teams list.
 type teamSummaryView struct {
-	ID                string `json:"id"`
+	ID string `json:"id"`
+	// OrgID names the team's parent. Without it a client that resolved a
+	// team by id had to find the owning org in its OWN membership tree —
+	// which answers nothing for a caller who is not a member, exactly the
+	// caller this row exists to serve.
+	OrgID             string `json:"org_id,omitempty"`
 	Name              string `json:"name"`
 	Slug              string `json:"slug"`
 	Status            string `json:"status"`
@@ -85,6 +90,7 @@ type teamSummaryView struct {
 func toTeamSummaryView(t identity.Team) teamSummaryView {
 	return teamSummaryView{
 		ID:                t.ID,
+		OrgID:             t.OrgID,
 		Name:              t.Name,
 		Slug:              t.Slug,
 		Status:            string(t.EffectiveStatus()),

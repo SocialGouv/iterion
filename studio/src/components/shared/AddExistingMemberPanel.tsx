@@ -3,21 +3,25 @@
 //
 // It is the counterpart of the email invitation, for the case the
 // invitation exists to solve and cannot. One component rather than one
-// panel per roster: the team page, the org page and the super-admin user
-// drawer ask the same question, and three copies would drift the moment
-// one of them grew a guard.
+// panel per roster: the team page and the org page ask the same question,
+// and two copies would drift the moment one of them grew a guard. (The
+// super-admin user drawer asks the INVERSE question — "which org or team
+// for this account" — so it picks a scope, not a person, and correctly
+// does not use this.)
 //
 // Two candidate sources, one shape. Pass `onQueryChange` when the parent
 // resolves candidates from the server (the super-admin user search, whose
 // match is an email PREFIX); omit it to filter a list the parent already
-// holds (a team's candidates are its org's roster).
+// holds (a team's candidates are its org's roster). Either way the search
+// box is the Combobox's own — a second input above it would read as a
+// rival way to do the same thing.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
 import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
-import { Input } from "@/components/ui/Input";
-import { Select } from "@/components/ui/Select";
+import { RoleSelect } from "@/components/shared/RoleSelect";
 
 export interface MemberCandidate {
   user_id: string;
@@ -33,7 +37,6 @@ export function AddExistingMemberPanel({
   busy = false,
   roles,
   defaultRole,
-  roleLabel = (r) => r,
   emptyMessage,
   addLabel = "Add",
   onQueryChange,
@@ -47,7 +50,6 @@ export function AddExistingMemberPanel({
   busy?: boolean;
   roles: readonly string[];
   defaultRole: string;
-  roleLabel?: (role: string) => string;
   emptyMessage: string;
   addLabel?: string;
   onQueryChange?: (query: string) => void;
@@ -56,22 +58,16 @@ export function AddExistingMemberPanel({
 }) {
   const [userID, setUserID] = useState("");
   const [role, setRole] = useState(defaultRole);
-  const [query, setQuery] = useState("");
 
-  const options = useMemo<ComboboxOption<string>[]>(
-    () =>
-      candidates.map((c) => ({
-        value: c.user_id,
-        label: c.email ?? c.user_id,
-        description: c.name,
-        // The id is searchable but never the primary line: an operator
-        // reads addresses, and pastes ids.
-        searchHaystack: `${c.email ?? ""} ${c.name ?? ""} ${c.user_id}`,
-      })),
-    [candidates],
-  );
+  const options: ComboboxOption<string>[] = candidates.map((c) => ({
+    value: c.user_id,
+    label: c.email ?? c.user_id,
+    description: c.name,
+    // The id is searchable but never the primary line: an operator reads
+    // addresses, and pastes ids.
+    searchHaystack: `${c.email ?? ""} ${c.name ?? ""} ${c.user_id}`,
+  }));
 
-  const serverSearched = onQueryChange != null;
   const submit = async () => {
     if (!userID) return;
     await onAdd(userID, role);
@@ -82,31 +78,9 @@ export function AddExistingMemberPanel({
   };
 
   return (
-    <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] p-4 space-y-3">
+    <Card className="space-y-3">
       <h3 className="font-medium">{title}</h3>
       {description && <p className="text-caption text-fg-subtle">{description}</p>}
-
-      {serverSearched && (
-        <div>
-          <label htmlFor="add-member-query" className="sr-only">
-            Search accounts
-          </label>
-          <Input
-            size="md"
-            id="add-member-query"
-            placeholder={queryPlaceholder}
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              // A new search invalidates the pick: committing the previous
-              // selection against a list the operator can no longer see is
-              // how the wrong account gets added.
-              setUserID("");
-              onQueryChange(e.target.value);
-            }}
-          />
-        </div>
-      )}
 
       <div className="flex gap-2 items-end">
         <div className="flex-1 min-w-0">
@@ -118,14 +92,9 @@ export function AddExistingMemberPanel({
             size="md"
             value={userID}
             options={options}
-            placeholder={
-              loading
-                ? "Loading accounts…"
-                : options.length === 0
-                  ? emptyMessage
-                  : "Pick an account…"
-            }
-            disabled={busy || loading || options.length === 0}
+            placeholder={loading ? "Loading accounts…" : queryPlaceholder}
+            disabled={busy}
+            onQueryChange={onQueryChange}
             onChange={(v) => setUserID(v)}
           />
         </div>
@@ -133,19 +102,14 @@ export function AddExistingMemberPanel({
           <label htmlFor="add-member-role" className="sr-only">
             Role
           </label>
-          <Select
+          <RoleSelect
             size="md"
             id="add-member-role"
             value={role}
+            roles={roles}
             disabled={busy}
-            onChange={(e) => setRole(e.target.value)}
-          >
-            {roles.map((r) => (
-              <option key={r} value={r}>
-                {roleLabel(r)}
-              </option>
-            ))}
-          </Select>
+            onChange={setRole}
+          />
         </div>
         <Button
           variant="primary"
@@ -160,6 +124,6 @@ export function AddExistingMemberPanel({
       {!loading && options.length === 0 && (
         <p className="text-caption text-fg-subtle">{emptyMessage}</p>
       )}
-    </section>
+    </Card>
   );
 }
