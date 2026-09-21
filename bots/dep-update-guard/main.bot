@@ -347,8 +347,8 @@ prompt verify_user:
   a drift-check task, test -z on git status --porcelain), verify.sh
   MUST mirror it — run the regen command(s), then fail on drift — with
   iterion's `.claude/` scaffold left out of BOTH forms — `git status
-  --porcelain -- ':/' ':(exclude,top).claude'` and `git diff --exit-code
-  -- ':/' ':(exclude,top).claude'` (a mirror marked intent-to-add stays
+  --porcelain -- ':/' {{run.tree_noise}}` and `git diff --exit-code
+  -- ':/' {{run.tree_noise}}` (a mirror marked intent-to-add stays
   in the index, so a bare diff stays red on it); the
   deterministic precheck rejects a gateless verify.sh otherwise.
 

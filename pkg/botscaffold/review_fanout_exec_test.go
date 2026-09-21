@@ -18,7 +18,9 @@ import (
 // (the typed refusal, never an approve), pending work — a modified tracked
 // file and an untracked one — is counted without staging anything, and a
 // base ref counts the committed work since it. The {{vars.base}} reference
-// is substituted as the runtime substitutes it, as one single-quoted word.
+// is substituted as the runtime substitutes it, as one single-quoted word;
+// the tree-noise exclusion arrives through the environment, as it does
+// for every tool process the engine spawns.
 func TestReviewFanoutScopeGateCountsTheScope(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the shape's commands are POSIX shell")
@@ -49,6 +51,17 @@ func TestReviewFanoutScopeGateCountsTheScope(t *testing.T) {
 	type scopeOut struct {
 		Files int  `json:"files"`
 		Empty bool `json:"empty"`
+	}
+	// The exclusion travels on the executable channel only: the shell the
+	// gate runs in carries ITERION_TREE_NOISE (shellInRepo, as the engine
+	// does), and a template that regressed to the prompt rendering would
+	// render one inert argument at run time — named here, not masked by a
+	// substitution the runtime never produces.
+	if !strings.Contains(scope.Command, "$ITERION_TREE_NOISE") {
+		t.Fatalf("the scope gate does not read $ITERION_TREE_NOISE: %q", scope.Command)
+	}
+	if strings.Contains(scope.Command, "{{run.tree_noise}}") {
+		t.Fatalf("the scope gate embeds the prompt rendering {{run.tree_noise}} in a tool command, where it shell-escapes to one inert argument: %q", scope.Command)
 	}
 	gate := func(state, base string) scopeOut {
 		t.Helper()
@@ -81,12 +94,37 @@ func TestReviewFanoutScopeGateCountsTheScope(t *testing.T) {
 	if got := gate("clean tree", ""); !got.Empty || got.Files != 0 {
 		t.Errorf("clean tree: %+v, want empty", got)
 	}
+	// The engine's mirror alone, on a repository that does not ignore
+	// .claude/: still an empty scope — the typed refusal stays reachable,
+	// and the mirror never reaches a reviewer as pending work.
+	if err := os.MkdirAll(filepath.Join(repo, ".claude", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(".claude", "skills", "mirrored.md"), "iterion wrote this\n")
+	if got := gate("mirror only", ""); !got.Empty || got.Files != 0 {
+		t.Errorf("the engine's mirror alone: %+v, want empty (the mirror is tree noise, not pending work)", got)
+	}
+	// A tracked devbox.lock the run's own tooling rewrote (#1459): tree
+	// noise on the TRACKED side, which only the `git diff` half of the gate
+	// sees — the untracked mirror above never reaches it. Still an empty
+	// scope, with and without a base.
+	write("devbox.lock", "plugin_version: 0.0.4\n")
+	gittest.Run(t, repo, "add", "devbox.lock")
+	gittest.Run(t, repo, "commit", "-q", "-m", "the lock")
+	write("devbox.lock", "plugin_version: 0.0.5\n")
+	if got := gate("rewritten tracked lock", ""); !got.Empty || got.Files != 0 {
+		t.Errorf("a rewritten tracked devbox.lock: %+v, want empty (the drift is tree noise, not pending work)", got)
+	}
+	if got := gate("rewritten tracked lock, base HEAD", "HEAD"); !got.Empty || got.Files != 0 {
+		t.Errorf("a rewritten tracked devbox.lock against base HEAD: %+v, want empty", got)
+	}
 	// Pending work: a modified tracked file and an untracked file, counted
-	// with nothing staged (the index stays as it was).
+	// with nothing staged (the index stays as it was). The drifted lock
+	// beside them still does not count.
 	write("tracked.txt", "two\n")
 	write("new.txt", "hello\n")
 	if got := gate("pending work", ""); got.Empty || got.Files != 2 {
-		t.Errorf("pending work: %+v, want 2 files", got)
+		t.Errorf("pending work: %+v, want 2 files (the mirror beside them does not count)", got)
 	}
 	if staged := gittest.Run(t, repo, "diff", "--cached", "--name-only"); staged != "" {
 		t.Errorf("the scope gate staged something: %q", staged)
@@ -100,5 +138,12 @@ func TestReviewFanoutScopeGateCountsTheScope(t *testing.T) {
 	}
 	if got := gate("base ref", "HEAD~1"); got.Empty || got.Files != 2 {
 		t.Errorf("base ref: %+v, want the 2 committed files", got)
+	}
+	// An unresolvable base must FAIL the gate: swallowing git's error into
+	// {"files":0,"empty":true} would take the typed refusal on a lie ("no
+	// changed file in the scope" when the truth is "no such base").
+	broken := strings.ReplaceAll(scope.Command, "{{vars.base}}", "'origin/nope'")
+	if out, stderr, err := shellInRepo(repo, broken); err == nil {
+		t.Errorf("an unresolvable base ref must fail the gate, got a verdict %q (stderr %q)", out, stderr)
 	}
 }

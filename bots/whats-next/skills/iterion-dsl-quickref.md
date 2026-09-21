@@ -437,7 +437,7 @@ commits when approved. Reference: `examples/review-merge-gate.bot`,
 
 ```iter fragment
 tool commit_changes:
-  command: `git add -A -- ':/' ':(exclude,top).claude' && git commit -m {{input.msg}}`   # one string, run through `bash -c`
+  command: `git add -A -- ':/' $ITERION_TREE_NOISE && git commit -m {{input.msg}}`   # one string, run through `bash -c`
   input:   commit_request         # schema declaring `msg: string`
   output:  commit_result          # the command prints JSON matching this schema on stdout
   await:   wait_all               # only when the node has multiple incoming edges
@@ -522,9 +522,9 @@ hard-blocking. Add the optional quad — `goal` + recipe (`command`/`script`)
 
 ```iter fragment
 tool commit_changes:
-  command: `git add -A -- ':/' ':(exclude,top).claude' && git commit -F - <<< {{input.msg}}`
+  command: `git add -A -- ':/' $ITERION_TREE_NOISE && git commit -F - <<< {{input.msg}}`
   goal: "Commit the upgrade; working tree clean except known caches."
-  postcondition: `cd {{input.workspace_dir}} && ! git status --porcelain -- ':/' ':(exclude,top).claude' | grep -q . && printf '{"sha":"%s"}' "$(git rev-parse HEAD)"`
+  postcondition: `cd {{input.workspace_dir}} && ! git status --porcelain -- ':/' $ITERION_TREE_NOISE | grep -q . && printf '{"sha":"%s"}' "$(git rev-parse HEAD)"`
   policy: recover            # required | recover | best_effort
   recovery:
     max_repair_attempts: 2   # rung 3 (self-repair) bound
@@ -627,8 +627,9 @@ shipped bots, so they are written here:
 - **The `run.*` namespace, in a `compute` expr or a quoted `when`:**
   `run.elapsed_seconds`, `run.max_duration_seconds`, `run.cost_usd`,
   `run.max_cost_usd`, `run.tokens`, `run.max_tokens`, `run.iterations`,
-  `run.max_iterations`, `run.id` — the run's own consumption and its
-  EFFECTIVE caps (after `--max-*`, the recipe, the platform ceiling). A cap
+  `run.max_iterations`, `run.id`, `run.tree_noise` — the run's own
+  consumption and its EFFECTIVE caps (after `--max-*`, the recipe, the
+  platform ceiling). A cap
   of 0 means UNBOUNDED, so guard a ratio with `run.max_duration_seconds > 0`
   first, and a workflow with no `budget:` block has no caps to read at all.
 - **A prompt reference to a node that has not run yet renders as its literal
@@ -657,9 +658,10 @@ shipped bots, so they are written here:
   parallel branch — it takes `.git/index.lock` and is FATAL when the
   sibling holds it (`git diff`'s own stat refresh just skips), and the
   loser's empty findings read as an approve. Read untracked files with
-  `git ls-files --others --exclude-standard -z | xargs -0 -I{} git diff
-  --no-index -- /dev/null {}` (exit 1 per file, 123 for the batch: a diff,
-  not a failure). A `router` and a `fail` node take no `output:`.
+  `git ls-files --others --exclude-standard $ITERION_TREE_NOISE -z |
+  xargs -0 -I{} git diff --no-index -- /dev/null {}` (exit 1 per file, 123
+  for the batch: a diff, not a failure; the env carries the engine's
+  tree-noise exclusion — the .claude/ mirror is not pending work). A `router` and a `fail` node take no `output:`.
 - **A `worktree: auto` run starts from the anchor COMMIT, and only what it
   COMMITS reaches your checkout**: staged, unstaged and untracked work is
   not in the worktree (that is the isolation), and at the end a dirty tree
@@ -697,6 +699,7 @@ shipped bots, so they are written here:
 | `{{artifacts.name}}` | published artifact |
 | `${ENV_VAR}` | compile-time env substitution |
 | `{{run.id}}` | the run id |
+| `{{run.tree_noise}}` | the canonical tree-noise pathspecs, pre-quoted for a git command line an AGENT pastes — a prompt-side form only. In a tool `command:`/`script:`/`postcondition:` it shell-escapes to ONE inert argument (C153): executable bodies read `$ITERION_TREE_NOISE` unquoted instead |
 | `{{run.elapsed_seconds}}` `{{run.cost_usd}}` `{{run.tokens}}` `{{run.iterations}}` | the run's own consumption so far |
 | `{{run.max_duration_seconds}}` `{{run.max_cost_usd}}` `{{run.max_tokens}}` `{{run.max_iterations}}` | the caps IN FORCE (after `--max-*` flags, recipe, platform ceiling, `raise_budget`). `0` = unbounded on that axis. No `budget:` block ⇒ no tracker: consumption and caps read `0`, only `elapsed_seconds` advances |
 
@@ -884,7 +887,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | Template | Shape |
 |---|---|
 | `campaign-loop` | an entry gate (unset `verify_command` = typed refusal) → one agent in passes → a `tool` running the repo's own checks (needs `jq`, pinned in the bundle's `devbox.json` for any image that ships devbox; every iterion image ships both) → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
-| `review-fanout` | a `tool` scope gate (empty scope = typed refusal) → `router fan_out_all` → two read-only reviewers under `permission: deny` with a read-only allow list → a `compute` with `await: wait_all` → a typed blocked verdict |
+| `review-fanout` | a `tool` scope gate (empty scope = typed refusal; the gate excludes the engine's tree noise via `$ITERION_TREE_NOISE`) → `router fan_out_all` → two read-only reviewers under `permission: deny` with a read-only allow list → a `compute` with `await: wait_all` → a typed blocked verdict |
 | `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
 | `scheduled-digest` | collect (`tool`, needs `jq`, pinned in the bundle's `devbox.json`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |
 | `per-ticket-subbots` | list (`tool`) → `fan_out_each` → an isolated `subbot` per item → `compute` fan-in |

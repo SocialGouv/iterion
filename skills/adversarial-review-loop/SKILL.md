@@ -55,7 +55,7 @@ Default scope is the change itself — everything it touches, committed or not:
 root=$(git rev-parse --show-toplevel) &&
 base=$(git merge-base origin/main HEAD) &&
 { git -C "$root" diff --name-only "$base"            # committed + staged + unstaged
-  git -C "$root" ls-files --others --exclude-standard # and the files not yet added
+  git -C "$root" ls-files --others --exclude-standard ':(exclude,top).claude' # and the files not yet added
 } | sort -u
 ```
 

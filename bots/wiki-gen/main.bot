@@ -119,7 +119,7 @@ prompt author_system:
      explains the relationship. A `quickstart.md` at the wiki root is the
      mandatory entrypoint and links to every major concept. COMMIT in
      stride (`docs(wiki): <what>`; body ending `Bot: wiki-gen`), staging
-     everything with `git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name) before each commit — git is your
+     everything with `git add -A -- ':/' {{run.tree_noise}}` (a deliverable under `.claude/` — or a deliberate `devbox.lock` update —: stage it by name) before each commit — git is your
      durable state; an interrupted run keeps every page you committed.
 
   INCREMENTAL UPDATE (when a wiki already exists — `wiki_exists` true):

@@ -42,10 +42,14 @@ prompt mission:
 prompt correctness_lens:
   Lens: CORRECTNESS. Read the pending changes with `git diff HEAD` (or
   diff against {{vars.base}} when it is set), and read the files git does
-  not track yet with `git ls-files --others --exclude-standard -z | xargs
-  -0 -I{} git diff --no-index -- /dev/null {}` (exit 1 per file and 123
-  for the batch mean "there is a diff", not a failure; an empty new file
-  shows a header and no hunk). Write NOTHING to the index
+  not track yet with `git ls-files --others --exclude-standard -z
+  {{run.tree_noise}} | xargs -0 -I{} git diff --no-index -- /dev/null {}`
+  (exit 1 per file and 123 for the batch mean "there is a diff", not a
+  failure; an empty new file shows a header and no hunk). The engine's own
+  tree noise (the .claude/ mirror, a drifted devbox.lock, tool-node
+  scratch) is never pending work — {{run.tree_noise}} carries the
+  exclusion, and $ITERION_TREE_NOISE holds the same list in your shell.
+  Write NOTHING to the index
   (no staging, no intent-to-add): the other reviewer branch races you on
   it. Set reviewed=false with no findings if you could not read the diff.
   Hunt for real bugs: logic errors, missed edge cases, races. Read enough
@@ -63,8 +67,15 @@ prompt security_lens:
 ## clean tree, or a fresh worktree without a base ref, would otherwise
 ## turn into a green verdict. Counts the changed and the untracked files
 ## without writing the index; its stdout is the JSON the schema wants.
+## The engine's tree noise (the .claude/ mirror, a drifted devbox.lock,
+## tool-node scratch) never counts: a tool command reads the exclusion
+## from $ITERION_TREE_NOISE, unquoted — {{run.tree_noise}} is the PROMPT
+## rendering and shell-escapes to one inert argument here (C153). Each
+## git read fails the node on its own error: an unresolvable base is an
+## ERROR the run sees, never an empty scope that takes the typed refusal
+## on a lie.
 tool scope:
-  command: `b={{vars.base}}; n=$({ if [ -n "$b" ]; then git diff --name-only "$b"; else git diff --name-only HEAD; fi; git ls-files --others --exclude-standard; } | wc -l | tr -d ' '); if [ "$n" -eq 0 ]; then printf '{"files":0,"empty":true}'; else printf '{"files":%s,"empty":false}' "$n"; fi`
+  command: `b={{vars.base}}; if [ -n "$b" ]; then d=$(git diff --name-only "$b" $ITERION_TREE_NOISE) || exit 1; else d=$(git diff --name-only HEAD $ITERION_TREE_NOISE) || exit 1; fi; u=$(git ls-files --others --exclude-standard $ITERION_TREE_NOISE) || exit 1; n=$(printf '%s\n%s\n' "$d" "$u" | grep -c .); if [ "$n" -eq 0 ]; then printf '{"files":0,"empty":true}'; else printf '{"files":%s,"empty":false}' "$n"; fi`
   output: scope_out
 
 router split:

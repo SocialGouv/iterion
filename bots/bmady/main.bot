@@ -546,7 +546,7 @@ compute derive_final:
 ## worktree: auto everything else IS this run's work. Guarded so an
 ## empty diff doesn't error.
 tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -A -- ':/' ':(exclude,top).claude' && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.message}})"
+  command: "git -C {{input.workspace_dir}} add -A -- ':/' $ITERION_TREE_NOISE && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.message}})"
   input: commit_tool_input
   output: commit_result
 

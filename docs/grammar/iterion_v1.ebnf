@@ -14,7 +14,7 @@ file = [ dsl_header ] { import_decl } { top_level_decl } ;
 
 (* The syntax profile (ADR-098). The header, when present, is the file's
    first significant line — after blank lines and comments; absent means
-   profile 1, today's grammar, frozen. The profile governs changes of
+   profile 1, the grammar at the 1.0 cut, frozen. The profile governs changes of
    MEANING only: under profile 2 a "…" string reads the standard escapes
    (\" \\ \n \t \r \0) with no directive, a blank line inside a prompt body
    is kept as a paragraph break, and the profile-1 `## strict-escape: on`

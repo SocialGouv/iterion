@@ -115,7 +115,7 @@ with no logic just to move the number.
 2. **The repeated unit**, one gap at a time: pick the behaviour → write
    a mutation-proof test next to the repo's existing tests, in its
    style → run the relevant tests with the repo's own runner → semantic
-   `test(<scope>):` commit (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name) so new files land). Never
+   `test(<scope>):` commit (`git add -A -- ':/' $ITERION_TREE_NOISE` (a deliverable under `.claude/` — or a deliberate `devbox.lock` update —: stage it by name) so new files land). Never
    commit a test you have not seen pass; git is the durable state.
 3. **verify gate** (deterministic, no LLM): an out-of-tree `verify.sh`
    capturing the repo's real build+test is re-run on its real exit

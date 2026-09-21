@@ -5154,7 +5154,8 @@ status = run(['git', '-C', ws, 'status', '--porcelain'])
 dirty = any(l.strip() and not is_scaffold(l) for l in (status.stdout or '').splitlines())
 stash_ref = ''
 if dirty:
-    sp = run(['git', '-C', ws, 'stash', 'push', '--include-untracked', '-m', 'seki-prepare-branch ' + suffix, '--', ':/', ':(exclude,top).claude'])
+    noise_args = __import__('os').environ.get('ITERION_TREE_NOISE', '').split()
+    sp = run(['git', '-C', ws, 'stash', 'push', '--include-untracked', '-m', 'seki-prepare-branch ' + suffix, '--', ':/'] + noise_args)
     if sp.returncode != 0:
         result['note'] = 'prepare_branch: stash failed: ' + (sp.stderr or '').strip()[:200]
         print(json.dumps(result)); sys.exit(0)

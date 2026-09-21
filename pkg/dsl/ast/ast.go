@@ -7,7 +7,7 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 // ---------------------------------------------------------------------------
 
 // DefaultProfile is the syntax profile a file declares by declaring none:
-// today's grammar, frozen (ADR-098).
+// the 1.0-cut grammar, frozen (ADR-098).
 const DefaultProfile = 1
 
 // File is the root AST node representing an entire .bot source file.
