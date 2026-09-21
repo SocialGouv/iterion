@@ -251,13 +251,20 @@ func TestAdminPlacement_FindReadPlaceAndGainAccess(t *testing.T) {
 			t.Fatalf("team placement = %d body=%s, want 200", status, body)
 		}
 
-		// The observable proof: a token carrying the new grant now reads the
-		// team that refused it at the top of this test.
-		placed := p.jwt(t, auth.Identity{
-			UserID: "sub1", Email: "brahim@externes.example.org",
-			OrgID: "o1", OrgRole: identity.OrgRoleMember, TeamID: "t1", Role: identity.RoleMember,
-		})
-		if status, body := p.call(t, http.MethodGet, "/api/teams/t1/members", placed, ""); status != http.StatusOK {
+		// The observable proof — minted through SwitchTeam, NOT forged.
+		//
+		// Forging the claims here would measure the forgery: canViewTeam
+		// short-circuits on `id.TeamID == teamID && id.Role.AtLeast(viewer)`
+		// and never reaches the store, so the 403 at the top of this test and
+		// a 200 here would differ only by which token was handed over — the
+		// placement would not be in the causal chain. SwitchTeam reads the
+		// membership, so it refuses outright when the grant is missing, which
+		// is what makes this assertion redden if either PUT fails to persist.
+		_, access, _, err := p.s.authSvc.SwitchTeam(context.Background(), "sub1", "t1")
+		if err != nil {
+			t.Fatalf("SwitchTeam after placement: %v — the grant did not persist", err)
+		}
+		if status, body := p.call(t, http.MethodGet, "/api/teams/t1/members", access, ""); status != http.StatusOK {
 			t.Fatalf("read after placement = %d body=%s, want 200", status, body)
 		}
 	})

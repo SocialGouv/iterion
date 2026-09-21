@@ -32,10 +32,11 @@ func regexArmOf(t *testing.T, f bson.M) string {
 // suite can only observe indirectly: Query reaches a `$regex`, so every
 // metacharacter in it must arrive at the server as a literal.
 //
-// The suite next door asserts the OUTCOME against a real Mongo (".*"
-// returns nothing). This asserts the MECHANISM, and it is the cheap half:
-// it needs no server, and it names what breaks — an operator's search box
-// feeding an unescaped pattern into the database.
+// The suite next door asserts the OUTCOME against a real Mongo — which is
+// the guarantee, since MongoDB evaluates the pattern with PCRE2 and this
+// test compiles it with Go's RE2. Keep both: this one needs no server, it
+// runs on every `go test ./...`, and it names what breaks — an operator's
+// search box feeding an unescaped pattern into the database.
 func TestUserQueryFilterIsLiteral(t *testing.T) {
 	for _, q := range []string{".*", "a|b", "^admin", "(x)+", "[a-z]", `\d`, ".*@example.org"} {
 		t.Run(q, func(t *testing.T) {

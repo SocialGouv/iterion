@@ -162,11 +162,17 @@ export function Combobox<T = string>({
   };
 
   // Header shows the selected option's label or the placeholder.
+  //
+  // A held value whose option is no longer in `options` falls back to the
+  // value itself, NEVER to the placeholder: a host whose list can shrink
+  // under a live selection — a server-backed search, a refetched roster —
+  // would otherwise read as "nothing is selected" while the selection is
+  // still held and the submit button next to it still enabled.
   const headerText = selected
     ? selected.label
-    : value === "" && emptyLabel
-      ? emptyLabel
-      : "";
+    : value === ""
+      ? (emptyLabel ?? "")
+      : String(value);
 
   const listboxId = useId();
 

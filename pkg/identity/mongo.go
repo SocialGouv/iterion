@@ -170,23 +170,31 @@ func (s *MongoStore) ListUsers(ctx context.Context, f UserFilter) ([]User, error
 }
 
 // userQueryFilter is the Mongo twin of matchesUserQuery — same meaning,
-// expressed as a query document, and reading the two arms from the same
+// expressed as a query document, and reading its arms from the same
 // normalizeUserQuery so the twins cannot disagree about what the query
 // means.
 //
 // QuoteMeta is load-bearing: Query is operator input reaching a `$regex`,
-// so an unescaped `.*` would widen the match to everyone and a
-// pathological pattern would burn CPU in the server. The email arm is
-// anchored so the unique index on `email` serves it.
+// and unescaped, `.*` widens the match to every row (measured: 20 001 of
+// 20 001, against 0 for the escaped form). The email arm is anchored so the
+// unique index on `email` serves it — verified by explain(): the `$or`
+// plans as SUBPLAN → OR → [IXSCAN _id_, IXSCAN email_unique], never a
+// COLLSCAN, and the bounds stay tight with an escaped metacharacter in the
+// pattern.
+//
+// The email arm is dropped entirely for a prefix MongoDB refuses as a
+// pattern — see userQuery.emailArmOff. The id arm survives it.
 func userQueryFilter(rawQuery string) bson.M {
 	q := normalizeUserQuery(rawQuery)
 	if q.matchesAllRow {
 		return bson.M{}
 	}
-	return bson.M{"$or": []bson.M{
-		{"email": bson.M{"$regex": "^" + regexp.QuoteMeta(q.emailPrefix)}},
-		{"_id": q.id},
-	}}
+	arms := make([]bson.M, 0, 2)
+	if !q.emailArmOff {
+		arms = append(arms, bson.M{"email": bson.M{"$regex": "^" + regexp.QuoteMeta(q.emailPrefix)}})
+	}
+	arms = append(arms, bson.M{"_id": q.id})
+	return bson.M{"$or": arms}
 }
 
 func (s *MongoStore) UserCount(ctx context.Context) (int64, error) {

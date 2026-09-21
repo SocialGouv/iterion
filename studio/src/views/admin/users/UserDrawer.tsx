@@ -365,6 +365,7 @@ function OrgsSection({
             value={role}
             roles={ORG_ROLES}
             disabled={busy}
+            confirm={confirm}
             onChange={(r) => setRole(r as OrgRole)}
           />
         </div>
@@ -400,14 +401,21 @@ function TeamsSection({
   confirm: Confirmer;
 }) {
   const userID = detail.user.id;
-  const [orgID, setOrgID] = useState("");
+  const [pickedOrgID, setPickedOrgID] = useState("");
   const [teamID, setTeamID] = useState("");
   const [role, setRole] = useState<Role>("member");
 
   // A team grant requires an org membership (the server answers 422
   // otherwise), so the only teams offered are those of an org this account
-  // already belongs to. The refusal stays on the server; the picker simply
-  // cannot reach it.
+  // already belongs to.
+  //
+  // Reconciled against the refetched roster on every render rather than held
+  // as state: revoking that org membership from the table above leaves the
+  // picked id behind, and a stale pick still drives the team list and the
+  // submit. The server's 422 catches it — but the panel would be showing a
+  // scope it is no longer using and handing back an unexplained refusal.
+  const orgID = detail.orgs.some((o) => o.org_id === pickedOrgID) ? pickedOrgID : "";
+
   const orgOptions = useMemo<ComboboxOption<string>[]>(
     () =>
       detail.orgs.map((o) => ({
@@ -534,7 +542,7 @@ function TeamsSection({
               placeholder="Organization…"
               disabled={busy}
               onChange={(v) => {
-                setOrgID(v);
+                setPickedOrgID(v);
                 // The team list belongs to the org: keeping a pick across a
                 // change would submit a team the operator can no longer see.
                 setTeamID("");
@@ -573,13 +581,17 @@ function TeamsSection({
               value={role}
               roles={TEAM_ROLES}
               disabled={busy}
+              confirm={confirm}
               onChange={(r) => setRole(r as Role)}
             />
           </div>
           <Button
             variant="primary"
             loading={busy}
-            disabled={!teamID || busy}
+            // orgID is the reconciled value: when the org membership behind
+            // the pick is revoked mid-flight it falls back to "", and the
+            // still-held teamID must not be submittable on its own.
+            disabled={!teamID || orgID === "" || busy}
             onClick={() =>
               void run(async () => {
                 await putTeamMember(teamID, userID, role);

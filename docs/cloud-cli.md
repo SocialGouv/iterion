@@ -112,7 +112,7 @@ the staging step alone and prints the upload id.
 | `triggers` | `list · get · create · update · delete · emit` |
 | `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
 | `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` |
-| `orgs` | `list · switch · members · invitations · usage · teams` |
+| `orgs` | `list · switch · members · invitations · usage · teams · add-member · approvals · credential-audience · oauth · settings` |
 | `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. |
 | `me` | `password · sessions-revoke-all · sso-links` |
 | `tokens` | `list · create · revoke` |

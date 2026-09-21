@@ -161,17 +161,31 @@ func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error)
 	return paginate(users, f.Page), nil
 }
 
-// userQuery is UserFilter.Query split into the two forms its two arms
-// compare against, so neither is recomputed per row.
+// maxUserQueryLen bounds the email arm. RFC 5321 caps an address at 254
+// bytes, so a longer prefix matches no stored email — and MongoDB refuses a
+// regex pattern past ~32 KB outright. Deciding it here keeps both stores on
+// one answer instead of one erroring while the other returns a clean page.
+const maxUserQueryLen = 254
+
+// userQuery is UserFilter.Query split into the forms its arms compare
+// against, so none is recomputed per row.
 //
-// They differ on purpose: an email is case-insensitive by construction
-// (the unique index is on the normalized form) but an id is an opaque
-// token, and lower-casing it before comparing would make an id containing
-// an upper-case byte unfindable by its own id.
+// The two arms differ on purpose: an email is case-insensitive by
+// construction (the unique index is on the normalized form) but an id is an
+// opaque token, and lower-casing it before comparing would make an id
+// containing an upper-case byte unfindable by its own id.
 type userQuery struct {
 	id            string // the trimmed query, compared verbatim
 	emailPrefix   string // the normalized query
 	matchesAllRow bool   // an empty query selects every user
+	// emailArmOff marks a prefix no email can carry — one holding a NUL,
+	// or longer than an address may be. MongoDB REFUSES both as a pattern
+	// ("cannot contain an embedded null byte", "pattern string is longer
+	// than the limit"), while a Go predicate would happily answer "no
+	// match": the same query would error on one store and return an empty
+	// page on the other. The id arm stays live — a NUL is legal in a BSON
+	// _id, so `_id: "a\x00b"` is a perfectly good lookup.
+	emailArmOff bool
 }
 
 func normalizeUserQuery(raw string) userQuery {
@@ -179,7 +193,11 @@ func normalizeUserQuery(raw string) userQuery {
 	if q == "" {
 		return userQuery{matchesAllRow: true}
 	}
-	return userQuery{id: q, emailPrefix: NormalizeEmail(q)}
+	e := NormalizeEmail(q)
+	if strings.IndexByte(e, 0) >= 0 || len(e) > maxUserQueryLen {
+		return userQuery{id: q, emailArmOff: true}
+	}
+	return userQuery{id: q, emailPrefix: e}
 }
 
 // matchesUserQuery is UserFilter.Query's predicate, stated once so this
@@ -190,6 +208,9 @@ func matchesUserQuery(u User, q userQuery) bool {
 	}
 	if u.ID == q.id {
 		return true
+	}
+	if q.emailArmOff {
+		return false
 	}
 	return strings.HasPrefix(NormalizeEmail(u.Email), q.emailPrefix)
 }

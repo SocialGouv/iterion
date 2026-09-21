@@ -207,6 +207,41 @@ func TestAdminUserDetail_OrphanGrantIsNamed(t *testing.T) {
 		t.Fatalf("the orphan grant's org must be resolved: %+v", got.Teams[0])
 	}
 
+	// A dangling reference must arrive ABSENT, not empty. A client renders
+	// `name ?? id`, and `""` is not nullish — shipping the empty string turns
+	// the one row this console exists to surface into a blank cell with no
+	// name, no slug and no id. Removing `omitempty` reddens this.
+	{
+		s2 := newOrgTestServer(t)
+		seedUser(t, s2, identity.User{ID: "ud", Email: "ud@example.org"})
+		if err := s2.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{
+			UserID: "ud", OrgID: "o-vanished", Role: identity.OrgRoleMember, JoinedAt: now,
+		}); err != nil {
+			t.Fatalf("seed dangling org membership: %v", err)
+		}
+		raw, err := json.Marshal(detailFor(t, s2, "ud"))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var wire struct {
+			Orgs []map[string]any `json:"orgs"`
+		}
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(wire.Orgs) != 1 {
+			t.Fatalf("the dangling membership must still render: %s", raw)
+		}
+		for _, k := range []string{"org_name", "org_slug"} {
+			if v, present := wire.Orgs[0][k]; present {
+				t.Fatalf("%s must be ABSENT when unknown, got %q: %s", k, v, raw)
+			}
+		}
+		if wire.Orgs[0]["org_id"] != "o-vanished" {
+			t.Fatalf("the id is the fact and must survive: %s", raw)
+		}
+	}
+
 	// A grant that DOES have its org membership must not be flagged — a
 	// marker that is always on names nothing.
 	if err := s.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{

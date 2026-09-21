@@ -17,8 +17,10 @@
 import { useQuery } from "@tanstack/react-query";
 
 import type { OrgTreeView, MembershipView } from "@/api/auth";
+import { ApiError } from "@/api/client";
 import { getOrg, getTeam, type OrgView, type TeamSummary } from "@/api/orgs";
 import { useAuth } from "@/auth/AuthContext";
+import { errorMessage } from "@/lib/errorHints";
 
 /**
  * The single "what did this caller get on team X" lookup.
@@ -71,12 +73,40 @@ export interface SubjectResult<T> {
   subject: T | null;
   loading: boolean;
   /**
-   * True once we know the caller cannot see this subject at all — the tree
-   * does not have it and the server refused. Distinct from `subject ==
+   * True once we know the caller may not see this subject — the tree does
+   * not have it and the server answered 401/403. Distinct from `subject ==
    * null` while loading, which is the state that used to render as "not a
    * member" before the request had even been made.
+   *
+   * NARROW on purpose. A super-admin passes canViewOrg/canViewTeam, so a
+   * tenant that simply does not exist comes back 404 — reporting that as
+   * denied tells the operator they lack an access they in fact hold, and a
+   * transient 5xx would say the same. Those two get their own answers below.
    */
   denied: boolean;
+  /** The subject does not exist (404), as distinct from being refused. */
+  notFound: boolean;
+  /**
+   * Anything else that went wrong, already formatted. Surfacing it beats
+   * the repo's least favourite shape: an error dressed as a permission.
+   */
+  error: string | null;
+}
+
+// classify splits a failed subject fetch into the three answers a page owes
+// its reader. Anything that is not an ApiError (a network drop, a parse
+// failure) is an error, never a refusal.
+function classify(err: unknown): Pick<SubjectResult<never>, "denied" | "notFound" | "error"> {
+  if (err == null) return { denied: false, notFound: false, error: null };
+  if (err instanceof ApiError) {
+    if (err.status === 401 || err.status === 403) {
+      return { denied: true, notFound: false, error: null };
+    }
+    if (err.status === 404) {
+      return { denied: false, notFound: true, error: null };
+    }
+  }
+  return { denied: false, notFound: false, error: errorMessage(err) };
 }
 
 function fromOrgView(o: OrgView): OrgSubject {
@@ -113,12 +143,14 @@ export function useOrgSubject(orgID: string): SubjectResult<OrgSubject> {
       },
       loading: false,
       denied: false,
+      notFound: false,
+      error: null,
     };
   }
   return {
     subject: query.data ? fromOrgView(query.data) : null,
     loading: query.isPending && orgID !== "",
-    denied: query.error != null,
+    ...classify(query.error),
   };
 }
 
@@ -146,6 +178,8 @@ export function useTeamSubject(teamID: string): SubjectResult<TeamSubject> {
       },
       loading: false,
       denied: false,
+      notFound: false,
+      error: null,
     };
   }
   const t: TeamSummary | undefined = query.data;
@@ -167,6 +201,6 @@ export function useTeamSubject(teamID: string): SubjectResult<TeamSubject> {
         }
       : null,
     loading: query.isPending && teamID !== "",
-    denied: query.error != null,
+    ...classify(query.error),
   };
 }

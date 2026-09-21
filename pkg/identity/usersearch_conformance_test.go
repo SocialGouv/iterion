@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,8 +125,77 @@ func runUserSearchSuite(t *testing.T, s Store) {
 		equal(t, ids(t, UserFilter{Query: ".*@example.org"}), nil)
 	})
 
+	// The other half of that guard, and the half an escaping test usually
+	// forgets: escaping must not OVER-reach either. RFC 5322 admits these
+	// in a local part, so an address legitimately carrying one must stay
+	// findable — a regression that escaped too much would leave the
+	// assertions above green while making real accounts unsearchable.
+	t.Run("an address that legitimately contains a metacharacter stays findable", func(t *testing.T) {
+		seeded := []string{}
+		for i, local := range []string{
+			"z.b", "z+b", "z-b", "z_b", "z$b", "z*b", "z?b", "z{b", "z|b2", "z^b",
+		} {
+			id := "us-meta-" + local
+			if _, err := s.CreateUser(ctx, User{
+				ID: id, Email: local + "@example.test",
+				Status: UserStatusActive, CreatedAt: base.Add(time.Duration(100+i) * time.Second),
+			}); err != nil {
+				t.Fatalf("seed %q: %v", local, err)
+			}
+			seeded = append(seeded, id)
+		}
+		for i, local := range []string{
+			"z.b", "z+b", "z-b", "z_b", "z$b", "z*b", "z?b", "z{b", "z|b2", "z^b",
+		} {
+			// Found by its full address…
+			equal(t, ids(t, UserFilter{Query: local + "@example.test"}), []string{seeded[i]})
+			// …and by the local part as a prefix.
+			got, err := s.ListUsers(ctx, UserFilter{Query: local})
+			if err != nil {
+				t.Fatalf("ListUsers(%q): %v", local, err)
+			}
+			found := false
+			for _, u := range got {
+				if u.ID == seeded[i] {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("prefix %q no longer finds %q — the escaping over-reached", local, seeded[i])
+			}
+		}
+	})
+
 	t.Run("a query matching nothing returns nothing", func(t *testing.T) {
 		equal(t, ids(t, UserFilter{Query: "nobody"}), nil)
+	})
+
+	// The axis this suite was blind to: the twins agreeing on a RESULT says
+	// nothing about them agreeing on an ERROR. MongoDB refuses a regex
+	// pattern carrying a NUL byte, and one past ~32 KB — both reachable
+	// from `GET /api/admin/users?q=`, since TrimSpace does not trim NUL —
+	// where a Go predicate would answer "no match". `ids` fails the test on
+	// any error, so asserting a clean empty page here asserts error parity.
+	t.Run("a prefix no email can carry is an empty page on BOTH stores", func(t *testing.T) {
+		for _, q := range []string{
+			"a\x00b",
+			"\x00",
+			"alice\x00",
+			strings.Repeat("a", 33000),
+			strings.Repeat(".", 20000), // QuoteMeta doubles these
+		} {
+			equal(t, ids(t, UserFilter{Query: q}), nil)
+		}
+		// And the id arm survives it: a NUL is legal in a BSON _id, so a
+		// query that IS an id still resolves even though no email could
+		// carry it as a prefix.
+		if _, err := s.CreateUser(ctx, User{
+			ID: "us-nul\x00id", Email: "nul@example.org",
+			Status: UserStatusActive, CreatedAt: base.Add(6 * time.Second),
+		}); err != nil {
+			t.Fatalf("seed nul-id user: %v", err)
+		}
+		equal(t, ids(t, UserFilter{Query: "us-nul\x00id"}), []string{"us-nul\x00id"})
 	})
 
 	t.Run("the page applies AFTER the filter", func(t *testing.T) {

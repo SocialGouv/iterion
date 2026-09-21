@@ -3639,8 +3639,6 @@
         },
         "required": [
           "org_id",
-          "org_name",
-          "org_slug",
           "role"
         ],
         "type": "object"
@@ -3701,8 +3699,6 @@
         },
         "required": [
           "team_id",
-          "team_name",
-          "team_slug",
           "role"
         ],
         "type": "object"

@@ -187,8 +187,15 @@ not exist **yet**, the email invitation remains the path.
 
 The confusing failure of this model, because nothing about it is broken.
 
-A GitHub login that the deployment **admits** but whose teams match no
-allow-listed org goes through `provisionSubmitter`
+**First, is this path even open?** It exists only under
+`ITERION_OIDC_GITHUB_UNGRANTED_POLICY=submitter` (YAML:
+`auth.oidc.github_ungranted_policy`). The default is `refuse`, where such a
+login is rejected with `ErrSSORestricted` and this account shape cannot be
+created at all. Checking that one setting turns the four-fact inference below
+into a one-line confirmation.
+
+Under `submitter`, a GitHub login whose org/team grants match none of the
+allow-list goes through `provisionSubmitter`
 ([pkg/auth/oidc_service.go](../pkg/auth/oidc_service.go)): the account is
 created **active, with no org, no team and no password**. It signs in
 successfully, lands in the `RestrictedShell` and sees an empty workspace. No
@@ -199,8 +206,8 @@ broken access.
 **The signature**, read as a whole rather than fact by fact: an ACTIVE
 account · an SSO link · no password · an empty roster. Any one of those alone
 looks like a misconfiguration; together they name this path. A second tell:
-`name` equals the lowercased GitHub login, the fallback used when the GitHub
-profile carries no display name.
+`name` equals the GitHub login verbatim, in the case GitHub spells it — the
+fallback used when the GitHub profile carries no display name.
 
 Read it in the studio at **Admin → Users → the account → Access & origin**,
 which states all four in one panel, or from the CLI:

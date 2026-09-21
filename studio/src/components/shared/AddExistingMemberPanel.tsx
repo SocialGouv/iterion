@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { RoleSelect } from "@/components/shared/RoleSelect";
+import type { Confirmer } from "@/hooks/useConfirm";
 
 export interface MemberCandidate {
   user_id: string;
@@ -41,6 +42,7 @@ export function AddExistingMemberPanel({
   addLabel = "Add",
   onQueryChange,
   queryPlaceholder = "Search by email…",
+  confirm,
   onAdd,
 }: {
   title: string;
@@ -54,12 +56,25 @@ export function AddExistingMemberPanel({
   addLabel?: string;
   onQueryChange?: (query: string) => void;
   queryPlaceholder?: string;
+  /** Prompts before an `owner` grant — control is handed over either way. */
+  confirm?: Confirmer;
   onAdd: (userID: string, role: string) => Promise<void>;
 }) {
   const [userID, setUserID] = useState("");
   const [role, setRole] = useState(defaultRole);
+  // The picked account, kept so it survives its own selection. Committing a
+  // pick closes the Combobox, which clears the search — and with a
+  // server-backed `candidates` that empties the list the pick came from. The
+  // operator would then face a panel that names nobody while "Add" stays
+  // enabled, one click from placing an account they can no longer see.
+  const [picked, setPicked] = useState<MemberCandidate | null>(null);
 
-  const options: ComboboxOption<string>[] = candidates.map((c) => ({
+  const shown =
+    picked && !candidates.some((c) => c.user_id === picked.user_id)
+      ? [picked, ...candidates]
+      : candidates;
+
+  const options: ComboboxOption<string>[] = shown.map((c) => ({
     value: c.user_id,
     label: c.email ?? c.user_id,
     description: c.name,
@@ -75,6 +90,7 @@ export function AddExistingMemberPanel({
     // team is the actual gesture, and re-picking the role each time is
     // where an operator mis-clicks.
     setUserID("");
+    setPicked(null);
   };
 
   return (
@@ -95,7 +111,10 @@ export function AddExistingMemberPanel({
             placeholder={loading ? "Loading accounts…" : queryPlaceholder}
             disabled={busy}
             onQueryChange={onQueryChange}
-            onChange={(v) => setUserID(v)}
+            onChange={(v) => {
+              setUserID(v);
+              setPicked(shown.find((c) => c.user_id === v) ?? null);
+            }}
           />
         </div>
         <div>
@@ -108,6 +127,7 @@ export function AddExistingMemberPanel({
             value={role}
             roles={roles}
             disabled={busy}
+            confirm={confirm}
             onChange={setRole}
           />
         </div>

@@ -4,6 +4,7 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { OrgTreeView, MembershipView } from "@/api/auth";
+import { ApiError } from "@/api/client";
 
 // One mutable identity, shared by both hooks under test and by
 // useCanManageTeam — all three read the same tree, which is the point:
@@ -18,10 +19,14 @@ const identity = {
   user: { id: "me", email: "me@example.org", status: "active", is_super_admin: false },
 };
 
-vi.mock("@/auth/AuthContext", () => ({
-  useAuth: () => identity,
-  hasOrgRole: () => false,
-}));
+// Only `useAuth` is replaced. `hasOrgRole` keeps its REAL implementation:
+// useCanManageTeam mirrors the server's three-armed `canManageTeam`, and a
+// stub that answered `false` would certify nothing — it would make the
+// org-admin arm untestable while the suite stayed green.
+vi.mock("@/auth/AuthContext", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/auth/AuthContext")>();
+  return { ...actual, useAuth: () => identity };
+});
 
 const getOrg = vi.fn();
 const getTeam = vi.fn();
@@ -103,15 +108,41 @@ describe("useOrgSubject", () => {
   });
 
   it("reports denial rather than a silent empty subject", async () => {
-    getOrg.mockRejectedValue(new Error("403 forbidden"));
+    getOrg.mockRejectedValue(new ApiError(403, "API error 403: forbidden"));
     const { result } = renderHook(() => useOrgSubject("o9"), { wrapper });
 
     await waitFor(() => expect(result.current.denied).toBe(true));
     expect(result.current.subject).toBeNull();
+    expect(result.current.notFound).toBe(false);
+    expect(result.current.error).toBeNull();
     // And it was not "denied" while the request was still in flight —
     // that state is what used to render as "not a member" before anything
     // had been asked.
     expect(result.current.loading).toBe(false);
+  });
+
+  // A super-admin PASSES canViewOrg, so an org that simply does not exist
+  // comes back 404. Calling that "denied" tells them they lack an access
+  // they hold, and the page's own not-found branch becomes unreachable.
+  it("separates a 404 from a refusal", async () => {
+    getOrg.mockRejectedValue(new ApiError(404, "API error 404: identity: not found"));
+    const { result } = renderHook(() => useOrgSubject("o9"), { wrapper });
+
+    await waitFor(() => expect(result.current.notFound).toBe(true));
+    expect(result.current.denied).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  // And an outage is neither. Dressing a 500 as a permission message buries
+  // the cause — the repo's no-silent-fallback rule, applied to a read.
+  it("surfaces a transient failure as an error, not as a refusal", async () => {
+    getOrg.mockRejectedValue(new ApiError(500, "API error 500: upstream exploded"));
+    const { result } = renderHook(() => useOrgSubject("o9"), { wrapper });
+
+    await waitFor(() => expect(result.current.error).toBeTruthy());
+    expect(result.current.denied).toBe(false);
+    expect(result.current.notFound).toBe(false);
+    expect(String(result.current.error)).toContain("exploded");
   });
 });
 
@@ -206,18 +237,17 @@ describe("useCanManageTeam", () => {
   // The other half of the class: an org admin opening a team of their org
   // that is not the active one used to get canManage=false — no controls,
   // though the server accepts their writes.
-  it("reads the named team's role, not the active one", () => {
+  it("reads the named team's grant, not the active team's role", () => {
     identity.activeRole = "viewer";
     identity.activeTeamID = "t1";
     identity.orgs = [
       {
         org_id: "o1",
-        org_name: "SDPC",
-        org_slug: "sdpc",
-        org_role: "admin",
+        org_name: "Plain",
+        org_slug: "plain",
+        org_role: "member",
         teams: [
           { team_id: "t1", team_name: "One", team_slug: "one", role: "viewer" },
-          // buildOrgTree gives an org admin an implied admin on every team.
           { team_id: "t2", team_name: "Two", team_slug: "two", role: "admin" },
         ],
       },
@@ -225,8 +255,43 @@ describe("useCanManageTeam", () => {
     expect(renderHook(() => useCanManageTeam("t2"), { wrapper }).result.current).toBe(
       true,
     );
-    // And the active team's own role still governs itself — a viewer on t1
-    // must not inherit t2's answer.
+    // A viewer on t1 must not inherit t2's answer.
+    expect(renderHook(() => useCanManageTeam("t1"), { wrapper }).result.current).toBe(
+      false,
+    );
+  });
+
+  // The server's canManageTeam has THREE arms: super-admin, team admin/owner,
+  // OR admin/owner of the team's org. The third looks redundant because
+  // buildOrgTree synthesises `admin` for an org admin — but it does that ONLY
+  // where no explicit grant exists. An org admin who also holds an explicit
+  // LOWER row on the team therefore arrives as `viewer`, and reading the team
+  // role alone hides every control the server would accept.
+  it("honours the org-admin arm when an explicit lower team grant exists", () => {
+    identity.orgs = [
+      {
+        org_id: "o1",
+        org_name: "SDPC",
+        org_slug: "sdpc",
+        org_role: "admin",
+        teams: [{ team_id: "t1", team_name: "One", team_slug: "one", role: "viewer" }],
+      },
+    ];
+    expect(renderHook(() => useCanManageTeam("t1"), { wrapper }).result.current).toBe(
+      true,
+    );
+  });
+
+  it("does not widen: a plain org member with a viewer grant stays refused", () => {
+    identity.orgs = [
+      {
+        org_id: "o1",
+        org_name: "SDPC",
+        org_slug: "sdpc",
+        org_role: "member",
+        teams: [{ team_id: "t1", team_name: "One", team_slug: "one", role: "viewer" }],
+      },
+    ];
     expect(renderHook(() => useCanManageTeam("t1"), { wrapper }).result.current).toBe(
       false,
     );

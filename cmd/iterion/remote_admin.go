@@ -115,13 +115,22 @@ var remoteAdminUsersCmd = &cobra.Command{
 		if len(args) != 2 {
 			return fmt.Errorf("usage: admin users [get <user-id>|update <user-id> --data @f|reset-password <user-id>]")
 		}
+		// --q is read only by the list form above; accepting it silently on an
+		// action would answer a question the operator did not ask.
+		if strings.TrimSpace(remoteAdminUserQuery) != "" {
+			return fmt.Errorf("--q applies to the list form only (`admin users --q <prefix>`), not to %q", args[0])
+		}
+		// PathEscape: an id reaching a URL path unescaped lets `../` retarget
+		// the request through ServeMux's 307 redirect — the CLI would report
+		// success on a route the operator never named.
+		base := "/api/admin/users/" + url.PathEscape(args[1])
 		switch args[0] {
 		case "get":
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/users/"+args[1])
+			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case "update":
-			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", "/api/admin/users/"+args[1], remoteAdminData, "patch JSON")
+			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base, remoteAdminData, "patch JSON")
 		case "reset-password":
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/users/"+args[1]+"/reset-password", nil)
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/reset-password", nil)
 		default:
 			return fmt.Errorf("unknown users action %q (get|update|reset-password)", args[0])
 		}

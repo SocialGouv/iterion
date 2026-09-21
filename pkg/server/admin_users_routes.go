@@ -26,10 +26,16 @@ import (
 // The route itself is registered in auth_routes.go beside its three
 // /api/admin/users siblings.
 
+// The name/slug fields carry `omitempty` on purpose. They are EMPTY when the
+// referenced row is gone — a dangling membership, which this console exists
+// to surface — and a client's `name ?? id` fallback only fires on an ABSENT
+// field: `""` is not nullish, so shipping the empty string would render the
+// row as a blank cell with no name, no slug and no id. Omitting the field is
+// what makes "we do not know this one" expressible on the wire.
 type adminUserOrgView struct {
 	OrgID    string `json:"org_id"`
-	OrgName  string `json:"org_name"`
-	OrgSlug  string `json:"org_slug"`
+	OrgName  string `json:"org_name,omitempty"`
+	OrgSlug  string `json:"org_slug,omitempty"`
 	Role     string `json:"role"`
 	Personal bool   `json:"personal,omitempty"`
 	JoinedAt string `json:"joined_at,omitempty"`
@@ -37,8 +43,8 @@ type adminUserOrgView struct {
 
 type adminUserTeamView struct {
 	TeamID   string `json:"team_id"`
-	TeamName string `json:"team_name"`
-	TeamSlug string `json:"team_slug"`
+	TeamName string `json:"team_name,omitempty"`
+	TeamSlug string `json:"team_slug,omitempty"`
 	OrgID    string `json:"org_id,omitempty"`
 	OrgName  string `json:"org_name,omitempty"`
 	Role     string `json:"role"`
@@ -173,6 +179,14 @@ func (s *Server) buildAdminUserDetail(ctx context.Context, u identity.User) (adm
 			// A personal team sits in a personal org whose membership row
 			// follows the same rule as any other, so no exemption here.
 			v.OrphanGrant = t.OrgID != "" && !memberOfOrg[t.OrgID]
+		} else {
+			// A grant whose TEAM row is gone is the same defect seen from the
+			// other end, and the more alarming one: unflagged it renders as a
+			// healthy grant that merely has no name. Both delete paths revoke
+			// memberships before the team row, so reaching this means a
+			// half-finished cascade — exactly what an operator opens this page
+			// to find.
+			v.OrphanGrant = true
 		}
 		teams = append(teams, v)
 	}

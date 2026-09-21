@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
@@ -29,6 +31,35 @@ func scopeWord(prefix string) string {
 		return "org"
 	}
 	return "team"
+}
+
+// memberPath appends a user id to a members collection URL.
+//
+// PathEscape is load-bearing: an id is operator input reaching a URL PATH,
+// and Go's ServeMux cleans dot-segments and answers 307, which the client
+// follows preserving method AND body. Concatenated raw, `../../t-other/
+// members/u-9` silently retargets the write to another tenant and the CLI
+// reports success. The server re-authorises against the post-redirect path,
+// so nothing is granted that the caller did not already hold — but a write
+// landing somewhere the operator did not name, under exit 0, is its own
+// defect.
+func memberPath(base, userID string) string {
+	return base + "/" + url.PathEscape(userID)
+}
+
+// roleBody encodes a {"role": …} body with a real JSON encoder.
+//
+// fmt.Sprintf("%q") emits GO string syntax, which is not JSON: `\a`, `\v`,
+// `\xNN` are valid Go and invalid JSON, so a role carrying a control byte or
+// invalid UTF-8 produced a malformed body and the operator got the server's
+// decode failure instead of "invalid role". No injection was possible — the
+// point is the diagnostic.
+func roleBody(role string) ([]byte, error) {
+	b, err := json.Marshal(map[string]string{"role": role})
+	if err != nil {
+		return nil, fmt.Errorf("encode role: %w", err)
+	}
+	return b, nil
 }
 
 // rolesHint names the role vocabulary of a tenancy scope, for help text.
@@ -71,13 +102,19 @@ func membersCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, error),
 			case len(args) == 0:
 				return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 			case args[0] == "add" && len(args) == 3:
-				body := fmt.Sprintf(`{"role":%q}`, args[2])
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", base+"/"+args[1], []byte(body))
+				body, err := roleBody(args[2])
+				if err != nil {
+					return err
+				}
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", memberPath(base, args[1]), body)
 			case args[0] == "set-role" && len(args) == 3:
-				body := fmt.Sprintf(`{"role":%q}`, args[2])
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", base+"/"+args[1], []byte(body))
+				body, err := roleBody(args[2])
+				if err != nil {
+					return err
+				}
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", memberPath(base, args[1]), body)
 			case args[0] == "remove" && len(args) == 2:
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", memberPath(base, args[1]), nil)
 			default:
 				return fmt.Errorf("%s", usage)
 			}
@@ -106,10 +143,13 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 				if role == "" {
 					role = "member"
 				}
-				body := fmt.Sprintf(`{"email":%q,"role":%q}`, args[1], role)
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, []byte(body))
+				body, err := json.Marshal(map[string]string{"email": args[1], "role": role})
+				if err != nil {
+					return fmt.Errorf("encode invitation: %w", err)
+				}
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
 			case args[0] == "delete" && len(args) == 2:
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+url.PathEscape(args[1]), nil)
 			default:
 				return fmt.Errorf("usage: invitations [create <email>|delete <invite-id>]")
 			}

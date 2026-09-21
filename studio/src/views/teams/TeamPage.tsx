@@ -55,7 +55,12 @@ export default function TeamPage() {
   // Resolved through the shared subject hook rather than out of the
   // caller's own tree: a super-admin or an org admin who holds no grant on
   // this team still gets the page, since the server would answer for them.
-  const { subject: team, loading: teamLoading, denied } = useTeamSubject(teamID);
+  const {
+    subject: team,
+    loading: teamLoading,
+    denied,
+    error: teamError,
+  } = useTeamSubject(teamID);
   const search = useSearch();
   const [, navigate] = useLocation();
   const tabFromURL = (s: string): Tab => {
@@ -115,13 +120,22 @@ export default function TeamPage() {
   }
 
   if (!team) {
+    // Three different answers, on purpose: a refusal, an absence, and a
+    // failure. Reporting an absence or an outage as a refusal tells an
+    // operator they lack an access they hold, and buries the real cause.
     return (
       <div className="p-6">
-        <p className="text-sm text-fg-muted">
-          {denied
-            ? "You do not have access to this team."
-            : "This team could not be found."}
-        </p>
+        {teamError ? (
+          <InlineBanner tone="danger" layout="inline">
+            {teamError}
+          </InlineBanner>
+        ) : (
+          <p className="text-sm text-fg-muted">
+            {denied
+              ? "You do not have access to this team."
+              : "This team could not be found."}
+          </p>
+        )}
       </div>
     );
   }
@@ -302,6 +316,7 @@ function Members({
           roles={ROLES}
           defaultRole="member"
           queryPlaceholder="Pick an org member…"
+          confirm={confirm}
           emptyMessage="Every member of this organization is already on the team."
           addLabel="Add to team"
           onAdd={async (userID, role) => {

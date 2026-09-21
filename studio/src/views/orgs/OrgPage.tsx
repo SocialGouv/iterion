@@ -62,7 +62,12 @@ export default function OrgPage() {
   // Resolved through the shared subject hook rather than out of the
   // caller's own tree: a super-admin who is not a member still gets the
   // page, since every API behind it would answer for them.
-  const { subject: org, loading: orgLoading, denied } = useOrgSubject(orgID);
+  const {
+    subject: org,
+    loading: orgLoading,
+    denied,
+    error: orgError,
+  } = useOrgSubject(orgID);
   const search = useSearch();
   const [, navigate] = useLocation();
   const tabFromURL = (s: string): Tab => {
@@ -109,13 +114,22 @@ export default function OrgPage() {
   }
 
   if (!org) {
+    // Three different answers, on purpose: a refusal, an absence, and a
+    // failure. Reporting an absence or an outage as a refusal tells an
+    // operator they lack an access they hold, and buries the real cause.
     return (
       <div className="p-6">
-        <p className="text-sm text-fg-muted">
-          {denied
-            ? "You do not have access to this organization."
-            : "This organization could not be found."}
-        </p>
+        {orgError ? (
+          <InlineBanner tone="danger" layout="inline">
+            {orgError}
+          </InlineBanner>
+        ) : (
+          <p className="text-sm text-fg-muted">
+            {denied
+              ? "You do not have access to this organization."
+              : "This organization could not be found."}
+          </p>
+        )}
       </div>
     );
   }
@@ -321,6 +335,7 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
           roles={ORG_ROLES}
           defaultRole="member"
           queryPlaceholder="Search by email prefix, or paste a user id…"
+          confirm={confirm}
           emptyMessage={
             candidateSearch.trim() === ""
               ? "Type an email prefix to find an account."

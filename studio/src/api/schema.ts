@@ -7157,8 +7157,8 @@ export interface components {
         adminUserOrgView: {
             joined_at?: string;
             org_id: string;
-            org_name: string;
-            org_slug: string;
+            org_name?: string;
+            org_slug?: string;
             personal?: boolean;
             role: string;
         };
@@ -7177,8 +7177,8 @@ export interface components {
             role: string;
             status?: string;
             team_id: string;
-            team_name: string;
-            team_slug: string;
+            team_name?: string;
+            team_slug?: string;
         };
         apiKeyView: {
             alive_runs?: number;
