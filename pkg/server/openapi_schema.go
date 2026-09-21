@@ -84,10 +84,11 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/admin/users/{id}":   {response: adminUserDetailView{}},
 		"PATCH /api/admin/users/{id}": {request: adminUpdateUserReq{}, response: UserView{}},
 
-		// One org, for anyone who may view it — the twin of GET
-		// /api/teams/{id}, and what lets a console resolve an org by id
-		// instead of by the caller's own membership tree.
-		"GET /api/orgs/{id}": {response: orgView{}},
+		// One org / one team, for anyone who may view them. The pair is
+		// what lets a console resolve a tenant by id instead of by the
+		// caller's own membership tree.
+		"GET /api/orgs/{id}":  {response: orgView{}},
+		"GET /api/teams/{id}": {response: teamSummaryView{}},
 
 		// Platform LLM credentials (super-admin) — the DB-backed env fallback.
 		"GET /api/admin/llm/api-keys": {

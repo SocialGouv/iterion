@@ -27,11 +27,17 @@ interface Props {
   orgID?: string;
   platform?: boolean;
   canManage: boolean;
+  // The org owning `teamID`, when the caller already knows it. Only used
+  // for the cross-link below; it does NOT switch this tab into org mode
+  // the way `orgID` does. Supplied so the link survives a caller who holds
+  // no membership in that org — a super-admin reading a team's audit — for
+  // whom the identity-tree fallback resolves nothing.
+  ownerOrgID?: string | null;
 }
 
 const PAGE = 50;
 
-export default function AuditTab({ teamID, orgID, platform, canManage }: Props) {
+export default function AuditTab({ teamID, orgID, platform, canManage, ownerOrgID }: Props) {
   const id = platform ? "platform" : (orgID ?? teamID ?? "");
   const load = (q: AuditQuery) =>
     platform
@@ -52,10 +58,12 @@ export default function AuditTab({ teamID, orgID, platform, canManage }: Props) 
   const activeOrg = auth?.activeOrg ?? null;
   const containingOrgID = useMemo(() => {
     if (!teamID) return "";
+    // What the caller told us wins: they resolved the team, tree or not.
+    if (ownerOrgID) return ownerOrgID;
     if (activeOrg?.teams.some((t) => t.team_id === teamID)) return activeOrg.org_id;
     const owner = orgs.find((o) => o.teams.some((t) => t.team_id === teamID));
     return owner?.org_id ?? "";
-  }, [orgs, activeOrg, teamID]);
+  }, [orgs, activeOrg, teamID, ownerOrgID]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [filter, setFilter] = useState<AuditQuery>({});
   const [nextOffset, setNextOffset] = useState<number | null>(null);

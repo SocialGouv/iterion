@@ -17,29 +17,21 @@ import {
   deleteInvitation,
   listInvitations,
   listTeamMembers,
+  putTeamMember,
   removeMember,
   updateMemberRole,
 } from "@/api/byok";
 import ApiKeysPanel from "@/views/account/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
-
+import { AddExistingMemberPanel } from "@/components/shared/AddExistingMemberPanel";
+import { useTeamSubject } from "@/hooks/useTenantSubject";
+import { TEAM_ROLES as ROLES, isDemotion, roleLabel } from "@/lib/roles";
+import { listOrgMembers } from "@/api/orgMembers";
 
 import AuditTab from "./tabs/AuditTab";
 import CredPoolTab from "./tabs/CredPoolTab";
 import MemoryTab from "./tabs/MemoryTab";
-
-// config_editor is prepended (index 0) so it reads as the least-privileged
-// role: the demotion-confirm heuristic below (ROLES.indexOf comparison)
-// correctly flags any downgrade *to* config_editor as a demotion, and it
-// mirrors the access ladder in @/api/auth.
-const ROLES = ["config_editor", "viewer", "member", "admin", "owner"] as const;
-
-// roleLabel gives the technical `config_editor` string a friendly display
-// name; every other role renders as-is (matching the existing lowercase UI).
-function roleLabel(role: string): string {
-  return role === "config_editor" ? "Config editor" : role;
-}
 
 // SSO, Usage, members-roster and billing are ORG-level — they live on the Org
 // settings page (/orgs/:id). The team page keeps the team's own administrative
@@ -59,8 +51,11 @@ const TABS: Array<{ id: Tab; label: string }> = [
 export default function TeamPage() {
   const params = useParams<{ id: string }>();
   const teamID = params.id;
-  const { teams, activeOrg, activeRole } = useAuth();
-  const team = useMemo(() => teams.find((t) => t.team_id === teamID), [teams, teamID]);
+  const { activeOrg, activeRole } = useAuth();
+  // Resolved through the shared subject hook rather than out of the
+  // caller's own tree: a super-admin or an org admin who holds no grant on
+  // this team still gets the page, since the server would answer for them.
+  const { subject: team, loading: teamLoading, denied } = useTeamSubject(teamID);
   const search = useSearch();
   const [, navigate] = useLocation();
   const tabFromURL = (s: string): Tab => {
@@ -81,35 +76,56 @@ export default function TeamPage() {
     navigate(`/teams/${teamID}?tab=${t}`, { replace: true });
   };
 
-  const canManage = useCanManageTeam();
+  const canManage = useCanManageTeam(teamID);
 
   // Breadcrumb: show "Org / Team" only when the org name actually adds
   // information. For the personal/default org (where org_name == team_name) the
   // prefix is pure redundancy ("SocialGouv / SocialGouv/socialgouv"), so we
   // collapse it to just the team name and drop the noisy /slug micro-suffix.
-  const showOrgCrumb = !!activeOrg && team != null && activeOrg.org_name !== team.team_name;
+  // The org crumb only applies to a team inside the ACTIVE org; for one
+  // reached from elsewhere it would name the wrong parent.
+  const showOrgCrumb =
+    !!activeOrg && team != null && team.isMember && activeOrg.org_name !== team.name;
+  // The role line describes the team on screen: activeRole is the role on
+  // the ACTIVE team, which is a different team whenever this page was
+  // reached by URL.
+  const shownRole = team?.isMember ? (team.role ?? activeRole) : team?.role;
   useHeaderSlot({
     left: team ? (
       <span className="text-sm font-semibold">
         {showOrgCrumb && (
           <span className="text-fg-muted font-normal">{activeOrg!.org_name} / </span>
         )}
-        {team.team_name}
+        {team.name}
       </span>
     ) : (
-      <span className="text-sm font-semibold">Team not found</span>
+      <span className="text-sm font-semibold">
+        {teamLoading ? "Loading team…" : "Team not found"}
+      </span>
     ),
     right: team ? (
       <span className="text-xs text-fg-muted">
-        Your role: {activeRole ? roleLabel(activeRole) : "—"}
+        Your role: {shownRole ? roleLabel(shownRole) : "—"}
       </span>
     ) : null,
   });
 
+  if (teamLoading) {
+    return (
+      <div className="p-6">
+        <p className="text-sm text-fg-muted">Loading team…</p>
+      </div>
+    );
+  }
+
   if (!team) {
     return (
       <div className="p-6">
-        <p className="text-sm text-fg-muted">You are not a member of this team.</p>
+        <p className="text-sm text-fg-muted">
+          {denied
+            ? "You do not have access to this team."
+            : "This team could not be found."}
+        </p>
       </div>
     );
   }
@@ -127,22 +143,34 @@ export default function TeamPage() {
         />
 
         <main>
-          {tab === "members" && <Members teamID={team.team_id} canManage={canManage} />}
+          {tab === "members" && (
+            <Members teamID={team.teamID} orgID={team.orgID} canManage={canManage} />
+          )}
           {tab === "api-keys" && (
-            <ApiKeysPanel team={{ id: team.team_id, name: team.team_name }} />
+            <ApiKeysPanel team={{ id: team.teamID, name: team.name }} />
           )}
           {tab === "cred-pool" && (
-            <CredPoolTab teamID={team.team_id} canManage={canManage} />
+            <CredPoolTab teamID={team.teamID} canManage={canManage} />
           )}
-          {tab === "audit" && <AuditTab teamID={team.team_id} canManage={canManage} />}
-          {tab === "memory" && <MemoryTab teamID={team.team_id} />}
+          {tab === "audit" && (
+            <AuditTab teamID={team.teamID} ownerOrgID={team.orgID} canManage={canManage} />
+          )}
+          {tab === "memory" && <MemoryTab teamID={team.teamID} />}
         </main>
       </div>
     </div>
   );
 }
 
-function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) {
+function Members({
+  teamID,
+  orgID,
+  canManage,
+}: {
+  teamID: string;
+  orgID: string | null;
+  canManage: boolean;
+}) {
   const queryClient = useQueryClient();
   // Mutation failures report through setActionErr; load failures surface
   // from the queries. One banner shows whichever is current.
@@ -162,8 +190,22 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     queryKey: ["team-invitations", teamID],
     queryFn: () => listInvitations(teamID),
   });
+  // The org roster is the candidate pool for "add an existing account":
+  // handlePutTeamMember refuses a user outside the team's org (422), so
+  // offering only org members makes that refusal unreachable from here.
+  const orgMembersQuery = useQuery({
+    queryKey: ["org-members", orgID],
+    queryFn: () => listOrgMembers(orgID!),
+    enabled: canManage && orgID != null,
+  });
   const members = membersQuery.data ?? [];
   const invs = invitationsQuery.data ?? [];
+  const candidates = useMemo(() => {
+    const onTeam = new Set(members.map((m) => m.user_id));
+    return (orgMembersQuery.data ?? [])
+      .filter((m) => !onTeam.has(m.user_id))
+      .map((m) => ({ user_id: m.user_id, email: m.email, name: m.name }));
+  }, [orgMembersQuery.data, members]);
   const fetching = membersQuery.isFetching || invitationsQuery.isFetching;
   const loadError = membersQuery.error ?? invitationsQuery.error;
   const err =
@@ -214,10 +256,7 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     // Confirm demotions and any change touching "owner" — these are the
     // role edits that can lock someone out or hand over control. Routine
     // promotions (e.g. member → admin) apply without a prompt.
-    const demotion =
-      ROLES.indexOf(role as (typeof ROLES)[number]) <
-      ROLES.indexOf(currentRole as (typeof ROLES)[number]);
-    if (demotion || currentRole === "owner" || role === "owner") {
+    if (isDemotion(currentRole, role) || currentRole === "owner" || role === "owner") {
       const ok = await confirm({
         title: "Change member role?",
         message: `Change this member from "${currentRole}" to "${role}"? This takes effect immediately.`,
@@ -259,6 +298,40 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
         <InlineBanner tone="danger" layout="inline">
           {err}
         </InlineBanner>
+      )}
+
+      {canManage && orgID && (
+        <AddExistingMemberPanel
+          title="Add someone who already has an account"
+          description={
+            <>
+              Candidates are this team&apos;s organization members who are not
+              on the team yet. Someone outside the organization is reached by
+              the invitation below — an org membership is the identity
+              boundary a team grant sits inside.
+            </>
+          }
+          candidates={candidates}
+          loading={orgMembersQuery.isPending}
+          busy={busy}
+          roles={ROLES}
+          defaultRole="member"
+          roleLabel={roleLabel}
+          emptyMessage="Every member of this organization is already on the team."
+          addLabel="Add to team"
+          onAdd={async (userID, role) => {
+            setActionErr(null);
+            setBusy(true);
+            try {
+              await putTeamMember(teamID, userID, role);
+              reload();
+            } catch (e) {
+              setActionErr(errorMessage(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
       )}
 
       {canManage && (
