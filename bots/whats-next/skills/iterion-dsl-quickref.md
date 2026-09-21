@@ -699,7 +699,7 @@ shipped bots, so they are written here:
 | `{{artifacts.name}}` | published artifact |
 | `${ENV_VAR}` | compile-time env substitution |
 | `{{run.id}}` | the run id |
-| `{{run.tree_noise}}` | the canonical tree-noise pathspecs, pre-quoted for a git command — the exclusion every whole-tree stage or scope gate carries |
+| `{{run.tree_noise}}` | the canonical tree-noise pathspecs, pre-quoted for a git command line an AGENT pastes — a prompt-side form only. In a tool `command:`/`script:`/`postcondition:` it shell-escapes to ONE inert argument (C153): executable bodies read `$ITERION_TREE_NOISE` unquoted instead |
 | `{{run.elapsed_seconds}}` `{{run.cost_usd}}` `{{run.tokens}}` `{{run.iterations}}` | the run's own consumption so far |
 | `{{run.max_duration_seconds}}` `{{run.max_cost_usd}}` `{{run.max_tokens}}` `{{run.max_iterations}}` | the caps IN FORCE (after `--max-*` flags, recipe, platform ceiling, `raise_budget`). `0` = unbounded on that axis. No `budget:` block ⇒ no tracker: consumption and caps read `0`, only `elapsed_seconds` advances |
 
@@ -887,7 +887,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | Template | Shape |
 |---|---|
 | `campaign-loop` | an entry gate (unset `verify_command` = typed refusal) → one agent in passes → a `tool` running the repo's own checks (needs `jq`, pinned in the bundle's `devbox.json` for any image that ships devbox; every iterion image ships both) → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
-| `review-fanout` | a `tool` scope gate (empty scope = typed refusal; the gate excludes the engine's tree noise via `{{run.tree_noise}}`) → `router fan_out_all` → two read-only reviewers under `permission: deny` with a read-only allow list → a `compute` with `await: wait_all` → a typed blocked verdict |
+| `review-fanout` | a `tool` scope gate (empty scope = typed refusal; the gate excludes the engine's tree noise via `$ITERION_TREE_NOISE`) → `router fan_out_all` → two read-only reviewers under `permission: deny` with a read-only allow list → a `compute` with `await: wait_all` → a typed blocked verdict |
 | `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
 | `scheduled-digest` | collect (`tool`, needs `jq`, pinned in the bundle's `devbox.json`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |
 | `per-ticket-subbots` | list (`tool`) → `fan_out_each` → an isolated `subbot` per item → `compute` fan-in |

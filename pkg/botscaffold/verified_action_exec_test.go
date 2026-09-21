@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // shellInRepo runs one shipped command text through `bash -c` in repo the
@@ -23,10 +24,15 @@ import (
 func shellInRepo(repo, command string) (stdout, stderr string, err error) {
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Dir = repo
+	// The engine provisions ITERION_TREE_NOISE on every tool process it
+	// spawns (host and sandbox); this shell stands in for that spawn and
+	// carries the same list, so a scaffold's command reads what a run's
+	// command reads.
 	cmd.Env = append(gittest.Env(),
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=maintenance.auto", "GIT_CONFIG_VALUE_0=false",
 		"GIT_CONFIG_KEY_1=gc.auto", "GIT_CONFIG_VALUE_1=0",
+		treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue(),
 	)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
