@@ -1,6 +1,11 @@
 package runtime
 
-import "time"
+import (
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
+)
 
 // RunNamespaceMembers is the exhaustive `run.<member>` vocabulary, in
 // documentation order. Every consumer of the namespace — the expression
@@ -9,17 +14,12 @@ import "time"
 // fail node's `message:`, an edge `with`, an `emit` payload, a subbot
 // `with:`) — resolves exactly these names, so a member added here reaches
 // all four at once.
-var RunNamespaceMembers = []string{
-	"id",
-	"elapsed_seconds",
-	"cost_usd",
-	"tokens",
-	"iterations",
-	"max_duration_seconds",
-	"max_cost_usd",
-	"max_tokens",
-	"max_iterations",
-}
+//
+// The authority is ir.RunMembers (pkg/dsl/ir/run_members.go), beside the
+// reference parser: that is what the compiler validates `{{run.*}}`
+// references against (C153), so a member cannot exist on one side without
+// the other.
+var RunNamespaceMembers = ir.RunMembers
 
 // runNamespace builds the `run.*` view for one resolution: the run's
 // identity, what it has consumed, and the caps in force RIGHT NOW (after
@@ -65,6 +65,14 @@ func runNamespace(rs *runState) map[string]any {
 		"max_cost_usd":         st.MaxCostUSD,
 		"max_tokens":           int64(st.MaxTokens),
 		"max_iterations":       int64(st.MaxIterations),
+		// The canonical tree-noise pathspecs, rendered for a gate node's
+		// PROMPT: the gates a bot runs (scope checks, whole-tree staging)
+		// must exclude what the run's setup and tooling wrote — never the
+		// pass's work (#1364, #1464). In an executable command the member
+		// shell-escapes into ONE argument git refuses; scripts read
+		// $ITERION_TREE_NOISE instead. Constant for a run, so the snapshot
+		// semantics of a rendered prompt lose nothing.
+		"tree_noise": treenoise.ShellPathspecs(),
 	}
 }
 

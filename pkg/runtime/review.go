@@ -306,11 +306,15 @@ func (e *Engine) performGateMerge(ctx context.Context, rs *runState, hn *ir.Huma
 		return fmt.Errorf("cannot read worktree HEAD at %s", wtCtx.wtPath)
 	}
 
+	// Prefer the run id — the stable key (#1366). Sibling to
+	// worktree.go's finalizeWorktree; the two paths agree so a
+	// consumer looking up the branch by id finds it whether the run
+	// was straight or post-resume.
 	branchName := e.branchName
 	if branchName == "" {
-		label := e.runName
+		label := rs.runID
 		if label == "" {
-			label = rs.runID
+			label = e.runName
 		}
 		branchName = "iterion/run/" + label
 	}

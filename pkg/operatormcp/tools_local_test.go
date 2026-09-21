@@ -461,20 +461,29 @@ func TestLocalValidateVarsReachTheDryRun(t *testing.T) {
 		}
 		return res
 	}
-	last := func(res result) string {
+	// Pass.Nodes is a set the emitter sorts (#1434), so "arrival
+	// order" is no fact about the graph — a fan-out reorders it. Read
+	// the pass through membership instead: reached("done") means the
+	// terminal branch fired, reached("unset") means the gate refused.
+	reached := func(res result, node string) bool {
 		if len(res.Exec.Passes) != 2 {
 			t.Fatalf("no dry run in the result: %+v", res)
 		}
-		return res.Exec.Passes[1].Nodes[len(res.Exec.Passes[1].Nodes)-1]
+		for _, n := range res.Exec.Passes[1].Nodes {
+			if n == node {
+				return true
+			}
+		}
+		return false
 	}
-	if got := last(ask(`{"file_path":"g.bot","exec":true}`)); got != "unset" {
-		t.Fatalf("without vars the gate did not refuse: ended at %q", got)
+	if got := ask(`{"file_path":"g.bot","exec":true}`); !reached(got, "unset") {
+		t.Fatalf("without vars the gate did not refuse: %+v", got.Exec.Passes)
 	}
-	if got := last(ask(`{"file_path":"g.bot","vars":{"release_tag":"v1"}}`)); got != "done" {
-		t.Fatalf("vars did not reach the dry run: ended at %q", got)
+	if got := ask(`{"file_path":"g.bot","vars":{"release_tag":"v1"}}`); !reached(got, "done") {
+		t.Fatalf("vars did not reach the dry run: %+v", got.Exec.Passes)
 	}
-	if got := last(ask(`{"file_path":"g.bot","preset":"ship"}`)); got != "done" {
-		t.Fatalf("the preset did not reach the dry run: ended at %q", got)
+	if got := ask(`{"file_path":"g.bot","preset":"ship"}`); !reached(got, "done") {
+		t.Fatalf("the preset did not reach the dry run: %+v", got.Exec.Passes)
 	}
 	if res := ask(`{"file_path":"g.bot","vars":{"relase_tag":"v1"}}`); !strings.Contains(res.ExecError, "names no var") {
 		t.Fatalf("a name no var declares is not said: %+v", res)

@@ -76,6 +76,30 @@ type ScheduledBot struct {
 	LastError   string     `bson:"last_error,omitempty" json:"last_error,omitempty"`
 	LastErrorAt *time.Time `bson:"last_error_at,omitempty" json:"last_error_at,omitempty"`
 
+	// LastRun* proves what the LAUNCHED run did — the OUTCOME of the last
+	// firing, not just the dispatch decision (#1426). LastFireAt says "we
+	// decided to fire"; these say "and here is the result". Empty until
+	// the first run reaches a terminal status. Written by the
+	// schedule-outcome eventbus subscriber (pkg/server) which reads
+	// run.Source.ScheduleID from the same run-terminal chokepoint that
+	// emits trigger.BuildRunOutcome — never a poller, per the ticket's
+	// arbitration.
+	//
+	// LastRunErrorCode is a stable machine-readable classifier (a
+	// sandbox_refused code from #1425, an org-gate refusal code, a store
+	// timeout tag). LastRunError is the free-text message the operator
+	// reads; a caller can dispatch on the code without parsing the
+	// message (dashboards colour-coding by code) but the message stays
+	// the authoritative record. Both are cleared on any terminal outcome
+	// that carries no error — a finished run, and a cancelled one (an
+	// operator cancel is a decision, not a defect) — so the schedule's
+	// health surface tracks the LAST outcome, not the last FAILURE.
+	LastRunID        string     `bson:"last_run_id,omitempty" json:"last_run_id,omitempty"`
+	LastRunStatus    string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
+	LastRunError     string     `bson:"last_run_error,omitempty" json:"last_run_error,omitempty"`
+	LastRunErrorCode string     `bson:"last_run_error_code,omitempty" json:"last_run_error_code,omitempty"`
+	LastRunAt        *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
+
 	CreatedBy string    `bson:"created_by,omitempty" json:"created_by,omitempty"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -105,6 +129,17 @@ type Store interface {
 	// holds the copy ListDue returned, and an operator retuning the schedule
 	// in between must not lose the edit to a health write.
 	MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error
+	// MarkRunOutcome stamps the OUTCOME of the last run this schedule
+	// launched — the run-terminal counterpart of MarkLaunchError. Called by
+	// the schedule-outcome eventbus subscriber from the same chokepoint
+	// that fires trigger.BuildRunOutcome, so the schedule's health surface
+	// stays truthful even when a run fails halfway (a sandbox refusal, an
+	// org-quota exhaustion, a hard runtime crash). The four (runID, status,
+	// errMsg, errCode) fields go in together — a caller may pass empty
+	// errMsg/errCode on success to CLEAR the previous failure. Idempotent
+	// under a replayed event (writer for the same runID a second time is a
+	// no-op on the store's own equality check).
+	MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error
 	// Update applies a partial mutation to an existing schedule. Only the
 	// non-nil fields of patch are written; NextFireAt is recomputed from the
 	// new Cron when Cron is set.

@@ -339,17 +339,25 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 }
 
 // waitCtx derives the ctx that bounds Unsubscribe + WG.Wait on cancel.
-// When the caller passes a joinCtx (shared deadline) we honour it verbatim
-// so N subscriptions share ONE budget. Otherwise fall back to a fresh
-// WithTimeout on the default budget so a standalone cancel stays bounded.
+// The returned deadline is CLAMPED to at most subscribeCancelBudget — a
+// future caller that hands a 30 s HTTP-request ctx to cancel cannot make
+// a runaway handler hold the cancel for 30 s; the seam's guarantee is
+// that cancel returns within the budget, no matter what deadline the
+// caller carries (#1477 follow-up question 1). A shorter caller deadline
+// (a shared joinCtx under shutdown) is honoured verbatim so N cancels
+// still compose to ONE budget.
 func (b *NATSBus) waitCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := b.subscribeCancelBudget()
 	if ctx == nil {
-		return context.WithTimeout(context.Background(), b.subscribeCancelBudget())
+		return context.WithTimeout(context.Background(), budget)
 	}
-	if _, ok := ctx.Deadline(); ok {
+	if deadline, ok := ctx.Deadline(); ok {
+		if time.Until(deadline) > budget {
+			return context.WithTimeout(ctx, budget)
+		}
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, b.subscribeCancelBudget())
+	return context.WithTimeout(ctx, budget)
 }
 
 var _ Bus = (*NATSBus)(nil)

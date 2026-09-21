@@ -32,6 +32,23 @@ import (
 // sandbox's bind-mount semantics into this generic helper. Edits to
 // the lookup contract should land in both places.
 func LocateIterionBinary() string {
+	p := locateIterionBinaryCandidate()
+	if p == "" {
+		return ""
+	}
+	// A relative ITERION_BIN is stat'd against the engine's cwd, but the
+	// path travels to subprocesses that run with a DIFFERENT cwd (a tool
+	// node's workDir, an MCP server, a bind-mount source) where it
+	// resolves elsewhere or nowhere — silently. Every consumer gets one
+	// absolute form.
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
+func locateIterionBinaryCandidate() string {
 	if exe, err := os.Executable(); err == nil && !isVolatileBuildPath(exe) {
 		candidate := filepath.Join(filepath.Dir(exe), "iterion")
 		if isExecutableFile(candidate) {
@@ -67,6 +84,15 @@ func LocateIterionBinary() string {
 // Matches both Linux `/tmp/go-build*` and macOS `/var/folders/.../T/go-build*`.
 func isVolatileBuildPath(p string) bool {
 	return strings.Contains(p, "/go-build") || strings.Contains(p, "/T/go-build")
+}
+
+// IsVolatileExecutable reports whether p looks like a Go-toolchain
+// temporary build artifact (`go run`, `go test`, watchexec-driven hot
+// rebuilds) — see isVolatileBuildPath. For callers that degrade quietly
+// when no engine binary can be located and need that degradation to stay
+// quiet exactly on the volatile paths, warning everywhere else.
+func IsVolatileExecutable(p string) bool {
+	return isVolatileBuildPath(p)
 }
 
 func isExecutableFile(p string) bool {

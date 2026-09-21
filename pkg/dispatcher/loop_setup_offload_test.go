@@ -187,12 +187,32 @@ func TestDispatch_SlotCountedFromClaimTime(t *testing.T) {
 		t.Fatal("dispatch-setup worker never reached the gated UpdateState")
 	}
 
-	// Give the actor a beat to (not) dispatch the second issue. With the slot
-	// counted from claim time, the global cap is already full, so the second
-	// candidate is skipped in the SAME cmdCandidates scan.
-	time.Sleep(50 * time.Millisecond)
+	// Mechanism observed: after `<-ft.updateEntered` the kick-off tick has
+	// PROGRESSED past card B's evaluation (the same cmdCandidates scan
+	// that claimed A also decides on B), but the tick's terminating
+	// `fireSnapshot()` (dispatcher.go) may not have published yet.
+	// Sending a `cmdReload` and waiting until it lands in the snapshot
+	// proves the actor has advanced past every command queued BEFORE
+	// this reload — including the tick itself and its final
+	// fireSnapshot. Once observed, the snapshot's Slots/Running reflect
+	// the decision the tick made about card B. 5 s is a liveness ceiling
+	// on a wedged actor, not the witness. #1471.
+	newCfg := *c.cfg.Load()
+	newCfg.Name = "check-slot"
+	c.Reload(&newCfg)
 
-	snap := c.Snapshot()
+	deadline := time.Now().Add(5 * time.Second)
+	var snap Snapshot
+	for time.Now().Before(deadline) {
+		snap = c.Snapshot()
+		if snap.Name == "check-slot" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if snap.Name != "check-slot" {
+		t.Fatal("actor did not apply cmdReload within 5 s — cannot decide the slot-count assertion (actor wedged)")
+	}
 	if snap.Slots.GlobalUsed != 1 {
 		t.Fatalf("GlobalUsed = %d while setup in flight, want 1 (slot counted from claim time)", snap.Slots.GlobalUsed)
 	}

@@ -237,6 +237,12 @@ func TestMemoryStore_CRUDRoundTrip(t *testing.T) {
 		t.Errorf("Update ghost: want ErrNotFound, got %v", err)
 	}
 
+	// MarkRunOutcome — the ticket-1426 twin of MarkLaunchError: a targeted
+	// field write that stamps the run's terminal outcome on the schedule,
+	// or clears the previous error on a successful run. Idempotent under
+	// a replay of the same event.
+	assertMarkRunOutcomeContract(t, store, "sb-crud", now)
+
 	// Delete removes it.
 	if err := store.Delete(ctx, "sb-crud"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -246,6 +252,84 @@ func TestMemoryStore_CRUDRoundTrip(t *testing.T) {
 	}
 	if err := store.Delete(ctx, "sb-crud"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete after delete: want ErrNotFound, got %v", err)
+	}
+}
+
+// assertMarkRunOutcomeContract is the shared conformance check for
+// MarkRunOutcome — both stores (memory + mongo) run it, so the contract
+// stays one place (#1426). Property tests: (1) a failure stamps id +
+// status + error + code + at; (2) a subsequent success CLEARS the
+// error/code (the field is a health signal, not a permanent record);
+// (3) an unknown id returns ErrNotFound; (4) an OUT-OF-ORDER delivery
+// (an `at` older than the stamped one — an overlapping run finishing
+// late, or a NATS redelivery racing the next tick) is a no-op, so the
+// health field never moves backwards.
+func assertMarkRunOutcomeContract(t *testing.T, store Store, scheduleID string, now time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	// Failure: stamps all four fields.
+	if err := store.MarkRunOutcome(ctx, scheduleID, "run-boom", "failed",
+		"sandbox: strict mode requested but no runtime available",
+		"sandbox_refused", now); err != nil {
+		t.Fatalf("MarkRunOutcome failure: %v", err)
+	}
+	got, err := store.Get(ctx, scheduleID)
+	if err != nil {
+		t.Fatalf("Get after failure: %v", err)
+	}
+	if got.LastRunID != "run-boom" || got.LastRunStatus != "failed" {
+		t.Errorf("outcome fields = (%q, %q); want (run-boom, failed)", got.LastRunID, got.LastRunStatus)
+	}
+	if got.LastRunError == "" || got.LastRunErrorCode != "sandbox_refused" {
+		t.Errorf("outcome error = (%q, %q); want non-empty msg + sandbox_refused code", got.LastRunError, got.LastRunErrorCode)
+	}
+	if got.LastRunAt == nil {
+		t.Error("LastRunAt is nil after MarkRunOutcome")
+	}
+	// Success on the next firing CLEARS the previous error/code so the
+	// health surface tracks the LAST outcome, not the last FAILURE.
+	if err := store.MarkRunOutcome(ctx, scheduleID, "run-ok", "finished", "", "", now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkRunOutcome success: %v", err)
+	}
+	got, _ = store.Get(ctx, scheduleID)
+	if got.LastRunID != "run-ok" || got.LastRunStatus != "finished" {
+		t.Errorf("success fields = (%q, %q); want (run-ok, finished)", got.LastRunID, got.LastRunStatus)
+	}
+	if got.LastRunError != "" || got.LastRunErrorCode != "" {
+		t.Errorf("success should clear error = (%q, %q); want empty", got.LastRunError, got.LastRunErrorCode)
+	}
+	// Out-of-order delivery: a stamp OLDER than the one on the row (the
+	// failed run finishing late, after its successor's success was
+	// recorded) must be a silent no-op — the health field never moves
+	// backwards. Mutation: drop the monotonicity guard in either twin →
+	// last_run_id reverts to "run-boom" → red.
+	if err := store.MarkRunOutcome(ctx, scheduleID, "run-boom", "failed",
+		"late delivery of the failed run", "sandbox_refused", now.Add(30*time.Second)); err != nil {
+		t.Fatalf("MarkRunOutcome out-of-order: %v", err)
+	}
+	got, _ = store.Get(ctx, scheduleID)
+	if got.LastRunID != "run-ok" || got.LastRunStatus != "finished" {
+		t.Errorf("out-of-order delivery moved the field backwards: (%q, %q); want (run-ok, finished)", got.LastRunID, got.LastRunStatus)
+	}
+	if got.LastRunError != "" || got.LastRunErrorCode != "" {
+		t.Errorf("out-of-order delivery resurrected the error = (%q, %q); want empty", got.LastRunError, got.LastRunErrorCode)
+	}
+	// Equal-timestamp redelivery (the same event replayed by the queue
+	// group) must be an idempotent no-op that still commits — the $lte /
+	// !After guard admits `at == last_run_at`, and rewriting identical
+	// values is invisible. Mutation: `$lte` → `$lt` (or `After` →
+	// `!Before`) reddens the strict-older row above, not this one; this
+	// row pins that the boundary itself stays admitted.
+	if err := store.MarkRunOutcome(ctx, scheduleID, "run-ok", "finished", "", "", now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkRunOutcome equal-at redelivery: %v", err)
+	}
+	got, _ = store.Get(ctx, scheduleID)
+	if got.LastRunID != "run-ok" || got.LastRunStatus != "finished" || got.LastRunError != "" {
+		t.Errorf("equal-at redelivery changed the row: (%q, %q, %q); want unchanged", got.LastRunID, got.LastRunStatus, got.LastRunError)
+	}
+	// Unknown id → ErrNotFound (both twins).
+	if err := store.MarkRunOutcome(ctx, "does-not-exist", "run-x", "failed", "boom", "code", now); !errors.Is(err, ErrNotFound) {
+		t.Errorf("MarkRunOutcome on an unknown id = %v, want ErrNotFound", err)
 	}
 }
 
@@ -329,6 +413,10 @@ func TestMongoStore_CAS(t *testing.T) {
 	if err := store.MarkLaunchError(ctx, "ghost", "boom", now); !errors.Is(err, ErrNotFound) {
 		t.Errorf("MarkLaunchError on an unknown id = %v, want ErrNotFound", err)
 	}
+
+	// #1426 twin: exercise the same MarkRunOutcome contract against the
+	// mongo store so the two twins never drift.
+	assertMarkRunOutcomeContract(t, store, "sb-1", now)
 
 	if err := store.Delete(ctx, "sb-1"); err != nil {
 		t.Errorf("Delete: %v", err)

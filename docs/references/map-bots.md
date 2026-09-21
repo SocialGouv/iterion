@@ -32,7 +32,7 @@
 | `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1 · 7 | 1.1.1 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 1 · 1 | 0.1.2 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 1 · 0 | 0.1.2 |
-| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.5 |
+| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.6 |
 | `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 1 · 8 | 2.0.1 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 1 · 8 | 0.1.2 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.4 |

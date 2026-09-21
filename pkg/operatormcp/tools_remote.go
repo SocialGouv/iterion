@@ -103,7 +103,14 @@ func remoteTools() []Tool {
 			Description: "List the bot catalog of the remote instance.",
 			ReadOnly:    true,
 			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-			handler: func(ctx context.Context, s *Server, _ json.RawMessage) (string, bool, error) {
+			handler: func(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
+				// No arguments declared; decode strictly so an
+				// unknown key is a tool error (#1335), not a silent
+				// drop against additionalProperties: false.
+				var args struct{}
+				if err := s.unmarshalArgs("remote_bots_list", raw, &args); err != nil {
+					return "", false, err
+				}
 				return remoteHTTP(ctx, "GET", "/api/v1/bots", nil)
 			},
 		},
@@ -316,7 +323,14 @@ func remoteHTTP(ctx context.Context, method, path string, body []byte) (string, 
 	return string(resp), false, nil
 }
 
-func handleRemoteStatus(ctx context.Context, _ *Server, _ json.RawMessage) (string, bool, error) {
+func handleRemoteStatus(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
+	// remote_status accepts no arguments; decode strictly so an
+	// unknown key surfaces as a tool error (#1335), not a silent
+	// drop against the schema's additionalProperties: false.
+	var args struct{}
+	if err := s.unmarshalArgs("remote_status", raw, &args); err != nil {
+		return "", false, err
+	}
 	c, err := cli.NewRemoteClient()
 	if err != nil {
 		return "", false, err
@@ -340,7 +354,7 @@ func handleRemoteStatus(ctx context.Context, _ *Server, _ json.RawMessage) (stri
 	return out, false, nil
 }
 
-func handleRemoteRunsList(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteRunsList(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		Status   string `json:"status"`
 		Workflow string `json:"workflow"`
@@ -348,7 +362,7 @@ func handleRemoteRunsList(ctx context.Context, _ *Server, raw json.RawMessage) (
 		Since    string `json:"since"`
 		Limit    int    `json:"limit"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_runs_list", raw, &args); err != nil {
 		return "", false, err
 	}
 	q := map[string]string{
@@ -363,37 +377,38 @@ func handleRemoteRunsList(ctx context.Context, _ *Server, raw json.RawMessage) (
 	return remoteHTTP(ctx, "GET", "/api/runs"+cli.QueryString(q), nil)
 }
 
-func requireRunID(raw json.RawMessage) (string, json.RawMessage, error) {
-	var args map[string]json.RawMessage
-	if err := unmarshalArgs(raw, &args); err != nil {
-		return "", nil, err
+// requireRunID decodes the {"run_id": "…"} argument shape shared by
+// remote_run_get and remote_runs_cancel, strictly (no silent drop of
+// an unknown key). toolName scopes the accepted-keys hint the error
+// carries when the caller passed something else — the one place both
+// handlers cross for their argument decode.
+func (s *Server) requireRunID(toolName string, raw json.RawMessage) (string, error) {
+	var args struct {
+		RunID string `json:"run_id"`
 	}
-	var id string
-	if v, ok := args["run_id"]; ok {
-		if err := json.Unmarshal(v, &id); err != nil {
-			return "", nil, fmt.Errorf("invalid run_id: %w", err)
-		}
+	if err := s.unmarshalArgs(toolName, raw, &args); err != nil {
+		return "", err
 	}
-	if id == "" {
-		return "", nil, fmt.Errorf("run_id is required")
+	if args.RunID == "" {
+		return "", fmt.Errorf("run_id is required")
 	}
-	return url.PathEscape(id), raw, nil
+	return url.PathEscape(args.RunID), nil
 }
 
-func handleRemoteRunGet(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
-	id, _, err := requireRunID(raw)
+func handleRemoteRunGet(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
+	id, err := s.requireRunID("remote_run_get", raw)
 	if err != nil {
 		return "", false, err
 	}
 	return remoteHTTP(ctx, "GET", "/api/runs/"+id, nil)
 }
 
-func handleRemoteRunEvents(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteRunEvents(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		RunID string `json:"run_id"`
 		Since int64  `json:"since"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_run_events", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -402,12 +417,12 @@ func handleRemoteRunEvents(ctx context.Context, _ *Server, raw json.RawMessage) 
 	return remoteHTTP(ctx, "GET", fmt.Sprintf("/api/runs/%s/events?from=%d", url.PathEscape(args.RunID), args.Since), nil)
 }
 
-func handleRemoteRunLog(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteRunLog(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		RunID string `json:"run_id"`
 		Tail  int    `json:"tail"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_run_log", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -429,13 +444,13 @@ func handleRemoteRunLog(ctx context.Context, _ *Server, raw json.RawMessage) (st
 	return text, false, nil
 }
 
-func handleRemoteRunArtifacts(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteRunArtifacts(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		RunID string `json:"run_id"`
 		Node  string `json:"node"`
 		File  string `json:"file"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_run_artifacts", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -461,11 +476,11 @@ func handleRemoteRunArtifacts(ctx context.Context, _ *Server, raw json.RawMessag
 	return remoteHTTP(ctx, "GET", path, nil)
 }
 
-func handleRemoteBotsGet(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteBotsGet(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		Name string `json:"name"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_bots_get", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.Name == "" {
@@ -474,13 +489,13 @@ func handleRemoteBotsGet(ctx context.Context, _ *Server, raw json.RawMessage) (s
 	return remoteHTTP(ctx, "GET", "/api/v1/bots/"+url.PathEscape(args.Name), nil)
 }
 
-func handleRemoteIssuesList(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteIssuesList(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		States   []string `json:"states"`
 		Labels   []string `json:"labels"`
 		Assignee string   `json:"assignee"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_issues_list", raw, &args); err != nil {
 		return "", false, err
 	}
 	q := url.Values{}
@@ -500,11 +515,11 @@ func handleRemoteIssuesList(ctx context.Context, _ *Server, raw json.RawMessage)
 	return remoteHTTP(ctx, "GET", path, nil)
 }
 
-func handleRemoteRoutes(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteRoutes(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		Filter string `json:"filter"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_routes", raw, &args); err != nil {
 		return "", false, err
 	}
 	text, isErr, err := remoteHTTP(ctx, "GET", "/api/routes", nil)
@@ -534,11 +549,11 @@ func handleRemoteRoutes(ctx context.Context, _ *Server, raw json.RawMessage) (st
 	return out, false, nil
 }
 
-func handleRemoteOpenAPI(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteOpenAPI(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		PathPrefix string `json:"path_prefix"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_openapi", raw, &args); err != nil {
 		return "", false, err
 	}
 	text, isErr, err := remoteHTTP(ctx, "GET", "/api/openapi.json", nil)
@@ -585,7 +600,7 @@ func handleRemoteRunsLaunch(ctx context.Context, s *Server, raw json.RawMessage)
 		MergeInto  string            `json:"merge_into"`
 		BranchName string            `json:"branch_name"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_runs_launch", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.BotID == "" && args.FilePath == "" {
@@ -614,13 +629,13 @@ func handleRemoteRunsLaunch(ctx context.Context, s *Server, raw json.RawMessage)
 	return out, false, nil
 }
 
-func handleRemoteRunsResume(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteRunsResume(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		RunID   string         `json:"run_id"`
 		Answers map[string]any `json:"answers"`
 		Force   bool           `json:"force"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_runs_resume", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.RunID == "" {
@@ -640,15 +655,15 @@ func handleRemoteRunsResume(ctx context.Context, _ *Server, raw json.RawMessage)
 	return remoteHTTP(ctx, "POST", "/api/runs/"+url.PathEscape(args.RunID)+"/resume", body)
 }
 
-func handleRemoteRunsCancel(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
-	id, _, err := requireRunID(raw)
+func handleRemoteRunsCancel(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
+	id, err := s.requireRunID("remote_runs_cancel", raw)
 	if err != nil {
 		return "", false, err
 	}
 	return remoteHTTP(ctx, "POST", "/api/runs/"+id+"/cancel", []byte("{}"))
 }
 
-func handleRemoteIssueCreate(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteIssueCreate(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		Title    string            `json:"title"`
 		Body     string            `json:"body"`
@@ -659,7 +674,7 @@ func handleRemoteIssueCreate(ctx context.Context, _ *Server, raw json.RawMessage
 		Bot      string            `json:"bot"`
 		BotArgs  map[string]string `json:"bot_args"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_issue_create", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.Title == "" {
@@ -699,10 +714,27 @@ func handleRemoteIssueCreate(ctx context.Context, _ *Server, raw json.RawMessage
 // semantics so an empty string can clear a field, like the CLI).
 var remoteIssueUpdatableFields = []string{"title", "body", "labels", "priority", "assignee", "bot", "bot_args"}
 
-func handleRemoteIssueUpdate(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteIssueUpdate(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var fields map[string]json.RawMessage
-	if err := unmarshalArgs(raw, &fields); err != nil {
+	if err := s.unmarshalArgs("remote_issue_update", raw, &fields); err != nil {
 		return "", false, err
+	}
+	// json.Decoder.DisallowUnknownFields only rejects unknown keys
+	// when decoding into a STRUCT — a map[string]json.RawMessage
+	// accepts every key. This tool decodes into a map to keep field
+	// semantics open (a caller updates any subset), so the
+	// unknown-key check runs manually here against the declared
+	// list, matching the promise the tool's inputSchema advertises
+	// (issue #1335).
+	allowed := map[string]bool{"id": true}
+	for _, k := range remoteIssueUpdatableFields {
+		allowed[k] = true
+	}
+	for k := range fields {
+		if !allowed[k] {
+			accepted := append([]string{"id"}, remoteIssueUpdatableFields...)
+			return "", false, fmt.Errorf("invalid arguments: unknown field %q — the tool's inputSchema declares additionalProperties: false; accepted keys: %s", k, strings.Join(accepted, ", "))
+		}
 	}
 	var id string
 	if v, ok := fields["id"]; ok {
@@ -729,12 +761,12 @@ func handleRemoteIssueUpdate(ctx context.Context, _ *Server, raw json.RawMessage
 	return remoteHTTP(ctx, "PATCH", "/api/v1/native/issues/"+url.PathEscape(id), body)
 }
 
-func handleRemoteIssueTransition(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteIssueTransition(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		ID string `json:"id"`
 		To string `json:"to"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_issue_transition", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.ID == "" || args.To == "" {
@@ -747,14 +779,14 @@ func handleRemoteIssueTransition(ctx context.Context, _ *Server, raw json.RawMes
 	return remoteHTTP(ctx, "POST", "/api/v1/native/issues/"+url.PathEscape(args.ID)+"/transition", body)
 }
 
-func handleRemoteIssueComment(ctx context.Context, _ *Server, raw json.RawMessage) (string, bool, error) {
+func handleRemoteIssueComment(ctx context.Context, s *Server, raw json.RawMessage) (string, bool, error) {
 	var args struct {
 		ID           string `json:"id"`
 		Text         string `json:"text"`
 		Bot          string `json:"bot"`
 		TransitionTo string `json:"transition_to"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_issue_comment", raw, &args); err != nil {
 		return "", false, err
 	}
 	if args.ID == "" || args.Text == "" {
@@ -780,7 +812,7 @@ func handleRemoteAPI(ctx context.Context, s *Server, raw json.RawMessage) (strin
 		Path   string `json:"path"`
 		Body   any    `json:"body"`
 	}
-	if err := unmarshalArgs(raw, &args); err != nil {
+	if err := s.unmarshalArgs("remote_api", raw, &args); err != nil {
 		return "", false, err
 	}
 	method := strings.ToUpper(strings.TrimSpace(args.Method))

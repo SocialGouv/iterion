@@ -53,8 +53,12 @@ func snapshotWorktree(wtPath, ref string) (string, error) {
 	if dirtyErr == nil && clean && !untracked {
 		return "", nil
 	}
-	// Stage every tracked + untracked change. Reverted at the end so
-	// the engine's index stays as it was before the snapshot pass.
+	// Stage EVERY tracked + untracked change — tree noise included, on
+	// purpose (#1464): a turn snapshot exists to replay the worktree AS IT
+	// WAS, and a rewind that came back without the mirror or the drifted
+	// lock would not be a rewind. The gates that exclude tree noise judge
+	// the PASS's work; the snapshot preserves the world. Reverted at the
+	// end so the engine's index stays as it was before the snapshot pass.
 	if out, err := runGit(wtPath, "add", "-A"); err != nil {
 		return "", fmt.Errorf("snapshot: git add -A: %w\noutput: %s", err, out)
 	}

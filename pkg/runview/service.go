@@ -59,7 +59,7 @@ type LaunchSpec struct {
 	// the currently-checked-out branch).
 	MergeInto string
 	// BranchName overrides the default storage branch
-	// `iterion/run/<friendly>` created on the worktree's HEAD.
+	// `iterion/run/<runID>` (the stable key, #1366) created on the worktree's HEAD.
 	BranchName string
 	// MergeStrategy selects how the run's commits are landed on the
 	// merge target: "squash" (default — collapse into one commit) or
