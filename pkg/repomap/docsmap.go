@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -77,6 +79,50 @@ func (d docsPages) Extract(root string) (string, error) {
 	return b.String(), nil
 }
 
+// linkTargetRe matches the destination of an inline link or image in a
+// summary cell: `](target)`.
+var linkTargetRe = regexp.MustCompile(`\]\(([^)]*)\)`)
+
+// externalTargetRe matches a target that leaves the repository: a URL with
+// a scheme, or a protocol-relative one.
+var externalTargetRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.-]*:|//)`)
+
+// reanchor rewrites the relative link targets a summary quotes so they
+// resolve from the map that carries it. The sentence is taken from the
+// page's own prose, where `adr/081-….md` or `README.md` names a file next
+// to that page; on the map (docs/references/, one level below docs/) the
+// same text would name nothing. Each target is resolved against the page's
+// directory and rewritten relative to OutputDir, its fragment kept; a bare
+// `#fragment` names the quoted page's own anchor, so it gains that page's
+// path. Scheme URLs and repository-root-absolute targets need nothing.
+func reanchor(summary, page string) string {
+	pageDir := path.Dir(page)
+	return linkTargetRe.ReplaceAllStringFunc(summary, func(m string) string {
+		target := m[2 : len(m)-1]
+		frag := ""
+		if i := strings.Index(target, "#"); i >= 0 {
+			frag, target = target[i:], target[:i]
+		}
+		var resolved string
+		switch {
+		case target == "":
+			if frag == "" || frag == "#" {
+				return m
+			}
+			resolved = page
+		case externalTargetRe.MatchString(target), strings.HasPrefix(target, "/"):
+			return m
+		default:
+			resolved = path.Join(pageDir, target)
+		}
+		rel, err := filepath.Rel(OutputDir, resolved)
+		if err != nil {
+			return m
+		}
+		return "](" + rel + frag + ")"
+	})
+}
+
 // readDocRow pulls a page's H1, its first prose sentence, and — for an
 // ADR — the Status bullet the template puts under the title.
 func readDocRow(abs, rel string) (docRow, error) {
@@ -105,7 +151,7 @@ func readDocRow(abs, rel string) (docRow, error) {
 		case row.IsADR && row.Status == "" && strings.HasPrefix(line, "- **Status**:"):
 			row.Status = firstSentence(strings.TrimPrefix(line, "- **Status**:"), 60)
 		case row.Summary == "" && isProse(line):
-			row.Summary = firstSentence(line, 140)
+			row.Summary = reanchor(firstSentence(line, 140), rel)
 		}
 		if row.Title != "" && row.Summary != "" && (!row.IsADR || row.Status != "") {
 			break
