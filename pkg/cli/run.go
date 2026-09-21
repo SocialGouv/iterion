@@ -10,7 +10,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
@@ -28,6 +27,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"github.com/SocialGouv/iterion/pkg/subbotsource"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
@@ -651,13 +651,12 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			defer func() { _ = c.Close() }()
 		}
 
-		// Capture the child's terminal-node output (the last node before Done)
-		// as the subbot's result. The callback fires concurrently when the
-		// child fans out parallel branches, so the capture is mutex-guarded.
-		var (
-			lastMu sync.Mutex
-			last   map[string]any
-		)
+		// Capture what the child emits — the terminal-node output (the last
+		// node before Done) a contractless subbot returns, plus the per-node
+		// outputs a contract's projection reads (#1280). The callback fires
+		// concurrently when the child fans out parallel branches, so the
+		// capture is mutex-guarded.
+		var capture runview.SubbotOutputCapture
 		var childContextSeed *store.ExecutionContext
 		if parent, loadErr := s.LoadRun(ctx, req.ParentRunID); loadErr == nil && parent != nil {
 			childContextSeed = parent.ExecutionContext.Clone()
@@ -692,12 +691,8 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// subbots died with "no SubbotRunner is wired" even though the
 			// depth guard below exists precisely to bound that recursion.
 			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
-			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
-				if out != nil {
-					lastMu.Lock()
-					last = out
-					lastMu.Unlock()
-				}
+			runtime.WithOnNodeFinished(func(_, nodeID string, out map[string]any) {
+				capture.Record(nodeID, out)
 			}),
 		}
 		// The child works in the parent's EFFECTIVE workdir (its worktree when
@@ -748,7 +743,10 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, s, req)
-		return last, nil
+		if contract := childWf.Contract; contract != nil {
+			return subbotcontracts.ProjectOutput(contract, capture.ByNode()), nil
+		}
+		return capture.Terminal(), nil
 	}
 }
 

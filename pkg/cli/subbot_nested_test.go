@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -117,5 +120,98 @@ workflow selfref:
 	}
 	if !strings.Contains(err.Error(), "recursion too deep") {
 		t.Fatalf("expected depth-guard error, got: %v", err)
+	}
+}
+
+// TestSubbotRunnerForCLI_ProjectsAContractedChildsOutput proves the CLI
+// closure's wiring of the contract projection (#1280): a child that keeps a
+// contract hands the parent its ports — including one read from a MID node —
+// not its terminal-node output map, which carries no carried field.
+func TestSubbotRunnerForCLI_ProjectsAContractedChildsOutput(t *testing.T) {
+	dir := t.TempDir()
+	child := `schema mid:
+  carried: string
+schema out:
+  ok: bool
+
+vars:
+  id: string = "none"
+
+contract kid:
+  version: 1
+  inputs:
+    id: string
+  outputs:
+    carried: string
+      from: first.carried
+    ok: bool
+      from: deep.ok
+
+tool first:
+  command: ` + "`printf '{\"carried\":\"c-%s\"}' {{vars.id}}`" + `
+  output: mid
+
+tool deep:
+  command: ` + "`printf '{\"ok\":true}'`" + `
+  output: out
+
+workflow child:
+  contract: kid
+  worktree: none
+  entry: first
+  first -> deep
+  deep -> done
+`
+	if err := os.WriteFile(filepath.Join(dir, "child.bot"), []byte(child), 0o644); err != nil {
+		t.Fatalf("write child: %v", err)
+	}
+
+	storeDir := filepath.Join(dir, "store")
+	s, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, iterlog.New(iterlog.LevelError, os.Stderr), RunOptions{NoInteractive: true})
+	out, err := runner(context.Background(), runtime.SubbotRequest{
+		Source:      "child.bot",
+		Vars:        map[string]any{"id": "n1"},
+		ParentRunID: "parent-run",
+		NodeID:      "run_child",
+	})
+	if err != nil {
+		t.Fatalf("contracted subbot run failed: %v", err)
+	}
+	if v, _ := out["carried"].(string); v != "c-n1" {
+		t.Fatalf("projected = %v, want carried=c-n1 read from the child's MID node — the terminal map has no carried field", out)
+	}
+	if v, _ := out["ok"].(bool); !v {
+		t.Fatalf("projected = %v, want ok=true from the contract port", out)
+	}
+
+	// The engine pinned the executed contract on the child's run doc — the
+	// record a re-attach reads, so the projection never needs the source
+	// again. The pin is asserted on the REAL doc the run wrote.
+	ids, err := s.ListRuns(context.Background())
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	var childDoc *store.Run
+	for _, id := range ids {
+		if r, cerr := s.LoadRun(context.Background(), id); cerr == nil && r.ParentRunID == "parent-run" {
+			childDoc = r
+		}
+	}
+	if childDoc == nil {
+		t.Fatal("no child run persisted")
+	}
+	if len(childDoc.PublicContract) == 0 {
+		t.Fatal("the child's run doc carries no pinned public contract")
+	}
+	var pc ir.PublicContract
+	if err := json.Unmarshal(childDoc.PublicContract, &pc); err != nil {
+		t.Fatalf("decode the pinned contract: %v", err)
+	}
+	if pc.Name != "kid" {
+		t.Fatalf("pinned contract = %q, want kid", pc.Name)
 	}
 }
