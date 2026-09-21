@@ -49,6 +49,7 @@ task test:race
 task test:bundle
 task test:live:compile     # compile every -tags=live test in the whole repo (`./...`, so any live-tagged file outside ./e2e is covered too) without running/cost; also runs in CI as a step of the required `test` job, so a refactor that breaks the live layer's compilation reddens the PR
 task openapi:check         # regenerate OpenAPI + studio types, fail on diff
+task docs:links            # every relative link and #anchor of the tracked markdown resolves, GitHub-style (docs:links:new = only what a change adds)
 task sdk:ts:check          # TypeScript SDK build/typecheck/tests
 task desktop:test
 task chart:lint

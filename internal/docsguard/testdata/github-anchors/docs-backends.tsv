@@ -1,0 +1,49 @@
+# 🤝 Backends and credential auto-detection	-backends-and-credential-auto-detection
+## Backend status	backend-status
+### Parity doctrine: `claw` ↔ `claude_code`	parity-doctrine-claw--claude_code
+## TL;DR	tldr
+## Resolution chain	resolution-chain
+### Launch-time per-node/-group overrides	launch-time-per-node-group-overrides
+## Default preference order	default-preference-order
+### Overriding the order	overriding-the-order
+## Per-node provider routing & fallback chain (`provider:`)	per-node-provider-routing--fallback-chain-provider
+### Fallback chain	fallback-chain
+### Which backends honour the chain	which-backends-honour-the-chain
+### Per-element model (`provider:model`)	per-element-model-providermodel
+## Cross-backend fallback routes (`fallbacks:`)	cross-backend-fallback-routes-fallbacks
+### When a route is taken	when-a-route-is-taken
+### Terminal degrade (`action: skip`) and the route gate (`when:`)	terminal-degrade-action-skip-and-the-route-gate-when
+### What a fall-through leaves behind	what-a-fall-through-leaves-behind
+### A best-effort session that no longer loads	a-best-effort-session-that-no-longer-loads
+### Refusals	refusals
+### At launch, without editing the bot	at-launch-without-editing-the-bot
+### Scope	scope
+## Transient-error & network resilience	transient-error--network-resilience
+## Per-backend detection rules	per-backend-detection-rules
+### `claude_code`	claude_code
+### `codex`	codex
+#### Native Web search (`tools: [web_search]`)	native-web-search-tools-web_search
+#### Sandbox and `full_access`	sandbox-and-full_access
+#### Image inputs (`images:`)	image-inputs-images
+### `claw`	claw
+#### Stream-silence watchdog	stream-silence-watchdog
+#### The `tools:` list is load-bearing here (`C135`)	the-tools-list-is-load-bearing-here-c135
+### xAI Grok (`model: "xai/…"`)	xai-grok-model-xai
+### OpenAI via ChatGPT forfait (Codex CLI OAuth)	openai-via-chatgpt-forfait-codex-cli-oauth
+## Third-party agent CLIs (`pi`, `kimi`, `grok`, and the CLI-agent seam)	third-party-agent-clis-pi-kimi-grok-and-the-cli-agent-seam
+### `pi` (pi coding agent)	pi-pi-coding-agent
+#### What it brings	what-it-brings
+#### What it does NOT bring	what-it-does-not-bring
+#### Behaviour worth knowing	behaviour-worth-knowing
+#### 💳 Subscription credentials bill to *extra usage*	-subscription-credentials-bill-to-extra-usage
+#### Environment variables	environment-variables
+### `kimi` (Moonshot kimi-code)	kimi-moonshot-kimi-code
+### `grok` (xAI Grok Build CLI)	grok-xai-grok-build-cli
+### Behavioural notes (generic Kimi/Grok delegates)	behavioural-notes-generic-kimigrok-delegates
+## Editor UX	editor-ux
+## Workflow-level pinning	workflow-level-pinning
+## Using a non-Anthropic provider via the Anthropic wire format (z.ai / GLM)	using-a-non-anthropic-provider-via-the-anthropic-wire-format-zai--glm
+### Shortcut: `ZAI_API_KEY` alone	shortcut-zai_api_key-alone
+### Explicit form: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`	explicit-form-anthropic_base_url--anthropic_auth_token
+## Client identity (User-Agent + custom headers) — claw backend	client-identity-user-agent--custom-headers--claw-backend
+## Troubleshooting	troubleshooting

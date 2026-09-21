@@ -3,13 +3,14 @@ import { dirname, join, normalize } from 'node:path'
 import { defineConfig } from 'vitepress'
 import { withMermaid } from 'vitepress-plugin-mermaid'
 import type MarkdownIt from 'markdown-it'
+import { githubSlug } from './github-slug.mjs'
 
 const REPO = 'https://github.com/SocialGouv/iterion'
 const BLOB = `${REPO}/blob/main`
 
 // Extensions that are source artifacts, not site pages: even when referenced
 // with an in-/docs relative path, link them to the file on GitHub.
-const RAW_SOURCE = /\.(go|ebnf|ya?ml|sh|json|bot|botz|ts|tsx|mod|sum|toml|proto)$/i
+const RAW_SOURCE = /\.(go|ebnf|ya?ml|sh|json|bot|botz|ts|tsx|mod|sum|toml|proto|csv)$/i
 
 // Docs are authored to be read on github.com: hundreds of links escape /docs
 // (../pkg/*.go, ../README.md, ...) or point at raw in-repo source artifacts.
@@ -348,6 +349,10 @@ export default withMermaid(
       ['meta', { name: 'twitter:image', content: 'https://socialgouv.github.io/iterion/og.png' }],
     ],
     markdown: {
+      // Heading anchors follow GitHub's rule (github-slug.mjs), so a
+      // `#fragment` written for github.com resolves here too; `task
+      // docs:links` checks every link against that one rule.
+      anchor: { slugify: githubSlug },
       // The .bot DSL uses ```iter fences (YAML-like, indentation-based) — alias
       // to the bundled yaml grammar. (```ebnf isn't bundled either but has no
       // close bundled match; it falls back to plain text on its own.)

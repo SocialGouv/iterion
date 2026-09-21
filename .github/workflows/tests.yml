@@ -30,7 +30,7 @@ concurrency:
 # it inside the merge queue buys a verdict nobody can act on — while holding a
 # runner slot the queue needs. The org shares 20 concurrent jobs across every
 # repository, and a queue entry is a full CI cycle, so those slots are what
-# decides how long a merge takes. The six advisory jobs below therefore run
+# decides how long a merge takes. The seven advisory jobs below therefore run
 # on the pull request and on main, and skip in `merge_group`.
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
@@ -938,3 +938,44 @@ jobs:
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
+
+  docs-links:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file. It reports what a change ADDS
+    # to the documentation's broken links (#1233), never the backlog it
+    # inherited: the head tree is compared against the base tree, so a page
+    # the change did not touch cannot redden it. `task docs:links` is the
+    # whole-tree check. To promote this to a required check: delete the
+    # merge_group skip and the step-level continue-on-error in the same
+    # change, and add it to the ruleset.
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Links broken by this change
+        # Step-level rather than job-level on purpose: a job-level
+        # continue-on-error still paints the job red on the pull request,
+        # which is the one thing an advisory verdict must not do. Here the
+        # step fails, each new broken link lands as an annotation on its line,
+        # and the job stays green.
+        continue-on-error: true
+        env:
+          # The base tree, not a merge base: a shallow clone has no history to
+          # walk, and one fetched commit is all the comparison needs. On a
+          # pull request HEAD is the merge of the change onto its base, so
+          # the difference is exactly what the change adds.
+          SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$SINCE"
+          go run -mod=vendor ./scripts/docslinks -since "$SINCE" -format github
+      - name: Site slugifier held to the GitHub-verified anchors
+        run: node docs/scripts/check-anchor-slugs.mjs
+      - name: Whole-tree backlog (informational)
+        continue-on-error: true
+        run: go run -mod=vendor ./scripts/docslinks
