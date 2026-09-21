@@ -232,36 +232,56 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	}
 	result := out.Result
 
-	output := result.Output
-
-	// If structured output parsing fell back to text wrapper, attempt JSON
-	// extraction from the text. Routers must produce structured output.
+	// A text answer that IS a JSON object is the structured answer: keep
+	// the parsed map as the output. Anything else stays a parse fallback,
+	// which the schema re-ask below treats as one more ask before the
+	// router fails — routers must produce structured output.
 	if result.ParseFallback {
-		if textVal, ok := output["text"].(string); ok {
+		if textVal, ok := result.Output["text"].(string); ok {
 			var parsed map[string]any
 			if json.Unmarshal([]byte(textVal), &parsed) == nil {
-				output = parsed
-			} else {
-				// Same bill as the dispatch failure above, and a surer
-				// one: the generation SUCCEEDED and was paid for — only
-				// its shape is unusable. Metered from out.Result rather
-				// than the local `output`, which this very block may
-				// already have replaced with a fresh `parsed` map that
-				// never carried the delegate's stamps.
-				return meteredFailureOutput(out, backendName), fmt.Errorf("model: llm router %q: backend returned unstructured text, cannot determine route selection", node.ID)
+				result.Output = parsed
+				result.ParseFallback = false
 			}
 		}
 	}
 
-	// Strict validation against the router schema.
-	if err := ValidateOutput(output, schema); err != nil {
-		return meteredFailureOutput(out, backendName), fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
+	// Everything below acts on the element that SERVED, which is the
+	// router's own backend unless the chain fell through — the reading
+	// executeBackend takes, so the stamps and the re-ask name the route
+	// that actually answered.
+	servingBackendName := firstNonEmpty(out.BackendName, backendName)
+	servingBackend := out.Backend
+	if servingBackend == nil {
+		servingBackend = backend
+	}
+	servingTask := out.Task
+	if servingTask == nil {
+		built, err := assemble(ctx, servingBackendName)
+		if err != nil {
+			return meteredFailureOutput(out, servingBackendName), fmt.Errorf("model: llm router %q: %w", node.ID, err)
+		}
+		servingTask = built
 	}
 
-	// Attach metadata.
-	stampDelegateOutputMeta(output, result, backendName)
+	// Strict validation against the router schema — with the same single
+	// re-ask an agent's schema failure gets: a run lost to a missing field
+	// the model could have supplied in one more turn is the same loss on a
+	// router as on an agent.
+	validated, err := e.validateAndRetry(ctx, backendFields{id: node.ID, kind: "llm router"}, servingBackendName, servingBackend, servingTask, result, schema)
+	if err != nil {
+		// The generation SUCCEEDED and was paid for — only its shape is
+		// unusable. validateAndRetry hands back the metered result on every
+		// error exit, so the engine books the whole bill.
+		out.Result = validated
+		return meteredFailureOutput(out, servingBackendName), err
+	}
+	result = validated
 
-	return output, nil
+	// Attach metadata.
+	stampDelegateOutputMeta(result.Output, result, servingBackendName)
+
+	return result.Output, nil
 }
 
 // ---------------------------------------------------------------------------

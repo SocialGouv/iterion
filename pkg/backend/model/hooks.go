@@ -964,10 +964,17 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	}
 }
 
-// putDelegateModelFields copies the model/window fields onto an event
-// payload, omitting empties and zeros so observers can tell "unknown"
-// from a measured empty by the key's absence — the CostUSD precedent.
+// putDelegateModelFields copies the model/window fields — and the attempt /
+// re-ask markers of a schema re-ask — onto an event payload, omitting
+// empties and zeros so observers can tell "unknown" from a measured empty
+// by the key's absence — the CostUSD precedent.
 func putDelegateModelFields(data map[string]any, info DelegateInfo) {
+	if info.Reask != "" {
+		data["reask"] = info.Reask
+		if info.Attempt > 0 {
+			data["attempt"] = info.Attempt
+		}
+	}
 	if info.DeclaredModel != "" {
 		data["declared_model"] = info.DeclaredModel
 	}

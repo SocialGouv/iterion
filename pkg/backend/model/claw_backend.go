@@ -242,6 +242,13 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	// A continued conversation is the executor's tool-less schema re-ask:
+	// it runs in-process by design (see Task.ContinueConversation) and is
+	// refused rather than forwarded to a runner that may predate the field.
+	if len(task.ContinueConversation) > 0 && task.Sandbox != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: node %q: a continued conversation runs in-process, never through the sandbox runner", task.NodeID)
+	}
+
 	if task.Sandbox != nil {
 		// The permission gate crosses the sandbox IPC boundary as a
 		// pre-task permission_policy envelope: the in-container
@@ -416,6 +423,30 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			}.ToContentBlock()},
 		})
 		opts.Messages = prior
+	}
+
+	// Continuation: a COMPLETED conversation the executor asks one more
+	// question of — its schema re-ask. The prior messages are replayed as
+	// they ended and the user text becomes the next turn; nothing is
+	// pending, so it cannot combine with the resume form above (which
+	// answers a pending tool_use). The store prepend is skipped for both
+	// forms (applySessionMessagesForTask): they already carry the history
+	// the store holds.
+	if len(task.ContinueConversation) > 0 {
+		if len(task.ResumeConversation) > 0 {
+			return delegate.Result{}, fmt.Errorf("claw backend: node %q carries both a paused and a completed conversation", task.NodeID)
+		}
+		var prior []api.Message
+		if err := json.Unmarshal(task.ContinueConversation, &prior); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: decode continued conversation: %w", err)
+		}
+		if strings.TrimSpace(userText) == "" {
+			return delegate.Result{}, fmt.Errorf("claw backend: node %q continues a conversation with an empty user turn", task.NodeID)
+		}
+		opts.Messages = append(prior, api.Message{
+			Role:    "user",
+			Content: []api.ContentBlock{{Type: "text", Text: userText}},
+		})
 	}
 
 	// Tools.
@@ -667,7 +698,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 	// Set the explicit schema for structured output.
 	genOpts := opts
 	genOpts.ExplicitSchema = task.OutputSchema
-	genOpts = applySessionMessages(ctx, taskSessionKey(task), genOpts)
+	genOpts = applySessionMessagesForTask(ctx, task, genOpts)
 
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
@@ -701,7 +732,7 @@ func (b *ClawBackend) generateTextWithRetry(ctx context.Context, client api.APIC
 }
 
 func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
-	opts = applySessionMessages(ctx, taskSessionKey(task), opts)
+	opts = applySessionMessagesForTask(ctx, task, opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
@@ -798,7 +829,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchemaRetry(ctx context.Context, c
 }
 
 func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
-	opts = applySessionMessages(ctx, taskSessionKey(task), opts)
+	opts = applySessionMessagesForTask(ctx, task, opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {

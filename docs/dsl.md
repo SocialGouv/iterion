@@ -187,6 +187,8 @@ schema review_result:
 
 Schemas define structured node inputs/outputs. Field types match variable types (`string`, `bool`, `int`, `float`, `json`, `string[]`); string fields may carry enum constraints. A seventh type, `file`, declares an operator-supplied binary and is valid only on a human node's `output_schema` — no model can produce one, so the compiler rejects it elsewhere with [C129](references/diagnostics.md). See [human-in-the-loop](human-in-the-loop.md).
 
+An LLM node's answer is held to its `output:` schema at the end of its turn. When it fails on a shape one more ask can fix — a required field missing, or text where JSON was expected — the executor re-asks the model **once**, with the validation error as its next input, in the conversation (`claw`) or session (`claude_code`, `codex`, `pi`) the answer came from; a type or enum mismatch, or a second invalid answer, fails the node. The re-ask is a real, billed turn and the run's events name it. See [the schema re-ask](backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask).
+
 ### Template namespaces
 
 | Reference | Meaning |

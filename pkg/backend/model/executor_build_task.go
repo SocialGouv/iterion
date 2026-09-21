@@ -24,6 +24,7 @@ import (
 // for the executeBackend unified path.
 type backendFields struct {
 	id               string
+	kind             string // what the id names in an error subject: "" = "node", "llm router" for the router path
 	model            string
 	backend          string
 	provider         string
@@ -51,6 +52,16 @@ type backendFields struct {
 	readonly         bool     // node-level `readonly:` — force delegated agents into a read-only sandbox
 	fullAccess       bool     // node-level `full_access:` — lift the codex sandbox to danger-full-access (network egress)
 	images           []string // node-level `images:` — templated input image paths forwarded to codex as `-i` (i2i)
+}
+
+// subject renders what an error about this node is about: `node "copi"`,
+// or `llm router "pick"` on the router path.
+func (f backendFields) subject() string {
+	kind := f.kind
+	if kind == "" {
+		kind = "node"
+	}
+	return fmt.Sprintf("%s %q", kind, f.id)
 }
 
 // extractBackendFields normalises the LLM-relevant fields shared by
@@ -649,21 +660,25 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 
 // validateAndRetry validates result.Output against the node's schema. On
 // success, the input result is returned unchanged. On a validation
-// failure that one retry can plausibly fix (parse-fallback OR missing-
-// required-field), one retry through retryDelegateLoop is attempted —
-// inheriting the standard transient-backoff budget — and the retry
-// result is re-validated. The retry does not replay the identical prompt:
-// its UserPrompt (plus, for multimodal tasks, an extra text ContentBlock)
-// is augmented with a delimited feedback block naming the validation error
-// so the model can correct itself. The OnDelegateRetry observer hook fires
-// for the schema-fallback retry (otherwise invisible to outer observers,
-// which only see transient-error retries), token / duration are
-// accumulated across every generation the node paid for — the first
-// attempt, the retry, and the claw recovery below when it ran — so per-node
-// accounting reflects the full cost paid, and stampDelegateOutputMeta is
-// re-applied after the retry so observability keys remain consistent. Any
-// other validation failure (type mismatch, enum violation) or a retry that
-// still fails returns a wrapped error; the caller propagates it.
+// failure that one more ask can plausibly fix (parse-fallback OR missing-
+// required-field), the model is RE-ASKED once, through retryDelegateLoop
+// so the re-ask inherits the standard transient-backoff budget, and the
+// re-ask's answer is re-validated. The re-ask continues the model's work
+// rather than repeating it (planSchemaReask): on claw the completed
+// conversation is replayed with the validation error as its next user turn
+// (one schema-forced call, tools off); on a backend that resumes by session
+// id the first answer's session is resumed with the validation error as the
+// new prompt; where neither is possible the turn restarts with the error
+// appended to the prompt. The re-ask is a real turn and is observed as one:
+// OnDelegateRetry announces it (with its mode), its own OnDelegateStarted /
+// OnDelegateFinished / OnDelegateError fire marked attempt 2, and token /
+// duration / cost are folded across every generation the node paid for —
+// the first attempt, the re-ask, and the claw recovery below when it ran —
+// so per-node accounting reflects the full cost paid; stampDelegateOutputMeta
+// is re-applied after the re-ask so observability keys remain consistent.
+// Any other validation failure (type mismatch, enum violation) fails the
+// node without a re-ask; a re-ask that still fails surfaces the validation
+// error WITH the re-ask's own error wrapped beside it; the caller propagates.
 //
 // Why retry on missing-field errors: a real-world failure mode (Seki's
 // voter judges on gpt-5.5/forfait — see docs/bot-runs/sec-audit-source.md)
@@ -696,44 +711,42 @@ func (e *ClawExecutor) validateAndRetry(
 	// unlikely to change them.
 	retryEligible := result.ParseFallback || isMissingFieldError(err)
 	if !retryEligible {
-		return result, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
+		return result, fmt.Errorf("model: %s: structured output invalid: %w", f.subject(), err)
 	}
-	e.logger.Warn("[%s#%d/%s] structured output validation failed, retrying backend: %v", f.id, task.Iteration, backendName, err)
+	// The re-ask: the validation error as the model's next input, in the
+	// conversation or session the first answer ran in wherever the backend
+	// can continue one. The ORIGINAL task is preserved untouched — its
+	// token/duration accounting has already been accumulated above and
+	// must not be disturbed.
+	reask := e.planSchemaReask(ctx, backendName, task, result, formatSchemaRetryFeedback(err))
+	e.logger.Warn("[%s#%d/%s] structured output validation failed, re-asking the model (%s): %v", f.id, task.Iteration, backendName, reask.label(), err)
 	// Fire OnDelegateRetry so observers (Prometheus exporter, event sink)
-	// see the retry attempt — previously the schema-validation retry was
-	// invisible because the outer retryDelegateLoop only knows about
+	// see the re-ask coming — the outer retryDelegateLoop only knows about
 	// transient errors, not schema-shape failures.
 	if e.hooks.OnDelegateRetry != nil {
 		di := delegateInfoFromResult(backendName, result)
 		di.DeclaredModel = task.Model
 		di.Error = err
 		di.Attempt = 1
+		di.Reask = reask.mode
 		e.hooks.OnDelegateRetry(f.id, di)
 	}
-	// Build a retry copy of the task whose UserPrompt (and, for multimodal
-	// tasks, an extra text ContentBlock) carries a delimited feedback block
-	// naming the validation failure, so the model can correct its output
-	// instead of blindly re-running the identical prompt. The ORIGINAL task
-	// is preserved untouched — its token/duration accounting has already
-	// been accumulated above and must not be disturbed.
-	retryTask := *task
-	feedback := formatSchemaRetryFeedback(err)
-	retryTask.UserPrompt = appendSchemaRetryFeedback(retryTask.UserPrompt, feedback)
-	if len(retryTask.UserContent) > 0 {
-		// Copy the slice header so appending feedback to the retry task does
-		// not mutate the original task's backing array.
-		retryTask.UserContent = append(
-			append([]delegate.ContentBlock(nil), retryTask.UserContent...),
-			delegate.ContentBlock{Type: "text", Text: feedback},
-		)
+	retryTask := reask.task
+	if e.hooks.OnDelegateStarted != nil {
+		e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: 2, Reask: reask.mode})
 	}
-	// Route the schema-fallback retry through retryDelegateLoop so it
-	// inherits the same transient-error backoff every other delegate call
-	// gets — a direct backend.Execute here skipped the retry budget and
-	// gave up on the first transient SDK hiccup.
+	// Route the re-ask through retryDelegateLoop so it inherits the same
+	// transient-error backoff every other delegate call gets — a direct
+	// backend.Execute here skipped the retry budget and gave up on the
+	// first transient SDK hiccup.
 	retryResult, retryErr := e.retryDelegateLoop(ctx, f.id, backendName, sharesSession(&retryTask), func() (delegate.Result, error) {
 		return backend.Execute(ctx, retryTask)
 	})
+	// Whether the two attempts share one session decides how their figures
+	// fold (a session TOTAL folds at the max, per-call figures sum) — read
+	// off the results where both name their session, off the task otherwise.
+	sameSession := foldSameSession(result, retryResult, sharesSession(&retryTask))
+	e.emitReaskOutcome(f.id, backendName, task.Model, reask, result, retryResult, retryErr, sameSession)
 	if retryErr != nil || retryResult.ParseFallback {
 		// The same backend still couldn't emit schema-valid JSON. The steady
 		// state here is claude_code under the Anthropic OAuth *forfait*, which
@@ -755,7 +768,7 @@ func (e *ClawExecutor) validateAndRetry(
 			// session rule (a MAX when both report one cumulative total),
 			// and the recovery — a different provider, its own session —
 			// SUMS onto whatever that yields.
-			return foldSpend(recoverySpend, foldSpend(result, recovered, sharesSession(&retryTask)), false), nil
+			return foldSpend(recoverySpend, foldSpend(result, recovered, sameSession), false), nil
 		}
 		// The retry was a second generation and it was billed, whether it
 		// errored or came back parse-fallback again. Returning the first
@@ -777,8 +790,8 @@ func (e *ClawExecutor) validateAndRetry(
 		// even though it gave up (a stream cut mid-answer, JSON the model
 		// malformed) — zero when it never reached a provider. Same two rules,
 		// same order as the recovered exit above.
-		return foldSpend(recoverySpend, foldSpend(result, retryResult, sharesSession(&retryTask)), false),
-			fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
+		return foldSpend(recoverySpend, foldSpend(result, retryResult, sameSession), false),
+			schemaReaskFailure(f.subject(), err, reask, retryErr)
 	}
 	// Accumulate the first attempt from here so per-node accounting
 	// reflects the full cost paid (dropping it understated the run's real
@@ -788,11 +801,11 @@ func (e *ClawExecutor) validateAndRetry(
 	// struct fields only, and what enforcement reads is the OUTPUT MAP
 	// (runtime.extractUsage), so the first attempt's tokens never reached
 	// max_tokens and its cost was dropped outright.
-	retryResult = foldSpend(result, retryResult, sharesSession(&retryTask))
+	retryResult = foldSpend(result, retryResult, sameSession)
 	// Re-attach metadata and re-validate.
 	stampDelegateOutputMeta(retryResult.Output, retryResult, backendName)
 	if retryValErr := ValidateOutput(retryResult.Output, schema); retryValErr != nil {
-		return retryResult, fmt.Errorf("model: node %q: structured output invalid after retry: %w", f.id, retryValErr)
+		return retryResult, fmt.Errorf("model: %s: structured output invalid after retry: %w", f.subject(), retryValErr)
 	}
 	return retryResult, nil
 }

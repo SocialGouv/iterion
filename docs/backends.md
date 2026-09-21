@@ -528,6 +528,46 @@ attempt to the route's last-good, provider-neutral message snapshot. This keeps
 a named durable chat slot intact without carrying partial output into the next
 route.
 
+### A schema-invalid answer gets one more turn (the schema re-ask)
+
+An LLM node's answer that fails its `output:` schema on a shape one more ask
+can fix — a required field missing, or text where JSON was expected — is not
+the node's verdict yet: the executor **re-asks the model once**, with the
+validation error as its next input, in the context the answer was produced
+in. A type or enum mismatch is the model's answer in a stable shape and fails
+the node without a re-ask; so does a second answer that is still invalid
+(`structured output invalid after retry`).
+
+How the re-ask continues the model's work depends on what the backend can
+continue. The mode rides the `delegate_retry` event (`reask`) and the
+re-ask's own `delegate_started` / `delegate_finished` / `delegate_error`,
+marked `attempt: 2`:
+
+| Backend | `reask` | What the model is sent |
+|---|---|---|
+| `claw`, in-process or sandboxed | `continue_conversation` | The conversation it just completed — its own answer as the last assistant turn — then the validation error as a user turn: one schema-forced call, tools off, run in-process (nothing in it touches the workspace) |
+| `claude_code`, `codex`, `pi` | `resume_session` | The session the answer ran in, resumed by id (never forked, never best-effort), with the validation error as the new prompt; the backend's own structured-output pass runs on top |
+| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get |
+
+**Budget: one re-ask.** A re-ask that comes back as unstructured text still
+gets the last-resort extraction (a direct claw call over that text, below); a
+re-ask that comes back invalid, or fails, fails the node — with the re-ask's
+own error wrapped beside the validation error, so a usage window hit during
+the re-ask is still the typed refusal the run-level retry keys on.
+
+**Cost: a real turn, billed as one.** The re-ask's tokens and cost fold onto
+the node's `_tokens` / `_cost_usd` under the rule an in-place retry follows
+(a session-total figure at its maximum, per-call figures summed), and its
+own `delegate_finished` carries what it ADDED — on a backend whose cost is a
+session total, the difference — so an accumulator summing one cost per
+delegation event stays exact.
+
+Why it is a continuation and not a repeat (#1385): on the copilot run that
+motivated it, the retry of a claw node resumed from a permission pause
+replayed the pause behind the captured history (91 + 11 messages), carried
+no feedback, re-ran forty tool steps for ten minutes and ended
+`failed_resumable` on the same missing boolean. The re-ask is one turn.
+
 ### Refusals
 
 Two crossings are compile-time **errors** (`C176`), because the degraded
