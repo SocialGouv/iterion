@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.176.0](https://github.com/SocialGouv/iterion/compare/v3.175.2...v3.176.0) (2026-09-21)
+
+### Features
+
+* **runtime:** a canonical tree-noise list — run.tree_noise, ITERION_TREE_NOISE, and gates that carry it ([#1507](https://github.com/SocialGouv/iterion/issues/1507)) ([13db0dd](https://github.com/SocialGouv/iterion/commit/13db0dd47ccdcfae1f1d5fb31d3e8ff9d54708e4)), closes [#1506](https://github.com/SocialGouv/iterion/issues/1506) [#1506](https://github.com/SocialGouv/iterion/issues/1506), references [#1464](https://github.com/SocialGouv/iterion/issues/1464) [#1364](https://github.com/SocialGouv/iterion/issues/1364) [#1459](https://github.com/SocialGouv/iterion/issues/1459) [#1464](https://github.com/SocialGouv/iterion/issues/1464) [#1506](https://github.com/SocialGouv/iterion/issues/1506)
+
+    <details><summary>why</summary>
+
+    The gates that judge a run's worktree must set aside what the run's own setup and tooling wrote: the `.claude/` mirror the engine lays at run start (#1364) and the devbox.lock every devbox invocation rewrites (#1459). Until now that exclusion lived as literals in 26 bot files and 27 identical python `is_scaffold` copies, and the engine's own finalizer carried a third spelling (`scaffoldPrefix`). One list, every shape derived: pkg/treenoise holds the entries and emits the git pathspecs, the…
+
+    </details>
+
 ## [3.175.2](https://github.com/SocialGouv/iterion/compare/v3.175.1...v3.175.2) (2026-09-20)
 
 ### Bug Fixes
