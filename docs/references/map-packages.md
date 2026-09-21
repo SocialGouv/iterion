@@ -77,7 +77,7 @@
 | `pkg/botregistry` | discovers bots on disk: single .bot files and .botz bundle directories. | — | 4 · 39 |
 | `pkg/botreplay` | implements a record/replay golden-test framework for iterion bots. | — | 5 · 14 |
 | `pkg/botscaffold` | renders a new bot bundle (main.bot + manifest.yaml + README.md + the bundle layout directories) from a builder Spec. | — | 3 · 17 |
-| `pkg/botsource` | persists TEAM-AUTHORED bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image. | `Store` | 4 · 36 |
+| `pkg/botsource` | persists TEAM-AUTHORED bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image. | `Store` | 4 · 39 |
 | `pkg/brand` | embeds iterion's bot identity — the mascot avatar of the official `iterion-bot` GitHub account — so the server can upload it onto the accounts it… | — | 1 · 8 |
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 19 · 157 |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — | 2 · 38 |
