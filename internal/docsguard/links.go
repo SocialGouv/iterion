@@ -21,13 +21,23 @@ import (
 )
 
 // A markdown link is checked the way GitHub resolves it: a relative path is
-// taken from the linking file's directory, a leading `/` from the repository
-// root, and a `#fragment` against the anchors GitHub generates for the target
-// page — one per heading through the slug rule below, plus every explicit
-// `id="…"` / `name="…"` the page carries in raw HTML. Links inside fenced
-// code, inline code, HTML comments and YAML front matter are not links and
-// are never reported; a fragment on a non-markdown file (`file.go#L12`) is
-// accepted as is, since GitHub serves those anchors from the file view.
+// taken from the linking file's directory, a `#fragment` against the anchors
+// GitHub generates for the target page — one per heading through the slug
+// rule below, plus every explicit `id="…"` / `name="…"` the page carries in
+// raw HTML. A `/`-prefixed target is reported (GitHub serves it against the
+// site origin, not this repository). Links inside fenced code, inline code,
+// HTML comments and YAML front matter are not links and are never reported;
+// a fragment on a non-markdown file (`file.go#L12`) is accepted as is, since
+// GitHub serves those anchors from the file view.
+//
+// Known blind spots, each with zero live instances in this repository today
+// (a finding is only as good as its class): link TEXT wrapped across lines
+// (`[text` on one line, `](target)` on the next) is not seen — the scan is
+// line-local; an HTML `href=` whose quoting is not exactly `href="…"` is
+// not seen; the site-side slug check decodes only the five entities its
+// heading-text reducer spells out; a page larger than what GitHub's
+// renderer serves (huge pages are truncated) is held to anchors the
+// rendered page may not carry.
 
 // Link is one link occurrence in a markdown file.
 type Link struct {
@@ -577,7 +587,11 @@ func (c *Checker) resolve(l Link) (*Broken, error) {
 	case pathPart == "":
 		resolved = l.File
 	case strings.HasPrefix(pathPart, "/"):
-		resolved = path.Clean(strings.TrimPrefix(pathPart, "/"))
+		// GitHub serves a /-prefixed target against the site origin
+		// (https://github.com/…), not against the repository: an in-repo
+		// page is not reachable that way, so the link is reported however
+		// well the path would fit the tree.
+		return &Broken{Link: l, Reason: fmt.Sprintf("%s starts with / — GitHub serves it against the site origin, not this repository; write the path relative to this file", pathPart)}, nil
 	default:
 		resolved = path.Join(path.Dir(l.File), pathPart)
 	}

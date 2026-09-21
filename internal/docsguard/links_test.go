@@ -243,10 +243,11 @@ func TestCheckIsGreenOnAResolvingTreeAndRedOnEachBreakage(t *testing.T) {
 		b := read(t, root, "docs/b.md")
 		write(t, root, "docs/b.md", strings.ReplaceAll(b, "## Second section", "## Second part"))
 		broken := check(t, root)
-		// Four links and the reference definition name the first heading,
-		// one names its numbered duplicate; the explicit anchor still holds.
-		if len(broken) != 5 {
-			t.Fatalf("five links point at the renamed headings, got %d:\n%s", len(broken), join(broken))
+		// Three inline links and the reference definition name the first
+		// heading, one names its numbered duplicate; the explicit anchor
+		// still holds.
+		if len(broken) != 4 {
+			t.Fatalf("four links point at the renamed headings, got %d:\n%s", len(broken), join(broken))
 		}
 		for _, b := range broken {
 			switch {
@@ -302,6 +303,15 @@ func TestCheckIsGreenOnAResolvingTreeAndRedOnEachBreakage(t *testing.T) {
 			t.Fatalf("want the outside-the-repository report, got:\n%s", join(broken))
 		}
 	})
+	t.Run("a root-absolute target", func(t *testing.T) {
+		root := writeLinkFixture(t)
+		a := read(t, root, "docs/a.md")
+		write(t, root, "docs/a.md", strings.Replace(a, "(b.md)", "(/docs/b.md)", 1))
+		broken := check(t, root)
+		if len(broken) != 1 || !strings.Contains(broken[0].Reason, "site origin") {
+			t.Fatalf("want the site-origin report, got:\n%s", join(broken))
+		}
+	})
 }
 
 // A fixture whose every link resolves: relative and root-absolute paths, a
@@ -319,7 +329,7 @@ func writeLinkFixture(t *testing.T) string {
 		"",
 		"[b](b.md) [sec](b.md#second-section) [dup](b.md#second-section-1) [angle](<b.md#second-section>)",
 		"[own](#local-heading) [dir](sub/) [dir anchor](sub/#intro) [up](../README.md#top)",
-		"[root](/docs/b.md#second-section) [img](img.png) ![img](img.png) [src](../pkg/x.go#L12)",
+		"[img](img.png) ![img](img.png) [src](../pkg/x.go#L12)",
 		"[explicit](b.md#explicit) [encoded](with%20space.md) [ext](https://example.com) [mail](mailto:a@b.c)",
 		"",
 		"[ref]: b.md#second-section",
