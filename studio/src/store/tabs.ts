@@ -93,6 +93,12 @@ interface TabsState {
   // example fork) restores after a reload with no file param and cannot
   // reload its document.
   bindFile: (id: string, file: string) => void;
+  // unbindFile is bindFile's opposite: the tab's document stopped following
+  // anything (File → New, Import, Start blank), so the tab names nothing —
+  // no file, no draft — and takes the untitled label back. A tab that kept
+  // its previous file would fetch it over the author's work on the next
+  // mount; one that kept its draft would re-apply the draft.
+  unbindFile: (id: string) => void;
 }
 
 function generateId(): string {
@@ -327,6 +333,18 @@ export const useTabsStore = create<TabsState>()(
           return {
             tabs: s.tabs.map((t) =>
               t.id === id ? { ...t, params: { ...t.params, file } } : t,
+            ),
+          };
+        });
+      },
+      unbindFile: (id) => {
+        set((s) => {
+          const tab = s.tabs.find((t) => t.id === id);
+          if (!tab || tab.kind !== "editor") return s;
+          if (Object.keys(tab.params).length === 0 && tab.label === UNTITLED_TAB_LABEL) return s;
+          return {
+            tabs: s.tabs.map((t) =>
+              t.id === id ? { ...t, params: {}, label: UNTITLED_TAB_LABEL } : t,
             ),
           };
         });

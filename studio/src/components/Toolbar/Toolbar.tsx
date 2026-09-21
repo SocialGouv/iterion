@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { useRecentsStore } from "@/store/recents";
-import { useBackendDetectStore } from "@/store/backendDetect";
 import * as api from "@/api/client";
 import ConfirmDialog from "../shared/ConfirmDialog";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -19,6 +18,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui";
 import ToolbarGroup from "./ToolbarGroup";
+import RunButton from "./RunButton";
 import { useDocumentFileOps } from "./useDocumentFileOps";
 import BundleFilesDrawer from "@/components/Editor/BundleFilesDrawer";
 import { forkBotSource } from "@/api/botSources";
@@ -50,7 +50,6 @@ import {
   StackIcon,
   FrameIcon,
   ListBulletIcon,
-  PlayIcon,
 } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
@@ -82,10 +81,6 @@ export default function Toolbar() {
   const setFilePickerOpen = useUIStore((s) => s.setFilePickerOpen);
   const recents = useRecentsStore((s) => s.recents);
   const clearRecents = useRecentsStore((s) => s.clearRecents);
-  const hasResolvedBackend = useBackendDetectStore((s) => !!s.report?.resolved_default);
-  // `report != null` once the host probe has returned (success or fail) —
-  // gates the missing-credential nudge so it doesn't flash during the boot probe.
-  const backendProbed = useBackendDetectStore((s) => s.report != null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   // Examples list for the File menu submenu — fetched lazily the first
@@ -460,55 +455,7 @@ export default function Toolbar() {
             hasDocument={!!document}
             isDirty={isDirty()}
           />
-          {backendProbed && !hasResolvedBackend && currentFilePath && (
-            // Run is disabled for two reasons (no file / no credential) but
-            // both share one tooltip. When the *credential* is the blocker,
-            // surface a clickable nudge straight to Preferences → Backends —
-            // otherwise the only signal is a silently greyed-out button.
-            <IconButton
-              variant="warning"
-              size="sm"
-              label="No LLM credential detected — open Preferences → Backends"
-              tooltip="No LLM credential detected — click to open Preferences → Backends"
-              onClick={() =>
-                window.dispatchEvent(
-                  new CustomEvent("iterion:open-settings", {
-                    detail: { tab: "backends" },
-                  }),
-                )
-              }
-            >
-              <ExclamationTriangleIcon />
-            </IconButton>
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            leadingIcon={<PlayIcon />}
-            onClick={() =>
-              setLocation(
-                currentFilePath
-                  ? `/runs/new?file=${encodeURIComponent(currentFilePath)}`
-                  : // Unsaved buffer — launch off inline source (LaunchView
-                    // reads the document store). The only launch path in cloud
-                    // mode, where the pod rootfs is read-only and a workflow
-                    // can never be saved to disk.
-                    `/runs/new`,
-              )
-            }
-            disabled={(!currentFilePath && !document) || !hasResolvedBackend}
-            title={
-              !currentFilePath && !document
-                ? "Write or open a workflow first to launch a run"
-                : !hasResolvedBackend
-                ? "No LLM credentials detected — open Preferences → Backends to configure."
-                : currentFilePath
-                ? `Launch ${currentFilePath}`
-                : "Launch the unsaved workflow"
-            }
-          >
-            Run
-          </Button>
+          <RunButton />
         </div>
         <div className="flex items-center gap-1 pl-2 border-l border-border-default">
           <IconButton

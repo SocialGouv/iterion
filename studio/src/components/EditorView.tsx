@@ -67,6 +67,11 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const activeEditorTab = useTabsStore((s) =>
     s.tabs.find((tab) => tab.id === s.activeEditorTabId),
   );
+  // The file the active tab was opened for (`?file=` → params.file): the key
+  // a file-scoped deep link is matched on, not the document's binding.
+  const activeTabFile = useTabsStore(
+    (s) => s.tabs.find((tab) => tab.id === s.activeEditorTabId)?.params.file ?? null,
+  );
 
   const assistantContext = useMemo<AssistantPageContextContribution>(() => {
     const selectedNode =
@@ -186,9 +191,10 @@ export default function EditorView({ active = true }: EditorViewProps) {
       return;
     }
 
-    // The matching EditorTabHost may still be loading. Do not mark this
-    // search as handled until the active document is the requested file.
-    if (!editorDeepLinkTargetsDocument(active, currentFilePath, file)) return;
+    // The matching EditorTabHost may still be loading — its EditorView is
+    // not mounted until it is. Do not mark this search as handled until the
+    // visible tab is the one opened for the requested file.
+    if (!editorDeepLinkTargetsDocument(active, activeTabFile, file)) return;
     handledSearch.current = search;
 
     if (node) {
@@ -199,7 +205,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
   }, [
     active,
     search,
-    currentFilePath,
+    activeTabFile,
     setPendingFitNodeId,
     setSelectedNode,
   ]);
