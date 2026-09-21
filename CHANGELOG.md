@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.180.2](https://github.com/SocialGouv/iterion/compare/v3.180.1...v3.180.2) (2026-09-21)
+
+### Bug Fixes
+
+* **bots:** the deepsec retry is a fresh pass, not a dead --run-id resume; report_card_system carries the UNTRUSTED INPUT BOUNDARY + class-guard test ([#1496](https://github.com/SocialGouv/iterion/issues/1496)) ([a54762c](https://github.com/SocialGouv/iterion/commit/a54762ca7ede691fa634fa8f1a13a52061b3af76)), references [#1323](https://github.com/SocialGouv/iterion/issues/1323) [#1324](https://github.com/SocialGouv/iterion/issues/1324) [#1494](https://github.com/SocialGouv/iterion/issues/1494) [#1495](https://github.com/SocialGouv/iterion/issues/1495) [#1323](https://github.com/SocialGouv/iterion/issues/1323) [#1324](https://github.com/SocialGouv/iterion/issues/1324) [#1324](https://github.com/SocialGouv/iterion/issues/1324) [#1494](https://github.com/SocialGouv/iterion/issues/1494) [#1494](https://github.com/SocialGouv/iterion/issues/1494)
+
+    <details><summary>why</summary>
+
+    Two related fixes for PR2 of the C1-SEKI cluster.
+
+    </details>
+
 ## [3.180.1](https://github.com/SocialGouv/iterion/compare/v3.180.0...v3.180.1) (2026-09-21)
 
 ### Bug Fixes
