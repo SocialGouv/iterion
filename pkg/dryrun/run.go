@@ -83,6 +83,50 @@ type Pass struct {
 	// trace: a fan-out's arrival order lives in events.jsonl.
 	Nodes []string `json:"nodes"`
 	Edges []Edge   `json:"edges"`
+	// DeadBranches names the branches of a fan-out whose end was neither a
+	// ceiling the dry run's shapes imposed (CeilingReason on the decline
+	// they carried) nor a declared `fail` node (Deliberate) — a death of
+	// the program, whatever the fan-out's `await` mode did with it. A
+	// `best_effort` fan-out finishes the run even when every branch dies,
+	// so the pass's Status reads `finished`; the dead branches are the one
+	// place that death is named, each branch once (Crossings counts the
+	// times). Under `wait_all` the trunk's death travels through the
+	// collector already, and the pass has none.
+	DeadBranches []DeadBranch `json:"dead_branches,omitempty"`
+}
+
+// DeadBranch names one branch a pass saw die of the program: the branch
+// that carried it, the node the branch started at, and the classifier's
+// word on the death — the RuntimeError code, the message the branch's
+// event carried. A branch that ended at a declared `fail` node or a
+// ceiling reason is not here. Crossings counts how many times the pass saw
+// the branch die: a fan-out inside a loop ends the branch once per
+// crossing, under the shapes the same way each time, and the branch is
+// named once.
+type DeadBranch struct {
+	Branch    string `json:"branch"`
+	Node      string `json:"node,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Crossings int    `json:"crossings,omitempty"`
+}
+
+// recordDeadBranch adds a branch's death to the pass, or counts one more
+// crossing of a branch already named — a fan-out inside a loop ends the
+// branch once per crossing, sequentially (the collector joins before the
+// loop's back-edge), so the kept code and message are the latest
+// crossing's.
+func (p *Pass) recordDeadBranch(d DeadBranch) {
+	for i := range p.DeadBranches {
+		if p.DeadBranches[i].Branch == d.Branch {
+			p.DeadBranches[i].Crossings++
+			p.DeadBranches[i].Code = d.Code
+			p.DeadBranches[i].Error = d.Error
+			return
+		}
+	}
+	d.Crossings = 1
+	p.DeadBranches = append(p.DeadBranches, d)
 }
 
 // ChildPass is one pass of a simulated child, under the node that handed
@@ -97,8 +141,8 @@ type ChildPass struct {
 	Pass
 }
 
-// Report is what two passes met. Its JSON carries `clean` as well: the
-// verdict of Clean.
+// Report is what two passes met. Its JSON carries `clean` and `failing`
+// as well: the verdicts of Clean and Failing.
 type Report struct {
 	Passes []Pass `json:"passes"`
 	// Children are the passes of every child simulated, in node order then
@@ -118,13 +162,16 @@ type Report struct {
 	UnvisitedEdges []Edge   `json:"unvisited_edges,omitempty"`
 }
 
-// MarshalJSON adds the verdict, `clean`, to the report's fields.
+// MarshalJSON adds the verdicts, `clean` and `failing`, to the report's
+// fields: a CI job that tolerates an undecided expression reads `failing`,
+// one that does not reads `clean`.
 func (r Report) MarshalJSON() ([]byte, error) {
 	type plain Report
 	return json.Marshal(struct {
 		plain
-		Clean bool `json:"clean"`
-	}{plain(r), r.Clean()})
+		Clean   bool `json:"clean"`
+		Failing bool `json:"failing"`
+	}{plain(r), r.Clean(), r.Failing()})
 }
 
 // coverage is what the passes reached of one program.
@@ -273,16 +320,21 @@ func Run(ctx context.Context, wf *ir.Workflow, opts Options) (*Report, error) {
 	return r, nil
 }
 
-// sortPassContents orders a pass's Nodes by id and Edges by
-// (from, to) so a fan-out that reorders event arrival — the concurrent
-// goroutines of `fan_out` branches finishing in whichever order — does
-// not decide the report's byte layout. The set of nodes/edges reached
-// is a document about the program, not a trace of one run; the
-// observer stream in events.jsonl keeps the arrival order with its
-// timestamps.
+// sortPassContents orders a pass's Nodes by id, Edges by
+// (from, to) and DeadBranches by branch, so a fan-out that reorders event
+// arrival — the concurrent goroutines of `fan_out` branches finishing in
+// whichever order — does not decide the report's byte layout. The set of
+// nodes/edges reached, and the set of branches that died, are documents
+// about the program, not a trace of one run; the observer stream in
+// events.jsonl keeps the arrival order with its timestamps.
 func sortPassContents(p *Pass) {
 	sort.Strings(p.Nodes)
 	sortEdges(p.Edges)
+	// One entry per branch (recordDeadBranch dedupes by name), so the
+	// branch name is a total order.
+	sort.Slice(p.DeadBranches, func(i, j int) bool {
+		return p.DeadBranches[i].Branch < p.DeadBranches[j].Branch
+	})
 }
 
 // sortEdges puts edges in a stable order: from first, then to.
@@ -327,6 +379,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	x := NewExecutor(&sim, bias, opts.Fixtures, shell)
 	x.path = opts.Path
 	x.children = opts.Children
+	x.given = opts.Inputs
 	if depth < maxChildDepth {
 		x.simulate = func(ctx context.Context, child *ir.Workflow, path, node string) (Pass, *Executor, error) {
 			childOpts := opts
@@ -342,10 +395,27 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		switch evt.Type {
 		case store.EventNodeStarted:
 			pass.Nodes = append(pass.Nodes, evt.NodeID)
+		case store.EventNodeFinished:
+			// The node's output now exists — simulated or engine-computed
+			// alike. A finish that carried an error left no output to read:
+			// the consult must not answer absence with a shape. The consult
+			// reads this set: a producer that never finished left nothing to
+			// rest a failure on.
+			if _, failed := evt.Data["error"]; !failed {
+				x.markProduced(evt.NodeID)
+			}
 		case store.EventEdgeSelected:
 			from, _ := evt.Data["from"].(string)
 			to, _ := evt.Data["to"].(string)
 			pass.Edges = append(pass.Edges, Edge{From: from, To: to})
+			if name, _ := evt.Data["loop"].(string); name != "" {
+				x.recordLoopCrossing(name, from, to)
+			} else {
+				// A non-loop edge can re-enter a loop's body from outside
+				// it — the engine resets that loop's counter and drops its
+				// snapshots, and the crossings mirror that re-entry.
+				x.recordTrunkEdge(from, to)
+			}
 		case store.EventBranchStarted:
 			// A fan-out activates its branches without an edge_selected: the
 			// engine names the edge that started the branch, and that edge
@@ -353,10 +423,50 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 			// would credit a router no pass reached.
 			from, _ := evt.Data["from"].(string)
 			pass.Edges = append(pass.Edges, Edge{From: from, To: evt.NodeID})
+		case store.EventBranchFinished:
+			// A branch that ended at a declared `fail` node (`deliberate`) or
+			// at a run's-circumstances ceiling (a budget the run spent, a
+			// loop decline the shapes imposed) is not a death of the
+			// program: the split is the same one ceilingOf makes on the
+			// trunk's stored FailureCode + LoopDeclined.Reason, applied
+			// here to the fields emitBranchFinishedDefer emitted for the
+			// branch (PR #1491 review Rdabb2b — one predicate for both).
+			// Any other error is a dead branch: a `best_effort` collector
+			// finishes the pass but the death still stands, and the dry
+			// run names it — otherwise a fan-out whose branches all die
+			// reads as `finished` and clean (#1325). Recording is scoped
+			// to `best_effort` alone (see below): a `wait_all` fan-out
+			// propagates the death through the collector and the pass's
+			// own status carries it.
+			errMsg, _ := evt.Data["error"].(string)
+			if errMsg == "" {
+				break
+			}
+			if deliberate, _ := evt.Data["deliberate"].(bool); deliberate {
+				break
+			}
+			code, _ := evt.Data["code"].(string)
+			declined, _ := evt.Data["declined"].(string)
+			if ceilingOf(store.FailureCode(code), declined) {
+				break
+			}
+			if code == string(store.FailureCancelled) {
+				// A branch the fan-out's own stop ended (the budget's
+				// cancelOnFirstFailure, the run cancelled, a deadline) died
+				// of the run's circumstances — the same family the trunk
+				// reads as its own code — not of the program.
+				break
+			}
+			pass.recordDeadBranch(DeadBranch{
+				Branch: evt.BranchID,
+				Node:   evt.NodeID,
+				Code:   code,
+				Error:  errMsg,
+			})
 		}
 	}
 	eng := runtime.New(&sim, st, x,
-		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true, BranchesRunToTheirEnd: true}),
+		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true, BranchesRunToTheirEnd: true, Invented: x}),
 		runtime.WithEventObserver(observe),
 		runtime.WithSandboxOverride("none"),
 		runtime.WithWorkDir(workDir),
@@ -397,6 +507,18 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	pass.Deliberate = errors.Is(runErr, runtime.ErrDeliberateFailure)
 	pass.Nodes = append([]string(nil), pass.Nodes...)
 	pass.Edges = append([]Edge(nil), pass.Edges...)
+	// DeadBranches is nil-ed only where the trunk's own program death is
+	// the story: a `wait_all` fan-out propagates the death onto the trunk
+	// (Status is `failed_*`, Pass.Failure carries it) and the per-branch
+	// echo would print twice. Every other pass keeps the branch deaths —
+	// a collector swallowed them (`best_effort` finishing at `done`),
+	// whatever the trunk's own end beside them was: a declared `fail` or
+	// a ceiling on the trunk does not un-die the branches (#1325).
+	if pass.Status != "finished" && !pass.Deliberate && !pass.Ceiling {
+		pass.DeadBranches = nil
+	} else {
+		pass.DeadBranches = append([]DeadBranch(nil), pass.DeadBranches...)
+	}
 	return pass, x, nil
 }
 
@@ -413,6 +535,18 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 func ceilingOf(code store.FailureCode, declined string) bool {
 	if code == store.FailureBudgetExceeded {
 		return true
+	}
+	// A branch's error today always carries a RuntimeError code around
+	// its LoopDeclined (edges.go wraps every decline before setting
+	// result.err), so this predicate agrees with the trunk's storage
+	// layer. But a caller that hands a bare `&LoopDeclined{...}` — no
+	// wrapping code — is a reasonable future shape, and the decline
+	// reason still stands on its own: fall back to CeilingReason(declined)
+	// when no code came through. Symmetric with what the storage layer
+	// would stamp if the wrapping were on the way (PR #1491 review
+	// robustness note).
+	if code == "" {
+		return runtime.CeilingReason(declined)
 	}
 	// The decline travels only on a death with no edge left — under the
 	// node's own code, or the fan-out's catch-all when its branches' codes
@@ -438,17 +572,20 @@ func implicitTerminal(id string, n ir.Node) bool {
 }
 
 // launchInputs is what the launch supplies: the caller's inputs, and a
-// shape for every var without a default the caller left out.
+// shape for every var without a default the caller left out. A `json` var
+// a downstream iteration reads takes the one-element list shape, so a
+// fan_out_each `over: "{{vars.x}}"` enters its body on both passes.
 func launchInputs(wf *ir.Workflow, given map[string]any, bias bool) map[string]any {
 	inputs := map[string]any{}
 	for k, v := range given {
 		inputs[k] = v
 	}
+	iterated := iteratedVars(wf)
 	for name, v := range wf.Vars {
 		if _, ok := inputs[name]; ok || v == nil || v.HasDefault {
 			continue
 		}
-		inputs[name] = VarValue(v, bias)
+		inputs[name] = VarValue(v, bias, iterated[name])
 	}
 	return inputs
 }

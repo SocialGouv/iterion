@@ -103,10 +103,10 @@
 | `pkg/dispatcher/native` | implements iterion's first-class issue/kanban tracker. | `BoardAdmin`, `BoardStore`, `IssueGetter`, `LaunchClaimer`, `StateReasoner`, `UniqueTitleCreator` | 22 · 226 |
 | `pkg/dispatcher/native/boardops` | contains the capability-gated operations that the __mcp-board MCP server and the /api/v1/mcp/board HTTP handler share. | — | 1 · 17 |
 | `pkg/dispatcher/tracker` | defines the issue-tracker abstraction used by the dispatcher (`iterion dispatch`). | `ClaimLeaser`, `ClaimReaper`, `LaunchStateLister`, `Tracker` | 13 · 63 |
-| `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 5 · 36 |
+| `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 6 · 42 |
 | `pkg/dsl/ast` | MarshalFile / UnmarshalFile provide JSON serialization and deserialization for File types, converting Go iota-based enums to human-readable string… | — | 7 · 128 |
 | `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program before it is handed back… | — | 1 · 2 |
-| `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 26 |
+| `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 27 |
 | `pkg/dsl/fix` | applies the mechanical remedies of compile diagnostics to a `.bot` text — the edits a diagnostic can carry because its fix is the same every time… | — | 1 · 6 |
 | `pkg/dsl/internal/dsltest` | holds the equivalence oracle the DSL packages' tests share: "the program that comes out of this transport, serialiser or editor is the program that… | — | 1 · 2 |
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
@@ -163,7 +163,7 @@
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — | 30 · 32 |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — | 1 · 8 |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
-| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 235 |
+| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 237 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
 | `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 51 · 345 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |

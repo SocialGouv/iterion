@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // evalComputeExpr runs a single compute-node AST under a recover()
@@ -80,4 +81,28 @@ func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[stri
 		Loop:      loopResolver,
 		Run:       runResolver,
 	}
+}
+
+// edgeWhenHolds evaluates an edge's `when` expression. A failure is the
+// edge's to skip — the selection logs it — unless the simulation says the
+// expression rested on a value it invented: then the stand-in decides the
+// edge, as a shaped bool would, and the pass reads the edge on both sides
+// across its two biases instead of never.
+func (e *Engine) edgeWhenHolds(edge *ir.Edge, fromNodeID string, exprCtx *expr.Context) (bool, error) {
+	ok, err := edge.Expression.EvalBool(exprCtx)
+	if err == nil {
+		return ok, nil
+	}
+	standIn, inconclusive := e.inconclusiveExpression(ExpressionFailure{
+		NodeID: fromNodeID,
+		EdgeTo: edge.To,
+		Source: edge.ExpressionSrc,
+		Refs:   edge.Expression.Refs(),
+		Err:    err,
+	})
+	if !inconclusive {
+		return false, err
+	}
+	holds, _ := standIn.(bool)
+	return holds, nil
 }
