@@ -23,6 +23,11 @@ func TestLive_Feat_Cursors(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
+	// The sample ships unpinned so readers can run it on whatever they
+	// have; this proof is ABOUT claw, so the preference is pinned here —
+	// on a host where Claude Code is signed in, the default order
+	// (claude_code first) would otherwise prove the wrong backend.
+	t.Setenv("ITERION_BACKEND_PREFERENCE", "claw")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feat-cursors-*")
 	if err != nil {

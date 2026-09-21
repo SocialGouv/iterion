@@ -89,6 +89,7 @@ schema files_output:
   structured_payload_echo: string
 
 agent files_runner:
+  backend: "claw"
   model: "anthropic/claude-haiku-4-5-20251001"
   input: files_input
   output: files_output
@@ -128,6 +129,7 @@ schema mcp_output:
   resource_text: string
 
 agent mcp_runner:
+  backend: "claw"
   model: "anthropic/claude-haiku-4-5-20251001"
   input: mcp_input
   output: mcp_output

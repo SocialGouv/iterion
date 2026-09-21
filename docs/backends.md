@@ -76,10 +76,10 @@ from a plausible one (#1417). The cells:
   single feature×coverage inventory.
 
 | Backend | Structured output (`schema:`/`output:`) | Permission gate `ask` | Session resume / fork | Tool events & cost | `{{outputs.*}}` / `{{run.*}}` | Sandbox | MCP servers | ask_user |
-|---|---|---|---|---|---|---|---|---|
-| `claude_code` | unknown | unknown | proven | unknown | engine-side | unknown | unknown | unknown |
-| `claw` | proven | proven | proven | proven | engine-side | unknown | proven | proven |
-| `codex` | proven | refused (C176) | unknown | unknown | engine-side | proven (readonly) | unwired (gap) | unknown |
+|---|---|---|---|---|---|--- |---|---|
+| `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | engine-side | unknown | unknown | unknown |
+| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | engine-side | unknown | proven | unknown |
+| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | engine-side | proven (readonly) | unwired (gap) | unknown |
 | `pi` | unknown | unknown | unknown | unknown | engine-side | unknown | unknown | unknown |
 | `kimi` | unknown | refused (C176) | unwired (gap) | unknown | engine-side | unknown | unwired (gap) | unknown |
 | `grok` | unknown | refused (C176) | unwired (gap) | unknown | engine-side | unknown | unwired (gap) | unknown |
@@ -90,18 +90,23 @@ The citations, per cell that is not self-evident from the table:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its
   schema (`task test:live`). Permission `ask`:
   `TestLive_Feat_Permission_Ask`, the run lands `paused_waiting_human`
-  (`task test:live:feat:permission-ask`). Fork: `TestLive_Feat_Fork`
-  (`task test:live:feat:fork`). Cost and tool events:
-  `TestLive_Feat_Budget` crosses a $0.0001 cap with real spend
-  (`task test:live:feat:budget`), `TestLive_ClawToolCoverage`
-  (`task test:live:coverage`). MCP servers: `TestLive_Lite_ClawMCP`
+  (`task test:live:feat:permission-ask`). Fork:
+  `TestLive_Feat_Fork` (`task test:live:feat:fork`). Tool events:
+  `TestLive_ClawToolCoverage` (`task test:live:coverage`). Cost: the
+  metered figure crosses a $0.0001 cap and fires `budget_exceeded`
+  (`TestLive_Feat_Budget`, `task test:live:feat:budget`) — the budget
+  gate over the meter is what is proven; the figure itself is an
+  estimate from token counts through iterion's pricing registry, the
+  same estimator codex uses, and only `claude_code` and `pi` report
+  provider-computed amounts. MCP servers: `TestLive_Lite_ClawMCP`
   round-trips a workflow-declared server (`task test:live:claw-mcp`).
-  ask_user: `TestLive_Full_ExhaustiveDSLCoverage` auto-answers an
-  `interaction: llm` question (`task test:live:full`),
-  `TestLive_Bot_Evolve` resumes on one (`task test:live:bot:evolve`).
-  Claw's session *resume* (conversation rehydration) is wired but not
-  live-asserted — its cell reads proven through the fork test, the
-  resume half stays unknown.
+  ask_user is **not** among the proven cells: the native tool is wired
+  (`pkg/backend/tool/claw_builtins.go`), the live harness auto-answers
+  it in-process, and no live assertion would fail if the tool never
+  fired — the exhaustive-DSL fixture's `interaction: llm` question is
+  the human-node gate, a different mechanism. Claw's session *resume*
+  (conversation rehydration) is wired but not live-asserted; only the
+  fork half of its cell is proven.
 - **claude_code.** The one proven cell is session resume:
   `TestLive_Lite_SessionInheritValidation`
   (`task test:live:session-inherit`) requires `fix._session_id ==
