@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // iterion lays the bundle's skills and plugin files under
@@ -45,7 +46,12 @@ func TestBmadyCommitLeavesTheScaffoldOut(t *testing.T) {
 
 	expanded := strings.ReplaceAll(cmd, "{{input.workspace_dir}}", ws)
 	expanded = strings.ReplaceAll(expanded, "{{input.message}}", "'feat: greet'")
-	if out, err := exec.Command("sh", "-c", expanded).CombinedOutput(); err != nil {
+	// The engine provisions ITERION_TREE_NOISE on every tool process it
+	// spawns (host and sandbox); the bare `sh -c` here stands in for that
+	// spawn, so it carries the same environment.
+	cmd2 := exec.Command("sh", "-c", expanded)
+	cmd2.Env = append(os.Environ(), treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
+	if out, err := cmd2.CombinedOutput(); err != nil {
 		t.Fatalf("commit_changes failed: %v\n%s", err, out)
 	}
 	shown := gittest.Run(t, ws, "show", "--name-only", "--format=", "HEAD")
@@ -102,8 +108,8 @@ func TestWholeTreeStagingExcludesTheScaffold(t *testing.T) {
 	// A whole-tree checkout (`checkout -- .`, the revert of every tracked
 	// file) spares the engine's tree the same way: the settings hooks it
 	// injects and the operator's own tracked files under .claude/ survive.
-	staging := regexp.MustCompile(`\badd -[AN]\b|\bclean -fd\b|'clean', '-fd'|"checkout", "--", "\."|'checkout', '--', '\.'|\bcheckout -- \.(\s|$)`)
-	excluded := regexp.MustCompile(`add -[AN] -- ':/' ':\(exclude,top\)\.claude'|clean -fd -- \. ':\(exclude\)\.claude'|'clean', '-fd', '--', '\.', ':\(exclude\)\.claude'|"checkout", "--", "\.", ":\(exclude\)\.claude"|'checkout', '--', '\.', ':\(exclude\)\.claude'|checkout -- \. ':\(exclude\)\.claude'`)
+	staging := regexp.MustCompile(`\badd -(?:[AN]|--all)\b|\bclean -fd\b|'clean', '-fd'|"checkout", "--", "\."|'checkout', '--', '\.'|\bcheckout -- \.(\s|$)`)
+	excluded := regexp.MustCompile(`add -(?:[AN]|--all) -- ':/' ':\(exclude,top\)\.claude'|clean -fd -- \. ':\(exclude\)\.claude'|'clean', '-fd', '--', '\.', ':\(exclude\)\.claude'|"checkout", "--", "\.", ":\(exclude\)\.claude"|'checkout', '--', '\.', ':\(exclude\)\.claude'|checkout -- \. ':\(exclude\)\.claude'|add -(?:[AN]|--all) -- ':/' \{\{run\.tree_noise\}\}|add -(?:[AN]|--all) -- ':/' \$ITERION_TREE_NOISE`)
 	sites := 0
 	for _, rel := range files {
 		src, err := os.ReadFile(rel)

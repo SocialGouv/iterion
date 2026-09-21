@@ -331,7 +331,7 @@ prompt campaign_system:
           those too) → COMMIT the aligned doc with a semantic
           message (`docs(<area>): <what was aligned>`), body ending
           with the trailer line `Bot: docs-refresh`. Stage everything
-          including new files (`git add -A -- ':/' ':(exclude,top).claude'`) before each commit;
+          including new files (`git add -A -- ':/' {{run.tree_noise}}`) before each commit;
           a page under `.claude/` that IS your deliverable is staged by name
           (`git add -- .claude/<path>`): the exclusion spares the mirror, not your work.
        b. DISMISS + LEDGER — a false positive, or genuinely not worth
@@ -1073,24 +1073,40 @@ for h in reflog:
     if not is_own_commit(h):
         base = h
         break
-# The engine's tree under .claude/ (a tracked settings.json it rewrites to
-# inject plugin hooks) is not the run's change in either branch (#1364).
-changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/'))
-def is_scaffold(line):
-    # iterion lays the bundle's skills (and plugin commands, agents,
-    # settings) under <workspace>/.claude/ at run start: written by the
-    # engine, never by a pass, never the run's work (#1364) -- the rule
-    # finalize applies to the wip bank (runOutputPaths). A rename is
-    # judged on its destination; a quoted path is unquoted.
+# The tree-noise list the engine provisions (ITERION_TREE_NOISE: the
+# .claude/ mirror, a drifted devbox.lock, tool-node script scratch) is not
+# the run's change on any branch (#1364, #1464): a verify_build that ran
+# devbox drifts the lock, and THIS pass's scope check must not fail on it.
+# The hard-coded .claude/ filter stays as the floor for an engine that does
+# not provision the variable yet.
+NOISE_PREFIX = ':(exclude,top)'
+noise = tuple(v[len(NOISE_PREFIX):] for v in os.environ.get('ITERION_TREE_NOISE', '').split() if v.startswith(NOISE_PREFIX))
+def is_noise(path):
+    for n in noise:
+        if n.endswith('*'):
+            if path.startswith(n[:-1]):
+                return True
+        elif path == n or path.startswith(n + '/'):
+            return True
+    return False
+changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/') and not is_noise(l.strip()))
+def line_path(line):
+    # A rename is judged on its destination; a quoted path is unquoted.
     path = line[3:]
     if ' -> ' in path:
         path = path.split(' -> ', 1)[1]
     path = path.strip()
     if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
         path = path[1:-1]
-    return path.startswith('.claude/')
+    return path
+def is_scaffold(line):
+    # iterion lays the bundle's skills (and plugin commands, agents,
+    # settings) under <workspace>/.claude/ at run start: written by the
+    # engine, never by a pass, never the run's work (#1364) -- the rule
+    # finalize applies to the wip bank (runOutputPaths).
+    return line_path(line).startswith('.claude/')
 for line in git(['status', '--porcelain']).splitlines():
-    if line[:2].strip() == '??' and not is_scaffold(line):
+    if line[:2].strip() == '??' and not is_scaffold(line) and not is_noise(line_path(line)):
         changed.add(line[3:].strip())
 
 def allowed(p):

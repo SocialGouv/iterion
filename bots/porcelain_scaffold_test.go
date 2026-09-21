@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // scaffoldRepo is a real repository with one committed baseline file and
@@ -35,7 +36,12 @@ func scaffoldRepo(t *testing.T) string {
 
 func runScaffoldJSON(t *testing.T, cmd string, out any) {
 	t.Helper()
-	raw, err := exec.Command("sh", "-c", cmd).Output()
+	// The engine provisions ITERION_TREE_NOISE on every tool process it
+	// spawns (host and sandbox); this bare `sh -c` stands in for that
+	// spawn and carries the same environment.
+	provisioned := exec.Command("sh", "-c", cmd)
+	provisioned.Env = append(os.Environ(), treenoise.TreeNoiseEnvVar+"="+treenoise.EnvValue())
+	raw, err := provisioned.Output()
 	if err != nil {
 		t.Fatalf("command failed: %v (out %q)", err, raw)
 	}
@@ -237,7 +243,7 @@ func TestPorcelainReadersAreClassified(t *testing.T) {
 	prose := regexp.MustCompile(`^\s*(#|//|""")|test -z on|probe = |1\. .git status|Run .git status|Split BEFORE|and .git diff HEAD|The earlier .git status`)
 	// A USE of the rule — never the helper's definition, which sits above
 	// every read and would clear them all.
-	rule := regexp.MustCompile(`(?:not|or|and) is_scaffold\(|\.startswith\(['"]\.claude/['"]\)|exclude,top\)\.claude|\^\\\.claude\\/`)
+	rule := regexp.MustCompile(`(?:not|or|and) is_scaffold\(|\.startswith\(['"]\.claude/['"]\)|exclude,top\)\.claude|\^\\\.claude\\/|is_noise\(|\{\{run\.tree_noise\}\}`)
 	const window = 16
 	var files []string
 	if err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
@@ -269,6 +275,9 @@ func TestPorcelainReadersAreClassified(t *testing.T) {
 			reads++
 			if strings.Contains(line, "--untracked-files=no") {
 				continue // tracked files only: the untracked scaffold is invisible to it
+			}
+			if strings.Contains(line, "ITERION_TREE_NOISE") {
+				continue // the read itself carries the exclusion (the env value word-splits at the read)
 			}
 			key := filepath.ToSlash(rel) + ":" + node + ":" + strings.TrimSpace(line)
 			nodeEnd := len(lines)

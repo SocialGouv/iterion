@@ -246,7 +246,7 @@ prompt campaign_system:
      its test.
 
   4. COMMIT EACH GAP AS YOU CLOSE IT — never batch. Stage everything
-     including new files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name)) and commit before moving on.
+     including new files (`git add -A -- ':/' {{run.tree_noise}}` (a deliverable under `.claude/` — or a deliberate `devbox.lock` update —: stage it by name)) and commit before moving on.
      git IS your durable state: an interrupted run keeps every
      committed test, and a fresh pass reads the matrix + `git log` and
      continues where you left off.

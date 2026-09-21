@@ -196,7 +196,7 @@ not oscillate. The shipped pattern is: one capable agent + a
 deterministic verify gate (a real exit code, never an LLM judgment) + a
 machine-checkable termination flag + a single bounded
 `continuation_loop(N)`. Judge the working tree (`git diff HEAD`), and
-make untracked files visible (`git add -N -- ':/' ':(exclude,top).claude'`) before diffing, or a
+make untracked files visible (`git add -N -- ':/' $ITERION_TREE_NOISE`) before diffing, or a
 change that only *adds* files is invisible.
 
 ## Diagnostic families

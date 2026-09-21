@@ -437,7 +437,7 @@ commits when approved. Reference: `examples/review-merge-gate.bot`,
 
 ```iter fragment
 tool commit_changes:
-  command: `git add -A -- ':/' ':(exclude,top).claude' && git commit -m {{input.msg}}`   # one string, run through `bash -c`
+  command: `git add -A -- ':/' $ITERION_TREE_NOISE && git commit -m {{input.msg}}`   # one string, run through `bash -c`
   input:   commit_request         # schema declaring `msg: string`
   output:  commit_result          # the command prints JSON matching this schema on stdout
   await:   wait_all               # only when the node has multiple incoming edges
@@ -522,9 +522,9 @@ hard-blocking. Add the optional quad — `goal` + recipe (`command`/`script`)
 
 ```iter fragment
 tool commit_changes:
-  command: `git add -A -- ':/' ':(exclude,top).claude' && git commit -F - <<< {{input.msg}}`
+  command: `git add -A -- ':/' $ITERION_TREE_NOISE && git commit -F - <<< {{input.msg}}`
   goal: "Commit the upgrade; working tree clean except known caches."
-  postcondition: `cd {{input.workspace_dir}} && ! git status --porcelain -- ':/' ':(exclude,top).claude' | grep -q . && printf '{"sha":"%s"}' "$(git rev-parse HEAD)"`
+  postcondition: `cd {{input.workspace_dir}} && ! git status --porcelain -- ':/' $ITERION_TREE_NOISE | grep -q . && printf '{"sha":"%s"}' "$(git rev-parse HEAD)"`
   policy: recover            # required | recover | best_effort
   recovery:
     max_repair_attempts: 2   # rung 3 (self-repair) bound
