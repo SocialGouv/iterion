@@ -49,8 +49,8 @@ Announce it at round 1 from the file count, never as a silent default:
 ```sh
 root=$(git rev-parse --show-toplevel) &&
 base=$(git merge-base origin/main HEAD) &&
-{ git -C "$root" diff --name-only "$base"
-  git -C "$root" ls-files --others --exclude-standard
+{ git -C "$root" diff --name-only "$base" ':(exclude,top).claude'
+  git -C "$root" ls-files --others --exclude-standard ':(exclude,top).claude'
 } | sort -u | wc -l
 ```
 

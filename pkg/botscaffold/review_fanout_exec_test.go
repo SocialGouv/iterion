@@ -11,14 +11,16 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // TestReviewFanoutScopeGateCountsTheScope executes the review-fanout
 // shape's scope gate in a real repository: a clean tree is an EMPTY scope
 // (the typed refusal, never an approve), pending work — a modified tracked
 // file and an untracked one — is counted without staging anything, and a
-// base ref counts the committed work since it. The {{vars.base}} reference
-// is substituted as the runtime substitutes it, as one single-quoted word.
+// base ref counts the committed work since it. The {{vars.base}} and
+// {{run.tree_noise}} references are substituted as the runtime substitutes
+// them: a single-quoted word, and the pre-quoted pathspec list.
 func TestReviewFanoutScopeGateCountsTheScope(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the shape's commands are POSIX shell")
@@ -53,6 +55,7 @@ func TestReviewFanoutScopeGateCountsTheScope(t *testing.T) {
 	gate := func(state, base string) scopeOut {
 		t.Helper()
 		command := strings.ReplaceAll(scope.Command, "{{vars.base}}", "'"+base+"'")
+		command = strings.ReplaceAll(command, "{{run.tree_noise}}", treenoise.ShellPathspecs())
 		if command == scope.Command {
 			t.Fatalf("%q no longer reads {{vars.base}}", scope.Command)
 		}
