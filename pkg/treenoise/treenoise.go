@@ -1,8 +1,9 @@
 // Package treenoise is the canonical list of "tree noise": paths the run's
 // own setup and tooling write into the workspace, which never count as the
 // pass's work — the `.claude/` mirror the engine lays at run start (#1364),
-// and `devbox.lock`, rewritten by every devbox invocation the bot makes
-// (#1459, #1464).
+// `devbox.lock`, rewritten by every devbox invocation the bot makes
+// (#1459, #1464), and the tool-node script scratch `.iterion-script-*` a
+// hard kill can leave behind (#1464).
 //
 // ONE list, every shape derived. The gates that judge the tree read it as
 // git pathspecs (`Pathspecs`), a bot's prompt carries it pre-rendered
@@ -34,21 +35,25 @@ const TreeNoiseEnvVar = "ITERION_TREE_NOISE"
 // tomorrow must not silently redefine what a merge-destined commit excludes.
 const MirrorPath = ".claude"
 
-// Entry is one tree-noise path: what writes it, and whether it is a
-// directory (a prefix match on porcelain paths) or a top-level file (an
-// exact one).
+// Entry is one tree-noise path: what writes it, and how it matches. A
+// plain entry covers the exact path and everything under it — the same
+// leading-path semantics its git pathspec carries. A Prefix entry ends in
+// a literal `*`, kept as-is by the pathspec shapes and matched as a raw
+// prefix by IsNoise — how the list swallows a generated-by-pattern class
+// without pretending it is one directory.
 type Entry struct {
-	Path string
-	Dir  bool
-	Why  string
+	Path   string
+	Prefix bool
+	Why    string
 }
 
 // Entries is the canonical list, in decision order. Every consumer derives
 // its shape from this slice; nothing else in the repository may spell a
 // noise path (the guards in bots/ and the tests here enforce that).
 var Entries = []Entry{
-	{MirrorPath, true, "iterion's skills/commands/agents/settings mirror, written at run start (#1364)"},
+	{MirrorPath, false, "iterion's skills/commands/agents/settings mirror, written at run start (#1364)"},
 	{"devbox.lock", false, "rewritten by every devbox invocation — plugin_version drift (#1459, #1464)"},
+	{".iterion-script-", true, "tool-node script scratch (.iterion-script-<random>.<ext>, executor_tool.go): the cleanup loses the race against a hard kill and the file then reads as uncommitted work"},
 }
 
 // Pathspecs returns the list as git pathspec arguments: an exclusion
@@ -58,7 +63,11 @@ var Entries = []Entry{
 func Pathspecs() []string {
 	out := make([]string, 0, len(Entries))
 	for _, e := range Entries {
-		out = append(out, ":(exclude,top)"+e.Path)
+		p := e.Path
+		if e.Prefix {
+			p += "*"
+		}
+		out = append(out, ":(exclude,top)"+p)
 	}
 	return out
 }
@@ -66,13 +75,18 @@ func Pathspecs() []string {
 // ShellPathspecs renders Pathspecs the way a shell command line wants them:
 // each entry single-quoted, space-separated — the form a bot's prompt
 // carries ({{run.tree_noise}}) and an agent copies into its Bash call. The
-// entries are shell-safe by construction (no quotes, no spaces, no
-// metacharacters — asserted by the tests), so the single quotes are
-// belt-and-braces, not load-bearing.
+// entries carry no quotes, spaces, or shell-significant characters beyond
+// the wildcard a Prefix entry ends in — asserted by the tests — and the
+// single quotes keep that wildcard out of the caller's shell: for a Prefix
+// entry they are load-bearing, not decoration.
 func ShellPathspecs() string {
 	quoted := make([]string, 0, len(Entries))
 	for _, e := range Entries {
-		quoted = append(quoted, "':(exclude,top)"+e.Path+"'")
+		p := e.Path
+		if e.Prefix {
+			p += "*"
+		}
+		quoted = append(quoted, "':(exclude,top)"+p+"'")
 	}
 	return strings.Join(quoted, " ")
 }
@@ -89,7 +103,9 @@ func IsMirror(path string) bool {
 // the ONE noise path the operator-initiated commit-and-finalize keeps
 // excluding when it stages merge-destined work (a tracked-and-modified
 // devbox.lock there is the dependency work itself, not engine noise —
-// verdict 3, R5478b3). Derived from MirrorPath, the name Entries carries.
+// verdict 3, R5478b3). A leftover `.iterion-script-*` scratch file rides
+// that commit too — the same deliberate disagreement, by mirror-only
+// design. Derived from MirrorPath, the name Entries carries.
 func MirrorPathspec() string {
 	return ":(exclude,top)" + MirrorPath
 }
@@ -104,20 +120,21 @@ func EnvValue() string {
 
 // IsNoise reports whether a `git status --porcelain` path is tree noise.
 // The path arrives as runOutputPaths normalizes it: rename arrows cut to
-// the destination, outer quotes stripped. A directory entry matches its
-// prefix; a file entry matches exactly — git's own semantics for the same
-// pathspec (`:(exclude,top).claude` hides a top-level FILE named .claude
-// just as well as the directory), so the predicate and the pathspec can
-// never disagree about one path.
+// the destination, outer quotes stripped. Every plain entry agrees with
+// its pathspec on every path — git's own semantics hide a top-level FILE
+// named `.claude` just as well as the directory, AND a directory named
+// `devbox.lock` just as well as the file — so the predicate matches the
+// exact path and anything under it either way. A Prefix entry matches a
+// raw prefix.
 func IsNoise(path string) bool {
 	for _, e := range Entries {
-		if e.Dir {
-			if path == e.Path || strings.HasPrefix(path, e.Path+"/") {
+		if e.Prefix {
+			if strings.HasPrefix(path, e.Path) {
 				return true
 			}
 			continue
 		}
-		if path == e.Path {
+		if path == e.Path || strings.HasPrefix(path, e.Path+"/") {
 			return true
 		}
 	}

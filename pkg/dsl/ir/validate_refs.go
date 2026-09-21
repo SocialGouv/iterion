@@ -521,11 +521,13 @@ func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
 }
 
 // validateRunRef warns of a {{run.X}} reference whose member the run
-// namespace does not carry (C149). A warning, not an error, for the same
+// namespace does not carry (C153). A warning, not an error, for the same
 // reason validateLoopRef is one: the runtime renders no value for an
 // unknown member, so yesterday's bot keeps compiling — and the defect is
 // still named at validate time, because "renders empty" is exactly how an
-// exclusion list vanishes from a scope gate's git command (#1464).
+// exclusion list vanishes from a prompt-carried scope gate's git command (#1464; on an
+// executable command the preserved placeholder fails loudly instead — git
+// refuses the pathspec it cannot match).
 func (c *compiler) validateRunRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return

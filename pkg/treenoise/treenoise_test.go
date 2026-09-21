@@ -15,6 +15,7 @@ func TestPathspecsCoverEveryEntry(t *testing.T) {
 	want := []string{
 		":(exclude,top).claude",
 		":(exclude,top)devbox.lock",
+		":(exclude,top).iterion-script-*",
 	}
 	if got := Pathspecs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Pathspecs() = %q, want %q", got, want)
@@ -22,7 +23,7 @@ func TestPathspecsCoverEveryEntry(t *testing.T) {
 }
 
 func TestShellPathspecsRendersEveryEntryQuoted(t *testing.T) {
-	want := "':(exclude,top).claude' ':(exclude,top)devbox.lock'"
+	want := "':(exclude,top).claude' ':(exclude,top)devbox.lock' ':(exclude,top).iterion-script-*'"
 	if got := ShellPathspecs(); got != want {
 		t.Fatalf("ShellPathspecs() = %q, want %q", got, want)
 	}
@@ -54,24 +55,31 @@ func TestEnvValueSplitsBackIntoPathspecs(t *testing.T) {
 
 // F6 (plan review): git's `:(exclude,top).claude` hides a top-level FILE
 // named .claude just as well as the directory — the predicate must agree
-// with the pathspec on every path, or `workdirIsClean` (the predicate's
-// consumer) calls a worktree dirty whose `add` stages nothing, and finalize
-// dies on an empty commit.
+// with the pathspec on every path, or the finalization probe calls a
+// worktree dirty whose `add` stages nothing, and finalize dies on an empty
+// commit. Verified against commit CONTENT on git 2.43 and 2.55: a file
+// entry's pathspec hides a directory of the same name and everything under
+// it, so the predicate counts those paths as noise too.
 func TestIsNoiseAgreesWithThePathspecSemantics(t *testing.T) {
 	cases := []struct {
 		path string
 		want bool
 	}{
-		{".claude", true},               // a top-level FILE named .claude
-		{".claude/", true},              // the directory, trailing slash
-		{".claude/skills/x.md", true},   // the mirror's contents
-		{".claude/settings.json", true}, // settings rewritten by plugin hooks
-		{".claudeish", false},           // a sibling that merely starts alike
-		{".claudeish/inner", false},     // …and its contents
-		{"devbox.lock", true},           // the lock, top-level exact
-		{"sub/dir/devbox.lock", false},  // NOT the lock: a different file the bot owns
-		{"README.md", false},            // real work
-		{"docs/adr/0001-x.md", false},   // real work, nested
+		{".claude", true},                   // a top-level FILE named .claude
+		{".claude/", true},                  // the directory, trailing slash
+		{".claude/skills/x.md", true},       // the mirror's contents
+		{".claude/settings.json", true},     // settings rewritten by plugin hooks
+		{".claudeish", false},               // a sibling that merely starts alike
+		{".claudeish/inner", false},         // …and its contents
+		{"devbox.lock", true},               // the lock, top-level exact
+		{"devbox.lock/inner", true},         // a DIRECTORY named devbox.lock — the pathspec hides its contents too
+		{"sub/dir/devbox.lock", false},      // NOT the lock: a different file the bot owns
+		{".iterion-script-abc123.sh", true}, // tool-node script scratch left by a hard kill
+		{".iterion-script-x/y", true},       // nested under a scratch-named dir — the glob crosses slashes too
+		{".iterion-script/", false},         // the dash-less dir form: neither the glob nor a real engine shape
+		{"x.iterion-script-a", false},       // a sibling that merely ends alike
+		{"README.md", false},                // real work
+		{"docs/adr/0001-x.md", false},       // real work, nested
 	}
 	for _, tc := range cases {
 		if got := IsNoise(tc.path); got != tc.want {

@@ -44,6 +44,17 @@ func TestToolNodeCommandsCarryTheTreeNoiseEnvWithoutAnyProvisioning(t *testing.T
 // The env rides an inherited environment: the child still sees the parent's
 // variables (a bot's PATH, its credentials), with the noise list appended.
 func TestToolNodeCommandsKeepTheInheritedEnvironment(t *testing.T) {
+	// The engine exports ITERION_TREE_NOISE to every tool process, and an
+	// ambient EMPTY export is a legitimate operator state (verdict 9) —
+	// but the inherited empty entry would shadow the appended canonical
+	// list for this helper's first-match reader. Clear the ambient for
+	// this case (t.Setenv registers the restore, os.Unsetenv makes the
+	// absence real); the canary below proves the inheritance itself.
+	t.Setenv(treenoise.TreeNoiseEnvVar, "")
+	if err := os.Unsetenv(treenoise.TreeNoiseEnvVar); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Setenv("ITERION_NOISE_CANARY", "here")
 	e := &ClawExecutor{}
 
@@ -138,18 +149,35 @@ func TestTreeNoiseEnvAppendYieldsToEveryPriorClaim(t *testing.T) {
 		t.Fatalf("append over an operator-exported variable = %q, want nil (the operator's value wins)", got)
 	}
 	// An explicitly EMPTY export is not a claim (verdict 9): an empty
-	// exclusion list is the silent-gate failure C149 exists to name, so the
+	// exclusion list is the silent-gate failure C153 exists to name, so the
 	// canonical entry still applies.
 	t.Setenv(treenoise.TreeNoiseEnvVar, "")
 	if got := fresh.treeNoiseEnvAppend(nil); got == nil || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
 		t.Fatalf("append over an EMPTY export = %q, want the canonical entry (empty is not a claim)", got)
 	}
-	// An EMPTY export is not a claim (verdict 5): an empty exclusion list is
-	// the silent-gate failure C149 exists to name, so the canonical entry
-	// still comes.
+}
+
+// An explicitly EMPTY run-level value is not a claim either (verdict 9 on
+// its fourth surface, found by the round-1 sweep): the node-env, operator
+// and sandbox branches all treat empty as no-claim, and a launch that
+// projects the variable empty must not silence the gate on host runs while
+// the same launch sandboxed gets the canonical list.
+func TestTreeNoiseRunLevelEmptyExportIsNotAClaim(t *testing.T) {
+	// The engine exports ITERION_TREE_NOISE to every tool process, so this
+	// suite runs with it SET whenever a bot runs `task test` here — and
+	// every branch of the append would then step aside. Clear it for this
+	// case (t.Setenv registers the restore, os.Unsetenv makes the absence
+	// real); the run-level EMPTY entry below is the claim under test.
 	t.Setenv(treenoise.TreeNoiseEnvVar, "")
-	if got := fresh.treeNoiseEnvAppend(nil); got == nil || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
-		t.Fatalf("append over an EMPTY export = %q, want the canonical entry (empty is not a claim)", got)
+	if err := os.Unsetenv(treenoise.TreeNoiseEnvVar); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := &ClawExecutor{}
+	fresh.SetRunExtraEnv([]string{treenoise.TreeNoiseEnvVar + "="})
+	got := fresh.treeNoiseEnvAppend(nil)
+	if got == nil || !strings.HasPrefix(got[0], "ITERION_TREE_NOISE=:(exclude,top).claude ") {
+		t.Fatalf("append over an EMPTY run-level value = %q, want the canonical entry (empty is not a claim)", got)
 	}
 }
 

@@ -61,7 +61,7 @@ func TestRunOutputPathsKeepTheDeliverableAndDropItsLock(t *testing.T) {
 // is dirty — the disagreement #1364's fix removed for the probe alone.
 func TestStageWorkArgsCarryTheTreeNoisePathspecs(t *testing.T) {
 	got := stageWorkArgs()
-	want := []string{"add", "-A", "--", ":/", ":(exclude,top).claude", ":(exclude,top)devbox.lock"}
+	want := []string{"add", "-A", "--", ":/", ":(exclude,top).claude", ":(exclude,top)devbox.lock", ":(exclude,top).iterion-script-*"}
 	if len(got) != len(want) {
 		t.Fatalf("stageWorkArgs() = %q, want %q", got, want)
 	}
@@ -109,6 +109,10 @@ func TestFinalizeWorktree_WipBankLeavesTheTreeNoiseOut(t *testing.T) {
 	writeFile(t, filepath.Join(wt, ".claude", "skills", "mirrored.md"), "iterion wrote this\n")
 	writeFile(t, filepath.Join(wt, "devbox.lock"), "plugin_version: 0.0.5\n")
 	writeFile(t, filepath.Join(wt, "real.md"), "the pass's work\n")
+	// A tool-node script scratch file the cleanup lost the race against:
+	// the wip bank must set it aside with the rest of the noise, not bank
+	// it as the pass's work (the round-1 sweep's entry, witness wanted).
+	writeFile(t, filepath.Join(wt, ".iterion-script-probe.sh"), "iterion scratch\n")
 
 	var logBuf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &logBuf)
@@ -129,12 +133,15 @@ func TestFinalizeWorktree_WipBankLeavesTheTreeNoiseOut(t *testing.T) {
 	if strings.Contains(show, ".claude") {
 		t.Fatalf("banked commit carries the .claude/ mirror:\n%s", show)
 	}
+	if strings.Contains(show, ".iterion-script-probe") {
+		t.Fatalf("banked commit carries the tool-node script scratch:\n%s", show)
+	}
 	// The banked commit never carries the noise, so the log must NAME what
 	// was set aside — a silent exclusion is the failure mode the split
-	// exists to close (verdict 8). The iterlog line cap may truncate a long
-	// list, so the assertions hold on its head: the set-aside phrase and
-	// the FIRST noise entry.
-	for _, want := range []string{"tree noise set aside", "devbox.lock"} {
+	// exists to close (verdict 8). The set-aside emit is human-facing and
+	// does not truncate (pkg/log), and git's porcelain order is
+	// deterministic, so each named entry is asserted where it lands.
+	for _, want := range []string{"tree noise set aside", "devbox.lock", ".iterion-script-probe.sh"} {
 		if !strings.Contains(logBuf.String(), want) {
 			t.Fatalf("finalize log misses %q:\n%s", want, logBuf.String())
 		}

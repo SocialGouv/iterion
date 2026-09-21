@@ -86,8 +86,8 @@ func CommitUncommittedAndFinalize(
 
 // stageWorkArgs stages the whole tree EXCEPT the canonical tree noise
 // (pkg/treenoise): the `.claude/` mirror and a drifted devbox.lock are not
-// the pass's work, and the WIP BANK's staging gesture agrees with the probe
-// (workdirIsClean) — never merged, the lock is derivable from devbox.json.
+// the pass's work, and the WIP BANK's staging gesture agrees with the
+// cleanliness probe — never merged, the lock is derivable from devbox.json.
 // The operator-initiated commit-and-finalize deliberately disagrees: its
 // commit is merge-destined, so it stages a tracked-and-modified lock (see
 // commitStageArgs).
@@ -193,9 +193,6 @@ func noisePaths(porcelain string) []string {
 	}
 	return out
 }
-
-// runOutputPaths returns the porcelain entries that stand for work the RUN
-// produced, dropping the scaffolding iterion mirrored in itself.
 
 func runGitInDir(workdir string, args ...string) error {
 	out, err := runGit(workdir, args...)

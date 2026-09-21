@@ -1,7 +1,7 @@
 package ir
 
 // RunMembers is the exhaustive `run.<member>` vocabulary — the one list the
-// compiler validates `{{run.*}}` references against (C149,
+// compiler validates `{{run.*}}` references against (C153,
 // validateRunRef) and the runtime's namespace resolver mirrors
 // (pkg/runtime, RunNamespaceMembers). It lives beside the reference parser
 // so a member cannot be added to the runtime without the compiler knowing:

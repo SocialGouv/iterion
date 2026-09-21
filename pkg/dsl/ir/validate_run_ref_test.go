@@ -31,7 +31,7 @@ workflow w:
 `
 
 // A {{run.<member>}} reference whose member the namespace does not carry is
-// C149 (a warning, like C147 for loops): the runtime renders no value for it
+// C153 (a warning, like C147 for loops): the runtime renders no value for it
 // (resolveRunPath returns nil), and "renders empty" is exactly how an
 // exclusion list vanishes from a scope gate's git command (#1464). The
 // compiler naming it at validate time is the guard; the plancher
@@ -39,7 +39,7 @@ workflow w:
 func TestARunReferenceNamesAKnownMember(t *testing.T) {
 	for name, tc := range map[string]struct {
 		ref  string
-		want string // "" = no C149
+		want string // "" = no C153
 	}{
 		"the budget members":      {"{{run.cost_usd}} and {{run.max_cost_usd}}", ""},
 		"the noise member":        {"{{run.tree_noise}}", ""},
@@ -57,12 +57,12 @@ func TestARunReferenceNamesAKnownMember(t *testing.T) {
 			}
 			if tc.want == "" {
 				if got != nil {
-					t.Fatalf("C149 on a sound run reference: %s", got.Message)
+					t.Fatalf("C153 on a sound run reference: %s", got.Message)
 				}
 				return
 			}
 			if got == nil || got.Severity != SeverityWarning || !strings.Contains(got.Message, tc.want) {
-				t.Fatalf("no C149 warning saying %q: %+v\n%v", tc.want, got, cr.Diagnostics)
+				t.Fatalf("no C153 warning saying %q: %+v\n%v", tc.want, got, cr.Diagnostics)
 			}
 		})
 	}

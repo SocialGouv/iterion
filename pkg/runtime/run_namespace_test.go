@@ -191,8 +191,8 @@ func TestRunTreeNoiseRendersTheCanonicalPathspecs(t *testing.T) {
 	if !ok || s == "" {
 		t.Fatalf("run.tree_noise = %#v, want a non-empty string of pathspecs", got)
 	}
-	if !containsEach(s, "':(exclude,top).claude'", "':(exclude,top)devbox.lock'") {
-		t.Fatalf("run.tree_noise = %q, want both canonical exclusions", s)
+	if !containsEach(s, "':(exclude,top).claude'", "':(exclude,top)devbox.lock'", "':(exclude,top).iterion-script-*'") {
+		t.Fatalf("run.tree_noise = %q, want every canonical exclusion", s)
 	}
 }
 

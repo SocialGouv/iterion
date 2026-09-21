@@ -85,7 +85,7 @@ func guardStateRootLeaf(root, backend, subject string) error {
 // for its generated profile.
 //
 // Without it, everything a backend writes there is an untracked file inside the
-// worktree, so it makes workdirIsClean false and rides finalizeWorktree's
+// worktree, so it makes the worktree dirty and rides finalizeWorktree's
 // `git add -A` into a wip-bank commit — meaning the run lands a commit full of
 // engine scratch on the operator's branch.
 //

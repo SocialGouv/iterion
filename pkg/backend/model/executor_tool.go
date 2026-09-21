@@ -683,6 +683,14 @@ func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
 		return nil
 	}
 	for _, entry := range e.runExtraEnv {
+		// An explicitly EMPTY run-level value is not a claim (verdict 9
+		// on its fourth surface): the node-env, operator and sandbox
+		// branches all treat empty as no-claim, and a launch projecting
+		// the variable empty must not silence the host gate while the
+		// same launch sandboxed gets the canonical list.
+		if entry == treenoise.TreeNoiseEnvVar+"=" {
+			continue
+		}
 		if strings.HasPrefix(entry, treenoise.TreeNoiseEnvVar+"=") {
 			return nil
 		}

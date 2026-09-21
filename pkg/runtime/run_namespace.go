@@ -17,7 +17,7 @@ import (
 //
 // The authority is ir.RunMembers (pkg/dsl/ir/run_members.go), beside the
 // reference parser: that is what the compiler validates `{{run.*}}`
-// references against (C149), so a member cannot exist on one side without
+// references against (C153), so a member cannot exist on one side without
 // the other.
 var RunNamespaceMembers = ir.RunMembers
 
@@ -65,11 +65,13 @@ func runNamespace(rs *runState) map[string]any {
 		"max_cost_usd":         st.MaxCostUSD,
 		"max_tokens":           int64(st.MaxTokens),
 		"max_iterations":       int64(st.MaxIterations),
-		// The canonical tree-noise pathspecs, ready to paste into a git
-		// command: the gates a bot runs (scope checks, whole-tree staging)
+		// The canonical tree-noise pathspecs, rendered for a gate node's
+		// PROMPT: the gates a bot runs (scope checks, whole-tree staging)
 		// must exclude what the run's setup and tooling wrote — never the
-		// pass's work (#1364, #1464). Constant for a run, so the snapshot
-		// semantics of a rendered command lose nothing.
+		// pass's work (#1364, #1464). In an executable command the member
+		// shell-escapes into ONE argument git refuses; scripts read
+		// $ITERION_TREE_NOISE instead. Constant for a run, so the snapshot
+		// semantics of a rendered prompt lose nothing.
 		"tree_noise": treenoise.ShellPathspecs(),
 	}
 }
