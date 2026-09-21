@@ -20,11 +20,11 @@ func pinWorkflow(name string, contract *ir.PublicContract) *ir.Workflow {
 			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
 			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
-		Edges:   []*ir.Edge{{From: "step", To: "done"}},
-		Schemas: map[string]*ir.Schema{},
-		Prompts: map[string]*ir.Prompt{},
-		Vars:    map[string]*ir.Var{},
-		Loops:   map[string]*ir.Loop{},
+		Edges:    []*ir.Edge{{From: "step", To: "done"}},
+		Schemas:  map[string]*ir.Schema{},
+		Prompts:  map[string]*ir.Prompt{},
+		Vars:     map[string]*ir.Var{},
+		Loops:    map[string]*ir.Loop{},
 		Contract: contract,
 	}
 	if contract != nil {
