@@ -39,6 +39,8 @@ when_to_use: |
   the forge and the board; does not fix. For a CVE-focused gate use the
   companion bot supply-shield-cve (Vulny).
 author: SocialGouv (devthejo) — bots/supply-shield/main.bot
+category: verify
+tags: [security, supply-chain, read-only]
 schema_version: 1
 
 dispatch_vars:

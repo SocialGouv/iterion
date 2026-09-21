@@ -91,6 +91,8 @@ when_to_use: |
   wrong" production-readiness audit (no single axis), point a review-loop bot
   at the tree instead — this bot needs an axis to sweep.
 author: SocialGouv (devthejo) — whole-improve-loop/main.bot
+category: harden
+tags: [ships-code, code-review]
 schema_version: 1
 
 dispatch_vars:

@@ -33,6 +33,8 @@ when_to_use: |
   owner's pen. Do NOT use it on divergences whose cause is not established:
   an unmeasured case escalates by construction.
 author: SocialGouv (devthejo) — arbitrate/main.bot
+category: steer
+tags: [programme, human-in-the-loop]
 schema_version: 1
 
 ## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the

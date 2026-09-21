@@ -216,6 +216,8 @@ when_to_use: |
   tracker_token secret) to also have it check the PR against the
   tracker ticket(s) it references.
 author: SocialGouv (devthejo) — review-pr/main.bot
+category: verify
+tags: [code-review, read-only]
 schema_version: 1
 triggers: [review-pr, pr-review, review]
 

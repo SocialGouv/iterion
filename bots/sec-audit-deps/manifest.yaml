@@ -41,6 +41,8 @@ when_to_use: |
   post-install triage, malware / typosquat / install-hook detection,
   CVE baseline. Emits findings to the board; does not fix.
 author: SocialGouv (devthejo) — bots/sec-audit-deps/main.bot
+category: verify
+tags: [security, supply-chain, read-only]
 schema_version: 1
 
 invocations:

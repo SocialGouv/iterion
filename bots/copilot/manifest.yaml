@@ -102,6 +102,8 @@ when_to_use: |
   it never edits or commits directly; the Studio-owned authoring bridge is the
   only write path it may request.
 author: SocialGouv — copilot/main.bot
+category: steer
+tags: [conversational]
 schema_version: 1
 triggers: [copi, copilot]
 

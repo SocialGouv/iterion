@@ -51,6 +51,46 @@ func TestRenderCatalogBlock_FiltersDisabledShowsWhenToUseAndVars(t *testing.T) {
 	}
 }
 
+func TestRenderCatalogBlock_GroupsByCategoryUncategorizedLast(t *testing.T) {
+	entries := []EntryWithSchema{
+		{Entry: Entry{Name: "zeta", DisplayName: "Zeta", Enabled: true, IsBundleDir: true,
+			Category: "steer", Tags: []string{"conversational"}}},
+		{Entry: Entry{Name: "alpha", DisplayName: "Al", Enabled: true, IsBundleDir: true,
+			Category: "verify"}},
+		{Entry: Entry{Name: "bravo", Enabled: true, IsBundleDir: true,
+			Category: "build"}},
+		{Entry: Entry{Name: "bare", Enabled: true, IsBundleDir: true}},
+	}
+	block := RenderCatalogBlock(entries, "", "")
+
+	// Group headings in canonical order, Uncategorized visibly last.
+	buildAt := strings.Index(block, "### Build — ship new capability")
+	verifyAt := strings.Index(block, "### Verify — judge the code, touch nothing")
+	steerAt := strings.Index(block, "### Steer — judge the direction, converse")
+	uncatAt := strings.Index(block, "### Uncategorized — visible, never hidden")
+	if buildAt < 0 || verifyAt < 0 || steerAt < 0 || uncatAt < 0 {
+		t.Fatalf("missing a group heading\n---\n%s", block)
+	}
+	if buildAt >= verifyAt || verifyAt >= steerAt || steerAt >= uncatAt {
+		t.Errorf("group order wrong: build@%d verify@%d steer@%d uncat@%d", buildAt, verifyAt, steerAt, uncatAt)
+	}
+	// Empty canonical groups are skipped in the routing document.
+	if strings.Contains(block, "### Document —") {
+		t.Errorf("empty category Document printed\n---\n%s", block)
+	}
+	// Cards carry their tags; the persona table carries the category column.
+	if !strings.Contains(block, "- **Tags**: conversational") {
+		t.Errorf("card missing its Tags line\n---\n%s", block)
+	}
+	if !strings.Contains(block, "| Zeta | `zeta` | steer |") {
+		t.Errorf("persona table missing the category column\n---\n%s", block)
+	}
+	// The uncategorized bot stays in the document.
+	if !strings.Contains(block, "### `bare`") {
+		t.Errorf("uncategorized bot dropped\n---\n%s", block)
+	}
+}
+
 // fixtureCatalogWorkspace builds a workspace with the whats-next catalog
 // template, two extra bundles (one disabled), and a loose example file.
 func fixtureCatalogWorkspace(t *testing.T) string {
@@ -101,10 +141,10 @@ func TestRegenerateWhatsNextCatalog_SplicesFiltersAndPreservesStatic(t *testing.
 		"PREAMBLE-BOTTOM",
 		catalogGeneratedBegin,
 		catalogGeneratedEnd,
-		"| Enably | `enabled-bot` |",
+		"| Enably | `enabled-bot` | — |",
 		"### `enabled-bot`",
 		"use the enabled bot",
-		"`whats-next` (this bot)",
+		"| Nexie | `whats-next` (this bot) | — |",
 	} {
 		if !strings.Contains(got, must) {
 			t.Errorf("generated catalog missing %q\n---\n%s", must, got)

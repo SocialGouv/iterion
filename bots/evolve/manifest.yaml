@@ -52,6 +52,8 @@ when_to_use: |
   waste). The repo-maturity-assessment skill captures the gating
   heuristic; Nexie can consult it before deciding to route here.
 author: SocialGouv (devthejo) — evolve/main.bot
+category: steer
+tags: [conversational, strategy]
 schema_version: 1
 
 triggers:

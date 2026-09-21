@@ -149,6 +149,8 @@ type botUpdateRequest struct {
 	WhenToUse   *string   `json:"when_to_use,omitempty"`
 	Enabled     *bool     `json:"enabled,omitempty"`
 	Triggers    *[]string `json:"triggers,omitempty"`
+	Category    *string   `json:"category,omitempty"`
+	Tags        *[]string `json:"tags,omitempty"`
 }
 
 // handleBotsPut updates a bot's manifest.yaml in place (the studio Bot
@@ -207,6 +209,8 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		WhenToUse:   req.WhenToUse,
 		Enabled:     req.Enabled,
 		Triggers:    req.Triggers,
+		Category:    req.Category,
+		Tags:        req.Tags,
 	}
 	if _, err := bundle.WriteManifest(manifestPath, patch); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: write manifest: %v", err)

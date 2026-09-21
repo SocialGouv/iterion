@@ -53,6 +53,8 @@ when_to_use: |
   fix a repo's EXISTING hand-authored docs (README/docs/**) against the
   code, editing them in place.
 author: SocialGouv (devthejo) — wiki-gen/main.bot
+category: document
+tags: [docs, ships-code]
 schema_version: 1
 
 dispatch_vars:

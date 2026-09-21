@@ -269,6 +269,8 @@ when_to_use: |
   needs an initial set authored from the code. Fixes and writes the
   DOCS only (never code logic) and commits.
 author: SocialGouv (devthejo) — docs-refresh/main.bot
+category: document
+tags: [docs, ships-code]
 schema_version: 1
 
 dispatch_vars:

@@ -58,6 +58,8 @@ when_to_use: |
   decision recorded in the contract, and the lot DAG in particular encodes
   compatibility knowledge that cannot be re-derived from the tree.
 author: SocialGouv (devthejo) — modernize/main.bot
+category: harden
+tags: [ships-code, upgrade]
 schema_version: 1
 
 dispatch_vars:

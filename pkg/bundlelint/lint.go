@@ -153,6 +153,23 @@ const (
 	// speak for that source. A warning: a source written in a newer
 	// profile than a runner reads fails at that runner's parse.
 	DiagProfileChildUnread Code = "C253"
+
+	// Bot navigation vocabulary (C270–C271 — the C2xx bands below 270 are
+	// claimed by ir and by the manifest/workflow checks above; these start
+	// the next free band). Both are warnings, never errors: a category or
+	// tag this build does not know stays declared and the bot stays
+	// visible (grouped under Uncategorized) — the spine is curated, but an
+	// operator's explicit choice is never silently replaced. What the lint
+	// buys is the typo surface and the reuse-before-invent nudge for tags.
+
+	// DiagBotCategoryUnknown: the manifest `category:` is not one of the
+	// six closed slugs (bundle.BotCategories) — usually a typo — so the
+	// bot lands in Uncategorized on every grouped surface.
+	DiagBotCategoryUnknown Code = "C270"
+	// DiagBotTagUnknown: a manifest `tags:` entry is outside the curated
+	// seed (bundle.KnownBotTags). The set is open on purpose; the warning
+	// exists so a new facet is a deliberate act, not a drift.
+	DiagBotTagUnknown Code = "C271"
 )
 
 // minRoutableDescription is the shortest `description:` the skill lint treats
@@ -266,6 +283,7 @@ func CheckConsistency(in Input) []Diag {
 		checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
 		checkSkills(&diags, in.Skills)
 		checkEngineRequirement(&diags, m, in.EngineBuild)
+		checkBotTaxonomy(&diags, m)
 	}
 
 	sort.SliceStable(diags, func(i, j int) bool {
@@ -275,6 +293,37 @@ func CheckConsistency(in Input) []Diag {
 		return diags[i].Field < diags[j].Field
 	})
 	return diags
+}
+
+// checkBotTaxonomy holds the manifest's declared category and tags against
+// the navigation vocabulary (C270, C271). Warnings only: an unknown value
+// stays declared and the bot stays visible — the check names the known set
+// so the fix is a one-glance edit, never a silent rewrite.
+func checkBotTaxonomy(diags *[]Diag, m *bundle.Manifest) {
+	if m.Category != "" {
+		if _, ok := bundle.BotCategoryBySlug(m.Category); !ok {
+			*diags = append(*diags, Diag{
+				Code:     DiagBotCategoryUnknown,
+				Severity: SeverityWarning,
+				Field:    "category",
+				Message: fmt.Sprintf("unknown bot category %q — the bot is grouped under Uncategorized",
+					m.Category),
+				Hint: "known categories: " + bundle.KnownBotCategorySlugs(),
+			})
+		}
+	}
+	for _, tag := range m.Tags {
+		if !bundle.IsKnownBotTag(tag) {
+			*diags = append(*diags, Diag{
+				Code:     DiagBotTagUnknown,
+				Severity: SeverityWarning,
+				Field:    "tags." + tag,
+				Message: fmt.Sprintf("tag %q is outside the curated vocabulary — fine if intentional; prefer reusing an existing tag",
+					tag),
+				Hint: "known tags: " + bundle.KnownBotTagsJoined(),
+			})
+		}
+	}
 }
 
 // checkChatSurface joins the manifest's presentation contract to the compiled

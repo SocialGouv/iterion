@@ -71,6 +71,8 @@ when_to_use: |
   for a fast free first draft the operator reframes at the draft-review
   gate. A re-run against the generated app evolves it.
 author: SocialGouv (devthejo) — app-dev/main.bot
+category: build
+tags: [ships-code, git]
 schema_version: 1
 
 triggers:

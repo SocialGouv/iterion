@@ -29,6 +29,14 @@ export interface BotEntry {
   /** Orchestrator-facing "use when" guidance (manifest when_to_use) that
    *  Nexie reads to route a task. Editable in the Bot metadata panel. */
   when_to_use?: string;
+  /** Navigation-spine slug (manifest `category`) — one of the six closed
+   *  slugs in lib/botTaxonomy.ts. Empty/unknown = Uncategorized, which
+   *  grouped surfaces render last, visibly. Editable in the Bot metadata
+   *  panel. */
+  category?: string;
+  /** Orthogonal facets (manifest `tags`, governed vocabulary). Power the
+   *  by-tag views. Editable in the Bot metadata panel. */
+  tags?: string[];
   /** Resolved catalog visibility: manifest `enabled` default composed
    *  with the workspace overlay. `false` = hidden from Nexie + the board
    *  picker (but still listed in the Catalog manager to flip back on).
@@ -277,6 +285,8 @@ export type BotPatch = Partial<{
   enabled: boolean;
   triggers: string[];
   icon: string;
+  category: string;
+  tags: string[];
 }>;
 
 /** BotEntryWithSchema augments BotEntry with the workflow's declared
@@ -392,6 +402,9 @@ export interface BotCreateSpec {
   icon?: string;
   description?: string;
   when_to_use?: string;
+  /** Navigation-spine slug carried from the picked template (the closed
+   *  six-slug set) so a builder bot is born classed. */
+  category?: string;
   instructions: string;
   model?: string;
   backend?: string;

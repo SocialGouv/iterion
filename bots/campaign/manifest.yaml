@@ -41,6 +41,8 @@ when_to_use: |
   is a human decision recorded in the contract, and this bot's whole
   authority over it is measuring whether it advances.
 author: SocialGouv (devthejo) — campaign/main.bot
+category: steer
+tags: [programme]
 schema_version: 1
 
 launch:

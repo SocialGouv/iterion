@@ -470,6 +470,7 @@ iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest bots]
 iterion bots templates
 iterion bots list
 iterion bots list --paths bots --paths examples --format markdown
+iterion bots list --category verify --tag security --format tree
 iterion bots install <git-url|path> [--path <bundle>] [--ref <git-ref>] [--name <id>] [--dest <dir>] [--force]
 iterion bots sync [--workdir <dir>]
 iterion bots update <name> [--ref <git-ref>] [--workdir <dir>] [--allow-dirty]
@@ -489,7 +490,7 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 | `--model`, `--backend` | Pin instead of auto-detection. |
 | `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly, and every template honours them. The worktree dial is on by default for the templates that commit — `blank`, `docs-writer`, `campaign-loop`, `plan-gate-implement`, `verified-action` (`--worktree=false` opts out, writing `worktree: none`) — and off for the ones whose deliverable is a file in the checkout, a read of pending changes, or a board write. |
 
-`bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
+`bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, a generated `skill`, or `tree` — the navigation spine (category → bot → presets). `--category <slug>` keeps bots in the named categories (`build`, `verify`, `harden`, `document`, `operate`, `steer`; the pseudo-slug `uncategorized` selects the Uncategorized group — bots with no category OR an unknown slug, exactly the bots the grouped views file there; repeatable, OR within the flag); `--tag <t>` keeps bots carrying EVERY listed tag (repeatable, AND across tags). Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
 
 `bots sync` materializes every dependency pinned by the project-root
 `bots.lock` into `.botz/` and rejects content whose bundle hash differs from

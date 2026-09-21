@@ -77,6 +77,8 @@ when_to_use: |
   feature-dev — though feature-dev already writes tests for the feature
   it ships). Testy's job is coverage of code that already exists.
 author: SocialGouv (devthejo) — test-coverage/main.bot
+category: harden
+tags: [tests, ships-code]
 schema_version: 1
 
 triggers:

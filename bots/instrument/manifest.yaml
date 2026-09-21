@@ -39,6 +39,8 @@ when_to_use: |
   general feature work (feature-dev) or for building dashboards —
   this bot wires the emission side only.
 author: SocialGouv (devthejo) — instrument/main.bot
+category: harden
+tags: [observability, ships-code]
 schema_version: 1
 
 dispatch_vars:

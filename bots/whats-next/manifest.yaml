@@ -36,6 +36,8 @@ when_to_use: |
   board→bilan cycle. The orchestrator / entry point, not a worker
   bot.
 author: SocialGouv (devthejo) — whats-next/main.bot
+category: steer
+tags: [conversational, board]
 schema_version: 1
 
 dispatch_vars:

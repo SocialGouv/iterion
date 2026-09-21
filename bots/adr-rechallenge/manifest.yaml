@@ -21,6 +21,8 @@ when_to_use: |
   bot, OR manually via --var adr_path=docs/adr/NNN-<slug>.md when an
   operator wants to revisit a specific decision.
 author: SocialGouv (devthejo) - adr-rechallenge/main.bot
+category: steer
+tags: [architecture, human-in-the-loop]
 schema_version: 1
 
 triggers:
