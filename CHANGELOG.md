@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.178.1](https://github.com/SocialGouv/iterion/compare/v3.178.0...v3.178.1) (2026-09-21)
+
+### Bug Fixes
+
+* **dryrun:** shape json outputs by their consumers, and name a best_effort fan-out's dead branches ([#1491](https://github.com/SocialGouv/iterion/issues/1491)) ([1b93cde](https://github.com/SocialGouv/iterion/commit/1b93cde4d165ece8df10d05cad1a032e6f4dc680)), references [#1318](https://github.com/SocialGouv/iterion/issues/1318) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1325](https://github.com/SocialGouv/iterion/issues/1325) [#1318](https://github.com/SocialGouv/iterion/issues/1318) [#1456](https://github.com/SocialGouv/iterion/issues/1456) [#1325](https://github.com/SocialGouv/iterion/issues/1325) [#1325](https://github.com/SocialGouv/iterion/issues/1325) [#1434](https://github.com/SocialGouv/iterion/issues/1434)
+
+    <details><summary>why</summary>
+
+    A `json`-typed output field a downstream position reads AS AN ARRAY takes the array shape now — empty on the false pass, one-element on the true pass. The rule fires at one seam (dryrun.Value), read from a workflow scan (arrayConsumers / arrayConsumedVars) that enumerates the two iteration surfaces of the DSL (fan_out_each `over:` refs and Foreach.CollectionRefs) at their exact leaf refs, the edge-expression array-context refs and the compute-expression array-context refs (through a new…
+
+    </details>
+
 ## [3.178.0](https://github.com/SocialGouv/iterion/compare/v3.177.0...v3.178.0) (2026-09-21)
 
 ### Features
