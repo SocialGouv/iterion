@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/liveledger"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -24,6 +25,7 @@ import (
 // Requires: OpenAI (the scheduled bot is claw openai/gpt-5.5). Expected:
 // ~2-5 min.
 func TestLive_Feat_Schedule(t *testing.T) {
+	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}

@@ -8,6 +8,18 @@ version: "3"
 # on fresh checkouts.
 dotenv: [".env"]
 
+# The live-e2e ledger writer (pkg/liveledger.Track, hooked from the
+# harness at t.Cleanup) picks up the current task's name from this
+# env var — it is how the ledger row is keyed on the operator-facing
+# `task test:live:*` target rather than on the internal Go test
+# function name. `{{.TASK}}` is Task's built-in variable for the
+# currently-running task; setting it at the root scope covers every
+# `test:live:*` target without a per-target edit that would drift.
+# Non-live tasks set it too, harmlessly — the harness only records
+# from live tests.
+env:
+  ITERION_LIVE_LEDGER_TARGET: "{{.TASK}}"
+
 vars:
   BINARY: iterion
   CMD: ./cmd/iterion
@@ -159,6 +171,11 @@ tasks:
     desc: Compile every -tags=live test in the repo without running anything (build-gate the paid live suite for free). Uses ./... so any future live-tagged file outside ./e2e is covered automatically — a live-tagged test file elsewhere in pkg/ would otherwise bit-rot invisibly.
     cmds:
       - go test -tags live -count=1 -run '^$' ./...
+
+  test:live:status:
+    desc: Answer "do the live e2e still pass?" without spending — reads e2e/testdata/live/ledger.json + Taskfile.yml and prints every test:live target with its last verdict or `never`, sorted by staleness. No credential, no network. See #1422.
+    cmds:
+      - go run ./cmd/iterion-live-status
 
   test:live:
     desc: Run all live e2e tests (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
