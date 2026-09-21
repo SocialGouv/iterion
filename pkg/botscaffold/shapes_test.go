@@ -523,21 +523,31 @@ func TestGalleryShapes(t *testing.T) {
 			if p := port(c.Outputs, "summary"); p == nil || p.FromNode != "work" || p.FromField != "summary" || p.Type != "string" {
 				t.Errorf("want output summary: string from work.summary, got %+v", p)
 			}
-			// A file port names a node that publishes, alone (C301).
+			// A file port names a node that publishes, alone (C301), and
+			// carries its verifiable shape (media type, schema).
 			if p := port(c.Outputs, "report"); p == nil || p.File == nil || p.FromNode != "work" || p.FromField != "" || ir.NodePublish(w.Nodes["work"]) == "" {
 				t.Errorf("want the file port report from the publishing node work, got %+v (work publishes %q)", p, ir.NodePublish(w.Nodes["work"]))
+			}
+			if p := port(c.Outputs, "report"); p == nil || p.File == nil || p.File.MediaType != "application/json" || p.File.Schema != "report" {
+				t.Errorf("want the file port report carrying application/json over the report schema, got %+v", p)
 			}
 			// A criterion names a port, a registered evaluator and its
 			// parameters (C302): min_length with min 1 on the goal — a bound
 			// of 0, or another kind, would declare a check that admits all.
-			var onGoal *ir.PublicCriterion
+			var onGoal, onSummary *ir.PublicCriterion
 			for _, k := range c.Criteria {
-				if k.Port == "input.goal" {
+				switch k.Port {
+				case "input.goal":
 					onGoal = k
+				case "output.summary":
+					onSummary = k
 				}
 			}
 			if onGoal == nil || !onGoal.Registered || onGoal.Kind != "min_length" || string(onGoal.Params) != `{"min":1}` {
 				t.Errorf("want the registered criterion min_length {min: 1} on input.goal, got %+v", onGoal)
+			}
+			if onSummary == nil || !onSummary.Registered || onSummary.Kind != "min_length" {
+				t.Errorf("want the registered criterion min_length on output.summary, got %+v", onSummary)
 			}
 			if len(c.Effects) == 0 {
 				t.Error("want at least one declared effect")

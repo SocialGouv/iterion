@@ -38,6 +38,9 @@ outputs name the nodes that produce them (`campaign`, `verify_run`, `review`,
 `gate`, `finalize_mr` — the PR ports are declared `nullable`: their producer
 is the one node a finished run can skip), one criterion and its effects. `iterion validate
 bots/feature-dev/` renders it; `--json` returns it as `public_contract`.
+No criterion is evaluated at run time — by this bot or anywhere: a declared
+criterion is documentation for readers (and for the evaluators a future
+release will run), not a gate; the launch accepts an empty `feature_prompt`.
 
 ## Shape (v2 — one agent, minimal framing)
 

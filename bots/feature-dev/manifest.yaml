@@ -8,6 +8,8 @@ version: 2.6.0
 ## PR ports are declared nullable: their producer is the one node a
 ## finished run can skip), one criterion and its effects;
 ## `iterion validate bots/feature-dev/` renders it. No instruction changed.
+## No criterion is evaluated at run time — the declared check is
+## documentation, not a gate.
 ## A bundle that declares a contract declares the engine floor that reads
 ## one: `requires.iterion` moves to the release that first reads `contract`.
 ## 2.5.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
