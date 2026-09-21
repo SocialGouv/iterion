@@ -114,25 +114,67 @@ func isMutatingNodeCtx(node ir.Node, defaultBackend string, resolver effectiveBa
 		if n.Readonly {
 			return false
 		}
-		if n.FullAccess || unrestrictedCLIBackendCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver) {
-			return true
-		}
-		for _, t := range n.Tools {
-			if !readOnlyTools[t] {
-				return true
-			}
-		}
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, nil)
 	case *ir.JudgeNode:
 		if n.Readonly {
 			return false
 		}
-		if n.FullAccess || unrestrictedCLIBackendCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver) {
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, nil)
+	}
+	return false
+}
+
+// IsReadOnlyTool reports whether a declared tool name belongs to the
+// read-only vocabulary above — the names an agent/judge may hold without
+// being able to change the workspace.
+func IsReadOnlyTool(name string) bool {
+	return readOnlyTools[name]
+}
+
+// ToolSurfaceCanWrite reports whether an agent/judge node's EFFECTIVE tool
+// surface can act on the workspace: `full_access:`, a declared tool outside
+// the read-only vocabulary, or an omitted `tools:` list on a backend where
+// omission means the full native toolset (a CLI delegate, or claw when a
+// `fallbacks:` route reaches one). Every other node kind reports false.
+//
+// `readonly:` is deliberately NOT consulted. The codex and pi delegates
+// enforce it as a sandbox mode; claude_code never reads it and runs under
+// bypassPermissions with whatever the tool list leaves visible. It is
+// therefore a scheduling assertion — isMutatingNodeCtx honours it for
+// parallel-branch admission — and not a bound on what the node can do, which
+// is the question a prompt-injection boundary asks.
+//
+// lookup resolves `${VAR:-default}` references in backend names: nil reads
+// the process environment (what a run does), a lookup that returns "" for
+// every name reads the authored defaults alone (what a catalog guard wants,
+// so its verdict does not depend on the host it runs on).
+func ToolSurfaceCanWrite(node ir.Node, defaultBackend string, lookup func(string) string) bool {
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, lookup)
+	case *ir.JudgeNode:
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, lookup)
+	}
+	return false
+}
+
+// llmToolSurfaceCanWrite is the readonly-free half of the agent/judge
+// classification, shared by ToolSurfaceCanWrite and isMutatingNodeCtx so the
+// two cannot drift on what "can write" means.
+func llmToolSurfaceCanWrite(
+	node ir.Node,
+	fields ir.LLMFields,
+	tools []string,
+	defaultBackend string,
+	resolver effectiveBackendResolver,
+	lookup func(string) string,
+) bool {
+	if fields.FullAccess || unrestrictedCLIBackendCanWrite(node, fields, tools, defaultBackend, resolver, lookup) {
+		return true
+	}
+	for _, t := range tools {
+		if !readOnlyTools[t] {
 			return true
-		}
-		for _, t := range n.Tools {
-			if !readOnlyTools[t] {
-				return true
-			}
 		}
 	}
 	return false
@@ -144,10 +186,11 @@ func unrestrictedCLIBackendCanWrite(
 	tools []string,
 	defaultBackend string,
 	resolver effectiveBackendResolver,
+	lookup func(string) string,
 ) bool {
-	backend := strings.TrimSpace(ir.ExpandEnvWithDefault(fields.Backend))
+	backend := strings.TrimSpace(ir.ExpandWithDefault(fields.Backend, lookup))
 	if backend == "" {
-		backend = strings.TrimSpace(ir.ExpandEnvWithDefault(defaultBackend))
+		backend = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, lookup))
 	}
 	if resolver != nil {
 		if effective := strings.TrimSpace(resolver.EffectiveBackendName(node)); effective != "" {
@@ -168,7 +211,7 @@ func unrestrictedCLIBackendCanWrite(
 	// list-based early return — a `tools: [read_file]` claw node with a
 	// CLI route still gains Edit/Write on fall-through, and admission
 	// happens once, before the run.
-	if backend == "claw" && fallbacksReachCLIBackend(node) {
+	if backend == "claw" && fallbacksReachCLIBackend(node, lookup) {
 		return true
 	}
 	if len(tools) > 0 {
@@ -192,19 +235,19 @@ func unrestrictedCLIBackendCanWrite(
 	// declares a CLI route stops being eligible for parallel read-only
 	// fan-out — and it is the right trade against N concurrent writers
 	// racing on one worktree with every guard already passed.
-	return fallbacksReachCLIBackend(node)
+	return fallbacksReachCLIBackend(node, lookup)
 }
 
 // fallbacksReachCLIBackend reports whether any of a node's `fallbacks:`
 // routes runs on a backend where an empty `tools:` list means the full
 // native toolset rather than none.
-func fallbacksReachCLIBackend(node ir.Node) bool {
+func fallbacksReachCLIBackend(node ir.Node, lookup func(string) string) bool {
 	llm, ok := node.(ir.LLMNode)
 	if !ok {
 		return false
 	}
 	for _, fb := range llm.GetFallbacks() {
-		b := strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend))
+		b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, lookup))
 		if b == "" || b == "auto" {
 			continue // inherits the node's backend, which is claw here
 		}

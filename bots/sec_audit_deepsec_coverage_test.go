@@ -705,38 +705,46 @@ func readSecAuditBot(t *testing.T) string {
 	return string(body)
 }
 
-// A retry that RESUMES a run the scanner already closed returns without
-// investigating one batch and exits zero (processor/src/index.ts:255), so the
-// `|| ERRS=...` never fires and a first attempt that failed on errored batches
-// is laundered into a clean pass. Every conservative term then reads healthy
-// over whatever fraction the first attempt reached.
+// #1323 dropped the --run-id retry branch (dead capability: a resume of a
+// phase=done run short-circuits at processor/src/index.ts:291 with
+// errorBatchCount=0). The failure mode this test used to guard -- a resumed
+// retry laundering an errored first attempt into a clean pass -- cannot
+// arise any more: the retry is always fresh, and a fresh retry that hits
+// another failure re-triggers `ERRS="$ERRS process"` -> PROC_FAILED=1 ->
+// process_complete=false. TestDeepsecFreshRetryIsNotAFailedPass covers the
+// mirror case (a fresh retry that succeeds IS a clean pass).
 //
-// This exercises the REAL node body under sh against a stub reproducing both
-// exits, because the flag that catches it is a SHELL variable — the python
-// reader alone cannot see it.
-func TestDeepsecResumedRetryIsNotACleanPass(t *testing.T) {
-	// process: first call prints the run id then fails on errored batches;
-	// the --run-id retry short-circuits on the already-done run and exits 0.
+// This variant exercises the retry-under-persistent-failure case: the retry
+// runs, fails again, and the coverage refuses to call it clean.
+func TestDeepsecRetryFailingTwiceReadsAsFailed(t *testing.T) {
 	cov := runDeepsecNode(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
 case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":1000,"candidatesFound":2000}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
   process)
-    for a in "$@"; do case "$a" in --run-id) exit 0;; esac; done
-    echo "Processing complete. Run: RID123"
+    # Every attempt (first + retry) fails with errored batches. No --run-id
+    # is passed by the fixed node (#1323); if a regression re-introduced the
+    # branch, one of the invocations would carry --run-id and this test
+    # would still fail through the second half (retry MUST be fresh).
+    for a in "$@"; do case "$a" in --run-id) echo "REGRESSED: retry passed --run-id"; exit 1;; esac; done
+    echo "Processing complete. Run: RID_first_or_retry"
     echo "40 batch(es) errored — exiting 1 (agent failure, not a clean review)."
     exit 1 ;;
   export)
-    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
-    exit 0 ;;
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[]' > "$a";; esac; prev="$a"; done
+    exit 1 ;;
   *) exit 0 ;;
 esac`)
 
 	if cov["process_failed"] != true {
-		t.Errorf("a resumed retry laundered a failed process step: process_failed = %v",
-			cov["process_failed"])
+		t.Errorf("both attempts failed with errored batches, yet coverage does not report a failed process step: %v", cov)
 	}
 	if cov["process_complete"] != false {
-		t.Errorf("coverage reads COMPLETE after a process step that errored 40 batches and a "+
-			"retry that investigated nothing: %v", cov)
+		t.Errorf("coverage reads COMPLETE after two process attempts errored their batches: %v", cov)
 	}
 }
 
@@ -1555,14 +1563,17 @@ esac`)
 	}
 }
 
-// Two readers of ONE location. The coverage reader resolves the data root as
-// $DEEPSEC_DATA_ROOT or "data", because deepsec honours that variable; the
-// shell guard that validates a run id reads the same directory. A guard that
-// hardcoded data/ would discard every id the log announced the moment the
-// variable is set — making the resume branch unreachable and logging "no run
-// meta carries it", which reads as a forgery attempt rather than a path
-// mismatch. The variable is unset in this repo today, which is exactly why the
-// divergence would have waited for the day it is not.
+// The coverage reader resolves the data root as $DEEPSEC_DATA_ROOT or "data",
+// because deepsec honours that variable itself: a runner that set it and
+// wrote metas under alt/ would be readable only if the reader resolves the
+// same path. A hardcoded data/ would degrade coverage to source=unavailable
+// on every run in that environment -- noisy and permanent, never a clean
+// bill, but silently invisible in this repo where the variable is unset.
+//
+// #1323 dropped the retry-side _dsmeta_exists guard along with the whole
+// resume branch. This test now exercises the coverage-reader lookup only:
+// the metas live under alt/, the environment says so, and the reader must
+// find them.
 func TestDeepsecMetaLookupHonoursTheSameDataRootAsTheReader(t *testing.T) {
 	cov := runDeepsecNodeEnv(t, `
 NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
@@ -1573,31 +1584,24 @@ case "$1" in
     echo "Run ID: sid1"
     exit 0 ;;
   process)
-    # The two retry paths must end DIFFERENTLY, or the assertion cannot tell
-    # them apart: a resume ends with the flag raised, a fresh pass ends clean.
-    for a in "$@"; do case "$a" in --run-id) exit 0;; esac; done
-    if [ -f alt/.attempted ]; then exit 0; fi
-    : > alt/.attempted
     printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":10}}' "$NOW" > alt/p/runs/rid1.json
     echo "Processing complete. Run: rid1"
-    echo "2 batch(es) errored — exiting 1 (agent failure, not a clean review)."
-    exit 1 ;;
+    exit 0 ;;
   export)
     prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
     exit 0 ;;
 esac
 exit 0`, "DEEPSEC_DATA_ROOT=alt")
 
-	// The reader found the metas under the non-default root...
+	// The reader found the metas under the non-default root.
 	if cov["source"] != "run_meta" || cov["candidate_files"] != float64(10) {
 		t.Fatalf("the coverage reader did not honour DEEPSEC_DATA_ROOT: %v", cov)
 	}
-	// ...and so did the guard: the id was accepted, so the retry RESUMED, which
-	// is the only path that raises process_failed here. A guard looking in
-	// data/ would have found nothing, cleared the id, and run a fresh pass.
-	if cov["process_failed"] != true {
-		t.Errorf("the run-id guard looked somewhere the reader does not: the id was discarded and "+
-			"the resume branch became unreachable — %v", cov)
+	if cov["files_processed"] != float64(10) || cov["process_complete"] != true {
+		t.Errorf("the process-meta under alt/ was not matched: %v", cov)
+	}
+	if cov["scan_phase"] != "done" || cov["process_phase"] != "done" {
+		t.Errorf("phases not read out of alt/: %v", cov)
 	}
 }
 
