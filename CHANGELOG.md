@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.178.4](https://github.com/SocialGouv/iterion/compare/v3.178.3...v3.178.4) (2026-09-21)
+
+### Bug Fixes
+
+* **server,botsource:** a mission rewind's apply resolves the bot identity the preview pinned ([#1515](https://github.com/SocialGouv/iterion/issues/1515)) ([9f38fd2](https://github.com/SocialGouv/iterion/commit/9f38fd2edaf689623b5d51338b5a8e7a16f379d7)), references [#1381](https://github.com/SocialGouv/iterion/issues/1381)
+
+    <details><summary>why</summary>
+
+    The assistant mission rewinds in two coordinator passes: the preview resolves the stored bot at its current botsource row and computes the pivot; the apply re-resolved independently and computed the blast radius in whatever the slug carried by then. A republish — or a delete plus re-author under the same slug — between the two passes moved the destruction onto a graph the preview never saw, on a receipt that reported success; ExpectedPivot guards the pivot's NAME, and any of those graphs name…
+
+    </details>
+
 ## [3.178.3](https://github.com/SocialGouv/iterion/compare/v3.178.2...v3.178.3) (2026-09-21)
 
 ### Bug Fixes
