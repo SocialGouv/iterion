@@ -26,6 +26,24 @@ export async function listOrgMembers(orgID: string): Promise<OrgMemberView[]> {
   return r.members ?? [];
 }
 
+// putOrgMember places an account that ALREADY EXISTS in the org with an
+// org role, idempotently. It is the direct counterpart of the email
+// invitation, for the case the invitation exists to solve and cannot: a
+// person who already has an account on this instance.
+//
+// Distinct from updateOrgMemberRole below, which PATCHes an existing
+// membership and 404s when there is none.
+export async function putOrgMember(
+  orgID: string,
+  userID: string,
+  role: OrgRole,
+): Promise<void> {
+  await request(`/orgs/${encodeURIComponent(orgID)}/members/${encodeURIComponent(userID)}`, {
+    method: "PUT",
+    body: JSON.stringify({ role }),
+  });
+}
+
 export async function updateOrgMemberRole(
   orgID: string,
   userID: string,
