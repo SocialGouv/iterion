@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.180.0](https://github.com/SocialGouv/iterion/compare/v3.179.0...v3.180.0) (2026-09-21)
+
+### Features
+
+* **dsl:** the contract gallery template, the feature-dev public contract, and a subbot's output projected from the child's contract ([#1537](https://github.com/SocialGouv/iterion/issues/1537)) ([c47df3a](https://github.com/SocialGouv/iterion/commit/c47df3a8b901f9ffc24aaa4fd72c2c8ad57a32eb)), references [#1276](https://github.com/SocialGouv/iterion/issues/1276) [#1263](https://github.com/SocialGouv/iterion/issues/1263) [#1280](https://github.com/SocialGouv/iterion/issues/1280) [#1276](https://github.com/SocialGouv/iterion/issues/1276) [#1280](https://github.com/SocialGouv/iterion/issues/1280)
+
+    <details><summary>why</summary>
+
+    The public-contracts lot (PR #1276) deferred two surfaces, both landed here:
+
+    </details>
+
 ## [3.179.0](https://github.com/SocialGouv/iterion/compare/v3.178.4...v3.179.0) (2026-09-21)
 
 ### Features
