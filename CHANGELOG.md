@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.180.1](https://github.com/SocialGouv/iterion/compare/v3.180.0...v3.180.1) (2026-09-21)
+
+### Bug Fixes
+
+* **runtime:** the skill mirror prunes the orphans it wrote, and an I/O failure on a declared skill stays fatal ([#1500](https://github.com/SocialGouv/iterion/issues/1500)) ([f4858d4](https://github.com/SocialGouv/iterion/commit/f4858d4c389015c811698a50c13e802a0ea78749)), closes [#1375](https://github.com/SocialGouv/iterion/issues/1375), references [#1](https://github.com/SocialGouv/iterion/issues/1) [#1479](https://github.com/SocialGouv/iterion/issues/1479) [#1375](https://github.com/SocialGouv/iterion/issues/1375) [#1479](https://github.com/SocialGouv/iterion/issues/1479) [#1375](https://github.com/SocialGouv/iterion/issues/1375) [#1375](https://github.com/SocialGouv/iterion/issues/1375)
+
+    <details><summary>why</summary>
+
+    ## The orphan pruner
+
+    </details>
+
 ## [3.180.0](https://github.com/SocialGouv/iterion/compare/v3.179.0...v3.180.0) (2026-09-21)
 
 ### Features
