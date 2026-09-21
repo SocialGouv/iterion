@@ -1,220 +1,291 @@
 package bots
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runops"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
-// TestCatalogUntrustedInputBoundaryOnWriteAgents enforces the class contract
-// #1324 renders on this bot family: every agent that reads
-// repository-derived material AND holds a writing tool or a board/forge
-// capability carries an `UNTRUSTED INPUT BOUNDARY` paragraph in its system
-// prompt. Without it a scanner rationale, a snippet, a matcher's
-// description or a forge-fetched ticket body can push an authoritative-
-// looking directive into the LLM, which then files a board issue,
-// commits a patch or shell-executes a payload.
-//
-// The predicate is not spelling-based: we look at (a) the presence of a
-// writing tool or a board/forge capability on the AGENT declaration,
-// which is stable, and (b) the presence of the MARKER phrase in the
-// SYSTEM prompt body — which is a posture cue, not a directive list.
-// See `bots/sec-audit-source/skills/sec-audit-source.md` for the
-// class contract.
-//
-// The test carries an ALLOWLIST of class members that are known-missing
-// today, with a follow-up-ticket reference each. It is expected to be
-// drained over time as those bots grow the paragraph; NEVER used to
-// hide a NEW class member's absence — the test errors on any addition
-// to the class that is not in the allowlist.
-func TestCatalogUntrustedInputBoundaryOnWriteAgents(t *testing.T) {
-	// Bots left to other sessions per the fleet contract; do NOT even
-	// enumerate their class members. Their maintainers will land the
-	// paragraph in their own PRs.
-	skipBots := map[string]string{
-		"docs-refresh":   "DSL v2 session owns bots/docs-refresh — fleet-contract § 1",
-		"adr-cartograph": "DSL v2 session owns bots/adr-cartograph — fleet-contract § 1",
-		"campaign":       "modernization campaign owns bots/campaign — fleet-contract § 1",
-		"modernize":      "modernization campaign owns bots/modernize — fleet-contract § 1",
+// untrustedInputBoundaryMarker is the phrase every acting prompt carries. It
+// is a posture cue, not a directive list: the paragraph it heads tells the
+// LLM that what it reads out of the target repository is data, and a guard
+// that enumerated forbidden spellings instead would be widened by the next
+// payload (docs/agents/bot-authoring.md, "Prompts that can act carry the
+// UNTRUSTED INPUT BOUNDARY").
+const untrustedInputBoundaryMarker = "UNTRUSTED INPUT BOUNDARY"
+
+// readCapabilities are the capabilities that only read. Every other one
+// (board.create, board.comment, board.label, board.assign, board.move,
+// board.close, and whatever the engine adds next) writes to a durable store
+// off text the node was handed, so it puts the node in the class.
+var readCapabilities = map[string]bool{
+	boardops.CapBoardRead: true,
+	runops.CapRunsRead:    true,
+}
+
+// authoredDefaults resolves a backend at its authored default (`${VAR:-x}`
+// reads x) so the class does not depend on which dials the host running the
+// test happens to set.
+func authoredDefaults(string) string { return "" }
+
+// actingPrompt is one agent/judge that can act on what it reads: a tool
+// surface the engine classifies as able to write (pkg/runtime.ToolSurfaceCanWrite)
+// or a capability that writes to the board.
+type actingPrompt struct {
+	node         string
+	systemPrompt string
+	reasons      []string
+}
+
+// actingPrompts classifies every agent and judge of a compiled bot.
+// Capabilities follow the executor's inheritance rule: a node that declares
+// none runs with the workflow's list (pkg/backend/model/executor_build_task.go,
+// effectiveCaps).
+func actingPrompts(wf *ir.Workflow) []actingPrompt {
+	var out []actingPrompt
+	for id, node := range wf.Nodes {
+		llm, ok := node.(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		var reasons []string
+		if runtime.ToolSurfaceCanWrite(node, wf.DefaultBackend, authoredDefaults) {
+			reasons = append(reasons, toolSurfaceReason(llm, wf.DefaultBackend))
+		}
+		caps := llm.GetCapabilities()
+		if caps == nil {
+			caps = wf.Capabilities
+		}
+		for _, c := range caps {
+			if !readCapabilities[c] {
+				reasons = append(reasons, "capability "+c)
+			}
+		}
+		if len(reasons) == 0 {
+			continue
+		}
+		out = append(out, actingPrompt{node: id, systemPrompt: llm.GetLLMFields().SystemPrompt, reasons: reasons})
 	}
-	// Class members that are known-missing the marker phrase today. Each
-	// gets a follow-up ticket; the entry documents the reason (bot's
-	// scope, why the paragraph is a small change but not this PR's).
-	// Adding a new entry here MUST be paired with a filed ticket.
-	//
-	// Follow-up ticket: #1494 (aggregate — one paragraph per bot).
+	sort.Slice(out, func(i, j int) bool { return out[i].node < out[j].node })
+	return out
+}
+
+// toolSurfaceReason names, for the failure message, what makes the node's
+// tool surface a writing one.
+func toolSurfaceReason(llm ir.LLMNode, defaultBackend string) string {
+	f := llm.GetLLMFields()
+	if f.FullAccess {
+		return "full_access"
+	}
+	tools := llm.GetTools()
+	if len(tools) == 0 {
+		backend := strings.TrimSpace(ir.ExpandWithDefault(f.Backend, authoredDefaults))
+		if backend == "" {
+			backend = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, authoredDefaults))
+		}
+		if backend == "claw" {
+			return "no tools: declared, and a fallbacks: route onto a CLI backend runs the full native toolset"
+		}
+		return "no tools: declared on " + backend + ", the full native toolset"
+	}
+	var acting []string
+	for _, t := range tools {
+		if !runtime.IsReadOnlyTool(t) {
+			acting = append(acting, t)
+		}
+	}
+	return "tools: " + strings.Join(acting, ", ")
+}
+
+// TestCatalogUntrustedInputBoundaryOnActingPrompts is the catalog-wide guard
+// for the class contract of #1324: every agent or judge that can act on what
+// it reads carries the UNTRUSTED INPUT BOUNDARY paragraph in its system
+// prompt. The predicate walks the COMPILED IR, so a `- item` list, an inline
+// `[a, b]` list and a missing `tools:` field classify the same way, and it
+// asks the engine what the surface can do rather than matching tool names.
+//
+// The only exemption is a `deferred` entry: a bot another agent session owns
+// (fleet contract § 1), keyed per agent so a NEW acting prompt on that bot
+// still reddens. An entry that no longer names an acting prompt lacking the
+// marker is stale and reddens too — the allowlist cannot rot in either
+// direction.
+func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
+	deferred := map[string]string{
+		"adr-cartograph/campaign":     "DSL v2 session owns bots/adr-cartograph — fleet-contract § 1",
+		"adr-cartograph/survey_code":  "DSL v2 session owns bots/adr-cartograph — fleet-contract § 1",
+		"adr-cartograph/verify_build": "DSL v2 session owns bots/adr-cartograph — fleet-contract § 1",
+		"docs-refresh/campaign":       "DSL v2 session owns bots/docs-refresh — fleet-contract § 1",
+		"docs-refresh/finalize_mr":    "DSL v2 session owns bots/docs-refresh — fleet-contract § 1",
+		"modernize/upgrade_campaign":  "modernization campaign owns bots/modernize — fleet-contract § 1",
+	}
+	// Acting prompts that lack the paragraph today, one entry per agent,
+	// tracked by #1494. Each entry is a defect, not a home.
 	knownMissing := map[string]string{
-		"adr-rechallenge":    "#1494 — three agents (survey_code, file_change_ticket, write_addendum) file tickets or write files off repo-derived analysis",
-		"app-dev":            "#1494 — interviewer + finalize_mr write; campaign files board issues",
-		"bmady":              "#1494 — analyst/pm/architect/dev all use bash on repo-derived material; dev writes",
-		"branch-improve-loop": "#1494 — finalize_mr writes off repo-derived diff",
-		"devbox-setup":       "#1494 — generate_devbox writes off detected stack",
-		"evolve":             "#1494 — 7 agents file backlog issues off repo-derived investigation",
-		"feature-gap-fill":   "#1494 — campaign files board issues",
-		"instrument":         "#1494 — campaign + finalize_mr",
-		"issue-triage":       "#1494 — triage files board decisions off scanner outputs",
-		"product-docs":       "#1494 — campaign + finalize_mr + publish",
-		"rgaa-audit":         "#1494 — report_card files board issues, holds write/bash",
-		"secured-renovacy":   "#1494 — 11 agents run bash on repo material; several write",
-		"ultra11y":           "#1494 — adjudicate + publish",
-		"whole-improve-loop": "#1494 — finalize_mr",
-		"wiki-gen":           "#1494 — author files board issues",
-	}
-	// Bots that MUST carry the marker on every class member. This PR ships
-	// with sec-audit-* and supply-shield-* in this list — they are the
-	// security cluster where the paragraph is already the standard.
-	enforced := map[string]bool{
-		"sec-audit-source": true,
-		"sec-audit-deps":   true,
-		"supply-shield":    true,
-		"supply-shield-cve": true,
+		"adr-rechallenge/file_change_ticket":     "#1494",
+		"adr-rechallenge/survey_code":            "#1494",
+		"adr-rechallenge/write_addendum":         "#1494",
+		"app-dev/campaign":                       "#1494",
+		"app-dev/deploy":                         "#1494",
+		"app-dev/finalize_mr":                    "#1494",
+		"app-dev/interviewer":                    "#1494",
+		"app-dev/plan":                           "#1494",
+		"app-dev/plan_review":                    "#1494",
+		"app-dev/plan_revise":                    "#1494",
+		"app-dev/review":                         "#1494",
+		"app-dev/verify_build":                   "#1494",
+		"arbitrate/arbitrate_judge":              "#1494",
+		"bmady/analyst":                          "#1494",
+		"bmady/architect":                        "#1494",
+		"bmady/dev":                              "#1494",
+		"bmady/pm":                               "#1494",
+		"bmady/qa":                               "#1494",
+		"branch-improve-loop/campaign":           "#1494",
+		"branch-improve-loop/finalize_mr":        "#1494",
+		"branch-improve-loop/plan":               "#1494",
+		"branch-improve-loop/plan_review":        "#1494",
+		"branch-improve-loop/plan_revise":        "#1494",
+		"branch-improve-loop/review":             "#1494",
+		"branch-improve-loop/verify_build":       "#1494",
+		"copilot/copi":                           "#1494",
+		"copilot/reflect":                        "#1494",
+		"dep-update-guard/align":                 "#1494",
+		"dep-update-guard/commit":                "#1494",
+		"dep-update-guard/security_audit":        "#1494",
+		"dep-update-guard/verify_build":          "#1494",
+		"devbox-setup/detect_stack":              "#1494",
+		"devbox-setup/generate_devbox":           "#1494",
+		"e2e-coverage/campaign":                  "#1494",
+		"e2e-coverage/plan":                      "#1494",
+		"e2e-coverage/plan_review":               "#1494",
+		"e2e-coverage/plan_revise":               "#1494",
+		"e2e-coverage/verify_build":              "#1494",
+		"evolve/emit_backlog":                    "#1494",
+		"evolve/investigate":                     "#1494",
+		"evolve/load_nexie_handoff":              "#1494",
+		"evolve/propose_evolutions":              "#1494",
+		"evolve/review_claude":                   "#1494",
+		"evolve/revise_vision":                   "#1494",
+		"evolve/survey":                          "#1494",
+		"evolve/synthesize_vision":               "#1494",
+		"feature-dev/campaign":                   "#1494",
+		"feature-dev/finalize_mr":                "#1494",
+		"feature-dev/plan":                       "#1494",
+		"feature-dev/plan_review":                "#1494",
+		"feature-dev/plan_revise":                "#1494",
+		"feature-dev/review":                     "#1494",
+		"feature-dev/verify_build":               "#1494",
+		"feature-gap-fill/campaign":              "#1494",
+		"feature-gap-fill/plan":                  "#1494",
+		"feature-gap-fill/plan_review":           "#1494",
+		"feature-gap-fill/plan_revise":           "#1494",
+		"feature-gap-fill/verify_build":          "#1494",
+		"golden-master/mutants_adversary":        "#1494",
+		"golden-master/oracle_campaign":          "#1494",
+		"instrument/campaign":                    "#1494",
+		"instrument/finalize_mr":                 "#1494",
+		"instrument/review":                      "#1494",
+		"instrument/verify_build":                "#1494",
+		"issue-triage/triage":                    "#1494",
+		"product-docs/campaign":                  "#1494",
+		"product-docs/finalize_mr":               "#1494",
+		"product-docs/publish":                   "#1494",
+		"revi-converse/converse_agent":           "#1494",
+		"review-env/deploy":                      "#1494",
+		"review-pr/converge":                     "#1494",
+		"review-pr/reviewer_claude":              "#1494",
+		"review-pr/reviewer_claude_glance":       "#1494",
+		"review-pr/reviewer_gpt":                 "#1494",
+		"review-pr/reviewer_gpt_glance":          "#1494",
+		"rgaa-audit/campaign":                    "#1494",
+		"rgaa-audit/report_card":                 "#1494",
+		"secured-renovacy/align_code":            "#1494",
+		"secured-renovacy/batch_upgrade_patches": "#1494",
+		"secured-renovacy/changelog_review":      "#1494",
+		"secured-renovacy/detect_stack":          "#1494",
+		"secured-renovacy/discover_outdated":     "#1494",
+		"secured-renovacy/family_align_code":     "#1494",
+		"secured-renovacy/fix_after_upgrade":     "#1494",
+		"secured-renovacy/install":               "#1494",
+		"secured-renovacy/p2_campaign":           "#1494",
+		"secured-renovacy/p2_verify_build":       "#1494",
+		"secured-renovacy/security_audit":        "#1494",
+		"secured-renovacy/upgrade":               "#1494",
+		"secured-renovacy/validate_upgrade":      "#1494",
+		"test-coverage/campaign":                 "#1494",
+		"test-coverage/plan":                     "#1494",
+		"test-coverage/plan_review":              "#1494",
+		"test-coverage/plan_revise":              "#1494",
+		"test-coverage/verify_build":             "#1494",
+		"ultra11y/adjudicate":                    "#1494",
+		"ultra11y/publish":                       "#1494",
+		"whole-improve-loop/campaign":            "#1494",
+		"whole-improve-loop/finalize_mr":         "#1494",
+		"whole-improve-loop/plan":                "#1494",
+		"whole-improve-loop/plan_review":         "#1494",
+		"whole-improve-loop/plan_revise":         "#1494",
+		"whole-improve-loop/verify_build":        "#1494",
+		"wiki-gen/author":                        "#1494",
 	}
 
-	botsRoot := "."
-	// The tests run from bots/, so bot paths are directory names.
-	entries, err := os.ReadDir(botsRoot)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read bots dir: %v", err)
 	}
-	failed := 0
-	newMissing := []string{}
+	var missing, stale []string
+	seen := map[string]bool{}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		bot := e.Name()
-		if _, skip := skipBots[bot]; skip {
+		if _, err := os.Stat(filepath.Join(bot, "main.bot")); err != nil {
 			continue
 		}
-		classMembers, systemPrompts := enumerateClassMembersAndPrompts(t, filepath.Join(botsRoot, bot))
-		if len(classMembers) == 0 {
-			continue
-		}
-		enforce := enforced[bot]
-		for _, m := range classMembers {
-			body := systemPrompts[m.systemPrompt]
-			hasMarker := strings.Contains(body, "UNTRUSTED INPUT BOUNDARY")
-			if hasMarker {
-				continue
+		wf := compilePlanPhaseBot(t, bot)
+		for _, m := range actingPrompts(wf) {
+			key := bot + "/" + m.node
+			body := ""
+			if p := wf.Prompts[m.systemPrompt]; p != nil {
+				body = p.Body
 			}
-			if enforce {
-				t.Errorf("bots/%s/main.bot: agent %q (system prompt %q) is a class member (%s) but the system prompt has no UNTRUSTED INPUT BOUNDARY marker. Add the paragraph -- see bots/sec-audit-source/skills/sec-audit-source.md for the class contract.",
-					bot, m.agentName, m.systemPrompt, m.reason)
-				failed++
-				continue
+			has := strings.Contains(body, untrustedInputBoundaryMarker)
+			_, exempt := deferred[key]
+			if !exempt {
+				_, exempt = knownMissing[key]
 			}
-			// Non-enforced bot: only allowed if it is in knownMissing.
-			if _, ok := knownMissing[bot]; !ok {
-				newMissing = append(newMissing, bot+"/"+m.agentName)
+			switch {
+			case has && exempt:
+				stale = append(stale, key+" carries the paragraph: drain its entry")
+			case has:
+			case exempt:
+				seen[key] = true
+			default:
+				missing = append(missing, fmt.Sprintf("%s (system prompt %q; %s)", key, m.systemPrompt, strings.Join(m.reasons, "; ")))
 			}
 		}
 	}
-	if failed > 0 {
-		t.Logf("%d class members missing the marker on enforced bots", failed)
+	for _, exemptions := range []map[string]string{deferred, knownMissing} {
+		for key := range exemptions {
+			if !seen[key] {
+				stale = append(stale, key+" is not an acting prompt lacking the paragraph: drain its entry")
+			}
+		}
 	}
-	if len(newMissing) > 0 {
-		sort.Strings(newMissing)
-		t.Errorf("new class members without the marker AND not in the knownMissing allowlist: %v. Either add the UNTRUSTED INPUT BOUNDARY paragraph to their system prompt, or extend knownMissing with a follow-up ticket reference (per bots/sec-audit-source/skills/sec-audit-source.md).", newMissing)
+	sort.Strings(missing)
+	sort.Strings(stale)
+	if len(missing) > 0 {
+		t.Errorf("%d acting prompt(s) lack the %s paragraph — write it (docs/agents/bot-authoring.md, \"Prompts that can act carry the UNTRUSTED INPUT BOUNDARY\"):\n  %s",
+			len(missing), untrustedInputBoundaryMarker, strings.Join(missing, "\n  "))
 	}
-}
-
-type classMember struct {
-	agentName    string
-	systemPrompt string
-	reason       string
-}
-
-var agentHeader = regexp.MustCompile(`(?m)^(?:agent|judge) (\w+):\s*$`)
-var promptHeader = regexp.MustCompile(`(?m)^prompt (\w+):\s*$`)
-var topLevelHeader = regexp.MustCompile(`(?m)^(agent|tool|compute|prompt|schema|workflow|edge)\b`)
-var capsField = regexp.MustCompile(`(?m)^\s*capabilities:\s*\[([^\]]*)\]`)
-var toolsField = regexp.MustCompile(`(?m)^\s*tools:\s*\[([^\]]*)\]`)
-var systemField = regexp.MustCompile(`(?m)^\s*system:\s*(\w+)`)
-
-func enumerateClassMembersAndPrompts(t *testing.T, botDir string) ([]classMember, map[string]string) {
-	t.Helper()
-	src, err := os.ReadFile(filepath.Join(botDir, "main.bot"))
-	if err != nil {
-		return nil, nil
+	if len(stale) > 0 {
+		t.Errorf("%d stale exemption(s):\n  %s", len(stale), strings.Join(stale, "\n  "))
 	}
-	body := string(src)
-	prompts := extractTopLevelBlocks(body, promptHeader)
-	agents := extractTopLevelBlocks(body, agentHeader)
-
-	var members []classMember
-	for name, ab := range agents {
-		caps := ""
-		if m := capsField.FindStringSubmatch(ab); m != nil {
-			caps = m[1]
-		}
-		tools := ""
-		if m := toolsField.FindStringSubmatch(ab); m != nil {
-			tools = m[1]
-		}
-		sys := ""
-		if m := systemField.FindStringSubmatch(ab); m != nil {
-			sys = m[1]
-		}
-		reasons := []string{}
-		// Board / forge capabilities that CAUSE writing to a durable
-		// store: an issue, a comment, a transition. Reading a board
-		// (board.read) alone does NOT put the agent in the class.
-		if strings.Contains(caps, "board.create") {
-			reasons = append(reasons, "board.create")
-		}
-		if strings.Contains(caps, "board.label") {
-			reasons = append(reasons, "board.label")
-		}
-		if strings.Contains(caps, "board.transition") {
-			reasons = append(reasons, "board.transition")
-		}
-		if strings.Contains(caps, "forge.") {
-			reasons = append(reasons, "forge.*")
-		}
-		// File-writing tools.
-		if strings.Contains(tools, "write_file") {
-			reasons = append(reasons, "write_file")
-		}
-		if strings.Contains(tools, "file_edit") {
-			reasons = append(reasons, "file_edit")
-		}
-		if len(reasons) == 0 {
-			continue
-		}
-		members = append(members, classMember{
-			agentName:    name,
-			systemPrompt: sys,
-			reason:       strings.Join(reasons, ", "),
-		})
-	}
-	sort.Slice(members, func(i, j int) bool { return members[i].agentName < members[j].agentName })
-	return members, prompts
-}
-
-// extractTopLevelBlocks scans src for occurrences of the given header regex
-// and returns a map from the captured name to the body up to the next
-// top-level node header.
-func extractTopLevelBlocks(src string, header *regexp.Regexp) map[string]string {
-	out := map[string]string{}
-	matches := header.FindAllStringSubmatchIndex(src, -1)
-	for i, m := range matches {
-		name := src[m[2]:m[3]]
-		start := m[1]
-		end := len(src)
-		// Find the next top-level header after this one.
-		nextIdx := topLevelHeader.FindStringIndex(src[start:])
-		if nextIdx != nil {
-			end = start + nextIdx[0]
-		}
-		// If we found another match of the same kind earlier, use its
-		// start instead.
-		if i+1 < len(matches) && matches[i+1][0] < end {
-			end = matches[i+1][0]
-		}
-		out[name] = src[start:end]
-	}
-	return out
 }

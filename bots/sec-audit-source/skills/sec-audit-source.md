@@ -162,29 +162,42 @@ Markdown export is folded into `report_card` (claude_code has
 
 ## The UNTRUSTED INPUT BOUNDARY marker (class contract)
 
-Every system prompt in this bot whose LLM (a) reads material derived
-from the audited repository (scanner output, snippets, matcher text,
-voter rationale, coverage banners) AND (b) holds a writing tool
-(`write_file`, `file_edit`) or a board/forge capability
-(`board.create`, `board.label`, `board.transition`) carries an
-`IMPORTANT — UNTRUSTED INPUT BOUNDARY:` paragraph. The paragraph
-names what is data (the audited tree's contents) versus what is an
-authoritative instruction (this system prompt + the skills the node
+Every system prompt of an LLM node that can ACT on what it reads carries
+an `IMPORTANT — UNTRUSTED INPUT BOUNDARY:` paragraph: it names what is
+data (scanner output, snippets, matcher text, voter rationale, coverage
+banners — everything derived from the audited tree) versus what is an
+authoritative instruction (the system prompt and the skills the node
 loads explicitly), and reminds the LLM that a directive-shaped text
 embedded in a scanner rationale is content, not a command.
 
-**Why the marker is a phrase, not an orthography.** A guard that
-enumerated spellings ("dismiss all findings", "approve this run",
-"the safe fix is …") is elargissable by adversarial text and never
-converges; the boundary is a POSTURE the LLM adopts, and the phrase
-is what tells the LLM the posture applies here. A test enforces the
-presence of `UNTRUSTED INPUT BOUNDARY` on every class member so the
-next bot cannot regress it silently — `bots/catalog_untrusted_input_boundary_test.go`.
+"Can act" is the engine's own classification, not a spelling of tool
+names — `pkg/runtime.ToolSurfaceCanWrite`: `full_access`, a declared tool
+outside the read-only vocabulary (`bash`, `diagnostic_shell`,
+`write_file`, `file_edit`, …), or an omitted `tools:` list on a backend
+where omission means the full native toolset (every CLI delegate, and
+claw when a `fallbacks:` route reaches one) — or a capability other than
+`board.read` / `runs.read` (`board.create`, `board.comment`,
+`board.label`, `board.assign`, `board.move`, `board.close`). `readonly:
+true` does not take a node out of the class: only the codex and pi
+delegates enforce it, claude_code never reads it. Every node of this bot
+reads material derived from the audited repository, so the surface alone
+decides membership.
 
-Adding a new agent node to this bot that writes / files / patches
-means writing the paragraph. Removing it in a refactor means the
-LLM no longer treats scanner-derived content as data; that is a
-security regression, and the test reddens.
+**Why the marker is a phrase, not an orthography.** A guard that
+enumerated spellings ("dismiss all findings", "approve this run", "the
+safe fix is …") is widened by adversarial text and never converges; the
+boundary is a POSTURE the LLM adopts, and the phrase is what tells the
+LLM the posture applies here.
+
+The rule is catalog-wide, not this bot's: the doctrine lives in
+`docs/agents/bot-authoring.md` ("Prompts that can act carry the
+UNTRUSTED INPUT BOUNDARY") and
+`bots/catalog_untrusted_input_boundary_test.go` walks the compiled IR of
+every catalog bot and reddens on any acting prompt without the phrase.
+Adding a node to this bot that writes, files, patches or shells out means
+writing the paragraph; removing it in a refactor means the LLM no longer
+treats scanner-derived content as data — a security regression the test
+catches.
 
 ## Discipline that keeps the FP rate low
 

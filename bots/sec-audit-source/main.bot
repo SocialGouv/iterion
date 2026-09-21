@@ -4547,11 +4547,14 @@ judge voter_v1:
   readonly: true
 
 judge voter_v2:
-  ## Cross-family voter (claude_code subscription). claude_code judges
-  ## inherit their tool surface from the harness — Read/Grep/Bash for
-  ## git + file inspection — and `readonly: true` strips Write/Edit, so
-  ## the explicit tools list code-review's reviewer_claude omits is
-  ## omitted here too (cf. bots/code-review/main.bot:356-368).
+  ## Cross-family voter (claude_code subscription), pinned to the same
+  ## read-plus-shell surface as v1/v3. On claude_code an omitted `tools:`
+  ## list is the FULL native toolset, Write/Edit included
+  ## (pkg/backend/delegate/claude_code.go: claudeNativeDisallowedTools
+  ## removes nothing for an empty declaration), and `readonly: true` is
+  ## enforced by the codex and pi delegates only -- claude_code never reads
+  ## it. The list is the first line; the paragraph in disprove_voter_system
+  ## is the second.
   backend: "claude_code"
   model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
@@ -4559,6 +4562,7 @@ judge voter_v2:
   output: voter_output
   system: disprove_voter_system
   user: disprove_voter_user
+  tools: [bash, read_file, glob, grep]
   tool_max_steps: 40
   session: fresh
   readonly: true
