@@ -173,14 +173,14 @@ type Engine struct {
 	compiledFiles            map[string]string                    // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
 	executionContext         *store.ExecutionContext              // resolved launch/resume context contract, set via WithExecutionContext
 	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
-	filePath                 string                               // absolute .bot source path, set via WithFilePath
+	filePath                 string                               // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
 	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                               // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                   string                               // in-source preset name selected at launch, set via WithPreset
 	runName                  string                               // deterministic human-friendly run label, set via WithRunName
 	source                   *store.RunSource                     // originating action metadata (dispatcher → issue ref), set via WithSource
 	mergeInto                string                               // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName               string                               // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
+	branchName               string                               // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
 	mergeStrategy            string                               // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
 	autoMerge                bool                                 // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
 	modelOverrides           []store.RunModelOverride             // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides

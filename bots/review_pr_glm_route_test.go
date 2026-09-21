@@ -9,15 +9,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-// TestReviewPrClaudeSlotFallsBackToGlmOnASpentForfait pins the route that
-// lets Revi review at all when this instance's Anthropic credential cannot
-// serve — window spent, credential rejected, or model unreachable.
+// TestReviewPrClaudeSlotFallsBackToGlmOnASpentForfait pins the claude slot's
+// GLM route. Since 0.9.6 the primary itself runs on z.ai (all four reviewer
+// nodes are pinned to provider "zai" + glm-5.3), so the route is the
+// same-provider rescue at the older id — armed for a spent window, a rejected
+// credential, or a model the facade refuses.
 //
-// review-pr is the gate every PR in this repo crosses, and it declared no
+// review-pr is the gate every PR in this repo crosses, and it once declared no
 // fallback of any kind: when the claude slot could not run, the reviewer
-// simply failed. The recorded workaround was to point the GPT slot's model at
-// GLM (docs/bot-runs/whole-improve-loop.md) — buying capacity with the
-// cross-family check, on the one bot whose product IS that check.
+// simply failed.
 //
 // Four properties, each of which has a way of being lost silently:
 //
@@ -28,19 +28,21 @@ import (
 //     wrong once. `provider:` is a hint, and providerFallbackEligible admits
 //     exactly one backend — claude_code. Pin the element to claw (the
 //     "obvious" home of GLM) and the hint is read by nobody: claw derives its
-//     provider from the model-spec prefix, so `anthropic/…` resolves back to
-//     the Anthropic credential that just failed, and the rescue re-uses it.
-//   - the route names its own model. The node's model is a Claude id; the
-//     element must carry the z.ai one or the facade is handed a model it
-//     does not serve.
+//     provider from the model-spec prefix, so the element re-uses the
+//     deployment's Anthropic credential — under the pin a different,
+//     also-capped credential — or dies as `invalid spec` on a bare GLM id.
+//   - the route names its own model — the older GLM id — so a hard failure of
+//     the pinned id never re-issues an identical call with a second full
+//     retry budget.
 //   - `on:` names `auth`, which the DEFAULT trigger set excludes. It is the
-//     category a present-but-rejected Anthropic credential produces: such a
-//     credential still outranks z.ai in the CLI's precedence, so the CLI uses
-//     it and 401s, and without `auth` the route sleeps through it. (An
-//     instance with only a z.ai key never reaches this route at all —
-//     claude_code resolves z.ai itself.) `unclassified` failures fall through
-//     whatever the filter says (elementAccepts), which is what hides the
-//     omission from a casual test.
+//     category a present-but-rejected credential produces — under the pin,
+//     the z.ai credential the primary itself runs on — and without `auth` the
+//     route sleeps through it. (A z.ai key absent entirely fails fast at
+//     authentication: the ambient Anthropic channels are stripped, so the CLI
+//     reports "Not logged in" rather than serving the call from another
+//     provider.) `unclassified` failures fall
+//     through whatever the filter says (elementAccepts), which is what hides
+//     the omission from a casual test.
 func TestReviewPrClaudeSlotFallsBackToGlmOnASpentForfait(t *testing.T) {
 	path := filepath.Join("review-pr", "main.bot")
 	cr := ir.Compile(parseBotUnit(path).File)

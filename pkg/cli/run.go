@@ -58,7 +58,7 @@ type RunOptions struct {
 	// <branch-name> → FF that branch (must match currently-checked-out).
 	MergeInto string
 	// BranchName overrides the default storage branch
-	// `iterion/run/<friendly>` created on the worktree's HEAD. The
+	// `iterion/run/<runID>` (the stable key, #1366) created on the worktree's HEAD. The
 	// branch is always created (GC guard); on collision a numeric
 	// suffix is appended.
 	BranchName string

@@ -3,6 +3,54 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.177.0](https://github.com/SocialGouv/iterion/compare/v3.176.0...v3.177.0) (2026-09-21)
+
+### Features
+
+* **review-pr:** the reviewer runs on z.ai glm-5.3 while the claude forfait is capped ([#1519](https://github.com/SocialGouv/iterion/issues/1519)) ([8b6b60f](https://github.com/SocialGouv/iterion/commit/8b6b60f1454364405478bc06aefc8fbebd6593b9)), references [pre-#1390](https://github.com/pre-/issues/1390)
+
+    <details><summary>why</summary>
+
+    The merge gate's reviewer fleet is parked: the deployment's Anthropic forfait is under a multi-day cap, and every PR in this repo crosses this bot. All four reviewer nodes (reviewer_claude, reviewer_gpt and both glance twins) are pinned to provider "zai" + model "glm-5.3".
+
+    </details>
+
+## [3.176.0](https://github.com/SocialGouv/iterion/compare/v3.175.2...v3.176.0) (2026-09-21)
+
+### Features
+
+* **runtime:** a canonical tree-noise list — run.tree_noise, ITERION_TREE_NOISE, and gates that carry it ([#1507](https://github.com/SocialGouv/iterion/issues/1507)) ([13db0dd](https://github.com/SocialGouv/iterion/commit/13db0dd47ccdcfae1f1d5fb31d3e8ff9d54708e4)), closes [#1506](https://github.com/SocialGouv/iterion/issues/1506) [#1506](https://github.com/SocialGouv/iterion/issues/1506), references [#1464](https://github.com/SocialGouv/iterion/issues/1464) [#1364](https://github.com/SocialGouv/iterion/issues/1364) [#1459](https://github.com/SocialGouv/iterion/issues/1459) [#1464](https://github.com/SocialGouv/iterion/issues/1464) [#1506](https://github.com/SocialGouv/iterion/issues/1506)
+
+    <details><summary>why</summary>
+
+    The gates that judge a run's worktree must set aside what the run's own setup and tooling wrote: the `.claude/` mirror the engine lays at run start (#1364) and the devbox.lock every devbox invocation rewrites (#1459). Until now that exclusion lived as literals in 26 bot files and 27 identical python `is_scaffold` copies, and the engine's own finalizer carried a third spelling (`scaffoldPrefix`). One list, every shape derived: pkg/treenoise holds the entries and emits the git pathspecs, the…
+
+    </details>
+
+## [3.175.2](https://github.com/SocialGouv/iterion/compare/v3.175.1...v3.175.2) (2026-09-20)
+
+### Bug Fixes
+
+* **resume:** the launch's decisions travel with the run — sandbox mode, merge target and branch name survive a resume, and answers survive a failed one ([#1490](https://github.com/SocialGouv/iterion/issues/1490)) ([f3223b8](https://github.com/SocialGouv/iterion/commit/f3223b85a00fc210aeafb5fa8a7967881bb05db9)), references [#1435](https://github.com/SocialGouv/iterion/issues/1435) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1435](https://github.com/SocialGouv/iterion/issues/1435) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#3](https://github.com/SocialGouv/iterion/issues/3) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1366](https://github.com/SocialGouv/iterion/issues/1366) [#1366](https://github.com/SocialGouv/iterion/issues/1366)
+
+    <details><summary>why</summary>
+
+    The class: every launch-time override iterion run accepts must either be persisted on the run and replayed on resume, or recomputed on purpose (documented). Two facets of one class were paying the ticket tax: --sandbox at launch was silently ignored by resume (docker on a host that saw one), and --merge-into / --branch-name / auto-merge choices were dropped between the CLI launch and the studio's resume. A third, smaller one on the way: answers of a resume that failed AFTER recording them (a…
+
+    </details>
+
+## [3.175.1](https://github.com/SocialGouv/iterion/compare/v3.175.0...v3.175.1) (2026-09-19)
+
+### Bug Fixes
+
+* **dsl:** a with: mapping refuses what the runtime cannot resolve — {{input.*}} on a subbot or emit, secrets and attachments, and a literal that cannot be its target's type ([#1497](https://github.com/SocialGouv/iterion/issues/1497)) ([543f876](https://github.com/SocialGouv/iterion/commit/543f876d9abf2de85e882ac89479e79a6e68499d)), references [#1308](https://github.com/SocialGouv/iterion/issues/1308) [#1310](https://github.com/SocialGouv/iterion/issues/1310) [#1420](https://github.com/SocialGouv/iterion/issues/1420) [#1505](https://github.com/SocialGouv/iterion/issues/1505)
+
+    <details><summary>why</summary>
+
+    A data mapping — an edge `-> dst with { ... }`, a subbot / emit node's own `with:`, or a `fail message:` — is resolved through `pkg/runtime.engine.resolveMapping`, whose `resolveRef` has no arm for the `secrets` / `attachments` namespaces and reads `input.*` against the parent's run inputs for subbot / emit where the kind has no `input:` surface. A compute node's `expr:` runs through `pkg/dsl/expr`, whose `evalNamespaces` (snapshot.go) excludes `secrets` and `attachments` deliberately — so a…
+
+    </details>
+
 ## [3.175.0](https://github.com/SocialGouv/iterion/compare/v3.174.1...v3.175.0) (2026-09-19)
 
 ### Features

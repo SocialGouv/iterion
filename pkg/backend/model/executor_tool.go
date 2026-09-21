@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // ---------------------------------------------------------------------------
@@ -649,16 +650,52 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	// container env (the same dir is bind-mounted there). The run-level
 	// env (the launch surface's layer plus the engine's PATH composition)
 	// is appended after the inherited env so on a duplicate key it wins.
+	cmd.Env = os.Environ()
 	if runLevelEnv := e.processExtraEnv(); e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
-		cmd.Env = append(os.Environ(), runLevelEnv...)
+		cmd.Env = append(cmd.Env, runLevelEnv...)
 		if e.artifactFilesDir != "" {
 			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 		}
 	}
+	// The canonical tree-noise pathspecs, engine-owned: a run without a
+	// devbox.json carries them just the same (#1464) — but the operator,
+	// the run or the node wins when they set the variable themselves, as
+	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(nil)...)
+
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
 	return cmd
+}
+
+// treeNoiseEnvAppend returns the ITERION_TREE_NOISE entry to append to a
+// host tool command's environment: the canonical list — unless the
+// variable is already set by the node's env map (MaterializeShellEnv's
+// output; no DSL surface carries this name), the run's env, or the
+// operator's own environment, in which case nothing is appended: an
+// explicit choice is never silently replaced (verdicts 2-3, #1464).
+func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
+	if value, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set && value != "" {
+		return nil
+	}
+	if value, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited && value != "" {
+		return nil
+	}
+	for _, entry := range e.runExtraEnv {
+		// An explicitly EMPTY run-level value is not a claim (verdict 9
+		// on its fourth surface): the node-env, operator and sandbox
+		// branches all treat empty as no-claim, and a launch projecting
+		// the variable empty must not silence the host gate while the
+		// same launch sandboxed gets the canonical list.
+		if entry == treenoise.TreeNoiseEnvVar+"=" {
+			continue
+		}
+		if strings.HasPrefix(entry, treenoise.TreeNoiseEnvVar+"=") {
+			return nil
+		}
+	}
+	return []string{treenoise.TreeNoiseEnvVar + "=" + treenoise.EnvValue()}
 }
 
 // toolNodeCommand returns a configured *exec.Cmd for a tool node's
@@ -716,21 +753,24 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	proc.TerminateGroupOnCancel(cmd)
 	cmd.Stdin = stdin
 	runLevelEnv := e.processExtraEnv()
-	if len(env) > 0 || e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
-		cmd.Env = os.Environ()
-		// Run-level env (the launch surface's layer plus the engine's
-		// PATH composition) — appended after the inherited env so on a
-		// duplicate key it wins.
-		cmd.Env = append(cmd.Env, runLevelEnv...)
-		// Host path only: sandboxed commands already see the variable from
-		// the container env (the same dir is bind-mounted there).
-		if e.artifactFilesDir != "" {
-			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
-		}
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	cmd.Env = os.Environ()
+	// Run-level env (the launch surface's layer plus the engine's
+	// PATH composition) — appended after the inherited env so on a
+	// duplicate key it wins.
+	cmd.Env = append(cmd.Env, runLevelEnv...)
+	// Host path only: sandboxed commands already see the variable from
+	// the container env (the same dir is bind-mounted there).
+	if e.artifactFilesDir != "" {
+		cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	// The canonical tree-noise pathspecs, engine-owned: a run without a
+	// devbox.json carries them just the same (#1464) — but the operator,
+	// the run or the node wins when they set the variable themselves, as
+	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
