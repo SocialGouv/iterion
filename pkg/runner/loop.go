@@ -2458,10 +2458,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// Plugin/library skills the LAUNCHING instance resolved for us. This pod's
 	// iterion home is ephemeral and empty, so local resolution would silently
 	// find nothing but the compiled-in builtins; passing the payload (even
-	// empty) makes it authoritative and suppresses that dead local lookup.
-	if msg.Contributions != nil {
-		engineOpts = append(engineOpts, runtime.WithContributions(contributionsFromWire(msg.Contributions)))
-	}
+	// empty) makes it authoritative and suppresses that dead local lookup. A
+	// missing payload is an anomaly (see contributionsEngineOptions) and is
+	// never read as "nothing enabled".
+	engineOpts = append(engineOpts, contributionsEngineOptions(msg.Contributions, r.cfg.Logger)...)
 	if msg.Resume != nil && msg.Resume.Force {
 		// Force-resume must be applied at engine construction so the
 		// hash-mismatch guard in pkg/runtime/resume.go reads the flag.

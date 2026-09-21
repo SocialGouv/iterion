@@ -78,6 +78,15 @@ func (t *contribClaimTracker) report(destPath string) bool {
 // mirrored and the local plugin registry is never consulted. That is the cloud
 // path — a runner pod's iterion home is empty, so the launching instance
 // resolved the enabled plugins' files for it (see Contributions).
+//
+// When inj is nil AND ambientUnresolved is true, the dispatch arrived without
+// the contributions payload: the local registry is NOT the run's declaration —
+// a runner pod's iterion home is empty by design, so "0 enabled" here proves
+// nothing about the launching instance's set. Nothing is mirrored and the pass
+// reports incomplete, so the pruner skips instead of deleting whatever earlier
+// passes mirrored (#1500 R6 medium). The flag is set only by the runner; a
+// local CLI/studio run keeps local resolution, where "0 enabled" IS the truth.
+//
 // It returns the SKILL files iterion owns after the mirror — the same contract
 // as mirrorBundleSkills, and for the same reason: a backend that must decide
 // what it may hand an agent cannot recover that from the workspace, which is a
@@ -89,25 +98,67 @@ func (t *contribClaimTracker) report(destPath string) bool {
 // form alone is NOT discovered as a skill by claude_code's Skill tool (only
 // the directory form is, per the Agent Skills spec; claw discovers both). See
 // mirrorFileSkill for the two-form contract.
-func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterlog.Logger) ([]string, error) {
+func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnresolved bool, logger *iterlog.Logger) (owned []string, complete bool, err error) {
 	if workDir == "" {
-		return nil, nil
+		return nil, true, nil
 	}
 	if inj != nil {
-		return mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)
-	}
-	reg, err := plugin.Load()
-	if err != nil {
-		if logger != nil {
-			logger.Warn("runtime: load plugins for contribution mirror: %v — skipping", err)
+		injOwned, injComplete, injErr := mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)
+		// The injected wire IS the whole declaration — the launching instance
+		// resolved it. A wire with no entries legitimately means "no plugins
+		// enabled", not "some plugin lost"; but a SKIPPED entry (validation or
+		// I/O, both soft in mirrorInjectedPluginFiles) drops injComplete so the
+		// pruner skips, same as the local path. Degraded is the publisher's
+		// own confession that the enumeration was PARTIAL (a broken
+		// plugin.yaml is invisible to Enabled()): the carried files mirror
+		// fine, and entries the launch pass mirrored are absent — the cloud
+		// twin of the local path's Registry.LoadSkips veto.
+		if inj.Degraded {
+			injComplete = false
+			if logger != nil {
+				logger.Warn("runtime/plugin: contributions payload is degraded (the launching instance could not fully enumerate its plugins) — mirrored what arrived, orphan pruner skipped for this pass")
+			}
 		}
-		return nil, nil
+		return injOwned, injComplete, injErr
+	}
+	if ambientUnresolved {
+		if logger != nil {
+			logger.Warn("runtime/plugin: dispatch arrived without the contributions payload — the ambient plugin declaration cannot be verified on this pod, nothing mirrored and the orphan pruner is skipped for this pass")
+		}
+		return nil, false, nil
+	}
+	reg, regErr := plugin.Load()
+	if regErr != nil {
+		if logger != nil {
+			logger.Warn("runtime: load plugins for contribution mirror: %v — skipping", regErr)
+		}
+		// The whole plugin registry couldn't be read — anything a prior
+		// pass mirrored on behalf of a plugin is now un-verifiable. The
+		// pruner MUST NOT run: an "orphan" here (no fresh tier sidecar)
+		// is not a real orphan, it is a signal iterion could not check.
+		return nil, false, nil
 	}
 	enabled := reg.Enabled()
-	if len(enabled) == 0 {
-		return nil, nil
+	if len(enabled) == 0 && len(reg.LoadSkips()) == 0 {
+		return nil, true, nil
 	}
-	var owned []string
+	complete = true
+	// A broken plugin.yaml makes loadInstalled skip the plugin SILENTLY —
+	// regErr above is nil and the plugin never enters Enabled(), so its
+	// files never enumerate and their tier sidecars stay un-refreshed.
+	// That is the #1500 R2-F1 HIGH class one layer shallower than a
+	// MirrorFiles failure: without this check the pruner reads a
+	// declared plugin's files as orphans and deletes them while the
+	// manifest still declares them. Any skip ⇒ the enumeration is
+	// partial ⇒ the pass is not complete.
+	if len(reg.LoadSkips()) > 0 {
+		complete = false
+		if logger != nil {
+			for _, skip := range reg.LoadSkips() {
+				logger.Warn("runtime: plugin load skipped (%s) — its previously-mirrored files are not pruned this pass", skip)
+			}
+		}
+	}
 
 	// One temp dir for all kinds: content is written there then run through
 	// reconcileSkillFile so plugin files reuse the exact bundle collision
@@ -137,13 +188,17 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				if logger != nil {
 					logger.Warn("runtime: plugin %q %ss: %v — skipping", p.Name(), kind.Name, ferr)
 				}
+				// Whatever this plugin was going to contribute for this
+				// kind is unknown: the pruner MUST NOT run — a prior
+				// pass's files are un-verifiable now.
+				complete = false
 				continue
 			}
 			for _, f := range files {
 				if !dirsReady {
 					for _, d := range []string{destDir, markerDir} {
 						if err := os.MkdirAll(d, 0o755); err != nil {
-							return nil, fmt.Errorf("runtime/plugin: mkdir %s: %w", d, err)
+							return nil, false, fmt.Errorf("runtime/plugin: mkdir %s: %w", d, err)
 						}
 					}
 					dirsReady = true
@@ -151,25 +206,41 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				if tmpDir == "" {
 					t, terr := os.MkdirTemp("", "iterion-plugin-contrib-*")
 					if terr != nil {
-						return nil, terr
+						return nil, false, terr
 					}
 					tmpDir = t
 				}
 				tmpPath := filepath.Join(tmpDir, f.Name)
 				if werr := os.WriteFile(tmpPath, f.Content, 0o644); werr != nil {
-					return nil, werr
+					return nil, false, werr
 				}
 				outcome, destPath, rerr := mirrorPluginContribFile(destDir, markerDir, tmpPath, f.Name, kind, logger)
 				if rerr != nil {
-					// A malformed contribution name (e.g. one that
-					// skillDestDirForm refuses because it has no .md
-					// extension case-insensitively) must not abort the
-					// whole mirror pass — that would discard every other
-					// plugin's skills / commands / agents behind a single
-					// WARN. Name the offender, keep going.
+					// BOTH error classes are soft here, unlike the bundle
+					// and library mirrors. Plugin contributions are
+					// AMBIENT — instance-level enablement no `.bot`
+					// declares — and pkg/plugin/registry.go's own rule is
+					// "a broken third-party plugin must not brick
+					// iterion". A fatal here would let a hostile workspace
+					// checkout plant a regular file at
+					// `.claude/skills/<stem>` (MkdirAll → ENOTDIR) or a
+					// directory at `.claude/commands/<name>.md` (hashFile
+					// → EISDIR) and disable every run of every
+					// plugin-enabled bot against that repo — attacker-
+					// authored run denial. Skipping is safe for the pruner
+					// BECAUSE complete drops to false: the un-mirrored
+					// entry leaves last pass's file sidecar-less, and the
+					// pruner refuses to run on an incomplete pass
+					// (#1500 Rf979b4). Bundle and library keep the fatal
+					// class — those skills the `.bot` itself declares.
 					if logger != nil {
-						logger.Warn("runtime/plugin: skipping %s %q from %q: %v", kind.Name, f.Name, p.Name(), rerr)
+						class := "validation"
+						if !isSkillValidationError(rerr) {
+							class = "I/O"
+						}
+						logger.Warn("runtime/plugin: skipping %s %q from %q (%s): %v", kind.Name, f.Name, p.Name(), class, rerr)
 					}
+					complete = false
 					continue
 				}
 				// Reports the COLLISION, never the winner. Two earlier
@@ -198,7 +269,7 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 			}
 		}
 	}
-	return owned, nil
+	return owned, complete, nil
 }
 
 // mirrorPluginContribFile places one contribution file on disk under the

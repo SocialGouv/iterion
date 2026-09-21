@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
@@ -32,11 +33,15 @@ const maxContributionsBytes = 256 * 1024
 // so an operator-installed org plugin's skill silently never reaches the
 // workspace. The launching instance is the only place that can see them.
 //
-// Returns (nil, nil) when there is genuinely nothing to ship, so the field
-// stays absent on the wire. A single unreadable plugin is logged and skipped —
-// a broken plugin must not fail a launch — but a referenced library skill that
-// is MISSING is only warned about, matching the local path where a DSL `skills:`
-// reference is soft.
+// Returns the resolved payload — possibly EMPTY but never nil when resolution
+// succeeds. An empty payload is a statement ("the launching instance has
+// nothing enabled"), and the runner must be able to tell it from a lost field:
+// a nil Contributions on the wire is reserved for "no payload arrived", which
+// the runner treats as an unverifiable declaration, never as "nothing
+// enabled". A single unreadable plugin is logged and skipped — a broken plugin
+// must not fail a launch — but a referenced library skill that is MISSING is
+// only warned about, matching the local path where a DSL `skills:` reference
+// is soft.
 // resolveContributionsFor is the tenant-aware entry point. tenantID + sources are
 // what make an ORG-PRIVATE plugin work: sources are team-scoped git-hosted
 // plugins (pkg/pluginsource) whose authority is the durable store, not this
@@ -54,8 +59,16 @@ func resolveContributionsFor(
 ) (*queue.Contributions, error) {
 	out := &queue.Contributions{}
 
-	// 0. Team-scoped git-hosted plugins. Resolved FIRST so a locally installed
+	// 0. Team-scoped git-hosted sources. Resolved FIRST so a locally installed
 	// plugin of the same name shadows it deterministically below.
+	//
+	// degraded records that the payload is an AMPUTATION: the enumeration
+	// below could not read every declared contribution, so entries the launch
+	// pass mirrored may be missing from the wire. The pod cannot detect that
+	// by inspecting the payload (the missing entries are missing), so it
+	// travels as a fact (queue.Contributions.Degraded) and the runner's
+	// mirror pass reads it as "declaration partial → pruner skipped".
+	degraded := false
 	if sources != nil && tenantID != "" {
 		files, skipped, err := sources.Resolve(ctx, tenantID)
 		if err != nil {
@@ -65,12 +78,15 @@ func resolveContributionsFor(
 			// lack the platform skill it was given.
 			return nil, err
 		}
+		if len(skipped) > 0 {
+			degraded = true
+		}
 		// A source that failed to materialise is skipped for THIS launch and
-		// flagged degraded on its record (the resolver did that); the run
-		// proceeds without its contributions. One team's broken plugin.yaml
-		// must not take every launch of the team down with it — but the skip
-		// is never quiet: here against the run, on the record for the studio
-		// and the API.
+		// degraded=true rides the payload; the run proceeds without its
+		// contributions. One team's broken plugin.yaml must not take every
+		// launch of the team down with it — but the skip is never quiet: here
+		// against the run, on the record for the studio and the API, and now
+		// on the wire to the pod.
 		for _, sk := range skipped {
 			if logger != nil {
 				logger.Warn("cloudpublisher: run %s launches WITHOUT plugin source %q (team %s): %v — the source is flagged degraded; fix it and re-register it, or disable it",
@@ -104,10 +120,27 @@ func resolveContributionsFor(
 	// 1. Enabled plugins' markdown (skills / commands / agents).
 	reg, err := plugin.Load()
 	if err != nil {
+		// The whole registry is unreadable: whatever a prior pass mirrored on
+		// the pod's behalf may be missing from the payload — degraded, and
+		// the pod's mirror pass must not bless a prune.
+		degraded = true
 		if logger != nil {
-			logger.Warn("cloudpublisher: load plugins for contribution payload: %v — shipping none", err)
+			logger.Warn("cloudpublisher: load plugins for contribution payload: %v — shipping none, payload flagged degraded", err)
 		}
 	} else {
+		// A broken plugin.yaml makes loadInstalled skip the plugin SILENTLY —
+		// err above is nil and the plugin never enters Enabled(), so its
+		// files never reach the payload while it is still enabled. The local
+		// mirror path vetoes the prune on the same signal
+		// (Registry.LoadSkips); the wire carries it as Degraded for the pod.
+		if len(reg.LoadSkips()) > 0 {
+			degraded = true
+			if logger != nil {
+				for _, skip := range reg.LoadSkips() {
+					logger.Warn("cloudpublisher: plugin load skipped (%s) — payload flagged degraded; the pod will not prune on resumes of this run", skip)
+				}
+			}
+		}
 		for _, p := range reg.Enabled() {
 			for _, kind := range plugin.MirrorKinds {
 				files, ferr := p.MirrorFiles(kind)
@@ -136,9 +169,13 @@ func resolveContributionsFor(
 	}
 
 	// 2. Skill-library skills the workflow references via DSL `skills:`.
+	// runtime.CollectSkillRefs is the ONE declaration collector: the runner's
+	// injected-payload veto verifies exactly the names this ships, so the two
+	// must not be able to disagree (a copy here drifted → stationary
+	// prune-veto on healthy cloud runs).
 	if wf != nil {
 		store := skilllib.LocalStoreForProject(projectStoreDir)
-		for _, name := range collectWorkflowSkillRefs(wf) {
+		for _, name := range runtime.CollectSkillRefs(wf) {
 			sk, gerr := store.Get(name)
 			if gerr != nil {
 				if logger != nil {
@@ -154,10 +191,6 @@ func resolveContributionsFor(
 		}
 	}
 
-	if len(out.Plugin) == 0 && len(out.Library) == 0 {
-		return nil, nil
-	}
-
 	total := 0
 	for _, f := range out.Plugin {
 		total += len(f.Content) + len(f.Name)
@@ -170,34 +203,11 @@ func resolveContributionsFor(
 			"cloudpublisher: contribution payload is %d bytes, over the %d-byte queue limit (%d plugin file(s), %d library skill(s)) — disable an unused plugin or trim a large skill",
 			total, maxContributionsBytes, len(out.Plugin), len(out.Library))
 	}
+	out.Degraded = degraded
 	if logger != nil {
-		logger.Debug("cloudpublisher: shipping %d plugin file(s) + %d library skill(s) (%d bytes) to the runner", len(out.Plugin), len(out.Library), total)
+		logger.Debug("cloudpublisher: shipping %d plugin file(s) + %d library skill(s) (%d bytes, degraded=%t) to the runner", len(out.Plugin), len(out.Library), total, out.Degraded)
 	}
 	return out, nil
-}
-
-// collectWorkflowSkillRefs returns the deduplicated union of the workflow-level
-// `skills:` default and every LLM node's `skills:` list. Mirrors
-// runtime.collectSkillRefs — kept here so the publisher does not import the
-// engine (the same split as queue.BudgetOverrides vs ir.BudgetOverrides).
-func collectWorkflowSkillRefs(wf *ir.Workflow) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(names []string) {
-		for _, n := range names {
-			if n != "" && !seen[n] {
-				seen[n] = true
-				out = append(out, n)
-			}
-		}
-	}
-	add(wf.Skills)
-	for _, node := range wf.Nodes {
-		if ln, ok := node.(ir.LLMNode); ok {
-			add(ln.GetSkills())
-		}
-	}
-	return out
 }
 
 // botSourceTenantOf extracts the stored-bundle tenant persisted on the run

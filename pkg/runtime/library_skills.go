@@ -35,33 +35,59 @@ import (
 // the local library store is never consulted (the cloud path — a runner pod has
 // no library on disk, so the launching instance resolved the workflow's refs
 // for it; see Contributions).
-func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra []string, inj *Contributions, logger *iterlog.Logger) (map[string]string, []string, error) {
+func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra []string, inj *Contributions, logger *iterlog.Logger) (hints map[string]string, owned []string, complete bool, err error) {
 	if workDir == "" || wf == nil {
-		return nil, nil, nil
+		return nil, nil, true, nil
 	}
 	if inj != nil {
 		// The cloud path: the launching instance already resolved BOTH the
 		// workflow's refs and the operator's extras into the payload, so the
 		// union is upstream of here and the pod just mirrors what it was sent.
-		return mirrorInjectedLibrarySkills(workDir, inj.Library, logger)
+		injHints, injOwned, injErr := mirrorInjectedLibrarySkills(workDir, inj.Library, logger)
+		// The payload is authoritative for WHAT to mirror, but the workflow's
+		// declaration is checkable right here: every declared ref must have
+		// been produced this pass — by the payload, or by the bundle/plugin
+		// mirrors that outrank the library and ran earlier in the sequence —
+		// or be provably untouchable by the pruner. A ref that is neither was
+		// dropped upstream of the payload; blessing the pass complete would
+		// let the pruner delete the still-declared skill's prior copy
+		// (#1500 R6 high).
+		dest := filepath.Join(workDir, ".claude", "skills")
+		markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
+		complete := true
+		for _, name := range unionSkillRefs(collectSkillRefs(wf), extra) {
+			if skillCoveredThisPass(dest, markerDir, name) {
+				continue
+			}
+			complete = false
+			if logger != nil {
+				logger.Warn("library: skill %q is declared by the workflow but was produced by no mirror this pass (dropped from the contributions payload, or unresolved upstream) — the orphan pruner is skipped for this pass", name)
+			}
+		}
+		return injHints, injOwned, complete, injErr
 	}
 	refs := unionSkillRefs(collectSkillRefs(wf), extra)
 	if len(refs) == 0 {
-		return nil, nil, nil
+		return nil, nil, true, nil
 	}
 	store := skilllib.LocalStoreForProject(projectStoreDir)
 
 	dest := filepath.Join(workDir, ".claude", "skills")
 	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
 
-	hints := make(map[string]string)
-	var owned []string
+	hints = make(map[string]string)
+	complete = true
 	dirsReady := false
 	for _, name := range refs {
-		if err := skilllib.ValidName(name); err != nil {
+		if verr := skilllib.ValidName(name); verr != nil {
 			if logger != nil {
-				logger.Warn("skill %q skipped: %v", name, err)
+				logger.Warn("skill %q skipped: %v", name, verr)
 			}
+			// The DSL declared this name; iterion refused it. From the
+			// pruner's perspective the pass did not mirror it — mark
+			// incomplete so the pruner does not treat last pass's file
+			// (if any) as an orphan.
+			complete = false
 			continue
 		}
 		srcPath, ok := store.Resolve(name)
@@ -70,9 +96,12 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 			// bundle and plugin ones, which take precedence (ADR-059). Warning
 			// that a bundle skill is "not in the skill library" is true and
 			// useless — it reads as a broken run to anyone watching the log, and
-			// every bundle that declares its own skills emits one line per skill
-			// at every start.
-			if alreadyMirrored(dest, name) {
+			// every bundle that declares its own skills (or an operator's
+			// hand-authored file, or a marker-less bundle directory skill) owns
+			// the name. A PREVIOUS pass's library copy does not satisfy the ref:
+			// its sidecar is stale, and that file is exactly what the pruner
+			// would delete on a transient store outage (#1500 R17fd85).
+			if skillCoveredThisPass(dest, markerDir, name) {
 				if logger != nil {
 					logger.Debug("skill %q resolved from the bundle/plugin mirror, not the library", name)
 				}
@@ -81,12 +110,19 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 			if logger != nil {
 				logger.Warn("skill %q referenced by the workflow is not in the skill library (~/.iterion/skills or <project>/.iterion/skills) — not mirrored", name)
 			}
+			// Same rationale as the ValidName branch: the DSL declared
+			// this skill, iterion failed to produce it. Whatever a prior
+			// pass wrote for this name is now un-verifiable — the
+			// pruner MUST NOT run, or it will delete a skill whose
+			// declaration was TEMPORARILY unresolvable (a store outage,
+			// a per-project override missing).
+			complete = false
 			continue
 		}
 		if !dirsReady {
 			for _, d := range []string{dest, markerDir} {
 				if err := os.MkdirAll(d, 0o755); err != nil {
-					return nil, nil, fmt.Errorf("runtime/library: mkdir %s: %w", d, err)
+					return nil, nil, false, fmt.Errorf("runtime/library: mkdir %s: %w", d, err)
 				}
 			}
 			dirsReady = true
@@ -98,22 +134,22 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		// A source that is already <name>/SKILL.md maps to the same dest.
 		skillDir := filepath.Join(dest, name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			// One skill's mkdir failing (permission denied, ENOSPC on a
-			// per-file basis, ...) must not discard every OTHER library
-			// skill this workflow references. Warn, skip, continue.
-			if logger != nil {
-				logger.Warn("runtime/library: skipping skill %q: mkdir %s: %v", name, skillDir, err)
-			}
-			continue
+			// I/O errors on a declared library skill (ENOSPC, EACCES,
+			// ENOTDIR when the checkout planted a plain file where the
+			// skill dir goes) stay FATAL: a run whose `.bot` explicitly
+			// declares `skills: [x]` must not proceed and report success
+			// without x — the doctrine is no silent fallback. skilllib
+			// name validation is already soft above (line ~61); anything
+			// reaching here is a filesystem issue.
+			return nil, nil, false, fmt.Errorf("runtime/library: mirror skill %q: mkdir %s: %w", name, skillDir, err)
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
 		outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
-			if logger != nil {
-				logger.Warn("runtime/library: skipping skill %q: %v", name, err)
-			}
-			continue
+			// Same rationale as the mkdir branch: an I/O failure on a
+			// declared library skill is fatal.
+			return nil, nil, false, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
 		}
 		// The hint is recorded either way — claude_code and claw read the
 		// directory natively, so the agent sees the skill whoever wrote it. The
@@ -130,32 +166,18 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 	if logger != nil && len(hints) > 0 {
 		logger.Info("library: %d skill(s) mirrored into %s", len(hints), dest)
 	}
-	return hints, owned, nil
+	return hints, owned, complete, nil
 }
 
 // collectSkillRefs returns the deduplicated union of the workflow-level
 // `skills:` default and every LLM node's `skills:` list, in a stable order
 // (workflow defaults first, then node refs in node-map iteration order,
 // deduped). Order does not affect correctness — the mirror is idempotent and
-// the hint list is re-sorted per node.
+// the hint list is re-sorted per node. Delegates to the exported
+// CollectSkillRefs, the ONE declaration collector shared with the cloud
+// publisher.
 func collectSkillRefs(wf *ir.Workflow) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(names []string) {
-		for _, n := range names {
-			if n != "" && !seen[n] {
-				seen[n] = true
-				out = append(out, n)
-			}
-		}
-	}
-	add(wf.Skills)
-	for _, node := range wf.Nodes {
-		if ln, ok := node.(ir.LLMNode); ok {
-			add(ln.GetSkills())
-		}
-	}
-	return out
+	return CollectSkillRefs(wf)
 }
 
 // unionSkillRefs appends the operator's run-level skills to the workflow's own,
@@ -253,4 +275,33 @@ func alreadyMirrored(dest, name string) bool {
 		}
 	}
 	return false
+}
+
+// skillCoveredThisPass reports whether a declared skill reference is covered
+// as of THIS mirror pass — satisfied for the orphan pruner's purposes, not
+// merely present on disk. One predicate serves both resolution paths:
+//
+//   - a fresh tier sidecar (<name>.SKILL.md.sha256.tier, rewritten by
+//     writeMarker after ClearMirroredTierMarkers wiped every sidecar at pass
+//     start) means a mirror produced the file THIS pass — the payload mirror,
+//     the local library mirror, or the bundle/plugin mirrors that outrank it;
+//   - a discoverable file with NO marker at all means a marker-less producer
+//     owns the name (a bundle's directory-form skill, or a hand-authored
+//     workspace file) — the pruner never touches a name without a marker, so
+//     the ref cannot become an orphan either way;
+//   - a marker WITHOUT a fresh sidecar is the dangerous middle: a file a
+//     PREVIOUS pass mirrored that this pass did not reproduce — exactly the
+//     file the pruner would delete, so the ref is NOT covered.
+//
+// The injected and local paths both consult it, so "declared but produced by
+// no mirror this pass" cannot mean different things on the two paths.
+func skillCoveredThisPass(dest, markerDir, name string) bool {
+	markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
+	if _, err := os.Stat(markerPath + tierSidecarSuffix); err == nil {
+		return true
+	}
+	if _, err := os.Stat(markerPath); err == nil {
+		return false
+	}
+	return alreadyMirrored(dest, name)
 }

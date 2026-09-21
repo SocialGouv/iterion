@@ -1,6 +1,7 @@
 package runner
 
 import (
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -32,5 +33,28 @@ func contributionsFromWire(c *queue.Contributions) *runtime.Contributions {
 			Content:     s.Content,
 		})
 	}
+	out.Degraded = c.Degraded
 	return out
+}
+
+// contributionsEngineOptions carries the dispatch's contributions payload into
+// the engine. A nil payload is an anomaly on the queue, not a statement: the
+// publisher resolves the launching instance's set on every launch AND every
+// resume and ships the result — possibly empty, never lost — so nil means the
+// field did not arrive. The engine is told the ambient declaration is
+// unresolved (WithContributionsUnresolved) instead of being left to a local
+// resolution that proves nothing on a pod whose iterion home is empty by
+// design; a pass that cannot verify the declaration must not bless the orphan
+// pruner (#1500 R6 medium).
+//
+// Shared by the root dispatch (loop.go) and every subbot child dispatch
+// (subbot.go) so the two cannot drift.
+func contributionsEngineOptions(c *queue.Contributions, logger *iterlog.Logger) []runtime.EngineOption {
+	if c != nil {
+		return []runtime.EngineOption{runtime.WithContributions(contributionsFromWire(c))}
+	}
+	if logger != nil {
+		logger.Warn("runner: dispatch arrived without a contributions payload — the ambient plugin/library declaration cannot be verified on this pod; the mirror pass will not bless this pass for orphan pruning")
+	}
+	return []runtime.EngineOption{runtime.WithContributionsUnresolved()}
 }

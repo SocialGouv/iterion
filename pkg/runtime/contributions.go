@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -32,6 +33,13 @@ type Contributions struct {
 	Plugin []ContributionFile
 	// Library holds skill-library skills the workflow references by name.
 	Library []LibrarySkillFile
+	// Degraded is the publisher's confession that the enumeration was
+	// PARTIAL (a broken plugin.yaml is invisible to the registry's Enabled(),
+	// an unreadable home, a degraded team source): entries the launch pass
+	// mirrored may be absent from the wire. The mirror pass mirrors what
+	// arrived but reports the pass incomplete, so the orphan pruner is
+	// skipped — the cloud twin of the local path's Registry.LoadSkips veto.
+	Degraded bool
 }
 
 // ContributionFile is one plugin markdown file bound for
@@ -60,6 +68,48 @@ func (c *Contributions) IsEmpty() bool {
 	return c == nil || (len(c.Plugin) == 0 && len(c.Library) == 0)
 }
 
+// ContributionsUnresolved reports whether this engine's dispatch arrived
+// WITHOUT the contributions payload (WithContributionsUnresolved): the
+// ambient plugin declaration is unverifiable here — a runner pod's iterion
+// home is empty by design, so local resolution proves nothing — and the
+// mirror pass mirrors nothing for plugins and never blesses the orphan
+// pruner. Read-only introspection; the runner's own tests assert the option
+// landed, and operators may log it.
+func (e *Engine) ContributionsUnresolved() bool {
+	return e.contributionsUnresolved
+}
+
+// CollectSkillRefs returns the deduplicated union of the workflow-level
+// `skills:` default and every LLM node's `skills:` list. It is THE declaration
+// collector for skill-library references: the runtime mirror verifies every
+// returned ref was produced by the pass (the #1500 R6 injected-payload veto),
+// and the cloud publisher ships exactly these names in the payload
+// (cloudpublisher used to carry its own copy — a drift between the two would
+// turn into a stationary prune-veto on healthy cloud runs, so one collector
+// serves both).
+func CollectSkillRefs(wf *ir.Workflow) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(names []string) {
+		for _, n := range names {
+			if n != "" && !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	if wf == nil {
+		return out
+	}
+	add(wf.Skills)
+	for _, node := range wf.Nodes {
+		if ln, ok := node.(ir.LLMNode); ok {
+			add(ln.GetSkills())
+		}
+	}
+	return out
+}
+
 // mirrorInjectedPluginFiles mirrors pre-resolved plugin markdown into
 // <workDir>/.claude/<kind>/, applying the SAME 4-branch collision policy as the
 // local path (reconcileSkillFile) so precedence stays identical whichever way
@@ -79,17 +129,23 @@ func (c *Contributions) IsEmpty() bool {
 // (kind, name) reaching here is a defence-in-depth signal that the payload
 // was built without dedup — the winner is publisher-order (queue.Contributions
 // order), we WARN with the destination, and it is reported once.
-func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger *iterlog.Logger) ([]string, error) {
+func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger *iterlog.Logger) (owned []string, complete bool, err error) {
+	// complete mirrors the local plugin path's contract (R0ab502): BOTH
+	// error classes are soft here — plugin contributions are ambient, and
+	// a hostile checkout planting an obstruction at a skill path must not
+	// kill the run — but ANY skipped entry drops complete to false so the
+	// caller skips the pruner (an un-mirrored entry leaves last pass's
+	// file un-refreshed, and an incomplete pass must not bless a prune).
+	complete = true
 	if workDir == "" || len(files) == 0 {
-		return nil, nil
+		return nil, complete, nil
 	}
 	tmpDir, err := os.MkdirTemp("", "iterion-injected-contrib-*")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	var owned []string
 	ready := map[string]bool{}
 	tracker := newContribClaimTracker()
 	for _, f := range files {
@@ -101,26 +157,28 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		if !ready[f.Kind] {
 			for _, d := range []string{destDir, markerDir} {
 				if err := os.MkdirAll(d, 0o755); err != nil {
-					return nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
+					return nil, false, fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
 				}
 			}
 			ready[f.Kind] = true
 		}
 		tmpPath := filepath.Join(tmpDir, f.Kind+"__"+f.Name)
 		if err := os.WriteFile(tmpPath, f.Content, 0o644); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		outcome, destPath, err := mirrorInjectedContribFile(destDir, markerDir, tmpPath, f.Kind, f.Name, logger)
 		if err != nil {
-			// Malformed entries (e.g. a name a third-party manifest crafted
-			// without an .md suffix — collectSkillFiles is EqualFold, so
-			// "Deploy.MD" reaches here and skillDestDirForm refuses it)
-			// must not discard every OTHER team-source's contribution
-			// behind a single error. Name the offender in the log, keep
-			// mirroring the rest.
-			if logger != nil {
-				logger.Warn("runtime/contrib: skipping %s %q: %v", f.Kind, f.Name, err)
+			// Both classes soft (see the function comment): name the
+			// class in the WARN, skip the entry, keep mirroring — and
+			// drop complete so the caller skips the pruner.
+			class := "validation"
+			if !isSkillValidationError(err) {
+				class = "I/O"
 			}
+			if logger != nil {
+				logger.Warn("runtime/contrib: skipping %s %q (%s): %v", f.Kind, f.Name, class, err)
+			}
+			complete = false
 			continue
 		}
 		// A duplicate reaching this path IS by definition a publisher
@@ -145,7 +203,7 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 	if logger != nil {
 		logger.Info("contributions: %d injected plugin file(s) mirrored into %s", len(files), filepath.Join(workDir, ".claude"))
 	}
-	return owned, nil
+	return owned, complete, nil
 }
 
 // mirrorInjectedContribFile is the injected twin of mirrorPluginContribFile.
@@ -209,21 +267,17 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		}
 		skillDir := filepath.Join(dest, s.Name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			// One skill's mkdir failing must not discard every OTHER
-			// injected library skill on this launch. Warn, skip.
-			if logger != nil {
-				logger.Warn("runtime/contrib: skipping library skill %q: mkdir %s: %v", s.Name, skillDir, err)
-			}
-			continue
+			// I/O errors on a declared library skill stay fatal on the
+			// cloud path too. The runner's `.bot` still declared the
+			// skill; silently proceeding without it would let a run
+			// report success while the agent runs blind.
+			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: mkdir %s: %w", s.Name, skillDir, err)
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, s.Name+".SKILL.md.sha256")
 		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
-			if logger != nil {
-				logger.Warn("runtime/contrib: skipping library skill %q: %v", s.Name, err)
-			}
-			continue
+			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
 		}
 		// The FILE, not skillDir — see mirrorLibrarySkills for why.
 		if outcome != skillOutcomeShadowed {

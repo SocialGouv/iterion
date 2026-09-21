@@ -395,7 +395,7 @@ func TestMirrorBundleSkillsSymlinkInDestDisownsTheDir(t *testing.T) {
 // what the engine reports would otherwise be handed none of them.
 func TestMirrorPluginContributionsReportsOwnedSkills(t *testing.T) {
 	workDir := t.TempDir()
-	owned, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+	owned, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "graphify.md", Content: []byte("---\nname: graphify\n---\nbody\n")},
 		{Kind: "commands", Name: "deploy.md", Content: []byte("a command, not a skill")},
 		{Kind: "agents", Name: "scout.md", Content: []byte("an agent, not a skill")},
@@ -473,7 +473,7 @@ func TestTierScopedToMirrorPass(t *testing.T) {
 	// Run 2 begins: sidecars wiped, no bundle this time — a library skill
 	// of the same name must REFRESH (the historical behaviour), not be
 	// locked out by last run's tier stamp.
-	ClearSkillTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir)
 	src2 := filepath.Join(t.TempDir(), "triage.md")
 	if err := os.WriteFile(src2, []byte("LIBRARY VERSION\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -492,7 +492,7 @@ func TestTierScopedToMirrorPass(t *testing.T) {
 
 	// Within one pass the precedence still holds: bundle first, then a
 	// same-name library — the bundle's copy is kept.
-	ClearSkillTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir)
 	if _, err := mirrorFileSkill(dest, markerDir, src1, "triage.md", skillTierBundle, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestTierScopedToMirrorPass(t *testing.T) {
 // the first, and a bundle upgrade that dropped a skill kept serving the
 // stale body on every resume). A source-level check, same spirit as the
 // server's resolver sweep: the class stays closed as call sites move.
-func TestClearSkillTierMarkers_PrecedesEveryMirrorPass(t *testing.T) {
+func TestClearMirroredTierMarkers_PrecedesEveryMirrorPass(t *testing.T) {
 	for _, file := range []string{"engine_run.go", "resume.go"} {
 		body, err := os.ReadFile(file)
 		if err != nil {
@@ -522,18 +522,18 @@ func TestClearSkillTierMarkers_PrecedesEveryMirrorPass(t *testing.T) {
 		}
 		src := string(body)
 		mirrors := strings.Count(src, "mirrorBundleSkills(")
-		wipes := strings.Count(src, "ClearSkillTierMarkers(")
+		wipes := strings.Count(src, "ClearMirroredTierMarkers(")
 		if mirrors == 0 {
 			t.Fatalf("%s: expected at least one mirror sequence", file)
 		}
 		if wipes != mirrors {
-			t.Fatalf("%s: %d mirrorBundleSkills call(s) but %d ClearSkillTierMarkers — every mirror sequence must wipe last pass's tier stamps first", file, mirrors, wipes)
+			t.Fatalf("%s: %d mirrorBundleSkills call(s) but %d ClearMirroredTierMarkers — every mirror sequence must wipe last pass's tier stamps first", file, mirrors, wipes)
 		}
 		// And the wipe comes BEFORE the mirror in each pairing.
 		rest := src
 		for i := 0; i < mirrors; i++ {
 			m := strings.Index(rest, "mirrorBundleSkills(")
-			w := strings.Index(rest, "ClearSkillTierMarkers(")
+			w := strings.Index(rest, "ClearMirroredTierMarkers(")
 			if w == -1 || w > m {
 				t.Fatalf("%s: mirror pass %d is not preceded by a wipe", file, i+1)
 			}
