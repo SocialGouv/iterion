@@ -133,11 +133,14 @@ var remoteOrgMemberRole string
 
 var remoteOrgsAddMemberCmd = &cobra.Command{
 	Use:   "add-member <user-id>",
-	Short: "Place an EXISTING account in the org with an org role (--role)",
+	Short: "Place an EXISTING account in the org with an org role (--role), super-admin only",
 	Long: "The org-level twin of `teams add-member`, and the half without which\n" +
 		"that one cannot serve the case it exists for: a user with no org at all\n" +
 		"is otherwise reachable only by email. Idempotent — re-running sets the\n" +
-		"role. For an account that does not exist yet, use `orgs invitations`.",
+		"role.\n\n" +
+		"SUPER-ADMIN only: an org admin adds someone with `orgs invitations`, which\n" +
+		"names an address its owner answers at rather than an account id. For an\n" +
+		"account that does not exist yet, `orgs invitations` is the path either way.",
 	Args: cobra.ExactArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if remoteOrgMemberRole == "" {

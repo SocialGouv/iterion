@@ -108,7 +108,7 @@ need org **admin/owner** (`canManageOrg`). Sources:
 |---|---|---|---|
 | `GET` | `/api/orgs/{id}` | org member | One org — name, slug, status, quotas. The twin of `GET /api/teams/{id}`, so a console can resolve an org by id instead of by the caller's own membership tree |
 | `GET` | `/api/orgs/{id}/members` | org member | List org members + roles |
-| `PUT` | `/api/orgs/{id}/members/{user_id}` | org admin | Place an account that ALREADY exists, idempotently (`{"role":…}`). Creates or updates, where `PATCH` requires an existing membership |
+| `PUT` | `/api/orgs/{id}/members/{user_id}` | **super-admin** | Place an account that ALREADY exists, idempotently (`{"role":…}`). Creates or updates, where `PATCH` requires an existing membership. Super-admin because it names an account id rather than an address its owner answers at: under org admin it absorbs any account, discloses its email through the roster, and turns the 404/200 split into an existence oracle. An org admin adds by `POST …/invitations` |
 | `PATCH` | `/api/orgs/{id}/members/{user_id}` | org admin | Change a member's org role (`member\|admin\|owner`) |
 | `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member (cascades to every team grant inside the org) |
 | `GET` | `/api/orgs/{id}/invitations` | org admin | List pending org invitations |

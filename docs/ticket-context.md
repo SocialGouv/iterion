@@ -163,7 +163,8 @@ and left `Team.Status` readable by the launch gate but writable by nothing:
 | Suspend / resume | **org** admin | `iterion remote teams status suspended --reason "…"` |
 | Delete an EMPTY team | org admin | `iterion remote teams delete` |
 | Place an EXISTING account in a team | team admin | `iterion remote teams add-member <user-id> --role admin`, or `teams members add <user-id> admin` |
-| Place an EXISTING account in the org | org admin | `iterion remote orgs add-member <user-id> --role member`, or `orgs members add <user-id> member` |
+| Place an EXISTING account in the org | **super-admin** | `iterion remote orgs add-member <user-id> --role member`, or `orgs members add <user-id> member` |
+| Add someone to the org as an org admin | org admin | `iterion remote orgs invitations create <email> --role member` — by address, accepted by its owner |
 
 The `<scope> members add` spelling is the same call under the noun it acts
 on, so `members` alone lists and `add` / `set-role` / `remove` complete it.
@@ -232,7 +233,12 @@ iterion remote orgs members add <user-id> member --org <org-id>
 iterion remote teams members add <user-id> member --team <team-id>
 ```
 
-or the same two gestures from the drawer. Both write an audit entry
+The first is **super-admin only** — placing by account id is not the org
+admin's right; theirs is `orgs invitations create <email>`, which names an
+address its owner answers at. The second stays an org admin's, its
+candidates being already in the org.
+
+Or the same two gestures from the drawer. Both write an audit entry
 (`org_member.added` / `member.added`) carrying the email and the role.
 
 **Deciding where the account came from**, when the SSO links do not settle

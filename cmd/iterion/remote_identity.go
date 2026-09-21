@@ -109,7 +109,12 @@ func membersCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, error),
 			"none; `add` creates or updates.\n\n" +
 			"A team grant requires the user to already be a member of the team's org,\n" +
 			"so for someone new to the org the order is: `orgs members add`, then\n" +
-			"`teams members add`.",
+			"`teams members add`.\n\n" +
+			"`orgs members add` is SUPER-ADMIN only: naming an account id is not the\n" +
+			"same right as naming an address its owner answers at. An org admin adds\n" +
+			"someone with `orgs invitations` and keeps `set-role`/`remove` over the\n" +
+			"members they already hold. `teams members add` stays open to them — its\n" +
+			"candidates are already in the org.",
 		Args: cobra.MaximumNArgs(3),
 		RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 			id, err := resolve(cmd, c)
