@@ -162,8 +162,13 @@ and left `Team.Status` readable by the launch gate but writable by nothing:
 | Rename | team admin | `iterion remote teams update --name X --slug x` |
 | Suspend / resume | **org** admin | `iterion remote teams status suspended --reason "…"` |
 | Delete an EMPTY team | org admin | `iterion remote teams delete` |
-| Place an EXISTING account in a team | team admin | `iterion remote teams add-member <user-id> --role admin` |
-| Place an EXISTING account in the org | org admin | `iterion remote orgs add-member <user-id> --role member` |
+| Place an EXISTING account in a team | team admin | `iterion remote teams add-member <user-id> --role admin`, or `teams members add <user-id> admin` |
+| Place an EXISTING account in the org | org admin | `iterion remote orgs add-member <user-id> --role member`, or `orgs members add <user-id> member` |
+
+The `<scope> members add` spelling is the same call under the noun it acts
+on, so `members` alone lists and `add` / `set-role` / `remove` complete it.
+`set-role` updates an EXISTING membership and fails when there is none;
+`add` creates or updates.
 
 Two guards worth knowing. **Delete refuses a team that still owns
 anything** — repo integrations, forge connections, api keys, active runs —
@@ -177,6 +182,61 @@ which is why `orgs add-member` exists as its org-admin twin, and why the two
 are a pair. Without it the round trip was merely moved one level up: a user
 with no org at all stayed reachable only by email. For an account that does
 not exist **yet**, the email invitation remains the path.
+
+### An account signs in and sees nothing
+
+The confusing failure of this model, because nothing about it is broken.
+
+A GitHub login that the deployment **admits** but whose teams match no
+allow-listed org goes through `provisionSubmitter`
+([pkg/auth/oidc_service.go](../pkg/auth/oidc_service.go)): the account is
+created **active, with no org, no team and no password**. It signs in
+successfully, lands in the `RestrictedShell` and sees an empty workspace. No
+email is sent, and there is no password to send — the way in is "Continue
+with GitHub", full stop. From the outside it is indistinguishable from a
+broken access.
+
+**The signature**, read as a whole rather than fact by fact: an ACTIVE
+account · an SSO link · no password · an empty roster. Any one of those alone
+looks like a misconfiguration; together they name this path. A second tell:
+`name` equals the lowercased GitHub login, the fallback used when the GitHub
+profile carries no display name.
+
+Read it in the studio at **Admin → Users → the account → Access & origin**,
+which states all four in one panel, or from the CLI:
+
+```
+iterion remote admin users --q <email-prefix>     # or an exact user id
+iterion remote admin users get <user-id>
+```
+
+`get` returns the account's file: status, last sign-in (empty when it has
+never completed one), `has_password`, the SSO links with their subject, and
+the orgs and teams it was actually **granted** — not what it could reach.
+The distinction matters here: an org admin can reach every team of their org,
+and a view that showed reachability would report grants that do not exist.
+
+**The repair** is to place the account, org first — an org membership is the
+identity boundary a team grant sits inside, so the reverse order is refused
+(422):
+
+```
+iterion remote orgs members add <user-id> member --org <org-id>
+iterion remote teams members add <user-id> member --team <team-id>
+```
+
+or the same two gestures from the drawer. Both write an audit entry
+(`org_member.added` / `member.added`) carrying the email and the role.
+
+**Deciding where the account came from**, when the SSO links do not settle
+it: password signup (`registerOpen`) **always** creates a personal org. No
+personal org ⇒ it was not that path. The direct evidence (`password_hash`,
+`oidc_links`) is in Mongo, which is not readable on prod.
+
+One row worth acting on if you ever see it: a team grant marked **"no org
+membership — this grant should not exist"**. The invariant says every team
+grant mirrors up to an org membership; the drawer flags the exception rather
+than smoothing it over.
 
 ### Moving a repo to another team — what does NOT follow it
 

@@ -31,13 +31,36 @@ func scopeWord(prefix string) string {
 	return "team"
 }
 
+// rolesHint names the role vocabulary of a tenancy scope, for help text.
+// The server is the authority; this only spares a round trip to find out.
+func rolesHint(prefix string) string {
+	if prefix == "/api/orgs" {
+		return "member|admin|owner"
+	}
+	return "viewer|member|admin|owner|config_editor"
+}
+
 // membersCmd builds the members command for a tenancy scope; prefix is
 // "/api/teams" or "/api/orgs" and resolve yields the scoped id.
+//
+// `add` lives here rather than next to one scope so both gain it at once:
+// the org half was missing for as long as this helper carried only
+// set-role and remove, which left the PREREQUISITE of a team grant — an
+// org membership — reachable only through the `remote api` escape hatch.
 func membersCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, error), prefix string) *cobra.Command {
+	usage := "usage: members [add <user-id> <role>|set-role <user-id> <role>|remove <user-id>]"
 	return &cobra.Command{
-		Use:   "members [set-role <user-id> <role>|remove <user-id>]",
+		Use:   "members [add <user-id> <role>|set-role <user-id> <role>|remove <user-id>]",
 		Short: "List or manage " + scopeWord(prefix) + " members",
-		Args:  cobra.MaximumNArgs(3),
+		Long: "Roles: " + rolesHint(prefix) + ".\n\n" +
+			"`add` places an account that ALREADY EXISTS, idempotently — the direct\n" +
+			"counterpart of an email invitation, for the case the invitation cannot\n" +
+			"serve. `set-role` updates an EXISTING membership and fails when there is\n" +
+			"none; `add` creates or updates.\n\n" +
+			"A team grant requires the user to already be a member of the team's org,\n" +
+			"so for someone new to the org the order is: `orgs members add`, then\n" +
+			"`teams members add`.",
+		Args: cobra.MaximumNArgs(3),
 		RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 			id, err := resolve(cmd, c)
 			if err != nil {
@@ -47,13 +70,16 @@ func membersCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, error),
 			switch {
 			case len(args) == 0:
 				return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+			case args[0] == "add" && len(args) == 3:
+				body := fmt.Sprintf(`{"role":%q}`, args[2])
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", base+"/"+args[1], []byte(body))
 			case args[0] == "set-role" && len(args) == 3:
 				body := fmt.Sprintf(`{"role":%q}`, args[2])
 				return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", base+"/"+args[1], []byte(body))
 			case args[0] == "remove" && len(args) == 2:
 				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
 			default:
-				return fmt.Errorf("usage: members [set-role <user-id> <role>|remove <user-id>]")
+				return fmt.Errorf("%s", usage)
 			}
 		}),
 	}
