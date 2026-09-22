@@ -1140,6 +1140,11 @@ tasks:
       - corepack pnpm install --prefer-offline
       - corepack pnpm exec node scripts/changelog-gen.mjs
 
+  release:floors:
+    desc: Preview what the release cut would do to the syntax-floor pins, and refuse a shape it cannot realign (the cut itself runs `cmd/release-floors --apply` from release-it's before:git:beforeRelease hook)
+    cmds:
+      - go run ./cmd/release-floors {{.CLI_ARGS}}
+
   # --- Helm chart targets (plan §F T-36, T-39) --------------------
   chart:sync-version:
     desc: Sync charts/iterion/Chart.yaml version + appVersion with package.json so `helm upgrade` picks up the right image tag

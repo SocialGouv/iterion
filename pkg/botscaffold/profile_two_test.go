@@ -1,8 +1,10 @@
 package botscaffold
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,7 +24,7 @@ func TestEveryTemplateRendersProfileTwoWithAFloor(t *testing.T) {
 	for shape, spec := range specs {
 		t.Run("shape="+shape, func(t *testing.T) {
 			spec.Slug = "probe"
-			spec.EngineFloor = "3.141.0"
+			spec.EngineFloor = parser.ProfileSince[2]
 			dir := t.TempDir()
 			if _, err := Scaffold(dir, spec); err != nil {
 				t.Fatalf("Scaffold: %v", err)
@@ -49,7 +51,7 @@ func TestEveryTemplateRendersProfileTwoWithAFloor(t *testing.T) {
 				t.Fatalf("no .bot rendered")
 			}
 			m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
-			if err != nil || m == nil || m.Requires == nil || m.Requires.Iterion != ">= 3.141.0" {
+			if err != nil || m == nil || m.Requires == nil || m.Requires.Iterion != ">= "+parser.ProfileSince[2] {
 				t.Fatalf("manifest floor: %v %+v", err, m)
 			}
 		})
@@ -64,13 +66,23 @@ func TestScaffoldFloorIsThisBuildsVersion(t *testing.T) {
 	prev := appinfo.Version
 	t.Cleanup(func() { appinfo.Version = prev })
 
-	appinfo.Version = "v3.150.2+abc123"
+	// A build newer than the release that reads the templates' profile,
+	// derived from that pin so the case stays "this build is newer" the day
+	// the pin moves, and carrying a patch of its own, which the floor takes
+	// verbatim.
+	major, _, cut := strings.Cut(parser.ProfileSince[2], ".")
+	n, err := strconv.Atoi(major)
+	if !cut || err != nil {
+		t.Fatalf("ProfileSince[2] = %q: no numeric major to derive a newer build from", parser.ProfileSince[2])
+	}
+	build := fmt.Sprintf("%d.0.2", n+1)
+	appinfo.Version = "v" + build + "+abc123"
 	dir := t.TempDir()
 	if _, err := Scaffold(dir, minimalSpec()); err != nil {
 		t.Fatal(err)
 	}
 	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
-	if err != nil || m.Requires == nil || m.Requires.Iterion != ">= 3.150.2" {
+	if err != nil || m.Requires == nil || m.Requires.Iterion != ">= "+build {
 		t.Fatalf("pinned build: %v %+v", err, m)
 	}
 
@@ -80,7 +92,7 @@ func TestScaffoldFloorIsThisBuildsVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, err = bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
-	if err != nil || m.Requires == nil || m.Requires.Iterion != ">= 3.141.0" {
+	if err != nil || m.Requires == nil || m.Requires.Iterion != ">= "+parser.ProfileSince[2] {
 		t.Fatalf("dev build: %v %+v", err, m.Requires)
 	}
 }
