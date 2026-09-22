@@ -64,18 +64,18 @@ type Counter interface {
 	// denied call rolls the increment back and reports which cap hit.
 	// The cost check is a soft cap by nature (a run's future spend is
 	// unknowable) — in-flight runs finish, new launches are denied.
-	AllowRun(ctx context.Context, tenantID string, when time.Time, maxRuns int, maxCostMillis int64) (DenyReason, error)
+	AllowRun(ctx context.Context, subject Subject, when time.Time, maxRuns int, maxCostMillis int64) (DenyReason, error)
 	// AddSpend accumulates post-hoc LLM cost/token usage for the
 	// month. Never gates — AllowRun enforces the cap pre-launch.
-	AddSpend(ctx context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error
+	AddSpend(ctx context.Context, subject Subject, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error
 	// ReleaseRun undoes one AllowRun admission whose launch was
 	// ultimately abandoned without any run being created (e.g. the
 	// loser of two concurrent duplicate webhook deliveries). Decrements
 	// the month's run counter; a missing month document is a no-op.
-	ReleaseRun(ctx context.Context, tenantID string, when time.Time) error
+	ReleaseRun(ctx context.Context, subject Subject, when time.Time) error
 	// Usage returns the month's counters for the org. A month with no
 	// activity returns the zero value (Month still filled).
-	Usage(ctx context.Context, tenantID string, when time.Time) (MonthlyUsage, error)
+	Usage(ctx context.Context, subject Subject, when time.Time) (MonthlyUsage, error)
 }
 
 // RetentionDays bounds how long monthly usage documents are retained
@@ -93,9 +93,42 @@ func monthStart(when time.Time) time.Time {
 	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
-// usageKey is the document id for one org-month.
-func usageKey(tenantID string, when time.Time) string {
-	return "org|" + tenantID + "|" + monthKey(when)
+// Subject is the metering identity a Counter buckets by month. It carries
+// its own KIND, because this counter meters two unrelated things and a bare
+// id cannot say which: an organisation's billing budget, and one external
+// contributor's abuse bound on the fork review lane. Two kinds sharing an
+// unqualified key would let a tenant whose id happens to equal a user id
+// spend the other's budget.
+//
+// Build one with OrgSubject or ForkAuthorSubject — never by hand, and never
+// by passing a bare id: usageKey only appends the month.
+type Subject string
+
+// OrgSubject is the billing budget of one organisation (or, for a
+// pre-backfill row with no org, of one team). Its spelling is FROZEN: it
+// reproduces the document id this package used before Subject existed, so
+// every live monthly document keeps being found. A change here silently
+// resets every org's quota to zero mid-month.
+func OrgSubject(orgOrTeamID string) Subject { return Subject("org|" + orgOrTeamID) }
+
+// ForkAuthorSubject is the per-contributor bound of the opt-in fork review
+// lane: the budget spent reviewing outside contributions is the BASE org's,
+// so it is metered per author as well as per org.
+//
+// Keyed on the forge's NUMERIC user id, not the login, and the caller is
+// responsible for that: a login is renameable — free, instant and unlimited
+// on GitHub — so a login-keyed bound resets itself on demand. The tenant is
+// part of the identity because the same contributor on two base repos of two
+// orgs spends two different budgets — and it must be the SAME id the org's
+// own budget is metered on (the org id, team id only for a pre-backfill row),
+// because pkg/cloud/orgsweep purges this collection by that second segment.
+func ForkAuthorSubject(tenantID, provider, authorID string) Subject {
+	return Subject("forkauthor|" + tenantID + "|" + provider + "|" + authorID)
+}
+
+// usageKey is the document id for one subject-month.
+func usageKey(subject Subject, when time.Time) string {
+	return string(subject) + "|" + monthKey(when)
 }
 
 // CostToMillis converts a USD amount to integer thousandths so the

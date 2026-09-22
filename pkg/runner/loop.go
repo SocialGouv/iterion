@@ -2126,6 +2126,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// so recordRunGitMeta can persist the commit/file metadata into the store
 	// before the pod's ephemeral workspace is wiped; the server pod, which
 	// has no worktree, serves the panels from that.
+	// A pin with no repository to clone is a pin nobody can enforce:
+	// prepareRepoWorkspace — which holds both the guard and the commit
+	// comparison — is entered only when RepoURL is set, so this message would
+	// run in the pod's own workdir while its run document advertises an
+	// admitted commit. Refused here, at the branch that decides there is no
+	// repo workspace, because that is the only place the shape is visible.
+	if strings.TrimSpace(msg.RepoSHAExpected) != "" && strings.TrimSpace(msg.RepoURL) == "" {
+		return fmt.Errorf("runner: run %s: admitted for commit %s but carries no repository to clone — refusing rather than running with the pin unenforced", msg.RunID, msg.RepoSHAExpected)
+	}
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		cloneStart := time.Now()

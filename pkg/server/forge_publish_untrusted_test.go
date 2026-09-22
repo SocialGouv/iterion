@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -59,10 +60,61 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		}
 	})
 
-	// The forbidden alternative is not "no grant is minted" — it is "a grant
-	// the CALLER supplied survives". The pin branch returns early, so a check
-	// placed after it would let any lane hand an untrusted run a token simply
-	// by putting one in vars.
+	// The strip sits ahead of BOTH early returns. This one is the no-pr_url
+	// return: a launch that names no pull request used to hand the vars back
+	// untouched, carrying whatever grant the caller had put in them.
+	t.Run("with no pr_url a pinned grant is still withdrawn", func(t *testing.T) {
+		s, _ := newForgePublishTestServer(t)
+		s.cfg.PublicURL = "https://iterion.example"
+		vars := map[string]string{"base_ref": "main", forgePublishVarToken: "pinned-grant-token"}
+		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustFork)
+		if err != nil {
+			t.Fatalf("injectForgePublishVars = %v, want nil — nothing was going to be minted, so an untrusted launch with no PR still launches", err)
+		}
+		if got, ok := out[forgePublishVarToken]; ok {
+			t.Fatalf("forge_publish_token = %q survived an untrusted launch that named no pull request", got)
+		}
+	})
+
+	// The withdrawal must cover the COMPLETE set the mint writes. It was
+	// first written as three literal deletes against a mint of four.
+	t.Run("every var the mint writes is withdrawn", func(t *testing.T) {
+		s, _ := newForgePublishTestServer(t)
+		s.cfg.PublicURL = "https://iterion.example"
+		minted, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustDefault)
+		if err != nil {
+			t.Fatalf("trusted mint = %v, want nil", err)
+		}
+		// Derived from what the mint ACTUALLY produced, not from a list
+		// copied here: a hand-copied list drifts the same way the strip did.
+		var mintedKeys []string
+		for k := range minted {
+			if strings.HasPrefix(k, "forge_publish") || strings.HasPrefix(k, "forge_pr_state") || strings.HasPrefix(k, "forge_delivery") {
+				mintedKeys = append(mintedKeys, k)
+			}
+		}
+		if len(mintedKeys) < 4 {
+			t.Fatalf("the trusted mint produced %v — expected at least 4 grant vars, so this test would not notice one surviving", mintedKeys)
+		}
+		carried := prVars()
+		for _, k := range mintedKeys {
+			carried[k] = minted[k]
+		}
+		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", carried, nil, store.RunTrustFork)
+		if !errors.Is(err, errForgePublishGrantUntrusted) {
+			t.Fatalf("injectForgePublishVars = %v, want errForgePublishGrantUntrusted", err)
+		}
+		for _, k := range mintedKeys {
+			if got, ok := out[k]; ok {
+				t.Fatalf("%s = %q survived on an untrusted launch — the withdrawal must cover every var the mint writes", k, got)
+			}
+		}
+	})
+
+	// The other early return. The forbidden alternative here is not "no grant
+	// is minted" — it is "a grant the CALLER supplied survives": the pin
+	// branch hands its vars straight back, so a check placed after it would
+	// let any lane arm an untrusted run by putting a token in vars.
 	t.Run("a caller-PINNED token is stripped, not honoured", func(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"

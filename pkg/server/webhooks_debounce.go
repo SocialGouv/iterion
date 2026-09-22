@@ -188,6 +188,7 @@ func (s *Server) deferSyncLaunch(
 		d.Targets = append(d.Targets, webhooks.DeferredTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,
+			Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
 		})
 	}
 	accepted, err := s.webhookDeferred.Upsert(ctx, d)
@@ -377,6 +378,11 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		res := s.launchWebhookTarget(ctx, req, cfg, meta, forgeLaunchTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,
+			// The provenance the admission proved, replayed from the parked
+			// row. The sweep re-enters none of the admission the inbound
+			// request passed, so anything it does not carry here is a fact
+			// the launch silently loses — and this one decides capabilities.
+			Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
 		}, d.PayloadHash, d.SourceIP)
 		if res.Status == webhooks.StatusLaunched {
 			s.scheduleForgeBoardProjection(meta.ProjectPath)

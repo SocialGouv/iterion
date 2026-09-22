@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Provider identifies the external event source.
@@ -227,11 +228,16 @@ type Config struct {
 	// The two kinds are DISJOINT, enforced in both directions at the launch
 	// tail (launchWebhookTarget): a fork-lane config never launches a
 	// same-repo target, and an ordinary config never launches a fork target.
-	// Immutable after create — see the webhook PATCH route — because the
-	// opt-in records and the per-author budget are keyed on this config, and
-	// flipping the kind under them would re-interpret rows written under the
-	// other one. Default false: an operator opts a repo in deliberately, with
-	// a second webhook. See docs/webhooks.md and docs/merge-gate.md.
+	//
+	// NOT SETTABLE THROUGH THE API YET, deliberately: no create/PATCH request
+	// struct carries it, so today every config decodes false and the fork
+	// lane admits nothing. The admission half — the maintainer gesture that
+	// opts one pull request in, and the per-author budget — is a follow-up,
+	// and the field becomes settable WITH it. When it does, the PATCH route
+	// has to refuse changing it on an existing config: the per-author budget
+	// is keyed on the config, so flipping the kind under it re-interprets
+	// rows written for the other one. That guard does not exist today and
+	// this comment is not claiming it does.
 	ForkLane bool `bson:"fork_lane,omitempty" json:"fork_lane,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
@@ -586,6 +592,16 @@ type DeferredTarget struct {
 	Vars    map[string]string `bson:"vars" json:"vars"`
 	RepoURL string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
 	RepoRef string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
+	// Trust and ExpectedSHA are the launch's provenance, parked with the
+	// rest of the target. They travel TOGETHER on purpose: carrying Trust
+	// alone would make a fork-lane row fire through the disjointness gate
+	// while its commit pin silently defaulted to empty — on the row with the
+	// LONGEST admission-to-fetch window in the system (the quiet window is
+	// minutes and a fresh push re-arms it with no ceiling), which is exactly
+	// where an unpinned fetch costs the most. A row written before these fields existed decodes to
+	// the trusted default and no pin, i.e. to what it did yesterday.
+	Trust       store.RunTrust `bson:"trust,omitempty" json:"trust,omitempty"`
+	ExpectedSHA string         `bson:"expected_sha,omitempty" json:"expected_sha,omitempty"`
 }
 
 // DeferredLaunch parks one webhook delivery's resolved launch for a

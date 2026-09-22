@@ -205,7 +205,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		// check it never answers. Widening one var's reach without asking who
 		// else reads it is exactly how that would have shipped.
 		healVars["fix_head_sha"] = p.HeadSHA
-		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP, launchProvenance{})
 		return
 	}
 
@@ -505,7 +505,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// branches from there.
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{})
 }
 
 // issueLabeledVars composes the launch vars an implementer bot (featurly)

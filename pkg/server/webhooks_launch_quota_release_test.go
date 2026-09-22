@@ -54,7 +54,7 @@ func TestLaunchWebhookTarget_ReleasesTheMeteredSlotWhenTheLaunchFails(t *testing
 		if res := run(t, s, ctx, "idem-ok"); res.Status != webhooks.StatusLaunched {
 			t.Fatalf("status = %q, want %q (res: %+v)", res.Status, webhooks.StatusLaunched, res)
 		}
-		u, err := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, err := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +69,7 @@ func TestLaunchWebhookTarget_ReleasesTheMeteredSlotWhenTheLaunchFails(t *testing
 		if res.Status != webhooks.StatusLaunchError {
 			t.Fatalf("status = %q, want %q (res: %+v)", res.Status, webhooks.StatusLaunchError, res)
 		}
-		u, err := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, err := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,7 +88,7 @@ func TestLaunchWebhookTarget_ReleasesTheMeteredSlotWhenTheLaunchFails(t *testing
 				t.Fatalf("%s: status = %q, want %q", idem, res.Status, webhooks.StatusLaunchError)
 			}
 		}
-		u, err := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, err := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if err != nil {
 			t.Fatal(err)
 		}

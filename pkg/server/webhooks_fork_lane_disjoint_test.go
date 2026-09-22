@@ -89,7 +89,7 @@ func TestLaunchWebhookTarget_RefusesALaneKindMismatch(t *testing.T) {
 			// Refused BEFORE metering: a mismatch that charged the org's
 			// monthly quota would be a denial-of-wallet with no run to show
 			// for it, and the sweeps retry.
-			u, err := counter.Usage(context.Background(), "t1", time.Now().UTC())
+			u, err := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 			if err != nil {
 				t.Fatal(err)
 			}

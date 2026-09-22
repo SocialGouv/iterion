@@ -311,7 +311,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{})
 }
 
 // gitlabIssueLabeledVars composes the implementer-bot launch vars for a
@@ -482,7 +482,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, converseBot,
-		vars, gitlabHeadCloneURL(head, p), gitlabHeadBranch(head, p), payloadHash, srcIP)
+		vars, gitlabHeadCloneURL(head, p), gitlabHeadBranch(head, p), payloadHash, srcIP, launchProvenance{})
 }
 
 // resolveGitLabNoteHead resolves the merge request a note sits on through the
@@ -632,7 +632,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if surface == "issue" {
 		ref = p.DefaultBranch
 	}
-	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP, launchProvenance{})
 }
 
 // buildCommandVars composes the launch vars for a generic command on a GitLab

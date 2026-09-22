@@ -158,6 +158,19 @@ func (r *Runner) recordWorkspaceReset(ctx context.Context, msg *queue.RunMessage
 // baseline the run's work is measured against: the restored chain's own base
 // when a chain was restored, "" when the clone's HEAD is the baseline.
 func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage) (string, string, error) {
+	// A pin with no ref to fetch would never be compared: verifyFetchedCommit
+	// is reached only from inside the `RepoSHA != ""` block below, so such a
+	// message would run the clone's DEFAULT BRANCH while the run document
+	// still advertises an admitted commit — the guard silently not running,
+	// which is worse than its absence. The two fields are copied from
+	// independent sources at every carrier (the launch spec, the resume, the
+	// forked child, the parked debounce row), so "they are always set
+	// together" is an assumption rather than a guarantee. Refuse: a caller
+	// asking for a pin without naming a ref asks for something unobtainable.
+	if strings.TrimSpace(msg.RepoSHAExpected) != "" && strings.TrimSpace(msg.RepoSHA) == "" {
+		return "", "", fmt.Errorf("runner: run %s: admitted for commit %s but carries no ref to fetch — refusing rather than running the clone's default branch with the pin unenforced",
+			msg.RunID, msg.RepoSHAExpected)
+	}
 	// RepoURL/RepoSHA arrive from a webhook payload (the generic webhook
 	// body is fully attacker-controlled) and flow into git below
 	// unmodified. Validate the transport + ref shape BEFORE touching the
@@ -255,6 +268,20 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	}
 	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {
 		if err := r.runGitEnv(ctx, dir, tok, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
+			return "", "", err
+		}
+		// What arrived is whatever the remote points that NAME at, at fetch
+		// time — and the fetch happens minutes to hours after the launch
+		// admitted the work. When the ref is one an untrusted party can move
+		// (a fork pull request's head), the admission pins the commit it
+		// proved and this is where the promise is kept: certify what RUNS,
+		// not what the name meant when it was checked.
+		//
+		// Verify-after-fetch rather than fetch-by-sha on purpose: `git fetch
+		// origin <40-hex>` needs uploadpack.allowAnySHA1InWant, which is not
+		// universally served, so a sha-shaped fetch would break on forges
+		// that serve the ref perfectly well.
+		if err := r.verifyFetchedCommit(ctx, dir, msg); err != nil {
 			return "", "", err
 		}
 		if err := r.runGit(ctx, dir, tok, "checkout", "--quiet", "-B", ref, "FETCH_HEAD"); err != nil {
@@ -413,6 +440,38 @@ func seedRunScratchIgnore(dir string) {
 	}
 	defer f.Close()
 	_, _ = f.WriteString("\n# iterion per-run scratch (mirrored skills + plan) — not part of the change\n.claude/\n")
+}
+
+// verifyFetchedCommit refuses a run whose fetch did not land on the commit
+// the launch admitted. It is a NO-OP unless the message carries
+// RepoSHAExpected, which only a lane whose ref an untrusted party can move
+// sets — so every existing lane keeps its exact behaviour.
+//
+// The comparison is against FETCH_HEAD, read immediately after the fetch and
+// before the checkout: that is the object this run is about to execute, as
+// opposed to what the ref name resolved to when the launch was admitted. A
+// fork contributor can force-push between those two moments, and the
+// debounce window alone is minutes (ITERION_WEBHOOK_SYNC_DEBOUNCE, default
+// 3m) and a fresh push RE-ARMS it with no ceiling, so the interval between
+// the admission and this fetch is unbounded, not merely long.
+//
+// Fails CLOSED on an unreadable FETCH_HEAD: if the runner cannot say WHICH
+// commit arrived, it cannot say the right one did.
+func (r *Runner) verifyFetchedCommit(ctx context.Context, dir string, msg *queue.RunMessage) error {
+	want := strings.TrimSpace(msg.RepoSHAExpected)
+	if want == "" {
+		return nil
+	}
+	got, err := r.runGitOutEnv(ctx, dir, "", nil, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("runner: run %s: cannot read the commit fetched for %q, so the admitted commit %s cannot be confirmed: %w",
+			msg.RunID, msg.RepoSHA, want, err)
+	}
+	if got = strings.TrimSpace(got); !strings.EqualFold(got, want) {
+		return fmt.Errorf("runner: run %s: %q now resolves to %s but this run was admitted for %s — the code moved between the admission and this fetch, so the run is refused rather than executed against a tree nobody approved",
+			msg.RunID, msg.RepoSHA, got, want)
+	}
+	return nil
 }
 
 // validateRepoTarget gates the webhook-sourced clone URL and ref before

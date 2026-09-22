@@ -106,7 +106,14 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > by the org launch gate + webhook rate limit.
 >
 > **Where fork PRs actually stand, per provider.** The guard is
-> unconditional on every provider and needs no configuration. On
+> unconditional on every provider and needs no configuration. The opt-in
+> fork review lane does not change that: it is a separate SUBSCRIPTION, not a
+> setting on these ones, and its runs can never post here — a run whose
+> workspace holds code the tenant did not write is refused the publish grant
+> both when it would be minted and when it would be honoured, so it cannot
+> write a `revi/review` status at all. Its enforcement ships today; its
+> admission does not, so nothing reaches it yet. See
+> [webhooks.md](webhooks.md#fork-review-lane). On
 > **GitHub** and **Forgejo** an inbound PR event whose head is a fork is
 > filtered before the sync lane is even considered, so the fork re-review
 > exposure above cannot occur there. On **GitLab** the inbound MR

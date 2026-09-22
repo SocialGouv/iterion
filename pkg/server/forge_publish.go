@@ -840,6 +840,15 @@ func hostOfURL(raw string) string {
 // Launch-time grant minting + var injection
 // ---------------------------------------------------------------------------
 
+// forgePublishVars is the COMPLETE set of launch vars the grant path mints.
+// It exists so the mint and the withdrawal below read the same list: the
+// withdrawal was first written as three literal deletes against a mint of
+// four, and the fourth (the delivery-preflight endpoint) survived on a
+// refused launch. A set named once cannot drift from itself.
+func forgePublishVars() [4]string {
+	return [4]string{forgePublishVarURL, forgePublishVarToken, forgePublishVarPRState, forgePublishVarPreflight}
+}
+
 // forgePublishVarURL / forgePublishVarToken are the launch vars the server
 // injects; a bot opts in by declaring them in its vars: block (undeclared
 // launch vars are dropped by the IR, so blind injection is safe).
@@ -847,9 +856,10 @@ func hostOfURL(raw string) string {
 // and authenticated by the SAME token: a delivery tail asks it whether the
 // pull request is still open before it pushes onto its branch.
 const (
-	forgePublishVarURL     = "forge_publish_url"
-	forgePublishVarToken   = "forge_publish_token"
-	forgePublishVarPRState = "forge_pr_state_url"
+	forgePublishVarURL       = "forge_publish_url"
+	forgePublishVarToken     = "forge_publish_token"
+	forgePublishVarPRState   = "forge_pr_state_url"
+	forgePublishVarPreflight = "forge_delivery_preflight_url"
 )
 
 // injectForgePublishVars mints a per-run forge-publish grant and injects the
@@ -882,22 +892,35 @@ const (
 // lane that sets it is that its output never reaches the forge, and a
 // capability that goes missing quietly is one nobody notices coming back.
 func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request, trust store.RunTrust) (map[string]string, error) {
+	prURL := strings.TrimSpace(vars["pr_url"])
+	// Ahead of ALL THREE early returns — the unwired-server one just below,
+	// the no-pr_url one, and the caller-pin one. A check placed after any of
+	// them lets a caller hand an untrusted launch a grant simply by putting
+	// one in vars: each returns the vars it was given. The unwired case is
+	// the least obvious and not hypothetical — a deployment with no forge
+	// connections mints nothing, so nothing would overwrite a caller-supplied
+	// forge_publish_url naming another deployment entirely.
+	//
+	// Deleting from a map is a no-op on absent keys, so placing this first
+	// costs a trusted launch nothing. Trusted() and not "== fork", so an
+	// unrecognised trust loses the grant too.
+	if !trust.Trusted() {
+		for _, k := range forgePublishVars() {
+			delete(vars, k)
+		}
+		if prURL == "" {
+			// Nothing was going to be minted anyway: withdraw whatever the
+			// caller brought and let the launch proceed. Erroring here would
+			// refuse every untrusted launch that is not about a pull request.
+			return vars, nil
+		}
+		return vars, fmt.Errorf("%w: %s: trust=%q", errForgePublishGrantUntrusted, prURL, string(trust))
+	}
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, nil
 	}
-	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
 		return vars, nil
-	}
-	// Before the pin branch, so a caller cannot hand an untrusted launch a
-	// grant by PINNING one: the pin path returns early and would otherwise
-	// carry any token the caller already put in vars straight onto the run.
-	// Trusted() and not "== fork" — an unrecognised trust loses the grant too.
-	if !trust.Trusted() {
-		delete(vars, forgePublishVarToken)
-		delete(vars, forgePublishVarURL)
-		delete(vars, forgePublishVarPRState)
-		return vars, fmt.Errorf("%w: %s: trust=%q", errForgePublishGrantUntrusted, prURL, string(trust))
 	}
 	if pinned := strings.TrimSpace(vars[forgePublishVarToken]); pinned != "" {
 		if grant, ok := s.forgePublishTokens.lookup(pinned); ok &&
@@ -952,7 +975,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	}
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
 	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
-	vars["forge_delivery_preflight_url"] = base + "/api/v1/forge/delivery-preflight"
+	vars[forgePublishVarPreflight] = base + "/api/v1/forge/delivery-preflight"
 	vars[forgePublishVarToken] = token
 	return vars, nil
 }

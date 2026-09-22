@@ -104,7 +104,7 @@ func orValue[T int | float64](team, def T) T {
 // counter stays true.
 type launchAdmission struct {
 	counter  orgusage.Counter
-	usageKey string
+	usageKey orgusage.Subject
 	when     time.Time
 }
 
@@ -292,10 +292,11 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 	if s.orgUsage == nil {
 		return nil, nil
 	}
-	usageKey := org.ID
-	if usageKey == "" {
-		usageKey = t.ID
+	meteredID := org.ID
+	if meteredID == "" {
+		meteredID = t.ID
 	}
+	usageKey := orgusage.OrgSubject(meteredID)
 	maxRuns := orValue(org.MonthlyRunQuota, s.orgDefaults.MonthlyRunQuota)
 	capUSD := orValue(org.MonthlyCostCapUSD, s.orgDefaults.MonthlyCostCapUSD)
 	deny, err := s.orgUsage.AllowRun(ctx, usageKey, now, maxRuns, orgusage.CostToMillis(capUSD))

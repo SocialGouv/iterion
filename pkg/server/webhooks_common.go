@@ -690,9 +690,11 @@ func (s *Server) insertAndLaunchWebhook(
 	repoRef string,
 	payloadHash string,
 	srcIP string,
+	prov launchProvenance,
 ) {
 	res := s.launchWebhookTarget(ctx, r, cfg, meta, forgeLaunchTarget{
 		BotID: botID, IdemKey: idemKey, Vars: vars, RepoURL: repoURL, RepoRef: repoRef,
+		Trust: prov.Trust, ExpectedSHA: prov.ExpectedSHA,
 	}, payloadHash, srcIP)
 	if res.Status == webhooks.StatusLaunched {
 		s.scheduleForgeBoardProjection(meta.ProjectPath)
@@ -718,6 +720,20 @@ func (s *Server) writeSingleLaunchResult(w http.ResponseWriter, r *http.Request,
 	default:
 		httpError(w, res.httpStatus, "%s", res.Error)
 	}
+}
+
+// launchProvenance is what a lane knows about the CODE a launch will run,
+// carried separately from the vars because nothing in it is the bot's
+// business: it decides capabilities, not behaviour. The zero value is the
+// trusted default, which is what every lane that existed before the fork
+// review lane hands over — so a call site that says nothing keeps saying
+// exactly what it said before.
+type launchProvenance struct {
+	// Trust classifies who wrote the code at (RepoURL, RepoRef).
+	Trust store.RunTrust
+	// ExpectedSHA pins the commit the admission proved, for a RepoRef whose
+	// author can move it between the admission and the runner's fetch.
+	ExpectedSHA string
 }
 
 // forgeLaunchTarget is one resolved (bot, idempotency key, vars) triple of a
@@ -1017,7 +1033,8 @@ func (s *Server) insertAndLaunchWebhookMulti(
 ) {
 	if len(targets) == 1 {
 		t := targets[0]
-		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, t.IdemKey, t.BotID, t.Vars, t.RepoURL, t.RepoRef, payloadHash, srcIP)
+		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, t.IdemKey, t.BotID, t.Vars, t.RepoURL, t.RepoRef, payloadHash, srcIP,
+			launchProvenance{Trust: t.Trust, ExpectedSHA: t.ExpectedSHA})
 		return
 	}
 

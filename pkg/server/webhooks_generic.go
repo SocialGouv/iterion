@@ -108,7 +108,9 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	applyWebhookVarLayers(vars, cfg)
 
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, req.RepoURL, req.RepoRef, payloadHash, srcIP)
+	// The generic JSON trigger names its own repo and has no fork lane:
+	// trusted, stated rather than defaulted.
+	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, req.RepoURL, req.RepoRef, payloadHash, srcIP, launchProvenance{})
 }
 
 // genericRequestMeta flattens a generic.Request into webhookEventMeta.

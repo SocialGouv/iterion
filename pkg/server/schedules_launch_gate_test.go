@@ -62,7 +62,7 @@ func TestLaunchScheduledBot_MetersTheTickAndRollsBackARefusal(t *testing.T) {
 		if err := s.launchScheduledBot(spineCtx(t), scheduledBot("t1")); err != nil {
 			t.Fatalf("launchScheduledBot = %v, want nil", err)
 		}
-		u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if u.Runs != 1 {
 			t.Errorf("monthly runs = %d after one scheduled launch, want 1", u.Runs)
 		}
@@ -76,7 +76,7 @@ func TestLaunchScheduledBot_MetersTheTickAndRollsBackARefusal(t *testing.T) {
 		if err := s.launchScheduledBot(spineCtx(t), scheduledBot("t1")); err == nil {
 			t.Fatal("launchScheduledBot = nil, want the run service's refusal")
 		}
-		u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if u.Runs != 0 {
 			t.Errorf("monthly runs = %d after a refused launch, want 0", u.Runs)
 		}

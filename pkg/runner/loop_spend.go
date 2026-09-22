@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
@@ -60,7 +61,7 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 			key = msg.TenantID
 		}
 		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := r.cfg.OrgUsage.AddSpend(bg, key, now, costUSD, in, out, aggregate); err != nil {
+		if err := r.cfg.OrgUsage.AddSpend(bg, orgusage.OrgSubject(key), now, costUSD, in, out, aggregate); err != nil {
 			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
 		}
 		cancel()

@@ -147,7 +147,7 @@
 | `pkg/modelprefs` | persists an operator's chosen model/backend/effort for a long-lived surface, so the choice survives the surface rather than being re-made every time… | `Store` | 3 · 27 |
 | `pkg/notify` | delivers run-completion webhooks — a generic "this run reached a terminal state, here is its final answer" callback POSTed to a URL supplied at… | — | 2 · 12 |
 | `pkg/operatormcp` | implements the operator-facing iterion MCP tool surface served by `iterion mcp` — the seam that lets any MCP client (Claude Code, the desktop, an… | — | 8 · 13 |
-| `pkg/orgusage` | meters per-org (tenant) monthly run launches and LLM spend, and enforces the launch-time caps. | `Counter` | 3 · 21 |
+| `pkg/orgusage` | meters per-org (tenant) monthly run launches and LLM spend, and enforces the launch-time caps. | `Counter` | 3 · 24 |
 | `pkg/pat` | implements personal access tokens — long-lived bearer credentials for programmatic API access (CI jobs, SDKs, curl) where the 15-minute JWT +… | `Store` | 3 · 25 |
 | `pkg/platformcfg` | holds platform-scoped runtime-settings families beyond the usage caps that established the doctrine (ADR-090): env var = deployment default, DB… | `CASStore`, `Store` | 2 · 38 |
 | `pkg/plugin` | implements iterion's plugin ecosystem: declarative, out-of-process extensions described by a `plugin.yaml` manifest with typed contribution points. | — | 8 · 67 |

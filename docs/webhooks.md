@@ -302,7 +302,9 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   the base and the bot reviews, comments and pushes against the wrong code
   under iterion's own identity. Serving forks needs a lane of its own
   (read-only, no publish grant, no fixer launch, no repo secrets, project
-  settings not honoured), not a switch on the existing ones.
+  settings not honoured), not a switch on the existing ones — see
+  [the fork review lane](#fork-review-lane) for the half of that lane that
+  ships today.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`, `/billy`), routed through the command registry —
   including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
@@ -372,6 +374,58 @@ webhook action (marking a WIP PR ready arrives as `edited`, which does not
 auto-trigger), so on Forgejo the draft→ready re-trigger is on-demand — a
 collaborator reopens the PR or uses the `/command` path. The no-draft and
 no-fork guarantees hold regardless.
+
+### <a name="fork-review-lane"></a>The fork review lane — what ships today
+
+A fork pull request is still refused on every ordinary lane, unconditionally,
+and no setting lifts that. What exists now is the **enforcement half** of the
+separate lane [#874](https://github.com/SocialGouv/iterion/issues/874)
+specifies: the controls that make serving a fork survivable. The **admission**
+half — the maintainer gesture that opts one pull request in, and the
+per-contributor budget — is a follow-up, so today **nothing produces a fork
+launch** and the lane admits nothing.
+
+**A run says who wrote its code.** `store.RunTrust` rides the run document,
+not the launching surface, because the decisions it governs are taken again
+long after the launch: a resume, a usage-window retry and a forked child all
+rebuild their credentials from the stored run. `RunTrustFork` marks a
+workspace authored outside the tenant. Every enforcement site calls
+`Trusted()`, which admits exactly ONE value — an unrecognised trust loses the
+capabilities rather than inheriting them.
+
+**What it withdraws, and where:**
+
+| Capability | Withdrawn at | Refusal |
+|---|---|---|
+| The forge publish grant (review, comment, and the `revi/review` commit status that gates the merge) | `injectForgePublishVars` refuses to MINT; `runOwnsGrant` refuses to HONOUR — on opposite sides of the run's creation, so no single mistake clears both | `forge publish grant refused for an untrusted workspace`; audit `forge.grant.untrusted_run` |
+| The tenant's workflow secrets — chiefly `forge_token`, which the runner writes into the clone as a git credential store | the cloud publisher skips the generic credential tier, on launch AND on resume | a declared secret that is not `optional:` makes the launch fail loudly rather than run with it unset |
+| The same token by its SECOND carrier — the secret id pinned on the run, opened server-side at merge time | `forgeTokenForRun` | `runs on an untrusted workspace … the tenant's forge token is never opened for it` |
+| Executing a tree nobody approved | the runner compares the fetched commit against the one the admission pinned (`RepoSHAExpected`), after the fetch and before the checkout | the run is refused, naming both commits |
+
+**Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
+KIND, not a permission. The check sits at the launch tail
+(`launchWebhookTarget`) rather than at the top of each provider handler,
+because three of that function's five callers never cross a handler — the
+sync-debounce sweep, the gate relaunch and the gate auto-fix rebuild a target
+from stored state and enter the tail directly, minutes to hours later. Both
+directions are refused: a fork target on an ordinary subscription (the
+dangerous one — that config carries the repo's grant and secret pins), and a
+same-repo target on the fork lane. A board-mode route is refused separately
+inside `dispatchInvocation`: it returns before the tail, and a board card has
+no seat for provenance.
+
+`ForkLane` is **not settable through the API yet**, deliberately — no
+create/PATCH request struct carries it — so every config decodes `false`. When
+the admission half makes it settable, the PATCH route must refuse changing it
+on an existing config, because the per-contributor budget will be keyed on it.
+
+**Why a fork lane can name one repository at all.** The launch pair that made
+the original refusal unconditional was `<base>.CloneURL` + a head branch
+living elsewhere. The lane does not build that pair: it launches on the base
+repo's own pull-request head ref (`refs/pull/<n>/head` on GitHub and Forgejo),
+which names ONE repository — the base — and resolves to the fork's commit. The
+base stays the clone's only remote, so `base_ref` and `origin/<base>` remain
+the base's, not a tree the contributor controls.
 
 ### PR auto-lane: review, not mutate (Revi vs Billy)
 
