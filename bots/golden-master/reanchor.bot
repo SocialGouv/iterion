@@ -113,7 +113,11 @@ prompt reanchor_user:
 ## ─── Schemas ───────────────────────────────────────────────────────
 
 schema campaign_input:
-  invalid: string
+  ## The harness's verdict as it is: a list of {id, reason}. Declared `json`
+  ## because the edge carries `{{vars.invalid}}`, a `json` var, whole — a
+  ## `string` here described the text the compiler kept, not the value the
+  ## run delivers.
+  invalid: json
   fail_log: string
 
 ## One field, and it is not believed. The deterministic check below is the sole

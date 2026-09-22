@@ -11,7 +11,7 @@ import (
 // runPostcondition — so these assertions bind the shipped path, not a
 // helper's private behaviour.
 func resolveToolCommandUnderTest(cmd string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string) string {
-	return resolveCommandTemplate(cmd, refs, input, vars, td, ctxRunID)
+	return resolveCommandTemplate(cmd, refs, input, vars, td, ctxRunID, nil)
 }
 
 // resolveToolScriptUnderTest is the same for a tool node's `script:` body

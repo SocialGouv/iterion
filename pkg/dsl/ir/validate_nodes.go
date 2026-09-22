@@ -1039,67 +1039,158 @@ func ExpandEnvWithDefault(s string) string {
 // An empty lookup result means "unset", so `:-` fires: that is shell `:-`
 // (as opposed to `-`), and it is what ExpandEnvWithDefault already promised.
 func ExpandWithDefault(s string, lookup func(string) string) string {
+	out, _ := expandWithDefault(s, lookup, expandPolicy{})
+	return out
+}
+
+// ExpandBracedWithDefault expands only the BRACED forms — `${VAR}` and
+// `${VAR:-default}` — and leaves a bare `$NAME` exactly as written.
+//
+// It is the reading a value that is itself a DOCUMENT owes its author: a
+// `json` var's text is data, where `$5` is five dollars and `awk '{print
+// $1}'` is a program, and expanding those to the empty string corrupts the
+// document silently. The same distinction is why a tool `command:` body
+// expands braces only (expandBracedEnv): the author's `$?`, `$1` and `$ec`
+// belong to the shell, not to iterion.
+func ExpandBracedWithDefault(s string, lookup func(string) string) string {
+	out, _ := expandWithDefault(s, lookup, expandPolicy{bracedOnly: true})
+	return out
+}
+
+// expandPolicy is what an expansion does with the two forms that have no
+// single answer: a bare `$NAME`, and a `${NAME}` whose lookup is empty.
+type expandPolicy struct {
+	// bracedOnly leaves a bare `$NAME` as written.
+	bracedOnly bool
+	// keepUnresolved leaves a reference with no value as written, rather
+	// than resolving it to the empty string.
+	keepUnresolved bool
+}
+
+// maxEnvExpansionDepth bounds the nesting of `${A:-${B:-c}}` that resolves.
+//
+// Load-bearing, not cosmetic: a var's text is not always the author's —
+// `--var` and a launch payload deliver whatever a caller sent, and the HTTP
+// launch body is capped at 10 MB. Past the bound the segment is emitted AS
+// WRITTEN, braces included, so the `${` stays visible to whoever reads the
+// value rather than silently becoming empty. The deepest authored nesting
+// in this repo's catalogue is 2; raise the constant if a real chain ever
+// needs more.
+const maxEnvExpansionDepth = 32
+
+// expandWithDefault resolves `${…}` in ONE left-to-right pass, inside-out
+// by construction: a segment is resolved the moment its `}` is read, when
+// everything it contains has already been resolved.
+//
+// The pass is what makes the work LINEAR, and that is the point. Scanning
+// forward for a closing brace from each `${` separately is quadratic in the
+// number of unmatched opens — measured on this tree before the rewrite,
+// 160 KB of `${` took 1.9 s, and 1 MB took 77 s inside `resolveVars`, in a
+// call that carries no context and cannot be cancelled. A depth bound does
+// not help there: nothing recurses, so nothing counts.
+//
+// The second result is the number of source positions the pass visited —
+// the algorithm's own step count, which is what a test asserts on. A
+// duration ratio would say the same thing and flake on a shared runner
+// (#1393); this is a count.
+func expandWithDefault(s string, lookup func(string) string, policy expandPolicy) (string, int) {
 	if lookup == nil {
 		lookup = lookupEnv
 	}
-	var b strings.Builder
+	if !strings.ContainsRune(s, '$') {
+		return s, 0
+	}
+	visited := 0
+	var stack [][]byte
+	cur := make([]byte, 0, len(s))
+	// suppressed counts the opens past the depth bound, so their `}` is
+	// copied out with them instead of closing a segment that is still live.
+	suppressed := 0
 	for i := 0; i < len(s); {
-		// Bare `$NAME` form (no braces) — delegate to os.Expand for
-		// just this fragment.
-		if s[i] == '$' && i+1 < len(s) && s[i+1] != '{' {
+		visited++
+		opens := i+1 < len(s) && s[i] == '$' && s[i+1] == '{'
+		if suppressed > 0 {
+			switch {
+			case opens:
+				suppressed++
+				cur = append(cur, '$', '{')
+				i += 2
+			case s[i] == '}':
+				suppressed--
+				cur = append(cur, '}')
+				i++
+			default:
+				cur = append(cur, s[i])
+				i++
+			}
+			continue
+		}
+		if opens {
+			if len(stack) >= maxEnvExpansionDepth {
+				suppressed = 1
+				cur = append(cur, '$', '{')
+				i += 2
+				continue
+			}
+			stack = append(stack, cur)
+			cur = nil
+			i += 2
+			continue
+		}
+		if s[i] == '}' && len(stack) > 0 {
+			inner := cur
+			cur = stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			cur = append(cur, resolveBracedSegment(string(inner), lookup, policy)...)
+			i++
+			continue
+		}
+		if !policy.bracedOnly && s[i] == '$' && i+1 < len(s) && s[i+1] != '{' {
 			end := i + 1
 			for end < len(s) && (isAlnum(s[end]) || s[end] == '_') {
 				end++
 			}
 			if end > i+1 {
-				b.WriteString(lookup(s[i+1 : end]))
+				if v := lookup(s[i+1 : end]); v != "" || !policy.keepUnresolved {
+					cur = append(cur, v...)
+				} else {
+					cur = append(cur, s[i:end]...)
+				}
 				i = end
 				continue
 			}
 		}
-		// `${...}` form — scan to the matching closing brace with
-		// depth counting so nested ${...} segments stay paired.
-		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				if j+1 < len(s) && s[j] == '$' && s[j+1] == '{' {
-					depth++
-					j += 2
-					continue
-				}
-				if s[j] == '}' {
-					depth--
-					if depth == 0 {
-						break
-					}
-				}
-				j++
-			}
-			if depth == 0 {
-				inner := s[i+2 : j]
-				// Recurse so a nested ${...} inside the fallback
-				// gets expanded before we apply the default-value
-				// rule on this level.
-				expanded := ExpandWithDefault(inner, lookup)
-				if idx := strings.Index(expanded, ":-"); idx >= 0 {
-					name, fallback := expanded[:idx], expanded[idx+2:]
-					if v := lookup(name); v != "" {
-						b.WriteString(v)
-					} else {
-						b.WriteString(fallback)
-					}
-				} else {
-					b.WriteString(lookup(expanded))
-				}
-				i = j + 1
-				continue
-			}
-		}
-		b.WriteByte(s[i])
+		cur = append(cur, s[i])
 		i++
 	}
-	return b.String()
+	// An open with no `}` is not a reference: it renders as written, `${`
+	// included, around whatever was already resolved inside it.
+	for len(stack) > 0 {
+		inner := cur
+		cur = stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cur = append(cur, '$', '{')
+		cur = append(cur, inner...)
+	}
+	return string(cur), visited
+}
+
+// resolveBracedSegment applies the `${NAME}` / `${NAME:-default}` rule to
+// one segment whose own content is already resolved. An empty lookup result
+// means "unset", so `:-` fires: that is shell `:-` (as opposed to `-`), and
+// it is what ExpandEnvWithDefault has always promised.
+func resolveBracedSegment(inner string, lookup func(string) string, policy expandPolicy) string {
+	if idx := strings.Index(inner, ":-"); idx >= 0 {
+		name, fallback := inner[:idx], inner[idx+2:]
+		if v := lookup(name); v != "" {
+			return v
+		}
+		return fallback
+	}
+	if v := lookup(inner); v != "" || !policy.keepUnresolved {
+		return v
+	}
+	return "${" + inner + "}"
 }
 
 func isAlnum(c byte) bool {

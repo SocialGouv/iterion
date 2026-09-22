@@ -937,7 +937,7 @@ func TestResolveCommandTemplate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseRefs: %v", err)
 			}
-			got := resolveCommandTemplate(tt.command, refs, tt.input, nil, nil, "")
+			got := resolveCommandTemplate(tt.command, refs, tt.input, nil, nil, "", nil)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
@@ -2126,7 +2126,7 @@ func TestProviderOptsForNode(t *testing.T) {
 // `PATCHES={{input.patches}}`.
 func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 	t.Run("string slice still space-separated", func(t *testing.T) {
-		got := shellEscapeValue([]string{"a", "b c", "d"})
+		got := shellEscapeValue([]string{"a", "b c", "d"}, ShapeUndeclared)
 		want := `'a' 'b c' 'd'`
 		if got != want {
 			t.Errorf("[]string: got %q, want %q", got, want)
@@ -2134,7 +2134,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 	})
 
 	t.Run("scalar interface slice still space-separated", func(t *testing.T) {
-		got := shellEscapeValue([]any{"foo", 42, true})
+		got := shellEscapeValue([]any{"foo", 42, true}, ShapeUndeclared)
 		want := `'foo' '42' 'true'`
 		if got != want {
 			t.Errorf("scalar []interface{}: got %q, want %q", got, want)
@@ -2145,7 +2145,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 		patches := []any{
 			map[string]any{"name": "@types/express", "current": "5.0.0", "target": "5.0.6", "risk": "patch"},
 		}
-		got := shellEscapeValue(patches)
+		got := shellEscapeValue(patches, ShapeUndeclared)
 		// Single shell-quoted JSON token (json.Marshal sorts map keys).
 		want := `'[{"current":"5.0.0","name":"@types/express","risk":"patch","target":"5.0.6"}]'`
 		if got != want {
@@ -2155,7 +2155,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 
 	t.Run("bare map JSON-encoded", func(t *testing.T) {
 		m := map[string]any{"sha": "deadbeef", "branch": "main"}
-		got := shellEscapeValue(m)
+		got := shellEscapeValue(m, ShapeUndeclared)
 		want := `'{"branch":"main","sha":"deadbeef"}'`
 		if got != want {
 			t.Errorf("map: got %q, want %q", got, want)
@@ -2163,7 +2163,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 	})
 
 	t.Run("empty complex slice still empty string", func(t *testing.T) {
-		got := shellEscapeValue([]any{})
+		got := shellEscapeValue([]any{}, ShapeUndeclared)
 		if got != "" {
 			t.Errorf("empty slice: got %q, want empty", got)
 		}
@@ -2171,7 +2171,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 
 	t.Run("nested slice JSON-encoded", func(t *testing.T) {
 		nested := []any{[]any{"a", "b"}, []any{"c"}}
-		got := shellEscapeValue(nested)
+		got := shellEscapeValue(nested, ShapeUndeclared)
 		want := `'[["a","b"],["c"]]'`
 		if got != want {
 			t.Errorf("nested slice: got %q, want %q", got, want)
@@ -2185,7 +2185,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 		patches := []any{
 			map[string]any{"name": "Bob's package"},
 		}
-		got := shellEscapeValue(patches)
+		got := shellEscapeValue(patches, ShapeUndeclared)
 		if !strings.Contains(got, `'\''s package`) {
 			t.Errorf("single-quote escape failed in JSON token: got %q", got)
 		}

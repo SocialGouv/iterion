@@ -84,9 +84,21 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	// router's outgoing edges went nil from iteration 2 (R7dd005).
 	if nodeID == e.workflow.Entry {
 		for name, v := range e.workflow.Vars {
-			if v.HasDefault {
-				result[name] = v.Default
+			if !v.HasDefault {
+				continue
 			}
+			// The value resolveVars already read, never a second reading of
+			// the same text: a `string[]` default seeded raw here while
+			// {{vars.x}} saw a list made `{{input.x}}` and `{{vars.x}}` two
+			// different values of one declaration (#1285). sc.vars carries
+			// every defaulted var, so the lookup only misses when a caller
+			// built a scope without them — then the compiler's text is still
+			// better than nothing.
+			if resolved, ok := sc.vars[name]; ok {
+				result[name] = resolved
+				continue
+			}
+			result[name] = v.Default
 		}
 		for k, v := range sc.runInputs {
 			result[k] = v
@@ -518,7 +530,13 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 		return "{{"
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
-			return sc.vars[ref.Path[0]]
+			if len(ref.Path) == 1 {
+				return sc.vars[ref.Path[0]]
+			}
+			// A `json` var is a document, so `{{vars.cfg.on}}` is its
+			// member — the reading an expression and a tool body both give
+			// the same text.
+			return drillPath(sc.vars[ref.Path[0]], ref.Path[1:])
 		}
 	case ir.RefInput:
 		if len(ref.Path) > 0 {
@@ -946,35 +964,47 @@ func matchOutputNode(wf *ir.Workflow, outputs map[string]map[string]any, path []
 	return nil, nil
 }
 
-// resolveVars builds the vars map from workflow variable defaults,
-// coercing user-provided override strings to the declared type.
+// resolveVars builds the vars map: every declared default, then the
+// overrides a launch supplied over them.
 //
-// Coercion is necessary because the CLI's --var flag and the HTTP
-// /api/runs endpoint both deliver vars as raw strings. Without
-// coercion, an explicit "--var loop_count=3" stores the var as the
-// string "3", which then fails downstream comparisons against the
-// typed defaults (e.g. "input.count >= vars.loop_count" tries to
-// compare a number against a string and aborts the run with an
-// opaque "cannot compare X >= string" error). Defaults from the
-// .bot source are already typed by the IR compiler — we coerce
-// only on overrides.
+// A var's TEXT has ONE reading — ir.ResolveVarText — whether it came from
+// the `.bot` or from `--var` / the HTTP /api/runs payload (#1285). Both
+// hosts deliver text, and both owe the author the same two steps in the
+// same order: expand the `${VAR:-default}` forms the DSL honours
+// everywhere else, then narrow to the declared type. Reading them
+// differently is not a nuance: `tags: string[] = "a,b"` started the run as
+// the string "a,b" while `--var tags=a,b` started it as ["a","b"], so a
+// template or a fan-out saw a string in one launch and a list in the
+// other — and `${LIST:-a,b}` was split on its comma before any expansion
+// on the override path, giving ["${LIST:-a", "b}"].
+//
+// Coercion is what makes an override usable at all: without it "--var
+// loop_count=3" stores the string "3", and "input.count >= vars.loop_count"
+// aborts the run with an opaque "cannot compare X >= string".
 func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	vars := make(map[string]any)
 	expandFn := e.varExpandFn()
+	read := func(origin, name string, raw any, vt ir.VarType) any {
+		resolved, err := ir.ResolveVarText(raw, vt, expandFn)
+		if err == nil {
+			return resolved
+		}
+		// Fall back to whatever the caller passed, expanded — the engine's
+		// downstream type checks will surface a clear error if the value
+		// really is incompatible, and failing the run here would be more
+		// aggressive than the previous behaviour. The origin is named
+		// because defaults and overrides now share this reading, and an
+		// operator reading the log otherwise cannot tell which of the two
+		// the engine refused.
+		if s, isText := raw.(string); isText {
+			raw = ir.ExpandWithDefault(s, expandFn)
+		}
+		e.logger.Warn("runtime: var %q (%s): coerce to %s failed: %v (using raw value)", name, origin, vt, err)
+		return raw
+	}
 	for name, v := range e.workflow.Vars {
 		if v.HasDefault {
-			if s, ok := v.Default.(string); ok {
-				// ExpandWithDefault, not os.Expand: the stdlib treats the
-				// whole `VAR:-fallback` as a variable name, so a default
-				// written `${VAR:-x}` — the idiom the DSL uses everywhere
-				// else, and which command:/model:/timeout: all honour —
-				// resolved to the EMPTY STRING here. Silently: the var just
-				// became empty and the failure surfaced much later, wherever
-				// it was consumed.
-				vars[name] = ir.ExpandWithDefault(s, expandFn)
-			} else {
-				vars[name] = v.Default
-			}
+			vars[name] = read("workflow default", name, v.Default, v.Type)
 		}
 	}
 	for k, v := range inputs {
@@ -982,21 +1012,7 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 		if !isVar {
 			continue
 		}
-		coerced, err := coerceVarValue(v, decl.Type)
-		if err != nil {
-			// Fall back to whatever the caller passed; the engine's
-			// downstream type checks will surface a clear error if
-			// the value really is incompatible. The alternative —
-			// failing the run here — would be more aggressive than
-			// the previous behaviour.
-			e.logger.Warn("runtime: var %q: coerce to %s failed: %v (using raw value)", k, decl.Type, err)
-			vars[k] = v
-			continue
-		}
-		if s, ok := coerced.(string); ok {
-			coerced = os.Expand(s, expandFn)
-		}
-		vars[k] = coerced
+		vars[k] = read("launch value", k, v, decl.Type)
 	}
 
 	// Foot-gun guard: a var explicitly set to the repo root — e.g.
@@ -1011,11 +1027,13 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	if e.repoRoot != "" {
 		if projectDir := expandFn("PROJECT_DIR"); projectDir != "" && !samePath(projectDir, e.repoRoot) {
 			for k, val := range vars {
-				if s, ok := val.(string); ok && samePath(s, e.repoRoot) {
-					vars[k] = projectDir
-					if e.logger != nil {
-						e.logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
-					}
+				remapped, changed := remapRepoRoot(val, e.repoRoot, projectDir)
+				if !changed {
+					continue
+				}
+				vars[k] = remapped
+				if e.logger != nil {
+					e.logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
 				}
 			}
 		}
@@ -1119,12 +1137,14 @@ func (e *Engine) varExpandFn() func(string) string {
 // validateVarEnums enforces declared `[enum: ...]` constraints on
 // launch-provided var values — the runtime counterpart of the C126
 // compile check on defaults (defaults are compile-validated, so only
-// provided values are checked here). Values are checked after the same
-// ${VAR} expansion resolveVars applies, i.e. against the exact value
-// that flows into the run; upstream template rendering (dispatcher
-// bot_args, preset overlay) has already happened by the time inputs
-// reach the engine. Returns an error naming every violating var, its
-// value, and the allowed list.
+// provided values are checked here). Values are checked through
+// ir.ResolveVarText, the SAME reading resolveVars gives them, so the gate
+// judges the exact value that flows into the run: a gate with an expander
+// of its own refused `${MODE:-fast}` (expanded to "") on a var the run
+// would then have started with "fast". Upstream template rendering
+// (dispatcher bot_args, preset overlay) has already happened by the time
+// inputs reach the engine. Returns an error naming every violating var,
+// its value, and the allowed list.
 func (e *Engine) validateVarEnums(inputs map[string]any) error {
 	if len(inputs) == 0 {
 		return nil
@@ -1144,7 +1164,12 @@ func (e *Engine) validateVarEnums(inputs map[string]any) error {
 				k, v, v, quoteList(decl.EnumValues)))
 			continue
 		}
-		if expanded := os.Expand(s, expandFn); !slices.Contains(decl.EnumValues, expanded) {
+		// decl.Type is VarString above, so the shared reading is the
+		// expansion and nothing else — it neither fails nor returns
+		// another type here.
+		read, _ := ir.ResolveVarText(s, decl.Type, expandFn)
+		expanded, _ := read.(string)
+		if !slices.Contains(decl.EnumValues, expanded) {
 			violations = append(violations, fmt.Sprintf(
 				"var %q: value %q is not one of the allowed values (%s)",
 				k, expanded, quoteList(decl.EnumValues)))
@@ -1154,6 +1179,45 @@ func (e *Engine) validateVarEnums(inputs map[string]any) error {
 		return errors.New(strings.Join(violations, "; "))
 	}
 	return nil
+}
+
+// remapRepoRoot rewrites every occurrence of the repo root inside a var's
+// value, wherever the declared type put it: a `string` var holds one path,
+// a `string[]` holds a list of them, a `json` one holds a document with
+// paths at any depth — the run reads a default and an override alike as a
+// value of its type (#1285), so a guard that read one string per var
+// stopped seeing the shapes most likely to carry a path. Returns the value
+// and whether anything moved; the input is never modified in place, since
+// the caller's map may be shared.
+func remapRepoRoot(val any, repoRoot, projectDir string) (any, bool) {
+	switch v := val.(type) {
+	case string:
+		if samePath(v, repoRoot) {
+			return projectDir, true
+		}
+	case []any:
+		changed := false
+		out := make([]any, len(v))
+		for i, e := range v {
+			out[i], _ = remapRepoRoot(e, repoRoot, projectDir)
+			changed = changed || out[i] != e
+		}
+		if changed {
+			return out, true
+		}
+	case map[string]any:
+		changed := false
+		out := make(map[string]any, len(v))
+		for k, e := range v {
+			var moved bool
+			out[k], moved = remapRepoRoot(e, repoRoot, projectDir)
+			changed = changed || moved
+		}
+		if changed {
+			return out, true
+		}
+	}
+	return val, false
 }
 
 // quoteList renders enum values as `"a", "b"` for error messages.
@@ -1170,14 +1234,6 @@ func quoteList(vals []string) string {
 // remapped to the worktree/sandbox workspace.
 func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
-}
-
-// coerceVarValue narrows a user-provided override (typically a
-// string from --var or POST /api/runs) to the type declared in the
-// IR for that var: the one reading of a var's text, ir.CoerceVarValue,
-// which the contract compiler mirrors for a var's default.
-func coerceVarValue(v any, vt ir.VarType) (any, error) {
-	return ir.CoerceVarValue(v, vt)
 }
 
 // emitTerminalNodeEvents emits the NodeStarted+NodeFinished pair for a

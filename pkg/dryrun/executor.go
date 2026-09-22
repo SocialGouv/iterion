@@ -368,6 +368,9 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 		schema = n.OutputSchema
 	case *ir.ToolNode:
 		schema = n.OutputSchema
+		// The run's own declarations: a dry run that rendered a `json` var
+		// as argv words would report a command the run never issues.
+		shapes := model.WorkflowShapes(x.wf).WithInputSchema(x.wf.Schemas[n.InputSchema])
 		switch {
 		case n.Action != "":
 			x.add(Finding{Node: id, Kind: KindUnchecked, Where: "action", Detail: fmt.Sprintf("connector action %s is not executed by a dry run: its output is a shape", n.Action)})
@@ -375,11 +378,11 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 			rendered := model.RenderScript(n.Script, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script"))
 			x.shellCheck(id, "script", n.Language, rendered)
 		default:
-			rendered := model.RenderCommand(n.Command, n.CommandRefs, input, vars, td, runID, x.reporter(id, "command"))
+			rendered := model.RenderCommand(n.Command, n.CommandRefs, input, vars, td, runID, shapes, x.reporter(id, "command"))
 			x.shellCheck(id, "command", "bash", rendered)
 		}
 		if n.Postcondition != "" {
-			rendered := model.RenderCommand(n.Postcondition, n.PostcondRefs, input, vars, td, runID, x.reporter(id, "postcondition"))
+			rendered := model.RenderCommand(n.Postcondition, n.PostcondRefs, input, vars, td, runID, shapes, x.reporter(id, "postcondition"))
 			x.shellCheck(id, "postcondition", "bash", rendered)
 		}
 	default:
