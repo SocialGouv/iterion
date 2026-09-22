@@ -430,9 +430,14 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		if opts.runName != "" {
 			msg += " (" + opts.runName + ")"
 		}
-		if err := runGitInDir(wc.wtPath, stageWorkArgs()...); err != nil {
+		if err := runGitInDir(wc.wtPath, stageWorkArgs(wc.wtPath)...); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
+			}
+			res.PreserveWorktree = true
+		} else if setAside, err := wipSetAside(wc.wtPath, porcelain); err != nil {
+			if logger != nil {
+				logger.Warn("runtime: finalize: wip bank cannot %v — preserving worktree at %s", err, wc.wtPath)
 			}
 			res.PreserveWorktree = true
 		} else if out, err := gitCommitMessage(wc.wtPath, msg); err != nil {
@@ -446,7 +451,14 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				finalSHA = banked
 			}
 			if logger != nil {
-				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged) — tree noise set aside: %s", shortSHA(finalSHA), strings.Join(noisePaths(porcelain), ", "))
+				// What the bank did not carry, not what the classification
+				// calls noise: a tracked file under an ignored mirror rides
+				// the commit (stagingExclusions) and must not be named here.
+				named := strings.Join(setAside, ", ")
+				if named == "" {
+					named = "none"
+				}
+				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged) — tree noise set aside: %s", shortSHA(finalSHA), named)
 			}
 		}
 	}

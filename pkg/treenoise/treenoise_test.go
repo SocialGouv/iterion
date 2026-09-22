@@ -29,6 +29,28 @@ func TestShellPathspecsRendersEveryEntryQuoted(t *testing.T) {
 	}
 }
 
+// Pathspec is the unit the two list shapes are built from: a consumer that
+// filters the list entry by entry (the engine's staging gestures, #1558)
+// spells exactly what the whole-list shapes would have — the wildcard of a
+// Prefix entry included — and the mirror's named pathspec is the mirror
+// entry's.
+func TestEntryPathspecIsTheUnitTheListShapesAreBuiltFrom(t *testing.T) {
+	for i, e := range Entries {
+		if got, want := e.Pathspec(), Pathspecs()[i]; got != want {
+			t.Fatalf("Entries[%d].Pathspec() = %q, Pathspecs()[%d] = %q", i, got, i, want)
+		}
+		if !strings.Contains(ShellPathspecs(), "'"+e.Pathspec()+"'") {
+			t.Fatalf("ShellPathspecs() lacks %q quoted: %s", e.Pathspec(), ShellPathspecs())
+		}
+		if e.Prefix != strings.HasSuffix(e.Pathspec(), "*") {
+			t.Fatalf("Entries[%d] Prefix=%v but Pathspec() = %q", i, e.Prefix, e.Pathspec())
+		}
+	}
+	if got := MirrorEntry(); got.Path != MirrorPath || got.Prefix || got.Pathspec() != ":(exclude,top)"+MirrorPath {
+		t.Fatalf("MirrorEntry() = %+v, want the plain entry for %q", got, MirrorPath)
+	}
+}
+
 // The load-bearing env tests (plan review F8): the entries are shell-safe
 // and space-free BY CONSTRUCTION, and the env value splits back into
 // exactly the pathspecs — a lossless round trip, not an equality that is
