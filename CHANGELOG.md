@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.183.0](https://github.com/SocialGouv/iterion/compare/v3.182.1...v3.183.0) (2026-09-22)
+
+### Features
+
+* **dsl:** allow/ask/deny are declarable per agent and judge node, and a node list REPLACES the workflow's ([#1581](https://github.com/SocialGouv/iterion/issues/1581)) ([8a7bb2b](https://github.com/SocialGouv/iterion/commit/8a7bb2b4922c971fc50deaa28200a857597fb7cb)), references [#1222](https://github.com/SocialGouv/iterion/issues/1222)
+
+    <details><summary>why</summary>
+
+    `allow:` / `ask:` / `deny:` existed on the `workflow` block only; just the scalar `permission:` mode descended to a node. So a workflow whose nodes need different bounds had no way to say so, and the author's only lever was `permission: off` on the node that needed more — which removes every rule, not the one in the way.
+
+    </details>
+
 ## [3.182.1](https://github.com/SocialGouv/iterion/compare/v3.182.0...v3.182.1) (2026-09-22)
 
 ### Bug Fixes
