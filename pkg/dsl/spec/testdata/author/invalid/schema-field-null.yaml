@@ -1,0 +1,12 @@
+# refused: a schema field needs its type
+dsl: 2
+schemas:
+  s:
+    f:
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

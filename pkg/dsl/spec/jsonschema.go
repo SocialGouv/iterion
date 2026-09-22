@@ -30,6 +30,13 @@ import (
 // an object of its parts and its sub-block's properties; an entry whose
 // line may stop at its name admits null. Edge lines keep the `.bot`'s own
 // grammar, one string each.
+//
+// What the schema cannot see — JSON has one number type, YAML two — and
+// the converter checks on the YAML tag instead (testdata/author/lax): a
+// float spelled with a zero fraction where the `.bot` wants an integer
+// (`dsl: 2.0`, `max_tokens: 1.0` — the lexer refuses a Float), and a
+// non-finite float (`.inf`, `.nan`) where a bounded number is wanted. The
+// schema is an author's aid; the `.bot` the converter writes is the truth.
 
 // SchemaDialect is the JSON Schema dialect the artefacts declare.
 const SchemaDialect = "https://json-schema.org/draft/2020-12/schema"
@@ -194,8 +201,9 @@ func (b *schemaBuilder) accepts(p Property) bool {
 func (b *schemaBuilder) root() obj {
 	props := obj{
 		"dsl": obj{
+			"type":        "integer",
 			"const":       b.profile,
-			"description": fmt.Sprintf("The syntax profile the document is read in: %d. Required — a new surface has nothing to guess.", b.profile),
+			"description": fmt.Sprintf("The syntax profile the document is read in: %d, written as a bare integer (`%d`, never `%d.0`: the .bot refuses a float, and JSON Schema cannot tell the two apart — the converter checks the YAML tag). Required — a new surface has nothing to guess.", b.profile, b.profile, b.profile),
 		},
 		"catalog": b.def("catalog", catalogDef),
 		"imports": obj{
@@ -321,9 +329,9 @@ func (b *schemaBuilder) form(f Form, values []string, body string) obj {
 	case StringOrNumber:
 		return obj{"anyOf": []any{obj{"type": "string"}, obj{"type": "number", "minimum": 0}}}
 	case Int:
-		return obj{"type": "integer", "minimum": 0}
+		return obj{"type": "integer", "minimum": 0, "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag"}
 	case Number:
-		return obj{"type": "number", "minimum": 0}
+		return obj{"type": "number", "minimum": 0, "$comment": "a finite non-negative number; `.inf` and `.nan` pass JSON Schema's bound and are the converter's to refuse"}
 	case Bool:
 		return obj{"type": "boolean"}
 	case JSON:

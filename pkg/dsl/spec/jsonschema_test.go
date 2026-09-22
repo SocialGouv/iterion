@@ -127,14 +127,145 @@ func TestAuthorSchemaRefusesEveryInvalidFixture(t *testing.T) {
 	}
 }
 
-// TestValidFixturesCoverTheRegistry: the valid fixtures exercise every node
-// kind, every property of every node kind and of the workflow, every
-// top-level key of the document, and every Form — a form nothing writes is
-// a fragment nothing proves.
+// TestKnownLaxSpellingsAreSaidNotHidden: the spellings the schema ACCEPTS
+// and the .bot refuses — JSON has one number type, YAML two — are written
+// down, one fixture each under testdata/author/lax with its first line
+// naming why, and held: still accepted by the schema today (the day the
+// validator or the schema refuses one, the fixture moves to invalid), and
+// the converter's to refuse by the YAML tag (PR B's round-trip test reads
+// the same directory).
+func TestKnownLaxSpellingsAreSaidNotHidden(t *testing.T) {
+	_, combined := authorSchemas(t)
+	for _, path := range fixtures(t, "lax") {
+		raw, _ := os.ReadFile(path)
+		if !strings.HasPrefix(string(raw), "# lax:") {
+			t.Errorf("%s: the first line must say why the schema is lax here", path)
+		}
+		doc, err := loadFixture(t, path)
+		if err != nil {
+			t.Errorf("%s: not YAML: %v", path, err)
+			continue
+		}
+		if err := combined.Validate(doc); err != nil {
+			t.Errorf("%s: the schema now refuses it — move the fixture to invalid: %v", path, err)
+		}
+	}
+}
+
+// coverage is what the valid fixtures WRITE, walked with the registry: every
+// kind reached, every property of every kind (a block's too, a sub-block's
+// too), every part of every entry (`kind.part`, nested `kind.entries.part`),
+// every Form those properties and parts carry, every top-level key.
+type coverage struct {
+	kinds, props, forms, top map[string]bool
+}
+
+func newCoverage() *coverage {
+	return &coverage{map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}}
+}
+
+// kind walks a value written for a kind's body: a mapping of its
+// properties (a block reached through a Block property is walked with its
+// own kind), or its entries.
+func (c *coverage) kind(k spec.Kind, v any) {
+	c.kinds[k.Name] = true
+	if k.Entries != nil && len(k.Properties) == 0 {
+		c.entries(k.Name, k.Entries, v)
+		return
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	for key, val := range m {
+		p, ok := k.Property(key)
+		if !ok {
+			if k.Entries != nil {
+				c.entry(k.Name, k.Entries, val)
+			}
+			continue
+		}
+		c.property(k.Name, p, val)
+	}
+}
+
+func (c *coverage) property(kind string, p spec.Property, val any) {
+	c.props[kind+"."+p.Name] = true
+	c.forms[string(p.Form)] = true
+	if p.Form == spec.Block || p.Form == spec.BlockOrIdent {
+		if bk, ok := spec.Lookup(p.Body); ok {
+			c.kind(bk, val)
+		}
+	}
+}
+
+// entries walks a block of entries: a mapping keyed by name, or the
+// sequence a SequenceKey block is written as.
+func (c *coverage) entries(name string, e *spec.Entries, v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, ev := range t {
+			c.entry(name, e, ev)
+		}
+	case []any:
+		for _, ev := range t {
+			c.entry(name, e, ev)
+		}
+	}
+}
+
+// entry walks one entry's value: the scalar shorthand (the one required or
+// only part), or an object of its parts and its sub-block's properties.
+func (c *coverage) entry(name string, e *spec.Entries, ev any) {
+	m, ok := ev.(map[string]any)
+	if !ok {
+		if ev == nil {
+			return
+		}
+		for _, f := range e.Fields {
+			if f.Required || len(e.Fields) == 1 {
+				c.props[name+"."+f.Name] = true
+				c.forms[string(f.Form)] = true
+				return
+			}
+		}
+		return
+	}
+	if e.Entries != nil {
+		for _, x := range m {
+			c.entry(name+".entries", e.Entries, x)
+		}
+		return
+	}
+	var body spec.Kind
+	hasBody := false
+	if e.Body != "" {
+		body, hasBody = spec.Lookup(e.Body)
+	}
+	for key, val := range m {
+		for _, f := range e.Fields {
+			if f.Name == key {
+				c.props[name+"."+f.Name] = true
+				c.forms[string(f.Form)] = true
+			}
+		}
+		if hasBody {
+			if p, ok := body.Property(key); ok {
+				c.kinds[body.Name] = true
+				c.property(body.Name, p, val)
+			}
+		}
+	}
+}
+
+// TestValidFixturesCoverTheRegistry: what the valid fixtures write, walked
+// with the registry, reaches every kind, every property of every kind
+// (blocks and sub-blocks included), every part of every entry, every Form,
+// and every top-level key — computed from the fixtures' CONTENT, so a
+// property or a part dropped from a fixture reddens here, wherever it
+// sits. A profile-1-only property is written by the profile-1 fixture.
 func TestValidFixturesCoverTheRegistry(t *testing.T) {
-	seenKind := map[string]bool{}
-	seenProp := map[string]bool{} // kind.prop
-	seenTop := map[string]bool{}
+	c := newCoverage()
 	for _, path := range fixtures(t, "valid") {
 		doc, err := loadFixture(t, path)
 		if err != nil {
@@ -142,32 +273,43 @@ func TestValidFixturesCoverTheRegistry(t *testing.T) {
 		}
 		root := doc.(map[string]any)
 		for key := range root {
-			seenTop[key] = true
+			c.top[key] = true
 		}
-		nodes, _ := root["nodes"].([]any)
-		if groups, ok := root["groups"].([]any); ok {
-			for _, g := range groups {
-				if gn, ok := g.(map[string]any)["nodes"].([]any); ok {
-					nodes = append(nodes, gn...)
-				}
-			}
-		}
-		for _, n := range nodes {
-			node := n.(map[string]any)
-			for key := range node {
-				if k, ok := spec.Lookup(key); ok && k.Role == spec.Node {
-					seenKind[key] = true
-					for prop := range node {
-						if prop != key {
-							seenProp[key+"."+prop] = true
-						}
+		walkNodes := func(nodes any) {
+			list, _ := nodes.([]any)
+			for _, n := range list {
+				node, _ := n.(map[string]any)
+				for key := range node {
+					if k, ok := spec.Lookup(key); ok && k.Role == spec.Node {
+						c.kind(k, node)
 					}
 				}
 			}
 		}
-		if wf, ok := root["workflow"].(map[string]any); ok {
-			for prop := range wf {
-				seenProp["workflow."+prop] = true
+		walkNodes(root["nodes"])
+		if groups, ok := root["groups"].([]any); ok {
+			for _, g := range groups {
+				if gm, ok := g.(map[string]any); ok {
+					walkNodes(gm["nodes"])
+				}
+			}
+		}
+		for kind, key := range map[string]string{"workflow": "workflow"} {
+			if k, ok := spec.Lookup(kind); ok {
+				c.kind(k, root[key])
+			}
+		}
+		for _, name := range []string{"vars", "presets", "attachments", "secrets"} {
+			if k, ok := spec.Lookup(name); ok {
+				c.kind(k, root[name])
+			}
+		}
+		for kind, key := range map[string]string{"schema": "schemas", "cursor": "cursors", "supervisor": "supervisors", "mcp_server": "mcp_servers", "contract": "contracts"} {
+			k, _ := spec.Lookup(kind)
+			if decls, ok := root[key].(map[string]any); ok {
+				for _, d := range decls {
+					c.kind(k, d)
+				}
 			}
 		}
 	}
@@ -178,46 +320,68 @@ func TestValidFixturesCoverTheRegistry(t *testing.T) {
 		names := strings.Join(k.Names(), ",")
 		var out []string
 		for _, other := range spec.Kinds {
-			if other.Role == spec.Node && other.Name != k.Name && strings.Join(other.Names(), ",") == names {
+			if other.Name != k.Name && other.Role == k.Role && len(k.Names()) > 0 && strings.Join(other.Names(), ",") == names {
 				out = append(out, other.Name)
 			}
 		}
 		return out
 	}
-	forms := map[spec.Form]bool{}
+	registryForms := map[string]bool{}
 	for _, k := range spec.Kinds {
-		if k.Role == spec.Node && !seenKind[k.Name] {
-			t.Errorf("no valid fixture writes a %s node", k.Name)
+		if k.Name == "group" || k.Name == "use" || k.Name == "prompt" {
+			continue // headers and text, not property tables: held by the header and schema tests
 		}
-		if k.Role == spec.Node || k.Name == "workflow" {
-			for _, p := range k.Properties {
-				if p.Until > 0 {
-					continue // a profile-1-only property lives in the v1 fixture, checked below
-				}
-				written := seenProp[k.Name+"."+p.Name]
-				for _, twin := range twins(k) {
-					written = written || seenProp[twin+"."+p.Name]
-				}
-				if !written {
-					t.Errorf("no valid fixture writes %s.%s", k.Name, p.Name)
-				}
-			}
+		if !c.kinds[k.Name] {
+			t.Errorf("no valid fixture reaches %s", k.Name)
 		}
 		for _, p := range k.Properties {
-			forms[p.Form] = true
+			registryForms[string(p.Form)] = true
+			written := c.props[k.Name+"."+p.Name]
+			for _, twin := range twins(k) {
+				written = written || c.props[twin+"."+p.Name]
+			}
+			if !written {
+				t.Errorf("no valid fixture writes %s.%s", k.Name, p.Name)
+			}
+		}
+		if k.Entries != nil {
+			for _, part := range fieldNamesOf(k.Entries, k.Name+".") {
+				if !c.props[part.name] {
+					t.Errorf("no valid fixture writes the entry part %s", part.name)
+				}
+				registryForms[string(part.form)] = true
+			}
+		}
+	}
+	for form := range registryForms {
+		if !c.forms[form] {
+			t.Errorf("no valid fixture writes a value of form %q", form)
 		}
 	}
 	for _, key := range []string{"dsl", "catalog", "imports", "vars", "presets", "attachments", "secrets", "prompts", "schemas", "cursors", "supervisors", "mcp_servers", "contracts", "groups", "uses", "nodes", "workflow"} {
-		if !seenTop[key] {
+		if !c.top[key] {
 			t.Errorf("no valid fixture writes the top-level %s", key)
 		}
 	}
-	if !seenProp["agent.memory"] {
-		t.Errorf("the v1 fixture does not write the memory block")
+	if len(c.props) < 150 || len(c.forms) < 20 {
+		t.Fatalf("the fixtures write %d properties of %d forms — the walk is not reading them", len(c.props), len(c.forms))
 	}
-	if len(forms) < 20 {
-		t.Fatalf("only %d forms in the registry — the count is not reading it", len(forms))
+}
+
+type namedForm struct {
+	name string
+	form spec.Form
+}
+
+func fieldNamesOf(e *spec.Entries, prefix string) []namedForm {
+	var out []namedForm
+	for _, f := range e.Fields {
+		out = append(out, namedForm{prefix + f.Name, f.Form})
 	}
+	if e.Entries != nil {
+		out = append(out, fieldNamesOf(e.Entries, prefix+"entries.")...)
+	}
+	return out
 }
 
 // TestSchemaArtefactsAreRegeneratedAndChecked: the three schema files are

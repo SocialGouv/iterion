@@ -89,6 +89,7 @@
       "description": "Run caps; a zero or absent cap is the engine default, and each is overridable per run without editing the .bot.",
       "properties": {
         "max_cost_usd": {
+          "$comment": "a finite non-negative number; `.inf` and `.nan` pass JSON Schema's bound and are the converter's to refuse",
           "description": "Spend cap in USD",
           "minimum": 0,
           "type": "number"
@@ -98,21 +99,25 @@
           "type": "string"
         },
         "max_iterations": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Total node executions; also the fuel of an unbounded loop (C097)",
           "minimum": 0,
           "type": "integer"
         },
         "max_parallel_branches": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Concurrent branches (0 = engine default)",
           "minimum": 0,
           "type": "integer"
         },
         "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Total token cap",
           "minimum": 0,
           "type": "integer"
         },
         "warn_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Advisory: crossing it emits budget_warning",
           "minimum": 0,
           "type": "integer"
@@ -150,11 +155,13 @@
       "description": "When and how a session's context is compacted.",
       "properties": {
         "preserve_recent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Recent messages kept verbatim",
           "minimum": 0,
           "type": "integer"
         },
         "threshold": {
+          "$comment": "a finite non-negative number; `.inf` and `.nan` pass JSON Schema's bound and are the converter's to refuse",
           "description": "Context fraction (0–1) that triggers compaction",
           "minimum": 0,
           "type": "number"
@@ -191,6 +198,7 @@
           "type": "string"
         },
         "version": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Public contract version, 1 or more (C300); defaults to 1",
           "minimum": 0,
           "type": "integer"
@@ -273,6 +281,7 @@
           "type": "string"
         },
         "min_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Minimum file size",
           "minimum": 0,
           "type": "integer"
@@ -314,11 +323,13 @@
                 "type": "string"
               },
               "max_items": {
+                "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
                 "description": "Maximum array cardinality (C300 on an input, C301 on an output)",
                 "minimum": 0,
                 "type": "integer"
               },
               "min_items": {
+                "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
                 "description": "Minimum array cardinality (C300 on an input, C301 on an output)",
                 "minimum": 0,
                 "type": "integer"
@@ -783,6 +794,7 @@
           "type": "string"
         },
         "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Output-token cap per call",
           "minimum": 0,
           "type": "integer"
@@ -902,6 +914,7 @@
           "type": "string"
         },
         "tool_max_steps": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Upper bound on tool-call rounds in one execution",
           "minimum": 0,
           "type": "integer"
@@ -1138,6 +1151,7 @@
           "type": "string"
         },
         "max_turns": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "review: conversation turns before the gate escalates",
           "minimum": 0,
           "type": "integer"
@@ -1151,6 +1165,7 @@
           "type": "string"
         },
         "min_answers": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Answers required before the node resumes",
           "minimum": 0,
           "type": "integer"
@@ -1310,6 +1325,7 @@
           "type": "string"
         },
         "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Output-token cap per call",
           "minimum": 0,
           "type": "integer"
@@ -1429,6 +1445,7 @@
           "type": "string"
         },
         "tool_max_steps": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Upper bound on tool-call rounds in one execution",
           "minimum": 0,
           "type": "integer"
@@ -1876,11 +1893,13 @@
           "type": "array"
         },
         "max_agent_attempts": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Agent rungs before the policy decides",
           "minimum": 0,
           "type": "integer"
         },
         "max_repair_attempts": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Self-repair rungs before the agent rung",
           "minimum": 0,
           "type": "integer"
@@ -2137,6 +2156,7 @@
           "type": "string"
         },
         "max_evals": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Upper bound on evaluations per run",
           "minimum": 0,
           "type": "integer"
@@ -2470,7 +2490,8 @@
     },
     "dsl": {
       "const": 2,
-      "description": "The syntax profile the document is read in: 2. Required — a new surface has nothing to guess."
+      "description": "The syntax profile the document is read in: 2, written as a bare integer (`2`, never `2.0`: the .bot refuses a float, and JSON Schema cannot tell the two apart — the converter checks the YAML tag). Required — a new surface has nothing to guess.",
+      "type": "integer"
     },
     "groups": {
       "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",

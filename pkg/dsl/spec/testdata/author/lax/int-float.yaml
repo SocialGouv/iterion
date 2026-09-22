@@ -1,0 +1,8 @@
+# lax: `max_tokens: 1.0` passes the schema (a zero-fraction float types as an integer) — the .bot refuses a Float where an integer is wanted (E002); the converter checks the YAML tag
+dsl: 2
+nodes:
+  - agent: a
+    max_tokens: 1.0
+workflow:
+  name: w
+  entry: a

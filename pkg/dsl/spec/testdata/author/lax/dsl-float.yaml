@@ -1,0 +1,8 @@
+# lax: `dsl: 2.0` passes the schema (JSON Schema has one number type; the validator compares numerically) — the .bot header refuses a float (E040); the converter checks the YAML tag
+dsl: 2.0
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a

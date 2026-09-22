@@ -1,0 +1,9 @@
+# refused: an element of a list of names is an identifier (servers names mcp_server declarations)
+dsl: 2
+nodes:
+  - agent: a
+    mcp:
+      servers: [forge-main]
+workflow:
+  name: w
+  entry: a
