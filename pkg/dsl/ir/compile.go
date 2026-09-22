@@ -1071,6 +1071,9 @@ func (c *compiler) compileAgents() {
 			Compress:          a.Compress,
 			AutoMemory:        a.AutoMemory,
 			Permission:        a.Permission,
+			PermissionAllow:   a.Allow,
+			PermissionAsk:     a.Ask,
+			PermissionDeny:    a.Deny,
 			Needs:             a.Needs,
 		}
 	}
@@ -1109,6 +1112,9 @@ func (c *compiler) compileJudges() {
 			Compress:          j.Compress,
 			AutoMemory:        j.AutoMemory,
 			Permission:        j.Permission,
+			PermissionAllow:   j.Allow,
+			PermissionAsk:     j.Ask,
+			PermissionDeny:    j.Deny,
 			Needs:             j.Needs,
 		}
 	}

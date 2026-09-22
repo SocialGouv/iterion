@@ -446,6 +446,18 @@ func parseRule(raw string) (rule, error) {
 	return r, nil
 }
 
+// ValidateRule reports why a rule string is unparseable, or nil when the
+// gate accepts it.
+//
+// It runs the REAL parser — the one Evaluate matches with — so it has no
+// spelling of its own to keep in step. A malformed rule is otherwise
+// discovered at dispatch, by which time the run has paid for a workspace
+// and a model call to learn that a quote was missing.
+func ValidateRule(raw string) error {
+	_, err := parseRule(raw)
+	return err
+}
+
 // compileArg compiles the `(content)` part of a rule into one anchored
 // matcher: a trailing `:*` is the Bash prefix idiom (`git diff:*` matches
 // `git diff` and any longer command), `*`/`**` are greedy wildcards, and

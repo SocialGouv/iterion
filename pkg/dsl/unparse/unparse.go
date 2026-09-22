@@ -544,7 +544,8 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			Timeout:  a.Timeout,
 			Readonly: a.Readonly, FullAccess: a.FullAccess, Images: a.Images, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, AutoMemory: a.AutoMemory, Permission: a.Permission, Needs: a.Needs,
+			Compress: a.Compress, AutoMemory: a.AutoMemory, Permission: a.Permission,
+			Allow: a.Allow, Ask: a.Ask, Deny: a.Deny, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
 			writeCompaction(&w.b, a.Compaction, "  ", false)
@@ -581,7 +582,8 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			Timeout:  j.Timeout,
 			Readonly: j.Readonly, FullAccess: j.FullAccess, Images: j.Images, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, AutoMemory: j.AutoMemory, Permission: j.Permission, Needs: j.Needs,
+			Compress: j.Compress, AutoMemory: j.AutoMemory, Permission: j.Permission,
+			Allow: j.Allow, Ask: j.Ask, Deny: j.Deny, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
 			writeCompaction(&w.b, j.Compaction, "  ", false)
@@ -1453,6 +1455,7 @@ type llmFields struct {
 	Compress                            string
 	AutoMemory                          string
 	Permission                          string
+	Allow, Ask, Deny                    []string
 	Needs                               []string
 }
 
@@ -1549,6 +1552,15 @@ func writeAgentFields(b *buf, f llmFields) {
 	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)
+	}
+	if len(f.Allow) > 0 {
+		fmt.Fprintf(b, "  allow: [%s]\n", quoteList(b, f.Allow))
+	}
+	if len(f.Ask) > 0 {
+		fmt.Fprintf(b, "  ask: [%s]\n", quoteList(b, f.Ask))
+	}
+	if len(f.Deny) > 0 {
+		fmt.Fprintf(b, "  deny: [%s]\n", quoteList(b, f.Deny))
 	}
 	if len(f.Needs) > 0 {
 		fmt.Fprintf(b, "  needs: [%s]\n", strings.Join(f.Needs, ", "))

@@ -64,11 +64,12 @@ effective: claw · from workflow · some nodes pin their own (override won't aff
 
 ## Scope (lite)
 
-Provenance covers the four **mode** knobs. The permission
-`allow:`/`ask:`/`deny:` rule lists are additive across levels (workflow
-lists + run-level `--permission-allow/...`), not overridden, so they
-have no single "winning level" to report — rule-list provenance is a
-deliberate non-goal for now.
+Provenance covers the four **mode** knobs. A permission
+`allow:`/`ask:`/`deny:` rule list does have a winning level — an
+`agent`/`judge` node's list REPLACES the workflow's of the same kind, and
+the run-level `--permission-allow/...` append to whichever won
+([permissions.md](permissions.md)) — but the Launch dialog does not report
+it: rule-list provenance stays a deliberate non-goal for now.
 
 Related: [permissions.md](permissions.md) · [plugins.md](plugins.md)
 (compression) · [backends.md](backends.md) (auto-detection).

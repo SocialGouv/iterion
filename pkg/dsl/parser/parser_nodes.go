@@ -130,6 +130,15 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenPermission:
 		p.expect(TokenColon)
 		d.Permission = p.expectIdent()
+	case TokenAllow:
+		p.expect(TokenColon)
+		d.Allow = p.parseStringList()
+	case TokenAsk:
+		p.expect(TokenColon)
+		d.Ask = p.parseStringList()
+	case TokenDeny:
+		p.expect(TokenColon)
+		d.Deny = p.parseStringList()
 	case TokenNeeds:
 		p.expect(TokenColon)
 		d.Needs = p.parseNeedsList()

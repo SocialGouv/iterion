@@ -163,7 +163,9 @@ export const iterDslDeclarations = [
 
 export const iterDslPropertiesByKind = {
   "agent": [
+    "allow",
     "artifact_labels",
+    "ask",
     "auto_memory",
     "await",
     "backend",
@@ -172,6 +174,7 @@ export const iterDslPropertiesByKind = {
     "compaction",
     "compress",
     "cursors",
+    "deny",
     "description",
     "fallbacks",
     "full_access",
@@ -331,7 +334,9 @@ export const iterDslPropertiesByKind = {
     "system"
   ],
   "judge": [
+    "allow",
     "artifact_labels",
+    "ask",
     "auto_memory",
     "await",
     "backend",
@@ -340,6 +345,7 @@ export const iterDslPropertiesByKind = {
     "compaction",
     "compress",
     "cursors",
+    "deny",
     "description",
     "fallbacks",
     "full_access",

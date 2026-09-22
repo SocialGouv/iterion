@@ -135,8 +135,9 @@ type ClawExecutor struct {
 	// values; permOverride / permRuleOverride are the run-level CLI/studio
 	// override (--permission, --permission-allow/ask/deny); permEnvDefault
 	// is ITERION_PERMISSION read once at construction. Mode precedence:
-	// override > node DSL > workflow DSL > env > off. Rule lists are
-	// additive (workflow + override). See resolvePermissionPolicy.
+	// override > node DSL > workflow DSL > env > off. A rule list is the
+	// node's own when it declares one and the workflow's otherwise, with
+	// the override list appended either way. See resolvePermissionPolicy.
 	wfPermission   string
 	wfPermAllow    []string
 	wfPermAsk      []string

@@ -227,3 +227,22 @@ workflow main:
 		t.Fatalf("wire response rejects codex for permission: off node: %s", reason)
 	}
 }
+
+// TestBuildBackendOverrideOptionsReadsTheNodesOwnAskRules gives the studio's
+// backend picker a witness for the per-node ask list: reverting its call site
+// to wf.PermissionAsk left the whole package green before this test.
+func TestBuildBackendOverrideOptionsReadsTheNodesOwnAskRules(t *testing.T) {
+	t.Setenv("ITERION_PERMISSION", "")
+	agent := &ir.AgentNode{}
+	agent.ID = "work"
+	agent.PermissionAsk = []string{"Bash(git push:*)"}
+	wf := &ir.Workflow{
+		Permission: "deny",
+		Nodes:      map[string]ir.Node{"work": agent},
+	}
+	// The workflow declares none: only the node's list can produce the refusal.
+	choices := buildBackendOverrideOptions(wf, "", "", []string{"grok"})
+	if got := choices["work"]["grok"].UnavailableReason; !strings.Contains(got, "cannot pause") {
+		t.Fatalf("grok assessment = %q, want a refusal from the NODE's ask rules", got)
+	}
+}

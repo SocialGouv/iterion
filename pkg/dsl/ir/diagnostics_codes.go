@@ -145,11 +145,14 @@ const (
 	DiagInvalidPermission       DiagCode = "C110" // permission: value not one of off|ask|deny (error)
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
-	DiagGatedCLIBackendSandbox  DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
-	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
-	DiagInvalidNodeTimeout      DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
-	DiagFileFieldNotHuman       DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)
-	DiagReservedAnswerKey       DiagCode = "C130" // human output schema declares an engine-reserved answer key (error — the engine overwrites it on resume)
+	// C154 is allocated from the free C154-C169 band: C113-C119 belong to the
+	// fan_out_each/groups epic and C120-C122 are taken, so the permission
+	// family cannot grow contiguously from C112.
+	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
+	DiagIndexOnScalar          DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
+	DiagInvalidNodeTimeout     DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
+	DiagFileFieldNotHuman      DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)
+	DiagReservedAnswerKey      DiagCode = "C130" // human output schema declares an engine-reserved answer key (error — the engine overwrites it on resume)
 	// Var enum constraints (`name: string [enum: "a", "b"] = "a"`).
 	DiagVarEnumNonString    DiagCode = "C125" // enum constraint on a non-string var type (error)
 	DiagVarDefaultNotInEnum DiagCode = "C126" // var default value not in the enum list (error)

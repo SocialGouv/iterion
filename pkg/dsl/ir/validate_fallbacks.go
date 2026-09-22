@@ -108,7 +108,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		// fallbacks let `backend: grok` + `permission: deny` compile and run
 		// silently ungated — worse than a loud C176 refusal.
 		if nodeBackend != "" {
-			if reason := UngatedCrossingReasonForAskRules(nodeBackend, effectivePermission, w.PermissionAsk); reason != "" {
+			if reason := UngatedCrossingReasonForAskRules(nodeBackend, effectivePermission, EffectiveAskRules(nn, w)); reason != "" {
 				c.errorfAt(DiagFallbackUnsafeCross, id, "",
 					"%s %q: primary route %s", kind, id, reason)
 			}
@@ -133,7 +133,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
 			c.checkFallbackWhen(w, kind, id, fb)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, w.PermissionAsk)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, EffectiveAskRules(nn, w))
 		}
 	}
 }
@@ -179,7 +179,8 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 	// warning-not-error rationale as above: --sandbox none and
 	// ITERION_SANDBOX_DEFAULT=none make the run legal without the
 	// workflow saying anything.
-	if mode == "ask" || len(w.PermissionAsk) > 0 {
+	askRules := EffectiveAskRules(nn, w)
+	if mode == "ask" || len(askRules) > 0 {
 		clawRoutes := []string{}
 		if nodeBackend == clawBackendName {
 			clawRoutes = append(clawRoutes, nodeBackend)
@@ -192,7 +193,7 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 		if len(clawRoutes) > 0 {
 			c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
 				"%s %q: the permission policy can produce an Ask decision (mode %s%s), which a sandboxed claw route cannot pause for — this node will FAIL at run time on %s unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
-				kind, id, mode, askRuleSuffix(len(w.PermissionAsk)), strings.Join(dedupeStrings(clawRoutes), ", "))
+				kind, id, mode, askRuleSuffix(len(askRules)), strings.Join(dedupeStrings(clawRoutes), ", "))
 		}
 	}
 }
@@ -380,6 +381,45 @@ func EffectivePermission(nodePermission, workflowPermission string) string {
 	return strings.TrimSpace(workflowPermission)
 }
 
+// EffectivePermissionRules resolves ONE permission rule list for a node:
+// a non-empty node list REPLACES the workflow list of the same kind, an
+// empty one inherits it. Replacement rather than union is the whole point
+// of the per-node form — a union can only widen, and the shape that needs
+// expressing (a converge node that must NOT hold the shell its reviewers
+// need) is a narrowing.
+//
+// "Declared" is len > 0, not nil-vs-empty: the AST's JSON seam carries
+// these lists with `omitempty`, which erases that distinction, so a rule
+// built on it would hold in the .bot and break through the studio.
+//
+// This is the single implementation of the precedence. The compiler's
+// screens and the executor's policy builder both call it, so a node whose
+// rules the compiler judged can never be the node the runtime gates.
+func EffectivePermissionRules(nodeRules, workflowRules []string) []string {
+	if permissionRulesDeclared(nodeRules) {
+		return nodeRules
+	}
+	return workflowRules
+}
+
+// permissionRulesDeclared is the single answer to "did the author declare
+// this list". Both the resolver above and C111 read it, so "declared"
+// cannot come to mean two things in the compiler and the runtime.
+func permissionRulesDeclared(rules []string) bool { return len(rules) > 0 }
+
+// EffectiveAskRules is EffectivePermissionRules for the ask list, taking
+// the node and the workflow so no caller can pair a node with the wrong
+// workflow list. Every admission screen that asks "can this route pause
+// for this node's asks" reads it: passing w.PermissionAsk directly would
+// make a node-declared ask: invisible to the screen, which is exactly the
+// silent ungating C176 exists to prevent.
+func EffectiveAskRules(nn LLMNode, w *Workflow) []string {
+	if w == nil {
+		return nn.GetPermissionAsk()
+	}
+	return EffectivePermissionRules(nn.GetPermissionAsk(), w.PermissionAsk)
+}
+
 // UngatedCrossingReason returns why a route may not serve a gated node,
 // or "" when it may. Shared by C176 and every launch-time screen so an
 // operator override cannot reach a crossing the compiler refuses.
@@ -393,7 +433,7 @@ func UngatedCrossingReason(routeBackend, permission string, hasAskRules bool) st
 			return ""
 		}
 		return fmt.Sprintf(
-			"runs on backend %q, which can enforce permission: %s but cannot pause for the workflow's explicit ask: rules — the run would not preserve the declared gate",
+			"runs on backend %q, which can enforce permission: %s but cannot pause for the explicit ask: rules in force for this node — the run would not preserve the declared gate",
 			routeBackend, mode)
 	}
 	return fmt.Sprintf(
