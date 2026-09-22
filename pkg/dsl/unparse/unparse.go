@@ -1538,7 +1538,11 @@ func writeAgentFields(b *buf, f llmFields) {
 	if f.SessionSlot != "" {
 		writeIdentProp(b, "session_slot", f.SessionSlot)
 	}
-	if len(f.Tools) > 0 {
+	// A DECLARED empty list is written back as `tools: []`: it is the
+	// author saying "this node has no tools", and dropping the line would
+	// turn it into an undeclared surface — the CLI backends' "no
+	// restriction". Only an absent (nil) list writes nothing.
+	if f.Tools != nil {
 		fmt.Fprintf(b, "  tools: [%s]\n", strings.Join(f.Tools, ", "))
 	}
 	if len(f.ToolPolicy) > 0 {

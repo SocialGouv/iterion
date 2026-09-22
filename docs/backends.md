@@ -749,7 +749,7 @@ run would be silently wrong rather than merely worse:
     restricted to `read_file` would gain Edit/Write the moment the chain
     falls through — on a node the engine may already have admitted as a
     read-only parallel branch.
-  - **CLI → claw is refused only when the list is empty**, which on claw
+  - **CLI → claw is refused only when the list is UNDECLARED**, which on claw
     means *zero* tools. Declaring the tools explicitly is the documented
     pattern: inert on the CLI primary, load-bearing on the claw route.
 
@@ -1571,7 +1571,13 @@ moves fast, so re-measure before trusting a claim against another build.
   `session: persist` node logs `backend "opencode" cannot resume; running
   fresh` and runs fresh.
 - **No MCP forwarding, and `tools:` does not constrain it.** opencode runs
-  its own tool set.
+  its own tool set: the list never reaches the CLI
+  (`toolcatalog.ReceivesToolList`), so a `tools:` line on such a node is
+  inert. **C270** says so for the one spelling whose inertness inverts its
+  meaning — `tools: []`, which declares NO tools and here yields opencode's
+  whole toolset. A non-empty list is dropped just as silently, with no
+  diagnostic; bound the node with `deny:` rules instead, or run it on a
+  backend that receives the list.
 - **No `command:` override.** Only `claude_code` consumes a node's
   `command:`; **C174** says so rather than letting it look honoured.
 - **No `provider:` hint.** opencode resolves its own credentials from its own

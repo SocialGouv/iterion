@@ -28,6 +28,7 @@ import CompactionFields from "./CompactionFields";
 import CursorsFields from "./CursorsFields";
 import FallbacksFields from "./FallbacksFields";
 import MCPConfigFields from "./MCPConfigFields";
+import { toolsFieldHelp } from "./toolsFieldHelp";
 
 interface Props {
   decl: AgentDecl | JudgeDecl;
@@ -241,8 +242,9 @@ export default function AgentForm({ decl, kind }: Props) {
       <TagListField
         label="Tools"
         values={decl.tools ?? []}
-        onChange={(v) => update({ tools: v.length > 0 ? v : undefined })}
+        onChange={(v) => update({ tools: v })}
         placeholder="Add tool..."
+        help={toolsFieldHelp(decl.tools)}
       />
       <NumberField
         label="Tool Max Steps"

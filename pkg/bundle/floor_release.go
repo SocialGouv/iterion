@@ -29,6 +29,9 @@ var releaseNotesMarkers = map[string]string{
 	// the notes of its release carry the word the constraint is spelled
 	// with.
 	"parser.VarMatchingSince": "matching",
+	// #1615 lands as `feat(dsl): an empty tools: list …`, so the notes of
+	// its release carry the two words the declaration is spelled with.
+	"bundle.DeclaredEmptyToolsSince": "empty tools",
 }
 
 // ReleaseNotesMarker is the word the release notes of a floor's pinned

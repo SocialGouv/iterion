@@ -760,18 +760,22 @@ judge review_gpt:
   output: verdict_output
   system: review_system
   user: review_user_gpt
+  ## NO tools for the gpt reviewer, and `tools: []` is what enforces it: an
+  ## empty list is a declaration, not an absence (C270 names any route that
+  ## would drop it). The vision + system prompt already sits near the
+  ## ChatGPT-forfait context window; even one or two read_file tool results
+  ## pushed the SECOND request over it (context_length_exceeded, observed in
+  ## the 2026-06-24 dogfood). The shared review prompt says reviewers MAY read
+  ## the workspace — so this reviewer judges the vision on its TEXTUAL merits
+  ## (coherence, evidence-citation, constraint-honesty) while the claude
+  ## reviewer (which keeps tools) does the file-grounded verification.
+  ## Cross-family perspective is preserved; the forfait window cannot
+  ## overflow. ITERION_EVOLVE_MODEL_GPT changes the MODEL only — the backend
+  ## is pinned to claw and the empty list holds whatever model runs here; a
+  ## reviewer that should read the workspace needs this line changed.
+  tools: []
   reasoning_effort: "${ITERION_EVOLVE_EFFORT_REVIEW:-medium}"
   readonly: true
-  ## NO file-reading tools for the gpt reviewer. The vision + system prompt
-  ## already sits near the ChatGPT-forfait context window; even one or two
-  ## read_file tool results pushed the SECOND request over it
-  ## (context_length_exceeded, observed in the 2026-06-24 dogfood). The shared
-  ## review prompt says reviewers MAY read the workspace — so this reviewer
-  ## judges the vision on its TEXTUAL merits (coherence, evidence-citation,
-  ## constraint-honesty) while the claude reviewer (which keeps tools) does the
-  ## file-grounded verification. Cross-family perspective is preserved; the
-  ## forfait window can no longer overflow. Override the model off-forfait via
-  ## ITERION_EVOLVE_MODEL_GPT to restore grounding tools.
 
 ## Topology gate (ADR-052). A `condition` router picks a SINGLE target,
 ## which is what mono needs; the guard cannot live on review_fanout's own

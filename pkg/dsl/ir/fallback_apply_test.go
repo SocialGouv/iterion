@@ -108,16 +108,18 @@ func TestApplyRunFallback_RefusesUngatedRouteFromWorkflowGate(t *testing.T) {
 	}
 }
 
-// TestApplyRunFallback_RefusesToolsInversion: an empty tools list means
-// ZERO tools on claw and the FULL native toolset on a CLI backend, so
-// the crossing silently changes what the node can DO — and the node was
+// TestApplyRunFallback_RefusesToolsInversion: the `tools:` list does not mean
+// the same thing on the two sides of the crossing — claw resolves its whole
+// surface from it, while claude_code narrows only its own 14-name native
+// roster, codex maps it onto a sandbox mode and pi/kimi/grok never receive it
+// — so the route silently changes what the node can DO, and the node was
 // already admitted as a read-only parallel branch on the claw reading.
 func TestApplyRunFallback_RefusesToolsInversion(t *testing.T) {
 	agent := applyAgent("work", "claw", "", nil, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
 	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false)
-	if len(refusals) != 1 || !strings.Contains(refusals[0], "un-restricts") {
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "tools: list does not mean what it means on claw") {
 		t.Fatalf("expected a tools-inversion refusal, got %v", refusals)
 	}
 	if len(agent.Fallbacks) != 0 {

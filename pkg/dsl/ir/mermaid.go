@@ -365,6 +365,10 @@ func appendLLMFullLines(lines []string, w *Workflow, llm LLMFields, schema Schem
 	}
 	if len(tools) > 0 {
 		lines = append(lines, "tools: "+strings.Join(tools, ", "))
+	} else if tools != nil {
+		// A declared-empty surface renders as what it is; omitting it would
+		// draw the node exactly like one that declared nothing.
+		lines = append(lines, "tools: (none)")
 	}
 	if toolMaxSteps > 0 {
 		lines = append(lines, fmt.Sprintf("tool_max_steps: %d", toolMaxSteps))

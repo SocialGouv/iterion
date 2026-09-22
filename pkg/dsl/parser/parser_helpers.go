@@ -96,6 +96,18 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 		return p.parseDashList(parseElem)
 	}
 	p.expect(TokenLBrack)
+	if p.peek().Type == TokenRBrack {
+		p.next()
+		return nil
+	}
+	return p.parseBracketElems(parseElem)
+}
+
+// parseBracketElems reads the elements of an inline list whose `[` is already
+// consumed and which is known not to be empty, through the closing `]`. It is
+// shared with parseDeclaredToolList, the one list whose empty inline form is
+// a value rather than an absence.
+func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []string {
 	var out []string
 	appendElem := func() {
 		first := p.peek()
@@ -104,10 +116,6 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 		} else {
 			p.resyncListElement(first)
 		}
-	}
-	if p.peek().Type == TokenRBrack {
-		p.next()
-		return out
 	}
 	appendElem()
 	for {
@@ -271,6 +279,52 @@ func (p *parser) parseStringList() []string {
 // element was dropped in silence and such a document could never be saved.
 func (p *parser) parseToolList() []string {
 	return p.parseBracketList(p.refListElem)
+}
+
+// parseDeclaredToolList parses an agent/judge `tools:` — the one list whose
+// EMPTY inline form is a value rather than an absence. `tools: []` is the
+// author saying "this node has no tools"; no `tools:` line at all leaves the
+// surface undeclared, which the CLI backends read as "no restriction". The
+// two are told apart by nilness from here down, through the ONE predicate
+// toolcatalog.ToolsDeclared.
+//
+// Every other bracket list keeps parseBracketList's nil: `capabilities: []`
+// in particular must stay indistinguishable from an absent one, because a nil
+// capability list is what makes a node inherit the workflow's.
+//
+// The `- item` form cannot express an empty list — an indented block with no
+// item is a parse error — so it never yields a declared-empty surface.
+func (p *parser) parseDeclaredToolList() []string {
+	if lineEnds(p.peek()) {
+		return p.parseDashList(p.refListElem)
+	}
+	// Only a `[` that was really read can open a declaration: `expect`
+	// consumes the offending token on a mismatch, so `tools: x]` would
+	// otherwise land on the `]` arm and salvage a broken line into a binding
+	// `tools: []` that the studio then writes back.
+	if _, ok := p.expect(TokenLBrack); !ok {
+		return p.parseBracketElems(p.refListElem)
+	}
+	if p.peek().Type == TokenRBrack {
+		p.next()
+		return []string{}
+	}
+	// A non-empty bracket from which NOTHING was read is refused loudly.
+	// Silence would have to pick a side and both are wrong: nil reads as an
+	// absent list — the CLI backend's whole toolset, the inversion #1615 is
+	// about — and an empty slice turns `tools: [*]` into "this node has no
+	// tools", rewrites the author's line to `tools: []` on the next `fmt`,
+	// and raises the bundle's engine floor off a typo. `[]` is the ONE way
+	// to declare an empty surface, and it is spelled with nothing between
+	// the brackets.
+	at := p.peek()
+	out := p.parseBracketElems(p.refListElem)
+	if out == nil {
+		p.addErrorHint(DiagExpectedToken, at,
+			"no tool name was read from this list: every element was refused",
+			"Write `tools: []` for a node with no tools, or name the tools.")
+	}
+	return out
 }
 
 // parseSkillList parses a `skills: [...]` list. Each element is either a

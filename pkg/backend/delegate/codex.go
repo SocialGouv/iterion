@@ -16,6 +16,7 @@ import (
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -754,7 +755,8 @@ func hasNonEmptyStructuredOutput(value any) bool {
 }
 
 // codexSandboxForAllowedTools picks the least-privilege codex sandbox mode
-// compatible with the intent expressed by a non-empty AllowedTools list.
+// compatible with the intent expressed by a DECLARED AllowedTools list (an
+// empty one names nothing that writes, so it stays read-only).
 // Iterion accepts both Claude-style TitleCase names and its native snake_case
 // aliases, so normalise before deciding whether filesystem mutation is needed.
 //
@@ -766,13 +768,14 @@ func codexSandboxForAllowedTools(allowed []string) string {
 		if isCodexWebSearchTool(t) {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(t)) {
-		case "read", "read_file", "readfile", "cat", "glob", "grep", "ls":
+		// Classified by the CANONICAL name, not by a spelling list of this
+		// file's own: `find` and `glob` are one tool, and a private table
+		// gave them different sandboxes (#1579 — the same disagreement, on a
+		// fourth table).
+		switch toolcatalog.CanonicalToolName(t) {
+		case "read", "glob", "grep", "ls", "websearch", "toolsearch", "todowrite", "skill":
 			continue
-		case "bash", "shell", "sh",
-			"edit", "edit_file", "file_edit", "multiedit", "str_replace",
-			"write", "write_file", "writefile",
-			"notebookedit", "notebook_edit", "patch", "apply_patch", "run_command":
+		case "bash", "edit", "write", "notebookedit":
 			return "workspace-write"
 		default:
 			// Unknown/custom tool names cannot prove the task is read-only. Prefer
@@ -785,9 +788,11 @@ func codexSandboxForAllowedTools(allowed []string) string {
 
 // codexSandboxForTask maps the DSL's access intent to Codex. readonly is the
 // explicit lock-down and wins over a conflicting full_access opt-in.
-// With neither flag, an empty tools list means "native toolset unrestricted"
-// throughout Iterion, so Codex must receive workspace-write rather than silently
-// changing that contract to read-only. A restricted list is classified by name.
+// With neither flag, an UNDECLARED tools list means "native toolset
+// unrestricted" throughout Iterion, so Codex must receive workspace-write
+// rather than silently changing that contract to read-only. A restricted list
+// is classified by name — and a list DECLARED empty names nothing that writes,
+// so it is read-only: the author asked for no tools at all.
 func codexSandboxForTask(task Task) string {
 	if task.Readonly {
 		return "read-only"
@@ -795,7 +800,7 @@ func codexSandboxForTask(task Task) string {
 	if task.FullAccess {
 		return "danger-full-access"
 	}
-	if len(task.AllowedTools) == 0 {
+	if !task.ToolsDeclared && len(task.AllowedTools) == 0 {
 		return "workspace-write"
 	}
 	return codexSandboxForAllowedTools(task.AllowedTools)

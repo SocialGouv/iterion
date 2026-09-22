@@ -21,7 +21,7 @@ import (
 // upstream guard has become load-bearing for a different reason and must be
 // re-read.
 func TestClaudeNativeDisallowedTools_OneNonNativeEntryStripsEverything(t *testing.T) {
-	stripped := claudeNativeDisallowedTools([]string{"ask_user"}, false)
+	stripped := claudeNativeDisallowedTools([]string{"ask_user"}, true, false)
 
 	if len(stripped) == 0 {
 		t.Fatal("a one-entry allowlist naming no native tool must strip the native surface")
@@ -44,7 +44,7 @@ func TestClaudeNativeDisallowedTools_OneNonNativeEntryStripsEverything(t *testin
 // The other face: NO declaration must leave the native surface untouched.
 // This is the legacy semantics the upstream guard exists to protect.
 func TestClaudeNativeDisallowedTools_NoDeclarationRestrictsNothing(t *testing.T) {
-	if got := claudeNativeDisallowedTools(nil, false); len(got) != 0 {
+	if got := claudeNativeDisallowedTools(nil, false, false); len(got) != 0 {
 		t.Errorf("an undeclared tool set must restrict nothing, got %v", got)
 	}
 }
