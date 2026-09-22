@@ -153,9 +153,25 @@ func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []strin
 
 func (p *parser) parseIdentList() []string {
 	return p.parseBracketList(func() (string, bool) {
-		id := tokenAsIdent(p.next())
+		t := p.next()
+		id := tokenAsIdent(t)
+		if id == "" {
+			p.listElementRefused(t, "a bare name")
+		}
 		return id, id != ""
 	})
+}
+
+// listElementRefused says that an element of a list of names is not one —
+// a quoted string, a number — instead of leaving it out: a `servers:
+// ["forge"]` used to read as an empty list, and the server was never wired,
+// without a word. The element is consumed; the rest of the list is read.
+func (p *parser) listElementRefused(t Token, want string) {
+	hint := "Every element of this list is a name; delete the element or write a name."
+	if t.Type == TokenString {
+		hint = "Write the name without quotes: a quoted element is a string, and this list holds names."
+	}
+	p.addErrorHint(DiagExpectedToken, t, "expected "+want+" in the list, got "+t.Type.String(), hint)
 }
 
 func (p *parser) parseStringList() []string {
@@ -222,10 +238,14 @@ func (p *parser) parseSkillList() []string {
 
 // parseToolRef parses a single tool reference: IDENT { "." IDENT } or
 // IDENT { "." IDENT } "." "*" for MCP server wildcards (e.g. mcp.claude_code.*).
+// A token that cannot open a name (a number, a bracket) is refused where it
+// stands — the callers read a quoted element before coming here, so a
+// string never reaches this point.
 func (p *parser) parseToolRef() string {
 	t := p.next()
 	id := tokenAsIdent(t)
 	if id == "" {
+		p.listElementRefused(t, "a name — a bare identifier, dotted for a server's tools (mcp.server.*), or a quoted literal —")
 		return ""
 	}
 	for p.peek().Type == TokenDot {
