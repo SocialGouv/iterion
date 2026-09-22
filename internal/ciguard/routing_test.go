@@ -160,9 +160,17 @@ type workflowJobs struct {
 	} `yaml:"jobs"`
 }
 
-// skipsMergeGroup reports whether a job's `if:` keeps it OUT of the merge
-// queue. The polarity is the point: `!=` skips, `==` runs there and only
-// there. A trailing comment is stripped first — it is prose, not condition.
+// skipsMergeGroup reports whether a job's `if:` carries the spelling the
+// advisory jobs use to stay OUT of the merge queue. The polarity is the
+// point: `!=` skips, `==` runs there and only there. A trailing comment is
+// stripped first — it is prose, not condition.
+//
+// It matches a SPELLING, and that is all it can do: `github.event_name`
+// `!='merge_group'` without spaces, an alternative, a `contains(…)` over a
+// list all read here as "does not skip". Those misses are on the cheap side —
+// an advisory job wrongly accused, or one really holding a queue slot. The
+// expensive side is not left to it: a required check may carry no `if:` at
+// all, refused outright below.
 func skipsMergeGroup(cond string) bool {
 	if i := strings.Index(cond, "#"); i >= 0 {
 		cond = cond[:i]
@@ -178,9 +186,11 @@ func skipsMergeGroup(cond string) bool {
 //
 // Both directions are a real defect, and each has happened:
 //
-//   - REQUIRED with a skip: a job skipped by a job-level `if:` reports
+//   - REQUIRED with any job-level `if:`: a job skipped by one reports
 //     SUCCESS, so a required check that never ran satisfies the gate on every
-//     queue entry. Silent, and it merges things nothing verified.
+//     queue entry. Silent, and it merges things nothing verified. The test
+//     refuses the condition rather than judging it, because judging means
+//     matching spellings and the spellings do not run out.
 //   - ADVISORY without one: the job holds a slot in a queue that shares 20
 //     concurrent runners across the organisation, to produce a verdict nobody
 //     can act on. Measured: the `brand` job shipped that way and had to be
@@ -200,10 +210,18 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 	for name, job := range wf.Jobs {
 		skips := skipsMergeGroup(job.If)
 		switch {
-		case requiredChecks[name] && skips:
-			t.Errorf("job %q is a REQUIRED check and skips merge_group (if: %q) — a skipped job reports SUCCESS, so the gate would be satisfied by a check that never ran", name, job.If)
+		case requiredChecks[name] && strings.TrimSpace(job.If) != "":
+			// Not "does it skip": whether a condition is true inside the
+			// queue is a question this file READS rather than evaluates, and
+			// reading loses. Measured: `github.event_name!='merge_group'` —
+			// the advisory spelling with its two spaces removed, legal and
+			// identical in meaning — walks past skipsMergeGroup, and so do an
+			// alternative and a `contains(…)`. A widened matcher finds one
+			// more spelling every round; the set is closed instead. Today all
+			// six required jobs carry no `if:`, so this costs nothing.
+			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check carries no `if:`; if one truly must, teach this test to EVALUATE it before adding it here", name, job.If)
 		case !requiredChecks[name] && !skips:
-			t.Errorf("job %q is advisory and does NOT skip merge_group (if: %q) — it holds a queue slot for a verdict nobody can act on; add `if: github.event_name != 'merge_group'`, or add it to the ruleset and to requiredChecks here", name, job.If)
+			t.Errorf("job %q is advisory and does NOT skip merge_group (if: %q) — it holds a queue slot for a verdict nobody can act on; add `if: github.event_name != 'merge_group'` verbatim, spaces included, or add it to the ruleset and to requiredChecks here", name, job.If)
 		}
 	}
 	for name := range requiredChecks {
@@ -284,5 +302,41 @@ func TestTheInlinedTasksMatchTheirTaskfileEntry(t *testing.T) {
 		if cmd := strings.TrimSpace(task.Cmds[0].Value); cmd != run {
 			t.Errorf("%s: the CI step runs\n  %s\nand `task %s` runs\n  %s", label, run, m.task, cmd)
 		}
+	}
+}
+
+// skipsMergeGroup now answers the ADVISORY side alone, and it answers by
+// matching a spelling. This table says which spellings — including one it
+// does NOT recognise, recorded as a miss rather than dressed up as a
+// property. On an advisory job a miss is a red test naming the exact text to
+// write; on a required one it was the whole catastrophe, and that side is no
+// longer decided here.
+func TestSkipsMergeGroupRecognisesTheSpellingTheAdvisoryJobsUse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cond string
+		want bool
+	}{
+		{"the negation the advisory jobs carry", "github.event_name != 'merge_group'", true},
+		{"prose after the condition is not the condition", "github.event_name != 'merge_group' # advisory", true},
+		{"the wrapper GitHub also accepts carries the same substring",
+			"${{ github.event_name != 'merge_group' }}", true},
+		{"no condition at all runs everywhere", "", false},
+		{"the INVERTED condition runs there and only there", "github.event_name == 'merge_group'", false},
+		{"an alternative re-admitting the queue does not skip it",
+			"github.event_name == 'pull_request' || github.event_name == 'merge_group'", false},
+		// Recorded as a MISS, not as a property: the same condition without
+		// its spaces is legal and means the same thing, and this predicate
+		// does not see it. Harmless on an advisory job — a red test naming
+		// the exact spelling to write — and refused outright on a required
+		// one by the test above, which is where it would have been costly.
+		{"the same condition without spaces is not recognised",
+			"github.event_name!='merge_group'", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := skipsMergeGroup(tc.cond); got != tc.want {
+				t.Errorf("skipsMergeGroup(%q) = %v, want %v", tc.cond, got, tc.want)
+			}
+		})
 	}
 }

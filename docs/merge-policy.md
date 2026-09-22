@@ -41,11 +41,16 @@ green.
   there merges green. The slow container-image build is intentionally NOT
   required — it builds on merge to `main` and would stall the queue 12 min/PR.
 
-  > **Promoting a check to required is a two-file change.** The four advisory
-  > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `govulncheck` — carry
+  > **Promoting a check to required is a two-file change.** The eight advisory
+  > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `govulncheck`,
+  > `desktop-vet-linux`, `desktop-vet-cross`, `docs-links`, `docs-build` — carry
   > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`:
   > a job that cannot block a merge should not hold a runner slot the queue
-  > needs. Adding one to this ruleset **without deleting its skip** is worse
+  > needs. (`brand` and `fmt-check` are not listed above and carry no skip:
+  > they are STAGED to become required — named in `internal/ciguard`'s
+  > `requiredChecks`, not yet in the ruleset — and stay in the queue so their
+  > context exists the day it names them.) Adding one to this ruleset
+  > **without deleting its skip** is worse
   > than a stalled queue: a job skipped by a job-level `if:` reports
   > **Success**, so the required check is satisfied by a job that never ran —
   > every entry merges green on a check that did not execute. (A
