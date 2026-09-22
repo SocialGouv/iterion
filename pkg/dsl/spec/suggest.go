@@ -87,7 +87,7 @@ func UnknownPropertyHintIn(kind, host, name string) string {
 	if len(k.Properties) > 0 {
 		parts = append(parts, kind+" accepts: "+strings.Join(k.Names(), ", ")+".")
 	} else if k.Entries != nil {
-		parts = append(parts, kind+" takes entries of the form `"+k.Entries.Shape+"`.")
+		parts = append(parts, kind+" takes entries of the form `"+EntryShape(k.Entries)+"`.")
 	}
 	return strings.Join(parts, " ")
 }
@@ -103,22 +103,32 @@ func childOwners(k Kind, name string) []Kind {
 	return out
 }
 
-// enclosingOwner returns the host of k that accepts name — the host the
-// block actually sits in when the caller named one that k lists, else k's
-// only host; "" when the host is unknown among several (a guess would be a
-// false claim) or accepts no such property.
+// enclosingOwner returns the enclosing kind that accepts name, walking up
+// the hosts of k: at each level the host the block actually sits in when the
+// caller named one that level lists, else the level's only host; "" when a
+// level has several hosts and none is the named one (a guess would be a
+// false claim), or when no level accepts the property. A route's `tools:`
+// walks fallback → fallbacks → the agent the block sits in.
 func enclosingOwner(k Kind, host, name string) string {
-	candidates := k.Hosts
-	switch {
-	case host != "" && hostOf(k, host):
-		candidates = []string{host}
-	case len(k.Hosts) != 1:
-		return ""
-	}
-	for _, h := range candidates {
-		if hk, ok := Lookup(h); ok && hk.Has(name) {
-			return h
+	cur := k
+	for range Kinds {
+		var next string
+		switch {
+		case host != "" && hostOf(cur, host):
+			next = host
+		case len(cur.Hosts) == 1:
+			next = cur.Hosts[0]
+		default:
+			return ""
 		}
+		hk, ok := Lookup(next)
+		if !ok {
+			return "" // the top level
+		}
+		if hk.Has(name) {
+			return next
+		}
+		cur = hk
 	}
 	return ""
 }

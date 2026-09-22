@@ -115,7 +115,7 @@
 | `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 46 · 468 |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — | 1 · 6 |
 | `pkg/dsl/parser` | — | — | 21 · 229 |
-| `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 7 · 53 |
+| `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 7 · 65 |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — | 1 · 44 |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — | 1 · 14 |
 | `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 4 · 3 |

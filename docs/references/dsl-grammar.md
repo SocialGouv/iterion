@@ -161,8 +161,8 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
-| `system` | ident | Prompt declaration used as the system prompt |
-| `user` | ident | Prompt declaration used as the user message |
+| `system` | prompt name, or its text as a string | The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
+| `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
 | `session_slot` | ident | Named durable session slot; requires session: persist |
 | `tools` | tool list | Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend |
@@ -171,12 +171,12 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
 | `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
 | `max_tokens` | int | Output-token cap per call |
-| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
 | `timeout` | string | Duration the node may run, e.g. "20m" |
 | `readonly` | bool | Declares the node mutates no workspace file, so it may run beside another branch |
 | `full_access` | bool | Grants the backend its full tool access |
 | `images` | string list | Image paths sent with the prompt |
-| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | How the node asks the operator (ADR-081) |
+| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212) |
 | `interaction_prompt` | ident | Prompt the llm interaction mode answers with in the operator's place |
 | `interaction_model` | string | Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
@@ -187,7 +187,7 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
 | `deny` | string list | Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111) |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
-| `fallbacks` | block → [fallback](dsl-properties.md#fallback) | Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused |
+| `fallbacks` | block → [fallbacks](dsl-properties.md#fallbacks) | Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused |
 | `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the node |
 | `compaction` | block → [compaction](dsl-properties.md#compaction) | Context-compaction thresholds of the node's session |
 | `memory` | block → [memory](dsl-properties.md#memory) | iterion's shared-memory tools and scopes for the node |
@@ -225,10 +225,10 @@ router_mode = "fan_out_all" | "fan_out_each" | "condition"
 | `model` | string | llm mode only (C023 otherwise): Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `system` | ident | llm mode only (C023 otherwise): Prompt declaration used as the system prompt |
-| `user` | ident | llm mode only (C023 otherwise): Prompt declaration used as the user message |
+| `system` | prompt name, or its text as a string | llm mode only (C023 otherwise): The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
+| `user` | prompt name, or its text as a string | llm mode only (C023 otherwise): The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `multi` | bool | llm mode only (C023 otherwise): the model may select several outgoing edges |
-| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
 | `over` | string | fan_out_each: expression naming the collection to iterate |
 | `as` | ident | fan_out_each: alias each item is bound to ({{each.<as>}}) |
 | `key` | ident | fan_out_each: item field that names each branch |
@@ -275,11 +275,11 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `postcondition` | string | Verified action: command whose exit code is the truth oracle at every rung |
 | `policy` | ident — `required`, `recover`, `best_effort` | Verified action: required (default), recover or best_effort (C103–C106) |
 | `recovery` | block → [recovery](dsl-properties.md#recovery) | Verified action: the self-heal ladder's bounds |
-| `action` | ident | Connector operation to call, `connector.resource.verb` — exclusive with command:/script: (ADR-098, C260) |
-| `connection` | ident | The connection binding that authenticates the action (C261) |
+| `action` | string\|ident | Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260) |
+| `connection` | string\|ident | The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261) |
 | `params` | block → [params](dsl-properties.md#params) | The action's arguments, by the operation's own parameter keys |
-| `retry` | string | Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266) |
-| `timeout` | string | Action: bound on one call, e.g. "30s" (C265). Inert without `action:` (C266) |
+| `retry` | string\|number | Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266) |
+| `timeout` | string\|number | Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266) |
 <!-- dsl-spec:end -->
 
 `command` and `script` are mutually exclusive. Recovery accepts `max_repair_attempts: INT`, `max_agent_attempts: INT`, `model: STRING`, and `agent_tools: tool_ref_list`.
@@ -338,7 +338,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 <!-- dsl-spec:begin table workflow -->
 | Property | Value | Meaning |
 |---|---|---|
-| `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
+| `entry` | dotted ident | Node the run starts at; a dotted name addresses a group instance's node |
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](dsl-properties.md#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](dsl-properties.md#attachments) | Workflow-scoped attachments |
@@ -361,7 +361,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `tool_policy` | tool list | Run-wide tool-policy entries |
 | `capabilities` | tool list | Run-wide board capabilities |
 | `skills` | skill list | Run-wide skill-library skills |
-| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | Default interaction mode for the run's nodes that set none |
+| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | Default interaction mode for the run's nodes that set none |
 <!-- dsl-spec:end -->
 
 Budget fields are `max_parallel_branches: INT`, `max_duration: STRING`, `max_cost_usd: NUMBER`, `max_tokens: INT`, `warn_tokens: INT` (advisory-only — crossing it emits a `budget_warning`), and `max_iterations: INT`.
@@ -459,7 +459,7 @@ A port (an `inputs:` / `outputs:` entry, `name: type`):
 | `default` | json value | Typed default of an optional input: the var's default, read as the launch reads a value of its type (a `string[]` or `json` var's text as a list or an object) — written, it must be the var's (C300); omitted, the var's is the port's. One JSON value on one line — `"text"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write and the compiler refuses from a document (C302) |
 | `min_items` | int | Minimum array cardinality (C300 on an input, C301 on an output) |
 | `max_items` | int | Maximum array cardinality (C300 on an input, C301 on an output) |
-| `from` | ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
+| `from` | dotted ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
 | `file` | block → [contract.file](dsl-properties.md#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
 <!-- dsl-spec:end -->
 
@@ -478,8 +478,8 @@ A criterion (a `criteria:` entry):
 <!-- dsl-spec:begin table contract.criterion -->
 | Property | Value | Meaning |
 |---|---|---|
-| `kind` | ident | Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303) |
-| `port` | ident | Checked port, singular: `input.<name>` or `output.<name>` (C302) |
+| `kind` | dotted ident | Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303) |
+| `port` | dotted ident | Checked port, singular: `input.<name>` or `output.<name>` (C302) |
 | `params` | json value | Parameters validated against the criterion's parameter declaration (C302): one JSON object on one line, e.g. `{min: 2}` |
 <!-- dsl-spec:end -->
 

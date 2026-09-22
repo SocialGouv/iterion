@@ -73,6 +73,7 @@ var freeEntryProbes = map[string]string{
 	"cursors":           "agent a:\n  cursors:\n    zz_probe: 1\n",
 	"cursor.values":     "cursor c:\n  values:\n    zz_probe: \"f\"\n",
 	"cursor.bands":      "cursor c:\n  bands:\n    \"0..1\": \"f\"\n",
+	"fallbacks":         "agent a:\n  fallbacks:\n    zz_probe:\n      backend: claw\n",
 	"schema":            "schema s:\n  zz_probe: string\n",
 	"contract.ports":    "contract c:\n  inputs:\n    zz_probe: string\n",
 	"contract.criteria": "contract c:\n  criteria:\n    zz_probe:\n      kind: min_length\n",
@@ -198,6 +199,14 @@ func sampleValues(p spec.Property) []string {
 			return each(p.Values)
 		}
 		return []string{p.Name + ": x"}
+	case spec.DottedIdent:
+		return []string{p.Name + ": x", p.Name + ": a.b"}
+	case spec.PromptRef:
+		return []string{p.Name + ": x", p.Name + `: "inline text"`}
+	case spec.EnumOrEnv:
+		return append(each(p.Values), p.Name+`: "${X:-`+p.Values[0]+`}"`)
+	case spec.StringOrNumber:
+		return []string{p.Name + `: "30s"`, p.Name + ": 3"}
 	case spec.Int, spec.Number:
 		return []string{p.Name + ": 1"}
 	case spec.Bool:
@@ -229,7 +238,7 @@ func sampleValues(p spec.Property) []string {
 			return []string{"values:\n  a: \"f\""}
 		case "cursor.bands":
 			return []string{"bands:\n  \"0..1\": \"f\""}
-		case "fallback":
+		case "fallbacks":
 			return []string{"fallbacks:\n  r:\n    backend: \"claw\""}
 		}
 		return []string{p.Name + ":"} // an empty block: the bare header
@@ -303,7 +312,7 @@ func TestFreeEntryBlocksTakeAnyName(t *testing.T) {
 		}
 	}
 	for _, k := range spec.Kinds {
-		if k.Entries == nil || k.Name == "prompt" || k.Name == "group" || k.Name == "use" {
+		if k.Entries == nil {
 			continue
 		}
 		if _, ok := freeEntryProbes[k.Name]; !ok {

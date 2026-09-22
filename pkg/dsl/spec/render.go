@@ -176,16 +176,22 @@ func Reference() string {
 		if line := whereLine(k); line != "" {
 			b.WriteString(line + "\n\n")
 		}
+		if k.Header != nil && len(k.Header.Fields) > 0 {
+			b.WriteString("| Header part | Value | Meaning |\n|---|---|---|\n")
+			for _, f := range k.Header.Fields {
+				fmt.Fprintf(&b, "| `%s` | %s | %s%s |\n", f.Name, fieldValueCell(f), escapePipes(f.Doc), optionalNote(f))
+			}
+			b.WriteString("\n")
+		}
+		if len(k.Holds) > 0 {
+			fmt.Fprintf(&b, "The body holds %s declarations and edge lines.\n\n", codes(k.Holds))
+		}
 		if len(k.Properties) > 0 {
 			b.WriteString(Table(k))
 			b.WriteString("\n")
 		}
 		if k.Entries != nil {
-			fmt.Fprintf(&b, "Entries: `%s` — %s", k.Entries.Shape, k.Entries.Doc)
-			if k.Entries.Body != "" {
-				fmt.Fprintf(&b, "; an entry's sub-block is a [%s](#%s)", k.Entries.Body, anchor(k.Entries.Body))
-			}
-			b.WriteString(".\n\n")
+			b.WriteString(entriesParagraph(k.Entries))
 		}
 	}
 	b.WriteString("### Deterministic public criteria\n\n")
@@ -206,11 +212,92 @@ func Reference() string {
 	return b.String()
 }
 
+// entriesParagraph renders what a block's author-named entries look like:
+// the entry line's shape, its meaning, the sub-block an entry may open, and
+// — when the line has several parts — a table of the parts.
+func entriesParagraph(e *Entries) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Entries: `%s` — %s", EntryShape(e), e.Doc)
+	if e.Body != "" {
+		fmt.Fprintf(&b, "; an entry's sub-block is a [%s](#%s)", e.Body, anchor(e.Body))
+	}
+	b.WriteString(".\n\n")
+	if len(e.Fields) > 1 {
+		b.WriteString("| Entry part | Value | Meaning |\n|---|---|---|\n")
+		for _, f := range e.Fields {
+			fmt.Fprintf(&b, "| `%s` | %s | %s%s |\n", f.Name, fieldValueCell(f), escapePipes(f.Doc), optionalNote(f))
+		}
+		b.WriteString("\n")
+	}
+	if e.Entries != nil {
+		b.WriteString("Each entry's indented lines: " + entriesParagraph(e.Entries))
+	}
+	return b.String()
+}
+
+// EntryShape renders the line one entry of a block is written on, from the
+// entries' structure: the key, then each part in its own spelling, an
+// optional part in brackets unless its spelling already opens with one (the
+// `[enum: …]` constraint is written with brackets) — `<name>: string | bool
+// | int [enum: "a", "b"] [= <default>]`.
+func EntryShape(e *Entries) string {
+	key := "<" + keyName(e) + ">"
+	if e.Key == String {
+		key = `"` + key + `"`
+	}
+	var b strings.Builder
+	b.WriteString(key + ":")
+	for _, f := range e.Fields {
+		s := fieldSpelling(f)
+		if !f.Required && !strings.HasPrefix(s, "[") {
+			s = "[" + s + "]"
+		}
+		b.WriteString(" " + s)
+	}
+	if e.Entries != nil {
+		b.WriteString(" (indented) " + EntryShape(e.Entries))
+	}
+	return b.String()
+}
+
+func keyName(e *Entries) string {
+	if e.KeyName != "" {
+		return e.KeyName
+	}
+	return "name"
+}
+
+// fieldSpelling is how a header part or an entry part is written on its
+// line: its own Spelling when it has one, else a placeholder named after
+// the part, quoted for a string, or the listed words of an enum.
+func fieldSpelling(f Field) string {
+	switch {
+	case f.Spelling != "":
+		return f.Spelling
+	case f.Form == Enum && len(f.Values) > 0:
+		return strings.Join(f.Values, " | ")
+	case f.Form == String:
+		return `"<` + f.Name + `>"`
+	}
+	return "<" + f.Name + ">"
+}
+
+func fieldValueCell(f Field) string {
+	return valueCell(Property{Name: f.Name, Form: f.Form, Values: f.Values})
+}
+
+func optionalNote(f Field) string {
+	if f.Required {
+		return ""
+	}
+	return " — optional"
+}
+
 func whereLine(k Kind) string {
 	switch k.Role {
 	case Declaration:
-		if k.Header != "" {
-			return "A top-level declaration: `" + k.Header + "`."
+		if k.Header != nil {
+			return "A top-level declaration: `" + k.Header.Syntax + "`."
 		}
 		return "A top-level declaration: `" + k.Name + " <name>:`."
 	case Node:
@@ -259,11 +346,15 @@ func valueCell(p Property) string {
 		return "`" + string(p.Form) + "`"
 	case Enum:
 		return "one of " + codes(p.Values)
+	case EnumOrEnv:
+		return "one of " + codes(p.Values) + ", or a quoted `${VAR:-default}` string"
+	case PromptRef:
+		return "prompt name, or its text as a string"
 	case Block:
 		return fmt.Sprintf("block → [%s](#%s)", p.Body, anchor(p.Body))
 	case BlockOrIdent:
 		return fmt.Sprintf("one of %s, or a block → [%s](#%s)", codes(p.Values), p.Body, anchor(p.Body))
-	case Ident, StringOrIdent, String:
+	case Ident, StringOrIdent, String, DottedIdent:
 		if len(p.Values) > 0 {
 			return escapePipes(string(p.Form)) + " — " + codes(p.Values)
 		}
@@ -294,7 +385,7 @@ func anchor(name string) string { return strings.ReplaceAll(name, ".", "") }
 // on every draft.
 func SkillSection() string {
 	var b strings.Builder
-	b.WriteString("Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `\"a|b\"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: \"v\"}` or an indented block · `with{}` a `with { k: \"v\" }` map · `{kind}` an indented block described under that kind.\n\n")
+	b.WriteString("Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string or one bare word · `id` bare name · `str|id` either · `str|num` a string or a bare number (`30s`, `3`) · `prompt` a prompt's name, or its text as a string · `int` `num` `bool` literals · `a|b` one of, bare or quoted · `a|b|\"${VAR}\"` one of, or a quoted env string · `\"a|b\"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: \"v\"}` or an indented block · `with{}` a `with { k: \"v\" }` map · `{kind}` an indented block described under that kind.\n\n")
 	seen := map[string]bool{}
 	for _, k := range Kinds {
 		if seen[k.Name] {
@@ -310,6 +401,15 @@ func SkillSection() string {
 			where = " (`" + k.Opener + ":` in " + strings.Join(hostNames(k), ", ") + ")"
 		}
 		fmt.Fprintf(&b, "- %s%s", label, where)
+		if k.Header != nil {
+			fmt.Fprintf(&b, " — `%s`", k.Header.Syntax)
+		}
+		if len(k.Holds) > 0 {
+			fmt.Fprintf(&b, " — body: %s declarations and edges", strings.Join(k.Holds, "/"))
+		}
+		if k.Text {
+			b.WriteString(" — body: free text")
+		}
 		if len(k.Properties) > 0 {
 			parts := make([]string, 0, len(k.Properties))
 			for _, p := range k.Properties {
@@ -322,7 +422,7 @@ func SkillSection() string {
 			b.WriteString(" — " + strings.Join(parts, " · "))
 		}
 		if k.Entries != nil {
-			fmt.Fprintf(&b, " — entries `%s`", k.Entries.Shape)
+			fmt.Fprintf(&b, " — entries `%s`", EntryShape(k.Entries))
 		}
 		b.WriteString("\n")
 	}
@@ -379,6 +479,14 @@ func shortForm(p Property) string {
 		return "json"
 	case Enum:
 		return strings.Join(p.Values, "|")
+	case EnumOrEnv:
+		return strings.Join(p.Values, "|") + `|"${VAR}"`
+	case PromptRef:
+		return "prompt"
+	case StringOrNumber:
+		return "str|num"
+	case DottedIdent:
+		return "id.id"
 	case IdentList:
 		return "[id]"
 	case StringList:
