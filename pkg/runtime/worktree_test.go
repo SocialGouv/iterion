@@ -949,9 +949,9 @@ func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
 			want:      []string{"src/new/name.txt"},
 		},
 		{
-			name:      "a quoted non-ascii path survives the filter",
+			name:      "a quoted non-ascii path survives the filter, decoded to its bytes",
 			porcelain: "?? \"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf\"\n",
-			want:      []string{"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf"},
+			want:      []string{"src/main/resources/static/doc/fiche-résumé.pdf"},
 		},
 		{
 			name:      "nothing at all",

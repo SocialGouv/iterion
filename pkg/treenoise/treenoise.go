@@ -47,11 +47,28 @@ type Entry struct {
 	Why    string
 }
 
+// Pathspec is the entry as ONE git pathspec argument: an exclusion anchored
+// at the repository top, the wildcard appended for a Prefix entry. It is
+// the unit Pathspecs and ShellPathspecs are built from, and the shape a
+// consumer filtering the list entry by entry (the engine's staging
+// gestures) spells.
+func (e Entry) Pathspec() string {
+	p := e.Path
+	if e.Prefix {
+		p += "*"
+	}
+	return ":(exclude,top)" + p
+}
+
+// mirrorEntry is the list member for MirrorPath — MirrorEntry returns it,
+// Entries carries it first.
+var mirrorEntry = Entry{MirrorPath, false, "iterion's skills/commands/agents/settings mirror, written at run start (#1364)"}
+
 // Entries is the canonical list, in decision order. Every consumer derives
 // its shape from this slice; nothing else in the repository may spell a
 // noise path (the guards in bots/ and the tests here enforce that).
 var Entries = []Entry{
-	{MirrorPath, false, "iterion's skills/commands/agents/settings mirror, written at run start (#1364)"},
+	mirrorEntry,
 	{"devbox.lock", false, "rewritten by every devbox invocation — plugin_version drift (#1459, #1464)"},
 	{".iterion-script-", true, "tool-node script scratch (.iterion-script-<random>.<ext>, executor_tool.go): the cleanup loses the race against a hard kill and the file then reads as uncommitted work"},
 }
@@ -63,11 +80,7 @@ var Entries = []Entry{
 func Pathspecs() []string {
 	out := make([]string, 0, len(Entries))
 	for _, e := range Entries {
-		p := e.Path
-		if e.Prefix {
-			p += "*"
-		}
-		out = append(out, ":(exclude,top)"+p)
+		out = append(out, e.Pathspec())
 	}
 	return out
 }
@@ -82,11 +95,7 @@ func Pathspecs() []string {
 func ShellPathspecs() string {
 	quoted := make([]string, 0, len(Entries))
 	for _, e := range Entries {
-		p := e.Path
-		if e.Prefix {
-			p += "*"
-		}
-		quoted = append(quoted, "':(exclude,top)"+p+"'")
+		quoted = append(quoted, "'"+e.Pathspec()+"'")
 	}
 	return strings.Join(quoted, " ")
 }
@@ -99,15 +108,16 @@ func IsMirror(path string) bool {
 	return path == MirrorPath || strings.HasPrefix(path, MirrorPath+"/")
 }
 
-// MirrorPathspec is the git pathspec excluding the engine's own mirror —
-// the ONE noise path the operator-initiated commit-and-finalize keeps
-// excluding when it stages merge-destined work (a tracked-and-modified
-// devbox.lock there is the dependency work itself, not engine noise —
-// verdict 3, R5478b3). A leftover `.iterion-script-*` scratch file rides
-// that commit too — the same deliberate disagreement, by mirror-only
-// design. Derived from MirrorPath, the name Entries carries.
-func MirrorPathspec() string {
-	return ":(exclude,top)" + MirrorPath
+// MirrorEntry is the engine's own mirror as a list member — the ONE entry
+// the operator-initiated commit-and-finalize keeps excluding when it stages
+// merge-destined work (a tracked-and-modified devbox.lock there is the
+// dependency work itself, not engine noise — verdict 3, R5478b3; a leftover
+// `.iterion-script-*` scratch file rides that commit too, the same
+// deliberate disagreement, by mirror-only design). Named rather than read
+// out of Entries by position: a member prepended tomorrow must not
+// silently redefine what a merge-destined commit excludes.
+func MirrorEntry() Entry {
+	return mirrorEntry
 }
 
 // EnvValue is the form tool scripts read from ITERION_TREE_NOISE: the

@@ -17,7 +17,12 @@ import (
 // the mirror. The call site (CommitUncommittedAndFinalize) is merge-
 // destined: dropping the lock here would merge devbox.json without its
 // resolution and destroy the bump with the worktree.
-func TestCommitStageArgsStageTheDependencyWork(t *testing.T) {
+// dependencyBotWorkdir is a repository whose dirt is a dependency bot's
+// deliverable — devbox.json AND devbox.lock modified, both tracked — with
+// the engine's mirror untracked beside it, under the ignore rules gitignore
+// holds (none when empty).
+func dependencyBotWorkdir(t *testing.T, gitignore string) (string, func(args ...string) string) {
+	t.Helper()
 	ws := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
@@ -26,6 +31,11 @@ func TestCommitStageArgsStageTheDependencyWork(t *testing.T) {
 	git("init", "-q", "-b", "main")
 	git("config", "user.email", "lot@run")
 	git("config", "user.name", "the lot")
+	if gitignore != "" {
+		if err := os.WriteFile(filepath.Join(ws, ".gitignore"), []byte(gitignore), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(ws, "devbox.json"), []byte("{\"packages\": []}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -49,10 +59,35 @@ func TestCommitStageArgsStageTheDependencyWork(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ".claude", "skills", "mirrored.md"), []byte("iterion wrote this\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return ws, git
+}
 
-	git(commitStageArgs()...)
+func TestCommitStageArgsStageTheDependencyWork(t *testing.T) {
+	ws, git := dependencyBotWorkdir(t, "")
+	git(commitStageArgs(ws)...)
 
-	staged := strings.Split(strings.TrimSpace(git("diff-index", "--name-only", "HEAD")), "\n")
+	staged := strings.Split(strings.TrimSpace(git("diff-index", "--cached", "--name-only", "HEAD")), "\n")
+	if !slices.Contains(staged, "devbox.json") || !slices.Contains(staged, "devbox.lock") {
+		t.Fatalf("the dependency work is not fully staged: %q", staged)
+	}
+	for _, p := range staged {
+		if strings.HasPrefix(p, ".claude") {
+			t.Fatalf("the mirror is staged: %q", staged)
+		}
+	}
+}
+
+// The same deliverable on a repository that IGNORES the mirror (this
+// repository's own `**/.claude/`): the operator's commit-and-finalize used
+// to exit 1 on the exclusion naming the ignored path — index right, salvage
+// refused (#1558). It stages both halves here too (gittest.Run fails the
+// test on any non-zero exit) and the ignored mirror stays out by git's own
+// rule, with no exclusion spelled.
+func TestCommitStageArgsStageTheDependencyWorkWhenTheMirrorIsIgnored(t *testing.T) {
+	ws, git := dependencyBotWorkdir(t, "**/.claude/\n")
+	git(commitStageArgs(ws)...)
+
+	staged := strings.Split(strings.TrimSpace(git("diff-index", "--cached", "--name-only", "HEAD")), "\n")
 	if !slices.Contains(staged, "devbox.json") || !slices.Contains(staged, "devbox.lock") {
 		t.Fatalf("the dependency work is not fully staged: %q", staged)
 	}
