@@ -61,9 +61,119 @@ Where:
 - `Grep` (bare) — any grep; `mcp__github__get_*` — any github MCP `get_` tool.
 - `Bash(rm -rf:*)` in `deny:` — never `rm -rf`, even in `ask` mode.
 
-A per-node override is the scalar mode only — `permission: deny` on an
-`agent` or `judge` node (the gate evaluates *LLM-issued* tool calls; a
-`tool` node's `permission:` is parsed but currently inert — see Status).
+`agent` and `judge` nodes take the same three lists, and the mode
+(`permission: deny`) as an override. A `tool` node takes the mode alone,
+and it is inert there: the gate evaluates *LLM-issued* tool calls (see
+Status).
+
+### Per-node rule lists — a node list REPLACES the workflow's
+
+One list cannot serve a workflow whose nodes need different bounds. So a
+node's `allow:` / `ask:` / `deny:` **replaces** the workflow list of the
+**same kind**, independently per kind; the kinds it does not declare are
+inherited. Never a union: a union can only widen, and the shape that needs
+expressing is a *narrowing* — a converge node that must not hold the shell
+its reviewers cannot work without.
+
+```iter fragment
+agent reviewer:
+  model: "anthropic/claude-opus-5"
+  system: reviewer_system
+  user: reviewer_user
+
+agent converge:
+  model: "anthropic/claude-opus-5"
+  system: converge_system
+  user: converge_user
+  deny: ["Bash"]
+
+workflow review:
+  entry: reviewer
+  permission: deny
+  allow: ["Read(**)", "Bash(git diff:*)", "Bash(git log:*)"]
+  deny: ["Read(.env*)"]
+  reviewer -> converge
+  converge -> done
+```
+
+`reviewer` keeps both workflow lists. `converge` keeps the `allow:` — it
+declared none — but its own `deny:` **replaces** the workflow's, so
+`converge` loses the shell *and* loses the `.env` guard: a node that
+declares a kind must restate anything from the workflow's list of that kind
+it still wants. That is what replacement costs, and it is the price of being
+able to narrow at all.
+
+Three properties are worth stating because each was a choice:
+
+- **Declared means non-empty.** `deny: []` is the same as no `deny:`, not
+  "clear the workflow's". The AST's JSON seam carries these lists with
+  `omitempty`, which erases nil-from-empty, so a rule built on that
+  distinction would hold in a `.bot` and break through the studio.
+- **Replacement is per kind, not per node.** A node declaring only `deny:`
+  still inherits the workflow's `allow:` and `ask:`.
+- **The run-level lists stay additive.** `--permission-allow` / `-ask` /
+  `-deny` append to whichever list won — node or workflow. They are the
+  operator's live escape hatch over a `.bot` they may not own, and a
+  replacement would take it away.
+
+The resolution happens once, in `resolvePermissionPolicy`
+(`pkg/backend/model/executor_build_task.go`) — the only place in the engine
+that builds a `Policy` from DSL and run inputs, which is why every backend's
+gate sees the same rules. The route screens (C136, C176) read the node's
+effective ask list through the same helper (`ir.EffectiveAskRules`), so the
+ask rules they admit a backend against are the ones the runtime will gate on.
+
+Two bounds on that sentence, both deliberate. The screens judge the **DSL**
+lists only: `--permission-ask` is appended after them and is screened at
+dispatch instead, where an ask-incapable backend refuses the node. And C111
+answers a different question — "is this list declared at all" — which it
+shares with the resolver through one predicate rather than by re-deriving it.
+
+### What a `tools:` list costs, measured
+
+`tools:` and the policy are **orthogonal**, and authoring one as if it
+were the other is the mistake this section exists to prevent. `tools:`
+bounds what *exists*; the policy bounds what may *run*; nothing joins them
+at run time.
+
+On `claude_code` a `tools:` list is **not** inert. The hard-restrict flag
+`--tools` is deliberately unused (see `pkg/backend/toolcatalog`), but iterion
+turns the list into `claudesdk.WithDisallowedTools`, which the SDK spells as
+`--disallowedTools`: every tool on Claude Code's **closed native roster**
+that the list does not name is removed. The roster is fourteen names —
+`Bash Read Glob Grep Write Edit MultiEdit NotebookEdit Task WebFetch
+WebSearch ToolSearch TodoWrite Skill` (`claudeNativeTools`). Measured on a
+reviewer node, counting only what the list itself contributes:
+
+```
+no tools: list                          the list adds nothing
+tools: [bash, read_file, glob, grep]    the list adds
+  [Write Edit MultiEdit NotebookEdit Task WebFetch WebSearch ToolSearch
+   TodoWrite Skill]
+```
+
+(A non-ultracode node also carries `Workflow` on that flag whatever its
+`tools:` says — the orchestration surface, unrelated to the list. And a tool
+*outside* the roster is never removed by a `tools:` list.)
+
+The bound is subtractive **only by enumeration**: naming four tools costs
+ten, `Skill` included. "Everything except Write and Edit" is nearly
+expressible — the other eleven aliases spelled out — but it costs
+`MultiEdit` too, because no alias grants it without `edit`; and every roster
+change silently re-opens whatever the list forgot to name. A per-node `deny:`
+says the same thing in one rule, and survives the roster changing.
+
+One cost worth knowing before substituting one for the other: the
+parallel-branch scheduler reads `tools:` and not the policy
+(`runtime.ToolSurfaceCanWrite`), so a node bounded by `deny:` alone still
+counts as possibly-mutating and loses read-only fan-out eligibility. A node
+that needs that eligibility still needs the `tools:` list.
+
+A rule is a *bound on what runs*, never a grant of what exists: a node
+whose `tools:` omits a tool cannot call it however its `allow:` reads. The
+compiler does not try to reconcile the two — it would have to agree with
+three alias tables in three packages, and the first one to drift would tell
+an author to delete a live `deny:` rule.
 
 Matching semantics (`pkg/backend/permission`):
 
@@ -111,9 +221,15 @@ Mode resolves with the same precedence as `compress:`:
 CLI --permission  >  node permission:  >  workflow permission:  >  ITERION_PERMISSION  >  off
 ```
 
-Rule lists are **additive**: the workflow `allow:`/`ask:`/`deny:` lists
-plus any `--permission-allow`/`--permission-ask`/`--permission-deny`
-run-level rules.
+Rule lists resolve in two steps, which are **not** the same operation:
+
+```
+per kind:  node allow:/ask:/deny:  REPLACES  workflow allow:/ask:/deny:
+then:      + --permission-allow / --permission-ask / --permission-deny
+```
+
+A node list wins over the workflow's when it declares one, per kind; the
+run-level flags are appended to whichever won.
 
 The studio Launch dialog captions the permission select with the
 resolved mode and the level it came from ("effective: ask · from
@@ -276,6 +392,10 @@ decode the native event and spell the native verdict.
 
 - `pkg/backend/permission/` — the matcher + Policy (single source of truth)
 - `docs/plugins.md` — the sibling opt-in `compress:` field this mirrors
-- Diagnostics: **C110** (invalid permission mode), **C111** (rules
-  declared but gate off), **C112** (tool-node `permission:` — parsed but
-  not enforced).
+- Diagnostics: **C110** (invalid permission mode), **C111** (a rule list
+  that reaches no gated reader — including a workflow list every gated
+  reader replaces), **C112** (tool-node `permission:` — parsed but not
+  enforced), **C154** (an entry the gate's parser cannot read, refused at
+  compile time instead of at dispatch), **C136** / **C176** (a route that
+  cannot serve the gate in force for the node, node-declared `ask:` rules
+  included).

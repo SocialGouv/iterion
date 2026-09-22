@@ -555,6 +555,9 @@ type LLMDecl struct {
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory        string           // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Allow             []string         // node-level permission allow rules; a non-empty list REPLACES the workflow's allow: (empty = inherit)
+	Ask               []string         // node-level permission ask rules; a non-empty list REPLACES the workflow's ask: (empty = inherit)
+	Deny              []string         // node-level permission deny rules; a non-empty list REPLACES the workflow's deny: (empty = inherit)
 	Needs             []string         // resource names acquired before running (workflow.resources)
 	Fallbacks         []*FallbackDecl  // ordered `fallbacks:` routes tried when this node's primary fails (ADR-087); declaration order preserved for round-trip
 }

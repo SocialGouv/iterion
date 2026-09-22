@@ -45,13 +45,19 @@ type backendFields struct {
 	capabilities     []string
 	skills           []string
 	cursors          *ir.CursorInvocation
-	compress         string   // node-level `compress:` value ("" = unset)
-	autoMemory       string   // node-level `auto_memory:` value ("" = inherit workflow)
-	permission       string   // node-level `permission:` mode override ("" = inherit)
-	timeout          string   // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
-	readonly         bool     // node-level `readonly:` — force delegated agents into a read-only sandbox
-	fullAccess       bool     // node-level `full_access:` — lift the codex sandbox to danger-full-access (network egress)
-	images           []string // node-level `images:` — templated input image paths forwarded to codex as `-i` (i2i)
+	compress         string // node-level `compress:` value ("" = unset)
+	autoMemory       string // node-level `auto_memory:` value ("" = inherit workflow)
+	permission       string // node-level `permission:` mode override ("" = inherit)
+	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
+	// REPLACES the workflow list of the same kind; see
+	// ir.EffectivePermissionRules, the single implementation of that rule.
+	permAllow  []string
+	permAsk    []string
+	permDeny   []string
+	timeout    string   // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
+	readonly   bool     // node-level `readonly:` — force delegated agents into a read-only sandbox
+	fullAccess bool     // node-level `full_access:` — lift the codex sandbox to danger-full-access (network egress)
+	images     []string // node-level `images:` — templated input image paths forwarded to codex as `-i` (i2i)
 }
 
 // subject renders what an error about this node is about: `node "copi"`,
@@ -92,6 +98,9 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
 			permission:       n.Permission,
+			permAllow:        n.PermissionAllow,
+			permAsk:          n.PermissionAsk,
+			permDeny:         n.PermissionDeny,
 			timeout:          n.Timeout,
 			readonly:         n.Readonly,
 			fullAccess:       n.FullAccess,
@@ -117,6 +126,9 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
 			permission:       n.Permission,
+			permAllow:        n.PermissionAllow,
+			permAsk:          n.PermissionAsk,
+			permDeny:         n.PermissionDeny,
 			timeout:          n.Timeout,
 			readonly:         n.Readonly,
 			fullAccess:       n.FullAccess,
@@ -128,14 +140,32 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 }
 
 // resolvePermissionPolicy builds the effective tool-permission policy for
-// a node. Mode precedence mirrors rtk (run override > node DSL > workflow
-// DSL > ITERION_PERMISSION env > off); the allow/ask/deny rule lists are
-// the union of the workflow-level lists and the run-level override lists.
-// Returns a disabled policy (mode off) when nothing opts in. A malformed
-// rule or unknown mode is an error (surfaced as a node execution error;
-// compile-time validation already flags these via C110/C111).
-func (e *ClawExecutor) resolvePermissionPolicy(nodeMode string) (*permission.Policy, error) {
-	mode, err := permission.ParseMode(cmp.Or(e.permOverride, nodeMode, e.wfPermission, e.permEnvDefault))
+// a node — the ONE place a Policy is built from DSL and run inputs, which
+// is why every backend's gate (claude_code's PreToolUse hook, claw's
+// executeToolsDirect and its sandboxed IPC envelope, pi's RPC callback,
+// the grok/kimi hook subprocess) sees the same rules.
+//
+// Mode precedence mirrors rtk: run override > node DSL > workflow DSL >
+// ITERION_PERMISSION env > off. Returns a disabled policy (mode off) when
+// nothing opts in.
+//
+// Each rule list resolves in two steps that are NOT the same operation:
+//
+//  1. node REPLACES workflow, per list and per kind
+//     (ir.EffectivePermissionRules — the compiler's screens call the same
+//     helper, so the policy the runtime builds is the one C111/C136/C176
+//     judged). Replacement is what lets one workflow hold heterogeneous
+//     nodes: a union could only widen, and the shape that needs expressing
+//     is a narrowing.
+//  2. the run-level override lists (--permission-allow/ask/deny) are
+//     APPENDED to whichever list won. They stay additive on purpose: they
+//     are the operator's live escape hatch over a .bot they may not own.
+//
+// A malformed rule or unknown mode is an error (surfaced as a node
+// execution error; compile-time validation already flags these via
+// C110/C111).
+func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Policy, error) {
+	mode, err := permission.ParseMode(cmp.Or(e.permOverride, f.permission, e.wfPermission, e.permEnvDefault))
 	if err != nil {
 		return nil, err
 	}
@@ -143,9 +173,9 @@ func (e *ClawExecutor) resolvePermissionPolicy(nodeMode string) (*permission.Pol
 		return &permission.Policy{}, nil
 	}
 	return permission.NewPolicy(mode,
-		slices.Concat(e.wfPermAllow, e.permAllowRules),
-		slices.Concat(e.wfPermAsk, e.permAskRules),
-		slices.Concat(e.wfPermDeny, e.permDenyRules),
+		slices.Concat(ir.EffectivePermissionRules(f.permAllow, e.wfPermAllow), e.permAllowRules),
+		slices.Concat(ir.EffectivePermissionRules(f.permAsk, e.wfPermAsk), e.permAskRules),
+		slices.Concat(ir.EffectivePermissionRules(f.permDeny, e.wfPermDeny), e.permDenyRules),
 	)
 }
 
@@ -1081,10 +1111,11 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.Rewriters = e.chain.Specs()
 	}
 	// Tool-permission gate (precedence: run override > node DSL > workflow
-	// DSL > ITERION_PERMISSION env; off = no gate). Rule lists are additive
-	// (workflow + run override). The SAME resolved policy drives both the
+	// DSL > ITERION_PERMISSION env; off = no gate). Each rule list is the
+	// node's when it declares one, the workflow's otherwise, plus the
+	// run-level override lists. The SAME resolved policy drives both the
 	// claude_code PreToolUse hook and the claw executeToolsDirect gate.
-	if pol, perr := e.resolvePermissionPolicy(f.permission); perr != nil {
+	if pol, perr := e.resolvePermissionPolicy(f); perr != nil {
 		return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, perr)
 	} else if pol.Enabled() {
 		// On resume after a permission `ask` pause, the runtime passes the

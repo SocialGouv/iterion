@@ -72,7 +72,7 @@ func buildBackendOverrideOptions(
 			choice.UnavailableReason = ir.UngatedCrossingReasonForAskRules(
 				backend,
 				mode.String(),
-				wf.PermissionAsk,
+				ir.EffectiveAskRules(llm, wf),
 			)
 			if choice.UnavailableReason == "" {
 				choice.Warning = ir.ToolRestrictionLossReason(

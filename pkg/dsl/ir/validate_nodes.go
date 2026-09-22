@@ -427,9 +427,9 @@ func forEachAgentJudgeToolValue(w *Workflow, llmGet func(LLMNode) string, toolGe
 // off|ask|deny. Empty ("") means unset/inherit and is always valid; the
 // comparison is case-insensitive and whitespace-trimmed (C110, error).
 //
-// It also warns (C111) when the workflow declares allow/ask/deny rules but the
-// resolved workflow permission mode is "" or "off" — the rules are inert
-// because the gate is disabled.
+// Whether a declared allow/ask/deny rule list ever REACHES a gated node is a
+// separate question with its own shape (workflow and node lists, replacement
+// between them); validatePermissionRules owns it, and C111.
 func (c *compiler) validatePermission(w *Workflow) {
 	valid := func(v string) bool {
 		switch strings.ToLower(strings.TrimSpace(v)) {
@@ -465,17 +465,6 @@ func (c *compiler) validatePermission(w *Workflow) {
 				}
 			}
 		})
-
-	// C111: rules declared but the gate is disabled. The resolved workflow
-	// mode is "" or "off" → the allow/ask/deny lists never take effect.
-	mode := strings.ToLower(strings.TrimSpace(w.Permission))
-	gateDisabled := mode == "" || mode == "off"
-	hasRules := len(w.PermissionAllow) > 0 || len(w.PermissionAsk) > 0 || len(w.PermissionDeny) > 0
-	if gateDisabled && hasRules {
-		c.warnfAtSpan(DiagPermissionRulesNoGate, c.workflowSpan(w.Name),
-			"workflow %q declares allow/ask/deny permission rules but the permission gate is %s; rules are inert",
-			w.Name, modeLabel(mode))
-	}
 }
 
 // modeLabel renders an empty permission mode as "off (unset)" for a clearer

@@ -437,6 +437,9 @@ type jsonAgentDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
+	Allow             []string             `json:"allow,omitempty"`
+	Ask               []string             `json:"ask,omitempty"`
+	Deny              []string             `json:"deny,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
 }
 
@@ -482,6 +485,9 @@ type jsonJudgeDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
+	Allow             []string             `json:"allow,omitempty"`
+	Ask               []string             `json:"ask,omitempty"`
+	Deny              []string             `json:"deny,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
 }
 
@@ -1487,6 +1493,9 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Compress:          a.Compress,
 		AutoMemory:        a.AutoMemory,
 		Permission:        a.Permission,
+		Allow:             a.Allow,
+		Ask:               a.Ask,
+		Deny:              a.Deny,
 		Needs:             a.Needs,
 	}
 }
@@ -1531,6 +1540,9 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Compress:          j.Compress,
 		AutoMemory:        j.AutoMemory,
 		Permission:        j.Permission,
+		Allow:             j.Allow,
+		Ask:               j.Ask,
+		Deny:              j.Deny,
 		Needs:             j.Needs,
 	}
 }
@@ -2266,6 +2278,9 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Compress:          ja.Compress,
 			AutoMemory:        ja.AutoMemory,
 			Permission:        ja.Permission,
+			Allow:             ja.Allow,
+			Ask:               ja.Ask,
+			Deny:              ja.Deny,
 			Needs:             ja.Needs,
 		},
 	}, nil
@@ -2324,6 +2339,9 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Compress:          jj.Compress,
 			AutoMemory:        jj.AutoMemory,
 			Permission:        jj.Permission,
+			Allow:             jj.Allow,
+			Ask:               jj.Ask,
+			Deny:              jj.Deny,
 			Needs:             jj.Needs,
 		},
 	}, nil

@@ -241,10 +241,17 @@ type AgentNode struct {
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
 	Fallbacks        []Fallback
-	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
-	AutoMemory       string   // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
-	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
-	Needs            []string // resource names this node acquires before running (counting semaphores)
+	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
+	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
+	// A non-empty list REPLACES the workflow list of the SAME kind; an
+	// empty one inherits it. Read through EffectivePermissionRules —
+	// never paired with a workflow list by hand.
+	PermissionAllow []string
+	PermissionAsk   []string
+	PermissionDeny  []string
+	Needs           []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -272,10 +279,17 @@ type JudgeNode struct {
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
 	Fallbacks        []Fallback
-	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
-	AutoMemory       string   // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
-	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
-	Needs            []string // resource names this node acquires before running (counting semaphores)
+	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
+	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
+	// A non-empty list REPLACES the workflow list of the SAME kind; an
+	// empty one inherits it. Read through EffectivePermissionRules —
+	// never paired with a workflow list by hand.
+	PermissionAllow []string
+	PermissionAsk   []string
+	PermissionDeny  []string
+	Needs           []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -624,6 +638,9 @@ type LLMNode interface {
 	GetCompress() string
 	GetAutoMemory() string
 	GetPermission() string
+	GetPermissionAllow() []string
+	GetPermissionAsk() []string
+	GetPermissionDeny() []string
 }
 
 var (
@@ -651,6 +668,9 @@ func (n *AgentNode) GetFallbacks() []Fallback                 { return n.Fallbac
 func (n *AgentNode) GetCompress() string                      { return n.Compress }
 func (n *AgentNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
+func (n *AgentNode) GetPermissionAllow() []string             { return n.PermissionAllow }
+func (n *AgentNode) GetPermissionAsk() []string               { return n.PermissionAsk }
+func (n *AgentNode) GetPermissionDeny() []string              { return n.PermissionDeny }
 
 // LLMNode accessor methods on *JudgeNode.
 func (n *JudgeNode) GetLLMFields() *LLMFields                 { return &n.LLMFields }
@@ -672,6 +692,9 @@ func (n *JudgeNode) GetFallbacks() []Fallback                 { return n.Fallbac
 func (n *JudgeNode) GetCompress() string                      { return n.Compress }
 func (n *JudgeNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
+func (n *JudgeNode) GetPermissionAllow() []string             { return n.PermissionAllow }
+func (n *JudgeNode) GetPermissionAsk() []string               { return n.PermissionAsk }
+func (n *JudgeNode) GetPermissionDeny() []string              { return n.PermissionDeny }
 
 // ---------------------------------------------------------------------------
 // Node field accessors — exported helpers that extract fields from concrete

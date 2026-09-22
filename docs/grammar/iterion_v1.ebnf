@@ -199,6 +199,9 @@ llm_prop = "description" ":" str_value NEWLINE
          | "compress" ":" compress_mode NEWLINE
          | "auto_memory" ":" auto_memory_mode NEWLINE
          | "permission" ":" permission_mode NEWLINE
+         | "allow" ":" string_list NEWLINE
+         | "ask" ":" string_list NEWLINE
+         | "deny" ":" string_list NEWLINE
          | "needs" ":" needs_value NEWLINE
          | mcp_config_block | compaction_block | memory_block
          | sandbox_decl | cursors_block ;
