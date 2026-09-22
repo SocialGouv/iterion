@@ -187,7 +187,7 @@ nodes:
     skills: [house.style, kebab-skill]
     tool_max_steps: 40
     max_tokens: 8000
-    reasoning_effort: ${VIBE_EFFORT:-max}
+    reasoning_effort: "${VIBE_EFFORT:-max}"
     timeout: 20m
     readonly: true
     images: [diagram.png]

@@ -318,9 +318,17 @@ func (s *speller) scalar(f spec.Form, values []string, what string, n *yaml.Node
 		}
 		return q(n.Value), true
 	case spec.EnumOrEnv:
+		// The .bot takes one of the words, bare or quoted — or ANY quoted
+		// string, kept as written for a run-time substitution ('$EFFORT',
+		// '${EFFORT:-high}', a template). The document says quoted with a
+		// quoted scalar; a plain scalar is a word of the list, or an
+		// environment form, unmistakable without quotes.
 		if tag != "!!str" {
-			s.refuse(n, what+" takes one of "+strings.Join(values, ", ")+" or an environment form `${VAR:-default}`, got "+tagWord(tag))
+			s.refuse(n, what+" takes one of "+strings.Join(values, ", ")+", or any other value in quotes, got "+tagWord(tag))
 			return "", false
+		}
+		if n.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0 {
+			return q(n.Value), true
 		}
 		for _, v := range values {
 			if n.Value == v {
@@ -330,7 +338,7 @@ func (s *speller) scalar(f spec.Form, values []string, what string, n *yaml.Node
 		if envFormRe.MatchString(n.Value) {
 			return q(n.Value), true
 		}
-		s.refuse(n, what+" takes one of "+strings.Join(values, ", ")+" or an environment form `${VAR:-default}`, got "+strconv.Quote(n.Value))
+		s.refuse(n, what+" takes one of "+strings.Join(values, ", ")+" bare, or any other value in quotes, kept as written for a run-time substitution ('$EFFORT', '${EFFORT:-high}', a template), got "+strconv.Quote(n.Value))
 		return "", false
 	case spec.Ident:
 		return s.ident(what, n, false)

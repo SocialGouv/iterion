@@ -855,24 +855,8 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\\}$",
-              "type": "string"
-            }
-          ],
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "type": "string"
         },
         "sandbox": {
           "anyOf": [
@@ -1386,24 +1370,8 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\\}$",
-              "type": "string"
-            }
-          ],
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "type": "string"
         },
         "sandbox": {
           "anyOf": [
@@ -1548,24 +1516,8 @@
           "type": "string"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\\}$",
-              "type": "string"
-            }
-          ],
-          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "type": "string"
         },
         "router": {
           "description": "The node's name",

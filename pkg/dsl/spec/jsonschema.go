@@ -217,7 +217,6 @@ func (b *schemaBuilder) def(name string, build func() obj) obj {
 const (
 	identPattern       = `^[A-Za-z_][A-Za-z0-9_]*$`
 	dottedIdentPattern = `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`
-	envPattern         = EnvFormPattern
 )
 
 // EnvFormPattern is the environment form a quoted EnumOrEnv value takes,
@@ -377,10 +376,10 @@ func (b *schemaBuilder) form(f Form, values []string, body string) obj {
 	case Enum:
 		return obj{"enum": stringsToAny(values)}
 	case EnumOrEnv:
-		return obj{"anyOf": []any{
-			obj{"enum": stringsToAny(values)},
-			obj{"type": "string", "pattern": envPattern, "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then"},
-		}}
+		// The .bot takes the words bare or quoted and ANY other value quoted,
+		// kept as written for a run-time substitution; the document says
+		// quoted with a quoted scalar, which a schema cannot see.
+		return obj{"type": "string", "description": "One of " + strings.Join(values, ", ") + " — or any other string, kept as written for a run-time substitution ('$EFFORT', '${EFFORT:-high}', a template). The .bot takes the words bare or quoted and anything else quoted; the document says quoted with a quoted scalar, which this schema cannot see: a plain word outside the list passes here and is refused by the converter (E051)."}
 	case IdentList:
 		return obj{"type": "array", "items": obj{"type": "string", "pattern": identPattern}}
 	case StringList, ToolList, SkillList, MixedList:

@@ -233,9 +233,28 @@ func (p *props) set(name string, v *yaml.Node) {
 }
 
 func (p *props) str(name, v string) {
-	if v != "" {
-		p.set(name, str(v))
+	if v == "" {
+		return
 	}
+	// An enum|env property takes its words bare or quoted and anything else
+	// quoted (a run-time substitution, kept as written): the document says
+	// the same with a quoted scalar, which the reader takes as any string.
+	for _, pr := range p.kind.Properties {
+		if pr.Name == name && pr.Form == spec.EnumOrEnv && !isOneOf(v, pr.Values) {
+			p.set(name, quoted(v))
+			return
+		}
+	}
+	p.set(name, str(v))
+}
+
+func isOneOf(v string, words []string) bool {
+	for _, w := range words {
+		if v == w {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *props) int(name string, v int) {
