@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.182.1](https://github.com/SocialGouv/iterion/compare/v3.182.0...v3.182.1) (2026-09-22)
+
+### Bug Fixes
+
+* **runtime:** staging gestures spell no exclusion git would refuse ([#1558](https://github.com/SocialGouv/iterion/issues/1558)) ([#1572](https://github.com/SocialGouv/iterion/issues/1572)) ([f19e5b7](https://github.com/SocialGouv/iterion/commit/f19e5b7018a037acde5ff287fd539ee46e43107e)), references [#1464](https://github.com/SocialGouv/iterion/issues/1464) [pre-#1507](https://github.com/pre-/issues/1507) [#1569](https://github.com/SocialGouv/iterion/issues/1569) [#1571](https://github.com/SocialGouv/iterion/issues/1571) [#1577](https://github.com/SocialGouv/iterion/issues/1577)
+
+    <details><summary>why</summary>
+
+    On a repository whose .gitignore already ignores the mirror (this one: `**/.claude/`), `git add -A -- ':/' ':(exclude,top).claude'` stages the work but exits 1 ("The following paths are ignored by one of your .gitignore files: .claude"). Both staging gestures read that as failure: the wip bank left the run's work unbanked in a preserved worktree, the operator's commit-and-finalize failed. Measured on the #1464 dogfood.
+
+    </details>
+
 ## [3.182.0](https://github.com/SocialGouv/iterion/compare/v3.181.2...v3.182.0) (2026-09-22)
 
 ### Features
