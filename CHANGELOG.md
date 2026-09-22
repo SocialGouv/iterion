@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.184.1](https://github.com/SocialGouv/iterion/compare/v3.184.0...v3.184.1) (2026-09-22)
+
+### Bug Fixes
+
+* **dsl:** a backend written as a dial is screened by what it declares, not by its spelling ([#1614](https://github.com/SocialGouv/iterion/issues/1614)) ([19e3a83](https://github.com/SocialGouv/iterion/commit/19e3a83d4a4653c757851edcfed27aeb8f7d07d6)), references [#1389](https://github.com/SocialGouv/iterion/issues/1389) [#1389](https://github.com/SocialGouv/iterion/issues/1389)
+
+    <details><summary>why</summary>
+
+    `effectiveNodeBackend` returned `""` — "no opinion" — for any backend string containing `${`, and `""` short-circuits every COMPARISON screen: the `tools:` inversion, the session-continuity refusal, the C177 effort drift, the primary-route permission-gate check, and the same set inside `ApplyRunFallback`, the launch-time `--fallback` admission. A node whose backend is an env dial therefore ran unscreened, and an author could add a route crossing the claw⇄CLI boundary to one and have it compile…
+
+    </details>
+
 ## [3.184.0](https://github.com/SocialGouv/iterion/compare/v3.183.0...v3.184.0) (2026-09-22)
 
 ### Features
