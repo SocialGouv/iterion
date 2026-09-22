@@ -713,6 +713,9 @@ func describePublicPort(port *ir.PublicPort) string {
 		}
 		notes = append(notes, lo+".."+hi+" items")
 	}
+	if port.Matching != "" {
+		notes = append(notes, "matching "+port.Matching)
+	}
 	if len(port.EnumValues) > 0 {
 		notes = append(notes, "one of "+strings.Join(port.EnumValues, "|"))
 	}

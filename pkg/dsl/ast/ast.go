@@ -303,13 +303,17 @@ type VarsBlock struct {
 }
 
 // VarField is a single variable declaration:
-// `name: type [enum: ...] [= default]`.
+// `name: type [enum: ...] [matching: "<re>"] [= default]`.
 type VarField struct {
 	Name       string
 	Type       TypeExpr
 	EnumValues []string // non-nil only if enum constraint present
-	Default    *Literal // nil if no default
-	Span       Span
+	// Matching is the RE2 source of a `[matching: "<re>"]` constraint, as
+	// the author wrote it. Empty means unconstrained: an empty pattern
+	// would match every value anyway, so the two are one state.
+	Matching string
+	Default  *Literal // nil if no default
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------

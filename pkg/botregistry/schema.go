@@ -50,10 +50,15 @@ type VarsBlock struct {
 // VarField mirrors ast.jsonVarField — same JSON tags so the studio's
 // existing VarField TypeScript type accepts our output unchanged.
 type VarField struct {
-	Name    string   `json:"name,omitempty"`
-	Type    string   `json:"type,omitempty"`
-	Enum    []string `json:"enum,omitempty"`
-	Default *Literal `json:"default,omitempty"`
+	Name string   `json:"name,omitempty"`
+	Type string   `json:"type,omitempty"`
+	Enum []string `json:"enum,omitempty"`
+	// Matching is the var's `[matching: "<re>"]` pattern. The block is
+	// decoded FROM ast.MarshalFile's output, so a key this struct omits
+	// is dropped in silence and the launch form shows a var as free text
+	// when the engine will refuse anything off the pattern.
+	Matching string   `json:"matching,omitempty"`
+	Default  *Literal `json:"default,omitempty"`
 }
 
 // Literal mirrors ast.jsonLiteral.

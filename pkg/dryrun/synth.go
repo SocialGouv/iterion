@@ -91,6 +91,26 @@ func SynthesizeAt(schema *ir.Schema, bias bool, iterated map[string]bool) map[st
 	return out
 }
 
+// patternValue is a value admitted by a var's `[matching: ...]` pattern,
+// taken from the shapes VarValue produces anyway; nil when the pattern
+// admits none of them.
+//
+// A fixed ladder with an explicit terminal, deliberately not a generator:
+// deriving a member of an arbitrary RE2 language is a different problem,
+// and a dry run that cannot invent an admissible value should say so —
+// through the unresolved reference the absent var produces — rather than
+// invent one the gate will refuse.
+func patternValue(pattern string) any {
+	// "" is the degenerate member and comes last: for `^[0-9]*$` the
+	// useful seed is "0", not an empty string rendered into a command.
+	for _, candidate := range []string{"x", "0", "1", ""} {
+		if ok, err := ir.ValueMatchesPattern(pattern, candidate); err == nil && ok {
+			return candidate
+		}
+	}
+	return nil
+}
+
 // enumValue is the enum's first value, its last when bias is false.
 func enumValue(enum []string, bias bool) string {
 	if bias {
@@ -99,21 +119,60 @@ func enumValue(enum []string, bias bool) string {
 	return enum[len(enum)-1]
 }
 
+// enumValueMatching is enumValue held to the var's pattern as well: the
+// first admissible value in the bias's direction, and ok=false when the
+// pattern admits none of them. An empty pattern admits everything, so the
+// unconstrained case keeps enumValue's exact pick.
+func enumValueMatching(enum []string, pattern string, bias bool) (string, bool) {
+	if pattern == "" {
+		return enumValue(enum, bias), true
+	}
+	for i := range enum {
+		candidate := enum[i]
+		if !bias {
+			candidate = enum[len(enum)-1-i]
+		}
+		if ok, err := ir.ValueMatchesPattern(pattern, candidate); err == nil && ok {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
 // VarValue is the launch value of a var the launch did not supply: a shape
 // of its type — an enum's first value (last when bias is false), bias for a
 // bool, 1, 1.0, "x", one element, an empty object (iteratedShape when a
 // downstream iteration reads the var). The engine seeds the vars that have
 // a default itself; this is for the others.
+//
+// It returns nil when the var declares a constraint no shape of this
+// function satisfies; the caller then leaves the var unsupplied.
 func VarValue(v *ir.Var, bias bool, iterated bool) any {
 	if v == nil {
 		return "x"
 	}
 	if len(v.EnumValues) > 0 {
-		pick := enumValue(v.EnumValues, bias)
+		// The pick must satisfy the var's OTHER constraint too: a var
+		// declaring both is the shape docs/dsl.md blesses, and seeding an
+		// enum value the pattern refuses kills the pass at node 0 over a
+		// value the operator never typed. nil when no declared value is
+		// admissible — the caller then leaves the var unsupplied.
+		pick, ok := enumValueMatching(v.EnumValues, v.Matching, bias)
+		if !ok {
+			return nil
+		}
 		if v.Type == ir.VarStringArray {
 			return []any{pick}
 		}
 		return pick
+	}
+	// A pattern-constrained var, for the same reason the enum branch
+	// above exists: the engine's launch gate judges the values the dry
+	// run supplies, so a shape the declared pattern refuses would kill
+	// the run at node 0 over a value the operator never typed — the dry
+	// run failing on its own invention rather than on the program.
+	if v.Matching != "" && v.Type == ir.VarString {
+		return patternValue(v.Matching)
 	}
 	switch v.Type {
 	case ir.VarBool:

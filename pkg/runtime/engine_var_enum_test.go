@@ -40,18 +40,18 @@ func enumTestWorkflow() *ir.Workflow {
 func TestValidateVarEnums(t *testing.T) {
 	eng := New(enumTestWorkflow(), tmpStore(t), newStubExecutor(), WithWorkDir(t.TempDir()))
 
-	if err := eng.validateVarEnums(nil); err != nil {
+	if err := eng.validateVarConstraints(nil); err != nil {
 		t.Errorf("nil inputs: unexpected error %v", err)
 	}
-	if err := eng.validateVarEnums(map[string]any{"mode": "interview"}); err != nil {
+	if err := eng.validateVarConstraints(map[string]any{"mode": "interview"}); err != nil {
 		t.Errorf("valid enum value: unexpected error %v", err)
 	}
 	// Unconstrained vars and undeclared keys pass untouched.
-	if err := eng.validateVarEnums(map[string]any{"free": "anything", "undeclared": "x"}); err != nil {
+	if err := eng.validateVarConstraints(map[string]any{"free": "anything", "undeclared": "x"}); err != nil {
 		t.Errorf("unconstrained/undeclared: unexpected error %v", err)
 	}
 
-	err := eng.validateVarEnums(map[string]any{"mode": "yolo"})
+	err := eng.validateVarConstraints(map[string]any{"mode": "yolo"})
 	if err == nil {
 		t.Fatal("expected an error for a value outside the enum set")
 	}
@@ -62,7 +62,7 @@ func TestValidateVarEnums(t *testing.T) {
 	}
 
 	// A non-string value can never satisfy a string enum.
-	if err := eng.validateVarEnums(map[string]any{"mode": 5}); err == nil {
+	if err := eng.validateVarConstraints(map[string]any{"mode": 5}); err == nil {
 		t.Error("expected an error for a non-string value on an enum var")
 	}
 }
@@ -74,11 +74,11 @@ func TestValidateVarEnumsExpandsEnv(t *testing.T) {
 	eng := New(enumTestWorkflow(), tmpStore(t), newStubExecutor(), WithWorkDir(t.TempDir()))
 
 	t.Setenv("ITERION_TEST_ENUM_MODE", "interview")
-	if err := eng.validateVarEnums(map[string]any{"mode": "${ITERION_TEST_ENUM_MODE}"}); err != nil {
+	if err := eng.validateVarConstraints(map[string]any{"mode": "${ITERION_TEST_ENUM_MODE}"}); err != nil {
 		t.Errorf("env-expanded valid value: unexpected error %v", err)
 	}
 	t.Setenv("ITERION_TEST_ENUM_MODE", "yolo")
-	if err := eng.validateVarEnums(map[string]any{"mode": "${ITERION_TEST_ENUM_MODE}"}); err == nil {
+	if err := eng.validateVarConstraints(map[string]any{"mode": "${ITERION_TEST_ENUM_MODE}"}); err == nil {
 		t.Error("expected an error once the env var expands to a non-enum value")
 	}
 }

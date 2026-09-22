@@ -216,11 +216,15 @@ type jsonVarsBlock struct {
 type jsonVarField struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File    string       `json:"file,omitempty"`
-	Name    string       `json:"name,omitempty"`
-	Type    string       `json:"type,omitempty"`
-	Enum    []string     `json:"enum,omitempty"`
-	Default *jsonLiteral `json:"default,omitempty"`
+	File string   `json:"file,omitempty"`
+	Name string   `json:"name,omitempty"`
+	Type string   `json:"type,omitempty"`
+	Enum []string `json:"enum,omitempty"`
+	// Matching is the RE2 source of a `[matching: "<re>"]` constraint.
+	// An empty pattern is the unconstrained state, so omitempty loses
+	// nothing: there is no "constrained to the empty pattern".
+	Matching string       `json:"matching,omitempty"`
+	Default  *jsonLiteral `json:"default,omitempty"`
 }
 
 type jsonSecretsBlock struct {
@@ -1447,9 +1451,10 @@ func varsBlockToJSON(v *VarsBlock) *jsonVarsBlock {
 	jv := &jsonVarsBlock{}
 	for _, f := range v.Fields {
 		jf := &jsonVarField{
-			Name: f.Name,
-			Type: typeExprToStr[f.Type],
-			Enum: f.EnumValues,
+			Name:     f.Name,
+			Type:     typeExprToStr[f.Type],
+			Enum:     f.EnumValues,
+			Matching: f.Matching,
 		}
 		if f.Default != nil {
 			jf.Default = literalToJSON(f.Default)
@@ -2234,7 +2239,7 @@ func varsBlockFromJSON(jv *jsonVarsBlock) (*VarsBlock, error) {
 		if !ok {
 			return nil, fmt.Errorf("astjson: unknown type %q", jf.Type)
 		}
-		vf := &VarField{Name: jf.Name, Type: te, EnumValues: jf.Enum}
+		vf := &VarField{Name: jf.Name, Type: te, EnumValues: jf.Enum, Matching: jf.Matching}
 		if jf.Default != nil {
 			l, err := literalFromJSON(jf.Default)
 			if err != nil {

@@ -22,7 +22,10 @@ feature list. For exact productions, use
 | Workflow | one `workflow` per file, entry, edges, defaults, permissions/capabilities/skills/MCP, budget, resources, interaction, worktree, compression, sandbox |
 
 Supported scalar/schema types are `string`, `bool`, `int`, `float`, `json`,
-and `string[]`; string declarations may carry an enum constraint.
+and `string[]`; a string declaration may carry an enum constraint, and a
+string **var** may also carry a `[matching: "<RE2>"]` pattern constraint
+(at most one of each) — checked on a literal default at compile time and on
+an operator-supplied value at launch.
 
 ## Edges, iteration, and convergence
 

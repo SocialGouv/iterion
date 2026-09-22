@@ -1,7 +1,9 @@
 name: whats-next
 display_name: Nexie
 icon: 🧭
-version: 0.3.3
+version: 0.3.4
+## 0.3.4 — the bundled DSL cheatsheet is regenerated: a var declaration can
+## carry a `[matching: "<re>"]` pattern constraint (#1350).
 ## 0.3.3 — the DSL cheatsheet's template table gains the `contract` shape
 ## (`iterion bots create <slug> --template contract`: a bot whose public
 ## contract is bound to its program).

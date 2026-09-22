@@ -680,8 +680,40 @@ func (x *Executor) whyUnresolved(ref string) string {
 			return fmt.Sprintf("the attachment is declared, but its %q has no value here", sub)
 		}
 		return "no such attachment is declared"
+	case "vars":
+		// The same distinction the attachment case makes, for the same
+		// reason. A var the dry run left unsupplied — no default, and no
+		// value of the shapes this package produces satisfies its
+		// `[matching: ...]` pattern — is not an undeclared one. And an
+		// undeclared {{vars.X}} is a compile error (C033), so it never
+		// reaches a dry run at all: without this arm the message below
+		// would be false every time it was printed.
+		name, _, _ := strings.Cut(rest, ".")
+		v := varOf(x.wf, name)
+		switch {
+		case v == nil:
+			return "no such var is declared"
+		case !v.HasDefault && v.Matching != "":
+			// The only way a declared var reaches here today: the seeding
+			// left it out because no shape it produces satisfies the
+			// pattern. Said precisely, because a message that names a
+			// cause it did not check becomes false the day another one
+			// appears.
+			return "the var is declared with no default, and the dry run could not invent a value its [matching: ...] pattern admits — pass one with --var"
+		default:
+			return "the var is declared, but it has no value on this path"
+		}
 	}
 	return whyUnresolvedNamespace(ns)
+}
+
+// varOf is the workflow's declaration of a var, or nil when the workflow
+// is absent or declares none by that name.
+func varOf(wf *ir.Workflow, name string) *ir.Var {
+	if wf == nil {
+		return nil
+	}
+	return wf.Vars[name]
 }
 
 // whyUnresolvedNamespace is the reading a namespace alone allows.

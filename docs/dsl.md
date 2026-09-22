@@ -46,6 +46,7 @@ Declarations may appear in any order subject to validation. A `prompt`, `schema`
 vars:
   project: string
   mode: string [enum: "autonomous", "interview"] = "autonomous"
+  agent: string [matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$"] = ""
   max_retries: int = 3
   verbose: bool = false
   threshold: float = 0.8
@@ -58,7 +59,7 @@ presets:
     verbose: true
 ```
 
-Supported types are `string`, `bool`, `int`, `float`, `json`, and `string[]`. Only strings accept `[enum: ...]`; defaults and launch values must belong to the declared set. Runtime precedence is `--var` over `--preset`, recipe values, and declaration defaults. See [recipes](recipes.md).
+Supported types are `string`, `bool`, `int`, `float`, `json`, and `string[]`. Runtime precedence is `--var` over `--preset`, recipe values, and declaration defaults. See [recipes](recipes.md).
 
 **A var's text has one reading**, whether it is the default written in the `.bot` or a value supplied by `--var`, a launch payload or a preset: the `${VAR}` / `${VAR:-default}` forms are expanded first, then the text is narrowed to the declared type. `tags: string[] = "${LIST:-a,b}"` and `--var 'tags=${LIST:-a,b}'` therefore start the run with the same `["a", "b"]`. A `json` var expands only the **braced** forms — a document's `$` is data (`{"cost":"$5"}` is five dollars, `{"awk":"{print $1}"}` is a program) while `${PROJECT_DIR}` still resolves. Every other type keeps the full reading, bare `$NAME` included. A `string[]` accepts either the JSON array form or comma-separated text; a `json` value that is not JSON stays the text the author wrote.
 
@@ -66,7 +67,56 @@ Nesting in `${A:-${B:-c}}` is bounded: 32 levels resolve, and past that the segm
 
 A site written against the *text* of a list-typed default reads something else under that reading, and says nothing: `length(vars.tags)` counted characters and counts elements, `TAGS={{vars.tags}}` in a `command:` keeps the first element and runs the rest as a command, a `script:` receives a list where it received a quoted string. **C155** names every expression, shell body and script body in that position.
 
-A workflow may declare an additional `vars:` block. Top-level and workflow variables are merged during compilation.
+#### Constraints — `[enum: ...]` and `[matching: "<re>"]`
+
+A string var can narrow what it accepts beyond "a string". Both constraints
+are string-only ([C125](references/diagnostics.md) / [C160](references/diagnostics.md)),
+a var may carry **at most one of each** — in either order, and a repeated
+bracket is refused rather than merged — and both are enforced independently:
+
+- `[enum: "a", "b"]` — the value is one of a declared set.
+- `[matching: "<re>"]` — the value satisfies a Go [RE2](https://github.com/google/re2/wiki/Syntax)
+  pattern (no backreferences, no lookaround; [C162](references/diagnostics.md)
+  refuses one that does not compile). The pattern is a quoted, non-empty
+  string: RE2 matches by search, so `""` would be found in every value and
+  constrain nothing — write `"^$"` for "the empty string only".
+
+**Where each is checked.** A literal **default** is checked at compile time
+([C126](references/diagnostics.md) / [C161](references/diagnostics.md)) on the
+text as written — a default is never re-checked later, so `= "${AGENT}"` on a
+constrained var is refused rather than excused. An operator-supplied value
+(`--var`, an HTTP payload, a dispatcher's `bot_args`, a preset overlay) is
+refused **at launch**, before a worktree or a sandbox is created, naming the
+var, the offending value and what it failed. Launch values are judged after
+the same `${...}` expansion the run applies, so the gate and the run never
+read a reference differently.
+
+A **resume** does not re-check stored values: a run admitted at launch stays
+resumable when its declaration is tightened afterwards.
+
+**Anchoring.** Go matches by **search**, not by full match, so `[a-z]+` also
+accepts `--flag` and ` codeX --some-flag`. Anchor the pattern with `^...$`,
+anchoring every branch of an alternation (`^a$|^b$`);
+[C163](references/diagnostics.md) warns when it is not. `(?m)` counts as
+unanchored: under the `m` flag the anchors become LINE anchors and a value
+carrying a newline passes a pattern that reads as if it could not.
+
+**Writing the pattern.** It is an ordinary quoted string, so under
+`dsl: 2` a backslash follows the [profile-2 escape rules](#the-syntax-profile):
+write `"^\\d+$"`, or use a backtick raw string — `` `^\d+$` `` — which
+`iterion fmt` normalises to the escaped form.
+
+**Checking at the keyboard.** `iterion run` refuses a bad value outright. Under
+the dry run the refusal is a pass that dies, which bare
+`iterion validate --exec` reports without failing — use
+`iterion validate --exec --strict` for a non-zero exit.
+
+A workflow may declare an additional `vars:` block. Top-level and workflow
+variables are merged during compilation, and a workflow-level entry that
+re-uses a top-level name **replaces** it — so a redeclaration that carries no
+constraint would drop one the earlier declaration made. That is refused
+([C164](references/diagnostics.md)): constrain the var on the redeclaration
+too (with either constraint), or on neither.
 
 ### Attachments
 

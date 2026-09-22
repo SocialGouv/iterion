@@ -25,6 +25,10 @@ var releaseNotesMarkers = map[string]string{
 	// (feat(claw): … tool aliases …); joined to the release test so the
 	// number cannot rot the way 3.144.0 and 3.146.0 did (#1155, Rda4616).
 	"bundle.ToolAliasesSince": "alias",
+	// #1350 lands as `feat(dsl): a var declares its own constraint …`, so
+	// the notes of its release carry the word the constraint is spelled
+	// with.
+	"parser.VarMatchingSince": "matching",
 }
 
 // ReleaseNotesMarker is the word the release notes of a floor's pinned

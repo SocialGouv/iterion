@@ -198,12 +198,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// how one project reached 54 GB of it.
 	defer e.sweepScratchOnExit(runID)
 
-	// Enum gate: every launch surface (CLI --var, HTTP launch, dispatcher
-	// bot_args, preset overlay, cloud pickup) funnels its var values into
-	// run.Inputs, so this single check rejects any enum-constrained var
-	// value outside its declared set — before a worktree or sandbox is
-	// spun up for a doomed run.
-	if err := e.validateVarEnums(run.Inputs); err != nil {
+	// Constraint gate: every launch surface (CLI --var, HTTP launch,
+	// dispatcher bot_args, preset overlay, cloud pickup) funnels its var
+	// values into run.Inputs, so this single check rejects any value
+	// outside what its var declares — `[enum: ...]` or `[matching: ...]` —
+	// before a worktree or sandbox is spun up for a doomed run.
+	//
+	// It deliberately does NOT run on resume: the stored payload was
+	// already admitted at launch, and re-judging it would make a run
+	// unresumable because its declaration was tightened afterwards.
+	if err := e.validateVarConstraints(run.Inputs); err != nil {
 		e.markFailedBestEffort(ctx, runID, "var validation", err)
 		return e.setupErr(ctx, fmt.Errorf("runtime: var validation: %w", err))
 	}

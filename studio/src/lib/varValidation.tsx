@@ -15,7 +15,21 @@ export function isVarMissing(field: VarField, value: string): boolean {
   return value.trim().length === 0;
 }
 
-/** Small reused affordance — the "required" pill next to a field
+/** A var's `[matching: ...]` pattern is deliberately NOT checked here.
+ *  The engine refuses an off-pattern value at launch, naming the var, the
+ *  value and the pattern; the browser cannot reproduce that verdict.
+ *
+ *  Two reasons, both measured. The engine judges the value AFTER `${...}`
+ *  expansion, which the form cannot do. And JavaScript's RegExp is not
+ *  RE2: `.` excludes `\r` and U+2028/9 where RE2 excludes only `\n`, and
+ *  `\S` is Unicode-aware where RE2's is ASCII — so `^\S+$` rejects a
+ *  non-breaking space, a BOM or an em space in the browser and accepts
+ *  them in the engine. A form built on that would disable Launch on a
+ *  value the run would have served, and widening it by listing the
+ *  divergent escapes is a guard that enumerates spellings, which does not
+ *  converge. Checking it faithfully means asking the server.
+ *
+ *  Small reused affordance — the "required" pill next to a field
  *  label. Lives here so both LaunchView and the board ticket form
  *  pick it up. */
 export function RequiredPill() {

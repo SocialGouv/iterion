@@ -43,9 +43,11 @@ Scalar declaration literals are strings, integers, floats, or booleans. JSON and
 ### Variables and presets
 
 ```ebnf
-vars = "vars:" INDENT { IDENT ":" type [ enum ] [ "=" literal ] } DEDENT ;
+vars = "vars:" INDENT { IDENT ":" type [ constraints ] [ "=" literal ] } DEDENT ;
+constraints = enum [ matching ] | matching [ enum ] ;   (* at most one of each *)
 type = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
 enum = "[enum:" STRING { "," STRING } "]" ;
+matching = "[matching:" STRING "]" ;   (* vars only; a non-empty RE2 pattern *)
 
 presets = "presets:" INDENT
             { IDENT ":" INDENT { IDENT ":" literal } DEDENT }

@@ -1,7 +1,11 @@
 name: sec-audit-source
 display_name: Seki
 icon: 🛡️
-version: 0.1.4
+version: 0.1.5
+## 0.1.5 — deepsec_agent declares its own charset (`[matching: ...]`), so an
+## operator typo is refused at launch instead of degrading to the coverage
+## value a missing deepsec binary produces (#1350). The node's own guard
+## stays as a belt.
 ## 0.1.4 — a pass no longer publishes a neighbour's deepsec export as its own
 ## (deepsec_out becomes a per-run subdirectory keyed on {{run.id}}, #1322); the
 ## deep scan no longer counts toward the min_generic hard-fail floor so two
@@ -125,4 +129,9 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.141.0"
+  ## The floor `[matching: ...]` asks for (parser.VarMatchingSince, via
+  ## bundle's syntax-floor table): below it the engine does not know the
+  ## form and refuses the FILE as a parse error rather than the bundle as
+  ## an unmet requirement. C252 asks for it; `cmd/release-floors` moves it
+  ## at the cut.
+  iterion: ">= 3.186.0"

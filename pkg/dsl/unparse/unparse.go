@@ -1273,12 +1273,22 @@ func writeVarsBlock(b *buf, vars *ast.VarsBlock, indent string) {
 		b.WriteString(": ")
 		b.WriteString(v.Type.String())
 		writeEnumConstraint(b, v.EnumValues)
+		writeMatchingConstraint(b, v.Matching)
 		if v.Default != nil {
 			b.WriteString(" = ")
 			writeLiteral(b, v.Default)
 		}
 		b.WriteByte('\n')
 	}
+}
+
+// writeMatchingConstraint emits ` [matching: "<re>"]` after a type for a var
+// declaration. No-op on an empty pattern, which is the unconstrained state.
+func writeMatchingConstraint(b *buf, pattern string) {
+	if pattern == "" {
+		return
+	}
+	fmt.Fprintf(b, " [matching: %s]", b.str(pattern))
 }
 
 // writeEnumConstraint emits ` [enum: "a", "b"]` after a type for schema
