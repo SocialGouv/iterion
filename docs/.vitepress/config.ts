@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, normalize } from 'node:path'
 import { defineConfig } from 'vitepress'
 import { withMermaid } from 'vitepress-plugin-mermaid'
@@ -83,15 +83,39 @@ function escapeBraces(md: MarkdownIt) {
 
 const DOCS_ROOT = join(__dirname, '..')
 
-// Does an in-docs directory lack a browsable index (README.md / index.md)?
-function dirHasNoIndex(resolved: string): boolean {
+// What a link to an in-docs directory can point at. VitePress builds index.md
+// as the directory's own page; a nested README.md it builds as
+// `<dir>/README.html`, never as that index (see the srcExclude note below), so
+// a README-only directory has its page one name further down. A directory with
+// neither has no page at all — those go to the GitHub tree. 'index' is also
+// the neutral answer for a path that is missing, unreadable or not a
+// directory: it leaves the link to VitePress, as before.
+type DirTarget = 'index' | 'none' | { readme: string }
+
+function dirTarget(resolved: string): DirTarget {
   const abs = join(DOCS_ROOT, resolved.replace(/^docs\/?/, ''))
-  if (!existsSync(abs)) return false
+  if (!existsSync(abs)) return 'index'
   try {
-    const entries = readdirSync(abs)
-    return !entries.some((f) => /^(readme|index)\.md$/i.test(f))
+    // Stat through the link: a symlinked page builds, a directory named
+    // index.md does not, and neither does a broken link or a pipe.
+    const files = readdirSync(abs).filter((name) => {
+      // Per entry: throwIfNoEntry covers a dangling link, not a symlink loop
+      // or a refused read, and one bad entry must not decide the directory.
+      try {
+        return statSync(join(abs, name)).isFile()
+      } catch {
+        return false
+      }
+    })
+    // Case is kept end to end: VitePress globs `**.md` case-sensitively and
+    // builds `Index.md` as `Index.html`, so only a lowercase `index.md` is
+    // the directory's own page, and a README is linked under the exact name
+    // it carries — `README.MD` builds nothing at all.
+    if (files.includes('index.md')) return 'index'
+    const readme = files.find((f) => f.endsWith('.md') && /^readme$/i.test(f.slice(0, -3)))
+    return readme ? { readme: readme.slice(0, -3) } : 'none'
   } catch {
-    return false
+    return 'index'
   }
 }
 
@@ -119,15 +143,21 @@ function rewriteHref(href: string, relativePath: string | undefined): Rewrite | 
 
   const escapesDocs = !resolved.startsWith('docs/') && resolved !== 'docs'
   const isRawInDocs = resolved.startsWith('docs/') && RAW_SOURCE.test(path)
-  // A directory link with no index page can't render as a site page — send it
-  // to the GitHub tree so it still resolves.
-  const isIndexlessDir = /\/$/.test(path) && dirHasNoIndex(resolved)
 
   if (escapesDocs || isRawInDocs) {
     return { href: `${BLOB}/${resolved}${suffix}`, external: true }
   }
-  if (isIndexlessDir) {
-    return { href: `${REPO}/tree/main/${resolved}${suffix}`, external: true }
+  // A trailing slash is what names a directory. Keep the reader on the site
+  // where a page exists, and send the rest to the GitHub tree so the link
+  // still resolves.
+  if (/\/$/.test(path)) {
+    const target = dirTarget(resolved)
+    if (typeof target === 'object') {
+      return { href: `${path}${target.readme}${suffix}`, external: false }
+    }
+    if (target === 'none') {
+      return { href: `${REPO}/tree/main/${resolved}${suffix}`, external: true }
+    }
   }
   return null
 }
