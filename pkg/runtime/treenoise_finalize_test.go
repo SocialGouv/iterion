@@ -21,16 +21,19 @@ import (
 // a PreserveWorktree warning.
 func TestRunOutputPathsLeaveTheTreeNoiseOut(t *testing.T) {
 	porcelain := strings.Join([]string{
-		" M docs/adr/0009-record.md", // real work, tracked modification
-		"?? .claude/settings.json",   // the engine's mirror
-		"?? .claude",                 // a top-level FILE named .claude (F6)
-		" M devbox.lock",             // the drift every devbox run writes
-		"?? devbox.json",             // NOT noise: a dependency bot's deliverable
-		"?? .claudeish",              // a sibling that merely starts alike
-		"R  old.md -> docs/new.md",   // a rename: the destination decides
+		" M docs/adr/0009-record.md",            // real work, tracked modification
+		"?? .claude/settings.json",              // the engine's mirror
+		"?? .claude",                            // a top-level FILE named .claude (F6)
+		" M devbox.lock",                        // the drift every devbox run writes
+		"?? devbox.json",                        // NOT noise: a dependency bot's deliverable
+		"?? .claudeish",                         // a sibling that merely starts alike
+		"R  old.md -> docs/new.md",              // a rename: the destination decides
+		`?? "docs/caf\303\251 note.md"`,         // C-quoted by core.quotePath: decoded to its bytes
+		`?? ".claude/caf\303\251.md"`,           // the same quoting on a mirror file: still noise
+		`R  "a b.md" -> "docs/na\303\257ve.md"`, // quoted rename: the decoded destination decides
 	}, "\n")
 	got := runOutputPaths(porcelain)
-	want := []string{"docs/adr/0009-record.md", "devbox.json", ".claudeish", "docs/new.md"}
+	want := []string{"docs/adr/0009-record.md", "devbox.json", ".claudeish", "docs/new.md", "docs/café note.md", "docs/naïve.md"}
 	if len(got) != len(want) {
 		t.Fatalf("runOutputPaths = %q, want %q", got, want)
 	}
@@ -398,5 +401,93 @@ func TestFinalizeWorktree_WipBankNamesOnlyTheNoiseItSetAside(t *testing.T) {
 	}
 	if strings.Contains(log, "tracked.md") {
 		t.Fatalf("the tracked mirror file rode the bank yet is named as set aside:\n%s", log)
+	}
+}
+
+// The guarantee behind the set-aside list, held on names git QUOTES in its
+// porcelain (core.quotePath: a non-ASCII byte, a quote, a backslash): what
+// the log names as set aside is exactly the noise the banked commit does
+// not carry. The porcelain's C-quoted form and the raw bytes `-z` and the
+// commit carry must decode to the same path, or a file that rode the bank
+// is reported as set aside — the inversion the list exists to prevent.
+func TestFinalizeWorktree_WipBankSetAsideIsExactlyWhatItDidNotCarry(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
+
+	if err := os.MkdirAll(filepath.Join(wt, ".claude", "rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	quoted := []string{"café accent.md", `quo"te.md`, `back\slash.md`}
+	for _, name := range quoted {
+		addCommit(t, wt, filepath.Join(".claude", "rules", name), "committed before the rule\n", "track "+name)
+	}
+	addCommit(t, wt, ".gitignore", "**/.claude/\n", "then ignore the mirror")
+	addCommit(t, wt, "devbox.lock", "plugin_version: 0.0.4\n", "baseline with a lock")
+	for _, name := range quoted {
+		writeFile(t, filepath.Join(wt, ".claude", "rules", name), "modified during the run\n")
+	}
+	writeFile(t, filepath.Join(wt, "devbox.lock"), "plugin_version: 0.0.5\n")
+	writeFile(t, filepath.Join(wt, "réel.md"), "the pass's work\n")
+	// Read through the production helper: gittest.Run trims the output,
+	// and a trimmed porcelain loses its first line's status column.
+	porcelain, err := runGit(wt, "status", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(porcelain, `"`) {
+		t.Fatalf("the fixture must make git quote a path, porcelain:\n%s", porcelain)
+	}
+
+	var logBuf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &logBuf)
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "wip-quoted", runID: "run_q", autoMerge: true, mergeStrategy: "merge"}, logger)
+	if !res.WipBanked || res.PreserveWorktree {
+		t.Fatalf("the wip bank must succeed, got %+v\nlog:\n%s", res, logBuf.String())
+	}
+
+	carried := map[string]bool{}
+	for _, f := range strings.Split(gittest.Run(t, repo, "show", "--name-only", "--format=", "-z", res.FinalCommit), "\x00") {
+		if f = strings.TrimSpace(f); f != "" {
+			carried[f] = true
+		}
+	}
+	for _, name := range quoted {
+		if !carried[".claude/rules/"+name] {
+			t.Fatalf("the tracked mirror file %q did not ride the bank; carried: %v", name, carried)
+		}
+	}
+	if !carried["réel.md"] {
+		t.Fatalf("the run's work did not ride the bank; carried: %v", carried)
+	}
+
+	log := logBuf.String()
+	i := strings.Index(log, "tree noise set aside: ")
+	if i < 0 {
+		t.Fatalf("no set-aside list in the log:\n%s", log)
+	}
+	listed := strings.TrimSpace(strings.SplitN(log[i+len("tree noise set aside: "):], "\n", 2)[0])
+	// The concrete expectation first — a broken decoder would list the
+	// quoted names on BOTH sides of the property below and hide there.
+	if listed != "devbox.lock" {
+		t.Fatalf("set aside = %q, want exactly the unstaged lock\nlog:\n%s", listed, log)
+	}
+	// Then the property the list promises: nothing listed rode the bank,
+	// and every noise path the bank left out is listed.
+	for _, p := range strings.Split(listed, ", ") {
+		if carried[p] {
+			t.Fatalf("%q is named as set aside and rode the bank", p)
+		}
+	}
+	for _, p := range noisePaths(porcelain) {
+		if !carried[p] && !strings.Contains(listed, p) {
+			t.Fatalf("noise path %q left out of the bank is missing from the set-aside list %q", p, listed)
+		}
 	}
 }
