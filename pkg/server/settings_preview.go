@@ -98,11 +98,16 @@ func buildBackendOverrideOptions(
 // treated as unset at either layer. Credential auto-detection stays unknown,
 // which only suppresses a best-effort tools-drift warning — never a gate
 // refusal.
+//
+// Each layer is read through ir.SourceBackendName, the reading the compiler
+// gives the same text: a `${VAR:-claw}` pin IS claw, and reading it raw made
+// the picker treat it as a backend nobody has — so the capability-drift
+// disclosure it owes the operator vanished on exactly the nodes that carry a
+// dial.
 func effectivePreviewBackend(node, run, workflow, env string) string {
 	for _, value := range []string{node, run, workflow, env} {
-		value = strings.TrimSpace(value)
-		if value != "" && value != "auto" {
-			return value
+		if resolved := ir.SourceBackendName(value); resolved != "" {
+			return resolved
 		}
 	}
 	return ""

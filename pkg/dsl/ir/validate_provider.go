@@ -93,10 +93,10 @@ func (c *compiler) validateProviders(w *Workflow) {
 		switch nn := n.(type) {
 		case LLMNode:
 			f := nn.GetLLMFields()
-			check(nn.NodeKind().String(), nn.NodeID(), f.Backend, f.Provider)
+			check(nn.NodeKind().String(), nn.NodeID(), effectiveNodeBackend(f.Backend, w.DefaultBackend), f.Provider)
 		case *RouterNode:
 			if nn.RouterMode == RouterLLM {
-				check("router", nn.ID, nn.Backend, nn.Provider)
+				check("router", nn.ID, effectiveNodeBackend(nn.Backend, w.DefaultBackend), nn.Provider)
 			}
 		}
 	}

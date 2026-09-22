@@ -317,10 +317,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		// silence. An empty effective backend is left alone: the resolver
 		// falls through to env and host credential detection, so the compiler
 		// genuinely cannot know.
-		backend := nn.GetLLMFields().Backend
-		if backend == "" {
-			backend = w.DefaultBackend
-		}
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		if backend != "" && !automemory.SupportsBackend(backend) {
 			c.warnfAt(DiagAutoMemoryNotSupported, n.NodeID(), "",
 				"%s %q: auto_memory: on has NO effect on backend=%q — MEMORY.md is wired for claude_code, claw and pi only",
@@ -363,10 +360,7 @@ func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
 		if !ok {
 			continue
 		}
-		backend := nn.GetLLMFields().Backend
-		if backend == "" {
-			backend = w.DefaultBackend
-		}
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		// Unresolved: the runtime falls through to env and host credential
 		// detection, so the compiler genuinely cannot know and must not guess.
 		supported := backend == "" || automemory.SupportsBackend(backend)
@@ -537,7 +531,12 @@ func (c *compiler) validateMemory(w *Workflow) {
 	}
 	for _, n := range w.Nodes {
 		if nn, ok := n.(LLMNode); ok {
-			check(nn.NodeKind().String(), nn.NodeID(), nn.GetLLMFields().Backend, nn.GetMemory())
+			// The node's route as the source declares it — a dial by its
+			// default, and the workflow default when the node names none:
+			// reading the raw text warned that `memory:` "has NO effect on
+			// backend=${DIAL:-claw}" about a backend that IS claw.
+			check(nn.NodeKind().String(), nn.NodeID(),
+				effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend), nn.GetMemory())
 		}
 	}
 }
