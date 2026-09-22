@@ -157,6 +157,14 @@ const (
 	DiagVarEnumNonString    DiagCode = "C125" // enum constraint on a non-string var type (error)
 	DiagVarDefaultNotInEnum DiagCode = "C126" // var default value not in the enum list (error)
 	DiagVarEnumDuplicate    DiagCode = "C127" // duplicate enum values in a var constraint (warning; deduped)
+
+	// Var pattern constraint (`[matching: "<re>"]`), the siblings of
+	// C125/C126 for the pattern form.
+	DiagVarMatchingNonString       DiagCode = "C160" // matching constraint on a non-string var type (error)
+	DiagVarDefaultNotMatching      DiagCode = "C161" // var default does not match its own pattern (error)
+	DiagVarMatchingUncompilable    DiagCode = "C162" // the matching pattern is not valid RE2 (error)
+	DiagVarMatchingUnanchored      DiagCode = "C163" // the pattern is not anchored, so it matches anywhere in the value (warning)
+	DiagVarRedeclaredUnconstrained DiagCode = "C164" // a var is redeclared without the constraint its earlier declaration carries (error)
 	// Expression builtins: a call the evaluator cannot satisfy. The NAME is
 	// already refused at parse (C040); the ARITY is not visible there, so a
 	// call with the wrong argument count used to compile and die mid-run.

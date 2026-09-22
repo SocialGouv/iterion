@@ -1269,6 +1269,12 @@ type Var struct {
 	Name       string
 	Type       VarType
 	EnumValues []string // non-nil only if enum constraint present (string vars)
+	// Matching is the RE2 source of a `[matching: "<re>"]` constraint
+	// (string vars), empty when unconstrained. The pattern is carried as
+	// TEXT, not as a compiled *regexp.Regexp: the text is what round-trips
+	// through the unparser and the JSON transport, and what a diagnostic
+	// quotes back to the author.
+	Matching   string
 	HasDefault bool
 	Default    any // string, int64, float64, or bool
 }

@@ -1866,6 +1866,9 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 			if len(f.EnumValues) > 0 {
 				v.EnumValues = c.compileVarEnum(f)
 			}
+			if f.Matching != "" {
+				v.Matching = c.compileVarMatching(f)
+			}
 			if f.Default != nil {
 				v.HasDefault = true
 				// Reuse the preset coercion so a var default is validated and
@@ -1890,8 +1893,55 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 			// (type mismatch) and deliberately not double-flagged here.
 			if len(v.EnumValues) > 0 && v.HasDefault {
 				if s, ok := v.Default.(string); ok && !slices.Contains(v.EnumValues, s) {
-					c.errorf(DiagVarDefaultNotInEnum,
+					c.errorfAtSpan(DiagVarDefaultNotInEnum, f.Span,
 						"var %q default %q is not one of the enum values (%s)", f.Name, s, quoteList(v.EnumValues))
+				}
+			}
+			// Same rule for the pattern form, and checked on the literal
+			// text exactly as C126 checks it: a default NEVER reaches the
+			// launch gate (the gate reads the operator's values), so a
+			// default excused here would be checked on no path at all
+			// while its declaration reads as constrained.
+			if v.Matching != "" && v.HasDefault {
+				if s, ok := v.Default.(string); ok {
+					matched, err := ValueMatchesPattern(v.Matching, s)
+					switch {
+					case err != nil:
+						// Unreachable while C162 and this check agree on
+						// what compiles, and reported rather than skipped
+						// for the reason the launch gate states: a pattern
+						// that does not compile must never read as "the
+						// default passed".
+						c.errorfAtSpan(DiagVarMatchingUncompilable, f.Span,
+							"var %q: declared pattern %q does not compile: %v", f.Name, v.Matching, err)
+					case !matched:
+						c.errorfAtSpan(DiagVarDefaultNotMatching, f.Span,
+							"var %q default %q does not match its own pattern %q", f.Name, s, v.Matching)
+					}
+				}
+			}
+			// A workflow-level `vars:` entry REPLACES the top-level one of
+			// the same name — so a redeclaration carrying NO constraint
+			// deletes the earlier one's, with no diagnostic and no launch
+			// refusal. The duplicate is already an error INSIDE one block
+			// (E010); the rule simply stopped at the block boundary.
+			//
+			// It asks only that the redeclaration constrain the var at all:
+			// which constraint is the author's business (an `[enum: "a"]`
+			// may legitimately become `[matching: "^a$"]`), and comparing
+			// two patterns for equivalence is undecidable — a REPLACED
+			// constraint is not diagnosed, an ABSENT one is.
+			//
+			// It reads what the author WROTE (the AST), not what the
+			// compiler kept: a constraint refused for another reason
+			// (C125/C160/C162) is zeroed on the IR, and calling it absent
+			// would send the author to repeat a line already on the page.
+			if prev, ok := vars[f.Name]; ok {
+				carried := len(prev.EnumValues) > 0 || prev.Matching != ""
+				declares := len(f.EnumValues) > 0 || f.Matching != ""
+				if carried && !declares {
+					c.errorfAtSpan(DiagVarRedeclaredUnconstrained, f.Span,
+						"var %q is redeclared with no constraint while its earlier declaration carries one; the redeclaration REPLACES it, so the guard would be removed in silence", f.Name)
 				}
 			}
 			vars[f.Name] = v
@@ -1912,7 +1962,7 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 func (c *compiler) compileVarEnum(f *ast.VarField) []string {
 	vt := convertVarType(f.Type)
 	if vt != VarString {
-		c.errorf(DiagVarEnumNonString,
+		c.errorfAtSpan(DiagVarEnumNonString, f.Span,
 			"var %q: [enum: ...] is only valid on string vars, not %s", f.Name, vt.String())
 		return nil
 	}
@@ -1920,7 +1970,7 @@ func (c *compiler) compileVarEnum(f *ast.VarField) []string {
 	vals := make([]string, 0, len(f.EnumValues))
 	for _, ev := range f.EnumValues {
 		if seen[ev] {
-			c.warnf(DiagVarEnumDuplicate,
+			c.warnfAtSpan(DiagVarEnumDuplicate, f.Span,
 				"var %q: duplicate enum value %q — keeping first occurrence", f.Name, ev)
 			continue
 		}

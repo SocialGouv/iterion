@@ -585,7 +585,12 @@ func launchInputs(wf *ir.Workflow, given map[string]any, bias bool) map[string]a
 		if _, ok := inputs[name]; ok || v == nil || v.HasDefault {
 			continue
 		}
-		inputs[name] = VarValue(v, bias, iterated[name])
+		// nil means no shape this package produces satisfies the var's
+		// declared constraint: leave it unsupplied rather than seed a
+		// value the engine's launch gate would refuse.
+		if shape := VarValue(v, bias, iterated[name]); shape != nil {
+			inputs[name] = shape
+		}
 	}
 	return inputs
 }

@@ -1051,7 +1051,7 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 // `git -C '${PROJECT_DIR}'`. Expanding overrides in the same pass
 // keeps `vars.workspace_dir` resolved to a real path regardless of
 // whether it came from the workflow default or the form input.
-// Shared by resolveVars and validateVarEnums so the launch gate checks
+// Shared by resolveVars and validateVarConstraints so the launch gate checks
 // exactly the value that flows into the run.
 func (e *Engine) varExpandFn() func(string) string {
 	return func(key string) string {
@@ -1134,18 +1134,24 @@ func (e *Engine) varExpandFn() func(string) string {
 	}
 }
 
-// validateVarEnums enforces declared `[enum: ...]` constraints on
-// launch-provided var values — the runtime counterpart of the C126
-// compile check on defaults (defaults are compile-validated, so only
-// provided values are checked here). Values are checked through
-// ir.ResolveVarText, the SAME reading resolveVars gives them, so the gate
-// judges the exact value that flows into the run: a gate with an expander
-// of its own refused `${MODE:-fast}` (expanded to "") on a var the run
-// would then have started with "fast". Upstream template rendering
-// (dispatcher bot_args, preset overlay) has already happened by the time
-// inputs reach the engine. Returns an error naming every violating var,
-// its value, and the allowed list.
-func (e *Engine) validateVarEnums(inputs map[string]any) error {
+// validateVarConstraints enforces the constraints a var declares —
+// `[enum: ...]` and `[matching: "<re>"]` — on launch-provided var values.
+// It is the runtime counterpart of the C126/C161 compile checks on
+// defaults (defaults are compile-validated, so only provided values are
+// checked here).
+//
+// Values are checked through ir.ResolveVarText, the SAME reading
+// resolveVars gives them, so the gate judges the exact value that flows
+// into the run: a gate with an expander of its own refused `${MODE:-fast}`
+// (expanded to "") on a var the run would then have started with "fast".
+// Upstream template rendering (dispatcher bot_args, preset overlay) has
+// already happened by the time inputs reach the engine.
+//
+// Both constraints are evaluated independently: a value inside the enum
+// but off the pattern is refused, and both reasons are reported. Returns
+// an error naming every violating var, its value, and what it failed —
+// the operator typed the value and is still at the keyboard.
+func (e *Engine) validateVarConstraints(inputs map[string]any) error {
 	if len(inputs) == 0 {
 		return nil
 	}
@@ -1153,15 +1159,28 @@ func (e *Engine) validateVarEnums(inputs map[string]any) error {
 	var violations []string
 	for _, k := range slices.Sorted(maps.Keys(inputs)) {
 		decl, isVar := e.workflow.Vars[k]
-		if !isVar || len(decl.EnumValues) == 0 || decl.Type != ir.VarString {
+		if !isVar || decl.Type != ir.VarString {
+			continue
+		}
+		if len(decl.EnumValues) == 0 && decl.Matching == "" {
 			continue
 		}
 		v := inputs[k]
 		s, isStr := v.(string)
 		if !isStr {
-			violations = append(violations, fmt.Sprintf(
-				"var %q: value %v (%T) is not one of the allowed values (%s)",
-				k, v, v, quoteList(decl.EnumValues)))
+			// A non-string value satisfies neither constraint, and each
+			// says so in its own terms: an operator who declared both
+			// learns which one they are reading about.
+			if len(decl.EnumValues) > 0 {
+				violations = append(violations, fmt.Sprintf(
+					"var %q: value %v (%T) is not one of the allowed values (%s)",
+					k, v, v, quoteList(decl.EnumValues)))
+			}
+			if decl.Matching != "" {
+				violations = append(violations, fmt.Sprintf(
+					"var %q: value %v (%T) is not a string, so it cannot match the declared pattern %q",
+					k, v, v, decl.Matching))
+			}
 			continue
 		}
 		// decl.Type is VarString above, so the shared reading is the
@@ -1169,10 +1188,27 @@ func (e *Engine) validateVarEnums(inputs map[string]any) error {
 		// another type here.
 		read, _ := ir.ResolveVarText(s, decl.Type, expandFn)
 		expanded, _ := read.(string)
-		if !slices.Contains(decl.EnumValues, expanded) {
+		if len(decl.EnumValues) > 0 && !slices.Contains(decl.EnumValues, expanded) {
 			violations = append(violations, fmt.Sprintf(
 				"var %q: value %q is not one of the allowed values (%s)",
 				k, expanded, quoteList(decl.EnumValues)))
+		}
+		if decl.Matching == "" {
+			continue
+		}
+		matched, err := ir.ValueMatchesPattern(decl.Matching, expanded)
+		if err != nil {
+			// Unreachable through a compiled program (C162 refuses it),
+			// so it is reported rather than skipped: a pattern that does
+			// not compile must never read as "the value passed".
+			violations = append(violations, fmt.Sprintf(
+				"var %q: declared pattern %q does not compile: %v", k, decl.Matching, err))
+			continue
+		}
+		if !matched {
+			violations = append(violations, fmt.Sprintf(
+				"var %q: value %q does not match the declared pattern %q",
+				k, expanded, decl.Matching))
 		}
 	}
 	if len(violations) > 0 {

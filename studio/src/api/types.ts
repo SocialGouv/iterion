@@ -117,6 +117,12 @@ export interface VarField {
   /** DSL `[enum: "a", "b"]` constraint — present only on string vars.
    *  Non-empty ⇒ the var renders as a fixed-choice select. */
   enum?: string[];
+  /** DSL `[matching: "<re>"]` constraint — an RE2 pattern, string vars
+   *  only. Transport: it rides the document so an edit and a save do not
+   *  drop it. The forms deliberately do NOT test a value against it —
+   *  see `lib/varValidation.tsx` for why (the engine refuses at launch,
+   *  and a browser RegExp is not RE2). */
+  matching?: string;
 }
 
 export type TypeExpr = "string" | "bool" | "int" | "float" | "json" | "string[]";

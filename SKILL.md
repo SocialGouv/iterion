@@ -357,7 +357,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `auth` (`auth:` in mcp_server) — type str · auth_url str · token_url str · revoke_url str · client_id str · scopes [str]
 - `group` — entries `node declarations and edges (src -> dst)`
 - `use` — entries `use g as p with { param: "value" }`
-- `vars` (`vars:` in the file, workflow) — entries `name: type [enum: "a", "b"] [= default]`
+- `vars` (`vars:` in the file, workflow) — entries `name: type [enum: "a", "b"] [matching: "<re>"] [= default]`
 - `presets` (`presets:` in the file) — entries `name: (indented) var: literal`
 - `attachments` (`attachments:` in the file, workflow) — entries `name: file | image`
 - `attachment` (`attachments:` in attachments) — description str · accept_mime [str] · required bool

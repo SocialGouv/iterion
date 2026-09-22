@@ -300,7 +300,7 @@ var Kinds = append([]Kind{
 
 	// ---- top-level blocks ----
 	{Name: "vars", Role: BlockRole, Opener: "vars", Hosts: []string{"file", "workflow"}, Doc: "Typed run parameters, overridable with --var and presets.",
-		Entries: &Entries{Shape: `name: type [enum: "a", "b"] [= default]`, Doc: "type is string, bool, int, float, json or string[]; the enum constraint applies to strings; a json/string[] default is a quoted JSON text"}},
+		Entries: &Entries{Shape: `name: type [enum: "a", "b"] [matching: "<re>"] [= default]`, Doc: `type is string, bool, int, float, json or string[]; the enum and matching constraints apply to strings (matching takes an RE2 pattern, checked at launch against --var/payload values); a json/string[] default is a quoted JSON text`}},
 	{Name: "presets", Role: BlockRole, Opener: "presets", Hosts: []string{"file"}, Doc: "Named bundles of var values selected with --recipe / --preset.",
 		Entries: &Entries{Shape: "name: (indented) var: literal", Doc: "Each entry is a preset name with one `var: literal` line per value"}},
 	{Name: "attachments", Role: BlockRole, Opener: "attachments", Hosts: []string{"file", "workflow"}, Doc: "Operator-supplied files and images the run receives.",

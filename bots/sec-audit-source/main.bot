@@ -246,7 +246,15 @@ vars:
   ## The value is not checked against a list of known agents, only against a
   ## charset: deepsec is the authority on which plugins exist, and enumerating
   ## them here would refuse the next one it ships.
-  deepsec_agent:       string = ""
+  ## The charset the deep scanner's node needs: both values reach deepsec
+  ## as bare words in an unquoted expansion, so neither may split into a
+  ## second argument nor pass for a flag. Declared here so a typo is
+  ## refused at launch, with the operator still at the keyboard, instead
+  ## of degrading inside the node to the same coverage value a MISSING
+  ## deepsec binary produces (#1350). The node keeps its own guard as a
+  ## belt: this line and that case statement admit the same values, which
+  ## bots/sec_audit_deepsec_agent_pattern_test.go holds them to.
+  deepsec_agent:       string [matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$"] = ""
   deepsec_model:       string = ""
   ## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
   ## The revalidate phase is a FIXED POOL OF 3 always-on adversarial

@@ -283,6 +283,7 @@ func (c *compiler) bindInput(contract string, p *ast.PortDecl, pp *PublicPort, v
 		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is %s, the var %s is %s — the port takes the var's type", contract, p.Name, p.Type, p.Name, v.Type.String())
 	}
 	pp.EnumValues = v.EnumValues
+	pp.Matching = v.Matching
 	switch {
 	case v.HasDefault:
 		pp.Required = false

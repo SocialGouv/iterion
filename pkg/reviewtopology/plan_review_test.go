@@ -61,7 +61,7 @@ func TestInjectPlanReviewIfDeclared(t *testing.T) {
 
 // A dual resolution has no mono family; writing mono_family="" violates
 // the [enum: "claude","gpt"] review-pr/evolve declare and kills the run
-// at Engine.Run's validateVarEnums gate before its first node (proven
+// at Engine.Run's validateVarConstraints gate before its first node (proven
 // live: `iterion run bots/review-pr/main.bot --var review_mode=dual`).
 // Absent = the bot's own default, which is what dual must leave behind.
 func TestInjectDualDoesNotWriteEmptyMonoFamily(t *testing.T) {

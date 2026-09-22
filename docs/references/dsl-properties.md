@@ -146,7 +146,7 @@ Typed run parameters, overridable with --var and presets.
 
 A block opened by `vars:` inside the top level, `workflow`.
 
-Entries: `name: type [enum: "a", "b"] [= default]` — type is string, bool, int, float, json or string[]; the enum constraint applies to strings; a json/string[] default is a quoted JSON text.
+Entries: `name: type [enum: "a", "b"] [matching: "<re>"] [= default]` — type is string, bool, int, float, json or string[]; the enum and matching constraints apply to strings (matching takes an RE2 pattern, checked at launch against --var/payload values); a json/string[] default is a quoted JSON text.
 
 ### presets
 

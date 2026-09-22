@@ -51,7 +51,14 @@ top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
    rule as the empty declarations (see prompt_decl); fallbacks_block is the
    exception, see there. *)
 vars_decl = "vars" ":" NEWLINE [ INDENT { var_field } DEDENT ] ;
-var_field = IDENT ":" type_expr [ enum_constraint ] [ "=" literal ] NEWLINE ;
+(* A var carries at most one of each constraint, in either order; a
+   repeated bracket is a parse error, because merging two would either drop
+   a pattern or widen an accepted set in silence. `matching_constraint` is
+   var-only: a schema field constrains model output, a different guarantee. *)
+var_field = IDENT ":" type_expr [ var_constraints ] [ "=" literal ] NEWLINE ;
+var_constraints = enum_constraint [ matching_constraint ]
+                | matching_constraint [ enum_constraint ] ;
+matching_constraint = "[" "matching" ":" STRING "]" ;
 
 type_expr = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
 literal = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;

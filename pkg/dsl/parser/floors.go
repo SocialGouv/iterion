@@ -19,3 +19,16 @@ package parser
 // refuses — a release that overtook it — moves by hand to the release that
 // first reads the syntax.
 const ContractSince = "3.150.0"
+
+// VarMatchingSince names the release that first reads a var's
+// `[matching: "<re>"]` constraint (#1350) — the floor a bundle declaring
+// one must declare in `requires.iterion`. Below it the runner does not
+// know the form and refuses the FILE as a parse error (`expected enum, got
+// matching`), not the bundle as an unmet requirement, so the floor is what
+// turns an unreadable bundle into a legible refusal.
+//
+// Same contract as ContractSince: while the lot waits, the pin is the next
+// MINOR above the release `origin/main` carries; at the cut
+// `cmd/release-floors --apply` rewrites it, and
+// bundle.TestSyntaxFloorsNameReleasesThatExist holds the result.
+const VarMatchingSince = "3.186.0"

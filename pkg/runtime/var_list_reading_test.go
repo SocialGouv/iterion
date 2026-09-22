@@ -116,13 +116,13 @@ func TestValidateVarEnums_ReadsThroughTheRunsOwnReading(t *testing.T) {
 		"mode": {Name: "mode", Type: ir.VarString, EnumValues: []string{"fast", "slow"}},
 	}}}
 
-	if err := eng.validateVarEnums(map[string]any{"mode": "${VAR_ENUM_UNSET:-fast}"}); err != nil {
+	if err := eng.validateVarConstraints(map[string]any{"mode": "${VAR_ENUM_UNSET:-fast}"}); err != nil {
 		t.Errorf("the gate refused a value the run reads as %q: %v", "fast", err)
 	}
 	if got := eng.resolveVars(map[string]any{"mode": "${VAR_ENUM_UNSET:-fast}"})["mode"]; got != "fast" {
 		t.Errorf("the run reads %#v — the gate and the run must agree", got)
 	}
-	if err := eng.validateVarEnums(map[string]any{"mode": "${VAR_ENUM_UNSET:-yolo}"}); err == nil {
+	if err := eng.validateVarConstraints(map[string]any{"mode": "${VAR_ENUM_UNSET:-yolo}"}); err == nil {
 		t.Error("the gate accepted a value outside the enum")
 	}
 }

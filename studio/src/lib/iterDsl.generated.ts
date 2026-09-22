@@ -69,6 +69,7 @@ export const iterDslKeywords = [
   "language",
   "llm",
   "loop_budget_guard",
+  "matching",
   "max_cost_usd",
   "max_duration",
   "max_iterations",

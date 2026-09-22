@@ -123,7 +123,7 @@ func isRootEntry(rel string) bool {
 
 func walkSyntax(entries []string, read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
-	var declaredBy, unread, importedBy, contractedBy, aliasBy []string
+	var declaredBy, unread, importedBy, contractedBy, aliasBy, matchingBy []string
 	visited := map[string]bool{}
 	var visit func(rel string)
 	visit = func(rel string) {
@@ -176,6 +176,9 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 			if f.AST != nil && len(aliasUses(f.AST)) > 0 {
 				aliasBy = append(aliasBy, f.Name)
 			}
+			if f.AST != nil && declaresVarMatching(f.AST) {
+				matchingBy = append(matchingBy, f.Name)
+			}
 			p := f.Profile
 			switch {
 			case p > profile:
@@ -214,7 +217,8 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 	importedBy = slices.Compact(slices.Sorted(slices.Values(importedBy)))
 	contractedBy = slices.Compact(slices.Sorted(slices.Values(contractedBy)))
 	aliasBy = slices.Compact(slices.Sorted(slices.Values(aliasBy)))
-	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, Unread: unread}
+	matchingBy = slices.Compact(slices.Sorted(slices.Values(matchingBy)))
+	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, MatchingBy: matchingBy, Unread: unread}
 }
 
 // aliasUses collects the tool-name spellings of one file's AST that resolve
@@ -301,7 +305,12 @@ type SyntaxRequirements struct {
 	// `Grep`) in a tool list: the names resolve only on a runner carrying
 	// the alias resolver (ToolAliasesSince), whatever their profile.
 	AliasBy []string
-	Unread  []string
+	// MatchingBy names the files that declare a var's `[matching: "<re>"]`
+	// constraint: the form is unknown below parser.VarMatchingSince, where
+	// it is a parse error on the file rather than an unmet requirement on
+	// the bundle.
+	MatchingBy []string
+	Unread     []string
 }
 
 // UsesImport reports whether any source of the bundle imports.
@@ -309,6 +318,9 @@ func (r SyntaxRequirements) UsesImport() bool { return len(r.ImportedBy) > 0 }
 
 // UsesContract reports whether any source of the bundle declares a contract.
 func (r SyntaxRequirements) UsesContract() bool { return len(r.ContractedBy) > 0 }
+
+// UsesVarMatching reports whether any source declares a var pattern.
+func (r SyntaxRequirements) UsesVarMatching() bool { return len(r.MatchingBy) > 0 }
 
 // UsesToolAliases reports whether any source of the bundle spells a Claw
 // tool alias in a tool list.
@@ -334,6 +346,9 @@ func (r SyntaxRequirements) Describe() string {
 	}
 	if r.UsesContract() {
 		parts = append(parts, fmt.Sprintf("`contract` (%s)", strings.Join(r.ContractedBy, ", ")))
+	}
+	if r.UsesVarMatching() {
+		parts = append(parts, fmt.Sprintf("a var `[matching: ...]` constraint (%s)", strings.Join(r.MatchingBy, ", ")))
 	}
 	if r.UsesToolAliases() {
 		parts = append(parts, fmt.Sprintf("the Claw tool alias (%s)", strings.Join(r.AliasBy, ", ")))
@@ -430,6 +445,32 @@ var syntaxFloors = []syntaxFloor{
 			return ToolAliasesSince, "the Claw tool alias", req.UsesToolAliases()
 		},
 	},
+	{
+		pins: map[string]string{"parser.VarMatchingSince": parser.VarMatchingSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return parser.VarMatchingSince, `a var's [matching: "<re>"] constraint`, req.UsesVarMatching()
+		},
+	},
+}
+
+// declaresVarMatching reports whether any var of the file — top-level or
+// workflow-level — carries a pattern constraint.
+func declaresVarMatching(f *ast.File) bool {
+	blocks := []*ast.VarsBlock{f.Vars}
+	for _, w := range f.Workflows {
+		blocks = append(blocks, w.Vars)
+	}
+	for _, vb := range blocks {
+		if vb == nil {
+			continue
+		}
+		for _, field := range vb.Fields {
+			if field != nil && field.Matching != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func profilePins() map[string]string {

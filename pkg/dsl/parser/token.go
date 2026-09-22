@@ -111,6 +111,7 @@ const (
 	TokenAs
 	TokenWith
 	TokenEnum
+	TokenMatching
 	// Session modes
 	TokenFresh
 	TokenInherit
@@ -300,6 +301,7 @@ var tokenNames = map[TokenType]string{
 	TokenAs:                 "as",
 	TokenWith:               "with",
 	TokenEnum:               "enum",
+	TokenMatching:           "matching",
 	TokenFresh:              "fresh",
 	TokenInherit:            "inherit",
 	TokenInheritIfAvailable: "inherit_if_available",
@@ -450,6 +452,7 @@ var keywords = map[string]TokenType{
 	"as":                    TokenAs,
 	"with":                  TokenWith,
 	"enum":                  TokenEnum,
+	"matching":              TokenMatching,
 	"fresh":                 TokenFresh,
 	"inherit":               TokenInherit,
 	"inherit_if_available":  TokenInheritIfAvailable,
