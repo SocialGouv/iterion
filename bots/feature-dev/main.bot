@@ -81,28 +81,23 @@
 ## ─────────────────────────────────────────────────────────────────
 
 dsl: 2
-
 import "lib/schemas.bot"
 import "lib/prompts.bot"
 import "lib/nodes.bot"
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## THE FEATURE. A high-level description with a clear, externally
   ## visible done-state (new endpoint, UI affordance, CLI flag, new bot).
   ## REQUIRED — no default; a run without a feature has nothing to ship.
   feature_prompt: string
-
   ## Host-attested context for a delegated run-failure investigation. Empty
   ## on ordinary feature work. The host owns this value; action-request vars
   ## with the same name are discarded before launch.
   failure_context: string = ""
-
   ## Operator-approved instructions attached to a host delegation. This is
   ## separate from failure_context so untrusted run data cannot grant scope.
   delegation_instructions: string = ""
-
   ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
   ## verify script/log ONLY. The engine resolves ${PROJECT_SCRATCH_DIR}
   ## to ~/.iterion/projects/<key>/scratch non-sandboxed and to the
@@ -112,14 +107,12 @@ vars:
   ## target worktree is the repo-agnostic rule: never pollute someone
   ## else's tree.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/feature-dev"
-
   ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
   ## pre-existing test failures / flaky tests the campaign must SKIP rather
   ## than burn budget proving they aren't its own. Empty (default) = the
   ## campaign establishes it once cheaply (a `git stash`-based check) then
   ## skips what predates its work. The dispatcher/operator can pre-fill it.
   baseline: string = ""
-
   ## Hard cap on continuation PASSES — the convergence backstop. Each pass
   ## is one campaign→verify cycle; the run stops (shipping what is banked)
   ## when the feature is reported complete + the tree is green, or when
@@ -129,7 +122,6 @@ vars:
   ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
   ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
-
   ## ─── PR finalization (opt-in) ─────────────────────────────────
   ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
   ## (the SERIES of per-slice commits) to the forge and opens a pull
@@ -147,7 +139,6 @@ vars:
   ## "native:<id>" (local board) or a forge issue URL. When set,
   ## finalize_mr posts the opened PR's URL back as a comment on it.
   source_issue_ref: string = ""
-
   ## ─── Plan phase ───────────────────────────────────────────────
   ## The plan phase itself — the AUTHORED plan the campaign implements
   ## from — runs by default, on every deployment, whatever `plan_review`
@@ -189,26 +180,6 @@ secrets:
   forge_token:
     as: file
     optional: true
-
-## ─── supervisor (Persy, the perseverance coach) ─────────────────────
-## Concurrent LLM watcher on the campaign node enforcing the contract's
-## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
-## the run's first event); see docs/supervisors.md for the knobs and the
-## per-run kill switch.
-
-## Every text marker is pinned to `assistant_text` — the agent's own
-## words. Unpinned, the same substrings match rendered tool inputs and
-## outputs (a grep hit in the repo, a Read of a file mentioning the
-## word), which measured at 5 of 10 evals burned on echoes in a run
-## where the agent never gave up. Pinning also lets the marker set use
-## the same vocabulary as the contract without self-firing on the
-## prompt text.
-supervisor persy:
-  watches: [campaign]
-  system: persy_policy
-  cooldown: "5m"
-  max_evals: 10
-  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
 
 prompt persy_policy:
   You are Persy, a perseverance coach watching a senior engineer agent
@@ -346,9 +317,36 @@ contract featurly:
       description: "Runs LLM agents up to the workflow budget (max_cost_usd, max_duration)"
       paid: true
 
-## ─── Workflow ───────────────────────────────────────────────────
+## ─── supervisor (Persy, the perseverance coach) ─────────────────────
+## Concurrent LLM watcher on the campaign node enforcing the contract's
+## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
+## the run's first event); see docs/supervisors.md for the knobs and the
+## per-run kill switch.
 
+## Every text marker is pinned to `assistant_text` — the agent's own
+## words. Unpinned, the same substrings match rendered tool inputs and
+## outputs (a grep hit in the repo, a Read of a file mentioning the
+## word), which measured at 5 of 10 evals burned on echoes in a run
+## where the agent never gave up. Pinning also lets the marker set use
+## the same vocabulary as the contract without self-firing on the
+## prompt text.
+supervisor persy:
+  watches: [campaign]
+  system: persy_policy
+  cooldown: "5m"
+  max_evals: 10
+  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
+
+## ─── Workflow ───────────────────────────────────────────────────
 workflow feature_dev:
+  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
+  ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
+  ## operator's main checkout is untouched during the run, (b) on convergence
+  ## the commits land on a persistent branch `iterion/run/<friendly-name>` AND
+  ## fast-forward the operator's currently-checked-out branch (best-effort,
+  ## skipped with a warning on conflict).
+  worktree: auto
+
   ## Entry is the deterministic workspace precondition: a launch with no
   ## repository to work on fails typed (WORKSPACE_NOT_A_REPO) before any
   ## LLM node spends. Then the plan phase: on by default, the plan is
@@ -362,21 +360,12 @@ workflow feature_dev:
   ## The public contract the program keeps (see the contract block above).
   contract: featurly
 
-  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
-  ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
-  ## operator's main checkout is untouched during the run, (b) on convergence
-  ## the commits land on a persistent branch `iterion/run/<friendly-name>` AND
-  ## fast-forward the operator's currently-checked-out branch (best-effort,
-  ## skipped with a warning on conflict).
-  worktree: auto
-
   ## No `sandbox:` block (ADR-082): isolation is the platform's job —
   ## the engine sandboxes by default (`sandbox: auto` reads the target
   ## repo's devcontainer, else the default image). The bot declares only
   ## its own toolchain in the sibling devbox.json (gh/glab for the PR
   ## tail); the target repo's toolchain comes from the target's own
   ## devcontainer/devbox.json.
-
   budget:
     max_parallel_branches: 1
     max_duration: "4h"
@@ -388,16 +377,21 @@ workflow feature_dev:
 
   ## Precondition: nothing LLM runs on a workspace with no repository.
   workspace_probe -> plan_topology when ok
+
   workspace_probe -> workspace_not_a_repo when not ok
 
   ## Plan phase: on by default; plan_phase off → straight to the campaign.
   plan_topology -> plan when do_plan
+
   ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
   ## field is not "" but the raw {{input.x}} placeholder leaking into
   ## the prompt (the engine keeps unresolved refs as-is).
   plan_topology -> campaign when not do_plan with {
-    fail_log: "", plan: "", plan_critique: "", plan_responses: "",
-    plan_provenance: ""
+    fail_log: "",
+    plan: "",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "",
   }
 
   ## The authored plan meets the peer-review gate: a second model family
@@ -405,41 +399,51 @@ workflow feature_dev:
   ## revision; otherwise the plan reaches the campaign unreviewed, with a
   ## provenance stamp that says so.
   plan -> plan_review_topology
+
   plan_review_topology -> plan_review when do_review with {
-    plan:        "{{outputs.plan.plan}}",
+    plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
-    risks:       "{{outputs.plan.risks}}"
+    risks: "{{outputs.plan.risks}}",
   }
+
   plan_review_topology -> campaign when not do_review with {
-    fail_log: "", plan: "{{outputs.plan.plan}}",
-    plan_critique: "", plan_responses: "",
-    plan_provenance: "authored by the plan node - NOT peer-reviewed (plan_review resolved off: one model family credentialed, or the operator said off); the author's own map, unchallenged"
+    fail_log: "",
+    plan: "{{outputs.plan.plan}}",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "authored by the plan node - NOT peer-reviewed (plan_review resolved off: one model family credentialed, or the operator said off); the author's own map, unchallenged",
   }
+
   plan_review -> plan_gate
+
   ## Peer served → the plan AUTHOR (same session) challenges the
   ## critique and integrates what holds; skipped (policy skip + peer
   ## unavailable) → the unreviewed plan proceeds, loudly.
   plan_gate -> plan_revise when not skipped with {
-    plan:        "{{outputs.plan.plan}}",
+    plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
-    risks:       "{{outputs.plan.risks}}",
-    concerns:    "{{outputs.plan_review.concerns}}",
+    risks: "{{outputs.plan.risks}}",
+    concerns: "{{outputs.plan_review.concerns}}",
     suggestions: "{{outputs.plan_review.suggestions}}",
-    blocking:    "{{outputs.plan_review.blocking}}",
+    blocking: "{{outputs.plan_review.blocking}}",
     _session_id: "{{outputs.plan._session_id}}",
-    _session_fingerprint: "{{outputs.plan._session_fingerprint}}"
+    _session_fingerprint: "{{outputs.plan._session_fingerprint}}",
   }
+
   plan_gate -> campaign when skipped with {
-    fail_log: "", plan: "{{outputs.plan.plan}}",
-    plan_critique: "", plan_responses: "",
-    plan_provenance: "authored by the plan node - the cross-model peer review was SKIPPED mid-run (peer unavailable, plan_review_policy skip); the author's own map, unchallenged"
+    fail_log: "",
+    plan: "{{outputs.plan.plan}}",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "authored by the plan node - the cross-model peer review was SKIPPED mid-run (peer unavailable, plan_review_policy skip); the author's own map, unchallenged",
   }
+
   plan_revise -> campaign with {
-    fail_log:        "",
-    plan:            "{{outputs.plan_revise.plan}}",
-    plan_critique:   "{{outputs.plan_review.concerns}}",
-    plan_responses:  "{{outputs.plan_revise.review_responses}}",
-    plan_provenance: "authored by the plan node, critiqued by a cross-model peer, and revised by the author (its accepted/rejected responses follow)"
+    fail_log: "",
+    plan: "{{outputs.plan_revise.plan}}",
+    plan_critique: "{{outputs.plan_review.concerns}}",
+    plan_responses: "{{outputs.plan_revise.review_responses}}",
+    plan_provenance: "authored by the plan node, critiqued by a cross-model peer, and revised by the author (its accepted/rejected responses follow)",
   }
 
   ## Each pass: the campaign ships feature slices (committing each in
@@ -447,24 +451,30 @@ workflow feature_dev:
   campaign -> verify_probe with {
     iteration: "{{loop.continuation_loop.iteration}}"
   }
+
   ## verify_probe reuses an already-valid verify.sh (skipping the LLM
   ## verify_build) on passes 2+; the first pass of every run regenerates it for
   ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
   verify_probe -> verify_run when fresh
+
   verify_probe -> verify_build when not fresh
+
   verify_build -> verify_run
+
   ## After the deterministic build gate, the adversarial review inspects the
   ## run's diff (the refinement pass moved in-loop), then the gate decides.
   verify_run -> review with {
-    base_ref:       "{{vars.mr_base}}",
-    build_passed:   "{{outputs.verify_run.passed}}",
-    prior_findings: "{{outputs.gate.fail_log}}"
+    base_ref: "{{vars.mr_base}}",
+    build_passed: "{{outputs.verify_run.passed}}",
+    prior_findings: "{{outputs.gate.fail_log}}",
   }
+
   review -> gate
 
   ## Converged (green AND the campaign reports the feature fully shipped) →
   ## ship what is banked (optional PR, else finish).
   gate -> mr_gate when converged
+
   ## Not converged → another campaign pass. RED carries the failure log so the
   ## agent fixes what it broke; green-but-more-work carries an empty log so the
   ## agent simply continues the feature. This closes the single declared loop
@@ -476,8 +486,12 @@ workflow feature_dev:
   ## plan would re-anchor later passes that must read `git log` instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
     fail_log: "{{outputs.gate.fail_log}}",
-    plan: "", plan_critique: "", plan_responses: "", plan_provenance: ""
+    plan: "",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "",
   }
+
   ## continuation_loop exhausted (max_passes hit while work remains) → ship
   ## what is banked anyway (every committed slice is real, landed work).
   ## Unconditional fallthrough after the loop-back retries are spent.
@@ -488,22 +502,29 @@ workflow feature_dev:
   ## (when source_issue_ref is set) posts the URL back. The feature prompt
   ## rides along as the PR's scope context.
   mr_gate -> forge_auth_probe when open_mr
+
   mr_gate -> done when not open_mr
 
   ## Push credential present → finalize_mr pushes + opens the PR; absent →
   ## finish cleanly (commits are on the engine's iterion/run/<name> storage
   ## branch for a manual push) instead of paying an agent turn to rediscover it.
   forge_auth_probe -> finalize_mr when available with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    mr_branch:        "{{vars.mr_branch}}",
-    mr_base:          "{{vars.mr_base}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    mr_branch: "{{vars.mr_branch}}",
+    mr_base: "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",
-    scope_notes:      "{{vars.feature_prompt}}"
+    scope_notes: "{{vars.feature_prompt}}",
   }
+
   forge_auth_probe -> done when not available
+
   ## PR opened → surface its URL as a headline result-link in the run summary
   ## (deterministic stdout directive → preview_url_available kind=pr), then
   ## finish. Nothing opened (empty diff / refused PR) → straight to done.
-  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> surface_pr_link when opened with {
+    url: "{{outputs.finalize_mr.url}}"
+  }
+
   finalize_mr -> done when not opened
+
   surface_pr_link -> done

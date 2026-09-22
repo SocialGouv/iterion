@@ -35,7 +35,6 @@ vars:
   brief: string
 
 ## ═══ Prompts : personas ══════════════════════════════════════════
-
 prompt analyst_system:
   You are Mary, the BMAD Analyst. You turn a raw request into a
   crisp, testable problem analysis BEFORE anyone writes code. You
@@ -183,7 +182,6 @@ prompt qa_user:
   Diff the working tree, audit it, and emit qa_output.
 
 ## ═══ Prompts : human gate instructions (rendered in the form) ═════
-
 prompt elicit_brief_instructions:
   # Clarify the brief
 
@@ -299,7 +297,6 @@ prompt final_review_instructions:
     is real but not ready to ship as-is.
 
 ## ═══ Schemas ═════════════════════════════════════════════════════
-
 schema analysis_output:
   problem_statement: string
   stakeholders: string[]
@@ -427,43 +424,102 @@ schema commit_result:
   output: string
 
 ## ═══ Nodes ═══════════════════════════════════════════════════════
-
 agent analyst:
-  backend: "claude_code"
   model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
-  reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
+  backend: "claude_code"
   output: analysis_output
   system: analyst_system
   user: analyst_user
-  session: fresh
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 40
+  reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
+  readonly: true
+
+agent pm:
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
+  backend: "claude_code"
+  input: prd_input
+  output: prd_output
+  system: pm_system
+  user: pm_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
+  readonly: true
+
+agent architect:
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
+  backend: "claude_code"
+  input: arch_input
+  output: arch_output
+  system: architect_system
+  user: architect_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
+  readonly: true
+
+agent dev:
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
+  backend: "claude_code"
+  input: dev_input
+  output: dev_output
+  system: dev_system
+  user: dev_user
+  tools: [bash, read_file, write_file, file_edit, glob, grep]
+  tool_max_steps: 120
+  reasoning_effort: "${BMADY_EFFORT_DEV:-high}"
+
+judge qa:
+  model: "${BMADY_MODEL_QA:-claude-opus-5}"
+  backend: "claude_code"
+  input: qa_input
+  output: qa_output
+  system: qa_system
+  user: qa_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  reasoning_effort: "${BMADY_EFFORT_QA:-medium}"
   readonly: true
 
 human elicit_brief:
   input: elicit_input
   output: elicit_output
-  instructions: elicit_brief_instructions
   interaction: human
-
-agent pm:
-  backend: "claude_code"
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
-  reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
-  input: prd_input
-  output: prd_output
-  system: pm_system
-  user: pm_user
-  session: fresh
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  readonly: true
+  instructions: elicit_brief_instructions
 
 human review_prd:
   input: review_prd_input
   output: review_prd_output
-  instructions: review_prd_instructions
   interaction: human
+  instructions: review_prd_instructions
+
+human approve_arch:
+  input: approve_arch_input
+  output: approve_arch_output
+  interaction: human
+  instructions: approve_arch_instructions
+
+human select_stories:
+  input: select_stories_input
+  output: select_stories_output
+  interaction: human
+  instructions: select_stories_instructions
+
+human final_review:
+  input: final_input
+  output: final_output
+  interaction: human
+  instructions: final_review_instructions
+
+## Deterministic commit — no LLM. Stages the whole dirty tree but the
+## `.claude/` scaffold iterion lays there (skills, plugin files): under
+## worktree: auto everything else IS this run's work. Guarded so an
+## empty diff doesn't error.
+tool commit_changes:
+  command: "git -C {{input.workspace_dir}} add -A -- ':/' $ITERION_TREE_NOISE && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.message}})"
+  input: commit_tool_input
+  output: commit_result
 
 ## Project the elicitation menu into the boolean the routing reads —
 ## keeps `action` (4 options) in the form while the graph branches on
@@ -476,62 +532,6 @@ compute derive_prd:
     action: "input.action"
     feedback: "input.feedback"
 
-agent architect:
-  backend: "claude_code"
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
-  reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
-  input: arch_input
-  output: arch_output
-  system: architect_system
-  user: architect_user
-  session: fresh
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  readonly: true
-
-human approve_arch:
-  input: approve_arch_input
-  output: approve_arch_output
-  instructions: approve_arch_instructions
-  interaction: human
-
-human select_stories:
-  input: select_stories_input
-  output: select_stories_output
-  instructions: select_stories_instructions
-  interaction: human
-
-agent dev:
-  backend: "claude_code"
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
-  reasoning_effort: "${BMADY_EFFORT_DEV:-high}"
-  input: dev_input
-  output: dev_output
-  system: dev_system
-  user: dev_user
-  session: fresh
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 120
-
-judge qa:
-  backend: "claude_code"
-  model: "${BMADY_MODEL_QA:-claude-opus-5}"
-  reasoning_effort: "${BMADY_EFFORT_QA:-medium}"
-  input: qa_input
-  output: qa_output
-  system: qa_system
-  user: qa_user
-  session: fresh
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  readonly: true
-
-human final_review:
-  input: final_input
-  output: final_output
-  instructions: final_review_instructions
-  interaction: human
-
 compute derive_final:
   input: final_output
   output: final_derived
@@ -541,24 +541,14 @@ compute derive_final:
     action: "input.action"
     feedback: "input.feedback"
 
-## Deterministic commit — no LLM. Stages the whole dirty tree but the
-## `.claude/` scaffold iterion lays there (skills, plugin files): under
-## worktree: auto everything else IS this run's work. Guarded so an
-## empty diff doesn't error.
-tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -A -- ':/' $ITERION_TREE_NOISE && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.message}})"
-  input: commit_tool_input
-  output: commit_result
-
 ## ═══ Workflow ════════════════════════════════════════════════════
-
 workflow bmady:
-  entry: analyst
-
   ## Isolate every mutation in a fresh git worktree. On a clean ship
   ## the engine persists the commit to a branch and fast-forwards the
   ## operator's checked-out branch (override with --merge-into).
   worktree: auto
+
+  entry: analyst
 
   budget:
     max_parallel_branches: 1
@@ -572,110 +562,116 @@ workflow bmady:
   ## ── Phase 1 : Analysis ──────────────────────────────────────────
   analyst -> elicit_brief with {
     problem_statement: "{{outputs.analyst.problem_statement}}",
-    proposed_scope:    "{{outputs.analyst.proposed_scope}}",
-    open_questions:    "{{outputs.analyst.open_questions}}"
+    proposed_scope: "{{outputs.analyst.proposed_scope}}",
+    open_questions: "{{outputs.analyst.open_questions}}",
   }
 
   ## ── Phase 2 : PRD (+ advanced-elicitation revise loop) ──────────
   elicit_brief -> pm with {
-    analysis:       "{{outputs.analyst}}",
-    clarifications: "{{outputs.elicit_brief.clarifications}}"
+    analysis: "{{outputs.analyst}}",
+    clarifications: "{{outputs.elicit_brief.clarifications}}",
   }
 
   pm -> review_prd with {
-    epics:      "{{outputs.pm.epics}}",
-    stories:    "{{outputs.pm.stories}}",
-    acceptance: "{{outputs.pm.acceptance}}"
+    epics: "{{outputs.pm.epics}}",
+    stories: "{{outputs.pm.stories}}",
+    acceptance: "{{outputs.pm.acceptance}}",
   }
 
   review_prd -> derive_prd with {
-    action:   "{{outputs.review_prd.action}}",
-    feedback: "{{outputs.review_prd.feedback}}"
+    action: "{{outputs.review_prd.action}}",
+    feedback: "{{outputs.review_prd.feedback}}",
   }
 
   ## approve → architecture ; anything else → John revises (bounded).
   derive_prd -> architect when is_approve with {
-    prd:      "{{outputs.pm}}",
-    analysis: "{{outputs.analyst}}"
+    prd: "{{outputs.pm}}",
+    analysis: "{{outputs.analyst}}",
   }
+
   derive_prd -> pm when not is_approve as prd_loop(5) with {
-    analysis:       "{{outputs.analyst}}",
+    analysis: "{{outputs.analyst}}",
     clarifications: "{{outputs.elicit_brief.clarifications}}",
-    refinement:     "{{outputs.derive_prd.action}}",
-    feedback:       "{{outputs.derive_prd.feedback}}"
+    refinement: "{{outputs.derive_prd.action}}",
+    feedback: "{{outputs.derive_prd.feedback}}",
   }
+
   ## The loop's exhaustion exit (C145, #1293): after the fifth revision the
   ## PRD goes to the architect as it stands — the loop bounds the argument,
   ## the programme still ships with what it has.
   derive_prd -> architect with {
-    prd:      "{{outputs.pm}}",
-    analysis: "{{outputs.analyst}}"
+    prd: "{{outputs.pm}}",
+    analysis: "{{outputs.analyst}}",
   }
 
   ## ── Phase 3 : Architecture (+ approve/reject loop) ──────────────
   architect -> approve_arch with {
     architecture_doc: "{{outputs.architect.architecture_doc}}",
-    components:       "{{outputs.architect.components}}",
-    risks:            "{{outputs.architect.risks}}"
+    components: "{{outputs.architect.components}}",
+    risks: "{{outputs.architect.risks}}",
   }
 
   approve_arch -> select_stories when approved with {
-    stories:          "{{outputs.pm.stories}}",
-    architecture_doc: "{{outputs.architect.architecture_doc}}"
+    stories: "{{outputs.pm.stories}}",
+    architecture_doc: "{{outputs.architect.architecture_doc}}",
   }
+
   approve_arch -> architect when not approved as arch_loop(5) with {
-    prd:      "{{outputs.pm}}",
+    prd: "{{outputs.pm}}",
     analysis: "{{outputs.analyst}}",
-    feedback: "{{outputs.approve_arch.feedback}}"
+    feedback: "{{outputs.approve_arch.feedback}}",
   }
+
   ## The loop's exhaustion exit (C145, #1293): after the fifth revision the
   ## architecture goes to story selection as it stands.
   approve_arch -> select_stories with {
-    stories:          "{{outputs.pm.stories}}",
-    architecture_doc: "{{outputs.architect.architecture_doc}}"
+    stories: "{{outputs.pm.stories}}",
+    architecture_doc: "{{outputs.architect.architecture_doc}}",
   }
 
   ## ── Phase 4 : Story selection → implement ───────────────────────
   select_stories -> dev with {
     selected_story_ids: "{{outputs.select_stories.selected_story_ids}}",
-    stories:            "{{outputs.pm.stories}}",
-    architecture_doc:   "{{outputs.architect.architecture_doc}}",
-    wip_limit:          "{{outputs.select_stories.wip_limit}}",
-    note:               "{{outputs.select_stories.note}}"
+    stories: "{{outputs.pm.stories}}",
+    architecture_doc: "{{outputs.architect.architecture_doc}}",
+    wip_limit: "{{outputs.select_stories.wip_limit}}",
+    note: "{{outputs.select_stories.note}}",
   }
 
   ## ── Phase 5 : QA → sign-off (+ change loop) ─────────────────────
   dev -> qa with {
     selected_story_ids: "{{outputs.select_stories.selected_story_ids}}",
-    dev_summary:        "{{outputs.dev.summary}}"
+    dev_summary: "{{outputs.dev.summary}}",
   }
 
   qa -> final_review with {
-    passed:      "{{outputs.qa.passed}}",
-    blockers:    "{{outputs.qa.blockers}}",
-    confidence:  "{{outputs.qa.confidence}}",
-    dev_summary: "{{outputs.dev.summary}}"
+    passed: "{{outputs.qa.passed}}",
+    blockers: "{{outputs.qa.blockers}}",
+    confidence: "{{outputs.qa.confidence}}",
+    dev_summary: "{{outputs.dev.summary}}",
   }
 
   final_review -> derive_final with {
-    action:   "{{outputs.final_review.action}}",
-    feedback: "{{outputs.final_review.feedback}}"
+    action: "{{outputs.final_review.action}}",
+    feedback: "{{outputs.final_review.feedback}}",
   }
 
   ## ship → commit ; request_changes → James (bounded) ; hold/other →
   ## the unconditional fallback ends the run without committing.
   derive_final -> commit_changes when is_ship with {
     workspace_dir: "{{vars.workspace_dir}}",
-    message:       "feat(bmady): {{vars.brief}}"
+    message: "feat(bmady): {{vars.brief}}",
   }
+
   derive_final -> dev when is_changes as dev_loop(5) with {
     selected_story_ids: "{{outputs.select_stories.selected_story_ids}}",
-    stories:            "{{outputs.pm.stories}}",
-    architecture_doc:   "{{outputs.architect.architecture_doc}}",
-    wip_limit:          "{{outputs.select_stories.wip_limit}}",
-    note:               "{{outputs.select_stories.note}}",
-    feedback:           "{{outputs.derive_final.feedback}}"
+    stories: "{{outputs.pm.stories}}",
+    architecture_doc: "{{outputs.architect.architecture_doc}}",
+    wip_limit: "{{outputs.select_stories.wip_limit}}",
+    note: "{{outputs.select_stories.note}}",
+    feedback: "{{outputs.derive_final.feedback}}",
   }
+
   derive_final -> done
 
   commit_changes -> done

@@ -25,3 +25,29 @@ func TestIsWorkflowFile(t *testing.T) {
 		}
 	}
 }
+
+// TestSkipWalkDirIsTheOneRule pins what a walk over a source tree does not
+// descend into. It is shared on purpose: `iterion fmt`'s collector and the
+// guards that check the same tree have to enumerate the same files, and two
+// spellings of the rule put them in a disagreement no list can settle — a
+// `.bot` under `.iterion/` was refused by one and invisible to the other,
+// with no content of `.fmt-refused` able to make both green.
+func TestSkipWalkDirIsTheOneRule(t *testing.T) {
+	for name, skip := range map[string]bool{
+		".iterion":     true,
+		".git":         true,
+		".works":       true,
+		".repos":       true,
+		"vendor":       true,
+		"node_modules": true,
+		"bots":         false,
+		"examples":     false,
+		"lib":          false,
+		"testdata":     false,
+		"my.dir":       false,
+	} {
+		if got := SkipWalkDir(name); got != skip {
+			t.Errorf("SkipWalkDir(%q) = %v, want %v", name, got, skip)
+		}
+	}
+}

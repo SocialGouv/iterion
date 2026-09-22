@@ -228,7 +228,8 @@ longer by a paragraph, the paragraph belongs in the tree.**
 ## CI/CD and merge
 
 `main` sits behind a **merge queue**; required checks are `test`, `race`,
-`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`. The queue, the
+`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`; `brand` and
+`fmt-check` report but are not required yet. The queue, the
 Revi gate, the release/changelog pipeline (never hand-edit `CHANGELOG.md`) and
 the Billy pause all live in
 [docs/agents/review-and-merge.md](docs/agents/review-and-merge.md) — read it

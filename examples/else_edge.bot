@@ -37,8 +37,13 @@ compute small:
     kind: "'small'"
 
 workflow else_demo:
+
   entry: classify
+
   classify -> big when big
+
   classify -> small else
+
   big -> done
+
   small -> done

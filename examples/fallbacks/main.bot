@@ -16,14 +16,6 @@
 
 dsl: 2
 
-schema work_output:
-  summary: string
-  confident: bool
-
-schema verdict:
-  approved: bool
-  reason: string
-
 prompt implement_sys:
   You are a careful implementer. Produce a short summary of what you
   would do. Do not invent work you have not done.
@@ -39,6 +31,14 @@ prompt review_user:
 
   {{outputs.implement.summary}}
 
+schema work_output:
+  summary: string
+  confident: bool
+
+schema verdict:
+  approved: bool
+  reason: string
+
 ## The headline case: a subscription-backed CLI agent that continues on a
 ## metered API when its window shuts.
 ##
@@ -48,11 +48,11 @@ prompt review_user:
 ## claude_code the list is inert; it exists so the claw route is a real
 ## agent rather than a schema-shaped narrator.
 agent implement:
-  backend: "claude_code"
   model: "claude-opus-5"
+  backend: "claude_code"
+  output: work_output
   system: implement_sys
   user: implement_user
-  output: work_output
   tools: [read_file, bash]
   fallbacks:
     ## Same model, different instrument: the forfait is out, the API key
@@ -76,11 +76,11 @@ agent implement:
 ## reading this node's output can consult `_fallback_used` before
 ## trusting it.
 judge review:
-  backend: "claw"
   model: "anthropic/claude-opus-5"
+  backend: "claw"
+  output: verdict
   system: review_sys
   user: review_user
-  output: verdict
   tools: [read_file]
   fallbacks:
     second_opinion:
@@ -89,12 +89,15 @@ judge review:
       on: [usage_window]
 
 workflow fallback_demo:
-  entry: implement
 
-  implement -> review
-  review -> done when approved
-  review -> fail else
+  entry: implement
 
   budget:
     max_duration: "20m"
     max_cost_usd: 5
+
+  implement -> review
+
+  review -> done when approved
+
+  review -> fail else

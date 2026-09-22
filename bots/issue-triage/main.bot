@@ -23,11 +23,6 @@ dsl: 2
 vars:
   issue_id: string
 
-schema triage_output:
-  routed_bot: string
-  no_fit: bool
-  rationale: string
-
 prompt triage_system:
   You are Triagy, the iterion board's triage router. You process EXACTLY
   ONE kanban card and stamp WHICH bot will handle it. You never do the
@@ -100,12 +95,17 @@ prompt triage_user:
      rationale.
   Return triage_output only after step 6 succeeded.
 
+schema triage_output:
+  routed_bot: string
+  no_fit: bool
+  rationale: string
+
 agent triage:
-  backend: "claw"
   ## Cheap but procedure-reliable. gpt-5.4-mini (the claw auto-default)
   ## skips the skill read + label/comment steps; 5.5 follows the
   ## contract. Same pin precedent as review-pr's claw reviewer.
   model: "openai/gpt-5.5"
+  backend: "claw"
   output: triage_output
   system: triage_system
   user: triage_user
@@ -117,9 +117,11 @@ agent triage:
   tool_max_steps: 12
 
 workflow issue_triage:
+
   entry: triage
-  triage -> done
 
   budget:
     max_duration: "10m"
     max_cost_usd: 1
+
+  triage -> done

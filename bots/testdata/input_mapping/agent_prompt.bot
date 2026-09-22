@@ -1,4 +1,5 @@
 ## Guard fixture — an agent's system and user prompts each read an input no incoming edge maps.
+
 dsl: 2
 
 prompt work:
@@ -20,6 +21,9 @@ agent reader:
   user: read_it
 
 workflow agent_prompt:
+
   entry: seed
+
   seed -> reader
+
   reader -> done

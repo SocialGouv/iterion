@@ -212,7 +212,6 @@ prompt campaign_user:
 ## language / package manager is named here — the gate stays universal while
 ## the verdict stays deterministic. verify_build does NOT fix code: a RED gate
 ## routes back to `campaign` (the one capable agent) to fix what it broke.
-
 prompt verify_system:
   You are a release engineer. A feature pass just applied changes to
   this repository and committed them. Your single job: capture how THIS repo
@@ -269,7 +268,6 @@ prompt verify_user:
   (exit 3) and the loop burns a full pass re-learning this.
 
 ## ─── Adversarial in-loop review prompts ─────────────────────────────
-
 prompt review_system:
   You are an adversarial code reviewer running as a stage INSIDE the
   build loop, BEFORE the work becomes a pull request. Your job is to catch
@@ -326,7 +324,6 @@ prompt review_user:
   return specific, actionable findings for the campaign to fix.
 
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
-
 prompt finalize_mr_system:
   You finalize a converged feature run by opening ONE pull request (PR;
   merge request on GitLab) for the SERIES of per-slice commits this run
@@ -370,4 +367,3 @@ prompt finalize_mr_user:
 
   Push the branch, open the PR, post the back-link when a source issue
   is given, and return the structured result.
-

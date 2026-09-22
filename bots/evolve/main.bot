@@ -37,189 +37,16 @@ vars:
   ## pkg/reviewtopology from the host's detected credentials and also
   ## lands on mono — it only picks the family for you.
   review_mode: string [enum: "auto", "mono", "dual"] = "mono"
-
   ## Which family runs in mono. Overwritten by the launch-time resolver
   ## when only one family is usable on the host.
   mono_family: string [enum: "claude", "gpt"] = "claude"
-
   workspace_dir: string = "${PROJECT_DIR}"
   ## Optional steering hints (objective / horizon / focus). The dispatcher
   ## fills this from the issue title + body; on an interactive
   ## `iterion run` it is empty and Evoly elicits the objective via ask_user.
   scope_notes: string = ""
 
-## ─── Schemas ──────────────────────────────────────────────────────
-
-schema survey_input:
-  workspace_dir: string
-  scope_notes:   string
-
-## Read-only repository + memory survey. Free-form json fields keep the
-## bot stack-agnostic (no closed language enum); the agent picks the axes
-## and signals from architectural-axes.md + repo-maturity-assessment.md.
-schema survey_output:
-  summary:          string
-  toplevel_dirs:    json
-  recent_activity:  json
-  candidate_axes:   json
-  maturity_signals: json
-  maturity_verdict: string [enum: "experimental", "early", "stable", "mature", "legacy"]
-  open_questions:   json
-  observations:     string
-
-schema investigate_input:
-  survey:        json
-  workspace_dir: string
-  scope_notes:   string
-
-schema investigate_output:
-  objective:           string
-  horizon:             string
-  confirmed_decisions: json
-  remaining_unknowns:  json
-  context_brief_path:  string
-  ready_for_synthesis: bool
-
-schema synthesize_input:
-  survey:        json
-  investigation: json
-  workspace_dir: string
-
-## A vision axis is a single direction of evolution. `name` is free-form
-## (architectural-axes.md is a vocabulary, not a closed enum).
-schema vision_axis:
-  name:           string
-  current_state:  string
-  target_state:   string
-  rationale:      string
-  evidence_paths: string[]
-
-schema vision_output:
-  title:         string
-  horizon:       string
-  axes:          json
-  guardrails:    string[]
-  rationale:     string
-  vision_md_path: string
-
-schema review_input:
-  vision:        json
-  workspace_dir: string
-
-## A reviewer judges the vision's coherence + evidence-grounding, NOT a
-## code diff. `family` is "claude" | "gpt" so the aggregator can show the
-## operator two independent perspectives. confidence gates which concerns
-## are advisory vs worth the operator's attention.
-schema verdict_output:
-  approved:     bool
-  family:       string
-  concerns:     string[]
-  missing_axes: string[]
-  confidence:   string [enum: "low", "medium", "high"]
-
-schema review_merge_input:
-  claude_approved:   bool
-  claude_concerns:   string[]
-  claude_missing:    string[]
-  claude_confidence: string
-  gpt_approved:      bool
-  gpt_concerns:      string[]
-  gpt_missing:       string[]
-  gpt_confidence:    string
-
-schema review_summary:
-  both_approved:     bool
-  combined_concerns: json
-  combined_missing:  json
-  advisory:          string
-
-## carry_vision stamps "the vision currently under review" so the
-## post-review edges reference one stable field regardless of whether it
-## came from synthesize_vision (round 1) or revise_vision (round N). Same
-## pattern as whats-next's carry_roadmap.
-schema vision_carry:
-  vision: json
-  review: json
-
-schema human_review_input:
-  vision: json
-  review: json
-
-## selected_axes lets the operator drop individual axes at review time;
-## empty/absent → keep every axis (approve-all). feedback drives revision.
-schema human_review_output:
-  approved:      bool
-  feedback:      string
-  selected_axes: json
-
-schema revise_input:
-  prior_vision:  json
-  feedback:      string
-  concerns:      json
-  workspace_dir: string
-
-schema propose_input:
-  vision:        json
-  workspace_dir: string
-
-## An evolution_item is one strategic direction turned into a dispatch-ready
-## backlog ticket. suggested_bot is set ONLY on a confident catalog match;
-## empty otherwise (the human / Nexie triages). args become the issue's
-## fields.bot_args so a drag-to-ready launches it. finding_file links the
-## deep plan/decision artifact in the findings/ memory inbox.
-schema evolution_item:
-  title:         string
-  axis:          string
-  horizon:       string [enum: "now", "next", "later"]
-  body:          string
-  suggested_bot: string
-  args:          json
-  finding_file:  string
-
-schema propose_output:
-  proposals:    json
-  findings_dir: string
-  rationale:    string
-
-schema emit_input:
-  proposals:     json
-  vision_title:  string
-  workspace_dir: string
-
-schema emit_output:
-  created_issues:   json
-  findings_written: json
-  summary:          string
-
-schema continue_input:
-  vision_title:    string
-  proposals_count: int
-  created_issues:  json
-
-schema continue_output:
-  action: string
-  detail: string
-
-schema continue_derived:
-  is_close:        bool
-  is_standby:      bool
-  is_refine:       bool
-  is_propose_more: bool
-  is_handoff:      bool
-  action:          string
-  detail:          string
-
-schema handoff_input:
-  vision_title:   string
-  created_issues: json
-  workspace_dir:  string
-
-schema handoff_output:
-  summary: string
-  cta:     string
-
 ## ─── Prompts ──────────────────────────────────────────────────────
-
 prompt survey_system:
   You are Evoly's survey phase — the read-only reconnaissance that
   precedes a long-horizon architectural vision. Your job is to
@@ -588,40 +415,208 @@ prompt load_handoff_user:
   Vision: {{input.vision_title}}
   Tickets created: {{input.created_issues}}
 
-## ─── Nodes ────────────────────────────────────────────────────────
+## ─── Schemas ──────────────────────────────────────────────────────
+schema survey_input:
+  workspace_dir: string
+  scope_notes: string
 
+## Read-only repository + memory survey. Free-form json fields keep the
+## bot stack-agnostic (no closed language enum); the agent picks the axes
+## and signals from architectural-axes.md + repo-maturity-assessment.md.
+schema survey_output:
+  summary: string
+  toplevel_dirs: json
+  recent_activity: json
+  candidate_axes: json
+  maturity_signals: json
+  maturity_verdict: string [enum: "experimental", "early", "stable", "mature", "legacy"]
+  open_questions: json
+  observations: string
+
+schema investigate_input:
+  survey: json
+  workspace_dir: string
+  scope_notes: string
+
+schema investigate_output:
+  objective: string
+  horizon: string
+  confirmed_decisions: json
+  remaining_unknowns: json
+  context_brief_path: string
+  ready_for_synthesis: bool
+
+schema synthesize_input:
+  survey: json
+  investigation: json
+  workspace_dir: string
+
+## A vision axis is a single direction of evolution. `name` is free-form
+## (architectural-axes.md is a vocabulary, not a closed enum).
+schema vision_axis:
+  name: string
+  current_state: string
+  target_state: string
+  rationale: string
+  evidence_paths: string[]
+
+schema vision_output:
+  title: string
+  horizon: string
+  axes: json
+  guardrails: string[]
+  rationale: string
+  vision_md_path: string
+
+schema review_input:
+  vision: json
+  workspace_dir: string
+
+## A reviewer judges the vision's coherence + evidence-grounding, NOT a
+## code diff. `family` is "claude" | "gpt" so the aggregator can show the
+## operator two independent perspectives. confidence gates which concerns
+## are advisory vs worth the operator's attention.
+schema verdict_output:
+  approved: bool
+  family: string
+  concerns: string[]
+  missing_axes: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema review_merge_input:
+  claude_approved: bool
+  claude_concerns: string[]
+  claude_missing: string[]
+  claude_confidence: string
+  gpt_approved: bool
+  gpt_concerns: string[]
+  gpt_missing: string[]
+  gpt_confidence: string
+
+schema review_summary:
+  both_approved: bool
+  combined_concerns: json
+  combined_missing: json
+  advisory: string
+
+## carry_vision stamps "the vision currently under review" so the
+## post-review edges reference one stable field regardless of whether it
+## came from synthesize_vision (round 1) or revise_vision (round N). Same
+## pattern as whats-next's carry_roadmap.
+schema vision_carry:
+  vision: json
+  review: json
+
+schema human_review_input:
+  vision: json
+  review: json
+
+## selected_axes lets the operator drop individual axes at review time;
+## empty/absent → keep every axis (approve-all). feedback drives revision.
+schema human_review_output:
+  approved: bool
+  feedback: string
+  selected_axes: json
+
+schema revise_input:
+  prior_vision: json
+  feedback: string
+  concerns: json
+  workspace_dir: string
+
+schema propose_input:
+  vision: json
+  workspace_dir: string
+
+## An evolution_item is one strategic direction turned into a dispatch-ready
+## backlog ticket. suggested_bot is set ONLY on a confident catalog match;
+## empty otherwise (the human / Nexie triages). args become the issue's
+## fields.bot_args so a drag-to-ready launches it. finding_file links the
+## deep plan/decision artifact in the findings/ memory inbox.
+schema evolution_item:
+  title: string
+  axis: string
+  horizon: string [enum: "now", "next", "later"]
+  body: string
+  suggested_bot: string
+  args: json
+  finding_file: string
+
+schema propose_output:
+  proposals: json
+  findings_dir: string
+  rationale: string
+
+schema emit_input:
+  proposals: json
+  vision_title: string
+  workspace_dir: string
+
+schema emit_output:
+  created_issues: json
+  findings_written: json
+  summary: string
+
+schema continue_input:
+  vision_title: string
+  proposals_count: int
+  created_issues: json
+
+schema continue_output:
+  action: string
+  detail: string
+
+schema continue_derived:
+  is_close: bool
+  is_standby: bool
+  is_refine: bool
+  is_propose_more: bool
+  is_handoff: bool
+  action: string
+  detail: string
+
+schema handoff_input:
+  vision_title: string
+  created_issues: json
+  workspace_dir: string
+
+schema handoff_output:
+  summary: string
+  cta: string
+
+## ─── Nodes ────────────────────────────────────────────────────────
 agent survey:
-  backend: "claw"
   model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-medium}"
+  backend: "claw"
   input: survey_input
   output: survey_output
   system: survey_system
   user: survey_user
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  readonly: true
   capabilities: [board.read]
+  tool_max_steps: 30
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-medium}"
+  readonly: true
   ## Per-bot vision memory (read-only here): autoload prior VISION.md +
   ## CONTEXT_BRIEF.md so a continuing vision surveys what CHANGED.
   memory:
     enabled: true
-    visibility: "bot"
     scope: "vision"
     autoload: ["VISION.md", "CONTEXT_BRIEF.md"]
     read: true
     pre_compact_inject: true
+    visibility: "bot"
 
 agent investigate:
-  backend: "claw"
   model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-medium}"
+  backend: "claw"
   input: investigate_input
   output: investigate_output
   system: investigate_system
   user: investigate_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 40
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-medium}"
   readonly: true
   ## interaction: human auto-injects the ask_user MCP tool. When the agent
   ## hits an ambiguity the code can't resolve, it calls ask_user, the run
@@ -637,32 +632,146 @@ agent investigate:
   ## never asked twice.
   memory:
     enabled: true
-    visibility: "bot"
     scope: "vision"
     autoload: ["VISION.md", "CONTEXT_BRIEF.md"]
     read: true
     write: true
     pre_compact_inject: true
+    visibility: "bot"
 
 agent synthesize_vision:
-  backend: "claw"
   model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT_SYNTH:-high}"
+  backend: "claw"
   input: synthesize_input
   output: vision_output
   system: synthesize_system
   user: synthesize_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 20
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT_SYNTH:-high}"
   readonly: true
   memory:
     enabled: true
-    visibility: "bot"
     scope: "vision"
     autoload: ["CONTEXT_BRIEF.md"]
     read: true
     write: true
     pre_compact_inject: true
+    visibility: "bot"
+
+agent revise_vision:
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  backend: "claw"
+  input: revise_input
+  output: vision_output
+  system: revise_system
+  user: revise_user
+  ## session: inherit reuses the prior revision's claw session so the
+  ## reviser remembers what it changed without re-shipping the thread.
+  session: inherit
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT_SYNTH:-high}"
+  readonly: true
+  memory:
+    enabled: true
+    scope: "vision"
+    autoload: ["VISION.md", "CONTEXT_BRIEF.md"]
+    read: true
+    write: true
+    pre_compact_inject: true
+    visibility: "bot"
+
+agent propose_evolutions:
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  backend: "claw"
+  input: propose_input
+  output: propose_output
+  system: propose_system
+  user: propose_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT_SYNTH:-high}"
+  readonly: true
+  ## findings/ is the SHARED cross-bot inbox. `visibility: "project"`
+  ## resolves it to projects/<RepoRoot-key>/memory/findings/ — keyed off
+  ## the STABLE repo root (like the vision scope and the board), so the
+  ## findings land where Nexie's emit_action hygiene scans even when Evoly
+  ## runs from a git worktree (a bare `scope:` would key off the ephemeral
+  ## WorkDir and strand findings under the worktree key — see
+  ## docs/bot-runs/evolve.md). Evoly writes the deep evolution artifacts here.
+  memory:
+    enabled: true
+    scope: "findings"
+    read: true
+    write: true
+    visibility: "project"
+
+agent emit_backlog:
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  backend: "claw"
+  input: emit_input
+  output: emit_output
+  system: emit_system
+  user: emit_user
+  tools: [bash, read_file]
+  ## Board write capabilities (claw exposes them as in-process
+  ## mcp.iterion_board.* tools via boardops). create + assign (set bot +
+  ## bot_args) + label, all in `backlog` state.
+  capabilities: [board.read, board.create, board.assign, board.label]
+  tool_max_steps: 40
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-low}"
+
+agent load_nexie_handoff:
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  backend: "claw"
+  input: handoff_input
+  output: handoff_output
+  system: load_handoff_system
+  user: load_handoff_user
+  tools: [bash, read_file]
+  capabilities: [board.read, board.create, board.label]
+  tool_max_steps: 15
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-low}"
+
+## The "claude" perspective. claude_code uses Claude Code OAuth (forfait,
+## no API key). It judges the vision passed in its input; no memory block
+## (claude_code ignores memory anyway) — it reads the workspace to verify
+## evidence.
+judge review_claude:
+  model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-5}"
+  backend: "claude_code"
+  input: review_input
+  output: verdict_output
+  system: review_system
+  user: review_user_claude
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 15
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT_REVIEW:-medium}"
+  ## readonly: judges only inspect — required so the two parallel review
+  ## branches are workspace-safe (the guard rejects >1 mutating branch).
+  readonly: true
+
+## The "gpt" perspective. claw + openai/gpt-5.5 (ChatGPT forfait).
+judge review_gpt:
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  backend: "claw"
+  input: review_input
+  output: verdict_output
+  system: review_system
+  user: review_user_gpt
+  reasoning_effort: "${ITERION_EVOLVE_EFFORT_REVIEW:-medium}"
+  readonly: true
+  ## NO file-reading tools for the gpt reviewer. The vision + system prompt
+  ## already sits near the ChatGPT-forfait context window; even one or two
+  ## read_file tool results pushed the SECOND request over it
+  ## (context_length_exceeded, observed in the 2026-06-24 dogfood). The shared
+  ## review prompt says reviewers MAY read the workspace — so this reviewer
+  ## judges the vision on its TEXTUAL merits (coherence, evidence-citation,
+  ## constraint-honesty) while the claude reviewer (which keeps tools) does the
+  ## file-grounded verification. Cross-family perspective is preserved; the
+  ## forfait window can no longer overflow. Override the model off-forfait via
+  ## ITERION_EVOLVE_MODEL_GPT to restore grounding tools.
 
 ## Topology gate (ADR-052). A `condition` router picks a SINGLE target,
 ## which is what mono needs; the guard cannot live on review_fanout's own
@@ -677,47 +786,17 @@ router review_topology:
 router review_fanout:
   mode: fan_out_all
 
-## The "claude" perspective. claude_code uses Claude Code OAuth (forfait,
-## no API key). It judges the vision passed in its input; no memory block
-## (claude_code ignores memory anyway) — it reads the workspace to verify
-## evidence.
-judge review_claude:
-  backend: "claude_code"
-  model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT_REVIEW:-medium}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_claude
-  session: fresh
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 15
-  ## readonly: judges only inspect — required so the two parallel review
-  ## branches are workspace-safe (the guard rejects >1 mutating branch).
-  readonly: true
+human human_review_vision:
+  input: human_review_input
+  output: human_review_output
+  interaction: human
+  instructions: human_review_instructions
 
-## The "gpt" perspective. claw + openai/gpt-5.5 (ChatGPT forfait).
-judge review_gpt:
-  backend: "claw"
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT_REVIEW:-medium}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_gpt
-  session: fresh
-  ## NO file-reading tools for the gpt reviewer. The vision + system prompt
-  ## already sits near the ChatGPT-forfait context window; even one or two
-  ## read_file tool results pushed the SECOND request over it
-  ## (context_length_exceeded, observed in the 2026-06-24 dogfood). The shared
-  ## review prompt says reviewers MAY read the workspace — so this reviewer
-  ## judges the vision on its TEXTUAL merits (coherence, evidence-citation,
-  ## constraint-honesty) while the claude reviewer (which keeps tools) does the
-  ## file-grounded verification. Cross-family perspective is preserved; the
-  ## forfait window can no longer overflow. Override the model off-forfait via
-  ## ITERION_EVOLVE_MODEL_GPT to restore grounding tools.
-  tools: []
-  readonly: true
+human ask_continue:
+  input: continue_input
+  output: continue_output
+  interaction: human
+  instructions: ask_continue_instructions
 
 ## Deterministic join: wait for BOTH reviewers, merge their verdicts into
 ## one advisory the operator sees. Not a gate — the human is the gate.
@@ -730,14 +809,14 @@ compute aggregate_review:
   output: review_summary
   await: best_effort
   expr:
-    both_approved:     "if(vars.review_mode == 'dual' || vars.mono_family == 'claude', input.claude_approved, true) && if(vars.review_mode == 'dual' || vars.mono_family == 'gpt', input.gpt_approved, true)"
+    both_approved: "if(vars.review_mode == 'dual' || vars.mono_family == 'claude', input.claude_approved, true) && if(vars.review_mode == 'dual' || vars.mono_family == 'gpt', input.gpt_approved, true)"
     combined_concerns: "concat(input.claude_concerns, input.gpt_concerns)"
-    combined_missing:  "concat(input.claude_missing, input.gpt_missing)"
+    combined_missing: "concat(input.claude_missing, input.gpt_missing)"
     ## Each operand needs its own fallback: in MONO the absent family's edge
     ## never fires, so its field is nil — and while concat() tolerates nil,
     ## string concatenation does NOT ("cannot concatenate string with <nil>"),
     ## which would fail the node outright.
-    advisory:          "if(input.claude_confidence, input.claude_confidence, 'n/a') + '/' + if(input.gpt_confidence, input.gpt_confidence, 'n/a')"
+    advisory: "if(input.claude_confidence, input.claude_confidence, 'n/a') + '/' + if(input.gpt_confidence, input.gpt_confidence, 'n/a')"
 
 ## carry_vision stamps "latest vision under review" so the post-review
 ## edges reference one stable field whether it came from synthesize_vision
@@ -749,104 +828,17 @@ compute carry_vision:
     vision: "input.vision"
     review: "input.review"
 
-human human_review_vision:
-  input: human_review_input
-  output: human_review_output
-  instructions: human_review_instructions
-  interaction: human
-
-agent revise_vision:
-  backend: "claw"
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT_SYNTH:-high}"
-  input: revise_input
-  output: vision_output
-  system: revise_system
-  user: revise_user
-  ## session: inherit reuses the prior revision's claw session so the
-  ## reviser remembers what it changed without re-shipping the thread.
-  session: inherit
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 20
-  readonly: true
-  memory:
-    enabled: true
-    visibility: "bot"
-    scope: "vision"
-    autoload: ["VISION.md", "CONTEXT_BRIEF.md"]
-    read: true
-    write: true
-    pre_compact_inject: true
-
-agent propose_evolutions:
-  backend: "claw"
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT_SYNTH:-high}"
-  input: propose_input
-  output: propose_output
-  system: propose_system
-  user: propose_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  readonly: true
-  ## findings/ is the SHARED cross-bot inbox. `visibility: "project"`
-  ## resolves it to projects/<RepoRoot-key>/memory/findings/ — keyed off
-  ## the STABLE repo root (like the vision scope and the board), so the
-  ## findings land where Nexie's emit_action hygiene scans even when Evoly
-  ## runs from a git worktree (a bare `scope:` would key off the ephemeral
-  ## WorkDir and strand findings under the worktree key — see
-  ## docs/bot-runs/evolve.md). Evoly writes the deep evolution artifacts here.
-  memory:
-    enabled: true
-    visibility: "project"
-    scope: "findings"
-    read: true
-    write: true
-
-agent emit_backlog:
-  backend: "claw"
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-low}"
-  input: emit_input
-  output: emit_output
-  system: emit_system
-  user: emit_user
-  tools: [bash, read_file]
-  ## Board write capabilities (claw exposes them as in-process
-  ## mcp.iterion_board.* tools via boardops). create + assign (set bot +
-  ## bot_args) + label, all in `backlog` state.
-  capabilities: [board.read, board.create, board.assign, board.label]
-  tool_max_steps: 40
-
-human ask_continue:
-  input: continue_input
-  output: continue_output
-  instructions: ask_continue_instructions
-  interaction: human
-
 compute derive_continue:
   input: continue_output
   output: continue_derived
   expr:
-    is_close:        "input.action == 'close' || input.action == 'done'"
-    is_standby:      "input.action == 'standby'"
-    is_refine:       "input.action == 'refine_vision'"
+    is_close: "input.action == 'close' || input.action == 'done'"
+    is_standby: "input.action == 'standby'"
+    is_refine: "input.action == 'refine_vision'"
     is_propose_more: "input.action == 'propose_more'"
-    is_handoff:      "input.action == 'handoff_to_nexie'"
-    action:          "input.action"
-    detail:          "input.detail"
-
-agent load_nexie_handoff:
-  backend: "claw"
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_EVOLVE_EFFORT:-low}"
-  input: handoff_input
-  output: handoff_output
-  system: load_handoff_system
-  user: load_handoff_user
-  tools: [bash, read_file]
-  capabilities: [board.read, board.create, board.label]
-  tool_max_steps: 15
+    is_handoff: "input.action == 'handoff_to_nexie'"
+    action: "input.action"
+    detail: "input.detail"
 
 ## ─── Workflow ─────────────────────────────────────────────────────
 
@@ -855,9 +847,9 @@ fail vision_not_converged:
   description: "ten revisions of the vision without the operator's approval"
   code: VISION_NOT_CONVERGED
   message: "the vision was revised ten times without the operator's approval — relaunch with a clearer brief, or approve at the review"
-  resumable: false
 
 workflow evolve:
+
   entry: survey
 
   budget:
@@ -884,15 +876,15 @@ workflow evolve:
   ## survey's open_questions seed what to ask) and persists answers to
   ## per-bot memory.
   survey -> investigate with {
-    survey:        "{{outputs.survey}}",
+    survey: "{{outputs.survey}}",
     workspace_dir: "{{vars.workspace_dir}}",
-    scope_notes:   "{{vars.scope_notes}}"
+    scope_notes: "{{vars.scope_notes}}",
   }
 
   investigate -> synthesize_vision with {
-    survey:        "{{outputs.survey}}",
+    survey: "{{outputs.survey}}",
     investigation: "{{outputs.investigate}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    workspace_dir: "{{vars.workspace_dir}}",
   }
 
   ## Review topology: dual takes the fan-out and runs both families; mono
@@ -900,75 +892,80 @@ workflow evolve:
   ## spent per round. The claude edge is the unconditional fallback, so an
   ## unset/unknown review_mode degrades to the cheap path.
   synthesize_vision -> review_topology
+
   review_topology -> review_fanout when "vars.review_mode == 'dual'"
+
   review_topology -> review_gpt when "vars.review_mode != 'dual' && vars.mono_family == 'gpt'" with {
-    vision:        "{{outputs.synthesize_vision}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    vision: "{{outputs.synthesize_vision}}",
+    workspace_dir: "{{vars.workspace_dir}}",
   }
+
   review_topology -> review_claude with {
-    vision:        "{{outputs.synthesize_vision}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    vision: "{{outputs.synthesize_vision}}",
+    workspace_dir: "{{vars.workspace_dir}}",
   }
 
   review_fanout -> review_claude with {
-    vision:        "{{outputs.synthesize_vision}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    vision: "{{outputs.synthesize_vision}}",
+    workspace_dir: "{{vars.workspace_dir}}",
   }
+
   review_fanout -> review_gpt with {
-    vision:        "{{outputs.synthesize_vision}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    vision: "{{outputs.synthesize_vision}}",
+    workspace_dir: "{{vars.workspace_dir}}",
   }
 
   ## Both reviewers join at aggregate_review (await: wait_all).
   review_claude -> aggregate_review with {
-    claude_approved:   "{{outputs.review_claude.approved}}",
-    claude_concerns:   "{{outputs.review_claude.concerns}}",
-    claude_missing:    "{{outputs.review_claude.missing_axes}}",
-    claude_confidence: "{{outputs.review_claude.confidence}}"
+    claude_approved: "{{outputs.review_claude.approved}}",
+    claude_concerns: "{{outputs.review_claude.concerns}}",
+    claude_missing: "{{outputs.review_claude.missing_axes}}",
+    claude_confidence: "{{outputs.review_claude.confidence}}",
   }
+
   review_gpt -> aggregate_review with {
-    gpt_approved:   "{{outputs.review_gpt.approved}}",
-    gpt_concerns:   "{{outputs.review_gpt.concerns}}",
-    gpt_missing:    "{{outputs.review_gpt.missing_axes}}",
-    gpt_confidence: "{{outputs.review_gpt.confidence}}"
+    gpt_approved: "{{outputs.review_gpt.approved}}",
+    gpt_concerns: "{{outputs.review_gpt.concerns}}",
+    gpt_missing: "{{outputs.review_gpt.missing_axes}}",
+    gpt_confidence: "{{outputs.review_gpt.confidence}}",
   }
 
   ## Initial path: aggregate → carry (stamps the synthesised vision +
   ## the review) → human.
   aggregate_review -> carry_vision with {
     vision: "{{outputs.synthesize_vision}}",
-    review: "{{outputs.aggregate_review}}"
+    review: "{{outputs.aggregate_review}}",
   }
 
   carry_vision -> human_review_vision with {
     vision: "{{outputs.carry_vision.vision}}",
-    review: "{{outputs.carry_vision.review}}"
+    review: "{{outputs.carry_vision.review}}",
   }
 
   ## Approve → turn the vision into proposals. We pass the carried
   ## (latest-reviewed) vision, never a stale synthesize output.
   human_review_vision -> propose_evolutions when approved with {
-    vision:        "{{outputs.carry_vision.vision}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    vision: "{{outputs.carry_vision.vision}}",
+    workspace_dir: "{{vars.workspace_dir}}",
   }
 
   ## Reject → revise with the operator feedback + reviewer concerns,
   ## then back through carry → human. The human approval loop is the
   ## convergence (the operator decides); bounded at 10 as a backstop.
   human_review_vision -> revise_vision when not approved with {
-    prior_vision:  "{{outputs.carry_vision.vision}}",
-    feedback:      "{{outputs.human_review_vision.feedback}}",
-    concerns:      "{{outputs.carry_vision.review}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    prior_vision: "{{outputs.carry_vision.vision}}",
+    feedback: "{{outputs.human_review_vision.feedback}}",
+    concerns: "{{outputs.carry_vision.review}}",
+    workspace_dir: "{{vars.workspace_dir}}",
   }
 
   ## Loop-back: the revised vision re-stamps carry (NO auto re-review —
   ## the operator reviews their own revisions) and returns to the human.
   ## The `as refine_loop(10)` tag bounds the human revision cycle.
-  revise_vision -> carry_vision with {
+  revise_vision -> carry_vision as refine_loop(10) with {
     vision: "{{outputs.revise_vision}}",
-    review: "{{outputs.aggregate_review}}"
-  } as refine_loop(10)
+    review: "{{outputs.aggregate_review}}",
+  }
 
   ## The loop's exhaustion exit (C145, #1293): ten revisions without the
   ## operator's approval end the run typed, instead of LOOP_EXHAUSTED — an
@@ -978,15 +975,15 @@ workflow evolve:
 
   ## Proposals → backlog tickets → home base.
   propose_evolutions -> emit_backlog with {
-    proposals:     "{{outputs.propose_evolutions.proposals}}",
-    vision_title:  "{{outputs.carry_vision.vision}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    proposals: "{{outputs.propose_evolutions.proposals}}",
+    vision_title: "{{outputs.carry_vision.vision}}",
+    workspace_dir: "{{vars.workspace_dir}}",
   }
 
   emit_backlog -> ask_continue with {
-    vision_title:    "{{outputs.carry_vision.vision}}",
+    vision_title: "{{outputs.carry_vision.vision}}",
     proposals_count: "{{outputs.emit_backlog.summary}}",
-    created_issues:  "{{outputs.emit_backlog.created_issues}}"
+    created_issues: "{{outputs.emit_backlog.created_issues}}",
   }
 
   ## Home base (permanent co-architect pivot). Mirrors Nexie's
@@ -995,7 +992,7 @@ workflow evolve:
   ## through home_loop(200).
   ask_continue -> derive_continue with {
     action: "{{outputs.ask_continue.action}}",
-    detail: "{{outputs.ask_continue.detail}}"
+    detail: "{{outputs.ask_continue.detail}}",
   }
 
   ## Explicit close — the ONLY path to the terminal Done node.
@@ -1003,22 +1000,22 @@ workflow evolve:
 
   ## Refine: re-investigate (the agent re-asks the operator via ask_user
   ## with their detail as the new steering hint) + re-synthesise the vision.
-  derive_continue -> investigate when is_refine with {
-    survey:        "{{outputs.survey}}",
+  derive_continue -> investigate when is_refine as home_loop(200) with {
+    survey: "{{outputs.survey}}",
     workspace_dir: "{{vars.workspace_dir}}",
-    scope_notes:   "{{outputs.derive_continue.detail}}"
-  } as home_loop(200)
+    scope_notes: "{{outputs.derive_continue.detail}}",
+  }
 
-  derive_continue -> propose_evolutions when is_propose_more with {
-    vision:        "{{outputs.carry_vision.vision}}",
-    workspace_dir: "{{vars.workspace_dir}}"
-  } as home_loop(200)
+  derive_continue -> propose_evolutions when is_propose_more as home_loop(200) with {
+    vision: "{{outputs.carry_vision.vision}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+  }
 
-  derive_continue -> load_nexie_handoff when is_handoff with {
-    vision_title:   "{{outputs.carry_vision.vision}}",
+  derive_continue -> load_nexie_handoff when is_handoff as home_loop(200) with {
+    vision_title: "{{outputs.carry_vision.vision}}",
     created_issues: "{{outputs.emit_backlog.created_issues}}",
-    workspace_dir:  "{{vars.workspace_dir}}"
-  } as home_loop(200)
+    workspace_dir: "{{vars.workspace_dir}}",
+  }
 
   ## Default fallback (covers `standby` and any unrecognised action):
   ## re-pause at the home base without doing work, keeping the session
@@ -1029,7 +1026,7 @@ workflow evolve:
   derive_continue -> ask_continue
 
   load_nexie_handoff -> ask_continue with {
-    vision_title:    "{{outputs.carry_vision.vision}}",
+    vision_title: "{{outputs.carry_vision.vision}}",
     proposals_count: "{{outputs.load_nexie_handoff.summary}}",
-    created_issues:  "{{outputs.emit_backlog.created_issues}}"
+    created_issues: "{{outputs.emit_backlog.created_issues}}",
   }

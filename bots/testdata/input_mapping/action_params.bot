@@ -1,4 +1,5 @@
 ## Guard fixture — a connector action's params read an input no incoming edge maps.
+
 dsl: 2
 
 prompt work:
@@ -19,6 +20,9 @@ tool comment:
   output: comment_out
 
 workflow action_params:
+
   entry: seed
+
   seed -> comment
+
   comment -> done

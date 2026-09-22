@@ -210,4 +210,3 @@ schema publish_health_input:
 schema publish_health_output:
   degraded: bool
   banner: string
-

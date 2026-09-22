@@ -28,7 +28,10 @@ green.
   `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `revi/review` — and `nats-conformance` once
-  an admin adds it to ruleset 18857412. Editing that ruleset from the API needs
+  an admin adds it to ruleset 18857412. `brand` and `fmt-check` are STAGED:
+  they report on the pull request AND in the queue, so the context is already
+  there the day the ruleset names them, and `internal/ciguard`'s
+  `requiredChecks` carries that list. Editing that ruleset from the API needs
   `PUT /repos/{owner}/{repo}/rulesets/{id}` with the **complete** representation
   (`name`, `target`, `enforcement`, `bypass_actors`, `conditions`, `rules`); a
   `PATCH`, or a `PUT` missing any of those, answers `404` — which reads exactly

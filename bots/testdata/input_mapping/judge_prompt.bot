@@ -1,4 +1,5 @@
 ## Guard fixture — a judge's system and user prompts each read an input no incoming edge maps.
+
 dsl: 2
 
 prompt work:
@@ -19,11 +20,14 @@ agent seed:
 
 judge review:
   model: "anthropic/claude-sonnet-4-6"
+  output: verdict
   system: judge_sys
   user: judge_user
-  output: verdict
 
 workflow judge_prompt:
+
   entry: seed
+
   seed -> review
+
   review -> done

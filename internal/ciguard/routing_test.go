@@ -136,6 +136,11 @@ var requiredChecks = map[string]bool{
 	"mongo-conformance": true,
 	"golangci":          true,
 	"brand":             true,
+	// Here before it is in the ruleset, like `brand`: the job runs in the
+	// merge queue from day one so the context exists the moment it is
+	// promoted — a required check that only starts being reported when it
+	// is promoted leaves the queue waiting for one that never arrives.
+	"fmt-check": true,
 }
 
 // workflowJobs is the file PARSED, not scanned.
@@ -204,6 +209,80 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 	for name := range requiredChecks {
 		if _, ok := wf.Jobs[name]; !ok {
 			t.Errorf("requiredChecks names %q, which this workflow does not define — the ruleset would wait for a check that never reports", name)
+		}
+	}
+}
+
+// taskfilePath is the other half of the one command the `fmt-check` job
+// runs. A task and a CI step that hold the same command in two places drift
+// the day one of them gains a path or a flag, and nothing says so.
+const taskfilePath = "../../Taskfile.yml"
+
+type workflowSteps struct {
+	Jobs map[string]struct {
+		Steps []struct {
+			Name string `yaml:"name"`
+			Run  string `yaml:"run"`
+		} `yaml:"steps"`
+	} `yaml:"jobs"`
+}
+
+type taskfileTasks struct {
+	Tasks map[string]struct {
+		Cmds []yaml.Node `yaml:"cmds"`
+	} `yaml:"tasks"`
+}
+
+// TestTheInlinedTasksMatchTheirTaskfileEntry holds a CI step that MIRRORS a
+// task to the task itself. The repo inlines rather than installing go-task
+// for one command, which is a choice, not a licence to let the two texts
+// drift: `task fmt:check` is documented as "exactly what the job runs", and
+// a doc sentence does not hold.
+//
+// The witness: change either side alone and this names the pair.
+func TestTheInlinedTasksMatchTheirTaskfileEntry(t *testing.T) {
+	mirrors := map[string]struct{ job, step, task string }{
+		"fmt-check": {"fmt-check", "Shipped bots and examples are canonical", "fmt:check"},
+	}
+	wsrc, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", workflowPath, err)
+	}
+	var wf workflowSteps
+	if err := yaml.Unmarshal(wsrc, &wf); err != nil {
+		t.Fatalf("parse %s: %v", workflowPath, err)
+	}
+	tsrc, err := os.ReadFile(taskfilePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", taskfilePath, err)
+	}
+	var tf taskfileTasks
+	if err := yaml.Unmarshal(tsrc, &tf); err != nil {
+		t.Fatalf("parse %s: %v", taskfilePath, err)
+	}
+	for label, m := range mirrors {
+		job, ok := wf.Jobs[m.job]
+		if !ok {
+			t.Errorf("%s: the workflow has no job %q", label, m.job)
+			continue
+		}
+		var run string
+		for _, st := range job.Steps {
+			if st.Name == m.step {
+				run = strings.TrimSpace(st.Run)
+			}
+		}
+		if run == "" {
+			t.Errorf("%s: job %q has no step %q with a `run:`", label, m.job, m.step)
+			continue
+		}
+		task, ok := tf.Tasks[m.task]
+		if !ok || len(task.Cmds) != 1 {
+			t.Errorf("%s: the Taskfile task %q is missing, or no longer one command", label, m.task)
+			continue
+		}
+		if cmd := strings.TrimSpace(task.Cmds[0].Value); cmd != run {
+			t.Errorf("%s: the CI step runs\n  %s\nand `task %s` runs\n  %s", label, run, m.task, cmd)
 		}
 	}
 }
