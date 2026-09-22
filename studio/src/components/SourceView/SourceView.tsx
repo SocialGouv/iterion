@@ -12,10 +12,14 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
-/** The picker's entry for the whole program of a bot in several files. It
- *  is not a file, so it can never collide with a `rel`, and it is
- *  read-only: one text cannot be split back into the files it came from. */
-export const MERGED = "\u0000merged";
+/** The picker's entry for the whole program of a bot in several files.
+ *  Not a path: a unit's `rel` is a slash path ending in `.bot`, so this
+ *  cannot collide with one. Deliberately plain ASCII — it travels as an
+ *  `<option value>` and back through `e.target.value`, and a NUL there
+ *  rests on a round trip no test in this repo exercises in a real browser
+ *  (#1649). It is read-only either way: one text cannot be split back
+ *  into the files it came from. */
+export const MERGED = "<merged>";
 
 export default function SourceView() {
   const documentStore = useDocumentStoreInstance();
@@ -105,8 +109,11 @@ export default function SourceView() {
   // that changed nothing left `stale` true in the committed tree: Edit
   // gone, and no control inside this view to bring it back. Setting the
   // same key twice bails harmlessly; setting a new one always re-renders.
-  const [renderedFor, setRenderedFor] = useState<string | null>(null);
-  const stale = renderedFor !== bufferKey;
+  const [rendered, setRendered] = useState<{ key: string; doc: IterDocument | null } | null>(null);
+  // `stale` keeps the FILE axis only. Adding the document here would eject
+  // the author from edit mode on every canvas keystroke; what the document
+  // decides is whether the buffer may be WRITTEN, which is moved()'s job.
+  const stale = rendered?.key !== bufferKey;
 
   // Sync document → source (when not in editing mode)
   useEffect(() => {
@@ -125,7 +132,7 @@ export default function SourceView() {
       // For a bot in one file, editing it here is the way out: an Apply that
       // parses whole clears the flag and Save works again.
       if (salvaged) {
-        setRenderedFor(key);
+        setRendered({ key, doc: document });
         setSource(currentSource ?? "");
         setParseError(null);
         setRefused(null);
@@ -140,7 +147,7 @@ export default function SourceView() {
           // be a text the author's file does not contain.
           const res = await api.unparseUnitFile(document, currentFilePath, selected);
           if (gen !== renderGen.current) return;
-          setRenderedFor(key);
+          setRendered({ key, doc: document });
           setSource(res.source);
           setRefused(res.refused ?? null);
         } else {
@@ -149,7 +156,7 @@ export default function SourceView() {
             unit ? { flatten: true, path: currentFilePath } : { path: currentFilePath },
           );
           if (gen !== renderGen.current) return;
-          setRenderedFor(key);
+          setRendered({ key, doc: document });
           setSource(res.source);
           setRefused(res.refused ?? null);
         }
@@ -198,7 +205,20 @@ export default function SourceView() {
     //
     // `selected` is not here because the picker is disabled while editing,
     // so it cannot move between the snapshot and the await.
-    const was = { path: currentFilePath, unit, salvaged, document };
+    // The document the BUFFER was rendered from, not the one current when
+    // Apply was clicked: a change landing between the last completed
+    // render and the click leaves `stale` false (it carries no document)
+    // and Edit clickable, and entering the mode cancels the pending
+    // re-render — so the stale text freezes and Apply would write it back
+    // as that file's whole content, reverting the change with no
+    // diagnostic. While salvaged the buffer is the FILE's text, not a
+    // render, and the confirm above already governs replacing the canvas.
+    const was = {
+      path: currentFilePath,
+      unit,
+      salvaged,
+      document: salvaged ? document : (rendered?.doc ?? document),
+    };
     const moved = () => {
       const now = documentStore.getState();
       return (
@@ -258,7 +278,14 @@ export default function SourceView() {
         // What the STORE ends up holding, not what was handed to it: the
         // store normalises the document, so the object the next render
         // reads is not the one this answer carried.
-        lastApplied.current = { rel: selected, doc: documentStore.getState().document };
+        const applied = documentStore.getState().document;
+        lastApplied.current = { rel: selected, doc: applied };
+        // The buffer now corresponds to THIS document for this file — it
+        // is the text that produced it. Without this the render
+        // provenance would stay on the pre-apply document for the whole
+        // debounce, and a second apply to the same file would be refused
+        // as stale although nothing had moved under it.
+        setRendered({ key: bufferKey, doc: applied });
         if (result.unit) setUnit({ ...unit, files: result.unit.files });
         setDiagnostics(result.diagnostics);
         // Only the main's. currentSource is what a cloud launch and every
@@ -307,6 +334,7 @@ export default function SourceView() {
     selected,
     documentStore,
     document,
+    rendered,
   ]);
 
   const handleEditorWillMount = useCallback((monaco: Monaco) => {

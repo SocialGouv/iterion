@@ -767,4 +767,44 @@ describe("the Source view of a bot in several files", () => {
     expect(await screen.findByText(/other files are not included/i)).toBeTruthy();
     expect(api.parseUnitFile).toHaveBeenCalledTimes(3);
   });
+
+  // A document change landing between the last completed render and the
+  // Apply click is invisible to a snapshot taken at the click: `stale`
+  // carries no document, so Edit stays clickable over the pre-change
+  // render, and entering the mode cancels the pending re-render — the
+  // stale text then freezes for as long as the mode is on. Applying it
+  // writes that file's whole content and reverts the change silently.
+  it("applies nothing when the buffer was rendered from a superseded document", async () => {
+    const store = unitStore();
+    api.parseUnitFile.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: [],
+      bindable: true,
+      unit: { root: "", main: "main.bot", revision: "", files: unit.files },
+    });
+    renderView(store);
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(MAIN_TEXT),
+    );
+
+    // The canvas moves the document; the author clicks Edit before the
+    // re-render lands, so the buffer still holds the old render.
+    const moved = { ...createEmptyDocument(), workflows: [{ name: "from-the-canvas", entry: "done", edges: [] }] };
+    store.getState().setDocument(moved as never);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(MAIN_TEXT);
+    fireEvent.change(screen.getByLabelText("source"), { target: { value: "APPLIED FROM A STALE RENDER" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    // The rebuild confirm fires first (the document is dirty), and that is
+    // not what this test is about — click through it.
+    fireEvent.click(await screen.findByRole("button", { name: "Rebuild" }));
+
+    // The forbidden alternative, named: the canvas change reverted by a
+    // text rendered before it.
+    await waitFor(() => expect(screen.getByText(/changed while this was applying/i)).toBeTruthy());
+    // The request goes out and its answer is discarded — moved() is read
+    // after the await, which is where the store can be compared. What
+    // matters is that nothing landed.
+    expect(store.getState().document?.workflows?.[0]?.name).toBe("from-the-canvas");
+  });
 });
