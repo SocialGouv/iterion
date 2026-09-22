@@ -1,0 +1,11 @@
+# refused: a prompt's body is text
+dsl: 2
+prompts:
+  p: [a, b]
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

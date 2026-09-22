@@ -1,0 +1,7 @@
+# refused: a use names its prefix with as
+dsl: 2
+uses:
+  - use: g
+workflow:
+  name: w
+  entry: a

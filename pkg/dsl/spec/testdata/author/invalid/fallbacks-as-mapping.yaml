@@ -1,0 +1,10 @@
+# refused: fallbacks are a sequence (order is the try order), not a mapping
+dsl: 2
+nodes:
+  - agent: a
+    fallbacks:
+      spare:
+        backend: claw
+workflow:
+  name: w
+  entry: a

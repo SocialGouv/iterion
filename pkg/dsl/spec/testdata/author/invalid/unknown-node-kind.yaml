@@ -1,0 +1,7 @@
+# refused: widget is not a node kind
+dsl: 2
+nodes:
+  - widget: a
+workflow:
+  name: w
+  entry: a

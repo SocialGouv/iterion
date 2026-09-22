@@ -1,0 +1,9 @@
+# refused: an expression is a quoted string
+dsl: 2
+nodes:
+  - compute: c
+    expr:
+      total: 1
+workflow:
+  name: w
+  entry: c

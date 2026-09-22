@@ -93,12 +93,13 @@ func Render(what string) (string, error) {
 	return "", fmt.Errorf("dsl-spec region: unknown region %q", what)
 }
 
-// Regenerate rewrites the document regions and the Monaco module under root,
-// using lexicalKeywords from parser.Keywords(), and returns the changed files.
+// Regenerate rewrites the document regions, the Monaco module and the author
+// schema artefacts under root, using lexicalKeywords from parser.Keywords()
+// and maxProfile from parser.MaxProfile, and returns the changed files.
 // Every document is read and spliced before
 // any is written, so a document that cannot be regenerated leaves the tree
 // as it was rather than half rewritten.
-func Regenerate(root string, lexicalKeywords []string) ([]string, error) {
+func Regenerate(root string, lexicalKeywords []string, maxProfile int) ([]string, error) {
 	type pending struct {
 		rel, path, body string
 	}
@@ -125,6 +126,20 @@ func Regenerate(root string, lexicalKeywords []string) ([]string, error) {
 	if fresh := Monaco(lexicalKeywords); fresh != string(monacoRaw) {
 		todo = append(todo, pending{MonacoFile, monacoPath, fresh})
 	}
+	artefacts, err := SchemaArtefacts(maxProfile)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range artefacts {
+		path := filepath.Join(root, a.Path)
+		raw, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		if a.Body != string(raw) {
+			todo = append(todo, pending{a.Path, path, a.Body})
+		}
+	}
 	var changed []string
 	for _, p := range todo {
 		if err := os.MkdirAll(filepath.Dir(p.path), 0o755); err != nil {
@@ -138,9 +153,10 @@ func Regenerate(root string, lexicalKeywords []string) ([]string, error) {
 	return changed, nil
 }
 
-// Stale returns documents or the Monaco module that differ from the registry
-// and lexicalKeywords (parser.Keywords()). A missing module is stale too.
-func Stale(root string, lexicalKeywords []string) ([]string, error) {
+// Stale returns the documents, the Monaco module or the schema artefacts that
+// differ from the registry, lexicalKeywords (parser.Keywords()) and maxProfile
+// (parser.MaxProfile). A missing module or artefact is stale too.
+func Stale(root string, lexicalKeywords []string, maxProfile int) ([]string, error) {
 	var stale []string
 	for _, rel := range Files {
 		raw, err := os.ReadFile(filepath.Join(root, rel))
@@ -162,7 +178,46 @@ func Stale(root string, lexicalKeywords []string) ([]string, error) {
 	if string(monacoRaw) != Monaco(lexicalKeywords) {
 		stale = append(stale, MonacoFile)
 	}
+	artefacts, err := SchemaArtefacts(maxProfile)
+	if err != nil {
+		return stale, err
+	}
+	for _, a := range artefacts {
+		raw, err := os.ReadFile(filepath.Join(root, a.Path))
+		if err != nil && !os.IsNotExist(err) {
+			return stale, err
+		}
+		if string(raw) != a.Body {
+			stale = append(stale, a.Path)
+		}
+	}
 	return stale, nil
+}
+
+// Artefact is one complete generated file: its repository-relative path and
+// the text the registry renders for it today.
+type Artefact struct {
+	Path string
+	Body string
+}
+
+// SchemaArtefacts renders the author schema files: one per syntax profile
+// up to maxProfile, and the combined one that dispatches on `dsl:`.
+func SchemaArtefacts(maxProfile int) ([]Artefact, error) {
+	profiles := SchemaProfiles(maxProfile)
+	var out []Artefact
+	for _, p := range profiles {
+		body, err := RenderSchema(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Artefact{SchemaFile(p), string(body)})
+	}
+	body, err := RenderCombinedSchema(profiles)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, Artefact{CombinedSchemaFile, string(body)}), nil
 }
 
 // Reference renders every kind: a heading, its doc, where it lives, its

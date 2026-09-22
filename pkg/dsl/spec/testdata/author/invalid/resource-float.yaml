@@ -1,0 +1,10 @@
+# refused: a resource is a count or a pool, not a float
+dsl: 2
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  resources:
+    gpu: 1.5

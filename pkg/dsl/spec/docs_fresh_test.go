@@ -9,12 +9,13 @@ import (
 )
 
 // The committed renderings of the registry — the property reference, the
-// grammar's tables, the skills' property section — must be what the
-// registry renders today. Regenerate with `task dsl:gen` (`iterion dsl spec
-// --write`) and commit the result.
+// grammar's tables, the skills' property section, the Monaco module, the
+// author schema artefacts — must be what the registry renders today.
+// Regenerate with `task dsl:gen` (`iterion dsl spec --write`) and commit the
+// result.
 func TestGeneratedDSLDocsAreFresh(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	stale, err := spec.Stale(root, parser.Keywords())
+	stale, err := spec.Stale(root, parser.Keywords(), parser.MaxProfile)
 	if err != nil {
 		t.Fatal(err)
 	}

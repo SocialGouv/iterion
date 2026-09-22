@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -33,16 +35,18 @@ var dslSpecCmd = &cobra.Command{
 	Short: "Render the DSL property registry, or regenerate the committed docs from it",
 	Long: "Render the property registry every kind of the .bot DSL is described by —\n" +
 		"the full reference (default), the compact `skill` section, or the table of\n" +
-		"one kind (`--region 'table agent'`) — or, with --write, regenerate every\n" +
-		"committed generated region in place (docs/references/dsl-properties.md,\n" +
-		"docs/references/dsl-grammar.md, SKILL.md, the whats-next DSL quickref)\n" +
-		"and the Monaco editor's keyword/property module.\n\n" +
+		"one kind (`--region 'table agent'`), the author JSON Schema of the YAML\n" +
+		"twin (`--region json-schema`, or `--region 'json-schema v2'` for one\n" +
+		"profile) — or, with --write, regenerate every committed generated region\n" +
+		"in place (docs/references/dsl-properties.md, docs/references/dsl-grammar.md,\n" +
+		"SKILL.md, the whats-next DSL quickref), the Monaco editor's\n" +
+		"keyword/property module and the schema artefacts under docs/references.\n\n" +
 		"The registry is held to the parser by a conformance test in both\n" +
 		"directions, so what this prints is what the parser accepts.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if dslSpecWrite {
-			changed, err := spec.Regenerate(dslSpecRoot, parser.Keywords())
+			changed, err := spec.Regenerate(dslSpecRoot, parser.Keywords(), parser.MaxProfile)
 			for _, f := range changed {
 				fmt.Fprintf(os.Stderr, "wrote %s\n", f)
 			}
@@ -54,6 +58,14 @@ var dslSpecCmd = &cobra.Command{
 			}
 			return nil
 		}
+		if strings.HasPrefix(dslSpecRegion, "json-schema") {
+			raw, err := renderAuthorSchema(strings.TrimSpace(strings.TrimPrefix(dslSpecRegion, "json-schema")))
+			if err != nil {
+				return err
+			}
+			_, err = os.Stdout.Write(raw)
+			return err
+		}
 		body, err := spec.Render(dslSpecRegion)
 		if err != nil {
 			return err
@@ -61,6 +73,19 @@ var dslSpecCmd = &cobra.Command{
 		_, err = os.Stdout.WriteString(body)
 		return err
 	},
+}
+
+// renderAuthorSchema renders the combined author schema ("" ) or one
+// profile's ("v1", "v2").
+func renderAuthorSchema(which string) ([]byte, error) {
+	if which == "" {
+		return spec.RenderCombinedSchema(spec.SchemaProfiles(parser.MaxProfile))
+	}
+	profile, err := strconv.Atoi(strings.TrimPrefix(which, "v"))
+	if err != nil || profile < 1 || profile > parser.MaxProfile {
+		return nil, fmt.Errorf("json-schema: %q is not a profile this build reads (v1 to v%d)", which, parser.MaxProfile)
+	}
+	return spec.RenderSchema(profile)
 }
 
 var dslMigrateOpts cli.MigrateDSLOptions
@@ -98,7 +123,7 @@ var dslMigrateCmd = &cobra.Command{
 func init() {
 	dslSpecCmd.Flags().BoolVar(&dslSpecWrite, "write", false, "Regenerate every committed generated region in place instead of printing")
 	dslSpecCmd.Flags().StringVar(&dslSpecRoot, "root", ".", "Repository root the --write paths are relative to")
-	dslSpecCmd.Flags().StringVar(&dslSpecRegion, "region", "reference", "What to print: reference, skill, or 'table <kind>'")
+	dslSpecCmd.Flags().StringVar(&dslSpecRegion, "region", "reference", "What to print: reference, skill, 'table <kind>', json-schema, or 'json-schema v<N>'")
 	dslCmd.AddCommand(dslSpecCmd)
 	dslMigrateCmd.Flags().IntVar(&dslMigrateOpts.To, "to", 2, "Target syntax profile")
 	dslMigrateCmd.Flags().BoolVar(&dslMigrateOpts.DryRun, "dry-run", false, "List every change and write nothing")

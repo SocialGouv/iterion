@@ -2,9 +2,15 @@
 
 The same `iterion dsl spec --write` command generates Monaco's lexical
 keywords and properties per kind in
-[`iterDsl.generated.ts`](../../studio/src/lib/iterDsl.generated.ts).
-The lexer supplies its keyword table; this registry supplies the properties.
-`task dsl:check` verifies that module alongside this reference.
+[`iterDsl.generated.ts`](../../studio/src/lib/iterDsl.generated.ts), and the
+author JSON Schema of the YAML twin of a `.bot` (lot 5 of #1010):
+[`iterion-author.v1.schema.json`](iterion-author.v1.schema.json),
+[`iterion-author.v2.schema.json`](iterion-author.v2.schema.json), one per
+syntax profile, and [`iterion-author.schema.json`](iterion-author.schema.json),
+which dispatches on the required `dsl:` key. The lexer supplies its keyword
+table; this registry supplies the properties, the header and entry shapes,
+and the forms the schema renders. `task dsl:check` verifies the module and
+the three schema files alongside this reference.
 
 Every declaration kind, node kind and block of the DSL, with the properties
 each accepts, the shape of every value and one line on what it means. This

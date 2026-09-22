@@ -1,0 +1,36 @@
+# YAML spellings that LOOK like traps and are valid documents: a quoted
+# number-looking string, a `{{` in a block scalar, numbers and bools in a
+# with map (they read as the strings they spell), a duration written bare,
+# a quoted enum word, an edge whose with map needs quotes.
+dsl: 2
+vars:
+  version: {type: string, default: "010"}
+  octal_looking: {type: string, default: "0o17"}
+prompts:
+  body: |
+    First paragraph with {{input.x}}.
+
+    Second paragraph; a `# hash` is text here, so is `key: value`.
+nodes:
+  - agent: a
+    model: anthropic/claude-opus-5
+    session: "inherit"
+    await: "best_effort"
+    timeout: 20m
+    reasoning_effort: max
+    interaction: "human_or_host"
+  - subbot: child
+    source: child.bot
+    with: {n: 3, ok: true, name: "x"}
+  - tool: t
+    action: "forgejo.issue.comment"
+    connection: "forge-main"
+    retry: "3"
+    timeout: 45
+workflow:
+  name: w
+  entry: a
+  edges:
+    - a -> child
+    - "child -> t with { note: \"a: b\" }"
+    - t -> done

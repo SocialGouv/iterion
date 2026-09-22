@@ -1,0 +1,9 @@
+# refused: memory.project_root was removed in profile 2 (E043 in the .bot)
+dsl: 2
+nodes:
+  - agent: a
+    memory:
+      project_root: true
+workflow:
+  name: w
+  entry: a

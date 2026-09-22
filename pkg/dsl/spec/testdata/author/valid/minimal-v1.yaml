@@ -1,0 +1,16 @@
+# The smallest profile-1 document, with the one property profile 1 alone
+# accepts (memory.project_root, removed in profile 2).
+dsl: 1
+prompts:
+  ask: Say hello.
+nodes:
+  - agent: hello
+    system: ask
+    memory:
+      enabled: true
+      project_root: true
+workflow:
+  name: hello
+  entry: hello
+  edges:
+    - hello -> done

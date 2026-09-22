@@ -1,0 +1,8 @@
+# refused: entry names a node, a bare identifier
+dsl: 2
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: "two words"

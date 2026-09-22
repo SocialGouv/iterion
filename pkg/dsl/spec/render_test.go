@@ -48,23 +48,23 @@ func TestMonacoRegenerationDetectsKeywordDriftAndMissingModule(t *testing.T) {
 		}
 	}
 	keywords := []string{"agent", "dsl"}
-	changed, err := Regenerate(root, keywords)
+	changed, err := Regenerate(root, keywords, 2)
 	if err != nil || !slices.Contains(changed, MonacoFile) {
 		t.Fatalf("module was not generated: changed=%v err=%v", changed, err)
 	}
-	if stale, err := Stale(root, keywords); err != nil || len(stale) != 0 {
+	if stale, err := Stale(root, keywords, 2); err != nil || len(stale) != 0 {
 		t.Fatalf("fresh generation reports stale files: %v %v", stale, err)
 	}
-	if stale, err := Stale(root, append(keywords, "new_lexer_keyword")); err != nil || !slices.Equal(stale, []string{MonacoFile}) {
+	if stale, err := Stale(root, append(keywords, "new_lexer_keyword"), 2); err != nil || !slices.Equal(stale, []string{MonacoFile}) {
 		t.Fatalf("lexer keyword drift must stale the module: %v %v", stale, err)
 	}
-	if changed, err := Regenerate(root, keywords); err != nil || len(changed) != 0 {
+	if changed, err := Regenerate(root, keywords, 2); err != nil || len(changed) != 0 {
 		t.Fatalf("second generation should not rewrite anything: %v %v", changed, err)
 	}
 	if err := os.Remove(filepath.Join(root, MonacoFile)); err != nil {
 		t.Fatal(err)
 	}
-	if stale, err := Stale(root, keywords); err != nil || !slices.Equal(stale, []string{MonacoFile}) {
+	if stale, err := Stale(root, keywords, 2); err != nil || !slices.Equal(stale, []string{MonacoFile}) {
 		t.Fatalf("missing module must be reported stale: %v %v", stale, err)
 	}
 }
@@ -88,7 +88,7 @@ func TestRegenerateIsAllOrNothing(t *testing.T) {
 		}
 		write(rel, body)
 	}
-	changed, err := Regenerate(root, []string{"agent"})
+	changed, err := Regenerate(root, []string{"agent"}, 2)
 	if err == nil {
 		t.Fatal("a broken document did not fail Regenerate")
 	}
