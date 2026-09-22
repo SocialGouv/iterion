@@ -742,7 +742,8 @@ your repo root and `sandbox: auto` will pick them up.
 | ------------- | ----------------------------------------------------- |
 | `claude_code` | **fully sandboxed** (CLI runs inside the container)   |
 | `pi`          | **fully sandboxed** in both RPC and print transports |
-| `kimi` / `grok` | **fully sandboxed** (CLI runs inside the container) |
+| `kimi` / `grok` | architecturally sandboxable, but **not in the stock image** — same as `opencode` below |
+| `opencode`    | **not shipped in the stock image** (the cloud runner image has the same gap) — the published sandbox image bakes claude-code and pi (and carries codex in node_modules), so a sandboxed `opencode`, `kimi` or `grok` node dies at `exec: not found` unless a custom image or a PATH inside the container supplies the binary. Nothing refuses it earlier: the limit is the image's contents, not the backend. |
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **fully sandboxed** (`bash -c` runs inside the container) |

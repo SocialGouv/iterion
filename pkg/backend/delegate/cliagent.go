@@ -170,7 +170,19 @@ func (b *CLIAgentBackend) resolveBinary(task Task) string {
 		return b.Command
 	}
 	if b.Protocol.HostBinaryEnv != "" && task.Hostless() {
-		return strings.TrimSpace(os.Getenv(b.Protocol.HostBinaryEnv))
+		// An ABSOLUTE path only: runOnce sets cmd.Dir to the workspace, and
+		// os/exec resolves a relative Path against Dir — so a relative value
+		// would run a binary out of the CHECKOUT, while detection resolved
+		// the same string against the server's own cwd. One string, two
+		// files, the untrusted one winning.
+		pinned := strings.TrimSpace(os.Getenv(b.Protocol.HostBinaryEnv))
+		if filepath.IsAbs(pinned) {
+			return pinned
+		}
+		if pinned != "" && b.Logger != nil {
+			b.Logger.Warn("[%s] %s=%q is not an absolute path and was ignored; falling back to %q on PATH",
+				b.Protocol.Name, b.Protocol.HostBinaryEnv, pinned, b.Protocol.DefaultBinary)
+		}
 	}
 	return ""
 }
@@ -280,6 +292,14 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 
 	// When the CLI exposes no system-prompt flag, fold the composed system
 	// prompt in as a preamble so the node's task still reaches the agent.
+	// A protocol that names neither a prompt flag nor stdin delivery would
+	// build argv with NO prompt at all and run the agent on an empty task.
+	// Refuse where refusing is still possible.
+	if proto.PromptFlag == "" && !proto.PromptViaStdin {
+		return Result{BackendName: backendName, ExitCode: -1}, fmt.Errorf(
+			"delegate: %s: protocol delivers no prompt (set PromptFlag or PromptViaStdin)", backendName)
+	}
+
 	promptArg := userPrompt
 	if proto.SystemPromptFlag == "" && systemPrompt != "" {
 		if promptArg != "" {

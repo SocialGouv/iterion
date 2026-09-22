@@ -253,7 +253,7 @@ That is the **whole** list, and deliberately so:
   API server, and tracing a static-file host buys nothing.
 
 Only the CLI-agent backends' *in-process* path is covered: a
-`claude_code` / `codex` / `pi` / `kimi` / `grok` node shells out to its
+`claude_code` / `codex` / `pi` / `kimi` / `grok` / `opencode` node shells out to its
 own CLI, which iterion does not trace.
 
 ### Relationship to the OpenTelemetry wiring

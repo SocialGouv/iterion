@@ -134,7 +134,7 @@ deliberate refusal only changes verdict when an operator changes something.
 
 ```iter fragment
 agent w:
-  backend: "claw"               # or claude_code / codex / pi / kimi / grok
+  backend: "claw"               # or claude_code / codex / pi / kimi / grok / opencode
   model:   "openai/gpt-5.5"     # claw with openai/* prefix
   reasoning_effort: high        # low | medium | high | xhigh | max | ultracode
                                 # ultracode = xhigh + multi-agent orchestration prerogative;

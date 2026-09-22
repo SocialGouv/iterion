@@ -16,10 +16,11 @@ export const BACKEND_OPTIONS: SelectOption[] = [
   { value: "kimi", label: "kimi" },
   { value: "grok", label: "grok" },
   { value: "codex", label: "codex" },
+  { value: "opencode", label: "opencode" },
 ];
 
 export const BACKEND_HELP =
-  "Execution backend. Empty resolves to the workflow default (claw if not set). claw runs in-process; every other value shells out to that agent CLI. Pick pi/kimi/grok to reach a model claude_code cannot. pi supports iterion's permission gate, ask_user, board capabilities and mcp_server blocks through an embedded extension; kimi and grok run their own tool set, so those blocks do not apply to them.";
+  "Execution backend. Empty resolves to the workflow default (claw if not set). claw runs in-process; every other value shells out to that agent CLI. Pick pi/kimi/grok/opencode to reach a model claude_code cannot. pi supports iterion's permission gate, ask_user, board capabilities and mcp_server blocks through an embedded extension; kimi, grok and opencode run their own tool set, so those blocks do not apply to them. opencode cannot enforce the permission gate at all, so a gated node routed to it is refused at compile time.";
 
 export const AWAIT_OPTIONS: SelectOption[] = [
   { value: "none", label: "none" },

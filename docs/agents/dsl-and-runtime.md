@@ -25,7 +25,7 @@ summary plus the gotchas that cost a session each.
 
 | Type | Description |
 |------|-------------|
-| **Agent** | LLM node with tools, structured I/O, and any selected backend (`claw`, `claude_code`, `codex`, `pi`, `kimi`, or `grok`) |
+| **Agent** | LLM node with tools, structured I/O, and any selected backend (`claw`, `claude_code`, `codex`, `pi`, `kimi`, `grok`, or `opencode`) |
 | **Judge** | LLM node producing verdicts (typically no tools) |
 | **Router** | Routing node with 5 modes: `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` (see `docs/routers.md`) |
 | **Human** | Pause/resume via `interaction: human` (default for human nodes); optional `interaction: llm` or `llm_or_human` can auto-answer or escalate. Agent/judge nodes can instead declare **`interaction: async`** (**ADR-081**): the agent posts questions via `ask_user_async` and KEEPS WORKING — answers arrive in its message queue (node-scoped inbox) whenever the operator replies; the `await_answers` tool is the LLM-discretion sync point (pauses only if something is still pending). See [docs/async-interaction.md](../async-interaction.md). |

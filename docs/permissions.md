@@ -268,6 +268,14 @@ and evaluated by each gated backend before every tool runs:
   so a policy that can produce one (mode `ask`, or any explicit `ask:`
   rule, which outranks mode `deny`) is refused loudly at dispatch, and
   C136 warns about the coupling at compile time.
+- **opencode** — cannot enforce the gate in any mode: it exposes no
+  `PreToolUse` hook, so a node with an armed gate is refused at compile
+  time (C176) and again at dispatch rather than run ungated. Its own
+  declarative policy (`OPENCODE_PERMISSION`) is a plausible route to
+  native `deny`, deliberately not wired — membership in the gate table is
+  earned by a live denial, never declared. Note that a headless opencode
+  run auto-*rejects* an `ask` verdict (measured on 1.1.19; later builds add
+  a `--auto` flag that auto-*allows* it instead).
 - **claude_code** — a broad PreToolUse hook (`wirePermissionHook` in
   claude_code.go) evaluates the policy. Under the always-on
   `bypassPermissions`, PreToolUse hooks still run and a `deny` decision
