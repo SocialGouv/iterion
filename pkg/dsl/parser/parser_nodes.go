@@ -738,16 +738,11 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 				fd.Metered = *v
 			}
 		case "action":
-			// Bare ident, matching the DSL's enum style (`await: wait_all`).
-			// A quoted string is tolerated for the JSON round-trip authors.
-			at := p.next()
-			switch at.Type {
-			case TokenIdent, TokenString:
-				fd.Action = at.Value
-			default:
-				p.expectFailed(at, TokenIdent, "expected fallback action (skip), got "+at.Type.String())
-				p.skipToNewline()
-			}
+			// A bare word, matching the DSL's enum style (`await: wait_all`),
+			// or a quoted string for the JSON round-trip authors — the one
+			// string|ident reader every such property goes through; the
+			// compiler narrows the word to `skip`.
+			fd.Action = p.expectStringOrIdent()
 		case "when":
 			// A quoted expr over vars, like a compute `expr:` value.
 			fd.When = p.expectString()
@@ -891,13 +886,16 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 	}
 	gd := &ast.GroupDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
 
-	// Optional parameter list: (p1, p2, ...)
+	// Optional parameter list: (p1, p2, ...). A parameter that is not a
+	// name is refused where it stands, not left out.
 	if p.peek().Type == TokenLParen {
 		p.next()
 		for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF && p.peek().Type != TokenNewline {
-			pn := tokenAsIdent(p.next())
-			if pn != "" {
+			pt := p.next()
+			if pn := tokenAsIdent(pt); pn != "" {
 				gd.Params = append(gd.Params, pn)
+			} else {
+				p.listElementRefused(pt, "a parameter name")
 			}
 			if p.peek().Type == TokenComma {
 				p.next()

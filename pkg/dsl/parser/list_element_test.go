@@ -56,3 +56,24 @@ func TestAListElementThatIsNotANameIsRefusedNotDropped(t *testing.T) {
 		})
 	}
 }
+
+// A group's parameter list is a list of names too: `group g("a", b):` used
+// to read as `group g(b):` in silence, and every `{{params.a}}` of the
+// group's prompts then stayed unbound.
+func TestAGroupParameterThatIsNotANameIsRefusedNotDropped(t *testing.T) {
+	for _, src := range []string{
+		"group g(\"a\", b):\n  agent x:\n    model: \"m\"\n",
+		"group g(b, 1):\n  agent x:\n    model: \"m\"\n",
+	} {
+		res := Parse("x.bot", src)
+		if len(res.Diagnostics) != 1 {
+			t.Fatalf("%q: want exactly one diagnostic, got %v", src, res.Diagnostics)
+		}
+		if d := res.Diagnostics[0]; d.Code != DiagExpectedToken || !strings.Contains(d.Message, "parameter name") {
+			t.Fatalf("%q: got %s %q", src, d.Code, d.Message)
+		}
+		if got := res.File.Groups[0].Params; !reflect.DeepEqual(got, []string{"b"}) {
+			t.Fatalf("%q: the other parameter was not read: %v", src, got)
+		}
+	}
+}
