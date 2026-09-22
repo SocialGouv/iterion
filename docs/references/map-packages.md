@@ -129,7 +129,7 @@
 | `pkg/git` | a minimal wrapper around the `git` CLI for the studio's modified-files panel. | — | 11 · 34 |
 | `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` | 4 · 159 |
 | `pkg/internal/appinfo` | — | — | 1 · 7 |
-| `pkg/internal/clilocate` | centralises the host-side probe used by backends that shell out to a CLI binary (claude, codex, …). | — | 1 · 4 |
+| `pkg/internal/clilocate` | centralises the host-side probe used by backends that shell out to a CLI binary (claude, codex, …). | — | 1 · 11 |
 | `pkg/internal/jsonl` | provides a crash-safe append-only JSONL file writer. | — | 3 · 2 |
 | `pkg/internal/mongotest` | supplies the contexts the Mongo-gated test suites use. | — | 1 · 3 |
 | `pkg/internal/mongoutil` | holds tiny helpers for the Mongo driver shared across iterion's storage packages (pkg/store/mongo, pkg/identity, pkg/secrets, pkg/auth). | — | 2 · 12 |

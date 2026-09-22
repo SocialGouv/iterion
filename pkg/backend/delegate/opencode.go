@@ -156,14 +156,13 @@ func refuseUntrustedOpenCodeProject(workDir string) error {
 		return nil
 	}
 	if workDir == "" {
-		// runOnce leaves cmd.Dir unset, so the CLI inherits the server
-		// process's own cwd and walks up from THERE. Screen that, not nothing.
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("delegate: %s: no workspace and no working directory to screen: %w",
-				BackendOpenCode, err)
-		}
-		workDir = cwd
+		// Unreachable from a real run: the engine defaults its work dir to
+		// os.Getwd() before any Task is built. Refused rather than screened,
+		// because neither answer would be right — on the host the CLI would
+		// inherit the SERVER's cwd, and under a sandbox the driver defaults
+		// its --workdir to the bind-mounted checkout, so "nothing to screen"
+		// would be a fail-OPEN on the very directory at issue.
+		return fmt.Errorf("delegate: %s: no workspace to screen for opencode resources", BackendOpenCode)
 	}
 	levels, err := openCodeProjectLevels(workDir)
 	if err != nil {

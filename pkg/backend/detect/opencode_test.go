@@ -232,3 +232,32 @@ func TestOpenCodeProbeAndSpawnAgreeOnTheSameString(t *testing.T) {
 		}
 	})
 }
+
+// TestPiProbeAndSpawnAgreeOnTheSameString: ITERION_PI_BIN has THREE consumers
+// — the print transport, the RPC transport and this probe. A probe that
+// resolves the string differently reports pi unavailable on a value the run
+// would happily use, or available on one the run refuses.
+func TestPiProbeAndSpawnAgreeOnTheSameString(t *testing.T) {
+	isolateEnv(t)
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "pi-nightly")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o750); err != nil { // #nosec G306 — a test stub that must be executable.
+		t.Fatal(err)
+	}
+
+	t.Run("a bare name on PATH is found, as the spawn would", func(t *testing.T) {
+		t.Setenv("PATH", dir)
+		t.Setenv("ITERION_PI_BIN", "pi-nightly")
+		if got, ok := locatePiBinary(); !ok || got == "" {
+			t.Fatalf("probe = (%q, %v) for a bare name the delegate PATH-resolves", got, ok)
+		}
+	})
+
+	t.Run("a relative path is a miss here because it is a refusal there", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		t.Setenv("ITERION_PI_BIN", "./bin/pi")
+		if got, ok := locatePiBinary(); ok {
+			t.Fatalf("probe resolved %q for a value the delegate refuses", got)
+		}
+	})
+}

@@ -207,17 +207,7 @@ var findOpenCodeBinary = locateOpenCodeBinary
 // MISS here because it is a refusal there. A probe that resolves the string
 // differently from the spawn reports a backend the run cannot use.
 func locateOpenCodeBinary() (string, bool) {
-	pinned := strings.TrimSpace(os.Getenv("ITERION_OPENCODE_BIN"))
-	switch {
-	case pinned == "":
-		return clilocate.Locate("", clilocate.Spec{Name: "opencode"})
-	case filepath.IsAbs(pinned):
-		return clilocate.Locate(pinned, clilocate.Spec{Name: "opencode"})
-	case !strings.ContainsRune(pinned, filepath.Separator):
-		return clilocate.Locate("", clilocate.Spec{Name: pinned})
-	default:
-		return "", false
-	}
+	return clilocate.LocatePinned(os.Getenv("ITERION_OPENCODE_BIN"), clilocate.Spec{Name: "opencode"})
 }
 
 // openCodeProviderEnv is the set of environment variables opencode itself
@@ -863,13 +853,18 @@ var findCodexBinary = func() (string, bool) {
 // findPiBinary probes the host for the pi CLI, honouring the same override the
 // backend itself uses so detection and execution agree on one binary.
 //
-// The override goes through Locate as its EXPLICIT path rather than being
-// returned directly: Locate rejects a path that does not exist, so a typo'd or
-// stale ITERION_PI_BIN no longer makes detection report pi as present — which,
-// since availability now feeds auto-selection, would resolve to a backend that
-// dies at exec. Trimming matches what NewPiBackend does with the same variable.
-var findPiBinary = func() (string, bool) {
-	return clilocate.Locate(strings.TrimSpace(os.Getenv("ITERION_PI_BIN")), clilocate.Spec{
+// The override goes through the SAME classifier the delegate spawns with
+// (clilocate.LocatePinned): an absolute path as given, a bare name through
+// PATH, a relative path a miss — because it is a refusal at spawn time. A
+// stale or typo'd ITERION_PI_BIN therefore no longer makes detection report
+// pi as present, and detection can no longer report a binary the run would
+// refuse, nor miss one the run would happily use.
+var findPiBinary = locatePiBinary
+
+// locatePiBinary is the real resolution, named so a test can exercise it
+// rather than the stub isolateEnv installs over the var.
+func locatePiBinary() (string, bool) {
+	return clilocate.LocatePinned(os.Getenv("ITERION_PI_BIN"), clilocate.Spec{
 		Name:      "pi",
 		Fallbacks: clilocate.CommonBinaryCandidates("pi"),
 	})

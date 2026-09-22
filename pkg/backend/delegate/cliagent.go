@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -194,14 +195,14 @@ func resolveCLIBinary(proto CLIAgentProtocol, command string, task Task) (string
 	}
 	if proto.HostBinaryEnv != "" && task.Hostless() {
 		pinned := strings.TrimSpace(os.Getenv(proto.HostBinaryEnv))
-		switch {
-		case pinned == "":
+		switch clilocate.ClassifyPin(pinned) {
+		case clilocate.PinUnset:
 			// Not set: fall through to the default binary.
-		case filepath.IsAbs(pinned), !strings.ContainsRune(pinned, filepath.Separator):
+		case clilocate.PinAbsolute, clilocate.PinBareName:
 			return pinned, nil
 		default:
 			return "", fmt.Errorf(
-				"delegate: %s: %s=%q is a relative path: it would resolve against the workspace and run a binary out of the checkout; use an absolute path or a bare name on PATH",
+				"delegate: %s: %s=%q is neither an absolute path nor a bare name: it carries a path separator, so it would resolve against the workspace and run a binary out of the checkout",
 				proto.Name, proto.HostBinaryEnv, pinned)
 		}
 	}

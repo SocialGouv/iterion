@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 )
 
 // Spec describes how to look for a CLI binary.
@@ -97,4 +98,70 @@ func isExecutable(p string) bool {
 		return true
 	}
 	return info.Mode()&0o111 != 0
+}
+
+// PinKind classifies an operator-pinned binary value (an env override, a
+// node's `command:`) by how os/exec will resolve it.
+type PinKind int
+
+const (
+	// PinUnset is an empty value: nothing was pinned.
+	PinUnset PinKind = iota
+	// PinAbsolute is an absolute path, resolved as given.
+	PinAbsolute
+	// PinBareName has no path separator, so os/exec resolves it through
+	// PATH and the command's Dir never enters.
+	PinBareName
+	// PinRelative contains a separator without being absolute. os/exec
+	// resolves it against the command's Dir — which for an agent CLI is the
+	// workspace — so it names a binary inside the checkout.
+	PinRelative
+)
+
+// pinSeparators are BOTH path separators, on every platform.
+//
+// Deliberately not `filepath.Separator`: Windows accepts `/` as a separator
+// while its own separator constant is `\`, so a host-separator test
+// classifies "./cli" as a bare name there and hands it straight back — to be
+// joined with the command's Dir, which for an agent CLI is the workspace. And
+// a host-separator test cannot be falsified on a Unix CI, because the two
+// predicates agree for every input a Unix host can express.
+//
+// One rule for every platform is therefore both safer and testable. It is
+// stricter than Unix's own os/exec for exactly one shape — a file whose name
+// literally contains a backslash — which is not worth platform-dependent
+// reasoning about what runs.
+const pinSeparators = `/\`
+
+// ClassifyPin answers the question os/exec asks before it decides whether to
+// resolve a value against the command's Dir.
+func ClassifyPin(v string) PinKind {
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "":
+		return PinUnset
+	case filepath.IsAbs(v):
+		return PinAbsolute
+	case !strings.ContainsAny(v, pinSeparators):
+		return PinBareName
+	default:
+		return PinRelative
+	}
+}
+
+// LocatePinned resolves an operator-pinned value the way the agent backends
+// spawn it, so a probe and a spawn can never answer differently for the same
+// string: an absolute path as given, a bare name through PATH, and a relative
+// path as a MISS — because it is a refusal at spawn time.
+func LocatePinned(pinned string, spec Spec) (string, bool) {
+	switch ClassifyPin(pinned) {
+	case PinAbsolute:
+		return Locate(strings.TrimSpace(pinned), Spec{Name: spec.Name})
+	case PinBareName:
+		return Locate("", Spec{Name: strings.TrimSpace(pinned)})
+	case PinRelative:
+		return "", false
+	default:
+		return Locate("", spec)
+	}
 }

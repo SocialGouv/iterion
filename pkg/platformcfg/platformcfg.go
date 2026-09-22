@@ -154,6 +154,11 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_BIN":          true,
 	"ITERION_PI_BIN":       true,
 	"ITERION_OPENCODE_BIN": true,
+	// The two project-trust switches are ENFORCEMENT, not paths: each one
+	// lifts a refusal that stops an agent CLI executing code out of the
+	// repository under review.
+	"ITERION_PI_TRUST_PROJECT":       true,
+	"ITERION_OPENCODE_TRUST_PROJECT": true,
 }
 
 // botVarsMax bounds the record so a runaway writer cannot grow the

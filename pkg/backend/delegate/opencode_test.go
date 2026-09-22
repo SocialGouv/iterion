@@ -301,8 +301,10 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err == nil {
 			t.Fatal("a workspace deeper than the cap was accepted without being screened")
 		}
-		if !strings.Contains(err.Error(), "cannot screen") {
-			t.Errorf("error %q does not say the screen could not be completed", err)
+		for _, want := range []string{"cannot screen", "path components", "no repository root"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %q — it must describe what was measured", err, want)
+			}
 		}
 	})
 
@@ -389,6 +391,16 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		}
 		if len(levels) < 2 {
 			t.Fatalf("levels = %v, want the ancestors of the working directory", levels)
+		}
+	})
+
+	// No workspace is unreachable from a real run, and neither "screen the
+	// server's cwd" nor "screen nothing" would be right — a sandbox driver
+	// defaults its --workdir to the bind-mounted checkout, so waving it
+	// through would fail OPEN on exactly the directory at issue.
+	t.Run("no workspace is refused, never waved through", func(t *testing.T) {
+		if err := refuseUntrustedOpenCodeProject(""); err == nil {
+			t.Error("an empty workspace was accepted without being screened")
 		}
 	})
 
