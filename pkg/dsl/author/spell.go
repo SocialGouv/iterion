@@ -849,12 +849,14 @@ func (s *speller) prompt(k, v *yaml.Node) {
 		s.refuse(v, what+"'s body is text; `"+v.Value+"` reads as "+tagWord(v.ShortTag())+" — quote it")
 		return
 	}
-	// A `|` block scalar ends with the one newline YAML keeps (clip); a
-	// declared body never ends with one, so that newline is the scalar's,
-	// not the author's text.
-	body := strings.TrimSuffix(v.Value, "\n")
+	body := v.Value
 	switch v.Style {
 	case yaml.LiteralStyle, yaml.FoldedStyle:
+		// A block scalar ends with the one newline YAML keeps (clip); a
+		// declared body never ends with one, so that newline is the
+		// scalar's, not the author's text. A quoted scalar's trailing
+		// newline is the author's: the lexer settles it, and says so.
+		body = strings.TrimSuffix(body, "\n")
 		var ok bool
 		if body, ok = s.blockBreaks(what, v, body); !ok {
 			return

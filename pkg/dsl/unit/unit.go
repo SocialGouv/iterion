@@ -124,7 +124,10 @@ func LoadDirWithMain(mainPath, mainName string, source []byte) *Unit {
 // every position of the main carries — the document's own path — and what
 // its diagnostics point at; source is the document's text, which the
 // unit's Digest covers in place of a `.bot`'s. The main is the unit's main
-// whatever it declares: a document is never read as a fragment.
+// whatever it declares: a document is never read as a fragment. f is read,
+// never written: the unit's Merged is a copy of it with the fragments'
+// declarations appended and the keyed blocks rebuilt, so the caller may go
+// on reading, compiling or writing f, and may hand it over again.
 func LoadDirWithMainAST(mainPath, mainName string, f *ast.File, source []byte) *Unit {
 	return loadDir(mainPath, mainName, map[string][]byte{filepath.Base(mainPath): source}, f)
 }

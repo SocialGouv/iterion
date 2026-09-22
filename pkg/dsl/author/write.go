@@ -71,8 +71,12 @@ func inlineBodies(prompts []*ast.PromptDecl) map[string]string {
 
 // ---- node builders ----
 
-// keyNode is a mapping key: plain, or double-quoted when it holds a scanner
-// break (see str) — the one spelling the document reads back as the key.
+// keyNode is a mapping key, tagged `!!str`: the tag makes the encoder quote
+// a key whose plain spelling would read as another type (`123`, `true`,
+// `null`, `2026-01-01` — author-chosen names reach here through a JSON
+// object's keys), so the reader gets the string back, never a non-string
+// key to refuse. A scanner break needs the double quotes said explicitly
+// (see str).
 func keyNode(k string) *yaml.Node {
 	if strings.ContainsAny(k, scannerBreaks) {
 		return quoted(k)
