@@ -947,6 +947,23 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 		httpError(w, http.StatusUnprocessableEntity, "%v", err)
 		return
 	}
+	// A unit's `bindable` is the MAIN's parse alone, so a FRAGMENT the
+	// parser could only salvage leaves the buffer unsalvaged and this view
+	// on — and the loader keeps that file's partial AST, so the part here
+	// is missing everything after the error. Rendering it back would show
+	// the author a text their file does not contain and hide the very lines
+	// they have to fix, which is what this route exists not to do.
+	if spr := parser.Parse(f.Rel, string(f.Source)); parseHasErrors(spr.Diagnostics) {
+		// The diagnostic itself, not a guess about it: several error-severity
+		// diagnostics leave a COMPLETE ast (an unknown property, a bad `dsl:`
+		// value), so "does not parse" would be false of them — while the
+		// render is still not the file, which is what this refuses.
+		writeJSON(w, unparseResponse{
+			Source:  string(f.Source),
+			Refused: fmt.Sprintf("iterion could not read all of %s (%s), so the document holds only what could be read of it — repair it where this bot's files live", f.Rel, firstParseError(spr.Diagnostics)),
+		})
+		return
+	}
 	text, err := canon.Text(f.Rel, parts[f.Rel], f.Source)
 	if err != nil {
 		if errors.Is(err, canon.ErrRefused) {
@@ -1009,6 +1026,14 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 	cur, _ := unitFile(ur.unit, req.File) // present: the guard above returned otherwise
 	if !sameImports(cur.AST, pr.File) {
 		httpError(w, http.StatusUnprocessableEntity, "%s changes this bot's `import` lines, which the per-file editor cannot apply: a save writes each declaration back to the file it came from and reads the imports from the files themselves. Removing one here would leave the import in place and empty the fragment; adding one would make every later save refuse. Edit the import on disk (or in the bundle's files) and reopen the bot.", req.File)
+		return
+	}
+	// Same reason as the imports: splitByProvenance rebuilds every part with
+	// the STORED file's profile, so a `dsl:` line changed here is never
+	// written — while the declarations WOULD have been read under the new
+	// one, which is how a quoted value changes meaning between the two.
+	if cur.AST != nil && pr.File != nil && cur.AST.EffectiveProfile() != pr.File.EffectiveProfile() {
+		httpError(w, http.StatusUnprocessableEntity, "%s changes this bot's `dsl:` profile, which the per-file editor cannot apply: a save writes each declaration back under the profile the file already has, so the change would be dropped and the values read under the other profile. Change it where this bot's files live and reopen the bot.", req.File)
 		return
 	}
 	staged := ur.stage(req.File, req.Source)
@@ -1129,4 +1154,15 @@ func (s *Server) unitFoldReason(source string, files map[string]string, main, pa
 		}
 	}
 	return ""
+}
+
+// firstParseError is the first error-severity diagnostic of a parse, for a
+// message that quotes what happened rather than characterising it.
+func firstParseError(diags []parser.Diagnostic) string {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return d.Error()
+		}
+	}
+	return "unreadable"
 }

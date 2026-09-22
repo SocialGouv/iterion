@@ -955,3 +955,64 @@ func TestTheCloudUnitWriteBackRefusesAFileTheWriterWouldFold(t *testing.T) {
 		t.Fatalf("the control's edit did not come back:\n%v", wrote.Files)
 	}
 }
+
+// TestRenderingAFragmentThatDoesNotParse: a unit's `bindable` is the
+// MAIN's parse alone, so a FRAGMENT with a syntax error leaves the buffer
+// unsalvaged and the per-file view on. The loader keeps that file's
+// partial AST, so the part handed to the render is missing everything
+// after the error — rendered back it is a text the author's file does not
+// contain, with the lines they have to fix gone.
+func TestRenderingAFragmentThatDoesNotParse(t *testing.T) {
+	workdir := t.TempDir()
+	broken := unitFixtureNodes + "\nagent \n  model\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": broken})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	rec, opened := openPath(t, s, "demo/main.bot")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open: %d %s", rec.Code, rec.Body.String())
+	}
+	if !opened.Bindable {
+		t.Fatal("the MAIN parses: this fixture must leave the buffer unsalvaged")
+	}
+
+	rec, out := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "demo/main.bot", "file": "lib/nodes.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render: %d %s", rec.Code, rec.Body.String())
+	}
+	if out.Refused == "" {
+		t.Fatal("a fragment the parser could only salvage was rendered with no reason given")
+	}
+	// The forbidden alternative, named: the writer's text for the partial
+	// AST — the file MINUS the region the parser could not read.
+	if out.Source != broken {
+		t.Fatalf("the view shows a text the file does not contain:\n%s", out.Source)
+	}
+}
+
+// TestThePerFileEditorRefusesAChangeToTheProfile: splitByProvenance
+// rebuilds every part with the STORED file's profile, so a `dsl:` line
+// changed here is never written — while the declarations WOULD have been
+// read under the new one. Same shape as the import refusal, same reason.
+func TestThePerFileEditorRefusesAChangeToTheProfile(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	openPath(t, s, "demo/main.bot")
+
+	raised := "dsl: 2\n\n" + unitFixtureNodes
+	rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": raised})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("raising the profile of one file: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "dsl:") {
+		t.Fatalf("the refusal does not name what it is about: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != unitFixtureNodes {
+		t.Fatalf("the fragment changed:\n%s", got)
+	}
+	// The control: an edit that leaves the profile alone still applies.
+	edited := strings.Replace(unitFixtureNodes, "Do the thing.", "Do the other thing.", 1)
+	if rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": edited}); rec.Code != http.StatusOK {
+		t.Fatalf("an edit that keeps the profile was refused: %d %s", rec.Code, rec.Body.String())
+	}
+}

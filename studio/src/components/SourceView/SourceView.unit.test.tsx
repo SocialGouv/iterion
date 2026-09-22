@@ -348,6 +348,9 @@ describe("the Source view of a bot in several files", () => {
     await waitFor(() => expect(api.parseUnitFile).toHaveBeenCalled());
 
     expect(store.getState().currentSource).toBe(MAIN_TEXT);
+    // That apply left the document unsaved, so the next one — which
+    // rebuilds from the STORED files — asks first.
+    store.getState().markSaved();
 
     // And the main's own edit DOES land there — without this the test
     // would pass on a component that never writes currentSource at all.
@@ -669,5 +672,99 @@ describe("the Source view of a bot in several files", () => {
     // The forbidden alternative, named: the proposal reverted by an answer
     // written against the document it replaced.
     expect(store.getState().document?.workflows?.[0]?.name).toBe("from-the-proposal");
+  });
+
+  // The per-file apply sends one text and no document: the server rebuilds
+  // the merged program from the bot's files AS STORED plus that overlay, so
+  // an unsaved canvas edit in ANOTHER file of the unit is replaced. The
+  // salvage confirm does not cover it — it is gated on `salvaged`, and its
+  // reasoning holds for a bot in ONE file, where the buffer is the document.
+  it("asks before rebuilding a unit that has unsaved canvas edits", async () => {
+    const store = unitStore();
+    api.parseUnitFile.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: [],
+      bindable: true,
+      unit: { root: "", main: "main.bot", revision: "", files: unit.files },
+    });
+    renderView(store);
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(MAIN_TEXT),
+    );
+    // The author edited the canvas: the buffer moved past its saved mark.
+    store.getState().setDocument(createEmptyDocument());
+    expect(store.getState().isDirty()).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), { target: { value: "EDITED MAIN" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    // The forbidden alternative, named: applying straight through.
+    expect(await screen.findByText(/other files are not included/i)).toBeTruthy();
+    expect(api.parseUnitFile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
+    await waitFor(() => expect(api.parseUnitFile).toHaveBeenCalled());
+  });
+
+  // `isDirty()` measures "the document moved since the last save"; what
+  // decides here is "it holds an overlay for a file OTHER than this one".
+  // They part on the commonest loop — edit, Apply, look, edit, Apply — and
+  // a danger dialog every time after the first teaches the author to click
+  // through it, which is how a real warning stops being read.
+  it("does not ask when the only unsaved change is its own apply to this same file", async () => {
+    const store = unitStore();
+    let served = 0;
+    api.parseUnitFile.mockImplementation(async () => {
+      served += 1;
+      return {
+        document: { ...createEmptyDocument(), workflows: [{ name: `applied-${served}`, entry: "done", edges: [] }] },
+        diagnostics: [],
+        bindable: true,
+        unit: { root: "", main: "main.bot", revision: "", files: unit.files },
+      };
+    });
+    renderView(store);
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(MAIN_TEXT),
+    );
+
+    const applyOnce = async (text: string) => {
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      fireEvent.change(screen.getByLabelText("source"), { target: { value: text } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    };
+
+    await applyOnce("EDIT ONE");
+    await waitFor(() => expect(api.parseUnitFile).toHaveBeenCalledTimes(1));
+    // The document is now dirty — from THIS view's own apply, on this file.
+    expect(store.getState().isDirty()).toBe(true);
+
+    await applyOnce("EDIT TWO");
+    // The forbidden alternative, named: a danger dialog for a rebuild that
+    // drops only the text being replaced.
+    await waitFor(() => expect(api.parseUnitFile).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/other files are not included/i)).toBeNull();
+
+    // And it fires again as soon as the document moved for a reason that
+    // is NOT this view's own apply — a canvas edit between two applies to
+    // the same file is dropped by the rebuild just the same.
+    store.getState().setDocument(createEmptyDocument());
+    await applyOnce("EDIT THREE");
+    expect(await screen.findByText(/other files are not included/i)).toBeTruthy();
+    expect(api.parseUnitFile).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
+    await waitFor(() => expect(api.parseUnitFile).toHaveBeenCalledTimes(3));
+
+    // And where something IS dropped: another file.
+    fireEvent.change(screen.getByTestId("source-view-file-picker"), {
+      target: { value: "lib/nodes.bot" },
+    });
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(FRAGMENT_TEXT),
+    );
+    await applyOnce("FRAGMENT EDIT");
+    expect(await screen.findByText(/other files are not included/i)).toBeTruthy();
+    expect(api.parseUnitFile).toHaveBeenCalledTimes(3);
   });
 });

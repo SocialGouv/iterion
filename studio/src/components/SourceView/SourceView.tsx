@@ -3,6 +3,7 @@ import Editor, { type Monaco } from "@/lib/monaco";
 import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
 import * as api from "@/api/client";
+import type { IterDocument } from "@/api/types";
 import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "@/lib/iterLanguage";
 import { registerIterCompletionProvider } from "@/lib/iterMonacoCompletion";
 import { applyParsedSource } from "@/lib/salvage";
@@ -56,6 +57,14 @@ export default function SourceView() {
   // Apply writes A's text into B: the server cannot tell, since that text
   // parses.
   const renderGen = useRef(0);
+  // The document this view last produced, and for which file. `isDirty()`
+  // measures "the document moved since the last save"; what actually
+  // matters here is "it holds an overlay for a file OTHER than this one".
+  // They part on the commonest loop — edit, Apply, look, edit, Apply —
+  // where re-applying the SAME file replaces only the text the author is
+  // deliberately replacing, and a danger dialog every time after the first
+  // would teach them to click through it.
+  const lastApplied = useRef<{ rel: string; doc: IterDocument | null } | null>(null);
 
   // The unit's identity moves on every save and every external reload. An
   // explicit choice survives it; a selection whose file is GONE — deleted
@@ -212,6 +221,29 @@ export default function SourceView() {
         return;
       }
       if (unit && currentFilePath && selected && selected !== MERGED) {
+        // The apply sends this ONE text and no document: the server rebuilds
+        // the merged program from the bot's files AS STORED, plus this
+        // overlay. So an unsaved canvas edit living in ANOTHER file of the
+        // unit is replaced, not carried — and so is a per-file apply made
+        // before this one and not yet saved. The salvage confirm above does
+        // not cover it: its comment ("unsalvaged, the text is the document
+        // unparsed and there is nothing to lose") is true of a bot in ONE
+        // file, where the buffer IS the document, and false of a unit,
+        // where the buffer is one file and the rest comes from storage.
+        const ours =
+          lastApplied.current !== null &&
+          lastApplied.current.rel === selected &&
+          lastApplied.current.doc === document;
+        if (isDirty() && !ours) {
+          const go = await confirm({
+            title: "Rebuild this bot from its stored files?",
+            message:
+              "Applying rebuilds this bot from its files as they are stored, plus the text you edited here. Unsaved changes to this bot's other files are not included, and applying replaces them.",
+            confirmLabel: "Rebuild",
+            confirmVariant: "danger",
+          });
+          if (!go) return;
+        }
         const result = await api.parseUnitFile(currentFilePath, selected, source);
         // The tab can change under this: the toolbar's own file picker is
         // not disabled by this view's Edit mode, and the assistant can
@@ -223,6 +255,10 @@ export default function SourceView() {
           return;
         }
         applyParsedSource(result, { setDocument, setSalvaged });
+        // What the STORE ends up holding, not what was handed to it: the
+        // store normalises the document, so the object the next render
+        // reads is not the one this answer carried.
+        lastApplied.current = { rel: selected, doc: documentStore.getState().document };
         if (result.unit) setUnit({ ...unit, files: result.unit.files });
         setDiagnostics(result.diagnostics);
         // Only the main's. currentSource is what a cloud launch and every
