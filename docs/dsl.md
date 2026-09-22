@@ -91,6 +91,31 @@ var, the offending value and what it failed. Launch values are judged after
 the same `${...}` expansion the run applies, so the gate and the run never
 read a reference differently.
 
+An in-source `presets:` entry that sets a var to a value its constraint
+refuses is **warned** about at `iterion validate`
+([C165](references/diagnostics.md)) rather than left for the run that
+happens to select it. A warning and not a refusal, deliberately: only a run
+that selects that preset is affected, and that run is refused at the launch
+gate — so an error would block a run selecting another preset, or none, and
+would strand a paused run whose declaration was tightened after it started.
+The warning stops at naming what it can see: whether the run is really
+refused also depends on the launch (a `--var` override supersedes the
+preset, and an engine-resolved var such as `review_mode` is overwritten
+before the gate reads it).
+
+Two limits to that warning, both because the compiler is not the run.
+A preset value the run's **expander rewrites** (`${VAR}`, `${VAR:-x}`,
+`$NAME`) is left to the gate, which sees it expanded — the compile-time
+environment is not the launch environment. Note the asymmetry with a
+default, which is the same text read for a different purpose: `= "${A:-fast}"`
+on a constrained var is refused, because the launch gate never re-**checks**
+a default — it judges the values a launch supplies — so a default excused at
+compile time would be checked on no path at all. The same text as a preset
+value *is* re-judged there, so it is left to the gate. (Both are **expanded**
+at run time; it is the checking that differs.) And a
+bundle's file-based preset (`presets/<name>.md`) is merged after
+compilation, so it too is the gate's to judge.
+
 A **resume** does not re-check stored values: a run admitted at launch stays
 resumable when its declaration is tightened afterwards.
 

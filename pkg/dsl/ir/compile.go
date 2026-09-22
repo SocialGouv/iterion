@@ -2044,6 +2044,7 @@ func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) ma
 			continue
 		}
 		values := make(map[string]any, len(entry.Values))
+		landed := make(map[string]*ast.PresetValue, len(entry.Values))
 		for _, pv := range entry.Values {
 			v, ok := vars[pv.Key]
 			if !ok {
@@ -2060,6 +2061,19 @@ func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) ma
 				continue
 			}
 			values[pv.Key] = coerced
+			landed[pv.Key] = pv
+		}
+		// Judged after the loop, so the value judged is the one that
+		// LANDS: a key written twice in one preset keeps the last, and the
+		// earlier text is read by no run. The `landed` check is what keeps
+		// that key from being reported once per occurrence — the value
+		// read is the map's either way. Walked over the slice, not the
+		// map, so the diagnostics keep a deterministic order.
+		for _, pv := range entry.Values {
+			if landed[pv.Key] != pv {
+				continue
+			}
+			c.checkPresetConstraint(entry.Name, pv, vars[pv.Key], values[pv.Key])
 		}
 		out[entry.Name] = Preset{Name: entry.Name, Values: values}
 	}

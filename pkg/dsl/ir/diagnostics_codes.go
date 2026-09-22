@@ -165,6 +165,7 @@ const (
 	DiagVarMatchingUncompilable    DiagCode = "C162" // the matching pattern is not valid RE2 (error)
 	DiagVarMatchingUnanchored      DiagCode = "C163" // the pattern is not anchored, so it matches anywhere in the value (warning)
 	DiagVarRedeclaredUnconstrained DiagCode = "C164" // a var is redeclared without the constraint its earlier declaration carries (error)
+	DiagPresetViolatesConstraint   DiagCode = "C165" // a preset value is outside the enum, or off the matching pattern, its var declares (warning: only a run selecting that preset is affected, and the launch gate refuses it)
 	// Expression builtins: a call the evaluator cannot satisfy. The NAME is
 	// already refused at parse (C040); the ARITY is not visible there, so a
 	// call with the wrong argument count used to compile and die mid-run.
