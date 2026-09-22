@@ -3,6 +3,18 @@
 
 dsl: 2
 
+prompt review_system:
+  You are a code reviewer. Produce a verdict with a one-paragraph rationale and
+  a concrete recommendation. Operate within the calibration appended below.
+
+prompt review_user:
+  Review the current change set. Surface the most important issue you find and
+  recommend the next action.
+
+schema verdict:
+  rationale: string
+  recommendation: string
+
 cursor ambition:
   description: "How aggressively to expand scope beyond the stated request."
   values:
@@ -17,28 +29,17 @@ cursor depth:
     "0.34..0.66": "Examine main code paths and one layer of dependencies."
     "0.67..1.0": "Trace all call sites and edge cases."
 
-schema verdict:
-  rationale: string
-  recommendation: string
-
-prompt review_system:
-  You are a code reviewer. Produce a verdict with a one-paragraph rationale and
-  a concrete recommendation. Operate within the calibration appended below.
-
-prompt review_user:
-  Review the current change set. Surface the most important issue you find and
-  recommend the next action.
-
 agent reviewer:
   model: "anthropic/claude-sonnet-4-6"
+  output: verdict
   system: review_system
   user: review_user
-  output: verdict
   cursors:
-    enabled: true
     ambition: ambitious
     depth: 0.7
 
 workflow main:
+
   entry: reviewer
+
   reviewer -> done

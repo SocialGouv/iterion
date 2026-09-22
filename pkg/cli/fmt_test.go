@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,5 +171,107 @@ func TestFmtRefusesAnArchive(t *testing.T) {
 	res, err := RunFmt(FmtOptions{Paths: []string{"w"}})
 	if err != nil || len(res.Files) != 1 || res.Files[0].Path != "w/one.bot" {
 		t.Fatalf("a walk met an archive: %v %+v", err, res)
+	}
+}
+
+// A gate that checked nothing is green for the one reason a gate must
+// never be: `--check` over a tree with no `.bot` in it — a path renamed, a
+// walk that stopped finding files — said "nothing would change".
+func TestFmtCheckRefusesToPassOnNoFileAtAll(t *testing.T) {
+	inTempWorkspace(t)
+	if err := os.MkdirAll("empty", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RunFmt(FmtOptions{Paths: []string{"empty"}, Check: true})
+	if !errors.Is(err, ErrFmtNothingToCheck) {
+		t.Fatalf("--check over an empty tree returned %v", err)
+	}
+	// Without --check it is not an error: formatting nothing is nothing.
+	if _, err := RunFmt(FmtOptions{Paths: []string{"empty"}}); err != nil {
+		t.Fatalf("fmt over an empty tree: %v", err)
+	}
+}
+
+// A baseline makes `--check` green while the refusals are exactly the ones
+// the tree already knows about, and red — naming the file — on each of the
+// three ways that can stop being true. Without a baseline, any refusal is
+// still an error.
+func TestFmtCheckAgainstABaseline(t *testing.T) {
+	inTempWorkspace(t)
+	good := writeBot(t, "c/good.bot", looseBot)
+	bad := writeBot(t, "c/bad.bot", "agent :\n  model\n")
+	baseline := filepath.Join(t.TempDir(), "refused")
+	write := func(lines ...string) {
+		if err := os.WriteFile(baseline, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The tree is not canonical yet: `good.bot` would change.
+	write("# the one we cannot format yet", bad)
+	if _, err := RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: baseline}); !errors.Is(err, ErrFmtWouldChange) {
+		t.Fatalf("a file that would change: %v", err)
+	}
+
+	// Formatted, the baseline matching the refusals: green.
+	if _, err := RunFmt(FmtOptions{Paths: []string{"c"}}); !errors.Is(err, ErrFmtRefused) {
+		t.Fatalf("the write pass: %v", err)
+	}
+	if _, err := RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: baseline}); err != nil {
+		t.Fatalf("the baseline matches the refusals and the check is red: %v", err)
+	}
+	// …and without the baseline the same tree is refused, as before.
+	if _, err := RunFmt(FmtOptions{Paths: []string{"c"}, Check: true}); !errors.Is(err, ErrFmtRefused) {
+		t.Fatalf("without a baseline a refusal must still be an error: %v", err)
+	}
+
+	// A file the baseline does not name becomes refused.
+	write("# nothing here")
+	res, err := RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: baseline})
+	if !errors.Is(err, ErrFmtBaselineStale) {
+		t.Fatalf("a refusal the baseline does not name: %v", err)
+	}
+	if len(res.RefusedPaths) != 1 || res.RefusedPaths[0] != bad {
+		t.Fatalf("refused paths: %v", res.RefusedPaths)
+	}
+
+	// The baseline names a file nothing refuses — the ratchet down.
+	write(bad, good)
+	if _, err := RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: baseline}); !errors.Is(err, ErrFmtBaselineStale) {
+		t.Fatalf("a baseline naming a file nothing refuses: %v", err)
+	}
+
+	// A baseline that is not there is an error NAMING that — never
+	// "nothing is refused", and never a stale-baseline verdict, which
+	// would send someone editing a file that does not exist.
+	_, err = RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: filepath.Join(t.TempDir(), "absent")})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a missing baseline: %v", err)
+	}
+
+	// Spelling: `./x` and `x` are one path, and a repeated line is one entry.
+	write("./"+bad, bad)
+	if _, err := RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: baseline}); err != nil {
+		t.Fatalf("a baseline written with ./ and a duplicate: %v", err)
+	}
+
+	// A baseline without --check is refused by name: it says what a CHECK
+	// tolerates, and a write pass ending on a ratchet verdict would have
+	// rewritten the tree first.
+	if _, err := RunFmt(FmtOptions{Paths: []string{"c"}, Baseline: baseline}); !errors.Is(err, ErrFmtBaselineNeedsCheck) {
+		t.Fatalf("--baseline without --check: %v", err)
+	}
+
+	// Both directions of a stale verdict are in the REPORT, not only in
+	// the printed lines: a --json consumer got the error and no file.
+	write("# nothing here")
+	res, _ = RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: baseline})
+	if len(res.NewlyRefused) != 1 || res.NewlyRefused[0] != bad {
+		t.Errorf("newly_refused = %v", res.NewlyRefused)
+	}
+	write(bad, good)
+	res, _ = RunFmt(FmtOptions{Paths: []string{"c"}, Check: true, Baseline: baseline})
+	if len(res.NoLongerRefused) != 1 || res.NoLongerRefused[0] != good {
+		t.Errorf("no_longer_refused = %v", res.NoLongerRefused)
 	}
 }

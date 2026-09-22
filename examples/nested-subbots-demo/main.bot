@@ -14,6 +14,7 @@
 ##     frame displays — the two parallel step runs pause on their HUMAN
 ##     check, parking stage, which parks main;
 ##   - answer both checks (Approve) and the whole chain completes.
+
 dsl: 2
 
 schema prep_out:
@@ -26,12 +27,8 @@ schema final_out:
   final_answer: string
 
 tool prep:
-  command: `printf '{"ready":true}'`
+  command: "printf '{\"ready\":true}'"
   output: prep_out
-
-subbot stage:
-  source: "stage.bot"
-  output: stage_out
 
 compute wrap:
   output: final_out
@@ -39,8 +36,16 @@ compute wrap:
   expr:
     final_answer: "'nested demo complete — both steps approved'"
 
+subbot stage:
+  source: "stage.bot"
+  output: stage_out
+
 workflow nested_subbots_demo:
+
   entry: prep
-  prep  -> stage
+
+  prep -> stage
+
   stage -> wrap
-  wrap  -> done
+
+  wrap -> done

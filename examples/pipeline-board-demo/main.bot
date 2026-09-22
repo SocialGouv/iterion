@@ -15,6 +15,7 @@
 ##     PARENT's final review appears — approve it too;
 ##   - the card lands in Done with the final_answer summary + all produced
 ##     elements (parent brief + 3×{cover,track,clip}).
+
 dsl: 2
 
 schema plan_out:
@@ -34,35 +35,26 @@ schema final_gate:
 schema final_out:
   final_answer: string
 
-## Writes the parent's own produced element (the season brief), then emits
-## the episode list the router fans out over.
-tool plan:
-  command: `D="$ITERION_ARTIFACT_FILES_DIR"; [ -n "$D" ] || D=/tmp/iterion-artifacts && mkdir -p "$D" && printf '# Season brief\n\nThree demo episodes, one sub-bot each.\nEach child produces a cover image + an audio track, then waits for your review.\n' > "$D/season-brief.md" && printf '{"episodes":[{"id":"ep1"},{"id":"ep2"},{"id":"ep3"}]}'`
-  output: plan_out
-
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.episodes}}"
   as: ep
 
-## One child run per episode, concurrently. `isolated:` asserts each child
-## confines its writes to its own run store, which is what makes the parallel
-## fan-out legal (see docs/groups-iteration-subbots.md).
-subbot produce_episode:
-  source: "episode.bot"
-  with { episode: "{{outputs.dispatch.ep.id}}" }
-  output: episode_out
-  isolated: true
-
-compute collect:
-  await: wait_all
-  output: collect_out
-  expr:
-    produced: "true"
-
 ## The PARENT's own human gate, after every child was reviewed.
 human final_review:
   output: final_gate
+
+## Writes the parent's own produced element (the season brief), then emits
+## the episode list the router fans out over.
+tool plan:
+  command: "D=\"$ITERION_ARTIFACT_FILES_DIR\"; [ -n \"$D\" ] || D=/tmp/iterion-artifacts && mkdir -p \"$D\" && printf '# Season brief\\n\\nThree demo episodes, one sub-bot each.\\nEach child produces a cover image + an audio track, then waits for your review.\\n' > \"$D/season-brief.md\" && printf '{\"episodes\":[{\"id\":\"ep1\"},{\"id\":\"ep2\"},{\"id\":\"ep3\"}]}'"
+  output: plan_out
+
+compute collect:
+  output: collect_out
+  await: wait_all
+  expr:
+    produced: "true"
 
 ## `publish:` persists the output as an artifact — that's where the pipeline
 ## board's Done card reads its `final_answer` from.
@@ -72,14 +64,34 @@ compute finish:
   expr:
     final_answer: "outputs.final_review.release_notes"
 
+## One child run per episode, concurrently. `isolated:` asserts each child
+## confines its writes to its own run store, which is what makes the parallel
+## fan-out legal (see docs/groups-iteration-subbots.md).
+subbot produce_episode:
+  source: "episode.bot"
+  with {
+    episode: "{{outputs.dispatch.ep.id}}",
+  }
+  output: episode_out
+  isolated: true
+
 workflow pipeline_board_demo:
+
   entry: plan
+
   budget:
     max_parallel_branches: 3
-  plan          -> dispatch
-  dispatch      -> produce_episode
+
+  plan -> dispatch
+
+  dispatch -> produce_episode
+
   produce_episode -> collect
-  collect       -> final_review
-  final_review  -> finish when approved
-  final_review  -> fail when not approved
-  finish        -> done
+
+  collect -> final_review
+
+  final_review -> finish when approved
+
+  final_review -> fail when not approved
+
+  finish -> done

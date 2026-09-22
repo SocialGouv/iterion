@@ -52,55 +52,7 @@ vars:
   ## manifest's dispatch_vars map here.
   initial_message: string = ""
 
-## ─── Schemas ──────────────────────────────────────────────────────
-
-## Uniform per-turn input: the operator's latest message. The seed
-## compute fills it from vars.initial_message on turn 1; the loop edge
-## fills it from the chat node's answer afterwards.
-schema turn_input:
-  operator_message: string
-
-## Nexie's structured turn output.
-##   reply          — markdown addressed to the operator; the chat
-##                    node renders it verbatim as Nexie's message.
-##   close          — true ONLY on an explicit operator request to
-##                    archive the session (standby is the default;
-##                    ending a turn never ends the run).
-##   quick_replies  — 0-4 short suggested next messages (strings);
-##                    the studio renders them as one-click chips.
-##   dispatched_ids — board ids pushed to `ready` THIS turn ([] when
-##                    none). The server stamps them onto the run's
-##                    watched issues so the studio's Watch panel
-##                    tracks the dispatched work.
-##   assistant_actions — typed requests rendered/executed by the Studio under
-##                    the operator's global action policies.
-schema nexie_turn:
-  reply:          string
-  close:          bool
-  quick_replies:  json
-  dispatched_ids: json
-  assistant_actions: json
-
-schema gate_out:
-  is_close:      bool
-  reply:         string
-  quick_replies: json
-
-## The chat node's answer — the operator's next message, free text.
-schema chat_output:
-  message: string
-
-schema chat_input:
-  reply:         string
-  quick_replies: json
-
-## Compute nodes always take an input schema; seed ignores it and
-## reads vars via expr.
-schema seed_input:
-  unused: string
-
 ## ─── Prompts ──────────────────────────────────────────────────────
-
 prompt nexie_system:
   You are Nexie, the operator's standing co-CTO for the workspace at
   {{vars.workspace_dir}}. You run inside iterion as a long-lived chat
@@ -313,36 +265,65 @@ prompt nexie_user:
 prompt chat_instructions:
   {{input.reply}}
 
-## ─── Nodes ────────────────────────────────────────────────────────
+## ─── Schemas ──────────────────────────────────────────────────────
 
-## Entry projection: turn 1's operator_message comes from
-## vars.initial_message so nexie has ONE input contract for entry and
-## loop alike. Deterministic, never blocks.
-compute seed:
-  input: seed_input
-  output: turn_input
-  expr:
-    operator_message: "vars.initial_message"
+## Uniform per-turn input: the operator's latest message. The seed
+## compute fills it from vars.initial_message on turn 1; the loop edge
+## fills it from the chat node's answer afterwards.
+schema turn_input:
+  operator_message: string
+
+## Nexie's structured turn output.
+##   reply          — markdown addressed to the operator; the chat
+##                    node renders it verbatim as Nexie's message.
+##   close          — true ONLY on an explicit operator request to
+##                    archive the session (standby is the default;
+##                    ending a turn never ends the run).
+##   quick_replies  — 0-4 short suggested next messages (strings);
+##                    the studio renders them as one-click chips.
+##   dispatched_ids — board ids pushed to `ready` THIS turn ([] when
+##                    none). The server stamps them onto the run's
+##                    watched issues so the studio's Watch panel
+##                    tracks the dispatched work.
+##   assistant_actions — typed requests rendered/executed by the Studio under
+##                    the operator's global action policies.
+schema nexie_turn:
+  reply: string
+  close: bool
+  quick_replies: json
+  dispatched_ids: json
+  assistant_actions: json
+
+schema gate_out:
+  is_close: bool
+  reply: string
+  quick_replies: json
+
+## The chat node's answer — the operator's next message, free text.
+schema chat_output:
+  message: string
+
+schema chat_input:
+  reply: string
+  quick_replies: json
+
+## Compute nodes always take an input schema; seed ignores it and
+## reads vars via expr.
+schema seed_input:
+  unused: string
 
 agent nexie:
+  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}"
   ## claude_code is REQUIRED: native Skill tool over the mirrored
   ## bundle skills, the __mcp-board stdio server, ask_user with
   ## same-session resume (`claude --resume <id>`), and the operator
   ## chatbox drained into the session at every tool boundary.
   backend: "claude_code"
-  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}"
-  ## ultracode = xhigh + the standing Workflow Orchestration consent
-  ## (parallel Task sub-agents for the roadmap-study audit fan-out).
-  ## Model default is opus-4-8, so no C089 degradation.
-  reasoning_effort: "${ITERION_WHATS_NEXT_EFFORT_CLAUDE:-ultracode}"
   input: turn_input
   output: nexie_turn
   publish: assistant_turn
   system: nexie_system
   user: nexie_user
-  ## interaction: human arms the ask_user MCP tool (mid-turn
-  ## questions pause the run and resume the SAME claude session).
-  interaction: human
   ## Each loop turn inherits the previous turn's claude session via
   ## the loop edge's _session_id mapping — that's what makes this a
   ## conversation instead of N one-shot invocations. inherit_if_available
@@ -354,17 +335,13 @@ agent nexie:
   ## (epic + framed tickets + labels + set_bot + promotions) on top
   ## of audits and verify reads.
   tool_max_steps: 80
-
-## Deterministic projection for the when-clauses + reply passthrough
-## (the chat node's input references outputs.gate so it never has to
-## disambiguate which upstream produced the latest reply).
-compute gate:
-  input: nexie_turn
-  output: gate_out
-  expr:
-    is_close:      "input.close"
-    reply:         "input.reply"
-    quick_replies: "input.quick_replies"
+  ## ultracode = xhigh + the standing Workflow Orchestration consent
+  ## (parallel Task sub-agents for the roadmap-study audit fan-out).
+  ## Model default is opus-4-8, so no C089 degradation.
+  reasoning_effort: "${ITERION_WHATS_NEXT_EFFORT_CLAUDE:-ultracode}"
+  ## interaction: human arms the ask_user MCP tool (mid-turn
+  ## questions pause the run and resume the SAME claude session).
+  interaction: human
 
 ## The standby home base. ONE free-text field: the operator's next
 ## message. instructions renders Nexie's reply verbatim (markdown) —
@@ -373,19 +350,37 @@ compute gate:
 human chat:
   input: chat_input
   output: chat_output
-  instructions: chat_instructions
   interaction: human
+  instructions: chat_instructions
+
+## ─── Nodes ────────────────────────────────────────────────────────
+
+## Entry projection: turn 1's operator_message comes from
+## vars.initial_message so nexie has ONE input contract for entry and
+## loop alike. Deterministic, never blocks.
+compute seed:
+  input: seed_input
+  output: turn_input
+  expr:
+    operator_message: "vars.initial_message"
+
+## Deterministic projection for the when-clauses + reply passthrough
+## (the chat node's input references outputs.gate so it never has to
+## disambiguate which upstream produced the latest reply).
+compute gate:
+  input: nexie_turn
+  output: gate_out
+  expr:
+    is_close: "input.close"
+    reply: "input.reply"
+    quick_replies: "input.quick_replies"
 
 ## ─── Workflow ─────────────────────────────────────────────────────
-
 workflow whats_next:
-  entry: seed
-
   ## Nexie mutates the board and memory, never the repo — a git
   ## worktree would only produce phantom storage branches (bilan
   ## 2026-06-22) and aim workspace_dir at a tree without .iterion.
   worktree: none
-
   ## A host action policy is not a boundary if the model can bypass it with
   ## curl or a direct board.json edit. Write-shaped primitives are therefore
   ## removed at the runtime gate. Internal board.read and ask_user tools are
@@ -393,6 +388,8 @@ workflow whats_next:
   permission: deny
   allow: ["Read(**)", "Glob", "Grep", "Task", "TodoWrite", "Skill"]
   deny: ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch"]
+
+  entry: seed
 
   budget:
     max_parallel_branches: 1
@@ -409,9 +406,9 @@ workflow whats_next:
   }
 
   nexie -> gate with {
-    reply:         "{{outputs.nexie.reply}}",
-    close:         "{{outputs.nexie.close}}",
-    quick_replies: "{{outputs.nexie.quick_replies}}"
+    reply: "{{outputs.nexie.reply}}",
+    close: "{{outputs.nexie.close}}",
+    quick_replies: "{{outputs.nexie.quick_replies}}",
   }
 
   ## Explicit close — the path to Done a turn can choose. Everything
@@ -420,8 +417,8 @@ workflow whats_next:
   gate -> done when is_close
 
   gate -> chat with {
-    reply:         "{{outputs.gate.reply}}",
-    quick_replies: "{{outputs.gate.quick_replies}}"
+    reply: "{{outputs.gate.reply}}",
+    quick_replies: "{{outputs.gate.quick_replies}}",
   }
 
   ## The conversation loop. Lifetime-bounded at 1000 turns (persisted
@@ -430,11 +427,11 @@ workflow whats_next:
   ## LOAD-BEARING: session continuity resolves ONLY from the input
   ## map (executor_build_task.go applySessionContinuity), so dropping
   ## these keys silently degrades Nexie to amnesiac one-shot turns.
-  chat -> nexie with {
-    operator_message:     "{{outputs.chat.message}}",
-    _session_id:          "{{outputs.nexie._session_id}}",
-    _session_fingerprint: "{{outputs.nexie._session_fingerprint}}"
-  } as conversation_loop(1000)
+  chat -> nexie as conversation_loop(1000) with {
+    operator_message: "{{outputs.chat.message}}",
+    _session_id: "{{outputs.nexie._session_id}}",
+    _session_fingerprint: "{{outputs.nexie._session_fingerprint}}",
+  }
 
   ## The loop's exhaustion exit: once conversation_loop is spent the
   ## back-edge above is declined whatever the operator typed, and without

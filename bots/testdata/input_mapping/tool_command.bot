@@ -1,4 +1,5 @@
 ## Guard fixture — a tool's command and postcondition read inputs no incoming edge maps.
+
 dsl: 2
 
 prompt work:
@@ -13,10 +14,13 @@ agent seed:
 
 tool probe:
   command: "test -n {{input.cmd_never}} && printf '{\"ok\": true}'"
-  postcondition: "test -n {{input.pc_never}}"
   output: probe_out
+  postcondition: "test -n {{input.pc_never}}"
 
 workflow tool_command:
+
   entry: seed
+
   seed -> probe
+
   probe -> done

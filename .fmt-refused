@@ -1,0 +1,63 @@
+# Files `iterion fmt` refuses, and why the check is green anyway.
+#
+# The writer has no multi-line form: a `|` block scalar comes back as one
+# escaped line — 470 504 characters on bots/golden-master/main.bot — which is
+# the same program and not the same file. pkg/dsl/canon refuses to write
+# that, so these files are left exactly as their authors wrote them.
+#
+# This list is a RATCHET, not a permission slip. `task fmt:check` is green
+# while the refusals are exactly these. It goes red, naming the file, when:
+#   - a formattable file drifts out of its canonical form;
+#   - a new file becomes unformattable (adding one here needs a reason);
+#   - a file listed here stops being refused — including one renamed or
+#     deleted. When #1612 gives the writer its multi-line form, this list has
+#     to shrink in the same change, or the check reddens.
+#
+# Format the file and delete its line. Do not add one without a ticket.
+#
+# The list holds PATHS, not reasons: a file named here that later fails to
+# parse, or whose comments a rewrite would lose, is still merely "refused"
+# and the check stays green on it. The floor under that is elsewhere —
+# bots/catalog_parse_compile_test.go, inside the required `test` job, which
+# parses and compiles every catalogue bot.
+#
+# https://github.com/SocialGouv/iterion/issues/1612
+bots/adr-cartograph/main.bot
+bots/adr-rechallenge/main.bot
+bots/app-dev/main.bot
+bots/arbitrate/main.bot
+bots/branch-improve-loop/main.bot
+bots/campaign/main.bot
+bots/copilot/main.bot
+bots/dep-update-guard/main.bot
+bots/devbox-setup/main.bot
+bots/docs-refresh/main.bot
+bots/e2e-coverage/main.bot
+bots/feature-dev/lib/nodes.bot
+bots/feature-gap-fill/main.bot
+bots/feed-watch/main.bot
+bots/golden-master/extend.bot
+bots/golden-master/main.bot
+bots/golden-master/reanchor.bot
+bots/golden-master/sync-harness.bot
+bots/instrument/main.bot
+bots/modernize/main.bot
+bots/product-docs/main.bot
+bots/revi-converse/main.bot
+bots/review-env/main.bot
+bots/review-pr/lib/nodes.bot
+bots/rgaa-audit/main.bot
+bots/sec-audit-deps/main.bot
+bots/sec-audit-source/main.bot
+bots/secured-renovacy/main.bot
+bots/supply-shield-cve/main.bot
+bots/supply-shield/main.bot
+bots/test-coverage/main.bot
+bots/testdata/input_mapping/tool_script.bot
+bots/ultra11y/main.bot
+bots/vuln-watch/main.bot
+bots/whole-improve-loop/main.bot
+bots/wiki-gen/main.bot
+examples/human-file-upload.bot
+examples/nested-subbots-demo/step.bot
+examples/pipeline-board-demo/episode.bot

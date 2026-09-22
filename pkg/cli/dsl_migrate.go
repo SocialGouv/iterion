@@ -224,10 +224,10 @@ func collectBotFiles(cmd string, paths []string) ([]string, error) {
 				return err
 			}
 			if d.IsDir() {
-				// Hidden trees hold other checkouts (`.claude/worktrees`,
-				// `.works`, `.repos`), the store and the VCS: never rewritten
-				// from a walk, only when named as a path themselves.
-				if path != p && (strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "node_modules") {
+				// The shared rule (workflowfile.SkipWalkDir): a tree a
+				// walk does not descend into is never rewritten from one,
+				// only when named as a path itself.
+				if path != p && workflowfile.SkipWalkDir(d.Name()) {
 					return filepath.SkipDir
 				}
 				return nil

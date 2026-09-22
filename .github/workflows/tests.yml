@@ -35,8 +35,13 @@ concurrency:
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
 # the ruleset's required checks (test, race, vendor-check, mongo-conformance,
-# golangci, revi/review). Promoting one of them to required means deleting its
-# skip in the same change — and the reason is worse than a stalled queue. A
+# golangci, revi/review) — plus the jobs STAGED to become required, `brand`
+# and `fmt-check`, which stay in the queue so their context already exists the
+# day the ruleset names them (a required check first reported at promotion
+# leaves the queue waiting for one that never arrives). internal/ciguard's
+# requiredChecks is that staging list, and is what refuses a job that picks
+# neither side. Promoting one of the advisory jobs to required means deleting
+# its skip in the same change — and the reason is worse than a stalled queue. A
 # job skipped by a job-level `if:` reports SUCCESS, so a required check that
 # never ran satisfies the gate: every queue entry would merge green on a check
 # that did not execute. (A workflow-level filter is the opposite — the check
@@ -938,6 +943,38 @@ jobs:
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
+
+  fmt-check:
+    # Its own name in the checks list, so a verdict about the catalogue's
+    # shape is not buried inside `test`. NOT a required check yet — add it
+    # to the ruleset when you want it blocking — but it runs in the merge
+    # queue from day one all the same: a required context that only starts
+    # existing when it is promoted leaves the queue waiting for a check
+    # that never arrives (the note at the top of this file).
+    #
+    # It is GREEN today, and red only on something worth acting on: a
+    # formattable bot that drifted, a file that newly cannot be formatted,
+    # or a line in `.fmt-refused` that nothing refuses any more (the
+    # ratchet — #1612 landing must shrink that list). `task fmt:check` runs
+    # exactly this command.
+    # The org's runners, like every other pure-Go job that stays in the
+    # queue: a GitHub-hosted slot is one of the 20 the org shares, and this
+    # job needs nothing a self-hosted image lacks. The expression is copied
+    # byte-for-byte from vendor-check — TestSelfHostedRoutingExpressionsAgree
+    # asserts every copy is identical.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      # Mirror of `task fmt:check`, inlined so the job does not pull go-task
+      # for one command. internal/ciguard asserts the two stay identical.
+      - name: Shipped bots and examples are canonical
+        run: go run -mod=vendor ./cmd/iterion fmt --check --baseline .fmt-refused bots examples
 
   docs-links:
     # Advisory: not a required check, so it cannot block a merge — see the

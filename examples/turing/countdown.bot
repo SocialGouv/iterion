@@ -43,6 +43,11 @@ compute step:
     done: "if(loop.countdown.iteration == 0, vars.start, input.prev_n - 1) <= 0"
 
 workflow countdown_wf:
+
   entry: step
+
   step -> done when done
-  step -> step as countdown(unbounded 200) with { prev_n: "{{outputs.step.n}}" }
+
+  step -> step as countdown(unbounded 200) with {
+    prev_n: "{{outputs.step.n}}"
+  }

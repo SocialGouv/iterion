@@ -549,6 +549,16 @@ tasks:
     cmds:
       - go test -count=1 -run 'TestGeneratedMapsAreFresh|TestTheFreshnessGateBites' ./pkg/repomap/
 
+  bots:fmt:
+    desc: Rewrite every shipped bot and example in its canonical form
+    cmds:
+      - go run -mod=vendor ./cmd/iterion fmt bots examples
+
+  fmt:check:
+    desc: Fail if a shipped bot or example drifted out of its canonical form, or if .fmt-refused is stale
+    cmds:
+      - go run -mod=vendor ./cmd/iterion fmt --check --baseline .fmt-refused bots examples
+
   dsl:gen:
     desc: Regenerate DSL docs, skills and Monaco vocabulary from the parser and property registry
     cmds:

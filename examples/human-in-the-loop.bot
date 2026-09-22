@@ -26,16 +26,6 @@ vars:
   service: string = "checkout-api"
   change_summary: string = "Bump the payment SDK 4.2 → 5.0 and migrate the webhook signature check to the new HMAC header."
 
-schema approval_decision:
-  ## enum → rendered as a select / radio group
-  environment: string [enum: "staging", "production"]
-  ## bool → rendered as a checkbox
-  approve: bool
-  ## single-line text field
-  reviewer: string
-  ## free-text notes (audit trail)
-  notes: string
-
 prompt approval_instructions:
   # Review the proposed change
 
@@ -47,12 +37,25 @@ prompt approval_instructions:
   a short note for the audit trail. Leaving **approve** unticked routes
   the run to `fail` — i.e. the change is rejected.
 
+schema approval_decision:
+  ## enum → rendered as a select / radio group
+  environment: string [enum: "staging", "production"]
+  ## bool → rendered as a checkbox
+  approve: bool
+  ## single-line text field
+  reviewer: string
+  ## free-text notes (audit trail)
+  notes: string
+
 human approval:
-  instructions: approval_instructions
   output: approval_decision
   interaction: human
+  instructions: approval_instructions
 
 workflow human_in_the_loop:
+
   entry: approval
+
   approval -> done when approve
+
   approval -> fail when not approve

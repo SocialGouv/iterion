@@ -24,11 +24,6 @@
 
 dsl: 2
 
-schema smoke_output:
-  first_id:   string
-  second_id:  string
-  summary:    string
-
 prompt smoke_system:
   You are exercising the iterion native kanban board through its MCP
   server. You MUST perform EXACTLY these three tool calls, in order,
@@ -55,15 +50,22 @@ prompt smoke_system:
 prompt smoke_user:
   Run the three-step board smoke test now. Do not ask questions.
 
+schema smoke_output:
+  first_id: string
+  second_id: string
+  summary: string
+
 agent smoke:
+  model: "claude-opus-5"
   backend: "claude_code"
-  model:   "claude-opus-5"
-  output:  smoke_output
-  system:  smoke_system
-  user:    smoke_user
+  output: smoke_output
+  system: smoke_system
+  user: smoke_user
   capabilities: [board.read, board.create, board.move]
   tool_max_steps: 12
 
 workflow board_smoke:
+
   entry: smoke
+
   smoke -> done

@@ -42,7 +42,8 @@ apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
 push / `--squash` without `--auto`). Required checks: `test`, `race`,
 `vendor-check`, `mongo-conformance`, `golangci`, `revi/review`.
 `nats-conformance` remains advisory until an admin adds it to ruleset
-18857412. Full details + revert command:
+18857412; `brand` and `fmt-check` report on the PR and in the queue but are
+not required yet (staged — `internal/ciguard`'s `requiredChecks`). Full details + revert command:
 [../merge-policy.md](../merge-policy.md).
 
 ## The Revi merge gate

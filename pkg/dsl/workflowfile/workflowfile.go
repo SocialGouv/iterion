@@ -55,6 +55,20 @@ func CommentBody(afterHashes string) string {
 	return strings.TrimRight(strings.TrimPrefix(afterHashes, " "), " \t\r")
 }
 
+// SkipWalkDir reports a directory a walk over a source tree does not
+// descend into: hidden trees hold other checkouts (`.claude/worktrees`,
+// `.works`, `.repos`), the run store and the VCS; `vendor` and
+// `node_modules` hold someone else's sources. A `.bot` under one of them is
+// reached only by naming it as a path.
+//
+// It is the ONE definition of that rule, shared by every walk: `iterion
+// fmt`'s collector and the guards that check the same tree have to
+// enumerate the same files, or a `.bot` one sees and the other does not
+// puts them in a disagreement no list can settle.
+func SkipWalkDir(name string) bool {
+	return strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules"
+}
+
 // FrontmatterFence is the text of the comment line that opens and closes a
 // bot's frontmatter block (`## ---` or `# ---`).
 const FrontmatterFence = "---"

@@ -122,42 +122,12 @@
 ## ─────────────────────────────────────────────────────────────────
 
 dsl: 2
-
 import "lib/schemas.bot"
 import "lib/prompts.bot"
 import "lib/nodes.bot"
 
-secrets:
-  ## Forge API token for OTHER forge uses (e.g. cloning a private repo on
-  ## a cloud runner). NOT used by the publish path any more: since
-  ## v0.3.0 the review is posted by the DETERMINISTIC publish_review
-  ## node through the iterion server's forge-publish endpoint, which
-  ## uses the team connection's live client — a workspace-mounted token
-  ## freezes at launch (a GitHub App installation token lives ~1h) and
-  ## must never be the posting credential. Mounted read-only as a FILE
-  ## (path/env only, never read into a prompt); `optional: true` so
-  ## runs without a binding are unaffected.
-  forge_token:
-    as: file
-    optional: true
-
-  ## Issue-tracker API credential for TICKET CONFORMANCE (v0.6.0): a
-  ## read-only token the reviewers use to fetch the ticket(s) a PR claims
-  ## to implement (Jira, GitHub/GitLab issues, ... — tracker knowledge
-  ## lives in skills/ticket-context.md, never in this DSL). Mounted as a
-  ## FILE: the agent passes the PATH to curl (`$(cat ...)` inside its own
-  ## shell), the value never enters a prompt, and the egress guard keeps
-  ## it from leaving toward any host but the binding's AllowedHosts (bind
-  ## it with AllowedHosts = the tracker instance host). `optional: true`:
-  ## teams without a tracker binding are unaffected — the whole feature
-  ## stays dormant unless `tracker_api_base` is also set.
-  tracker_token:
-    as: file
-    optional: true
-
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## Branch comparison base. Reviewers audit
   ## `git diff $(git merge-base base_ref HEAD)` (working tree vs the
   ## merge-base), so committed + uncommitted branch changes are both in
@@ -165,12 +135,10 @@ vars:
   ## integration-branch name; pass `--var base_ref=develop` for another
   ## base, or `--var base_ref=HEAD` to review only uncommitted changes.
   base_ref: string = "main"
-
   ## Free-text steering for the reviewers (e.g. "focus on the new auth
   ## middleware" or "this is a hotfix, prioritise correctness"). Empty
   ## = review the whole diff against the full production-ready grid.
   scope_notes: string = ""
-
   ## REVIEW TIER (#685) — a repo's criticality/budget policy, one knob
   ## instead of five. "guard" is the DEFAULT and reproduces the bot's
   ## historical (pre-0.8.0) posture byte-for-byte. "glance" is frugal: a
@@ -195,7 +163,6 @@ vars:
   ## directly with --max-cost-usd/--max-duration when the default ceiling
   ## (sized off the measured guard-tier median) is not the one you want.
   review_tier: string [enum: "glance", "guard", "audit"] = "guard"
-
   ## What a fixer already did with an EARLIER review of this same PR, per
   ## finding id: fixed (with the commit), contested (with its argument), or
   ## deferred. Stamped at launch by the engine when such a run exists; empty
@@ -206,7 +173,6 @@ vars:
   ## is NOT an instruction to drop it — a wrong argument must be answered, and
   ## a finding that is still real still counts against the gate.
   prior_pushback: string = ""
-
   ## TICKET CONFORMANCE (v0.6.0). Base URL of the issue-tracker API the
   ## PR's tickets live on (e.g. "https://jira.example.org" or
   ## "https://myorg.atlassian.net"). Empty (default) = the feature is OFF
@@ -217,20 +183,17 @@ vars:
   ## and the PR review summary. Typically pinned per repo via the
   ## integration's launch_vars, not per run.
   tracker_api_base: string = ""
-
   ## Tracker auth mode hint. Empty = send the token as a Bearer header
   ## (Jira Server/DC personal access tokens, most REST APIs). Non-empty =
   ## HTTP Basic with this value as the username and the token as the
   ## password (Jira Cloud API tokens use the service account's email).
   ## Only meaningful when tracker_api_base is set.
   tracker_user: string = ""
-
   ## Explicit ticket references to check, space-separated (e.g.
   ## "PROJ-123 PROJ-456"). Empty = the reviewers extract references
   ## themselves from the PR title/body (scope_notes) and the source
   ## branch name, per skills/ticket-context.md.
   ticket_refs: string = ""
-
   ## The ticket-conformance switch (v0.9.0). "auto" (default) checks the
   ## PR against its ticket(s) whenever they are readable:
   ##   - an EXTERNAL tracker when `tracker_api_base` is set (Jira & co),
@@ -244,13 +207,11 @@ vars:
   ## Set "off" to skip the check entirely (cost, or a repo whose issues
   ## are noise).
   ticket_context: string [enum: "auto", "off"] = "auto"
-
   ## The PR's head branch name — a GENERIC PR-context var the iterion
   ## webhook lanes inject on every PR launch (empty on a bare CLI run).
   ## Declared here so ticket references embedded in the branch name
   ## (feature/PROJ-123-...) are extractable for ticket conformance.
   source_branch: string = ""
-
   ## Findings below this severity are not WRITTEN (order: low < medium <
   ## high < critical). Applied at the SOURCE — the reviewers are told not
   ## to draft detail/replacement for anything under the floor (a token
@@ -270,7 +231,6 @@ vars:
   ## gates on "low" must lower this one too (or pick a tier that does), or
   ## its required check silently stops seeing what it gates on.
   severity_threshold: string [enum: "auto", "low", "medium", "high", "critical"] = "auto"
-
   ## Cap the number of board issues / report rows (highest severity
   ## first). A capped run says so prominently in the report so it is
   ## never mistaken for "only N issues exist".
@@ -282,7 +242,6 @@ vars:
   ## (a 0 cap is never a real request — it would suppress every finding)
   ## and wins over the tier.
   max_findings: int = 0
-
   ## When true, emit creates one native-board issue per kept finding
   ## (label source:revi). When false, emit writes the markdown report
   ## only — useful for a read-only PR comment workflow with no board.
@@ -295,13 +254,11 @@ vars:
   ## launch var (PR-comment workflows never want board writes, on any
   ## tier) keeps working unchanged.
   post_to_board: string [enum: "auto", "true", "false"] = "auto"
-
   ## Markdown report destination, repo-root-relative. A neutral
   ## dotfile the operator can gitignore — deliberately NOT under
   ## .iterion/ so Revi never scatters engine state into the target
   ## repo's tree.
   report_path: string = ".review-pr/findings.md"
-
   ## FORGE PR REVIEW (v0.3.0). When set to a pull-request (merge-request on GitLab) URL,
   ## Revi ALSO publishes its merged findings onto that PR as a real
   ## forge review: one inline comment per finding anchored to file:line,
@@ -322,14 +279,12 @@ vars:
   ## `--var base_ref=main --var pr_url=https://github.com/o/r/pull/42`).
   ## Auto-resolving base/head from the PR URL is a future enhancement.
   pr_url: string = ""
-
   ## Review posting mode when pr_url is set: "inline" (default — one
   ## comment per finding anchored to file:line) or "summary" (a single
   ## rolled-up review body carrying all findings). The endpoint
   ## auto-falls back to a summary-only review when the forge rejects
   ## the inline anchors, so "inline" is safe unattended.
   pr_review_mode: string [enum: "inline", "summary"] = "inline"
-
   ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer; "dual"
   ## runs both and cross-confirms. Dual costs a full reviewer pass per
   ## family on EVERY review — and with the merge gate wired, every push
@@ -347,12 +302,10 @@ vars:
   ## IS audit's defining spend. An explicit `--var review_mode=dual` on any
   ## tier also forces it, unchanged from before #685.
   review_mode: string [enum: "auto", "mono", "dual"] = "mono"
-
   ## Which family runs in mono. Overwritten by the launch-time resolver
   ## when it detects only one usable family (e.g. an Anthropic-forfait
   ## instance with no OpenAI quota resolves to "claude").
   mono_family: string [enum: "claude", "gpt"] = "claude"
-
   ## MERGE GATE (v0.5.0). When pr_url is set, the deterministic publish
   ## step ALSO posts a commit status named "revi/review" on the PR head
   ## SHA: `success` when 0 findings meet `gate_severity`, else `failure`.
@@ -364,7 +317,6 @@ vars:
   ## (opt-in ReviewOnSync webhook) so the status tracks the fixed head.
   ## Set false to skip the status entirely (advisory-only reviews).
   gate_enabled: bool = true
-
   ## Severity floor that BLOCKS the merge (order: low < medium < high <
   ## critical). Default "high": high + critical findings block; low +
   ## medium advise only. A finding you "would block a PR on" is exactly
@@ -386,7 +338,6 @@ vars:
   ## them merge-blocking; tighten gate_severity yourself when a repo wants
   ## audit to also block on them.
   gate_severity: string [enum: "low", "medium", "high", "critical"] = "high"
-
   ## The commit-status CONTEXT the gate posts under — the name that appears
   ## in the repo's required checks. A required check applies to EVERY PR, so
   ## a repo where different bots review different PRs (a dependency guard on
@@ -396,7 +347,6 @@ vars:
   ## launch_vars (durable across re-provisioning), the same value on every
   ## bot that can gate. The default keeps this bot's historical name.
   gate_context: string = "revi/review"
-
   ## The fixer escalation this repo offers, published with the findings so a
   ## developer reads it where they read them. Empty — the default — omits the
   ## line entirely: a repo with no fixer, or one whose zero-touch lane is
@@ -406,7 +356,6 @@ vars:
   ## published as written. Set it per repo via the integration's launch_vars,
   ## the same place gate_context is set.
   fixer_hint: string = ""
-
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER
   ## at launch when the run's team has a forge connection covering
   ## pr_url's repo (studio/API launches and inbound webhooks both
@@ -419,6 +368,57 @@ vars:
   ## workspace credentials.
   forge_publish_url: string = ""
   forge_publish_token: string = ""
+
+secrets:
+  ## Forge API token for OTHER forge uses (e.g. cloning a private repo on
+  ## a cloud runner). NOT used by the publish path any more: since
+  ## v0.3.0 the review is posted by the DETERMINISTIC publish_review
+  ## node through the iterion server's forge-publish endpoint, which
+  ## uses the team connection's live client — a workspace-mounted token
+  ## freezes at launch (a GitHub App installation token lives ~1h) and
+  ## must never be the posting credential. Mounted read-only as a FILE
+  ## (path/env only, never read into a prompt); `optional: true` so
+  ## runs without a binding are unaffected.
+  forge_token:
+    as: file
+    optional: true
+  ## Issue-tracker API credential for TICKET CONFORMANCE (v0.6.0): a
+  ## read-only token the reviewers use to fetch the ticket(s) a PR claims
+  ## to implement (Jira, GitHub/GitLab issues, ... — tracker knowledge
+  ## lives in skills/ticket-context.md, never in this DSL). Mounted as a
+  ## FILE: the agent passes the PATH to curl (`$(cat ...)` inside its own
+  ## shell), the value never enters a prompt, and the egress guard keeps
+  ## it from leaving toward any host but the binding's AllowedHosts (bind
+  ## it with AllowedHosts = the tracker instance host). `optional: true`:
+  ## teams without a tracker binding are unaffected — the whole feature
+  ## stays dormant unless `tracker_api_base` is also set.
+  tracker_token:
+    as: file
+    optional: true
+
+prompt pacer_policy:
+  You pace a READ-ONLY code reviewer that has a hard cost budget. Its
+  review is worthless unless it is DELIVERED — the budget can kill the
+  run before the structured output lands.
+
+  Stay SILENT (decision: watch) while the reviewer is making steady,
+  scoped progress: reading the diff, checking callers of changed code,
+  drafting findings.
+
+  Intervene with ONE short message when you see budget-burning drift:
+    - re-reading files it already read, or sweeping the repo far
+      outside the changed files' blast radius;
+    - many minutes / many tool turns without converging toward its
+      final structured output;
+    - a cost/budget warning event.
+  The message: "Budget pressure: stop exploring and emit your
+  review_output NOW with what you already have — findings at or above
+  the severity floor only. A delivered review at current depth beats a
+  dead run."
+
+  Intervene AT MOST twice per run, then stay silent (decision: done).
+  Never comment on the code itself, never suggest findings, never ask
+  the reviewer to dig deeper.
 
 ## ─── Supervisor ─────────────────────────────────────────────────
 
@@ -446,35 +446,8 @@ supervisor pacer:
   ## and is silent by the time spend nears the real wall.
   monitors: ["cost_gt=32"]
 
-prompt pacer_policy:
-  You pace a READ-ONLY code reviewer that has a hard cost budget. Its
-  review is worthless unless it is DELIVERED — the budget can kill the
-  run before the structured output lands.
-
-  Stay SILENT (decision: watch) while the reviewer is making steady,
-  scoped progress: reading the diff, checking callers of changed code,
-  drafting findings.
-
-  Intervene with ONE short message when you see budget-burning drift:
-    - re-reading files it already read, or sweeping the repo far
-      outside the changed files' blast radius;
-    - many minutes / many tool turns without converging toward its
-      final structured output;
-    - a cost/budget warning event.
-  The message: "Budget pressure: stop exploring and emit your
-  review_output NOW with what you already have — findings at or above
-  the severity floor only. A delivered review at current depth beats a
-  dead run."
-
-  Intervene AT MOST twice per run, then stay silent (decision: done).
-  Never comment on the code itself, never suggest findings, never ask
-  the reviewer to dig deeper.
-
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow review_pr:
-  entry: diff_precheck
-
   ## A review READS the target repo; it never builds it. Installing the
   ## toolchain that repo pins to build ITSELF buys this run nothing and
   ## costs it a cold Nix realise before the first node — minutes on a
@@ -482,7 +455,6 @@ workflow review_pr:
   ## up. The bot's own devbox.json, if it ever ships one, still installs.
   ## Override per run with `--repo-devbox on`.
   repo_devbox: off
-
   ## The same fact, applied to the safety net: a review writes no commit
   ## for the repo it reads, so the mid-run workspace checkpoint has
   ## nothing of this run's to preserve — while its push would put an
@@ -494,6 +466,8 @@ workflow review_pr:
   ## The findings a reader needs live in node outputs, which are durable
   ## in the store on their own.
   workspace_checkpoint: off
+
+  entry: diff_precheck
 
   budget:
     ## Two read-only reviewer branches run in parallel; emit runs alone
@@ -529,6 +503,7 @@ workflow review_pr:
   ## EFFICIENCY: an empty review diff skips tier resolution, both LLM
   ## reviewers, and emit.
   diff_precheck -> tier_expand when not is_empty
+
   diff_precheck -> done when is_empty
 
   ## REVIEW TIERS (#685): resolve severity_threshold / max_findings /
@@ -543,23 +518,32 @@ workflow review_pr:
   ## unset/unknown review_mode/review_tier degrades to the cheap path
   ## rather than to an empty router.
   topology -> fan when "vars.review_mode == 'dual' || vars.review_tier == 'audit'"
+
   topology -> reviewer_gpt_glance when "vars.review_tier == 'glance' && vars.mono_family == 'gpt'"
+
   topology -> reviewer_gpt when "vars.mono_family == 'gpt'"
+
   topology -> reviewer_claude_glance when "vars.review_tier == 'glance'"
+
   topology -> reviewer_claude
 
   ## Fan out to both FULL-strength family reviewers (dual only — audit's
   ## defining spend never routes through the glance variants).
   fan -> reviewer_claude
+
   fan -> reviewer_gpt
 
   ## Converge on emit (await: wait_all). emit reads
   ## outputs.merge_reviews (normalised per family) directly, so the
   ## edges carry no data mapping.
   reviewer_claude -> merge_reviews
+
   reviewer_gpt -> merge_reviews
+
   reviewer_claude_glance -> merge_reviews
+
   reviewer_gpt_glance -> merge_reviews
+
   merge_reviews -> converge
 
   ## emit always runs (board + markdown report). Then pr_gate decides
@@ -572,12 +556,14 @@ workflow review_pr:
     ticket_conformance: "{{outputs.converge.ticket_conformance}}",
     total_findings: "{{outputs.converge.total_findings}}",
     claude_findings: "{{outputs.merge_reviews.claude_findings}}",
-    gpt_findings: "{{outputs.merge_reviews.gpt_findings}}"
+    gpt_findings: "{{outputs.merge_reviews.gpt_findings}}",
   }
+
   ## No PR target → finish after the board + report (the default,
   ## zero extra LLM cost). PR target → deterministic server-mediated
   ## forge publish (no LLM, no workspace credential).
   pr_gate -> done when not has_pr
+
   pr_gate -> publish_review when has_pr with {
     review_scope: "{{outputs.merge_reviews.review_scope}}",
     ## diff_precheck's ignorance sentinel (-1), mapped on the EDGE because a
@@ -614,14 +600,16 @@ workflow review_pr:
     ticket_conformance: "{{outputs.pr_gate.ticket_conformance}}",
     total_findings: "{{outputs.pr_gate.total_findings}}",
     claude_findings: "{{outputs.pr_gate.claude_findings}}",
-    gpt_findings: "{{outputs.pr_gate.gpt_findings}}"
+    gpt_findings: "{{outputs.pr_gate.gpt_findings}}",
   }
+
   ## Deterministic anti-façade gate on the publish result, then done.
   publish_review -> publish_health with {
     published: "{{outputs.publish_review.published}}",
     comments_posted: "{{outputs.publish_review.comments_posted}}",
     total_findings: "{{outputs.pr_gate.total_findings}}",
     skipped_reason: "{{outputs.publish_review.skipped_reason}}",
-    review_url: "{{outputs.publish_review.review_url}}"
+    review_url: "{{outputs.publish_review.review_url}}",
   }
+
   publish_health -> done

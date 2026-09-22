@@ -5,13 +5,6 @@
 
 dsl: 2
 
-supervisor watchdog:
-  watches: [implement]
-  model: "anthropic/claude-opus-4-8"
-  system: watchdog_policy
-  cooldown: "30s"
-  max_evals: 15
-
 prompt watchdog_policy:
   You watch an implementer agent. Stay silent while it makes steady
   progress. Intervene (one short, actionable message) only if you see it
@@ -22,10 +15,19 @@ prompt watchdog_policy:
 prompt task:
   Implement the requested change with tests.
 
+supervisor watchdog:
+  watches: [implement]
+  model: "anthropic/claude-opus-4-8"
+  system: watchdog_policy
+  cooldown: "30s"
+  max_evals: 15
+
 agent implement:
   model: "anthropic/claude-opus-4-8"
   system: task
 
 workflow main:
+
   entry: implement
+
   implement -> done

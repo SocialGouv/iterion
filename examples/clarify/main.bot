@@ -49,21 +49,7 @@ vars:
   latest_message: string = ""
   thread_id: string = ""
 
-## ─── Schema ───────────────────────────────────────────────────────
-
-schema clarification:
-  should_respond: bool
-  ## The message to post back into the thread. MUST be empty when
-  ## should_respond is false. When true, the concise clarifying
-  ## question(s) or reformulation.
-  final_answer: string
-  ## One short internal sentence on why the bot did or didn't
-  ## intervene. Not posted to the thread — useful for operators
-  ## auditing the bot's restraint.
-  reasoning: string
-
 ## ─── Prompt ───────────────────────────────────────────────────────
-
 prompt facilitate_sys:
   You are @clarify-bot, a discussion facilitator embedded in a chat
   thread. Your only job is to help the participants understand each
@@ -107,23 +93,35 @@ prompt facilitate_sys:
   Output ONLY valid JSON matching the requested schema. No prose
   outside the JSON.
 
-## ─── Node ─────────────────────────────────────────────────────────
+## ─── Schema ───────────────────────────────────────────────────────
+schema clarification:
+  should_respond: bool
+  ## The message to post back into the thread. MUST be empty when
+  ## should_respond is false. When true, the concise clarifying
+  ## question(s) or reformulation.
+  final_answer: string
+  ## One short internal sentence on why the bot did or didn't
+  ## intervene. Not posted to the thread — useful for operators
+  ## auditing the bot's restraint.
+  reasoning: string
 
+## ─── Node ─────────────────────────────────────────────────────────
 agent facilitator:
+  model: "{{vars.model}}"
   ## claw backend: read-only LLM reasoning, no tools, no shell.
   ## Omitting tools leaves the agent with none (no filesystem, no shell).
   backend: "claw"
-  model: "{{vars.model}}"
+  output: clarification
+  publish: final_answer
+  system: facilitate_sys
   ## interaction llm so the run never blocks waiting on a human: a
   ## facilitator that pauses a chat thread mid-answer is useless.
   interaction: llm
-  system: facilitate_sys
-  output: clarification
-  publish: final_answer
 
 ## ─── Workflow ─────────────────────────────────────────────────────
-
 workflow clarify:
+
   entry: facilitator
+
   ## `done` is a reserved terminal identifier — no declaration needed.
   facilitator -> done

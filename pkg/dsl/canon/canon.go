@@ -43,6 +43,9 @@ func Bytes(name string, src []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot be rewritten without changing the program: %v", ErrRefused, err)
 	}
+	if line, n := collapsedValue(name, text); line > 0 {
+		return nil, fmt.Errorf("%w: the value at line %d is written over several lines and the writer has no form for one — it would come back as a single line of %d characters (#1612). Leave the file as it is", ErrRefused, line, n)
+	}
 	if text == norm.Text {
 		return src, nil
 	}
@@ -62,4 +65,24 @@ func provenText(f *ast.File) (string, error) {
 		return "", err
 	}
 	return text, nil
+}
+
+// collapsedValue finds the first value the writer put on ONE line although
+// it holds several — a `|` block scalar, or a raw string spanning lines,
+// re-emitted as `"…\n…"`. The writer has no multi-line form (#1612), and a
+// file whose embedded script comes back as one line of half a million
+// characters is not the file the author wrote, however faithfully it still
+// compiles. Structural, not a length rule: a value that HOLDS a newline and
+// whose text OCCUPIES one line is the whole of it.
+func collapsedValue(name, text string) (line, size int) {
+	for _, t := range parser.NewLexer(name, text).All() {
+		if t.Type != parser.TokenString || !strings.Contains(t.Value, "\n") {
+			continue
+		}
+		if t.EndLine > t.Line {
+			continue // written over the lines it holds: nothing collapsed
+		}
+		return t.Line, t.End - t.Offset
+	}
+	return 0, 0
 }

@@ -2,6 +2,7 @@
 
 ## campaign's input: the deterministic gate's failure log from the PREVIOUS
 ## pass (empty on the first pass and on a green-but-more-work continuation).
+
 dsl: 2
 
 schema campaign_input:
@@ -100,4 +101,3 @@ schema finalize_mr_output:
   back_linked: bool
   skipped_reason: string
   summary: string
-
