@@ -3,6 +3,7 @@ package detect
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -180,4 +181,54 @@ func TestDetectOpenCodeFindsOnlyWhatTheDelegateCanSpawn(t *testing.T) {
 	if _, ok := locateOpenCodeBinary(); !ok {
 		t.Fatal("ITERION_OPENCODE_BIN did not make the binary reachable")
 	}
+}
+
+// TestOpenCodeProbeAndSpawnAgreeOnTheSameString: the probe and the delegate
+// read ONE variable. A probe that resolves it differently reports a backend
+// the run cannot use — the class this variable was introduced to close.
+func TestOpenCodeProbeAndSpawnAgreeOnTheSameString(t *testing.T) {
+	isolateEnv(t)
+	dir := t.TempDir()
+	abs := filepath.Join(dir, "opencode")
+	if err := os.WriteFile(abs, []byte("#!/bin/sh\nexit 0\n"), 0o750); err != nil { // #nosec G306 — a test stub that must be executable.
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir()) // nothing named opencode on PATH
+
+	t.Run("a relative path is a miss here because it is a refusal there", func(t *testing.T) {
+		t.Setenv("ITERION_OPENCODE_BIN", "./opencode")
+		if got, ok := locateOpenCodeBinary(); ok {
+			t.Fatalf("probe resolved %q for a value the delegate refuses", got)
+		}
+	})
+
+	t.Run("an absolute path is honoured by both", func(t *testing.T) {
+		t.Setenv("ITERION_OPENCODE_BIN", abs)
+		if got, ok := locateOpenCodeBinary(); !ok || got != abs {
+			t.Fatalf("probe = (%q, %v), want the absolute path", got, ok)
+		}
+	})
+
+	t.Run("a bare name is resolved through PATH by both", func(t *testing.T) {
+		t.Setenv("PATH", dir)
+		t.Setenv("ITERION_OPENCODE_BIN", "opencode")
+		if _, ok := locateOpenCodeBinary(); !ok {
+			t.Fatal("probe missed a bare name the delegate would PATH-resolve")
+		}
+	})
+
+	t.Run("a non-executable pin is a miss, and the hint says why", func(t *testing.T) {
+		plain := filepath.Join(t.TempDir(), "opencode")
+		if err := os.WriteFile(plain, []byte("text"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ITERION_OPENCODE_BIN", plain)
+		if got, ok := locateOpenCodeBinary(); ok {
+			t.Fatalf("probe accepted a non-executable pin %q; the spawn would EACCES", got)
+		}
+		st := detectOpenCode(nil)
+		if len(st.Hints) == 0 || !strings.Contains(st.Hints[0], "ITERION_OPENCODE_BIN") {
+			t.Fatalf("hint = %v, want it to name the pinned variable", st.Hints)
+		}
+	})
 }

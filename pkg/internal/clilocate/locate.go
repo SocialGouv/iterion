@@ -26,16 +26,18 @@ type Spec struct {
 
 // Locate resolves a CLI binary path.
 //
-//   - If explicit is non-empty, return it when it exists as a non-directory
-//     file (Fallbacks are NOT consulted; the caller asked for a specific
-//     path and a miss is a hard miss).
+//   - If explicit is non-empty, return it when it is an EXECUTABLE file
+//     (Fallbacks are NOT consulted; the caller asked for a specific path and
+//     a miss is a hard miss). The same predicate as the fallback arm: a
+//     probe that accepts a path the spawn will fail on with EACCES reports a
+//     backend that cannot run.
 //   - Otherwise, try exec.LookPath(spec.Name), then iterate Fallbacks and
 //     return the first executable file.
 //
 // Returns the resolved path and true on success; "", false on miss.
 func Locate(explicit string, spec Spec) (string, bool) {
 	if explicit != "" {
-		if fileExists(explicit) {
+		if isExecutable(explicit) {
 			return explicit, true
 		}
 		return "", false
@@ -84,11 +86,6 @@ func ClaudeLocalFallback() []string {
 		return nil
 	}
 	return []string{filepath.Join(home, ".claude", "local", "claude")}
-}
-
-func fileExists(p string) bool {
-	info, err := os.Stat(p)
-	return err == nil && !info.IsDir()
 }
 
 func isExecutable(p string) bool {

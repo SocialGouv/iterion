@@ -153,6 +153,7 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_SIGNUP_MODE":  true,
 	"ITERION_BIN":          true,
 	"ITERION_PI_BIN":       true,
+	"ITERION_OPENCODE_BIN": true,
 }
 
 // botVarsMax bounds the record so a runaway writer cannot grow the

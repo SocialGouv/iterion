@@ -1453,7 +1453,7 @@ only providers already authenticated on the host, so it will not list
 
 | Variable | Effect |
 |---|---|
-| `ITERION_PI_BIN` | Absolute path to the `pi` binary (e.g. a `bun --compile` single-file build on a host with no Node). |
+| `ITERION_PI_BIN` | The `pi` binary on the host (e.g. a `bun --compile` single-file build on a host with no Node): an absolute path, or a bare name on PATH. A relative path with a separator is refused — it would resolve against the workspace. |
 | `ITERION_PI_MODE` | `print` rolls back to the one-shot transport. The default is the long-lived `--mode rpc` session (tool events, native steering, authoritative accounting, pre-flight handshake). |
 | `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR`. Reproducible pi config, but hides the operator's own `auth.json` — so the OAuth breadth above goes with it. |
 | `ITERION_PI_OFFLINE` | `0` re-enables pi's catalogue refresh inside a sandbox (off by default there: an egress policy would stall startup). |
@@ -1641,7 +1641,7 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
 | Variable | Effect |
 |---|---|
 | `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the target repository's `.opencode/` resources. Read from the **process** environment, so on a shared server it lifts the refusal for every concurrent run, not just yours. See the warning above. |
-| `ITERION_OPENCODE_BIN` | Absolute path to the opencode CLI on the HOST, for a host whose PATH the iterion process does not share. Detection and execution read the same variable. Ignored inside a sandbox, where a host path means nothing. |
+| `ITERION_OPENCODE_BIN` | The opencode CLI on the HOST, for a host whose PATH the iterion process does not share: an absolute path, or a bare name on PATH. A relative path with a separator is refused — it would resolve against the workspace and run a binary out of the checkout. Detection and execution apply the same rule. Ignored inside a sandbox, where a host path means nothing. |
 
 ### Behavioural notes (generic Kimi/Grok delegates)
 

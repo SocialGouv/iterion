@@ -43,7 +43,7 @@ func TestLocate_ExplicitPath_Missing(t *testing.T) {
 
 func TestLocate_ExplicitPath_Directory(t *testing.T) {
 	dir := t.TempDir()
-	// Passing a directory as explicit should miss — fileExists checks !IsDir.
+	// Passing a directory as explicit should miss — isExecutable checks !IsDir.
 	got, ok := Locate(dir, Spec{Name: "ignored"})
 	if ok || got != "" {
 		t.Fatalf("directory as explicit should miss; got (%q, %v)", got, ok)
@@ -131,5 +131,29 @@ func TestCommonBinaryCandidates(t *testing.T) {
 		if filepath.Base(p) != "foo" {
 			t.Errorf("candidate %q does not end in /foo", p)
 		}
+	}
+}
+
+// TestLocate_ExplicitSkipsNonExecutable: the explicit arm uses the same
+// predicate as the fallback arm. Accepting a path the spawn fails on with
+// EACCES makes the probe report a backend that cannot run.
+func TestLocate_ExplicitSkipsNonExecutable(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("permission bits are not enforced on windows")
+	}
+	dir := t.TempDir()
+	nonExec := filepath.Join(dir, "pinned-but-not-executable")
+	if err := os.WriteFile(nonExec, []byte("text"), 0o644); err != nil {
+		t.Fatalf("write non-exec: %v", err)
+	}
+	if got, ok := Locate(nonExec, Spec{Name: "irrelevant"}); ok {
+		t.Fatalf("Locate accepted a non-executable explicit path: %q", got)
+	}
+	// Control: the same path, made executable, IS accepted.
+	if err := os.Chmod(nonExec, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := Locate(nonExec, Spec{Name: "irrelevant"}); !ok || got != nonExec {
+		t.Fatalf("Locate = (%q, %v), want the executable explicit path", got, ok)
 	}
 }

@@ -161,30 +161,54 @@ type CLIAgentPermissionHook struct {
 	WriteRegistration func(realHome, shadowHome, command string) error
 }
 
-// resolveBinary picks argv[0] for this task: the explicit Command wins, then
-// the protocol's host-only env override (never inside a sandbox — a host path
-// is not a container path, and nothing mounts it there), then DefaultBinary,
-// which is what the published images ship on PATH.
-func (b *CLIAgentBackend) resolveBinary(task Task) string {
-	if b.Command != "" {
-		return b.Command
+// resolveCLIBinary picks argv[0] for one CLI-agent task: the explicit
+// Command wins, then the protocol's host-only env override, then
+// DefaultBinary, which is what the published images ship on PATH.
+//
+// It is a package function, not a method, because pi drives TWO transports
+// (print through CLIAgentBackend, RPC through PiRPCBackend) off the SAME
+// variable — and a rule applied in one derivation only is a rule the default
+// transport does not have.
+//
+// The env override must be either an ABSOLUTE path or a bare name:
+//
+//   - absolute — unambiguous, and what the docs have always asked for;
+//   - a bare name (no separator) — os/exec resolves it through PATH, where
+//     cmd.Dir never enters, so it carries no hazard and it is an operator
+//     choice that used to work;
+//   - anything else (a relative path WITH a separator) is REFUSED, not
+//     quietly swapped for the default: runOnce sets cmd.Dir to the
+//     workspace and os/exec resolves such a value against Dir, so it would
+//     run a binary out of the CHECKOUT — while detection resolved the same
+//     string against the server's own cwd. One string, two files, the
+//     untrusted one winning.
+//
+// resolveBinary is the method form of resolveCLIBinary for this backend.
+func (b *CLIAgentBackend) resolveBinary(task Task) (string, error) {
+	return resolveCLIBinary(b.Protocol, b.Command, task)
+}
+
+func resolveCLIBinary(proto CLIAgentProtocol, command string, task Task) (string, error) {
+	if command != "" {
+		return command, nil
 	}
-	if b.Protocol.HostBinaryEnv != "" && task.Hostless() {
-		// An ABSOLUTE path only: runOnce sets cmd.Dir to the workspace, and
-		// os/exec resolves a relative Path against Dir — so a relative value
-		// would run a binary out of the CHECKOUT, while detection resolved
-		// the same string against the server's own cwd. One string, two
-		// files, the untrusted one winning.
-		pinned := strings.TrimSpace(os.Getenv(b.Protocol.HostBinaryEnv))
-		if filepath.IsAbs(pinned) {
-			return pinned
-		}
-		if pinned != "" && b.Logger != nil {
-			b.Logger.Warn("[%s] %s=%q is not an absolute path and was ignored; falling back to %q on PATH",
-				b.Protocol.Name, b.Protocol.HostBinaryEnv, pinned, b.Protocol.DefaultBinary)
+	if proto.HostBinaryEnv != "" && task.Hostless() {
+		pinned := strings.TrimSpace(os.Getenv(proto.HostBinaryEnv))
+		switch {
+		case pinned == "":
+			// Not set: fall through to the default binary.
+		case filepath.IsAbs(pinned), !strings.ContainsRune(pinned, filepath.Separator):
+			return pinned, nil
+		default:
+			return "", fmt.Errorf(
+				"delegate: %s: %s=%q is a relative path: it would resolve against the workspace and run a binary out of the checkout; use an absolute path or a bare name on PATH",
+				proto.Name, proto.HostBinaryEnv, pinned)
 		}
 	}
-	return ""
+	if proto.DefaultBinary == "" {
+		return "", fmt.Errorf("delegate: %s: no CLI binary configured (set command: or protocol DefaultBinary)", proto.Name)
+	}
+	return proto.DefaultBinary, nil
 }
 
 // CLIAgentParse is the rich parse result of a CLI-agent invocation (see
@@ -278,13 +302,9 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	}
 	defer permissionCleanup()
 
-	binary := b.resolveBinary(task)
-	if binary == "" {
-		binary = proto.DefaultBinary
-	}
-	if binary == "" {
-		return Result{BackendName: backendName, ExitCode: -1},
-			fmt.Errorf("delegate: %s: no CLI binary configured (set command: or protocol DefaultBinary)", backendName)
+	binary, err := b.resolveBinary(task)
+	if err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
 	}
 
 	systemPrompt := task.BuildSystemPrompt()

@@ -6,6 +6,7 @@ package detect
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -150,6 +151,11 @@ func detectOpenCode(prov []ProviderStatus) BackendStatus {
 	st := BackendStatus{Name: BackendOpenCode, Auth: AuthNone}
 
 	if _, ok := findOpenCodeBinary(); !ok {
+		if pinned := strings.TrimSpace(os.Getenv("ITERION_OPENCODE_BIN")); pinned != "" {
+			st.Hints = []string{fmt.Sprintf(
+				"ITERION_OPENCODE_BIN=%q does not resolve to an executable file (it must be an absolute path or a bare name on PATH)", pinned)}
+			return st
+		}
 		st.Hints = []string{"opencode CLI not found on PATH"}
 		return st
 	}
@@ -194,11 +200,24 @@ var findOpenCodeBinary = locateOpenCodeBinary
 
 // locateOpenCodeBinary is the real resolution, named so a test can exercise
 // it rather than the stub isolateEnv installs over the var.
+//
+// It applies the SAME rule the delegate applies to the same variable
+// (delegate.resolveCLIBinary): an absolute path is taken as given, a bare
+// name is resolved through PATH, and a relative path with a separator is a
+// MISS here because it is a refusal there. A probe that resolves the string
+// differently from the spawn reports a backend the run cannot use.
 func locateOpenCodeBinary() (string, bool) {
-	return clilocate.Locate(strings.TrimSpace(os.Getenv("ITERION_OPENCODE_BIN")), clilocate.Spec{
-		Name:      "opencode",
-		Fallbacks: nil,
-	})
+	pinned := strings.TrimSpace(os.Getenv("ITERION_OPENCODE_BIN"))
+	switch {
+	case pinned == "":
+		return clilocate.Locate("", clilocate.Spec{Name: "opencode"})
+	case filepath.IsAbs(pinned):
+		return clilocate.Locate(pinned, clilocate.Spec{Name: "opencode"})
+	case !strings.ContainsRune(pinned, filepath.Separator):
+		return clilocate.Locate("", clilocate.Spec{Name: pinned})
+	default:
+		return "", false
+	}
 }
 
 // openCodeProviderEnv is the set of environment variables opencode itself

@@ -152,8 +152,18 @@ func openCodeProjectTrusted() bool {
 //
 // Opt back in with ITERION_OPENCODE_TRUST_PROJECT=1, for a repository you own.
 func refuseUntrustedOpenCodeProject(workDir string) error {
-	if workDir == "" || openCodeProjectTrusted() {
+	if openCodeProjectTrusted() {
 		return nil
+	}
+	if workDir == "" {
+		// runOnce leaves cmd.Dir unset, so the CLI inherits the server
+		// process's own cwd and walks up from THERE. Screen that, not nothing.
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("delegate: %s: no workspace and no working directory to screen: %w",
+				BackendOpenCode, err)
+		}
+		workDir = cwd
 	}
 	levels, err := openCodeProjectLevels(workDir)
 	if err != nil {
@@ -197,11 +207,16 @@ func refuseUntrustedOpenCodeProject(workDir string) error {
 // Running out of levels is an error, not a shorter list: a cap that
 // truncates a security walk fails open.
 func openCodeProjectLevels(workDir string) ([]string, error) {
-	work, err := filepath.EvalSymlinks(workDir)
+	// Abs first, then EvalSymlinks — the order validateWorkDir uses. A
+	// relative WorkDir resolves against the server's cwd, which is where
+	// runOnce's cmd.Dir would put the CLI; EvalSymlinks(".") succeeds and
+	// returns "." unchanged, so the other order screens one level of nothing.
+	work, err := filepath.Abs(workDir)
 	if err != nil {
-		if work, err = filepath.Abs(workDir); err != nil {
-			return nil, fmt.Errorf("resolve workspace %q: %w", workDir, err)
-		}
+		return nil, fmt.Errorf("resolve workspace %q: %w", workDir, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(work); err == nil {
+		work = resolved
 	}
 	home := openCodeOperatorHome()
 
@@ -223,7 +238,7 @@ func openCodeProjectLevels(workDir string) ([]string, error) {
 		return levels, nil // filesystem root
 	}
 	return nil, fmt.Errorf(
-		"workspace %q sits more than %d levels below its repository root: cannot screen it for opencode resources",
+		"workspace %q has more than %d path components above it and no repository root: cannot screen it for opencode resources",
 		work, openCodeMaxProjectLevels)
 }
 
@@ -243,8 +258,15 @@ func openCodeOperatorHome() string {
 // isGitWorktreeRoot reports whether dir holds a `.git` entry — a directory
 // for a primary checkout, a file for a linked worktree or a submodule.
 // Either truncates opencode's own walk, so either truncates this one.
+//
+// Stat, never Lstat: Lstat sees strictly more entries, and every entry it
+// sees that Stat does not — a DANGLING `.git` symlink, a symlink loop —
+// would stop this walk while opencode's (stat-based) climbs straight past it
+// and loads the parent's resources. A stop predicate stronger than the CLI's
+// is a hole, and this one was measured open end to end. A Stat error also
+// reads as "not a root", so the walk climbs and screens more: fail-closed.
 func isGitWorktreeRoot(dir string) bool {
-	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
 }
 

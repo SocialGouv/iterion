@@ -357,6 +357,41 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		}
 	})
 
+	// The stop predicate must be no STRONGER than opencode's. A DANGLING
+	// `.git` symlink exists to Lstat and not to Stat: it stopped this walk
+	// while opencode climbed straight past it and loaded the parent's
+	// plugin — measured end to end against the real CLI.
+	t.Run("a DANGLING .git does not stop the walk", func(t *testing.T) {
+		repo := writeWorkspace(t, ".opencode/plugin/pwn.ts", ".git/HEAD")
+		work := filepath.Join(repo, "sub")
+		if err := os.MkdirAll(work, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(repo, "nonexistent", "nowhere"), filepath.Join(work, ".git")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := refuseUntrustedOpenCodeProject(work); err == nil {
+			t.Fatal("a dangling .git symlink truncated the walk; opencode does not stop there")
+		}
+	})
+
+	// A RELATIVE workdir resolves against the server's cwd, which is where
+	// runOnce's cmd.Dir would put the CLI. EvalSymlinks(".") succeeds and
+	// returns "." unchanged, so resolving in the other order screens one
+	// level of nothing and never reaches a single real ancestor.
+	t.Run("a relative workdir is absolutised before the walk", func(t *testing.T) {
+		levels, err := openCodeProjectLevels(".")
+		if err != nil {
+			t.Fatalf("openCodeProjectLevels(\".\") = %v", err)
+		}
+		if len(levels) == 0 || !filepath.IsAbs(levels[0]) {
+			t.Fatalf("levels = %v, want absolute paths", levels)
+		}
+		if len(levels) < 2 {
+			t.Fatalf("levels = %v, want the ancestors of the working directory", levels)
+		}
+	})
+
 	t.Run("a clean workspace runs", func(t *testing.T) {
 		ws := t.TempDir()
 		if err := refuseUntrustedOpenCodeProject(ws); err != nil {
@@ -493,14 +528,59 @@ func TestHostBinaryEnvRefusesRelativePath(t *testing.T) {
 	task := Task{WorkDir: t.TempDir()}
 
 	t.Setenv("ITERION_OPENCODE_BIN", "./opencode")
-	if got := b.resolveBinary(task); got != "" {
+	got, err := b.resolveBinary(task)
+	if err == nil {
 		t.Fatalf("resolveBinary = %q on a relative override; it would exec out of the workspace", got)
 	}
+	// The refusal names the variable and its value, so an operator can see
+	// which string was rejected rather than watch a different binary run.
+	for _, want := range []string{"ITERION_OPENCODE_BIN", "./opencode", "absolute"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not mention %q", err, want)
+		}
+	}
+
 	// Control: an absolute override is still honoured, so the assertion
 	// above is not a test that cannot fail.
 	abs := filepath.Join(t.TempDir(), "opencode")
 	t.Setenv("ITERION_OPENCODE_BIN", abs)
-	if got := b.resolveBinary(task); got != abs {
-		t.Fatalf("resolveBinary = %q, want the absolute override %q", got, abs)
+	if got, err := b.resolveBinary(task); err != nil || got != abs {
+		t.Fatalf("resolveBinary = (%q, %v), want the absolute override %q", got, err, abs)
+	}
+
+	// A BARE NAME has no checkout hazard: os/exec resolves it through PATH,
+	// where cmd.Dir never enters. Refusing it would silently swap an
+	// operator's explicit binary for another.
+	t.Setenv("ITERION_OPENCODE_BIN", "opencode-nightly")
+	if got, err := b.resolveBinary(task); err != nil || got != "opencode-nightly" {
+		t.Fatalf("resolveBinary = (%q, %v), want the bare name honoured", got, err)
+	}
+
+	// Inside a sandbox a host path means nothing: the image supplies the CLI.
+	t.Setenv("ITERION_OPENCODE_BIN", "./opencode")
+	if got, err := b.resolveBinary(Task{WorkDir: task.WorkDir, Sandbox: stubSandboxRun{}}); err != nil || got != opencodeProtocol.DefaultBinary {
+		t.Fatalf("sandboxed resolveBinary = (%q, %v), want the image's %q", got, err, opencodeProtocol.DefaultBinary)
+	}
+}
+
+// TestPiRPCSharesTheBinaryChokepoint: pi drives two transports off the SAME
+// variable, and RPC is the DEFAULT one. A rule applied to the print
+// derivation only is a rule the default transport does not have — the
+// relative override would still exec out of the checkout there.
+func TestPiRPCSharesTheBinaryChokepoint(t *testing.T) {
+	t.Setenv("ITERION_PI_BIN", "./bin/pi")
+	ws := t.TempDir()
+
+	_, printErr := (&CLIAgentBackend{Protocol: piProtocol}).resolveBinary(Task{WorkDir: ws})
+	if printErr == nil {
+		t.Fatal("the print transport accepted a relative override")
+	}
+
+	_, rpcErr := (&PiRPCBackend{}).Execute(context.Background(), Task{WorkDir: ws, BaseDir: ws, UserPrompt: "hi"})
+	if rpcErr == nil {
+		t.Fatal("the RPC transport accepted a relative override; it would exec out of the workspace")
+	}
+	if !strings.Contains(rpcErr.Error(), "ITERION_PI_BIN") {
+		t.Fatalf("the RPC transport failed for another reason: %v", rpcErr)
 	}
 }
