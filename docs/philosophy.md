@@ -97,7 +97,7 @@ and a migration next quarter.
 | Seam | Interface | Shipped implementations |
 |---|---|---|
 | Node execution | `NodeExecutor` ([engine.go](../pkg/runtime/engine.go)) | `ClawExecutor`, test stubs |
-| LLM/agent backend | `delegate.Backend` + `SystemPromptModeForBackend` ([delegate.go](../pkg/backend/delegate/delegate.go)) | claw, claude_code, codex, pi, kimi, grok — [ADR-065](adr/065-dedicated-cli-agent-backend.md), [backends](backends.md) |
+| LLM/agent backend | `delegate.Backend` + `SystemPromptModeForBackend` ([delegate.go](../pkg/backend/delegate/delegate.go)) | claw, claude_code, codex, pi, kimi, grok, opencode — [ADR-065](adr/065-dedicated-cli-agent-backend.md), [backends](backends.md) |
 | Issue tracker | `tracker.Tracker` ([tracker.go](../pkg/dispatcher/tracker/tracker.go)) | native kanban, GitHub, Forgejo |
 | Git forge | [`pkg/forge`](../pkg/forge/) provider adapters | GitHub, GitLab, Forgejo — [ADR-049](adr/049-forge-as-interchangeable-substrate.md) |
 | Shared memory | `knowledge.MemoryStore` ([pkg/knowledge](../pkg/knowledge/)) | filesystem, Mongo — [memory](memory-and-knowledge.md) |

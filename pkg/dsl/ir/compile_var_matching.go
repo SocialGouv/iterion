@@ -3,6 +3,7 @@ package ir
 import (
 	"regexp"
 	"regexp/syntax"
+	"slices"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
@@ -117,4 +118,95 @@ func endsAnchored(re *syntax.Regexp) bool {
 	default:
 		return false
 	}
+}
+
+// checkPresetConstraint holds a preset's literal value to the constraints
+// its var declares — `[enum: ...]` and `[matching: "<re>"]` — through
+// ValueMatchesPattern, the same reading the launch gate uses.
+//
+// A preset value is a literal written in the `.bot`, as checkable as a
+// default and governed by the same constraint. It is not C126/C161 because
+// the SITE differs, and the preset family already draws that line: a type
+// mismatch on a default is C109, the same mismatch on a preset value is
+// C071, because the line to edit and the remedy are not the same. This
+// check follows that split rather than inventing a second one.
+//
+// It WARNS rather than refuses, and that is the whole difference between
+// this and C126/C161. A bad default poisons every run; a bad preset value
+// is read only by a run that selects that preset, and usually that run is
+// refused, precisely, by the launch gate. Only usually: an engine-resolved
+// var (reviewtopology's `review_mode`, `mono_family`, `plan_review`,
+// `llm_families`) is overwritten between the preset merge and the gate, so
+// the value never reaches it — which is the second reason not to state the
+// refusal as a fact in the diagnostic's own text. Made an
+// error, this blocks a run that selects another preset or none at all, and
+// it makes a PAUSED run unresumable once its declaration is tightened,
+// which `Engine.Run`'s gate deliberately protects against and docs/dsl.md
+// promises (a compile error is not reachable by `resume --force`). C152 is
+// the precedent: a `with:` literal that will misbehave at run time on some
+// consumers warns at compile time.
+//
+// Only a value the compiler can read WHOLE is judged. The run expands a
+// preset value as it expands a default or a `--var` (docs/dsl.md, "a var's
+// text has one reading"), and the compile-time environment is not the
+// launch environment — so a value the expander REWRITES is left to the
+// gate, which sees it expanded. The question is asked of the expander
+// itself (carriesLiveReference), never of the text: `yolo$`, `yolo${` and
+// `100$` all carry a `$` the expander never acts on, and a spelling rule
+// would have shipped them unchecked.
+//
+// No type guard: a non-string var cannot carry either constraint
+// (C125/C160 zero them), so the "declares no constraint" return below is
+// what actually covers those — a second guard on the same condition would
+// be dead code dressed as a safety net.
+func (c *compiler) checkPresetConstraint(preset string, pv *ast.PresetValue, v *Var, value any) {
+	if v == nil || pv == nil {
+		return
+	}
+	if len(v.EnumValues) == 0 && v.Matching == "" {
+		return
+	}
+	s, ok := value.(string)
+	if !ok {
+		return
+	}
+	if carriesLiveReference(s) {
+		return
+	}
+	if len(v.EnumValues) > 0 && !slices.Contains(v.EnumValues, s) {
+		c.warnfAtSpan(DiagPresetViolatesConstraint, pv.Span,
+			"preset %q sets var %q to %q, which is not one of the enum values (%s)",
+			preset, pv.Key, s, quoteList(v.EnumValues))
+	}
+	if v.Matching == "" {
+		return
+	}
+	matched, err := ValueMatchesPattern(v.Matching, s)
+	switch {
+	case err != nil:
+		// Unreachable through a compiled program (C162 refuses the pattern
+		// and leaves the IR none), and reported rather than skipped for the
+		// reason the launch gate states: a pattern that does not compile
+		// must never read as "the value passed".
+		c.errorfAtSpan(DiagVarMatchingUncompilable, pv.Span,
+			"var %q: declared pattern %q does not compile: %v", pv.Key, v.Matching, err)
+	case !matched:
+		c.warnfAtSpan(DiagPresetViolatesConstraint, pv.Span,
+			"preset %q sets var %q to %q, which does not match its pattern %q",
+			preset, pv.Key, s, v.Matching)
+	}
+}
+
+// carriesLiveReference reports whether the run's expander would REWRITE s —
+// the behaviour checkPresetConstraint's skip actually needs.
+//
+// It asks the expander instead of reading the text, because a `$` is not a
+// reference: `yolo$`, `100$`, `yo$-lo` and the forgotten-brace `yolo${` are
+// all left exactly as written (expandWithDefault acts on a `$` only when a
+// name follows, and an unclosed `${` renders verbatim by construction). A
+// rule spelled over the text skipped all four, and a preset value the
+// expander never touches is precisely the one the compiler can still judge.
+func carriesLiveReference(s string) bool {
+	const sentinel = "\x00iterion-live-ref\x00"
+	return ExpandWithDefault(s, func(string) string { return sentinel }) != s
 }

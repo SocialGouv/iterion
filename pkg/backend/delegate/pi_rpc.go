@@ -77,14 +77,12 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
-	// Same rule as the print transport: ITERION_PI_BIN is a HOST path, so it
-	// must not become argv[0] inside a container.
-	binary := b.Command
-	if binary == "" && task.Hostless() {
-		binary = strings.TrimSpace(os.Getenv(piProtocol.HostBinaryEnv))
-	}
-	if binary == "" {
-		binary = piProtocol.DefaultBinary
+	// The SAME derivation as the print transport, not a copy of its rule:
+	// both transports read ITERION_PI_BIN, so a rule applied in one
+	// derivation only is a rule the DEFAULT transport does not have.
+	binary, err := resolveCLIBinary(piProtocol, b.Command, task)
+	if err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
 
 	systemPrompt := task.BuildSystemPrompt()

@@ -182,8 +182,8 @@ It is NOT persisted on the run, though: `iterion resume --auto-memory` has to
 re-state it.
 
 Diagnostics: **C131** (invalid value) and **C132** (`on` on a backend that
-ignores it — `claude_code`, `claw` and `pi` consume it; kimi, grok and the
-Codex do not). C132 fires per node on an explicit node-level `on`, and
+ignores it — `claude_code`, `claw` and `pi` consume it; kimi, grok,
+opencode and the Codex do not). C132 fires per node on an explicit node-level `on`, and
 once for the workflow when a workflow-level `on` is inert because *nothing* in
 the graph can honour it.
 

@@ -30,7 +30,7 @@ agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-<a id="the-syntax-profile"></a>**The syntax profile.** A file may open with `dsl: 2` — its first significant line, after blank lines and comments (the `## ---` frontmatter included). Absent means profile 1: today's grammar, frozen. The header governs changes of MEANING only, and profile 2 carries four: a `"…"` string reads the standard escapes (`\"` `\\` `\n` `\t` `\r` `\0`) with no directive, where profile 1 keeps every backslash verbatim; a blank line inside a prompt body is kept as a paragraph break, where profile 1 drops it; the profile-1 `## strict-escape: on` directive is refused (E042), as is the retired `project_root:` (E043). Everything else on this page reads the same in both profiles. New files start with the header (`bots create` and the studio write it); an existing file moves with `iterion dsl migrate --to 2 <file|bundle>`, which re-spells the literals so their values do not change, names the prompts whose paragraphs will now reach the model, raises the bundle's `requires.iterion` to the build that reads the profile, and leaves every other byte alone. `iterion validate` says when a headerless file is one profile 2 would read otherwise (C144); a bundle written in profile 2 with no `requires.iterion` draws C252 and is refused at push. A header this build does not read is E040; one below a declaration — or below an `import` — is E041: the lexer took its profile off the first significant line, and read the whole file as profile 1.
+<a id="the-syntax-profile"></a>**The syntax profile.** A file may open with `dsl: 2` — its first significant line, after blank lines and comments (the `## ---` frontmatter included). Absent means profile 1: the grammar at the 1.0 cut, frozen. The header governs changes of MEANING only, and profile 2 carries four: a `"…"` string reads the standard escapes (`\"` `\\` `\n` `\t` `\r` `\0`) with no directive, where profile 1 keeps every backslash verbatim; a blank line inside a prompt body is kept as a paragraph break, where profile 1 drops it; the profile-1 `## strict-escape: on` directive is refused (E042), as is the retired `project_root:` (E043). Everything else on this page reads the same in both profiles. New files start with the header (`bots create` and the studio write it); an existing file moves with `iterion dsl migrate --to 2 <file|bundle>`, which re-spells the literals so their values do not change, names the prompts whose paragraphs will now reach the model, raises the bundle's `requires.iterion` to the build that reads the profile, and leaves every other byte alone. `iterion validate` says when a headerless file is one profile 2 would read otherwise (C144); a bundle written in profile 2 with no `requires.iterion` draws C252 and is refused at push. A header this build does not read is E040; one below a declaration — or below an `import` — is E041: the lexer took its profile off the first significant line, and read the whole file as profile 1.
 
 **Names and keys are unique.** A node id is unique across every node kind (C041 — `emit`, `wait` and `await_answers` included), a prompt, a schema, a cursor or a group among its own kind, and a key of `vars:`, `presets:`, `attachments:` or `secrets:` appears once in its block (E010) — in one file as across two: a duplicate key used to shadow the other in silence.
 
@@ -90,6 +90,31 @@ refused **at launch**, before a worktree or a sandbox is created, naming the
 var, the offending value and what it failed. Launch values are judged after
 the same `${...}` expansion the run applies, so the gate and the run never
 read a reference differently.
+
+An in-source `presets:` entry that sets a var to a value its constraint
+refuses is **warned** about at `iterion validate`
+([C165](references/diagnostics.md)) rather than left for the run that
+happens to select it. A warning and not a refusal, deliberately: only a run
+that selects that preset is affected, and that run is refused at the launch
+gate — so an error would block a run selecting another preset, or none, and
+would strand a paused run whose declaration was tightened after it started.
+The warning stops at naming what it can see: whether the run is really
+refused also depends on the launch (a `--var` override supersedes the
+preset, and an engine-resolved var such as `review_mode` is overwritten
+before the gate reads it).
+
+Two limits to that warning, both because the compiler is not the run.
+A preset value the run's **expander rewrites** (`${VAR}`, `${VAR:-x}`,
+`$NAME`) is left to the gate, which sees it expanded — the compile-time
+environment is not the launch environment. Note the asymmetry with a
+default, which is the same text read for a different purpose: `= "${A:-fast}"`
+on a constrained var is refused, because the launch gate never re-**checks**
+a default — it judges the values a launch supplies — so a default excused at
+compile time would be checked on no path at all. The same text as a preset
+value *is* re-judged there, so it is left to the gate. (Both are **expanded**
+at run time; it is the checking that differs.) And a
+bundle's file-based preset (`presets/<name>.md`) is merged after
+compilation, so it too is the gate's to judge.
 
 A **resume** does not re-check stored values: a run admitted at launch stays
 resumable when its declaration is tightened afterwards.

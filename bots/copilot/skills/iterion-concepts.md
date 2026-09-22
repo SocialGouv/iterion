@@ -64,6 +64,7 @@ and per-project, referenced from a workflow's `skills:` field.
 | `claw` | in-process multi-provider API client; iterion owns the message list |
 | `pi` | the pi agent CLI, ~36 providers, provider-computed cost |
 | `kimi`, `grok` | vendor CLIs through the generic CLI-agent seam |
+| `opencode` | multi-provider CLI through the same seam; cannot enforce the permission gate in any mode (C176 refuses a gated node) |
 | `codex` | **legacy** — native tool set not narrowable via `tools:`, and its pinned SDK refuses iterion's outer sandbox; do not adopt |
 
 Two behavioural differences worth knowing by heart:

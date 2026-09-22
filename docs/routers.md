@@ -250,7 +250,7 @@ When using `model`, the engine resolves the model identifier through this chain:
 3. Built-in default: `anthropic/claude-sonnet-5`
 
 When using `backend`, the named backend (for example `claude_code`, `pi`,
-`kimi`, `grok`, or `claw`) handles the call. Delegated CLIs normally use their
+`kimi`, `grok`, `opencode`, or `claw`) handles the call. Delegated CLIs normally use their
 own login; the in-process `claw` backend uses Iterion's configured provider
 credentials. `codex` is also available as an explicit CLI backend.
 

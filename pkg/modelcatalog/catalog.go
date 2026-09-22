@@ -346,6 +346,15 @@ func availability(report detect.Report, specProvider, modelID, credProvider stri
 			if prov.Available {
 				backends = append(backends, name)
 			}
+		case detect.BackendOpenCode:
+			// opencode resolves from the environment too, but not from the
+			// same variables iterion probes: it reads ZHIPU_API_KEY where
+			// iterion reads ZAI_API_KEY. Offering a model on a credential
+			// opencode cannot read would pair the studio's picker with a call
+			// that always fails, so the pairing asks detect's own predicate.
+			if prov.Available && detect.OpenCodeReadsSource(prov.Source) {
+				backends = append(backends, name)
+			}
 		}
 		// codex is deliberately absent: deprecated (C030), never auto-selected.
 	}

@@ -25,12 +25,24 @@ var KnownProviders = map[string]bool{
 
 // hintIgnoringBackends are the backends that do NOT consume the per-node
 // provider hint today: claw derives its provider from the model-spec
-// prefix and codex ignores the hint entirely. A multi-element provider
-// chain on these is a no-op fall-through (the executor collapses it to the
-// head), so C088 tells the author the chain won't do anything there.
+// prefix, codex ignores the hint entirely, and kimi, grok and opencode let
+// their CLI resolve its own credentials — the shared CLIAgentBackend never
+// reads Task.ProviderHint, so the hint has nowhere to land in their argv.
+//
+// pi is here for the other reason C088 exists: it DOES fold the head hint
+// into its argv, but the diagnostic is about the CHAIN, and the runtime
+// walks a multi-element chain for claude_code alone
+// (model.providerFallbackEligible) — so on pi too, everything after the
+// first element is a no-op the author should be told about. A multi-element provider chain on these
+// is a no-op fall-through (the executor collapses it to the head), so C088
+// tells the author the chain won't do anything there.
 var hintIgnoringBackends = map[string]bool{
-	"claw":  true,
-	"codex": true,
+	"claw":     true,
+	"codex":    true,
+	"kimi":     true,
+	"grok":     true,
+	"pi":       true,
+	"opencode": true,
 }
 
 // validateProviders walks every LLM-capable node (agent, judge, llm
@@ -42,9 +54,9 @@ var hintIgnoringBackends = map[string]bool{
 //     checked. Fields containing a ${VAR} env ref are skipped wholesale:
 //     their literal text isn't the resolved value, and a ${VAR:-a,b}
 //     default may itself carry commas.
-//   - C088 (warning) when a >1-element chain is declared on a backend that
-//     ignores the provider hint (claw / codex), so the author knows the
-//     fall-through is inert there today.
+//   - C088 (warning) when a >1-element chain is declared on a backend in
+//     hintIgnoringBackends above, so the author knows the fall-through is
+//     inert there today.
 //   - C172 (warning) for a malformed `provider:model` element — a colon
 //     with an empty provider part (":glm-5.2") or empty model part
 //     ("zai:"). The runtime trims to whatever is present, so this is a
@@ -85,7 +97,7 @@ func (c *compiler) validateProviders(w *Workflow) {
 		}
 		if len(tokens) > 1 && hintIgnoringBackends[backend] {
 			c.warnfAt(DiagProviderChainIgnored, id, "",
-				"%s %q: provider fallback chain %q has no effect on backend=%q (only claude_code consumes the provider hint today); the runtime uses only the first provider",
+				"%s %q: provider fallback chain %q has no effect on backend=%q (the runtime walks a multi-provider chain for claude_code only); the runtime uses only the first provider",
 				kind, id, provider, backend)
 		}
 	}

@@ -28,7 +28,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `spec/` — The declarative **property registry** (a leaf): every kind's accepted properties with value shape and one-line doc. Held to the parser by a black-box conformance test in BOTH directions (a property added to one side without the other fails CI) and to the EBNF's `*_prop` productions. Feeds E012's remedy (closest name, the block a name belongs to, the kind's list — `parser.unknownProperty`, the one choke point), and renders `docs/references/dsl-properties.md`, the grammar's tables and the skills' property section (`iterion dsl spec --write` / `task dsl:gen`; `task dsl:check` fails on a stale rendering). The parser's `isKeywordToken` is derived from the lexer's keyword table for the same reason: the hand-kept copy drifted twice
 - `pkg/backend/` — Execution stack (LLM + tools)
   - `model/` — Executor registry (`ClawExecutor`), schema validation, event hooks
-  - `delegate/` — Backend interface and CLI delegates (`claude_code`, `codex`, `pi`, `kimi`, `grok`); `claw` implements the same interface in-process under `model/`
+  - `delegate/` — Backend interface and CLI delegates (`claude_code`, `codex`, `pi`, `kimi`, `grok`, `opencode`); `claw` implements the same interface in-process under `model/`
   - `tool/` — Tool registry, policies, adapters
   - `mcp/` — MCP server lifecycle, configuration, health checks
   - `recipe/` — Recipe handling for tool adapters and execution policies

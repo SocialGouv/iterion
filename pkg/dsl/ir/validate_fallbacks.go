@@ -68,6 +68,7 @@ var reasoningEffortBackends = map[string]bool{
 	"pi":          true,
 	"grok":        true,
 	"codex":       true,
+	"opencode":    true,
 }
 
 // clawBackendName is the literal value of the in-process backend.
