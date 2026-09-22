@@ -1347,8 +1347,21 @@ tool post_feedback:
             # the PR head at the moment it posts; without this, a push landing
             # between the audit and the publish takes this verdict as its own.
             # The server refuses a stale pin rather than retargeting the status.
-            if s(audited_sha):
-                payload["gate"]["audited_sha"] = s(audited_sha)
+            #
+            # The pin is SHAPE-CHECKED here because on the committed path it is
+            # read off an agent's report, and this file already records the
+            # model answering with the abbreviated form `git commit` prints
+            # (see same_commit below). The server REFUSES a pin it cannot read,
+            # and that refusal costs the required check - so a malformed answer
+            # degrades to an unpinned post, which the server reports as such,
+            # rather than to no status at all.
+            pin = s(audited_sha)
+            if re.match(r"^[0-9a-fA-F]{7,40}$", pin):
+                payload["gate"]["audited_sha"] = pin
+            elif pin:
+                gate_note = (gate_note + " " if gate_note else "") + \
+                            "(posted UNPINNED: this run reported " + repr(pin)[:48] + \
+                            " as the audited commit, which is not a commit id)"
             if gate_note:
                 payload["gate"]["note"] = gate_note
         req = urllib.request.Request(
@@ -1735,6 +1748,13 @@ tool arm_automerge:
             out(False, "pull request not found via the forge API")
         if pr.get("mergeQueueEntry"):
             out(True, "already in the merge queue")
+        # The pin is resolved BEFORE anything is taken down. vouched_sha exits
+        # on four distinct disagreements, and a disarm placed ahead of it leaves
+        # the pull request BARE on a refusal this run could have made without
+        # touching the forge at all - worst with gate_enabled off, where no
+        # gate_sha is ever produced, so EVERY pass would tear an arming down and
+        # then refuse to replace it.
+        pin = vouched_sha(pr, "arm")
         # An arming already on the PR is opaque - its expectedHeadOid cannot be
         # read back - so it is replaced by one this run places and can vouch
         # for, never accepted. Disarm first: enablePullRequestAutoMerge on an
@@ -1748,7 +1768,7 @@ tool arm_automerge:
         # rejection and never lands anything on a queue-protected repo.
         try:
             graphql(arm_mut, {"id": node_id, "method": s(method).upper() or "SQUASH",
-                              "oid": vouched_sha(pr, "arm")})
+                              "oid": pin})
         except Exception as arm_err:
             if base_has_merge_queue(pr):
                 # The queue is the only door here; a direct merge would be

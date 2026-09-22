@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -47,7 +48,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		Gate    *gate  `json:"gate"`
 	}
 
-	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool) (published, map[string]any) {
+	// pinOverride, when non-empty, replaces the audited_sha fixture — the one
+	// input on the committed path that an AGENT produces, so the one that can
+	// arrive in a shape the server refuses.
+	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool, pinOverride ...string) (published, map[string]any) {
 		t.Helper()
 		var got published
 		var seen bool
@@ -96,6 +100,9 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{vars.gate_enabled}}":        boolLit(gateEnabled),
 			"{{vars.gate_context}}":        `"` + gateContext + `"`,
 		} {
+			if ref == "{{input.audited_sha}}" && len(pinOverride) > 0 {
+				val = strconv.Quote(pinOverride[0])
+			}
 			body = strings.ReplaceAll(body, ref, val)
 		}
 		if strings.Contains(body, "{{") {
@@ -178,6 +185,32 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			if strings.Contains(got.Summary, `"`+title+`"`) && !strings.Contains(got.Summary, "## "+title) {
 				t.Errorf("the comment cites section %q, which it did not render:\n%s", title, got.Summary)
 			}
+		}
+	})
+
+	// On the committed path the pin is read off an AGENT's report, and this bot
+	// has already been burned by the model answering with the abbreviated form
+	// `git commit` prints. The server REFUSES a pin it cannot read, and that
+	// refusal costs the required check — so a malformed answer must degrade to
+	// an UNPINNED post that says why, never to no status at all.
+	t.Run("a pin the server could not read degrades to unpinned, and says so", func(t *testing.T) {
+		for _, bad := range []string{
+			"a11ced0 (HEAD -> renovate/go-mods)", "HEAD", "none", "a11ced", "", "  ",
+		} {
+			t.Run(strconv.Quote(bad), func(t *testing.T) {
+				pub, _ := run(t, "committed", "iterion/review", true, bad)
+				if pub.Gate == nil {
+					t.Fatal("the gate must still be requested — a bad pin costs the pin, not the check")
+				}
+				if pub.Gate.AuditedSHA != "" {
+					t.Fatalf("a pin the server would refuse must not be sent, got %q", pub.Gate.AuditedSHA)
+				}
+				// Empty is the ordinary "nothing to pin" case (no commit on this
+				// path); only a value that was PRESENT and wrong needs saying.
+				if strings.TrimSpace(bad) != "" && !strings.Contains(pub.Gate.Note, "UNPINNED") {
+					t.Errorf("a pin that was present and unusable must be reported, got note %q", pub.Gate.Note)
+				}
+			})
 		}
 	})
 

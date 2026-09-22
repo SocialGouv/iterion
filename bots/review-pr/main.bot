@@ -610,6 +610,9 @@ workflow review_pr:
     total_findings: "{{outputs.pr_gate.total_findings}}",
     skipped_reason: "{{outputs.publish_review.skipped_reason}}",
     review_url: "{{outputs.publish_review.review_url}}",
+    gate_requested: "{{outputs.publish_review.gate_requested}}",
+    gate_posted: "{{outputs.publish_review.gate_posted}}",
+    gate_skipped_reason: "{{outputs.publish_review.gate_skipped_reason}}",
   }
 
   publish_health -> done

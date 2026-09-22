@@ -335,10 +335,18 @@ def finding_id(f):
     key = str(f.get('file') or '').strip() + chr(10) + t
     return 'R' + hashlib.sha256(key.encode()).hexdigest()[:6]
 
-def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
+def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary='', gate_requested=False, gate_posted=False, gate_skipped_reason=''):
+    # The gate travels STRUCTURED, not only folded into the summary string. A
+    # required check that never lands blocks the pull request for good, so the
+    # run must be able to say so with a predicate rather than with prose a
+    # reader has to notice -- publish_health is what raises it.
+    # (No backticks in these comments: this block is a backtick-delimited
+    # command: string, and one would terminate it. Same trap as below.)
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
                       'comments_posted': posted, 'suggestions_posted': sugg,
-                      'skipped_reason': skipped, 'summary': summary}))
+                      'skipped_reason': skipped, 'summary': summary,
+                      'gate_requested': bool(gate_requested), 'gate_posted': bool(gate_posted),
+                      'gate_skipped_reason': gate_skipped_reason}))
     raise SystemExit(0)
 
 url = os.environ.get('PUB_URL', '').strip()
@@ -704,7 +712,9 @@ if bool(res.get('gate_posted')):
 elif str(res.get('gate_error') or ''):
     s = s + ' merge gate NOT posted: ' + str(res.get('gate_error')) + '.'
 emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
-     review_url=str(res.get('review_url') or ''), posted=posted, sugg=sugg, skipped='', summary=s)
+     review_url=str(res.get('review_url') or ''), posted=posted, sugg=sugg, skipped='', summary=s,
+     gate_requested=gate_enabled, gate_posted=bool(res.get('gate_posted')),
+     gate_skipped_reason=str(res.get('gate_error') or ''))
 "`
   input: publish_input
   output: publish_output
@@ -714,14 +724,24 @@ emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
 ## already succeeded upstream, so this informs (degraded=true) rather
 ## than hard-failing the run. Forge-agnostic: a pure count assertion.
 tool publish_health:
-  command: `TOTAL={{input.total_findings}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} python3 -c "
+  command: `TOTAL={{input.total_findings}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} GATE_REQ={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} python3 -c "
 import os, json, sys
 total = int(os.environ.get('TOTAL', '0') or '0')
 posted = int(os.environ.get('POSTED', '0') or '0')
 review_url = os.environ.get('REVIEW_URL', '')
 skipped = os.environ.get('SKIPPED', '')
-degraded = total > 0 and posted == 0
-if degraded:
+def flag(name):
+    return str(os.environ.get(name, '')).strip().lower() in ('1', 'true', 'yes', 'on')
+# A required status that never lands blocks the pull request for good, with
+# nothing red anywhere to say so - the run would otherwise report 'forge
+# publish OK'. This is the SAME condition the inline-anchor guard reports on,
+# and it is the more expensive of the two: anchors can be re-posted, a gate
+# nobody notices is a PR nobody can merge.
+gate_missing = flag('GATE_REQ') and not flag('GATE_POSTED')
+degraded = (total > 0 and posted == 0) or gate_missing
+if gate_missing:
+    banner = chr(9888) + ' MERGE GATE NOT POSTED: the review landed but its required check did not (reason: ' + (os.environ.get('GATE_SKIPPED', '') or 'none given') + '). Until a review posts the status on the CURRENT head, this PR cannot merge; push again or re-run the review on the same pr_url.'
+elif degraded:
     banner = chr(9888) + ' FORGE PUBLISH FAILED: ' + str(total) + ' finding(s) to post but 0 inline comments landed on the PR (reason: ' + (skipped or 'none given') + '). The board + markdown report still succeeded; fix the forge CLI auth and re-run with the same pr_url to publish.'
 else:
     banner = 'forge publish OK: ' + str(posted) + ' inline comment(s) posted; review: ' + (review_url or 'n/a')

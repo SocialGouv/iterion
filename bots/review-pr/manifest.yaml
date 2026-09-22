@@ -1,7 +1,19 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.7
+version: 0.9.8
+## 0.9.8 — the gate's outcome travels STRUCTURED, so a check that never landed
+## cannot read as a healthy run. 0.9.7 pinned the verdict to the revision it
+## judged, and the server refuses a stale pin — but `publish_health` only ever
+## saw `total_findings` / `comments_posted`, so a head that moved during the
+## review cost `revi/review` entirely while the run reported "forge publish OK".
+## That is the defect 0.5.6 was written for, re-entered by another door: its own
+## words are "when the guard legitimately fires, it costs the inline anchors
+## only: the publish still happens, carrying the gate, because a required status
+## that never lands blocks a PR for good". `publish_output` now carries
+## gate_requested / gate_posted / gate_skipped_reason, the edge threads them,
+## and publish_health raises MERGE GATE NOT POSTED with the reason and the
+## recovery — the same predicate Vetty's feedback_health already used.
 ## 0.9.7 — the verdict is PINNED to the revision it judged: the publish
 ## payload carries `audited_sha` (the same `REVIEWED_SHA` the node already
 ## compared against the worktree HEAD to annotate a stale anchor — it was

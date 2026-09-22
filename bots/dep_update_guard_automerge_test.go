@@ -495,6 +495,41 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 	})
 
+	// Taking an arming down is only defensible when this run can put one back.
+	// `vouched_sha` refuses on four distinct disagreements, so a disarm placed
+	// ahead of it leaves the pull request BARE on refusals this run could have
+	// made without touching the forge at all.
+	for _, tc := range []struct {
+		name string
+		subs map[string]string
+		pr   map[string]any
+	}{
+		// Structural, not a race: gate_enabled off means no gate_sha is ever
+		// produced, so `vouched_sha` can NEVER succeed. Every pass would read
+		// the PR, tear the arming down and refuse — a de-arming machine.
+		{"the gate is off, so nothing can ever be vouched",
+			map[string]string{"{{vars.gate_enabled}}": "False", "{{input.gate_sha}}": `""`}, nil},
+		// The ordinary race form of the same shape.
+		{"the branch moved after the gate",
+			nil, map[string]any{"headRefOid": "b33fb33fb33f"}},
+		{"the gate landed on a commit this run never audited",
+			map[string]string{"{{input.gate_sha}}": `"0ther5ha0000"`}, nil},
+	} {
+		t.Run("a refusal it could not replace touches nothing: "+tc.name, func(t *testing.T) {
+			over := map[string]any{"autoMergeRequest": map[string]any{"enabledAt": "2026-09-22T09:00:00Z"}}
+			for k, v := range tc.pr {
+				over[k] = v
+			}
+			res, calls, _ := runWith(t, tc.subs, withState(over), "", nil)
+			if res["armed"] != false {
+				t.Fatalf("want a refusal, got %v", res)
+			}
+			if queried(calls, "disablePullRequestAutoMerge") {
+				t.Errorf("%s: the arming was taken down by a pass that then refused to replace it — the PR is left bare (reason=%q)", tc.name, res["reason"])
+			}
+		})
+	}
+
 	// The replacement must never leave the PR bare: if the disarm succeeds and
 	// the re-arm fails, saying "armed" would be a lie in the most expensive
 	// direction — and silently dropping a human's arming is not acceptable

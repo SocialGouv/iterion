@@ -63,7 +63,36 @@ func TestDepUpdateGuardEveryFeedbackEdgePinsTheAuditedSHA(t *testing.T) {
 		if !strings.Contains(pin, "{{") {
 			t.Errorf("edge %s -> %s (%s) pins %q to the literal %q: a pin must RESOLVE to the revision this run read",
 				e.From, e.To, edgeGuard(e), pinField, pin)
+			continue
 		}
+		// Presence is the weaker half. The value has to be the sha true on THIS
+		// path, and the likeliest slip is not an omission — it is pasting the
+		// sibling's value, which five of the six edges carry. On the one edge
+		// that committed, the pre-commit head is never the post-commit head, so
+		// that paste is a permanent gate refusal on Vetty's primary path.
+		wantRef := "outputs.prepare.head_sha"
+		why := "this path pushed nothing, so the verdict covers the head the run read"
+		if e.Condition == "did_commit" && !e.Negated {
+			wantRef = "outputs.commit.sha"
+			why = "this is the one path where the alignment moved the branch"
+		}
+		if !strings.Contains(pin, wantRef) {
+			t.Errorf("edge %s -> %s (%s) pins %q to %s, want a reference to %s — %s",
+				e.From, e.To, edgeGuard(e), pinField, pin, wantRef, why)
+		}
+	}
+
+	// The did_commit edge is the one the value assertion above exists for; a
+	// rename that made it unreachable would leave every remaining edge checked
+	// against the lenient branch, and this test would stay green saying nothing.
+	var sawCommitEdge bool
+	for _, e := range cr.Workflow.Edges {
+		if e.To == node && e.Condition == "did_commit" && !e.Negated {
+			sawCommitEdge = true
+		}
+	}
+	if !sawCommitEdge {
+		t.Errorf("no `when did_commit` edge reaches %q — the guard above then only ever checks the lenient branch", node)
 	}
 
 	// A walk that silently found nothing would pass every assertion above.
