@@ -1,0 +1,8 @@
+# refused: a node's kind key carries its name, a string
+dsl: 2
+nodes:
+  - agent:
+    model: m
+workflow:
+  name: w
+  entry: a

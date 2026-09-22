@@ -1,0 +1,8 @@
+# refused: dsl is required — a new surface has nothing to guess
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

@@ -1,0 +1,8 @@
+# refused: needs names resources, bare identifiers
+dsl: 2
+nodes:
+  - agent: a
+    needs: ["gpu-1"]
+workflow:
+  name: w
+  entry: a

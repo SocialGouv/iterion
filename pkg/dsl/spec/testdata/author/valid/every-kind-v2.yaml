@@ -1,0 +1,400 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SocialGouv/iterion/main/docs/references/iterion-author.schema.json
+# Every declaration kind, every node kind, every block, every header and
+# entry shape the author schema knows, in one profile-2 document. A
+# fixture of the schema, not a program: nothing here compiles.
+dsl: 2
+catalog:
+  name: release-readiness
+  description: Ship gate
+  triggers: [pull_request]
+  capabilities: [board.read]
+imports: [lib/schemas.bot]
+vars:
+  goal: string
+  max_fix_passes: {type: int, default: 3}
+  ratio: {type: float, default: 0.5}
+  dry: {type: bool, default: true}
+  labels: {type: "string[]", default: '["a", "b"]'}
+  blob: {type: json, default: '{"k": 1}'}
+  mode: {type: string, enum: [fast, slow], default: fast}
+  agent_bin: {type: string, matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$", default: codex}
+presets:
+  dev:
+    goal: ship
+    max_fix_passes: 1
+    dry: false
+    ratio: 0.25
+attachments:
+  spec: file
+  logo:
+    type: image
+    description: The brand logo
+    accept_mime: [image/png]
+    required: false
+secrets:
+  api_token: "${API_TOKEN}"
+  stored_secret:
+  deploy_key:
+    value: "${DEPLOY_KEY}"
+    as: file
+    mount_path: /run/secrets/deploy_key
+    env: DEPLOY_KEY_PATH
+    optional: true
+    hosts: [github.com]
+    description: The deploy key
+schemas:
+  verdict: {ok: bool, notes: string}
+  request:
+    kind: {type: string, enum: [bug, feature]}
+    files: "string[]"
+    payload: json
+    score: float
+    count: int
+    upload: file
+prompts:
+  reviewer: |
+    Review the diff.
+
+    {{"{{"}} literal braces {{"}}"}}
+    Read {{input.goal}} first.
+  terse: "One line."
+cursors:
+  depth:
+    description: How deep to read
+    values:
+      shallow: Skim the diff
+      deep: Read every file
+  tone:
+    bands:
+      "0..0.5": Be terse
+      "0.5..1": Be verbose
+supervisors:
+  coach:
+    watches: [survey]
+    model: anthropic/claude-opus-5
+    system: reviewer
+    cooldown: 2m
+    max_evals: 3
+    monitors: ["tool_call:*"]
+mcp_servers:
+  forge:
+    transport: stdio
+    command: forge-mcp
+    args: [--stdio]
+  web:
+    transport: http
+    url: https://example.test/mcp
+    auth:
+      type: oauth2
+      auth_url: https://example.test/auth
+      token_url: https://example.test/token
+      revoke_url: https://example.test/revoke
+      client_id: iterion
+      scopes: [read]
+contracts:
+  public:
+    display_name: Release readiness
+    responsibility: Decide whether a change may ship
+    version: 1
+    inputs:
+      goal: string
+      files:
+        type: "string[]"
+        description: Files to read
+        required: false
+        nullable: true
+        default: ["a", "b"]
+        min_items: 0
+        max_items: 10
+        file:
+          media_type: text/plain
+          min_bytes: 1
+          schema: request
+    outputs:
+      decision:
+        type: verdict
+        from: survey.ok
+    criteria:
+      goal_long_enough:
+        kind: min_length
+        port: input.goal
+        params: {min: 2}
+      declared_only:
+    effects:
+      opens_pr:
+        description: Opens a pull request
+        paid: false
+groups:
+  - group: review
+    params: [target]
+    nodes:
+      - agent: look
+        model: anthropic/claude-opus-5
+        user: "Look at {{params.target}}"
+      - judge: weigh
+        model: anthropic/claude-opus-5
+        output: verdict
+      - router: split
+        mode: fan_out_all
+      - human: ask
+        interaction: human
+      - tool: run
+        command: go test ./...
+      - compute: score
+        expr:
+          total: "input.a + input.b"
+    edges:
+      - look -> weigh
+      - weigh -> done
+  - group: empty
+uses:
+  - use: review
+    as: r1
+    with: {target: docs, n: 3, ok: true}
+  - use: empty
+    as: e1
+nodes:
+  - agent: survey
+    description: Surveys the change
+    model: anthropic/claude-opus-5
+    backend: claw
+    provider: anthropic
+    command: claude
+    input: request
+    output: verdict
+    publish: survey_out
+    artifact_labels: [plan, review-ledger]
+    system: reviewer
+    user: "Inline text is a prompt too"
+    session: "fresh"
+    session_slot: main
+    tools: [read_file, bash, mcp.forge.*]
+    tool_policy: [read_file]
+    capabilities: [board.read]
+    skills: [house.style, kebab-skill]
+    tool_max_steps: 40
+    max_tokens: 8000
+    reasoning_effort: "${VIBE_EFFORT:-max}"
+    timeout: 20m
+    readonly: true
+    full_access: false
+    images: [diagram.png]
+    interaction: async
+    interaction_prompt: terse
+    interaction_model: anthropic/claude-haiku-4-5-20251001
+    await: wait_all
+    compress: on
+    auto_memory: off
+    permission: ask
+    allow: ["Read(**)"]
+    ask: ["Bash(git *)"]
+    deny: ["Bash(rm *)"]
+    needs: gpu
+    fallbacks:
+      - route: spare
+        backend: claw
+        model: anthropic/claude-sonnet-5
+        provider: anthropic
+        on: [usage_window, unavailable]
+        metered: true
+        when: "vars.dry == false"
+      - route: give_up
+        action: skip
+        on: [any]
+    mcp:
+      inherit: true
+      servers: [forge]
+      disable: [web]
+    compaction:
+      threshold: 0.8
+      preserve_recent: 4
+    memory:
+      enabled: true
+      scope: review
+      autoload: [README.md]
+      read: true
+      write: false
+      pre_compact_inject: true
+      visibility: bot
+    sandbox:
+      mode: inline
+      image: ghcr.io/example/img:1
+      user: runner
+      workspace_folder: /work
+      host_state: none
+      post_create: make setup
+      env: {CI: "1", MODE: fast}
+      mounts: ["/cache:/cache", host.sock]
+      network:
+        mode: allowlist
+        preset: iterion-default
+        inherit: append
+        rules: ["!**.evil.site", github.com]
+    cursors:
+      enabled: true
+      depth: deep
+      tone: 0.7
+      other: "${TONE}"
+  - judge: verdict
+    model: anthropic/claude-opus-5
+    output: verdict
+    reasoning_effort: high
+    sandbox: none
+  - router: split
+    mode: fan_out_each
+    over: "input.files"
+    as: file
+    key: file
+    depends_on: previous
+    needs: [gpu, slots]
+  - router: pick
+    description: Picks the next branch
+    mode: llm
+    model: anthropic/claude-opus-5
+    backend: claw
+    provider: anthropic
+    system: reviewer
+    user: terse
+    multi: true
+    reasoning_effort: medium
+  - human: approve
+    description: Release approval
+    input: request
+    output: verdict
+    publish: approval
+    artifact_labels: [approval]
+    instructions: "Approve the release?"
+    system: reviewer
+    model: anthropic/claude-opus-5
+    interaction: human_or_host
+    interaction_prompt: terse
+    interaction_model: anthropic/claude-haiku-4-5-20251001
+    min_answers: 1
+    await: best_effort
+    review_url: "{{outputs.open.url}}"
+    posture: agent_verdict_ok
+    merge_strategy: squash
+    merge_into: current
+    max_turns: 4
+  - tool: run_tests
+    description: Runs the tests
+    command: go test ./...
+    input: request
+    output: verdict
+    publish: test_output
+    artifact_labels: [tests]
+    await: wait_all
+    sandbox: auto
+    compress: ultra
+    permission: off
+    needs: gpu
+    parallel_safe: true
+    goal: The tag exists
+    postcondition: git rev-parse --verify v1
+    policy: recover
+    recovery:
+      max_repair_attempts: 2
+      max_agent_attempts: 1
+      model: anthropic/claude-opus-5
+      agent_tools: [bash]
+  - tool: script_node
+    script: "print('x')"
+    language: python3
+    sandbox:
+      build:
+        dockerfile: Dockerfile
+        context: .
+        args: {BASE: alpine}
+  - tool: comment
+    action: forgejo.issue.comment
+    connection: forge-main
+    params:
+      owner: SocialGouv
+      "user-id": 42
+      body: "{{outputs.survey.notes}}"
+      wait: 30s
+    retry: 3
+    timeout: 30s
+  - compute: converge
+    description: Converges the verdicts
+    input: request
+    output: verdict
+    publish: converged
+    artifact_labels: [x]
+    await: wait_all
+    expr:
+      ok: "input.a && input.b"
+      notes: "concat(input.n1, input.n2)"
+  - subbot: child
+    description: Runs the child
+    source: child.bot
+    with: {issue: "{{input.id}}", n: 2}
+    output: verdict
+    needs: slots
+    isolated: true
+  - emit: ready
+    description: Announces readiness
+    event: ready
+    with: {value: "{{outputs.converge.ok}}"}
+  - wait: for_ready
+    description: Waits for the announcement
+    event: ready
+    timeout: 30s
+    output: verdict
+  - await_answers: gather
+    description: Gathers the async answers
+    from: survey
+    timeout: 30m
+  - fail: rejected
+    description: The change may not ship
+    code: REJECTED
+    message: "No: {{outputs.verdict.notes}}"
+    resumable: true
+workflow:
+  name: release_readiness
+  entry: survey
+  contract: public
+  vars:
+    wf_only: {type: string, default: x}
+  attachments:
+    extra: file
+  budget:
+    max_parallel_branches: 4
+    max_duration: 4h
+    max_cost_usd: 12.5
+    max_tokens: 400000
+    warn_tokens: 300000
+    max_iterations: 30
+  resources:
+    gpu: 2
+    slots: [slot-a, slot-b]
+  mcp:
+    autoload_project: false
+    servers: [forge]
+  compaction:
+    threshold: 0.9
+    preserve_recent: 6
+  sandbox: auto
+  worktree: auto
+  default_backend: claw
+  compress: on
+  auto_memory: on
+  loop_budget_guard: on
+  repo_devbox: off
+  workspace_checkpoint: on
+  permission: deny
+  allow: ["Read(**)"]
+  ask: ["Edit(**)"]
+  deny: ["Bash(rm *)"]
+  tool_policy: [read_file]
+  capabilities: [board.read, board.move]
+  skills: [house.style]
+  interaction: human
+  edges:
+    - survey -> split
+    - split -> r1.look
+    - r1.weigh -> converge when ok
+    - r1.weigh -> rejected else
+    - converge -> approve as fix(3)
+    - approve -> run_tests when input.ok
+    - "run_tests -> done with { tag: \"v1\" }"

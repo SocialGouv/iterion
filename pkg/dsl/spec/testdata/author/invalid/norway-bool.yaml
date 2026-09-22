@@ -1,0 +1,8 @@
+# refused: YAML 1.2 reads yes as a string, and readonly is a boolean
+dsl: 2
+nodes:
+  - agent: a
+    readonly: yes
+workflow:
+  name: w
+  entry: a

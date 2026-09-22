@@ -1,0 +1,8 @@
+# refused: sometimes is not a session mode
+dsl: 2
+nodes:
+  - agent: a
+    session: sometimes
+workflow:
+  name: w
+  entry: a

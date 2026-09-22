@@ -220,7 +220,8 @@ session_mode = "fresh" | "inherit" | "inherit_if_available"
 reasoning_effort = "low" | "medium" | "high" | "xhigh" | "max"
                  | "ultracode" | STRING_LIT ;
 await_mode = "wait_all" | "best_effort" ;
-interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review" ;
+interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review"
+                 | "async" | "human_or_host" ;
 compress_mode = "off" | "on" | "ultra" ;
 auto_memory_mode = "off" | "on" ;
 loop_budget_guard_mode = "off" | "on" ;
@@ -584,19 +585,25 @@ template_namespace = "vars" | "input" | "outputs" | "artifacts"
    word — two words, a number with a unit — is still an error (E002). *)
 str_value = STRING_LIT | IDENT ;
 
+(* A word from a fixed list — session_mode, await_mode, router_mode,
+   mcp_transport, interaction_mode — reads quoted as well as bare
+   (`session: "fresh"` is `session: fresh`); a word outside the list is
+   refused either way. The productions below name the words. *)
+
 (* Every list may be written inline, or as one `- item` per line indented
    under the property (comment lines allowed between items); both read as
-   the same list. `[]` is the empty list's only form. *)
-ident_list = "[" [ IDENT { "," IDENT } ] "]"
+   the same list. `[]` is the empty list's only form. A trailing comma before
+   the `]` is accepted and reads as no element, as in JSON5. *)
+ident_list = "[" [ IDENT { "," IDENT } [ "," ] ] "]"
            | NEWLINE INDENT { "-" IDENT NEWLINE } DEDENT ;
-string_list = "[" [ str_value { "," str_value } ] "]"
+string_list = "[" [ str_value { "," str_value } [ "," ] ] "]"
             | NEWLINE INDENT { "-" str_value NEWLINE } DEDENT ;
-string_or_ident_list = "[" [ string_or_ident { "," string_or_ident } ] "]"
+string_or_ident_list = "[" [ string_or_ident { "," string_or_ident } [ "," ] ] "]"
                      | NEWLINE INDENT { "-" string_or_ident NEWLINE } DEDENT ;
-tool_ref_list = "[" [ tool_ref_elem { "," tool_ref_elem } ] "]"
+tool_ref_list = "[" [ tool_ref_elem { "," tool_ref_elem } [ "," ] ] "]"
               | NEWLINE INDENT { "-" tool_ref_elem NEWLINE } DEDENT ;
 tool_ref_elem = tool_ref | STRING_LIT ;  (* a quoted element is the literal name *)
-skill_ref_list = "[" [ skill_ref { "," skill_ref } ] "]"
+skill_ref_list = "[" [ skill_ref { "," skill_ref } [ "," ] ] "]"
                | NEWLINE INDENT { "-" skill_ref NEWLINE } DEDENT ;
 
 tool_ref = IDENT { "." IDENT } [ "." "*" ] ;

@@ -1,0 +1,9 @@
+# refused: dsl names a profile no schema describes
+dsl: 9
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

@@ -1,0 +1,7 @@
+# refused: the workflow carries its name
+dsl: 2
+nodes:
+  - agent: a
+    model: m
+workflow:
+  entry: a

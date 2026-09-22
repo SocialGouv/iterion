@@ -301,12 +301,12 @@ func enclosingDeclaration(tmpl, opener string) string {
 // TestEveryListedValueOfACheckedPropertyHasACompileProbe: a `checked`
 // property (a bare word the compiler narrows) added to the registry without
 // a compile probe would carry a value list nothing holds to the compiler.
-// An Enum is the parser's business — the form probe proves its values are
+// An Enum (or an EnumOrEnv) is the parser's business — the form probe proves its values are
 // accepted and a bogus one refused, in TestEveryListedPropertyParsesCleanWithItsForm.
 func TestEveryListedValueOfACheckedPropertyHasACompileProbe(t *testing.T) {
 	for _, k := range spec.Kinds {
 		for _, p := range k.Properties {
-			if len(p.Values) == 0 || p.Form == spec.Enum {
+			if len(p.Values) == 0 || p.Form == spec.Enum || p.Form == spec.EnumOrEnv {
 				continue
 			}
 			if notValidated[k.Name+"."+p.Name] {

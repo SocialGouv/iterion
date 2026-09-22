@@ -131,8 +131,7 @@ func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
 
 func (p *parser) parseMCPTransport() ast.MCPTransport {
 	t := p.next()
-	value := tokenAsIdent(t)
-	switch value {
+	switch enumWord(t) {
 	case "stdio":
 		return ast.MCPTransportStdio
 	case "http":

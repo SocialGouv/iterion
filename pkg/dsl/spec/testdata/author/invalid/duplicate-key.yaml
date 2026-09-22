@@ -1,0 +1,9 @@
+# refused: a key appears once per mapping (YAML refuses the document)
+dsl: 2
+nodes:
+  - agent: a
+    model: m
+    model: n
+workflow:
+  name: w
+  entry: a

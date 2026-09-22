@@ -1,0 +1,5244 @@
+{
+  "$defs": {
+    "v1": {
+      "additionalProperties": false,
+      "description": "The YAML twin of a .bot file: the same declarations, in the .bot's order, with YAML's native values. A draft `iterion fmt --to bot` converts; never the committed truth.",
+      "properties": {
+        "attachments": {
+          "$ref": "#/$defs/v1.attachments"
+        },
+        "catalog": {
+          "$ref": "#/$defs/v1.catalog"
+        },
+        "contracts": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v1.contract"
+          },
+          "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "cursors": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v1.cursor"
+          },
+          "description": "A prompt-engineering dial: an enum (values:) or a numeric band map (bands:) over [0, 1], each entry carrying a prompt fragment (C083–C086).",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "dsl": {
+          "const": 1,
+          "description": "The syntax profile the document is read in: 1, written as a bare integer (`1`, never `1.0`: the .bot refuses a float, and JSON Schema cannot tell the two apart — the converter checks the YAML tag). Required — a new surface has nothing to guess.",
+          "type": "integer"
+        },
+        "groups": {
+          "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
+          "items": {
+            "$ref": "#/$defs/v1.group"
+          },
+          "type": "array"
+        },
+        "imports": {
+          "description": "Fragments under the bot's lib/ directory (`lib/<file>.bot`), resolved from the document's directory, as `import` lines do in a .bot.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mcp_servers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v1.mcp_server"
+          },
+          "description": "An MCP server the workflow may activate: stdio (command/args) or http/sse (url), optionally OAuth2.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "nodes": {
+          "description": "The graph's nodes, in order: each one `{<kind>: <name>, …properties}`.",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/v1.node.agent"
+              },
+              {
+                "$ref": "#/$defs/v1.node.judge"
+              },
+              {
+                "$ref": "#/$defs/v1.node.router"
+              },
+              {
+                "$ref": "#/$defs/v1.node.human"
+              },
+              {
+                "$ref": "#/$defs/v1.node.tool"
+              },
+              {
+                "$ref": "#/$defs/v1.node.compute"
+              },
+              {
+                "$ref": "#/$defs/v1.node.subbot"
+              },
+              {
+                "$ref": "#/$defs/v1.node.emit"
+              },
+              {
+                "$ref": "#/$defs/v1.node.wait"
+              },
+              {
+                "$ref": "#/$defs/v1.node.await_answers"
+              },
+              {
+                "$ref": "#/$defs/v1.node.fail"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "presets": {
+          "$ref": "#/$defs/v1.presets"
+        },
+        "prompts": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v1.prompt"
+          },
+          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "schemas": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v1.schema"
+          },
+          "description": "A structured-output shape; a bare header declares an empty schema.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "secrets": {
+          "$ref": "#/$defs/v1.secrets"
+        },
+        "supervisors": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v1.supervisor"
+          },
+          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "uses": {
+          "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
+          "items": {
+            "$ref": "#/$defs/v1.use"
+          },
+          "type": "array"
+        },
+        "vars": {
+          "$ref": "#/$defs/v1.vars"
+        },
+        "workflow": {
+          "$ref": "#/$defs/v1.workflow"
+        }
+      },
+      "required": [
+        "dsl"
+      ],
+      "type": "object"
+    },
+    "v1.attachments": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "enum": [
+              "file",
+              "image"
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "An entry may open an indented sub-block",
+            "properties": {
+              "accept_mime": {
+                "description": "MIME types accepted",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "description": {
+                "description": "Free-text description shown by the studio and the reports",
+                "type": "string"
+              },
+              "required": {
+                "description": "The run cannot start without it",
+                "type": "boolean"
+              },
+              "type": {
+                "description": "What the operator supplies",
+                "enum": [
+                  "file",
+                  "image"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "Operator-supplied files and images the run receives. An entry may open an indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.auth": {
+      "additionalProperties": false,
+      "description": "OAuth2 settings of an MCP server (only authorization-code/PKCE is wired).",
+      "properties": {
+        "auth_url": {
+          "description": "Authorization endpoint",
+          "type": "string"
+        },
+        "client_id": {
+          "description": "OAuth client id",
+          "type": "string"
+        },
+        "revoke_url": {
+          "description": "Revocation endpoint (optional)",
+          "type": "string"
+        },
+        "scopes": {
+          "description": "Scopes requested",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "token_url": {
+          "description": "Token endpoint",
+          "type": "string"
+        },
+        "type": {
+          "description": "\"oauth2\"",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v1.budget": {
+      "additionalProperties": false,
+      "description": "Run caps; a zero or absent cap is the engine default, and each is overridable per run without editing the .bot.",
+      "properties": {
+        "max_cost_usd": {
+          "$comment": "a finite non-negative number; `.inf` and `.nan` pass JSON Schema's bound and are the converter's to refuse",
+          "description": "Spend cap in USD",
+          "minimum": 0,
+          "type": "number"
+        },
+        "max_duration": {
+          "description": "Wall-clock cap, e.g. \"4h\"",
+          "type": "string"
+        },
+        "max_iterations": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Total node executions; also the fuel of an unbounded loop (C097)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_parallel_branches": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Concurrent branches (0 = engine default)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Total token cap",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warn_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Advisory: crossing it emits budget_warning",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "v1.catalog": {
+      "additionalProperties": false,
+      "description": "The catalog identity the .bot carries in its `## ---` frontmatter; a non-empty triggers or capabilities OVERRIDES the manifest's at discovery.",
+      "properties": {
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "triggers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v1.compaction": {
+      "additionalProperties": false,
+      "description": "When and how a session's context is compacted.",
+      "properties": {
+        "preserve_recent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Recent messages kept verbatim",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "threshold": {
+          "$comment": "a finite non-negative number; `.inf` and `.nan` pass JSON Schema's bound and are the converter's to refuse",
+          "description": "Context fraction (0–1) that triggers compaction",
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "v1.contract": {
+      "additionalProperties": false,
+      "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+      "properties": {
+        "criteria": {
+          "$ref": "#/$defs/v1.contract.criteria",
+          "description": "Deterministic registered checks on a port; prose is not executable"
+        },
+        "display_name": {
+          "description": "Explicit human-readable name",
+          "type": "string"
+        },
+        "effects": {
+          "$ref": "#/$defs/v1.contract.effects",
+          "description": "Visible effects, including paid operations"
+        },
+        "inputs": {
+          "$ref": "#/$defs/v1.contract.ports",
+          "description": "Named typed values and files the bot takes; each one is a declared var (C300)"
+        },
+        "outputs": {
+          "$ref": "#/$defs/v1.contract.ports",
+          "description": "Named typed values and files the bot produces on success; each one names the node and field that produce it (C301)"
+        },
+        "responsibility": {
+          "description": "The single responsibility this bot fulfils",
+          "type": "string"
+        },
+        "version": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Public contract version, 1 or more (C300); defaults to 1",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "v1.contract.criteria": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A named deterministic acceptance check, described in its indented sub-block",
+            "properties": {
+              "kind": {
+                "description": "Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303)",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              },
+              "params": {
+                "$ref": "#/$defs/v1.json_value",
+                "description": "Parameters validated against the criterion's parameter declaration (C302): one JSON object on one line, e.g. `{min: 2}`"
+              },
+              "port": {
+                "description": "Checked port, singular: `input.<name>` or `output.<name>` (C302)",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "description": "The bare name: the entry declared, nothing set on its line",
+            "type": "null"
+          }
+        ]
+      },
+      "description": "Deterministic acceptance checks on the ports, each a registered evaluator with JSON parameters — never prose. A named deterministic acceptance check, described in its indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.contract.effects": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A visible effect of the bot, described in its indented sub-block",
+            "properties": {
+              "description": {
+                "description": "Externally visible operation",
+                "type": "string"
+              },
+              "paid": {
+                "description": "The operation may incur a charge; unknown cost remains unknown",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "description": "The bare name: the entry declared, nothing set on its line",
+            "type": "null"
+          }
+        ]
+      },
+      "description": "The bot's externally visible operations, documented; an effect grants nothing — the sandbox, the allow-lists and the verified actions keep the admission. A visible effect of the bot, described in its indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.contract.file": {
+      "additionalProperties": false,
+      "description": "Verifiable properties of a produced or consumed file.",
+      "properties": {
+        "media_type": {
+          "description": "Expected media type",
+          "type": "string"
+        },
+        "min_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Minimum file size",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema": {
+          "description": "Schema of structured file contents",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v1.contract.ports": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "One port per line, its properties in the optional indented sub-block",
+            "properties": {
+              "default": {
+                "$ref": "#/$defs/v1.json_value",
+                "description": "Typed default of an optional input: the var's default, read as the launch reads a value of its type (a `string[]` or `json` var's text as a list or an object) — written, it must be the var's (C300); omitted, the var's is the port's. One JSON value on one line — `\"text\"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write and the compiler refuses from a document (C302)"
+              },
+              "description": {
+                "description": "Meaning of the value",
+                "type": "string"
+              },
+              "file": {
+                "$ref": "#/$defs/v1.contract.file",
+                "description": "Properties of a delivered or consumed file; existence and provenance are the runtime's checks"
+              },
+              "from": {
+                "description": "Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300)",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              },
+              "max_items": {
+                "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+                "description": "Maximum array cardinality (C300 on an input, C301 on an output)",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "min_items": {
+                "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+                "description": "Minimum array cardinality (C300 on an input, C301 on an output)",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "nullable": {
+                "description": "Permit an explicit null value (default false); on an input whose var has no default, the one way to be optional — omitted, the var is null (C300)",
+                "type": "boolean"
+              },
+              "required": {
+                "description": "Mandatory port (default true). An input mirrors its var — required exactly when the var has no default — and a written value that disagrees is refused (C300)",
+                "type": "boolean"
+              },
+              "type": {
+                "description": "A builtin type or a declared schema's name, optionally followed by []",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "Public input or output ports, in declaration order. One port per line, its properties in the optional indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.cursor": {
+      "additionalProperties": false,
+      "description": "A prompt-engineering dial: an enum (values:) or a numeric band map (bands:) over [0, 1], each entry carrying a prompt fragment (C083–C086).",
+      "properties": {
+        "bands": {
+          "$ref": "#/$defs/v1.cursor.bands",
+          "description": "Numeric form: one `\"lo..hi\": \"fragment\"` per line"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "values": {
+          "$ref": "#/$defs/v1.cursor.values",
+          "description": "Enum form: one `name: \"fragment\"` per line, order preserved"
+        }
+      },
+      "type": "object"
+    },
+    "v1.cursor.bands": {
+      "additionalProperties": {
+        "description": "The fragment appended to the system prompt when the position falls in the band",
+        "type": "string"
+      },
+      "description": "The numeric bands of a cursor. The range is parsed by the compiler (C085 when malformed)",
+      "type": "object"
+    },
+    "v1.cursor.values": {
+      "additionalProperties": {
+        "description": "The fragment appended to the system prompt when the value is selected",
+        "type": "string"
+      },
+      "description": "The enum values of a cursor. Order is the position a numeric invocation snaps to",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.cursors": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "description": "The setting: a declared value's name, a numeric position, or a quoted string resolved at run time"
+      },
+      "description": "Cursor activation on a node: the reserved enabled: key plus one setting per declared cursor.",
+      "properties": {
+        "enabled": {
+          "description": "Gate for the whole block (an explicit block opts in)",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "v1.expr": {
+      "additionalProperties": {
+        "description": "The expression whose value fills the output field; always quoted, a bare word is not an expression",
+        "type": "string"
+      },
+      "description": "The expressions of a compute node. An expression over vars, input, outputs, artifacts, loop and run — not a {{template}}",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.fallbacks": {
+      "description": "The named alternative routes of a node, tried in declaration order when the primary fails (ADR-087/ADR-091); the one block that may not stand bare — a chain with no route is refused. One named route per entry, its settings in the indented sub-block; order is the try order",
+      "items": {
+        "additionalProperties": false,
+        "description": "One named route per entry, its settings in the indented sub-block; order is the try order",
+        "properties": {
+          "action": {
+            "description": "skip: complete the node with a zero-value output stamped _skipped instead of failing",
+            "type": "string"
+          },
+          "backend": {
+            "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "type": "string"
+          },
+          "metered": {
+            "description": "The route spends a metered API key (credential hint)",
+            "type": "boolean"
+          },
+          "model": {
+            "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "type": "string"
+          },
+          "on": {
+            "description": "Failure classes that take this route (default usage_window, unavailable; never any or auth by default)",
+            "items": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "type": "string"
+          },
+          "route": {
+            "description": "The entry's name",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "when": {
+            "description": "Expression over vars that gates the route",
+            "type": "string"
+          }
+        },
+        "required": [
+          "route"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "v1.group": {
+      "additionalProperties": false,
+      "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
+      "properties": {
+        "edges": {
+          "description": "Edge lines in the .bot's own grammar, one per string: `src -> dst [when <expr> | else] [as loop(N)] [with { key: \"value\" }]`; quoted only when YAML needs it (a `: ` inside a with map).",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "The declaration's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "nodes": {
+          "description": "The declarations the body holds, in order",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/v1.node.agent"
+              },
+              {
+                "$ref": "#/$defs/v1.node.judge"
+              },
+              {
+                "$ref": "#/$defs/v1.node.router"
+              },
+              {
+                "$ref": "#/$defs/v1.node.human"
+              },
+              {
+                "$ref": "#/$defs/v1.node.tool"
+              },
+              {
+                "$ref": "#/$defs/v1.node.compute"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "params": {
+          "description": "The parameters a use binds with its with map; prompts read {{params.<name>}}",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "group"
+      ],
+      "type": "object"
+    },
+    "v1.json_value": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/v1.json_value"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/v1.json_value"
+          },
+          "type": "object"
+        }
+      ],
+      "description": "One JSON value: text, a non-negative number, a bool, null, a list or an object of these — the subset a .bot writes (no signed number, no exponent)."
+    },
+    "v1.mcp": {
+      "additionalProperties": false,
+      "description": "Which MCP servers are active; an empty block wires nothing (C135 stays an error).",
+      "properties": {
+        "autoload_project": {
+          "description": "Workflow scope: load the repository's .mcp.json servers (default true)",
+          "type": "boolean"
+        },
+        "disable": {
+          "description": "Servers removed from the ambient set",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "inherit": {
+          "description": "Node scope: inherit the workflow's active servers (default true)",
+          "type": "boolean"
+        },
+        "servers": {
+          "description": "mcp_server declarations activated",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v1.mcp_server": {
+      "additionalProperties": false,
+      "description": "An MCP server the workflow may activate: stdio (command/args) or http/sse (url), optionally OAuth2.",
+      "properties": {
+        "args": {
+          "description": "stdio: its arguments",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "auth": {
+          "$ref": "#/$defs/v1.auth",
+          "description": "OAuth2 authorization-code/PKCE settings"
+        },
+        "command": {
+          "description": "stdio: the executable",
+          "type": "string"
+        },
+        "transport": {
+          "description": "How the server is reached",
+          "enum": [
+            "stdio",
+            "http",
+            "sse"
+          ]
+        },
+        "url": {
+          "description": "http / sse: the endpoint",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v1.memory": {
+      "additionalProperties": false,
+      "description": "iterion's shared-memory tools for a node (docs/memory-and-knowledge.md); distinct from auto_memory.",
+      "properties": {
+        "autoload": {
+          "description": "Documents injected at node start",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "description": "Open the memory tools to the node",
+          "type": "boolean"
+        },
+        "pre_compact_inject": {
+          "description": "Re-inject memory before a compaction",
+          "type": "boolean"
+        },
+        "project_root": {
+          "description": "Key the space on the repository root rather than the working directory (legacy; exclusive with visibility)",
+          "type": "boolean"
+        },
+        "read": {
+          "description": "Allow memory_read",
+          "type": "boolean"
+        },
+        "scope": {
+          "description": "Memory scope the tools read and write",
+          "type": "string"
+        },
+        "visibility": {
+          "description": "Who sees the space (C170); quoted",
+          "type": "string"
+        },
+        "write": {
+          "description": "Allow memory_write",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "v1.node.agent": {
+      "additionalProperties": false,
+      "description": "An LLM node with tools, structured I/O and any backend.",
+      "properties": {
+        "agent": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "allow": {
+          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ask": {
+          "description": "Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "auto_memory": {
+          "description": "The backend's own auto-memory: on or off (C131/C132)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "backend": {
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "capabilities": {
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "Executable that drives a CLI backend, overriding its default binary",
+          "type": "string"
+        },
+        "compaction": {
+          "$ref": "#/$defs/v1.compaction",
+          "description": "Context-compaction thresholds of the node's session"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "cursors": {
+          "$ref": "#/$defs/v1.cursors",
+          "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
+        },
+        "deny": {
+          "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "fallbacks": {
+          "$ref": "#/$defs/v1.fallbacks",
+          "description": "Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused"
+        },
+        "full_access": {
+          "description": "Grants the backend its full tool access",
+          "type": "boolean"
+        },
+        "images": {
+          "description": "Image paths sent with the prompt",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "interaction_model": {
+          "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "interaction_prompt": {
+          "description": "Prompt the llm interaction mode answers with in the operator's place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Output-token cap per call",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mcp": {
+          "$ref": "#/$defs/v1.mcp",
+          "description": "MCP servers active for the node"
+        },
+        "memory": {
+          "$ref": "#/$defs/v1.memory",
+          "description": "iterion's shared-memory tools and scopes for the node"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "permission": {
+          "description": "Tool-permission gate: off, ask or deny (C110–C112)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "readonly": {
+          "description": "Declares the node mutates no workspace file, so it may run beside another branch",
+          "type": "boolean"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultracode"
+              ]
+            },
+            {
+              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "type": "string"
+            }
+          ],
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v1.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "session": {
+          "description": "How the node's LLM session relates to the previous node's",
+          "enum": [
+            "fresh",
+            "inherit",
+            "inherit_if_available",
+            "fork",
+            "artifacts_only",
+            "persist"
+          ]
+        },
+        "session_slot": {
+          "description": "Named durable session slot; requires session: persist",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "skills": {
+          "description": "Skill-library skills mirrored into the run's .claude/skills",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration the node may run, e.g. \"20m\"",
+          "type": "string"
+        },
+        "tool_max_steps": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Upper bound on tool-call rounds in one execution",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_policy": {
+          "description": "Tool-policy entries applied on top of tools",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "user": {
+          "description": "The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "v1.node.await_answers": {
+      "additionalProperties": false,
+      "description": "Parks its branch until every pending ask_user_async question of `from:` (or the whole run) is answered; output {answers: […]} (ADR-081, C241/C242).",
+      "properties": {
+        "await_answers": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "from": {
+          "description": "Node whose async questions are awaited; omit for the whole run",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration after which the node fails, e.g. \"30m\" (mandatory)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "await_answers"
+      ],
+      "type": "object"
+    },
+    "v1.node.compute": {
+      "additionalProperties": false,
+      "description": "A deterministic expression node: each expr entry is evaluated by the bounded expression language into an output field.",
+      "properties": {
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "compute": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "expr": {
+          "$ref": "#/$defs/v1.expr",
+          "description": "One `field: \"expression\"` per output field"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "compute"
+      ],
+      "type": "object"
+    },
+    "v1.node.emit": {
+      "additionalProperties": false,
+      "description": "Publishes a named run-scoped event with an immutable payload (ADR-051).",
+      "properties": {
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "emit": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "event": {
+          "description": "Event name",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "Payload fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "emit"
+      ],
+      "type": "object"
+    },
+    "v1.node.fail": {
+      "additionalProperties": false,
+      "description": "A named terminal failure with a typed code and a message (C247 checks the UPPER_SNAKE code, C248 refuses a reserved one).",
+      "properties": {
+        "code": {
+          "description": "Error code, UPPER_SNAKE (bare or quoted)",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "fail": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "message": {
+          "description": "Message; {{…}} references are rendered",
+          "type": "string"
+        },
+        "resumable": {
+          "description": "Leaves the run failed_resumable instead of failed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fail"
+      ],
+      "type": "object"
+    },
+    "v1.node.human": {
+      "additionalProperties": false,
+      "description": "A pause point the operator answers (interaction human, the default), an LLM answers (llm / llm_or_human), the host application may answer (human_or_host), or a review gate (review).",
+      "properties": {
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "human": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "Prompt shown to the operator as the question: a declared prompt's name, or the text itself as a string",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "interaction_model": {
+          "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "interaction_prompt": {
+          "description": "Prompt the llm interaction mode answers with in the operator's place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "max_turns": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "review: conversation turns before the gate escalates",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "merge_into": {
+          "description": "review: current (default), none or a branch name",
+          "type": "string"
+        },
+        "merge_strategy": {
+          "description": "review: squash (default) or merge; not validated at compile",
+          "type": "string"
+        },
+        "min_answers": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Answers required before the node resumes",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "posture": {
+          "description": "review: who may merge — human_required (default) or agent_verdict_ok; not validated at compile, another word reads as the default",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "review_url": {
+          "description": "review: the PR/MR the gate reviews (a {{…}} reference is accepted)",
+          "type": "string"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "human"
+      ],
+      "type": "object"
+    },
+    "v1.node.judge": {
+      "additionalProperties": false,
+      "description": "An LLM node producing verdicts; same surface as an agent, typically without tools.",
+      "properties": {
+        "allow": {
+          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ask": {
+          "description": "Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "auto_memory": {
+          "description": "The backend's own auto-memory: on or off (C131/C132)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "backend": {
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "capabilities": {
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "Executable that drives a CLI backend, overriding its default binary",
+          "type": "string"
+        },
+        "compaction": {
+          "$ref": "#/$defs/v1.compaction",
+          "description": "Context-compaction thresholds of the node's session"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "cursors": {
+          "$ref": "#/$defs/v1.cursors",
+          "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
+        },
+        "deny": {
+          "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "fallbacks": {
+          "$ref": "#/$defs/v1.fallbacks",
+          "description": "Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused"
+        },
+        "full_access": {
+          "description": "Grants the backend its full tool access",
+          "type": "boolean"
+        },
+        "images": {
+          "description": "Image paths sent with the prompt",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "interaction_model": {
+          "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "interaction_prompt": {
+          "description": "Prompt the llm interaction mode answers with in the operator's place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "judge": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Output-token cap per call",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mcp": {
+          "$ref": "#/$defs/v1.mcp",
+          "description": "MCP servers active for the node"
+        },
+        "memory": {
+          "$ref": "#/$defs/v1.memory",
+          "description": "iterion's shared-memory tools and scopes for the node"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "permission": {
+          "description": "Tool-permission gate: off, ask or deny (C110–C112)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "readonly": {
+          "description": "Declares the node mutates no workspace file, so it may run beside another branch",
+          "type": "boolean"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultracode"
+              ]
+            },
+            {
+              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "type": "string"
+            }
+          ],
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v1.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "session": {
+          "description": "How the node's LLM session relates to the previous node's",
+          "enum": [
+            "fresh",
+            "inherit",
+            "inherit_if_available",
+            "fork",
+            "artifacts_only",
+            "persist"
+          ]
+        },
+        "session_slot": {
+          "description": "Named durable session slot; requires session: persist",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "skills": {
+          "description": "Skill-library skills mirrored into the run's .claude/skills",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration the node may run, e.g. \"20m\"",
+          "type": "string"
+        },
+        "tool_max_steps": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Upper bound on tool-call rounds in one execution",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_policy": {
+          "description": "Tool-policy entries applied on top of tools",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "user": {
+          "description": "The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "judge"
+      ],
+      "type": "object"
+    },
+    "v1.node.router": {
+      "additionalProperties": false,
+      "description": "A routing node: fan_out_all, fan_out_each, condition, round_robin or llm (docs/routers.md). Never takes await.",
+      "properties": {
+        "as": {
+          "description": "fan_out_each: alias each item is bound to ({{each.<as>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "backend": {
+          "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "depends_on": {
+          "description": "fan_out_each: item field naming the branch this one waits for (requires key)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "key": {
+          "description": "fan_out_each: item field that names each branch",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mode": {
+          "description": "Routing mode",
+          "enum": [
+            "fan_out_all",
+            "fan_out_each",
+            "condition",
+            "round_robin",
+            "llm"
+          ]
+        },
+        "model": {
+          "description": "llm mode only (C023 otherwise): Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "multi": {
+          "description": "llm mode only (C023 otherwise): the model may select several outgoing edges",
+          "type": "boolean"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "over": {
+          "description": "fan_out_each: expression naming the collection to iterate",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultracode"
+              ]
+            },
+            {
+              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "type": "string"
+            }
+          ],
+          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+        },
+        "router": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "system": {
+          "description": "llm mode only (C023 otherwise): The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "user": {
+          "description": "llm mode only (C023 otherwise): The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "router"
+      ],
+      "type": "object"
+    },
+    "v1.node.subbot": {
+      "additionalProperties": false,
+      "description": "Runs another .bot as a nested child run; its outputs read back as {{outputs.<subbot>.<field>}} (C119).",
+      "properties": {
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "isolated": {
+          "description": "Asserts the child runs in its own workspace",
+          "type": "boolean"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "source": {
+          "description": "Path of the child .bot, relative to this file",
+          "type": "string"
+        },
+        "subbot": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "Child vars; {{…}} references are allowed in the values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "subbot"
+      ],
+      "type": "object"
+    },
+    "v1.node.tool": {
+      "additionalProperties": false,
+      "description": "The deterministic node, no LLM. One of three recipes: `command:` runs through bash -c, `script:` through the interpreter `language:` names, `action:` calls a connector operation (ADR-098). With `output:` a command prints schema-shaped JSON on stdout. A Verified Action adds goal + postcondition + policy + recovery (ADR-044), which an `action:` refuses (C262/C263).",
+      "properties": {
+        "action": {
+          "description": "Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260)",
+          "type": "string"
+        },
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "command": {
+          "description": "Shell command, run through bash -c (exclusive with script)",
+          "type": "string"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "connection": {
+          "description": "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "goal": {
+          "description": "Verified action: what the command is for, in one line",
+          "type": "string"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "language": {
+          "description": "Interpreter for script:",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "parallel_safe": {
+          "description": "Declares the node safe to run beside a mutating branch",
+          "type": "boolean"
+        },
+        "params": {
+          "$ref": "#/$defs/v1.params",
+          "description": "The action's arguments, by the operation's own parameter keys"
+        },
+        "permission": {
+          "description": "Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "policy": {
+          "description": "Verified action: required (default), recover or best_effort (C103–C106)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "postcondition": {
+          "description": "Verified action: command whose exit code is the truth oracle at every rung",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "recovery": {
+          "$ref": "#/$defs/v1.recovery",
+          "description": "Verified action: the self-heal ladder's bounds"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "description": "Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266)"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v1.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "script": {
+          "description": "Inline script run by the interpreter language: names",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "description": "Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266)"
+        },
+        "tool": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "type": "object"
+    },
+    "v1.node.wait": {
+      "additionalProperties": false,
+      "description": "Blocks its branch until the named event fires; the timeout is mandatory (ADR-051, C196–C198).",
+      "properties": {
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "event": {
+          "description": "Event name awaited",
+          "type": "string"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration after which the wait fails, e.g. \"30s\" (mandatory)",
+          "type": "string"
+        },
+        "wait": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "wait"
+      ],
+      "type": "object"
+    },
+    "v1.params": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "minimum": 0,
+            "type": "number"
+          }
+        ],
+        "description": "The argument's value: a string, a bare word or a number, coerced by the operation's parameter type"
+      },
+      "description": "The arguments of a connector action, keyed by the operation's own parameter names. The key is the operation's own parameter name, quoted when it is not an identifier (`\"user-id\"`); a {{…}} template is rendered and then coerced to the type the operation declares, so an integer field receives a number",
+      "type": "object"
+    },
+    "v1.presets": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "description": "The value the var takes; its type is the var's"
+        },
+        "description": "Each entry is a preset name whose indented lines set one var each",
+        "type": "object"
+      },
+      "description": "Named bundles of var values selected with --recipe / --preset. Each entry is a preset name whose indented lines set one var each",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.prompt": {
+      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+      "type": "string"
+    },
+    "v1.recovery": {
+      "additionalProperties": false,
+      "description": "Bounds of a Verified Action's recovery ladder (idempotent-skip → recipe → self-repair → agent → policy).",
+      "properties": {
+        "agent_tools": {
+          "description": "Tools the recovery agent may call",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_agent_attempts": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Agent rungs before the policy decides",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_repair_attempts": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Self-repair rungs before the agent rung",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v1.resources": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "The slot count, or the pool's member ids (its capacity is their number)"
+      },
+      "description": "Named resources nodes lease with needs:. A count is a semaphore; a quoted list is a pool whose members are leased one at a time",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.sandbox": {
+      "additionalProperties": false,
+      "description": "Per-run container isolation (docs/sandbox.md): the short form names a mode, the block form is inline and needs image: or build: (C044).",
+      "properties": {
+        "build": {
+          "$ref": "#/$defs/v1.sandbox.build",
+          "description": "Dockerfile build, local docker only (V2-6)"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables",
+          "type": "object"
+        },
+        "host_state": {
+          "description": "Mount ~/.iterion and ~/.claude into the container: auto or none",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "image": {
+          "description": "Container image (exclusive with build)",
+          "type": "string"
+        },
+        "mode": {
+          "description": "none, auto (devcontainer.json or the published slim image) or inline (C044 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mounts": {
+          "description": "Extra bind mounts",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "network": {
+          "$ref": "#/$defs/v1.sandbox.network",
+          "description": "Egress policy (open by default)"
+        },
+        "post_create": {
+          "description": "Command run once after the container starts",
+          "type": "string"
+        },
+        "user": {
+          "description": "Container user",
+          "type": "string"
+        },
+        "workspace_folder": {
+          "description": "Mount point of the workspace inside the container",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v1.sandbox.build": {
+      "additionalProperties": false,
+      "description": "A Dockerfile build of the sandbox image (docker driver only).",
+      "properties": {
+        "args": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Build arguments",
+          "type": "object"
+        },
+        "context": {
+          "description": "Build context",
+          "type": "string"
+        },
+        "dockerfile": {
+          "description": "Dockerfile path",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v1.sandbox.network": {
+      "additionalProperties": false,
+      "description": "Network egress of the sandbox, enforced by a CONNECT proxy on the host.",
+      "properties": {
+        "inherit": {
+          "description": "How a node's rules compose with the workflow's: omit to merge (the default), or replace / append (C044 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mode": {
+          "description": "open (no proxy), allowlist or denylist (C044 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "preset": {
+          "description": "Rule preset, e.g. \"iterion-default\"",
+          "type": "string"
+        },
+        "rules": {
+          "description": "Hosts and globs; a leading ! negates",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v1.schema": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "enum": [
+              "string",
+              "bool",
+              "int",
+              "float",
+              "json",
+              "string[]",
+              "file"
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
+            "properties": {
+              "enum": {
+                "description": "The values a string field may take, quoted",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "description": "The field's type",
+                "enum": [
+                  "string",
+                  "bool",
+                  "int",
+                  "float",
+                  "json",
+                  "string[]",
+                  "file"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "A structured-output shape; a bare header declares an empty schema. One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.secrets": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The value alone: the entry's shorthand",
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The value on the header line is optional: a bare `name:` (with or without a sub-block) resolves the stored secret by name",
+            "properties": {
+              "as": {
+                "description": "How the secret is materialised: value (env/template) or file",
+                "type": "string"
+              },
+              "description": {
+                "description": "Free-text description shown by the studio and the reports",
+                "type": "string"
+              },
+              "env": {
+                "description": "Environment variable that receives the value",
+                "type": "string"
+              },
+              "hosts": {
+                "description": "Hosts the secret may be sent to",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "mount_path": {
+                "description": "as: file — the path inside the sandbox",
+                "type": "string"
+              },
+              "optional": {
+                "description": "A missing secret does not fail the launch",
+                "type": "boolean"
+              },
+              "value": {
+                "description": "Inline value — the same field the sub-block's `value:` sets; prefer the stored secret, resolved by name",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "description": "The bare name: the entry declared, nothing set on its line",
+            "type": "null"
+          }
+        ]
+      },
+      "description": "Secrets the run resolves by name from the team's or the local store (docs/secrets.md). The value on the header line is optional: a bare `name:` (with or without a sub-block) resolves the stored secret by name",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.supervisor": {
+      "additionalProperties": false,
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "properties": {
+        "cooldown": {
+          "description": "Minimum delay between two evaluations, e.g. \"2m\"",
+          "type": "string"
+        },
+        "max_evals": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Upper bound on evaluations per run",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars",
+          "type": "string"
+        },
+        "monitors": {
+          "description": "Event patterns armed from the first event (the CLI --monitor grammar)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "watches": {
+          "description": "Agent nodes the supervisor is armed for",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v1.use": {
+      "additionalProperties": false,
+      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
+      "properties": {
+        "as": {
+          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "description": "The group instantiated",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "The parameter bindings; a number or a bool is the string it spells",
+          "type": "object"
+        }
+      },
+      "required": [
+        "as",
+        "use"
+      ],
+      "type": "object"
+    },
+    "v1.vars": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "enum": [
+              "string",
+              "bool",
+              "int",
+              "float",
+              "json",
+              "string[]"
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "One var per line; the enum and matching constraints apply to strings; a json/string[] default is a quoted JSON text",
+            "properties": {
+              "default": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ],
+                "description": "The value the run starts with when no --var or preset sets one; a json or string[] default is written as a quoted JSON text"
+              },
+              "enum": {
+                "description": "The values a string var may take, quoted",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "matching": {
+                "description": "An RE2 pattern a string var's value must match, checked at launch against --var and payload values; beside enum in either order, at most one of each",
+                "type": "string"
+              },
+              "type": {
+                "description": "The var's type",
+                "enum": [
+                  "string",
+                  "bool",
+                  "int",
+                  "float",
+                  "json",
+                  "string[]"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "Typed run parameters, overridable with --var and presets. One var per line; the enum and matching constraints apply to strings; a json/string[] default is a quoted JSON text",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v1.workflow": {
+      "additionalProperties": false,
+      "description": "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; a bare header declares an empty workflow (C008).",
+      "properties": {
+        "allow": {
+          "description": "Permission rules always allowed, Tool(pattern) syntax",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ask": {
+          "description": "Permission rules that pause for approval",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attachments": {
+          "$ref": "#/$defs/v1.attachments",
+          "description": "Workflow-scoped attachments"
+        },
+        "auto_memory": {
+          "description": "The backend's own auto-memory: on or off (C131/C132)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/v1.budget",
+          "description": "Run caps, each overridable by the matching run flag"
+        },
+        "capabilities": {
+          "description": "Run-wide board capabilities",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "compaction": {
+          "$ref": "#/$defs/v1.compaction",
+          "description": "Default compaction thresholds"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "contract": {
+          "description": "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "default_backend": {
+          "description": "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "deny": {
+          "description": "Permission rules always blocked",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "description": "Edge lines in the .bot's own grammar, one per string: `src -> dst [when <expr> | else] [as loop(N)] [with { key: \"value\" }]`; quoted only when YAML needs it (a `: ` inside a with map).",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entry": {
+          "description": "Node the run starts at; a dotted name addresses a group instance's node",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "Default interaction mode for the run's nodes that set none",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "loop_budget_guard": {
+          "description": "Decline a loop's back-edge the budget cannot fund: on (default) or off (C133)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mcp": {
+          "$ref": "#/$defs/v1.mcp",
+          "description": "MCP servers active for the run"
+        },
+        "name": {
+          "description": "The workflow's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "permission": {
+          "description": "Tool-permission gate: off, ask or deny (C110–C112)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "repo_devbox": {
+          "description": "Load the target repo's devbox.json toolchain: on (default) or off (C134)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "resources": {
+          "$ref": "#/$defs/v1.resources",
+          "description": "Named semaphores and pools nodes lease with needs:"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v1.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "skills": {
+          "description": "Run-wide skill-library skills",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tool_policy": {
+          "description": "Run-wide tool-policy entries",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "vars": {
+          "$ref": "#/$defs/v1.vars",
+          "description": "Workflow-scoped vars (merged with the file's)"
+        },
+        "workspace_checkpoint": {
+          "description": "Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "worktree": {
+          "description": "auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "v2": {
+      "additionalProperties": false,
+      "description": "The YAML twin of a .bot file: the same declarations, in the .bot's order, with YAML's native values. A draft `iterion fmt --to bot` converts; never the committed truth.",
+      "properties": {
+        "attachments": {
+          "$ref": "#/$defs/v2.attachments"
+        },
+        "catalog": {
+          "$ref": "#/$defs/v2.catalog"
+        },
+        "contracts": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v2.contract"
+          },
+          "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "cursors": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v2.cursor"
+          },
+          "description": "A prompt-engineering dial: an enum (values:) or a numeric band map (bands:) over [0, 1], each entry carrying a prompt fragment (C083–C086).",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "dsl": {
+          "const": 2,
+          "description": "The syntax profile the document is read in: 2, written as a bare integer (`2`, never `2.0`: the .bot refuses a float, and JSON Schema cannot tell the two apart — the converter checks the YAML tag). Required — a new surface has nothing to guess.",
+          "type": "integer"
+        },
+        "groups": {
+          "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
+          "items": {
+            "$ref": "#/$defs/v2.group"
+          },
+          "type": "array"
+        },
+        "imports": {
+          "description": "Fragments under the bot's lib/ directory (`lib/<file>.bot`), resolved from the document's directory, as `import` lines do in a .bot.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mcp_servers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v2.mcp_server"
+          },
+          "description": "An MCP server the workflow may activate: stdio (command/args) or http/sse (url), optionally OAuth2.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "nodes": {
+          "description": "The graph's nodes, in order: each one `{<kind>: <name>, …properties}`.",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/v2.node.agent"
+              },
+              {
+                "$ref": "#/$defs/v2.node.judge"
+              },
+              {
+                "$ref": "#/$defs/v2.node.router"
+              },
+              {
+                "$ref": "#/$defs/v2.node.human"
+              },
+              {
+                "$ref": "#/$defs/v2.node.tool"
+              },
+              {
+                "$ref": "#/$defs/v2.node.compute"
+              },
+              {
+                "$ref": "#/$defs/v2.node.subbot"
+              },
+              {
+                "$ref": "#/$defs/v2.node.emit"
+              },
+              {
+                "$ref": "#/$defs/v2.node.wait"
+              },
+              {
+                "$ref": "#/$defs/v2.node.await_answers"
+              },
+              {
+                "$ref": "#/$defs/v2.node.fail"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "presets": {
+          "$ref": "#/$defs/v2.presets"
+        },
+        "prompts": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v2.prompt"
+          },
+          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "schemas": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v2.schema"
+          },
+          "description": "A structured-output shape; a bare header declares an empty schema.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "secrets": {
+          "$ref": "#/$defs/v2.secrets"
+        },
+        "supervisors": {
+          "additionalProperties": {
+            "$ref": "#/$defs/v2.supervisor"
+          },
+          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "uses": {
+          "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
+          "items": {
+            "$ref": "#/$defs/v2.use"
+          },
+          "type": "array"
+        },
+        "vars": {
+          "$ref": "#/$defs/v2.vars"
+        },
+        "workflow": {
+          "$ref": "#/$defs/v2.workflow"
+        }
+      },
+      "required": [
+        "dsl"
+      ],
+      "type": "object"
+    },
+    "v2.attachments": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "enum": [
+              "file",
+              "image"
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "An entry may open an indented sub-block",
+            "properties": {
+              "accept_mime": {
+                "description": "MIME types accepted",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "description": {
+                "description": "Free-text description shown by the studio and the reports",
+                "type": "string"
+              },
+              "required": {
+                "description": "The run cannot start without it",
+                "type": "boolean"
+              },
+              "type": {
+                "description": "What the operator supplies",
+                "enum": [
+                  "file",
+                  "image"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "Operator-supplied files and images the run receives. An entry may open an indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.auth": {
+      "additionalProperties": false,
+      "description": "OAuth2 settings of an MCP server (only authorization-code/PKCE is wired).",
+      "properties": {
+        "auth_url": {
+          "description": "Authorization endpoint",
+          "type": "string"
+        },
+        "client_id": {
+          "description": "OAuth client id",
+          "type": "string"
+        },
+        "revoke_url": {
+          "description": "Revocation endpoint (optional)",
+          "type": "string"
+        },
+        "scopes": {
+          "description": "Scopes requested",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "token_url": {
+          "description": "Token endpoint",
+          "type": "string"
+        },
+        "type": {
+          "description": "\"oauth2\"",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v2.budget": {
+      "additionalProperties": false,
+      "description": "Run caps; a zero or absent cap is the engine default, and each is overridable per run without editing the .bot.",
+      "properties": {
+        "max_cost_usd": {
+          "$comment": "a finite non-negative number; `.inf` and `.nan` pass JSON Schema's bound and are the converter's to refuse",
+          "description": "Spend cap in USD",
+          "minimum": 0,
+          "type": "number"
+        },
+        "max_duration": {
+          "description": "Wall-clock cap, e.g. \"4h\"",
+          "type": "string"
+        },
+        "max_iterations": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Total node executions; also the fuel of an unbounded loop (C097)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_parallel_branches": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Concurrent branches (0 = engine default)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Total token cap",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warn_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Advisory: crossing it emits budget_warning",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "v2.catalog": {
+      "additionalProperties": false,
+      "description": "The catalog identity the .bot carries in its `## ---` frontmatter; a non-empty triggers or capabilities OVERRIDES the manifest's at discovery.",
+      "properties": {
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "triggers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v2.compaction": {
+      "additionalProperties": false,
+      "description": "When and how a session's context is compacted.",
+      "properties": {
+        "preserve_recent": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Recent messages kept verbatim",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "threshold": {
+          "$comment": "a finite non-negative number; `.inf` and `.nan` pass JSON Schema's bound and are the converter's to refuse",
+          "description": "Context fraction (0–1) that triggers compaction",
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "v2.contract": {
+      "additionalProperties": false,
+      "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+      "properties": {
+        "criteria": {
+          "$ref": "#/$defs/v2.contract.criteria",
+          "description": "Deterministic registered checks on a port; prose is not executable"
+        },
+        "display_name": {
+          "description": "Explicit human-readable name",
+          "type": "string"
+        },
+        "effects": {
+          "$ref": "#/$defs/v2.contract.effects",
+          "description": "Visible effects, including paid operations"
+        },
+        "inputs": {
+          "$ref": "#/$defs/v2.contract.ports",
+          "description": "Named typed values and files the bot takes; each one is a declared var (C300)"
+        },
+        "outputs": {
+          "$ref": "#/$defs/v2.contract.ports",
+          "description": "Named typed values and files the bot produces on success; each one names the node and field that produce it (C301)"
+        },
+        "responsibility": {
+          "description": "The single responsibility this bot fulfils",
+          "type": "string"
+        },
+        "version": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Public contract version, 1 or more (C300); defaults to 1",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "v2.contract.criteria": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A named deterministic acceptance check, described in its indented sub-block",
+            "properties": {
+              "kind": {
+                "description": "Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303)",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              },
+              "params": {
+                "$ref": "#/$defs/v2.json_value",
+                "description": "Parameters validated against the criterion's parameter declaration (C302): one JSON object on one line, e.g. `{min: 2}`"
+              },
+              "port": {
+                "description": "Checked port, singular: `input.<name>` or `output.<name>` (C302)",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "description": "The bare name: the entry declared, nothing set on its line",
+            "type": "null"
+          }
+        ]
+      },
+      "description": "Deterministic acceptance checks on the ports, each a registered evaluator with JSON parameters — never prose. A named deterministic acceptance check, described in its indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.contract.effects": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A visible effect of the bot, described in its indented sub-block",
+            "properties": {
+              "description": {
+                "description": "Externally visible operation",
+                "type": "string"
+              },
+              "paid": {
+                "description": "The operation may incur a charge; unknown cost remains unknown",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "description": "The bare name: the entry declared, nothing set on its line",
+            "type": "null"
+          }
+        ]
+      },
+      "description": "The bot's externally visible operations, documented; an effect grants nothing — the sandbox, the allow-lists and the verified actions keep the admission. A visible effect of the bot, described in its indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.contract.file": {
+      "additionalProperties": false,
+      "description": "Verifiable properties of a produced or consumed file.",
+      "properties": {
+        "media_type": {
+          "description": "Expected media type",
+          "type": "string"
+        },
+        "min_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Minimum file size",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema": {
+          "description": "Schema of structured file contents",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v2.contract.ports": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "One port per line, its properties in the optional indented sub-block",
+            "properties": {
+              "default": {
+                "$ref": "#/$defs/v2.json_value",
+                "description": "Typed default of an optional input: the var's default, read as the launch reads a value of its type (a `string[]` or `json` var's text as a list or an object) — written, it must be the var's (C300); omitted, the var's is the port's. One JSON value on one line — `\"text\"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write and the compiler refuses from a document (C302)"
+              },
+              "description": {
+                "description": "Meaning of the value",
+                "type": "string"
+              },
+              "file": {
+                "$ref": "#/$defs/v2.contract.file",
+                "description": "Properties of a delivered or consumed file; existence and provenance are the runtime's checks"
+              },
+              "from": {
+                "description": "Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300)",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              },
+              "max_items": {
+                "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+                "description": "Maximum array cardinality (C300 on an input, C301 on an output)",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "min_items": {
+                "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+                "description": "Minimum array cardinality (C300 on an input, C301 on an output)",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "nullable": {
+                "description": "Permit an explicit null value (default false); on an input whose var has no default, the one way to be optional — omitted, the var is null (C300)",
+                "type": "boolean"
+              },
+              "required": {
+                "description": "Mandatory port (default true). An input mirrors its var — required exactly when the var has no default — and a written value that disagrees is refused (C300)",
+                "type": "boolean"
+              },
+              "type": {
+                "description": "A builtin type or a declared schema's name, optionally followed by []",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "Public input or output ports, in declaration order. One port per line, its properties in the optional indented sub-block",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.cursor": {
+      "additionalProperties": false,
+      "description": "A prompt-engineering dial: an enum (values:) or a numeric band map (bands:) over [0, 1], each entry carrying a prompt fragment (C083–C086).",
+      "properties": {
+        "bands": {
+          "$ref": "#/$defs/v2.cursor.bands",
+          "description": "Numeric form: one `\"lo..hi\": \"fragment\"` per line"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "values": {
+          "$ref": "#/$defs/v2.cursor.values",
+          "description": "Enum form: one `name: \"fragment\"` per line, order preserved"
+        }
+      },
+      "type": "object"
+    },
+    "v2.cursor.bands": {
+      "additionalProperties": {
+        "description": "The fragment appended to the system prompt when the position falls in the band",
+        "type": "string"
+      },
+      "description": "The numeric bands of a cursor. The range is parsed by the compiler (C085 when malformed)",
+      "type": "object"
+    },
+    "v2.cursor.values": {
+      "additionalProperties": {
+        "description": "The fragment appended to the system prompt when the value is selected",
+        "type": "string"
+      },
+      "description": "The enum values of a cursor. Order is the position a numeric invocation snaps to",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.cursors": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "description": "The setting: a declared value's name, a numeric position, or a quoted string resolved at run time"
+      },
+      "description": "Cursor activation on a node: the reserved enabled: key plus one setting per declared cursor.",
+      "properties": {
+        "enabled": {
+          "description": "Gate for the whole block (an explicit block opts in)",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "v2.expr": {
+      "additionalProperties": {
+        "description": "The expression whose value fills the output field; always quoted, a bare word is not an expression",
+        "type": "string"
+      },
+      "description": "The expressions of a compute node. An expression over vars, input, outputs, artifacts, loop and run — not a {{template}}",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.fallbacks": {
+      "description": "The named alternative routes of a node, tried in declaration order when the primary fails (ADR-087/ADR-091); the one block that may not stand bare — a chain with no route is refused. One named route per entry, its settings in the indented sub-block; order is the try order",
+      "items": {
+        "additionalProperties": false,
+        "description": "One named route per entry, its settings in the indented sub-block; order is the try order",
+        "properties": {
+          "action": {
+            "description": "skip: complete the node with a zero-value output stamped _skipped instead of failing",
+            "type": "string"
+          },
+          "backend": {
+            "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "type": "string"
+          },
+          "metered": {
+            "description": "The route spends a metered API key (credential hint)",
+            "type": "boolean"
+          },
+          "model": {
+            "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "type": "string"
+          },
+          "on": {
+            "description": "Failure classes that take this route (default usage_window, unavailable; never any or auth by default)",
+            "items": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "type": "string"
+          },
+          "route": {
+            "description": "The entry's name",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "when": {
+            "description": "Expression over vars that gates the route",
+            "type": "string"
+          }
+        },
+        "required": [
+          "route"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "v2.group": {
+      "additionalProperties": false,
+      "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
+      "properties": {
+        "edges": {
+          "description": "Edge lines in the .bot's own grammar, one per string: `src -> dst [when <expr> | else] [as loop(N)] [with { key: \"value\" }]`; quoted only when YAML needs it (a `: ` inside a with map).",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "The declaration's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "nodes": {
+          "description": "The declarations the body holds, in order",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/v2.node.agent"
+              },
+              {
+                "$ref": "#/$defs/v2.node.judge"
+              },
+              {
+                "$ref": "#/$defs/v2.node.router"
+              },
+              {
+                "$ref": "#/$defs/v2.node.human"
+              },
+              {
+                "$ref": "#/$defs/v2.node.tool"
+              },
+              {
+                "$ref": "#/$defs/v2.node.compute"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "params": {
+          "description": "The parameters a use binds with its with map; prompts read {{params.<name>}}",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "group"
+      ],
+      "type": "object"
+    },
+    "v2.json_value": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/v2.json_value"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/v2.json_value"
+          },
+          "type": "object"
+        }
+      ],
+      "description": "One JSON value: text, a non-negative number, a bool, null, a list or an object of these — the subset a .bot writes (no signed number, no exponent)."
+    },
+    "v2.mcp": {
+      "additionalProperties": false,
+      "description": "Which MCP servers are active; an empty block wires nothing (C135 stays an error).",
+      "properties": {
+        "autoload_project": {
+          "description": "Workflow scope: load the repository's .mcp.json servers (default true)",
+          "type": "boolean"
+        },
+        "disable": {
+          "description": "Servers removed from the ambient set",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "inherit": {
+          "description": "Node scope: inherit the workflow's active servers (default true)",
+          "type": "boolean"
+        },
+        "servers": {
+          "description": "mcp_server declarations activated",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v2.mcp_server": {
+      "additionalProperties": false,
+      "description": "An MCP server the workflow may activate: stdio (command/args) or http/sse (url), optionally OAuth2.",
+      "properties": {
+        "args": {
+          "description": "stdio: its arguments",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "auth": {
+          "$ref": "#/$defs/v2.auth",
+          "description": "OAuth2 authorization-code/PKCE settings"
+        },
+        "command": {
+          "description": "stdio: the executable",
+          "type": "string"
+        },
+        "transport": {
+          "description": "How the server is reached",
+          "enum": [
+            "stdio",
+            "http",
+            "sse"
+          ]
+        },
+        "url": {
+          "description": "http / sse: the endpoint",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v2.memory": {
+      "additionalProperties": false,
+      "description": "iterion's shared-memory tools for a node (docs/memory-and-knowledge.md); distinct from auto_memory.",
+      "properties": {
+        "autoload": {
+          "description": "Documents injected at node start",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "description": "Open the memory tools to the node",
+          "type": "boolean"
+        },
+        "pre_compact_inject": {
+          "description": "Re-inject memory before a compaction",
+          "type": "boolean"
+        },
+        "read": {
+          "description": "Allow memory_read",
+          "type": "boolean"
+        },
+        "scope": {
+          "description": "Memory scope the tools read and write",
+          "type": "string"
+        },
+        "visibility": {
+          "description": "Who sees the space (C170); quoted",
+          "type": "string"
+        },
+        "write": {
+          "description": "Allow memory_write",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "v2.node.agent": {
+      "additionalProperties": false,
+      "description": "An LLM node with tools, structured I/O and any backend.",
+      "properties": {
+        "agent": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "allow": {
+          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ask": {
+          "description": "Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "auto_memory": {
+          "description": "The backend's own auto-memory: on or off (C131/C132)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "backend": {
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "capabilities": {
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "Executable that drives a CLI backend, overriding its default binary",
+          "type": "string"
+        },
+        "compaction": {
+          "$ref": "#/$defs/v2.compaction",
+          "description": "Context-compaction thresholds of the node's session"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "cursors": {
+          "$ref": "#/$defs/v2.cursors",
+          "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
+        },
+        "deny": {
+          "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "fallbacks": {
+          "$ref": "#/$defs/v2.fallbacks",
+          "description": "Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused"
+        },
+        "full_access": {
+          "description": "Grants the backend its full tool access",
+          "type": "boolean"
+        },
+        "images": {
+          "description": "Image paths sent with the prompt",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "interaction_model": {
+          "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "interaction_prompt": {
+          "description": "Prompt the llm interaction mode answers with in the operator's place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Output-token cap per call",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mcp": {
+          "$ref": "#/$defs/v2.mcp",
+          "description": "MCP servers active for the node"
+        },
+        "memory": {
+          "$ref": "#/$defs/v2.memory",
+          "description": "iterion's shared-memory tools and scopes for the node"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "permission": {
+          "description": "Tool-permission gate: off, ask or deny (C110–C112)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "readonly": {
+          "description": "Declares the node mutates no workspace file, so it may run beside another branch",
+          "type": "boolean"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultracode"
+              ]
+            },
+            {
+              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "type": "string"
+            }
+          ],
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v2.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "session": {
+          "description": "How the node's LLM session relates to the previous node's",
+          "enum": [
+            "fresh",
+            "inherit",
+            "inherit_if_available",
+            "fork",
+            "artifacts_only",
+            "persist"
+          ]
+        },
+        "session_slot": {
+          "description": "Named durable session slot; requires session: persist",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "skills": {
+          "description": "Skill-library skills mirrored into the run's .claude/skills",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration the node may run, e.g. \"20m\"",
+          "type": "string"
+        },
+        "tool_max_steps": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Upper bound on tool-call rounds in one execution",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_policy": {
+          "description": "Tool-policy entries applied on top of tools",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "user": {
+          "description": "The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "v2.node.await_answers": {
+      "additionalProperties": false,
+      "description": "Parks its branch until every pending ask_user_async question of `from:` (or the whole run) is answered; output {answers: […]} (ADR-081, C241/C242).",
+      "properties": {
+        "await_answers": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "from": {
+          "description": "Node whose async questions are awaited; omit for the whole run",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration after which the node fails, e.g. \"30m\" (mandatory)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "await_answers"
+      ],
+      "type": "object"
+    },
+    "v2.node.compute": {
+      "additionalProperties": false,
+      "description": "A deterministic expression node: each expr entry is evaluated by the bounded expression language into an output field.",
+      "properties": {
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "compute": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "expr": {
+          "$ref": "#/$defs/v2.expr",
+          "description": "One `field: \"expression\"` per output field"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "compute"
+      ],
+      "type": "object"
+    },
+    "v2.node.emit": {
+      "additionalProperties": false,
+      "description": "Publishes a named run-scoped event with an immutable payload (ADR-051).",
+      "properties": {
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "emit": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "event": {
+          "description": "Event name",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "Payload fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "emit"
+      ],
+      "type": "object"
+    },
+    "v2.node.fail": {
+      "additionalProperties": false,
+      "description": "A named terminal failure with a typed code and a message (C247 checks the UPPER_SNAKE code, C248 refuses a reserved one).",
+      "properties": {
+        "code": {
+          "description": "Error code, UPPER_SNAKE (bare or quoted)",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "fail": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "message": {
+          "description": "Message; {{…}} references are rendered",
+          "type": "string"
+        },
+        "resumable": {
+          "description": "Leaves the run failed_resumable instead of failed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fail"
+      ],
+      "type": "object"
+    },
+    "v2.node.human": {
+      "additionalProperties": false,
+      "description": "A pause point the operator answers (interaction human, the default), an LLM answers (llm / llm_or_human), the host application may answer (human_or_host), or a review gate (review).",
+      "properties": {
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "human": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "Prompt shown to the operator as the question: a declared prompt's name, or the text itself as a string",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "interaction_model": {
+          "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "interaction_prompt": {
+          "description": "Prompt the llm interaction mode answers with in the operator's place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "max_turns": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "review: conversation turns before the gate escalates",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "merge_into": {
+          "description": "review: current (default), none or a branch name",
+          "type": "string"
+        },
+        "merge_strategy": {
+          "description": "review: squash (default) or merge; not validated at compile",
+          "type": "string"
+        },
+        "min_answers": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Answers required before the node resumes",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "posture": {
+          "description": "review: who may merge — human_required (default) or agent_verdict_ok; not validated at compile, another word reads as the default",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "review_url": {
+          "description": "review: the PR/MR the gate reviews (a {{…}} reference is accepted)",
+          "type": "string"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "human"
+      ],
+      "type": "object"
+    },
+    "v2.node.judge": {
+      "additionalProperties": false,
+      "description": "An LLM node producing verdicts; same surface as an agent, typically without tools.",
+      "properties": {
+        "allow": {
+          "description": "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ask": {
+          "description": "Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "auto_memory": {
+          "description": "The backend's own auto-memory: on or off (C131/C132)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "backend": {
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "capabilities": {
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "Executable that drives a CLI backend, overriding its default binary",
+          "type": "string"
+        },
+        "compaction": {
+          "$ref": "#/$defs/v2.compaction",
+          "description": "Context-compaction thresholds of the node's session"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "cursors": {
+          "$ref": "#/$defs/v2.cursors",
+          "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
+        },
+        "deny": {
+          "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "fallbacks": {
+          "$ref": "#/$defs/v2.fallbacks",
+          "description": "Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused"
+        },
+        "full_access": {
+          "description": "Grants the backend its full tool access",
+          "type": "boolean"
+        },
+        "images": {
+          "description": "Image paths sent with the prompt",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "interaction_model": {
+          "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "interaction_prompt": {
+          "description": "Prompt the llm interaction mode answers with in the operator's place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "judge": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "max_tokens": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Output-token cap per call",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mcp": {
+          "$ref": "#/$defs/v2.mcp",
+          "description": "MCP servers active for the node"
+        },
+        "memory": {
+          "$ref": "#/$defs/v2.memory",
+          "description": "iterion's shared-memory tools and scopes for the node"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "permission": {
+          "description": "Tool-permission gate: off, ask or deny (C110–C112)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "readonly": {
+          "description": "Declares the node mutates no workspace file, so it may run beside another branch",
+          "type": "boolean"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultracode"
+              ]
+            },
+            {
+              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "type": "string"
+            }
+          ],
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v2.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "session": {
+          "description": "How the node's LLM session relates to the previous node's",
+          "enum": [
+            "fresh",
+            "inherit",
+            "inherit_if_available",
+            "fork",
+            "artifacts_only",
+            "persist"
+          ]
+        },
+        "session_slot": {
+          "description": "Named durable session slot; requires session: persist",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "skills": {
+          "description": "Skill-library skills mirrored into the run's .claude/skills",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration the node may run, e.g. \"20m\"",
+          "type": "string"
+        },
+        "tool_max_steps": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Upper bound on tool-call rounds in one execution",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_policy": {
+          "description": "Tool-policy entries applied on top of tools",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "user": {
+          "description": "The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "judge"
+      ],
+      "type": "object"
+    },
+    "v2.node.router": {
+      "additionalProperties": false,
+      "description": "A routing node: fan_out_all, fan_out_each, condition, round_robin or llm (docs/routers.md). Never takes await.",
+      "properties": {
+        "as": {
+          "description": "fan_out_each: alias each item is bound to ({{each.<as>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "backend": {
+          "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "depends_on": {
+          "description": "fan_out_each: item field naming the branch this one waits for (requires key)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "key": {
+          "description": "fan_out_each: item field that names each branch",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mode": {
+          "description": "Routing mode",
+          "enum": [
+            "fan_out_all",
+            "fan_out_each",
+            "condition",
+            "round_robin",
+            "llm"
+          ]
+        },
+        "model": {
+          "description": "llm mode only (C023 otherwise): Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "multi": {
+          "description": "llm mode only (C023 otherwise): the model may select several outgoing edges",
+          "type": "boolean"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "over": {
+          "description": "fan_out_each: expression naming the collection to iterate",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultracode"
+              ]
+            },
+            {
+              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "type": "string"
+            }
+          ],
+          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+        },
+        "router": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "system": {
+          "description": "llm mode only (C023 otherwise): The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "user": {
+          "description": "llm mode only (C023 otherwise): The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "router"
+      ],
+      "type": "object"
+    },
+    "v2.node.subbot": {
+      "additionalProperties": false,
+      "description": "Runs another .bot as a nested child run; its outputs read back as {{outputs.<subbot>.<field>}} (C119).",
+      "properties": {
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "isolated": {
+          "description": "Asserts the child runs in its own workspace",
+          "type": "boolean"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "source": {
+          "description": "Path of the child .bot, relative to this file",
+          "type": "string"
+        },
+        "subbot": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "Child vars; {{…}} references are allowed in the values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "subbot"
+      ],
+      "type": "object"
+    },
+    "v2.node.tool": {
+      "additionalProperties": false,
+      "description": "The deterministic node, no LLM. One of three recipes: `command:` runs through bash -c, `script:` through the interpreter `language:` names, `action:` calls a connector operation (ADR-098). With `output:` a command prints schema-shaped JSON on stdout. A Verified Action adds goal + postcondition + policy + recovery (ADR-044), which an `action:` refuses (C262/C263).",
+      "properties": {
+        "action": {
+          "description": "Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260)",
+          "type": "string"
+        },
+        "artifact_labels": {
+          "description": "Labels stamped on the published artifact; a quoted element is the literal label",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "await": {
+          "description": "Convergence rule when several incoming branches reach the node",
+          "enum": [
+            "wait_all",
+            "best_effort"
+          ]
+        },
+        "command": {
+          "description": "Shell command, run through bash -c (exclusive with script)",
+          "type": "string"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "connection": {
+          "description": "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)",
+          "type": "string"
+        },
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "goal": {
+          "description": "Verified action: what the command is for, in one line",
+          "type": "string"
+        },
+        "input": {
+          "description": "Schema the node's input is validated against",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "language": {
+          "description": "Interpreter for script:",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "needs": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Resource(s) leased from the workflow's resources: block for the node's duration"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "parallel_safe": {
+          "description": "Declares the node safe to run beside a mutating branch",
+          "type": "boolean"
+        },
+        "params": {
+          "$ref": "#/$defs/v2.params",
+          "description": "The action's arguments, by the operation's own parameter keys"
+        },
+        "permission": {
+          "description": "Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "policy": {
+          "description": "Verified action: required (default), recover or best_effort (C103–C106)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "postcondition": {
+          "description": "Verified action: command whose exit code is the truth oracle at every rung",
+          "type": "string"
+        },
+        "publish": {
+          "description": "Artifact name the output is published under (read back as {{artifacts.<name>}})",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "recovery": {
+          "$ref": "#/$defs/v2.recovery",
+          "description": "Verified action: the self-heal ladder's bounds"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "description": "Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266)"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v2.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "script": {
+          "description": "Inline script run by the interpreter language: names",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "description": "Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266)"
+        },
+        "tool": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "type": "object"
+    },
+    "v2.node.wait": {
+      "additionalProperties": false,
+      "description": "Blocks its branch until the named event fires; the timeout is mandatory (ADR-051, C196–C198).",
+      "properties": {
+        "description": {
+          "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "event": {
+          "description": "Event name awaited",
+          "type": "string"
+        },
+        "output": {
+          "description": "Schema the node's structured output must match",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Duration after which the wait fails, e.g. \"30s\" (mandatory)",
+          "type": "string"
+        },
+        "wait": {
+          "description": "The node's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "wait"
+      ],
+      "type": "object"
+    },
+    "v2.params": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "minimum": 0,
+            "type": "number"
+          }
+        ],
+        "description": "The argument's value: a string, a bare word or a number, coerced by the operation's parameter type"
+      },
+      "description": "The arguments of a connector action, keyed by the operation's own parameter names. The key is the operation's own parameter name, quoted when it is not an identifier (`\"user-id\"`); a {{…}} template is rendered and then coerced to the type the operation declares, so an integer field receives a number",
+      "type": "object"
+    },
+    "v2.presets": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "description": "The value the var takes; its type is the var's"
+        },
+        "description": "Each entry is a preset name whose indented lines set one var each",
+        "type": "object"
+      },
+      "description": "Named bundles of var values selected with --recipe / --preset. Each entry is a preset name whose indented lines set one var each",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.prompt": {
+      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+      "type": "string"
+    },
+    "v2.recovery": {
+      "additionalProperties": false,
+      "description": "Bounds of a Verified Action's recovery ladder (idempotent-skip → recipe → self-repair → agent → policy).",
+      "properties": {
+        "agent_tools": {
+          "description": "Tools the recovery agent may call",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_agent_attempts": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Agent rungs before the policy decides",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_repair_attempts": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Self-repair rungs before the agent rung",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v2.resources": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "The slot count, or the pool's member ids (its capacity is their number)"
+      },
+      "description": "Named resources nodes lease with needs:. A count is a semaphore; a quoted list is a pool whose members are leased one at a time",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.sandbox": {
+      "additionalProperties": false,
+      "description": "Per-run container isolation (docs/sandbox.md): the short form names a mode, the block form is inline and needs image: or build: (C044).",
+      "properties": {
+        "build": {
+          "$ref": "#/$defs/v2.sandbox.build",
+          "description": "Dockerfile build, local docker only (V2-6)"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables",
+          "type": "object"
+        },
+        "host_state": {
+          "description": "Mount ~/.iterion and ~/.claude into the container: auto or none",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "image": {
+          "description": "Container image (exclusive with build)",
+          "type": "string"
+        },
+        "mode": {
+          "description": "none, auto (devcontainer.json or the published slim image) or inline (C044 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mounts": {
+          "description": "Extra bind mounts",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "network": {
+          "$ref": "#/$defs/v2.sandbox.network",
+          "description": "Egress policy (open by default)"
+        },
+        "post_create": {
+          "description": "Command run once after the container starts",
+          "type": "string"
+        },
+        "user": {
+          "description": "Container user",
+          "type": "string"
+        },
+        "workspace_folder": {
+          "description": "Mount point of the workspace inside the container",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v2.sandbox.build": {
+      "additionalProperties": false,
+      "description": "A Dockerfile build of the sandbox image (docker driver only).",
+      "properties": {
+        "args": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Build arguments",
+          "type": "object"
+        },
+        "context": {
+          "description": "Build context",
+          "type": "string"
+        },
+        "dockerfile": {
+          "description": "Dockerfile path",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "v2.sandbox.network": {
+      "additionalProperties": false,
+      "description": "Network egress of the sandbox, enforced by a CONNECT proxy on the host.",
+      "properties": {
+        "inherit": {
+          "description": "How a node's rules compose with the workflow's: omit to merge (the default), or replace / append (C044 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mode": {
+          "description": "open (no proxy), allowlist or denylist (C044 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "preset": {
+          "description": "Rule preset, e.g. \"iterion-default\"",
+          "type": "string"
+        },
+        "rules": {
+          "description": "Hosts and globs; a leading ! negates",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v2.schema": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "enum": [
+              "string",
+              "bool",
+              "int",
+              "float",
+              "json",
+              "string[]",
+              "file"
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
+            "properties": {
+              "enum": {
+                "description": "The values a string field may take, quoted",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "description": "The field's type",
+                "enum": [
+                  "string",
+                  "bool",
+                  "int",
+                  "float",
+                  "json",
+                  "string[]",
+                  "file"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "A structured-output shape; a bare header declares an empty schema. One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.secrets": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The value alone: the entry's shorthand",
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The value on the header line is optional: a bare `name:` (with or without a sub-block) resolves the stored secret by name",
+            "properties": {
+              "as": {
+                "description": "How the secret is materialised: value (env/template) or file",
+                "type": "string"
+              },
+              "description": {
+                "description": "Free-text description shown by the studio and the reports",
+                "type": "string"
+              },
+              "env": {
+                "description": "Environment variable that receives the value",
+                "type": "string"
+              },
+              "hosts": {
+                "description": "Hosts the secret may be sent to",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "mount_path": {
+                "description": "as: file — the path inside the sandbox",
+                "type": "string"
+              },
+              "optional": {
+                "description": "A missing secret does not fail the launch",
+                "type": "boolean"
+              },
+              "value": {
+                "description": "Inline value — the same field the sub-block's `value:` sets; prefer the stored secret, resolved by name",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "description": "The bare name: the entry declared, nothing set on its line",
+            "type": "null"
+          }
+        ]
+      },
+      "description": "Secrets the run resolves by name from the team's or the local store (docs/secrets.md). The value on the header line is optional: a bare `name:` (with or without a sub-block) resolves the stored secret by name",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.supervisor": {
+      "additionalProperties": false,
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "properties": {
+        "cooldown": {
+          "description": "Minimum delay between two evaluations, e.g. \"2m\"",
+          "type": "string"
+        },
+        "max_evals": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Upper bound on evaluations per run",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars",
+          "type": "string"
+        },
+        "monitors": {
+          "description": "Event patterns armed from the first event (the CLI --monitor grammar)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "system": {
+          "description": "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)",
+          "type": "string"
+        },
+        "watches": {
+          "description": "Agent nodes the supervisor is armed for",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "v2.use": {
+      "additionalProperties": false,
+      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
+      "properties": {
+        "as": {
+          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "description": "The group instantiated",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "The parameter bindings; a number or a bool is the string it spells",
+          "type": "object"
+        }
+      },
+      "required": [
+        "as",
+        "use"
+      ],
+      "type": "object"
+    },
+    "v2.vars": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The type alone: the entry's shorthand",
+            "enum": [
+              "string",
+              "bool",
+              "int",
+              "float",
+              "json",
+              "string[]"
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "One var per line; the enum and matching constraints apply to strings; a json/string[] default is a quoted JSON text",
+            "properties": {
+              "default": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ],
+                "description": "The value the run starts with when no --var or preset sets one; a json or string[] default is written as a quoted JSON text"
+              },
+              "enum": {
+                "description": "The values a string var may take, quoted",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "matching": {
+                "description": "An RE2 pattern a string var's value must match, checked at launch against --var and payload values; beside enum in either order, at most one of each",
+                "type": "string"
+              },
+              "type": {
+                "description": "The var's type",
+                "enum": [
+                  "string",
+                  "bool",
+                  "int",
+                  "float",
+                  "json",
+                  "string[]"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "description": "Typed run parameters, overridable with --var and presets. One var per line; the enum and matching constraints apply to strings; a json/string[] default is a quoted JSON text",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "v2.workflow": {
+      "additionalProperties": false,
+      "description": "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; a bare header declares an empty workflow (C008).",
+      "properties": {
+        "allow": {
+          "description": "Permission rules always allowed, Tool(pattern) syntax",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ask": {
+          "description": "Permission rules that pause for approval",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attachments": {
+          "$ref": "#/$defs/v2.attachments",
+          "description": "Workflow-scoped attachments"
+        },
+        "auto_memory": {
+          "description": "The backend's own auto-memory: on or off (C131/C132)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/v2.budget",
+          "description": "Run caps, each overridable by the matching run flag"
+        },
+        "capabilities": {
+          "description": "Run-wide board capabilities",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "compaction": {
+          "$ref": "#/$defs/v2.compaction",
+          "description": "Default compaction thresholds"
+        },
+        "compress": {
+          "description": "Command-output compression: on, ultra or off (C102)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "contract": {
+          "description": "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "default_backend": {
+          "description": "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "type": "string"
+        },
+        "deny": {
+          "description": "Permission rules always blocked",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "description": "Edge lines in the .bot's own grammar, one per string: `src -> dst [when <expr> | else] [as loop(N)] [with { key: \"value\" }]`; quoted only when YAML needs it (a `: ` inside a with map).",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entry": {
+          "description": "Node the run starts at; a dotted name addresses a group instance's node",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+          "type": "string"
+        },
+        "interaction": {
+          "description": "Default interaction mode for the run's nodes that set none",
+          "enum": [
+            "none",
+            "human",
+            "llm",
+            "llm_or_human",
+            "review",
+            "async",
+            "human_or_host"
+          ]
+        },
+        "loop_budget_guard": {
+          "description": "Decline a loop's back-edge the budget cannot fund: on (default) or off (C133)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "mcp": {
+          "$ref": "#/$defs/v2.mcp",
+          "description": "MCP servers active for the run"
+        },
+        "name": {
+          "description": "The workflow's name",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "permission": {
+          "description": "Tool-permission gate: off, ask or deny (C110–C112)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "repo_devbox": {
+          "description": "Load the target repo's devbox.json toolchain: on (default) or off (C134)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "resources": {
+          "$ref": "#/$defs/v2.resources",
+          "description": "Named semaphores and pools nodes lease with needs:"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/v2.sandbox"
+            }
+          ],
+          "description": "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"
+        },
+        "skills": {
+          "description": "Run-wide skill-library skills",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tool_policy": {
+          "description": "Run-wide tool-policy entries",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "vars": {
+          "$ref": "#/$defs/v2.vars",
+          "description": "Workflow-scoped vars (merged with the file's)"
+        },
+        "workspace_checkpoint": {
+          "description": "Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "worktree": {
+          "description": "auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/SocialGouv/iterion/main/docs/references/iterion-author.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The YAML twin of a .bot: a draft an author writes and `iterion fmt --to bot` converts; never the committed truth. `dsl:` is required and selects the syntax profile the document is read in.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/v1"
+    },
+    {
+      "$ref": "#/$defs/v2"
+    }
+  ],
+  "title": "iterion author document"
+}

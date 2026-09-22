@@ -1,0 +1,11 @@
+# refused: an entry of vars is keyed by an identifier
+dsl: 2
+vars:
+  "two words": string
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

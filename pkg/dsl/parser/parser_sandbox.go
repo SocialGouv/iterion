@@ -206,7 +206,7 @@ func (p *parser) parseSandboxNetworkBody(startTok, colon Token) *ast.SandboxNetw
 			// the lexer tokenises into ident/-/ident, so accept a
 			// quoted string here; bare idents work for hyphen-free
 			// names.
-			nb.Preset = p.expectStringOrIdent()
+			nb.Preset = p.expectStringOrIdentLine()
 		case "inherit":
 			nb.Inherit = p.expectIdent()
 		case "rules":
@@ -267,7 +267,13 @@ func (p *parser) parseStringMapBlock() map[string]string {
 		}
 		key := p.expectIdent()
 		p.expect(TokenColon)
-		out[key] = p.expectStringOrIdent()
+		if v, ok := p.expectStringOrIdentOK(); ok {
+			out[key] = v
+		} else {
+			// The refused value and its tail go together: read on, the tail
+			// became keys of the map (`KEY1: 123 456` gave a key `456`).
+			p.skipToNewline()
+		}
 		p.skipNewlines()
 	}
 	return out
@@ -278,46 +284,49 @@ func (p *parser) parseStringMapBlock() map[string]string {
 // element to be a quoted string, this one also accepts bare idents
 // — useful for sandbox.network.rules where authors mix quoted globs
 // like "!**.evil.site" and bare hostnames like github.com.
+// It is the one list reader every list goes through (parseBracketList): a
+// refused element is reported and left out, the rest of the list read. Its
+// own inline loop used to APPEND the refusal as an empty string — an empty
+// egress rule beside the diagnostic.
 func (p *parser) parseStringOrIdentList() []string {
-	if lineEnds(p.peek()) {
-		return p.parseDashList(func() (string, bool) {
-			v := p.expectStringOrIdent()
-			return v, v != ""
-		})
-	}
-	if _, ok := p.expect(TokenLBrack); !ok {
-		return nil
-	}
-	var out []string
-	for {
-		t := p.peek()
-		if t.Type == TokenRBrack || t.Type == TokenEOF {
-			if t.Type == TokenRBrack {
-				p.next()
-			}
-			return out
-		}
-		out = append(out, p.expectStringOrIdent())
-		cm := p.peek()
-		if cm.Type == TokenComma {
-			p.next()
-		}
-	}
+	return p.parseBracketList(p.expectStringOrIdentOK)
 }
 
 // expectStringOrIdent accepts either a quoted string literal or a
 // bare ident (lifted as a string). Used in heterogeneous list/map
 // forms where users mix quoted globs and bare hostnames.
 func (p *parser) expectStringOrIdent() string {
+	v, _ := p.expectStringOrIdentOK()
+	return v
+}
+
+// expectStringOrIdentLine is expectStringOrIdent for a property that owns
+// its line: a refused value takes the rest of the line with it, so the tail
+// of a malformed value is never read as the next property (`posture: 123
+// 456` used to draw "unknown property '456'"). The map's `{…}` form and a
+// JSON object's keys read one token at a time on a shared line and keep
+// the plain reader.
+func (p *parser) expectStringOrIdentLine() string {
+	v, ok := p.expectStringOrIdentOK()
+	if !ok {
+		p.skipToNewline()
+	}
+	return v
+}
+
+// expectStringOrIdentOK is expectStringOrIdent reporting whether it read a
+// value: a list reader appends nothing on a refusal, where the empty string
+// of the plain form would be an element.
+func (p *parser) expectStringOrIdentOK() (string, bool) {
 	t := p.peek()
 	if t.Type == TokenString {
-		return p.expectString()
+		return p.expectString(), true
 	}
 	if t.Type == TokenIdent || isKeywordToken(t.Type) {
 		// A bare hostname is dotted (`github.com`): read the whole of it.
-		return p.continueDottedRef(p.expectIdent())
+		return p.continueDottedRef(p.expectIdent()), true
 	}
 	p.addError(DiagExpectedToken, t, "expected string or identifier")
 	p.next()
-	return ""
+	return "", false
 }

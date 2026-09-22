@@ -313,6 +313,7 @@ export const iterDslPropertiesByKind = {
     "provider",
     "when"
   ],
+  "fallbacks": [],
   "group": [],
   "human": [
     "artifact_labels",

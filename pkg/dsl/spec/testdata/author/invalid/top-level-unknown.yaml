@@ -1,0 +1,10 @@
+# refused: the document's top level is closed
+dsl: 2
+agents: []
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

@@ -1,0 +1,13 @@
+# refused: a with map's values are scalars
+dsl: 2
+uses:
+  - use: g
+    as: p
+    with: {k: [a]}
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

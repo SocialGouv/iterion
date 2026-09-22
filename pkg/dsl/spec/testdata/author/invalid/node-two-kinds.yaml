@@ -1,0 +1,8 @@
+# refused: a node has exactly one kind key
+dsl: 2
+nodes:
+  - agent: a
+    judge: b
+workflow:
+  name: w
+  entry: a

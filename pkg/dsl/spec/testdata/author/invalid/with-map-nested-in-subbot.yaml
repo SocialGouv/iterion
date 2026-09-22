@@ -1,0 +1,9 @@
+# refused: a with map's values are scalars (a subbot's too)
+dsl: 2
+nodes:
+  - subbot: s
+    source: c.bot
+    with: {issue: {id: 1}}
+workflow:
+  name: w
+  entry: s

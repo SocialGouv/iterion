@@ -171,3 +171,68 @@ func TestEBNFPropertyProductionsMatchTheRegistry(t *testing.T) {
 		}
 	}
 }
+
+// ebnfValueProductions maps an enum property (by kind and name) to the EBNF
+// production that lists its words. The words are the parser's, held to the
+// registry by TestEnumValuesAreTheParsersList; this holds the third copy —
+// the machine-readable grammar — to the same list, so a mode the parser
+// gained (async, human_or_host) cannot stay out of it for months again.
+var ebnfValueProductions = map[[2]string]string{
+	{"agent", "session"}:           "session_mode",
+	{"agent", "await"}:             "await_mode",
+	{"agent", "interaction"}:       "interaction_mode",
+	{"agent", "reasoning_effort"}:  "reasoning_effort",
+	{"router", "mode"}:             "router_mode",
+	{"mcp_server", "transport"}:    "mcp_transport",
+	{"workflow", "interaction"}:    "interaction_mode",
+	{"human", "interaction"}:       "interaction_mode",
+	{"judge", "session"}:           "session_mode",
+	{"router", "reasoning_effort"}: "reasoning_effort",
+	{"tool", "await"}:              "await_mode",
+	{"compute", "await"}:           "await_mode",
+	{"human", "await"}:             "await_mode",
+	{"judge", "await"}:             "await_mode",
+	{"judge", "interaction"}:       "interaction_mode",
+	{"judge", "reasoning_effort"}:  "reasoning_effort",
+}
+
+var quotedWordRe = regexp.MustCompile(`"([a-z_]+)"`)
+
+func TestEBNFValueProductionsMatchTheRegistry(t *testing.T) {
+	prods := loadProductions(t)
+	seen := map[string]bool{}
+	for key, prod := range ebnfValueProductions {
+		k, ok := spec.Lookup(key[0])
+		if !ok {
+			t.Fatalf("%s: not a registered kind", key[0])
+		}
+		p, ok := k.Property(key[1])
+		if !ok || (p.Form != spec.Enum && p.Form != spec.EnumOrEnv) {
+			t.Errorf("%s.%s: not an enum property of the registry (%q)", key[0], key[1], p.Form)
+			continue
+		}
+		seen[key[0]+"."+key[1]] = true
+		body, ok := prods[prod]
+		if !ok {
+			t.Errorf("%s.%s: production %q not found in the EBNF", key[0], key[1], prod)
+			continue
+		}
+		var got []string
+		for _, m := range quotedWordRe.FindAllStringSubmatch(body, -1) {
+			got = append(got, m[1])
+		}
+		want := append([]string(nil), p.Values...)
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s.%s: EBNF production %s lists %v, the registry %v", key[0], key[1], prod, got, want)
+		}
+	}
+	for _, k := range spec.Kinds {
+		for _, p := range k.Properties {
+			if (p.Form == spec.Enum || p.Form == spec.EnumOrEnv) && !seen[k.Name+"."+p.Name] {
+				t.Errorf("%s.%s: an enum property with no EBNF value production mapped", k.Name, p.Name)
+			}
+		}
+	}
+}

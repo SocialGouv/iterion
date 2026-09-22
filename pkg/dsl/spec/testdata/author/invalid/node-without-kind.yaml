@@ -1,0 +1,7 @@
+# refused: a node carries its kind as its key; an object with no kind key is no node
+dsl: 2
+nodes:
+  - model: m
+workflow:
+  name: w
+  entry: a
