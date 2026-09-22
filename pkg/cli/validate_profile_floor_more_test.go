@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A bundle known by its skills/ alone — no manifest — written in profile 2
@@ -34,7 +36,7 @@ func TestRunValidate_AsksAManifestLessOrLowFlooredBundleForItsFloor(t *testing.T
 	if err := RunValidate(mainBot, jp); err != nil {
 		t.Fatalf("validate with a low floor: %v\n%s", err, out.String())
 	}
-	if s := out.String(); !strings.Contains(s, "C252") || !strings.Contains(s, "3.141.0") {
+	if s := out.String(); !strings.Contains(s, "C252") || !strings.Contains(s, parser.ProfileSince[2]) {
 		t.Fatalf("a floor below the release was not refused:\n%s", s)
 	}
 }

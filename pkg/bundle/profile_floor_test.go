@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A floor's presence is not enough: a profile-2 bundle declaring `>= 0.0.1`
@@ -29,8 +31,8 @@ func TestCheckProfileFloorReadsTheFloorsHeight(t *testing.T) {
 		{"profile 2, no manifest", nil, 2, false, ""},
 		{"profile 2, no floor", with(""), 2, false, ""},
 		{"profile 2, a floor below the release", with(">= 0.0.1"), 2, false, ">= 0.0.1"},
-		{"profile 2, the release itself", with(">= 3.141.0"), 2, true, ">= 3.141.0"},
-		{"profile 2, a bare version at the release", with("v3.141.0"), 2, true, "v3.141.0"},
+		{"profile 2, the release itself", with(">= " + parser.ProfileSince[2]), 2, true, ">= " + parser.ProfileSince[2]},
+		{"profile 2, a bare version at the release", with("v" + parser.ProfileSince[2]), 2, true, "v" + parser.ProfileSince[2]},
 		{"profile 2, a floor above", with(">= 3.200.0"), 2, true, ">= 3.200.0"},
 		{"profile 2, one patch below", with(">= 3.140.9"), 2, false, ">= 3.140.9"},
 		{"a profile with no release on record takes any floor", with(">= 0.0.1"), 7, true, ">= 0.0.1"},
@@ -42,7 +44,7 @@ func TestCheckProfileFloorReadsTheFloorsHeight(t *testing.T) {
 			if pf.OK != c.ok || pf.Declared != c.declared || pf.Profile != c.profile {
 				t.Fatalf("CheckProfileFloor = %+v, want ok=%v declared=%q", pf, c.ok, c.declared)
 			}
-			if c.profile == 2 && pf.Need != "3.141.0" {
+			if c.profile == 2 && pf.Need != parser.ProfileSince[2] {
 				t.Fatalf("need %q", pf.Need)
 			}
 		})

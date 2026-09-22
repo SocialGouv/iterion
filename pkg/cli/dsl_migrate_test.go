@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 const migrateFixtureBot = "## the bot\nprompt p:\n  First.\n\n  Second.\n\nagent a:\n  system: p\n  description: \"a\\tb\"\n  memory:\n    enabled: true\n\nworkflow w:\n  entry: a\n  a -> done\n"
@@ -130,7 +131,7 @@ func TestMigrateDSLLeavesAnAncestorBundleAlone(t *testing.T) {
 			if err != nil {
 				t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
 			}
-			if len(res.Files) != 1 || !res.Files[0].Written || !strings.Contains(res.Files[0].Loose, "no bundle to carry requires.iterion") || !strings.Contains(res.Files[0].Loose, "older than 3.141.0") {
+			if len(res.Files) != 1 || !res.Files[0].Written || !strings.Contains(res.Files[0].Loose, "no bundle to carry requires.iterion") || !strings.Contains(res.Files[0].Loose, "older than "+parser.ProfileSince[2]) {
 				t.Fatalf("files: %+v", res.Files)
 			}
 			if len(res.Manifests) != 0 {

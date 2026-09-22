@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 )
 
@@ -39,10 +40,10 @@ func TestMigrateDSLOnADevBuildWritesTheProfilesRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Manifests) != 1 || !res.Manifests[0].Written || res.Manifests[0].To != ">= 3.141.0" {
+	if len(res.Manifests) != 1 || !res.Manifests[0].Written || res.Manifests[0].To != ">= "+parser.ProfileSince[2] {
 		t.Fatalf("manifests: %+v", res.Manifests)
 	}
-	if m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml")); err != nil || m.Requires == nil || m.Requires.Iterion != ">= 3.141.0" {
+	if m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml")); err != nil || m.Requires == nil || m.Requires.Iterion != ">= "+parser.ProfileSince[2] {
 		t.Fatalf("manifest: %v %+v", err, m)
 	}
 }
