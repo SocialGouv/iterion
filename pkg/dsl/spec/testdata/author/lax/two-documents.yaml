@@ -1,0 +1,16 @@
+# lax: a YAML stream of two documents — the schema validates the first, which passes — is refused by the converter (E050): one document per file
+dsl: 2
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+---
+dsl: 2
+nodes:
+  - agent: b
+    model: m
+workflow:
+  name: w2
+  entry: b

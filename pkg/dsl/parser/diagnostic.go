@@ -40,6 +40,12 @@ const (
 	DiagBadImportPath    DiagCode = "E045" // an import path that is not a quoted, relative, slash-separated `.bot` path into lib/
 	DiagImportUnreadable DiagCode = "E046" // an imported fragment that cannot be read: missing, or beyond what the unit may read
 	DiagImportCycle      DiagCode = "E047" // a fragment that imports itself, through however many files
+
+	// Author-document errors (the YAML twin of a .bot, pkg/dsl/author)
+	DiagAuthorDocument   DiagCode = "E050" // the YAML document itself is refused: not exactly one document, an anchor, an alias, a merge key or an explicit tag, a duplicate or non-string key, too deep or too large
+	DiagAuthorValue      DiagCode = "E051" // a value that is not the shape its property or part takes, or one the .bot cannot write: a negative or non-finite number, a float where an integer, a word where a bool, a key the document's top level does not have
+	DiagAuthorHeader     DiagCode = "E052" // no `dsl:` key — the author document names its syntax profile, always
+	DiagAuthorPromptBody DiagCode = "E053" // a prompt body the .bot reads otherwise: a warning names the lines the lexer drops, an error a body with no written form
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -69,6 +75,10 @@ var hints = map[DiagCode]string{
 	DiagBadImportPath:       "Write `import \"lib/<name>.bot\"`: a quoted, relative, slash-separated path to a `.bot` fragment under the bot's `lib/` directory, one import per line.",
 	DiagImportUnreadable:    "Create the fragment under the bot's `lib/` directory, or fix the path; a symlink, an absolute path or a path leaving the bot's directory is never read.",
 	DiagImportCycle:         "A fragment may not import a file that imports it back: move the shared declarations into a third fragment both import.",
+	DiagAuthorDocument:      "Write one plain YAML document: no `---` document separator, no anchor (`&a`) or alias (`*a`), no `<<` merge key, no explicit `!!tag`, every key once per mapping and written as a plain word.",
+	DiagAuthorValue:         "Give the value the shape the property's form takes (docs/references/dsl-properties.md): a string, an integer as digits, `true`/`false`, a list as `[a, b]`, a block as an indented mapping. The .bot has no signed number, no exponent and no `.inf`, so neither has its YAML twin.",
+	DiagAuthorHeader:        "Add `dsl: 2` (or `dsl: 1`) at the top of the document: the syntax profile the .bot is written in. The author document never guesses one.",
+	DiagAuthorPromptBody:    "A prompt's text is read as the .bot lexer reads a body: leading and trailing blank lines dropped, the first line's indentation taken off every line, interior blank lines dropped in profile 1. Write the body as it will be read, or accept the reading.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is

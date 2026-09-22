@@ -189,8 +189,16 @@ func (b *schemaBuilder) def(name string, build func() obj) obj {
 const (
 	identPattern       = `^[A-Za-z_][A-Za-z0-9_]*$`
 	dottedIdentPattern = `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`
-	envPattern         = `^\$\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\}$`
+	envPattern         = EnvFormPattern
 )
+
+// EnvFormPattern is the environment form a quoted EnumOrEnv value takes,
+// `${VAR}` or `${VAR:-default}`, substituted at run time. The default may
+// be anything, another environment form included (`${A:-${B:-high}}`, a
+// spelling the shipped bots use); the pattern is the one the author schema
+// renders and the one the converter (pkg/dsl/author) holds a value to, so
+// the two cannot disagree on what an environment form is.
+const EnvFormPattern = `^\$\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\}$`
 
 // accepts reports whether the property is in the profile's window.
 func (b *schemaBuilder) accepts(p Property) bool {

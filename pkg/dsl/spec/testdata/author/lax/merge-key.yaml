@@ -1,0 +1,10 @@
+# lax: a merge key (<<) is folded in by the generic YAML decoder and the merged document passes the schema — the converter refuses merge keys, anchors and aliases (E050)
+dsl: 2
+nodes:
+  - agent: a
+    model: &base anthropic/claude-opus-5
+  - judge: j
+    <<: {model: *base}
+workflow:
+  name: w
+  entry: a

@@ -91,6 +91,14 @@ func NewLexer(filename, src string) *Lexer {
 		// meanwhile, never with a profile this build knows nothing of.
 		profile = 1
 	}
+	return newLexer(filename, src, profile, pre.StrictEscape || profile >= 2)
+}
+
+// newLexer is NewLexer with the profile and the escape mode decided by the
+// caller instead of read off the source's head: a fragment of text — an
+// edge line read on its own (ParseEdgeLine) — has no head to read them
+// from. src is already normalised.
+func newLexer(filename, src string, profile int, strictEscape bool) *Lexer {
 	l := &Lexer{
 		src:          []rune(src),
 		file:         filename,
@@ -98,7 +106,7 @@ func NewLexer(filename, src string) *Lexer {
 		col:          1,
 		indentStack:  []int{0},
 		atLineStart:  true,
-		strictEscape: pre.StrictEscape || profile >= 2,
+		strictEscape: strictEscape,
 		profile:      profile,
 	}
 	l.lineStarts = []int{0}
@@ -602,7 +610,15 @@ func (l *Lexer) scanToken() {
 
 	default:
 		l.advance()
-		l.emitError(DiagUnexpectedToken, fmt.Sprintf("unexpected character %q", string(ch)), startLine, startCol)
+		msg := fmt.Sprintf("unexpected character %q", string(ch))
+		if strings.ContainsRune("&<>!?", ch) {
+			// The character of an operator, outside a string: what an
+			// author writes when a condition or an expression is left
+			// bare — the one shape the language has for it is quoted
+			// (measured on the authoring probe, both surfaces).
+			msg += ": an operator belongs in a quoted expression (`when \"a && b\"`, `expr: \"x > 1\"`)"
+		}
+		l.emitError(DiagUnexpectedToken, msg, startLine, startCol)
 	}
 }
 

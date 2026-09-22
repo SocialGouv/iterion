@@ -864,7 +864,7 @@
             },
             {
               "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\\}$",
               "type": "string"
             }
           ],
@@ -1395,7 +1395,7 @@
             },
             {
               "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\\}$",
               "type": "string"
             }
           ],
@@ -1557,7 +1557,7 @@
             },
             {
               "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\\}$",
               "type": "string"
             }
           ],

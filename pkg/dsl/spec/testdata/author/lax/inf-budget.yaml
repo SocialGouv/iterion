@@ -1,4 +1,4 @@
-# lax: `max_cost_usd: .inf` passes the schema's `minimum: 0` (the validator compares a non-finite float as zero) — the .bot lexer has no such value (E002); the converter refuses a non-finite number
+# lax: `max_cost_usd: .inf` passes the schema's `minimum: 0` (the validator compares a non-finite float as zero) — the .bot lexer has no such value (E002); the converter refuses a non-finite number (E051)
 dsl: 2
 nodes:
   - agent: a
