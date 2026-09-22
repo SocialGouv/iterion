@@ -28,6 +28,7 @@ func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 	documentSurfaces := map[string]string{
 		"pkg/botimport/validate.go":                  "an imported draft is one generated file",
 		"pkg/dsl/author/author.go":                   "the converter reads ONE author document: it hands the parser the .bot text it spelled from the YAML, and returns the AST; the caller compiles it in its unit through LoadDirWithMainAST",
+		"pkg/dsl/author/internal/probecheck/main.go": "the authoring probe's harness: its --write mode reads one .bot to write its author document (no compile); its check mode compiles through LoadDirWithMainAST",
 		"pkg/dsl/canon/canon.go":                     "the canonical form rewrites one file on its own text — a unit is formatted file by file, each proven against itself, as the studio's per-file save is",
 		"pkg/dsl/migrate/migrate.go":                 "the migrator rewrites one file in place; a unit migrates file by file",
 		"pkg/dsl/unit/unit.go":                       "the unit loader itself parses each file of the unit",
