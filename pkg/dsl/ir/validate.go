@@ -28,6 +28,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateImplicitCollectorMigration(w)
 	c.validateConditionFields(w)
 	c.validateExprTypes(w)
+	c.validateVarListDefaults(w)
 	c.validateDuplicateWithKeys(w)
 	c.validateReachability(w)
 	c.validateHistoryRefs(w)

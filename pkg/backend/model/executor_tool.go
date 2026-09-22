@@ -400,7 +400,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// from. {{run.*}} and {{outputs.*}} resolve beside {{input.*}},
 			// under the same shell escaping and the same missing-value rule.
 			td := TemplateDataFromContext(ctx)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, td, RunIDFromContext(ctx), e.secretGuard)
+			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -858,7 +858,7 @@ func looksLikeShellCommand(cmd string) bool {
 // command line that the wrapping tool needs to RE-INTERPRET as shell, not
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
-func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, shapes *Shapes, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -872,7 +872,7 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return renderCommand(command, refs, input, vars, td, ctxRunID, guard, nil)
+	return renderCommand(command, refs, input, vars, td, ctxRunID, guard, shapes, nil)
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -905,12 +905,16 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 // shell-escaped values with a hole kept as written, JSON literals with a
 // hole as null — named once each so the production path and a dry run
 // cannot choose differently.
-func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shellEscapeValue, false, unresolved)
+func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string)) string {
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, shellEscapeValue, false, unresolved)
 }
 
+// A script body carries no declared shape: every namespace renders as a
+// JSON literal there, which is already what both list types mean to a
+// JS/Python/Ruby parser — `["a","b"]` for a `string[]`, the parsed document
+// for a `json`. Passing the declarations would be wiring nothing reads.
 func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, jsonLiteralValue, true, unresolved)
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, jsonLiteralValue, true, unresolved)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -935,7 +939,7 @@ func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td 
 // text is never re-read for braces, since a value may carry `{{…}}` of its
 // own and that is the value, not a reference. The production callers
 // listen to none; a dry run names them.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool, unresolved func(ref string)) string {
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string)) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -948,17 +952,22 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			continue
 		}
 		var val any
-		var handled bool
+		var handled, present bool
 		switch {
 		case ref.Kind == ir.RefInput && len(ref.Path) > 0:
 			// Drilled to the leaf, as a prompt reads it: `{{input.a.b}}` is
 			// the field b of a, not the whole of a — one reading of a
 			// reference, whichever body holds it. A missing leaf is nil and
 			// takes the missing-value rule below.
-			val, _ = drillTemplatePath(input, ref.Path)
+			val, present = drillTemplatePath(input, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
-			val = vars[ref.Path[0]]
+			// Drilled to the leaf, like input and outputs: `{{vars.cfg.on}}`
+			// is the member `on` of the `json` var cfg. Reading only
+			// vars[path[0]] answered the whole document here while an
+			// expression on the same text answered the member — one
+			// reference, three surfaces, three values.
+			val, present = drillTemplatePath(vars, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefOutputs && len(ref.Path) > 0:
 			// The snapshot the prompts render from. An output not yet
@@ -966,7 +975,7 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// same missing-value rule as an absent input below — the
 			// placeholder in a shell body, `null` in a script body — so
 			// the two namespaces cannot disagree about a hole.
-			val, _ = outputsTemplateValue(td, ref.Path)
+			val, present = outputsTemplateValue(td, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefRun && len(ref.Path) > 0:
 			// The engine's `run.*` namespace — identity plus the run's
@@ -1017,13 +1026,23 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			}
 			continue
 		}
-		// substituteNil controls whether a recognised-but-nil ref gets
-		// rendered or left as raw template text. Shell contexts keep
-		// the raw `{{input.X}}` placeholder so a missing wiring is
-		// visible; script contexts MUST render (renderer turns nil into
-		// "null") because a JS/Python/Ruby parser otherwise crashes on
-		// the literal braces before any script logic runs.
-		if val == nil {
+		shape := shapes.Of(ref)
+		// A `json` slot whose value is PRESENT and null holds a value —
+		// JSON null — not a hole, and `null` is its text.
+		//
+		// A `string[]` one does NOT take that rule: an empty list renders
+		// no token, which is right for a list the author wrote empty and
+		// wrong for a producer that had nothing to say — the argument
+		// would vanish and the next one shift into its place, in the one
+		// configuration where the author DECLARED the slot. Null there is
+		// the missing-value case and keeps its placeholder.
+		//
+		// substituteNil controls what the missing-value rule does: shell
+		// contexts keep the raw `{{input.X}}` placeholder so a missing
+		// wiring is visible; script contexts MUST render (the renderer
+		// turns nil into "null") because a JS/Python/Ruby parser otherwise
+		// crashes on the literal braces before any script logic runs.
+		if val == nil && (!present || shape != ShapeJSON) {
 			if unresolved != nil {
 				unresolved(refExpr(ref))
 			}
@@ -1032,9 +1051,9 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			}
 		}
 		if ref.Unquoted {
-			subs[ref.Raw] = rawTemplateValue(val)
+			subs[ref.Raw] = rawTemplateValue(val, ShapeUndeclared)
 		} else {
-			subs[ref.Raw] = defaultRender(val)
+			subs[ref.Raw] = defaultRender(val, shape)
 		}
 	}
 	if len(subs) == 0 {
@@ -1079,7 +1098,7 @@ func refExpr(ref *ir.Ref) string {
 // rendered as JSON's natural form. The result is a valid expression
 // in JavaScript, Python, Ruby, and any modern language that accepts
 // JSON-superset literal syntax — no further wrapping needed.
-func jsonLiteralValue(val any) string {
+func jsonLiteralValue(val any, _ ValueShape) string {
 	b, err := json.Marshal(val)
 	if err != nil {
 		// json.Marshal effectively never fails on values we accept
@@ -1095,7 +1114,7 @@ func jsonLiteralValue(val any) string {
 // the {{!ref}} raw substitution mode. Strings pass through; complex types
 // are JSON-encoded (matches formatValue's prompt-rendering convention so
 // authors can reason about both contexts uniformly).
-func rawTemplateValue(val any) string {
+func rawTemplateValue(val any, _ ValueShape) string {
 	if val == nil {
 		return "null"
 	}
@@ -1241,75 +1260,15 @@ func resolveBracedEnvBody(body string) string {
 	return ""
 }
 
-// jsonFieldsAsText pre-encodes every input value whose schema field is
-// declared `json` into its compact JSON text, so shell substitution
-// renders it as ONE token.
-//
-// Without it, a `json` field holding an all-string list reaches
-// shellEscapeValue's scalar-slice arm and space-joins:
-//
-//	QUICK={{input.quick_replies}} python3 -c "json.loads(os.environ['QUICK'])"
-//
-// resolves to `QUICK='Go' 'TypeScript' python3 …`, so sh reads only the
-// first word as the assignment and runs `TypeScript` as the command —
-// exit 127, with a fragment of model-authored prose as the error. The
-// author declared `json` and parses JSON; the space-join silently
-// contradicts both.
-//
-// Scoped to `json`-declared fields on purpose. The scalar-slice
-// space-join is load-bearing for `string[]` fields — `git add --
-// {{input.files}}` and friends need one shell word per element — and an
-// agent's structured output arrives as []any either way, so the declared
-// type is the only thing that distinguishes the two intents. Values
-// already textual (string, nil) and fields the schema does not declare
-// are returned untouched, and the input map is only copied when a field
-// actually changes.
-//
-// Shell command bodies only: `script:` contexts JSON-encode values
-// themselves, and pre-encoding here would double-encode them.
-func (e *ClawExecutor) jsonFieldsAsText(node *ir.ToolNode, input map[string]any) map[string]any {
-	if node == nil || node.InputSchema == "" || len(input) == 0 {
-		return input
-	}
-	schema := e.schemas[node.InputSchema]
-	if schema == nil {
-		return input
-	}
-	out := input
-	copied := false
-	for _, f := range schema.Fields {
-		if f == nil || f.Type != ir.FieldTypeJSON {
-			continue
-		}
-		v, ok := out[f.Name]
-		if !ok {
-			continue
-		}
-		switch v.(type) {
-		case nil, string:
-			// Already a single token; re-encoding would add quotes the
-			// author never wrote.
-			continue
-		}
-		b, err := json.Marshal(v)
-		if err != nil {
-			// Unmarshalable value — leave the existing behaviour rather
-			// than dropping the field.
-			continue
-		}
-		if !copied {
-			cloned := make(map[string]any, len(input))
-			for k, val := range input {
-				cloned[k] = val
-			}
-			out, copied = cloned, true
-		}
-		out[f.Name] = string(b)
-	}
-	return out
-}
-
 // shellEscapeValue formats val for safe interpolation into a sh -c command.
+//
+// shape is what the WORKFLOW declares about the slot val came from, and it
+// decides first: a `json` var or field is one token of compact JSON text, a
+// `string[]` one shell word per element (see value_shape.go). Both arrive
+// here as []any, so nothing about the value itself could separate them.
+//
+// Undeclared — an `outputs.*` field, a key an edge delivers to a node with
+// no `input:` schema, a drilled path — falls to the value's own shape:
 //
 // Homogeneous scalar slices ([]string, or []interface{} of strings /
 // numbers / bools) become a space-separated list of individually-shell-
@@ -1332,7 +1291,13 @@ func (e *ClawExecutor) jsonFieldsAsText(node *ir.ToolNode, input map[string]any)
 //
 // Scalars fall back to fmt.Sprint + shellEscape, preserving the prior
 // single-value behaviour for strings, numbers, and booleans.
-func shellEscapeValue(val any) string {
+func shellEscapeValue(val any, shape ValueShape) string {
+	switch shape {
+	case ShapeJSON:
+		return shellJSONToken(val)
+	case ShapeWords:
+		return shellWords(val)
+	}
 	if val == nil {
 		return ""
 	}
@@ -1350,19 +1315,16 @@ func shellEscapeValue(val any) string {
 		if len(v) == 0 {
 			return ""
 		}
-		// An all-string []interface{} space-joins here. That is correct for a
-		// `string[]` field — `git add -- {{input.files}}` needs one shell word
-		// per element — and wrong for a `json` one, where the author writes
-		// `KEY={{input.langs}} … python3 json.loads(KEY)` and gets
-		// `KEY=Go TypeScript`, so sh runs `TypeScript` (exit 127). Both shapes
-		// arrive as []any, so this function cannot tell them apart.
-		// RESOLVED one frame up instead of here: jsonFieldsAsText pre-encodes
-		// the values whose schema field is declared `json`, on both shell
-		// command bodies (shellRecipe and runPostcondition), leaving this
-		// arm's space-join intact for `string[]`. Object arrays keep
-		// JSON-encoding below regardless of the declaration.
-		// Still uncovered: `{{vars.x}}` on a `json`-declared var, and input
-		// keys an edge delivers to a node that declares no `input:` schema.
+		// An all-string []interface{} space-joins here. That is the
+		// `string[]` reading — `git add -- {{input.files}}` needs one shell
+		// word per element — and the wrong one for a `json` value, where the
+		// author writes `KEY={{input.langs}} … python3 json.loads(KEY)` and a
+		// space-join gives `KEY=Go TypeScript`, so sh runs `TypeScript`
+		// (exit 127). Both arrive as []any, so this arm cannot separate them
+		// and does not try: a DECLARED slot took the shape branch above, and
+		// what reaches here carries no declaration. The space-join is the
+		// reading that keeps an argv position working, which is what an
+		// undeclared list at a shell site most often is.
 		if sliceHasComplexElement(v) {
 			// Mixed or complex slice → JSON-encode as a single shell token.
 			b, err := json.Marshal(v)

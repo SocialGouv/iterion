@@ -25,7 +25,7 @@
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.6.0 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.3.2 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1 · 3 | 1.6.1 |
-| `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 4 · 6 | 0.1.2 |
+| `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 4 · 6 | 0.1.3 |
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 1 · 8 | 0.1.2 |
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 1 · 3 | 0.2.1 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 1 · 3 | 0.4.1 |

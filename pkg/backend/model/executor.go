@@ -56,14 +56,21 @@ type ClawExecutor struct {
 	cursors         map[string]*ir.CursorDef
 	imageAttachs    map[string]bool // names of image-typed attachments declared in the workflow
 	vars            map[string]any
-	presetPrompt    string   // selected preset's "## Focus" bias, {{vars}}-templated per node
-	presetSkills    []string // selected preset's relevant-skill hint names
-	hooks           EventHooks
-	retry           RetryPolicy
-	logger          *iterlog.Logger
-	workDir         string // working directory for backend subprocesses
-	repoRoot        string // source-of-truth repo path (project-rooted memory uses this)
-	defaultBackend  string // workflow-level default backend (empty = use "claw")
+	// wfShapes are the workflow's declarations that do not depend on which
+	// node renders — the `vars:` block and every node's `output:` schema —
+	// kept for their TYPES: a `json` value and a `string[]` one reach a tool
+	// body as the same []any, and only the declaration separates the
+	// document from the argv list (see value_shape.go). Read-only after
+	// construction; each node layers its own `input:` schema on top.
+	wfShapes       *Shapes
+	presetPrompt   string   // selected preset's "## Focus" bias, {{vars}}-templated per node
+	presetSkills   []string // selected preset's relevant-skill hint names
+	hooks          EventHooks
+	retry          RetryPolicy
+	logger         *iterlog.Logger
+	workDir        string // working directory for backend subprocesses
+	repoRoot       string // source-of-truth repo path (project-rooted memory uses this)
+	defaultBackend string // workflow-level default backend (empty = use "claw")
 	// modelOverrides are launch-time per-node/-group backend+model+provider
 	// overrides (studio Launch dropdowns, CLI --model/--backend). They sit at
 	// the TOP of the resolution chain — above the node's DSL backend:/model: —
@@ -786,9 +793,21 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 	if len(wf.Vars) > 0 {
 		seed = make(map[string]any, len(wf.Vars))
 		for name, vr := range wf.Vars {
-			if vr.HasDefault {
-				seed[name] = vr.Default
+			if !vr.HasDefault {
+				continue
 			}
+			// The same reading the engine gives an override, so a var a host
+			// never overrides does not start the run as the compiler's raw
+			// text while the same var supplied on the command line starts it
+			// as a list (#1285). The engine's own lookup (${PROJECT_DIR},
+			// ${BUNDLE_DIR}) is not reachable from here; SetVars overwrites
+			// this seed with the engine's reading before Execute.
+			resolved, err := ir.ResolveVarText(vr.Default, vr.Type, nil)
+			if err != nil {
+				seed[name] = vr.Default
+				continue
+			}
+			seed[name] = resolved
 		}
 	}
 	imageAttachs := map[string]bool{}
@@ -801,6 +820,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		registry:           registry,
 		prompts:            wf.Prompts,
 		schemas:            wf.Schemas,
+		wfShapes:           WorkflowShapes(wf),
 		cursors:            wf.Cursors,
 		imageAttachs:       imageAttachs,
 		defaultBackend:     wf.DefaultBackend,
