@@ -190,7 +190,7 @@
 | `pkg/subbotcontracts` | reads the `subbot` children of a workflow for the contracts they keep — what bundlelint holds a parent's `with:` to (C255). | — | 2 · 2 |
 | `pkg/subbotsource` | resolves the source reference carried by a subbot node. | — | 1 · 9 |
 | `pkg/supervise` | implements LLM-driven supervisor agents that watch a running iterion workflow from a separate goroutine/process and enqueue steering messages the… | `Evaluator`, `IdempotentInjector`, `Injector`, `Observer`, `WatcherProgressStoreProvider` | 11 · 56 |
-| `pkg/treenoise` | the canonical list of "tree noise": paths the run's own setup and tooling write into the workspace, which never count as the pass's work — the… | — | 1 · 10 |
+| `pkg/treenoise` | the canonical list of "tree noise": paths the run's own setup and tooling write into the workspace, which never count as the pass's work — the… | — | 1 · 11 |
 | `pkg/trigger` | the unifying spine for event-driven runs. | `BoardEffect`, `EffectOutbox`, `LabelConsumer`, `Launcher`, `Nudger`, `ProjectionBindings`, `ProjectionEffect`, `Publisher`, `SubscriptionStore` | 14 · 133 |
 | `pkg/usagecap` | stops a deployment from spending its LLM subscription down to the provider's own wall. | `PolicySource`, `SettingsStore`, `Store` | 7 · 110 |
 | `pkg/usernotify` | delivers user-addressed notifications for run lifecycle moments — a run pausing on a human form, finishing, failing — to per-user channels (web… | `PrefsStore`, `SentStore`, `Sink` | 6 · 56 |
