@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.182.0](https://github.com/SocialGouv/iterion/compare/v3.181.2...v3.182.0) (2026-09-22)
+
+### Features
+
+* **release:** the cut realigns the syntax floor pins it claims ([#1287](https://github.com/SocialGouv/iterion/issues/1287)) ([#1570](https://github.com/SocialGouv/iterion/issues/1570)) ([28eba1e](https://github.com/SocialGouv/iterion/commit/28eba1efa0469d4e6a824bcf86fc27ad72419569)), references [#1566](https://github.com/SocialGouv/iterion/issues/1566) [#1154](https://github.com/SocialGouv/iterion/issues/1154) [#1566](https://github.com/SocialGouv/iterion/issues/1566)
+
+    <details><summary>why</summary>
+
+    A syntax floor (`parser.ProfileSince[2]`, `ImportSince`, `ContractSince`, `bundle.ToolAliasesSince`) is pinned by hand to the next minor above the release main carries — a guess written before the number is known, realigned by hand when a release overtakes it. The cut is the one place that knows the number actually released.
+
+    </details>
+
 ## [3.181.2](https://github.com/SocialGouv/iterion/compare/v3.181.1...v3.181.2) (2026-09-22)
 
 ### Bug Fixes
