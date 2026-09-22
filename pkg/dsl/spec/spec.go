@@ -73,10 +73,18 @@ type Property struct {
 	// Body names the kind whose properties fill a Block / BlockOrIdent.
 	Body string
 	Doc  string
-	// Until is the last syntax profile that accepts the property (0: every
-	// profile). From the next profile the parser refuses it by name
-	// (E043), and the rendered documents say so.
+	// Since is the first syntax profile that accepts the property (0: every
+	// profile); Until the last (0: every later profile). Outside the window
+	// the parser refuses the property by name (E043 past Until), the author
+	// schema of that profile leaves it out, and the rendered documents say
+	// so. No property carries a Since above 1 today: the first that does
+	// makes TestProfileMarksMatchTheParser demand the parser's refusal.
+	Since int
 	Until int
+	// Deprecated marks a property still accepted in every profile of its
+	// window but no longer the way to write the thing: the rendered
+	// documents and the author schema annotate it, nothing refuses it.
+	Deprecated bool
 }
 
 // Field is one named part of a declaration header or of an entry line:

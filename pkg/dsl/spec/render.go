@@ -333,14 +333,27 @@ func Table(k Kind) string {
 	return b.String()
 }
 
-// profileNote says which profiles still accept a property the language
-// removed, so a reader of the table is not sent to write a line profile 2
-// refuses.
+// profileNote says which profiles accept a property the language added or
+// removed, and which one is deprecated, so a reader of the table is not
+// sent to write a line the file's profile refuses — or a line the language
+// is leaving.
 func profileNote(p Property) string {
-	if p.Until == 0 {
+	var notes []string
+	switch {
+	case p.Since > 0 && p.Until > 0:
+		notes = append(notes, fmt.Sprintf("profiles %d to %d only", p.Since, p.Until))
+	case p.Since > 0:
+		notes = append(notes, fmt.Sprintf("since profile %d", p.Since))
+	case p.Until > 0:
+		notes = append(notes, fmt.Sprintf("profile %d only (removed in profile %d)", p.Until, p.Until+1))
+	}
+	if p.Deprecated {
+		notes = append(notes, "deprecated")
+	}
+	if len(notes) == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" — profile %d only (removed in profile %d)", p.Until, p.Until+1)
+	return " — " + strings.Join(notes, "; ")
 }
 
 func valueCell(p Property) string {
@@ -417,8 +430,14 @@ func SkillSection() string {
 			parts := make([]string, 0, len(k.Properties))
 			for _, p := range k.Properties {
 				part := p.Name + " " + shortForm(p)
+				if p.Since > 0 {
+					part += fmt.Sprintf(" (profile ≥%d)", p.Since)
+				}
 				if p.Until > 0 {
 					part += fmt.Sprintf(" (profile ≤%d)", p.Until)
+				}
+				if p.Deprecated {
+					part += " (deprecated)"
 				}
 				parts = append(parts, part)
 			}
