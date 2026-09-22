@@ -17,6 +17,7 @@ vars:
   labels: {type: "string[]", default: '["a", "b"]'}
   blob: {type: json, default: '{"k": 1}'}
   mode: {type: string, enum: [fast, slow], default: fast}
+  agent_bin: {type: string, matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$", default: codex}
 presets:
   dev:
     goal: ship
