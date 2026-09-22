@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.187.0](https://github.com/SocialGouv/iterion/compare/v3.186.0...v3.187.0) (2026-09-22)
+
+### Features
+
+* **server,studio,cli:** administering teams and members from the cloud console ([#1559](https://github.com/SocialGouv/iterion/issues/1559)) ([a686907](https://github.com/SocialGouv/iterion/commit/a6869077fa551abd5c400c816e66750e48ad2b04)), references [#1540](https://github.com/SocialGouv/iterion/issues/1540) [#1539](https://github.com/SocialGouv/iterion/issues/1539) [#1541](https://github.com/SocialGouv/iterion/issues/1541) [#1542](https://github.com/SocialGouv/iterion/issues/1542) [#1543](https://github.com/SocialGouv/iterion/issues/1543) [#1446](https://github.com/SocialGouv/iterion/issues/1446) [#1544](https://github.com/SocialGouv/iterion/issues/1544)
+
+    <details><summary>why</summary>
+
+    An operator could not answer the first question an account that "sees nothing" raises: where does it come from, and what was it actually granted? Every fact needed already lived in the store and none of it was reachable through the API, so the answer was a Mongo read or a guess.
+
+    </details>
+
 ## [3.186.0](https://github.com/SocialGouv/iterion/compare/v3.185.1...v3.186.0) (2026-09-22)
 
 ### Features
