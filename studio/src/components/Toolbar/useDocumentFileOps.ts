@@ -288,7 +288,10 @@ export function useDocumentFileOps({
         pushRecent(currentFilePath);
       } catch (err) {
         console.error("Save failed:", err);
-        addToast("Save failed", "error");
+        // The server's own sentence: a save refused because the writer
+        // cannot reproduce the file (#1612) names the file, the line and
+        // what to do. "Save failed" alone leaves the author nowhere.
+        toastError(addToast, err, "Save failed", { persistent: true });
       }
     } else {
       saveAs.requestSaveAs({ store: documentStore });
@@ -329,15 +332,30 @@ export function useDocumentFileOps({
       return;
     }
     try {
-      const source = await api.unparse(document);
+      const { source, refused } = await api.unparse(document, {
+        // A bot in several files downloads as its PROGRAM: one text, which
+        // is what a `.bot` on the author's disk means. The path travels
+        // with it so the answer can still name which of the bot's files
+        // the writer cannot reproduce.
+        ...(unit ? { flatten: true } : {}),
+        path: documentStore.getState().currentFilePath,
+      });
+      // A third shape of the same harm: the writer has no multi-line form
+      // for one of this file's values (#1612), so the .bot it would hand
+      // over puts on one line what the author wrote over several. Same
+      // program, and not the same file.
+      if (refused) {
+        addToast(`This bot cannot be downloaded as .bot source: ${refused}`, "warning", { persistent: true });
+        return;
+      }
       const blob = new Blob([source], { type: "text/plain" });
       const name = document.workflows?.[0]?.name || "workflow";
       downloadBlob(blob, `${name}.bot`);
     } catch (err) {
       console.error("Download failed:", err);
-      addToast("Download failed", "error");
+      addToast(err instanceof Error ? `Download failed: ${err.message}` : "Download failed", "error");
     }
-  }, [document, addToast, documentStore, openDiagnosticsPanel]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel, unit]);
 
   const handleCopySource = useCallback(async () => {
     if (!document) return;
@@ -350,14 +368,25 @@ export function useDocumentFileOps({
       return;
     }
     try {
-      const source = await api.unparse(document);
+      const { source, refused } = await api.unparse(document, {
+        // A bot in several files downloads as its PROGRAM: one text, which
+        // is what a `.bot` on the author's disk means. The path travels
+        // with it so the answer can still name which of the bot's files
+        // the writer cannot reproduce.
+        ...(unit ? { flatten: true } : {}),
+        path: documentStore.getState().currentFilePath,
+      });
+      if (refused) {
+        addToast(`This bot cannot be copied as .bot source: ${refused}`, "warning", { persistent: true });
+        return;
+      }
       await navigator.clipboard.writeText(source);
       addToast("Source copied to clipboard", "success");
     } catch (err) {
       console.error("Copy failed:", err);
-      addToast("Copy failed", "error");
+      addToast(err instanceof Error ? `Copy failed: ${err.message}` : "Copy failed", "error");
     }
-  }, [document, addToast, documentStore, openDiagnosticsPanel]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel, unit]);
 
   const handleAddWorkflow = useCallback(() => {
     if (!document) return;

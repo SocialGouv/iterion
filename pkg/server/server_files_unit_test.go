@@ -38,6 +38,9 @@ type openedUnit struct {
 	Document    json.RawMessage `json:"document"`
 	Diagnostics []string        `json:"diagnostics"`
 	Unit        *unitInfo       `json:"unit"`
+	// False when the file did not parse: the document is the salvage, and
+	// the studio marks the buffer so the sites that write it refuse.
+	Bindable bool `json:"bindable"`
 }
 
 func openPath(t *testing.T, s *Server, path string) (*httptest.ResponseRecorder, openedUnit) {

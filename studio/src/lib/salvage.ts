@@ -26,19 +26,34 @@ import type { IterDocument } from "@/api/types";
  * only display and are exempt: the Source view (which shows the file's own
  * text while salvaged) and the assistant's context snapshot.
  *
- * It lifts by itself: a parse of the buffer that comes back whole clears the
- * flag, so repairing the text in the Source view makes Save work again. That
- * is the only way out, deliberately — the canvas cannot restore a region the
- * parser never read.
+ * For a bot in ONE file it lifts by itself: a parse of the buffer that comes
+ * back whole clears the flag, so repairing the text in the Source view makes
+ * Save work again. That is the only way out, deliberately — the canvas cannot
+ * restore a region the parser never read.
+ *
+ * For a bot in SEVERAL files it does not lift there at all. A save of one
+ * re-derives the unit from the files as they are stored and refuses one that
+ * does not load, so no buffer reaches a main that does not parse; the Source
+ * view is read-only for it, and the flag lifts when the FILES parse. The
+ * `state.unit` branch below says so, and says nothing about which control
+ * repairs them — the control differs per twin and the cloud twin has none
+ * (#1659).
  */
 export function salvageRefusal(state: { salvaged: boolean; unit?: unknown }): string | null {
   if (!state.salvaged) return null;
-  // A refusal has to name a way out that EXISTS. The Source view is
-  // read-only for a bot in several files — it is edited file by file — so
-  // pointing a unit's author at Edit/Apply there points at a control the
-  // render gate hides, and the buffer has no route at all.
+  // Three sentences were written for this branch and two named a CONTROL:
+  // the files drawer, which renders only for a cloud path; then the Source
+  // view, whose Apply answers 200 and whose Save then refuses. The control
+  // that works differs per twin and on the cloud twin there is none — the
+  // bundle files drawer sends `main.bot` to the canvas, which is the tab
+  // that is refusing.
+  //
+  // So this names the CONSTRAINT, which is one fact, true on both twins and
+  // checkable: a bot in several files is saved from its files as they are
+  // stored, and a main that does not parse has to be repaired there. Where
+  // "there" is belongs to the surface that has it, not to this sentence.
   if (state.unit) {
-    return "This bot's main did not parse, so the canvas holds only what could be read of it — saving would drop the rest. A bot in several files is edited file by file: repair its main from the files drawer or on disk, and the tab reloads when it parses again.";
+    return "This bot's main did not parse, so the canvas holds only what could be read of it — saving would drop the rest. A bot in several files is saved from its files as they are stored, so nothing edited here can reach a main that does not parse: repair the main where this bot's files live, then reopen it.";
   }
   return "This file did not parse, so the canvas holds only what could be read of it — saving would drop the rest. Repair it in the Source view and Apply.";
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BOTSOURCE_SCHEME, openFile, saveFile } from "./client";
+import { BOTSOURCE_SCHEME, openFile, saveFile, unparse } from "./client";
 import type { IterDocument } from "./types";
 
 // The cloud save of a bot in several files: the document is written back
@@ -170,5 +170,65 @@ describe("openFile of a cloud bot source that does not parse", () => {
     const opened = await openFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`);
     expect(opened.path).toBe(`${BOTSOURCE_SCHEME}t1/demo/main.bot`);
     expect(opened.bindable).toBe(true);
+  });
+});
+
+// A bot in ONE file in the cloud has a before too — the bundle holds it —
+// and the server cannot read one off a `botsource://` path. Without this
+// the display lane answered the writer's FOLDED text with no reason set,
+// so the view offered Edit on a text the file does not contain and the
+// save was then refused with a 422 after the author had typed.
+describe("unparse of a cloud bot", () => {
+  it("reads its before from the bundle instead of asking the server for a path it cannot resolve", async () => {
+    const bundle = {
+      id: "b1",
+      slug: "demo",
+      version: 1,
+      files: { "main.bot": "dsl: 2\n\ntool t:\n  command: `one\ntwo`\n", "manifest.yaml": "name: demo\n" },
+    };
+    const calls = mockFetch(({ url }) => {
+      if (url.includes("/bot-sources/")) return bundle;
+      return { source: "THE FILE", refused: "a value written over several lines" };
+    });
+    const doc = { workflows: [], agents: [], prompts: [], schemas: [], comments: [] } as unknown as IterDocument;
+    const out = await unparse(doc, { path: `${BOTSOURCE_SCHEME}team1/demo/main.bot` });
+
+    expect(out.refused).toBeTruthy();
+    const unparseCall = calls.find((c) => c.url.includes("/api/unparse"));
+    const body = JSON.parse(String(unparseCall?.init?.body));
+    // The bundle's files are what the server is given — never a
+    // `botsource://` path, which it would skip as having no before.
+    expect(body.files["main.bot"]).toContain("`one");
+    expect(body.main).toBe("main.bot");
+    expect(body.file).toBe("main.bot");
+    expect(body.path).toBeUndefined();
+  });
+
+  // The merged program of a cloud bot carries its bundle's files too: the
+  // answer names which of them the merged text no longer holds over its
+  // lines, and the server cannot read one off a `botsource://` path.
+  it("carries the bundle's files with a flatten, so the answer can name what it lost", async () => {
+    const bundle = {
+      id: "b1",
+      slug: "demo",
+      version: 1,
+      files: { "main.bot": "dsl: 2\n\ntool t:\n  command: `one\ntwo`\n", "manifest.yaml": "name: demo\n" },
+    };
+    const calls = mockFetch(({ url }) => {
+      if (url.includes("/bot-sources/")) return bundle;
+      return { source: "MERGED", refused: "main.bot: a value written over several lines" };
+    });
+    const doc = { workflows: [], agents: [], prompts: [], schemas: [], comments: [] } as unknown as IterDocument;
+    const out = await unparse(doc, { path: `${BOTSOURCE_SCHEME}team1/demo/main.bot`, flatten: true });
+
+    expect(out.refused).toBeTruthy();
+    const unparseCall = calls.find((c) => c.url.includes("/api/unparse"));
+    const body = JSON.parse(String(unparseCall?.init?.body));
+    expect(body.flatten).toBe(true);
+    expect(body.files["main.bot"]).toContain("`one");
+    // The merged program, not one file of it: the forbidden alternative
+    // here is the per-file render, which would hand over the main alone.
+    expect(body.file).toBeUndefined();
+    expect(body.path).toBeUndefined();
   });
 });

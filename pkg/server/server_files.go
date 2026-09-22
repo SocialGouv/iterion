@@ -14,9 +14,9 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
-	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -752,17 +752,38 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 	// the file would be rewritten in profile 1, its strings read otherwise
 	// at the next parse, with Verify none the wiser (it holds the text to
 	// the document, never to the file).
-	if current, _, err := locks[0].parent.read(filepath.Base(absPath), math.MaxInt64-1); err == nil {
+	// Only "it is not there" is an absence. Every other read failure — the
+	// file changed while opening, it is not regular, it exceeds the read
+	// limit — would otherwise read as "no before" and silently disarm BOTH
+	// guards below, which is how a save stops being checked without anyone
+	// seeing it.
+	current, _, currentErr := locks[0].parent.read(filepath.Base(absPath), math.MaxInt64-1)
+	if currentErr != nil {
+		if !errors.Is(currentErr, fs.ErrNotExist) {
+			s.authoringError(w, r, currentErr)
+			return
+		}
+		current = nil
+	}
+	if current != nil {
 		if on := parser.ReadPreamble(parser.NormalizeSource(string(current))).Profile; on > f.EffectiveProfile() {
 			httpError(w, http.StatusUnprocessableEntity, "%s is written in dsl profile %d and the document would save it in profile %d: reopen the file in the studio (the document carries no profile — an older client dropped it)", req.Path, on, f.EffectiveProfile())
 			return
 		}
 	}
-	source := unparse.Unparse(f)
 	// The file written must be the document saved: a value the serialiser
 	// could not carry (or a construct it does not know) would otherwise land
 	// on disk as a different program, and the next parse would run THAT.
-	if err := unparse.Verify(f, source); err != nil {
+	// canon.Text carries the other half: the same program with a value the
+	// author wrote over several lines folded onto one is not the same FILE,
+	// which `iterion fmt` has refused to write since #1612 — the studio's
+	// save is the path that never asked.
+	source, err := canon.Text(req.Path, f, current)
+	if err != nil {
+		if errors.Is(err, canon.ErrRefused) {
+			httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved from the studio: %s. Leave the file as it is, or edit it directly", req.Path, canonReason(err))
+			return
+		}
 		httpError(w, http.StatusUnprocessableEntity, "the document cannot be saved as .bot source without changing it: %v", err)
 		return
 	}
