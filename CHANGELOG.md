@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.185.0](https://github.com/SocialGouv/iterion/compare/v3.184.1...v3.185.0) (2026-09-22)
+
+### Features
+
+* **dsl:** a comment keeps the place it was written at, through a save and through fmt ([#1616](https://github.com/SocialGouv/iterion/issues/1616)) ([15de46b](https://github.com/SocialGouv/iterion/commit/15de46be580c2141547223791143e5bb300f0412)), references [#1282](https://github.com/SocialGouv/iterion/issues/1282)
+
+    <details><summary>why</summary>
+
+    The parser kept only the file-head `##` comments. A comment written inside a declaration, between two, or at the end of a line never reached the AST, so a studio save and `iterion fmt` dropped it — and `unparse.Verify` could not see the loss, because the compiled program does not carry comments and the mirror comparison left them out. `iterion fmt` refused 59 of the 81 shipped `.bot` files for that reason alone.
+
+    </details>
+
 ## [3.184.1](https://github.com/SocialGouv/iterion/compare/v3.184.0...v3.184.1) (2026-09-22)
 
 ### Bug Fixes
