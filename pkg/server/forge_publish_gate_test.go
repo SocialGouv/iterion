@@ -256,6 +256,97 @@ func TestForgePublishReview_GateRefusedOnAClosedPullRequest(t *testing.T) {
 	}
 }
 
+// A verdict is a statement about the revision the bot READ. The endpoint
+// resolves the head itself, so without a pin the two can differ: the bot audits
+// A, a push lands B, and A's verdict certifies B. With a required check, zero
+// required approvals and auto-merge armed, that is how an unaudited revision
+// reaches the default branch.
+func TestForgePublishReview_GateRefusedWhenTheHeadMovedSinceTheAudit(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	// The bot audited "aaaa11112222"; by the time it publishes, the head is "bbbb33334444".
+	gc := &fakeGateClient{headSHA: "bbbb33334444"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"aaaa11112222"}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("the review itself still lands: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("no status may certify a revision nobody audited, got %d write(s): %+v", gc.setCalls, gc.last)
+	}
+	if resp.GatePosted {
+		t.Fatalf("gate_posted must be false when the head moved: %+v", resp)
+	}
+	// Both revisions belong in the reason: one names what was judged, the other
+	// what the forge would have certified.
+	if !strings.Contains(resp.GateError, "aaaa1111") || !strings.Contains(resp.GateError, "bbbb3333") {
+		t.Fatalf("gate_error must name the audited revision AND the current head, got %q", resp.GateError)
+	}
+	if !resp.Published {
+		t.Fatalf("the review comment is the one thing still worth posting: %+v", resp)
+	}
+}
+
+func TestForgePublishReview_GatePostedWhenTheAuditedSHAIsTheHead(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "deadbeefcafe"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"deadbeefcafe"}`)))
+
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GatePosted || resp.GateState != "success" || resp.GateSHA != "deadbeefcafe" {
+		t.Fatalf("a pin that MATCHES must post exactly as before: %+v (gate_error=%q)", resp, resp.GateError)
+	}
+	if resp.GateSHAUnpinned {
+		t.Fatalf("a request carrying audited_sha is pinned, not unpinned: %+v", resp)
+	}
+	if gc.setCalls != 1 {
+		t.Fatalf("SetCommitStatus calls = %d, want 1", gc.setCalls)
+	}
+}
+
+// Until every bundle in the fleet sends the pin, an absent audited_sha still
+// posts — refusing outright would blank the required check on every repo whose
+// bundle predates this change. It is NOT silent: the response says so and the
+// server logs it, and that signal is what makes flipping the default to a
+// refusal a measurable decision instead of a blind one.
+func TestForgePublishReview_GateWithoutAnAuditedSHAIsReportedUnpinned(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "deadbeefcafe"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0}`)))
+
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GatePosted || resp.GateSHA != "deadbeefcafe" {
+		t.Fatalf("an unpinned gate still posts today: %+v", resp)
+	}
+	if !resp.GateSHAUnpinned {
+		t.Fatalf("an unpinned gate must SAY it is unpinned, else the fleet's readiness is unmeasurable: %+v", resp)
+	}
+}
+
 // An empty state is a provider that does not report one, never a closure:
 // suppressing a required check on a guess is how a pull request deadlocks.
 func TestForgePublishReview_GatePostedWhenTheStateIsUnknown(t *testing.T) {

@@ -35,6 +35,11 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		Context       string `json:"context"`
 		BlockingCount int    `json:"blocking_count"`
 		Note          string `json:"note"`
+		// AuditedSHA pins the verdict to the revision this run read. The server
+		// refuses a pin that is no longer the head instead of retargeting the
+		// status, so a payload that drops it goes quietly back to certifying
+		// whatever revision arrived last.
+		AuditedSHA string `json:"audited_sha"`
 	}
 	type published struct {
 		PRURL   string `json:"pr_url"`
@@ -84,6 +89,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
+			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + srv.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
@@ -205,6 +211,13 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			if pub.Gate == nil {
 				t.Fatal("no gate in the publish payload")
 			}
+			// The pin has to REACH the endpoint, on every verdict — a hold is
+			// as much a statement about a revision as a pass is, and the
+			// server can only refuse a stale one it was given.
+			if pub.Gate.AuditedSHA != "feedfacefeed" {
+				t.Errorf("verdict %q: gate.audited_sha = %q, want the revision the run read — without it the status certifies whatever head the forge reports at publish time",
+					tc.verdict, pub.Gate.AuditedSHA)
+			}
 			blocked := pub.Gate.BlockingCount > 0
 			if blocked != tc.wantBlocked {
 				t.Errorf("verdict %q: blocking_count=%d, want blocked=%v", tc.verdict, pub.Gate.BlockingCount, tc.wantBlocked)
@@ -257,6 +270,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
+			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + redir.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
@@ -318,6 +332,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
+			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `""`,
 			"{{vars.forge_publish_token}}": `""`,

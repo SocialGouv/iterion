@@ -266,6 +266,13 @@ type publishReviewGate struct {
 	Threshold string `json:"threshold,omitempty"`
 	// TotalFindings is the full kept-finding count (for the description).
 	TotalFindings int `json:"total_findings"`
+	// AuditedSHA pins the verdict to the revision the bot actually read. The
+	// endpoint resolves the PR head itself, so without this pin the two can
+	// differ — the bot audits A, a push lands B, and A's verdict certifies B.
+	// When set and no longer the head, the status is REFUSED rather than
+	// retargeted: a gate that follows the head certifies whatever arrived last.
+	// Absent, the status still posts and the response reports it unpinned.
+	AuditedSHA string `json:"audited_sha,omitempty"`
 	// Note, when set, REPLACES the rendered description. The bot uses it to
 	// state the real reason a gate is red when that reason is not "N blocking
 	// findings" — e.g. its own output was unreadable and the count is a
@@ -293,6 +300,11 @@ type publishReviewResponse struct {
 	GateContext string `json:"gate_context,omitempty"`
 	GateSHA     string `json:"gate_sha,omitempty"`
 	GateError   string `json:"gate_error,omitempty"`
+	// GateSHAUnpinned reports a gate that carried no audited_sha, so the status
+	// landed on whatever head the endpoint resolved. It is the measurement that
+	// says when refusing an unpinned gate outright becomes safe: while any
+	// bundle in the fleet still omits the pin, this is true somewhere.
+	GateSHAUnpinned bool `json:"gate_sha_unpinned,omitempty"`
 	// SkippedReason explains a publish that did not land (a forge error).
 	// Present with published=false; the gate may still have been posted.
 	SkippedReason string `json:"skipped_reason,omitempty"`
@@ -440,6 +452,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			GateContext:     gate.context,
 			GateSHA:         gate.sha,
 			GateError:       gate.errText,
+			GateSHAUnpinned: gate.shaUnpinned,
 		})
 		return
 	}
@@ -458,6 +471,10 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		} else {
 			s.logger.Warn("forge gate: %s %s#%d → not posted: %s", conn.Provider, grant.Repo, number, gate.errText)
 		}
+		if gate.shaUnpinned {
+			s.logger.Warn("forge gate: %s %s#%d @%s posted UNPINNED (no audited_sha) — the verdict is not tied to the revision the bot read; bump this repo's bundle",
+				conn.Provider, grant.Repo, number, gate.sha)
+		}
 	}
 
 	writeJSON(w, publishReviewResponse{
@@ -474,6 +491,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		GateContext:       gate.context,
 		GateSHA:           gate.sha,
 		GateError:         gate.errText,
+		GateSHAUnpinned:   gate.shaUnpinned,
 	})
 
 	// Reviewer bookkeeping — the two halves of the re-request gesture, one
@@ -693,6 +711,9 @@ type gateOutcome struct {
 	context   string // the status check name used
 	sha       string // the head SHA the status was posted on
 	errText   string // why not posted (when !posted)
+	// shaUnpinned records a gate that carried no audited_sha: the status landed
+	// on whatever head was resolved, with nothing tying it to what was read.
+	shaUnpinned bool
 }
 
 // postGateStatus posts the deterministic merge-gate commit status. It resolves
@@ -740,6 +761,27 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	if pr.State != "" && pr.State != "open" {
 		out.errText = "pull request is " + pr.State + " — no gate status on a head that left the merge decision"
 		return out
+	}
+	// A verdict is a statement about the revision the bot READ, and the head was
+	// resolved just now — between the two, a push may have landed. Certifying the
+	// current head with a verdict about an earlier one is how an unaudited
+	// revision clears a required check. Refuse rather than retarget: the same
+	// chokepoint every bot's gate status crosses, so the rule stays out of each
+	// bot's tail.
+	//
+	// An ABSENT pin still posts. Refusing it would blank the required check on
+	// every repository whose bundle predates the pin, which deadlocks the very
+	// pull requests the gate exists to protect. It is not silent: the outcome
+	// says unpinned and the caller logs it, and that signal is what turns
+	// "refuse unpinned too" into a measurable decision.
+	if audited := strings.TrimSpace(gate.AuditedSHA); audited != "" {
+		if !strings.EqualFold(audited, pr.HeadSHA) {
+			out.errText = "the head moved since the audit (audited " + shortSHA(audited) +
+				", head is now " + shortSHA(pr.HeadSHA) + ") — no status on a revision nobody audited"
+			return out
+		}
+	} else {
+		out.shaUnpinned = true
 	}
 	out.sha = pr.HeadSHA
 

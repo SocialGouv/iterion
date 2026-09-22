@@ -551,6 +551,14 @@ schema feedback_input:
   validate_summary: string
   commit_summary: string
   escalation: string
+  ## The revision THIS verdict is about, pinned so the gate cannot certify a
+  ## commit nobody audited: the publish endpoint resolves the PR head at the
+  ## moment it posts, and a push landing in between would otherwise carry this
+  ## verdict onto it. Every edge fills it with the sha true on ITS path — the
+  ## new commit on the did_commit edge, the head this run read everywhere else.
+  ## An empty pin posts UNPINNED rather than failing, so a forgotten edge is
+  ## silent: `dep_update_guard_gate_test.go` refuses one.
+  audited_sha: string
 
 schema feedback_output:
   ## verdict echoed back: the graph stamps it per-edge as a literal, so a
@@ -1234,6 +1242,7 @@ tool post_feedback:
     validate_summary = {{input.validate_summary}}
     escalation = {{input.escalation}}
     commit_summary = {{input.commit_summary}}
+    audited_sha = {{input.audited_sha}}
     token_ref = {{secrets.forge_token.path}}
     pub_url = {{vars.forge_publish_url}}
     pub_token = {{vars.forge_publish_token}}
@@ -1334,6 +1343,12 @@ tool post_feedback:
         if gate_on:
             payload["gate"] = {"enabled": True, "context": s(gate_context) or "vetty/deps",
                                "blocking_count": blocking, "threshold": "verdict"}
+            # Pin the verdict to the revision it is ABOUT. The endpoint resolves
+            # the PR head at the moment it posts; without this, a push landing
+            # between the audit and the publish takes this verdict as its own.
+            # The server refuses a stale pin rather than retargeting the status.
+            if s(audited_sha):
+                payload["gate"]["audited_sha"] = s(audited_sha)
             if gate_note:
                 payload["gate"]["note"] = gate_note
         req = urllib.request.Request(
@@ -1755,7 +1770,8 @@ workflow dep_update_guard:
     verdict: "hold_security",
     audit_summary: "{{outputs.security_audit.summary}}",
     cves: "{{outputs.security_audit.cves}}",
-    malware_signals: "{{outputs.security_audit.malware_signals}}"
+    malware_signals: "{{outputs.security_audit.malware_signals}}",
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
   ## Safe → align the consuming code.
   audit_gate -> align when safe with { bump_summary: "{{outputs.prepare.bump_summary}}" }
@@ -1775,7 +1791,8 @@ workflow dep_update_guard:
     verdict: "needs_decision",
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
-    escalation: "{{outputs.escalate.guidance}}"
+    escalation: "{{outputs.escalate.guidance}}",
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
 
   verify_build -> verify_run
@@ -1800,7 +1817,8 @@ workflow dep_update_guard:
     verdict: "hold_unstable",
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
-    validate_summary: "{{outputs.verify_run.log_tail}}"
+    validate_summary: "{{outputs.verify_run.log_tail}}",
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
 
   commit -> commit_check
@@ -1823,7 +1841,10 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}"
+    commit_summary: "{{outputs.commit.summary}}",
+    ## The head did not move — that IS this verdict: align claimed edits and
+    ## the branch head disagrees. The read sha is the only one that exists.
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
   commit_check -> post_feedback when did_commit with {
     pr_url: "{{vars.pr_url}}",
@@ -1831,7 +1852,10 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}"
+    commit_summary: "{{outputs.commit.summary}}",
+    ## The ONE edge where the alignment moved the branch: the verdict covers
+    ## the commit this run pushed, not the head it read.
+    audited_sha: "{{outputs.commit.sha}}"
   }
   commit_check -> post_feedback else with {
     pr_url: "{{vars.pr_url}}",
@@ -1839,7 +1863,10 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}"
+    commit_summary: "{{outputs.commit.summary}}",
+    ## Nothing to align, so nothing was pushed: the verdict covers the head
+    ## this run read.
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
 
   ## Deterministic anti-façade gate on the comment, then done.

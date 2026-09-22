@@ -1,7 +1,18 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.9
+version: 2.8.0
+## 2.8.0 — the verdict is PINNED to the revision it is about. The publish
+## payload now carries `audited_sha`, and the server refuses a pin that is no
+## longer the head instead of retargeting the status. Without it the endpoint
+## resolved the pull request head at the moment it wrote the check, so a push
+## landing between the audit and the publish took this verdict as its own —
+## with a required check, zero required approvals and auto-merge armed, that
+## is a path for an unaudited commit to reach the default branch. Every one of
+## the six edges into `post_feedback` fills it with the sha true on ITS path
+## (the new commit where the alignment landed, the head this run read
+## elsewhere); an omission posts UNPINNED rather than failing, so
+## `dep_update_guard_pin_test.go` refuses an edge that forgets.
 ## 2.7.9 — the verify instruction's mirrored drift gate leaves iterion's `.claude/`
 ## scaffold out of its porcelain check, as does the gate's drift tail (#1364).
 ## 2.7.8 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph

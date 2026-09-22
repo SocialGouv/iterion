@@ -1,7 +1,12 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.6
+version: 0.9.7
+## 0.9.7 — the verdict is PINNED to the revision it judged: the publish
+## payload carries `audited_sha` (the same `REVIEWED_SHA` the node already
+## compared against the worktree HEAD to annotate a stale anchor — it was
+## reported in the comment and never enforced on the gate), and the server
+## refuses a pin that is no longer the head instead of retargeting the status.
 ## 0.9.6 — the whole reviewer fleet is pinned to z.ai's GLM: `provider:
 ## "zai"` + `model: "glm-5.3"` on all four reviewer nodes, because this
 ## deployment's Anthropic forfait is capped and the merge gate must
