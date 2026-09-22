@@ -129,6 +129,54 @@ func TestARefusedStringOrIdentValueTakesItsLine(t *testing.T) {
 	}
 }
 
+// A trailing comma closes the list: `[bash,]` is `[bash]`, as the JSON value
+// form and the old string|ident list already read it. The list loop used to
+// hand the `]` to the element reader, which refused it — "delete the element
+// or write a name", about the closer the author wrote — and then missed it.
+func TestATrailingCommaClosesTheList(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		src  string
+		pick func(r *ParseResult) []string
+	}{
+		{"tools", "agent a:\n  tools: [bash,]\n  description: \"after\"\n", func(r *ParseResult) []string { return r.File.Agents[0].Tools }},
+		{"needs", "agent a:\n  needs: [gpu,]\n  description: \"after\"\n", func(r *ParseResult) []string { return r.File.Agents[0].Needs }},
+		{"images", "agent a:\n  images: [\"x.png\",]\n  description: \"after\"\n", func(r *ParseResult) []string { return r.File.Agents[0].Images }},
+		{"rules", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [github.com,]\n", func(r *ParseResult) []string { return r.File.Workflows[0].Sandbox.Network.Rules }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			res := Parse("x.bot", c.src)
+			if len(res.Diagnostics) != 0 || len(c.pick(res)) != 1 {
+				t.Fatalf("diagnostics %v, list %v", res.Diagnostics, c.pick(res))
+			}
+		})
+	}
+	// An empty element between two commas is still a refusal, said once,
+	// and both neighbours are read.
+	res := Parse("x.bot", "agent a:\n  tools: [bash, , read_file]\n")
+	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash", "read_file"}) || len(res.Diagnostics) == 0 {
+		t.Fatalf("tools %v, diagnostics %v", got, res.Diagnostics)
+	}
+}
+
+// In the `- item` form, a refused element that opens a bracket is said ONCE:
+// its residue on the line is the same mistake, not a second one, and the
+// next items are read.
+func TestADashFormElementThatOpensABracketIsSaidOnce(t *testing.T) {
+	res := Parse("x.bot", "supervisor s:\n  watches:\n    - a\n    - [b]\n    - c\n  cooldown: \"2m\"\n")
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Line != 4 {
+		t.Fatalf("want one diagnostic on line 4, got %v", res.Diagnostics)
+	}
+	if s := res.File.Supervisors[0]; !reflect.DeepEqual(s.Watches, []string{"a", "c"}) || s.Cooldown != "2m" {
+		t.Fatalf("watches %v, cooldown %q", s.Watches, s.Cooldown)
+	}
+	// A GOOD element followed by residue is still the mistake it was.
+	res = Parse("x.bot", "supervisor s:\n  watches:\n    - a b\n")
+	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "one `- item` per line") {
+		t.Fatalf("got %v", res.Diagnostics)
+	}
+}
+
 // A list element with no comma before it is said once, then read; a stray
 // token inside the list is refused where it stands; nothing runs into the
 // next property. `[bash foo]` used to draw "expected ]" and then "unknown

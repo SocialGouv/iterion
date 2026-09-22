@@ -345,7 +345,7 @@ unknown property is checked against, so a name that is not here draws E012
 with the closest accepted name in its `fix:` line.
 
 <!-- dsl-spec:begin skill -->
-Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string or one bare word · `id` bare name · `str|id` either · `str|num` a string or a bare number (`30s`, `3`) · `prompt` a prompt's name, or its text as a string · `int` `num` `bool` literals · `a|b` one of, bare or quoted · `a|b|"${VAR}"` one of, or a quoted env string · `"a|b"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
+Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string or one bare word · `id` bare name · `id.id` bare name, dotted for a group instance's node or a node's field · `str|id` either · `str|num` a string or a bare number (`30s`, `3`) · `prompt` a prompt's name, or its text as a string · `int` `num` `bool` literals · `a|b` one of, bare or quoted · `a|b|"${VAR}"` one of, or a quoted env string · `"a|b"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
 
 - `prompt` — body: free text
 - `schema` — entries `<field>: string | bool | int | float | json | string[] | file [enum: "a", "b"]`

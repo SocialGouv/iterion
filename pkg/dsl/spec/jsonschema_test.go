@@ -112,7 +112,12 @@ func TestAuthorSchemaRefusesEveryInvalidFixture(t *testing.T) {
 		}
 		doc, err := loadFixture(t, path)
 		if err != nil {
-			continue // YAML refused it: that is the refusal the fixture documents
+			// YAML refused it: the refusal the fixture documents only when
+			// its first line says so.
+			if first, _, _ := strings.Cut(string(raw), "\n"); !strings.Contains(first, "YAML") {
+				t.Errorf("%s: refused by the YAML decoder (%v), which the first line does not name", path, err)
+			}
+			continue
 		}
 		if err := combined.Validate(doc); err == nil {
 			t.Errorf("%s: accepted by the combined schema", path)

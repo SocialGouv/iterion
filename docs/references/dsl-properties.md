@@ -31,6 +31,7 @@ each property live in the [DSL guide](../dsl.md). The value forms:
 |---|---|
 | string | a quoted string: `"…"`, a backtick raw string, or a `\|` block scalar — or one plain bare word, which is the string it spells |
 | ident | a bare name: a declared prompt, schema or node, or an accepted word; a quoted string is refused |
+| dotted ident | a bare name, dotted when it addresses a group instance's node, a node's field or a plugin's kind (`r1.look`, `node.field`); a quoted string is refused |
 | string\|ident | either of the two, a bare name dotted (`github.com`) allowed |
 | string\|number | a quoted string, a bare word, or a number with its unit attached (`30s`, `3`) |
 | prompt name, or its text as a string | a declared prompt's name, bare — or the prompt's own text, quoted or as a `\|` block scalar: an inline prompt |

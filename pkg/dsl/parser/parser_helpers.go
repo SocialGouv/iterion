@@ -115,6 +115,13 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 		switch {
 		case t.Type == TokenComma:
 			p.next()
+			if p.peek().Type == TokenRBrack {
+				// A trailing comma closes the list, as it does in the JSON
+				// value form; handed to the element reader, the `]` was
+				// refused as an element and then missed as the closer.
+				p.next()
+				return out
+			}
 			appendElem()
 		case t.Type == TokenRBrack:
 			p.next()
@@ -190,11 +197,17 @@ func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []strin
 				p.addErrorHint(DiagExpectedToken, n, "expected an element after `-`: a dash with nothing on its line is not an empty item", "Delete the bare `-`, or write the element after it.")
 				continue
 			}
-			if v, ok := parseElem(); ok {
+			v, ok := parseElem()
+			if ok {
 				out = append(out, v)
 			}
 			if n := p.peek(); n.Type != TokenNewline && n.Type != TokenComment && n.Type != TokenDedent && n.Type != TokenEOF {
-				p.addError(DiagUnexpectedToken, n, "one `- item` per line: nothing may follow the element but a comment")
+				// Residue after a GOOD element is a mistake of its own;
+				// after a refused one it is the same mistake, already
+				// said — the reader consumed the token that opened it.
+				if ok {
+					p.addError(DiagUnexpectedToken, n, "one `- item` per line: nothing may follow the element but a comment")
+				}
 				p.skipToNewline()
 			}
 		case TokenNewline, TokenComment:
