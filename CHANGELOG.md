@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.181.1](https://github.com/SocialGouv/iterion/compare/v3.181.0...v3.181.1) (2026-09-22)
+
+### Bug Fixes
+
+* **sandbox:** `auto` degrades where the host cannot isolate, an explicit container refuses — one chokepoint, one typed code ([#1425](https://github.com/SocialGouv/iterion/issues/1425)) ([#1567](https://github.com/SocialGouv/iterion/issues/1567)) ([57a200a](https://github.com/SocialGouv/iterion/commit/57a200a03668190863b2c77a76b30af74ad357b2)), closes [#1565](https://github.com/SocialGouv/iterion/issues/1565), references [#1426](https://github.com/SocialGouv/iterion/issues/1426) [#1564](https://github.com/SocialGouv/iterion/issues/1564) [#1426](https://github.com/SocialGouv/iterion/issues/1426)
+
+    <details><summary>why</summary>
+
+    The docs promised a graceful degrade the factory did not perform, and it was not theoretical: **107 scheduled ticks** died on the operator's own host between 2026-07-20 and 2026-09-17 with `sandbox: mode "auto" requested but no container runtime is available`. Arbitrated split, by MODE and never by the tier that named the mode:
+
+    </details>
+
 ## [3.181.0](https://github.com/SocialGouv/iterion/compare/v3.180.2...v3.181.0) (2026-09-21)
 
 ### Features
