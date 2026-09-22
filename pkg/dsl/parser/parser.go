@@ -24,6 +24,9 @@ func Parse(filename, src string) *ParseResult {
 		file: filename,
 	}
 	f := p.parseFile()
+	// Every `##` line goes back to the declaration it was written around,
+	// with the address the writer reads to put it back (comments.go).
+	attachComments(filename, f, p.lex.All())
 	return &ParseResult{File: f, Diagnostics: p.diags, ProfileReads: p.lex.ProfileReads()}
 }
 

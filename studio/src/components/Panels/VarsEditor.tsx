@@ -111,21 +111,23 @@ function VarsSection({
   const updateField = useCallback(
     (index: number, updates: Partial<VarField>) => {
       const next = fields.map((f, i) => (i === index ? { ...f, ...updates } : f));
-      onChange({ fields: next });
+      // Spread the block: it also carries the comments written around it
+      // and, in a multi-file bot, the file it came from.
+      onChange({ ...vars, fields: next });
     },
-    [fields, onChange],
+    [fields, onChange, vars],
   );
 
   const addField = useCallback(() => {
-    onChange({ fields: [...fields, { name: "", type: "string" }] });
-  }, [fields, onChange]);
+    onChange({ ...vars, fields: [...fields, { name: "", type: "string" }] });
+  }, [fields, onChange, vars]);
 
   const removeField = useCallback(
     (index: number) => {
       const next = fields.filter((_, i) => i !== index);
-      onChange(next.length > 0 ? { fields: next } : undefined);
+      onChange(next.length > 0 ? { ...vars, fields: next } : undefined);
     },
-    [fields, onChange],
+    [fields, onChange, vars],
   );
 
   if (filterName && visibleIndices.length === 0) return null;

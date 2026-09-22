@@ -50,6 +50,7 @@ func TestEveryContractFieldSurvivesTheWriter(t *testing.T) {
 var (
 	rawJSONType = reflect.TypeOf(json.RawMessage{})
 	spanType    = reflect.TypeOf(ast.Span{})
+	commentType = reflect.TypeOf(ast.Comment{})
 )
 
 // fillContract sets every exported field to a distinct value the text can
@@ -60,6 +61,16 @@ func fillContract(t *testing.T, v reflect.Value, n *int) {
 	t.Helper()
 	switch {
 	case v.Type() == spanType:
+		return
+	case v.Type() == commentType:
+		// A comment's address is meaningful only against the document:
+		// filled with a counter it would name a property the contract
+		// does not have, and the writer would put it at the end of the
+		// block instead — a real behaviour, held by its own test. Given a
+		// real address here, the comparison proves the stronger thing:
+		// the comment comes back exactly where it was written.
+		*n++
+		v.Set(reflect.ValueOf(ast.Comment{Text: fmt.Sprintf("v%d", *n), Anchor: "display_name", Place: ast.CommentTrailing}))
 		return
 	case v.Type() == rawJSONType:
 		*n++
@@ -98,6 +109,11 @@ func fillContract(t *testing.T, v reflect.Value, n *int) {
 // value, "" when none.
 func zeroField(path string, v reflect.Value) string {
 	if v.Type() == spanType {
+		return ""
+	}
+	if v.Type() == commentType {
+		// The filler gives a comment a real address, not a counter; its
+		// span never travels.
 		return ""
 	}
 	switch v.Kind() {

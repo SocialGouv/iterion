@@ -67,7 +67,8 @@ func hasProvenance(f *ast.File) bool {
 }
 
 // walkCarriers visits the span of every top-level declaration, comment,
-// keyed block and block entry of a document — every carrier of provenance.
+// keyed block, block entry and block comment of a document — every carrier
+// of provenance.
 func walkCarriers(f *ast.File, visit func(ast.Span)) {
 	dv := reflect.ValueOf(f).Elem()
 	for i := 0; i < dv.NumField(); i++ {
@@ -89,6 +90,13 @@ func walkCarriers(f *ast.File, visit func(ast.Span)) {
 			if entries := entriesOf(fv.Elem()); entries.IsValid() {
 				for j := 0; j < entries.Len(); j++ {
 					if span, ok := spanOf(entries.Index(j)); ok {
+						visit(span)
+					}
+				}
+			}
+			if cs := commentsOf(fv.Elem()); cs.IsValid() {
+				for j := 0; j < cs.Len(); j++ {
+					if span, ok := spanOf(cs.Index(j)); ok {
 						visit(span)
 					}
 				}
@@ -116,14 +124,27 @@ func spanOf(v reflect.Value) (ast.Span, bool) {
 	return sf.Interface().(ast.Span), true
 }
 
-// entriesOf is the one slice field of a keyed block (Fields, Entries).
+// entriesOf is the entry list of a keyed block — `Fields` or `Entries`.
+// NAMED, not guessed: a block has more than one slice field (it carries
+// the comments written around it too), and "the first slice field" would
+// return whichever the struct happens to declare first — a field reorder
+// would then route the comment list as the entries.
 func entriesOf(block reflect.Value) reflect.Value {
-	for i := 0; i < block.NumField(); i++ {
-		if block.Field(i).Kind() == reflect.Slice {
-			return block.Field(i)
+	for _, name := range []string{"Fields", "Entries"} {
+		if f := block.FieldByName(name); f.IsValid() && f.Kind() == reflect.Slice {
+			return f
 		}
 	}
 	return reflect.Value{}
+}
+
+// commentsOf is a carrier's comment list, invalid when it has none.
+func commentsOf(v reflect.Value) reflect.Value {
+	f := v.FieldByName("Comments")
+	if !f.IsValid() || f.Kind() != reflect.Slice {
+		return reflect.Value{}
+	}
+	return f
 }
 
 // splitByProvenance takes a document of a merged unit apart, file by file:
@@ -184,6 +205,26 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 		case reflect.Pointer:
 			if fv.IsNil() {
 				continue
+			}
+			// The comments written around the block go where they were
+			// written, like its entries: a block is a carrier, and
+			// without this a save of a bot in several files dropped
+			// every comment of its `vars:`, `presets:`, `secrets:` and
+			// `attachments:` — silently, and with the save reporting
+			// success, which is the whole of #1282 on this path.
+			if cs := commentsOf(fv.Elem()); cs.IsValid() {
+				for j := 0; j < cs.Len(); j++ {
+					el := cs.Index(j)
+					span, _ := spanOf(el)
+					q, err := owner(span, "")
+					if err != nil {
+						return nil, err
+					}
+					target := reflect.ValueOf(q).Elem().Field(i)
+					ensureBlock(target, fv.Type())
+					tc := commentsOf(target.Elem())
+					tc.Set(reflect.Append(tc, el))
+				}
 			}
 			// Each entry goes where it was, and a block exists in a file
 			// because an entry of it does. A block emptied of every entry

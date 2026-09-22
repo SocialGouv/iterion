@@ -22,6 +22,9 @@ type ContractDecl struct {
 	Outputs  []*PortDecl
 	Criteria []*CriterionDecl
 	Effects  []*PublicEffect
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
 	Span     Span
 }
 

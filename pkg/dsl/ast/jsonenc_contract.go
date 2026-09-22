@@ -22,6 +22,7 @@ type jsonContractDecl struct {
 	Outputs        []*jsonPortDecl      `json:"outputs,omitempty"`
 	Criteria       []*jsonCriterionDecl `json:"criteria,omitempty"`
 	Effects        []*jsonPublicEffect  `json:"effects,omitempty"`
+	Comments       []*jsonComment       `json:"comments,omitempty"`
 }
 
 // jsonPortDecl mirrors PortDecl. Required is a pointer so "unset" (true by

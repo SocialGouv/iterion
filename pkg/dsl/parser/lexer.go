@@ -493,7 +493,10 @@ func (l *Lexer) scanComment(startLine int) {
 	if l.pos < len(l.src) {
 		l.advance() // consume '\n'
 	}
-	l.emit(TokenComment, strings.TrimSpace(string(buf)), startLine, startCol)
+	// The text is what the shared definition says it is — one space after
+	// the hashes removed and nothing more — so the indentation an author
+	// wrote inside a comment is part of it and a rewrite puts it back.
+	l.emit(TokenComment, workflowfile.CommentBody(string(buf)), startLine, startCol)
 	l.atLineStart = true
 }
 
@@ -889,7 +892,29 @@ func (l *Lexer) emit(tt TokenType, value string, line, col int) {
 	if line >= 1 && line <= len(l.lineStarts) {
 		offset = l.lineStarts[line-1] + col - 1
 	}
-	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col, Offset: offset, End: l.pos})
+	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col, Offset: offset, End: l.pos, EndLine: l.endLineOf(line, l.pos)})
+}
+
+// endLineOf is the line the token starting on line and ending at the
+// exclusive rune index end sits on last. Read off the line table, so a
+// value whose TEXT spans lines is measured by the text and one whose VALUE
+// does (an escaped "a\nb") is not.
+func (l *Lexer) endLineOf(line, end int) int {
+	if end <= 0 || line < 1 {
+		return line
+	}
+	last := end - 1
+	// A scanner that must look ahead to find its terminator — the block
+	// scalar reads the indentation of the line BELOW the block before it
+	// knows the block ended — leaves l.pos past the token's own text.
+	// Whitespace at the end is never part of a token's text.
+	for last > 0 && (l.src[last] == ' ' || l.src[last] == '\t') {
+		last--
+	}
+	for line < len(l.lineStarts) && l.lineStarts[line] <= last {
+		line++
+	}
+	return line
 }
 
 // skipRestOfString advances past the remainder of a quoted literal after an

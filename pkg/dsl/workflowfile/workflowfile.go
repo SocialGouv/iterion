@@ -42,8 +42,17 @@ func CommentText(line string) (text string, ok bool) {
 	}
 	t = strings.TrimPrefix(t, "#")
 	t = strings.TrimPrefix(t, "#")
-	t = strings.TrimPrefix(t, " ")
-	return strings.TrimRight(t, " \t\r"), true
+	return CommentBody(t), true
+}
+
+// CommentBody is a comment's text once its hashes are off: one following
+// space removed — the one the writer puts back — and nothing else, so the
+// indentation an author wrote INSIDE the comment (`##   - item`, a wrapped
+// line aligned under a bullet) is part of the text and survives a rewrite.
+// The lexer reads the same rule off this function, which is what keeps the
+// two from drifting.
+func CommentBody(afterHashes string) string {
+	return strings.TrimRight(strings.TrimPrefix(afterHashes, " "), " \t\r")
 }
 
 // FrontmatterFence is the text of the comment line that opens and closes a

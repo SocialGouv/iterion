@@ -18,6 +18,12 @@ func TestEveryFieldSurvivesTheTransport(t *testing.T) {
 	n := 0
 	fillValue(reflect.ValueOf(f).Elem(), &n, 0)
 	legalise(f)
+	// A group's MEMBERS have a Comments field the transport reaches and
+	// the writer does not place through: the decoder folds such a comment
+	// onto the group, under the path the parser gives it. Fold the
+	// expectation the same way — what is asserted is still that no field
+	// is dropped, on the document the decoder promises.
+	foldGroupComments(f)
 	data, err := MarshalFile(f)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +60,8 @@ func legalise(f *File) {
 
 // transportlessTypes are position types: the JSON document is span-free by
 // design (the studio canvas has no source positions to carry).
+var commentPlaceType = reflect.TypeOf(CommentBefore)
+
 var transportlessTypes = map[reflect.Type]bool{
 	reflect.TypeOf(Span{}): true,
 	reflect.TypeOf(Pos{}):  true,
@@ -74,6 +82,12 @@ var rawJSONType = reflect.TypeOf(json.RawMessage{})
 
 func fillValue(v reflect.Value, n *int, depth int) {
 	if transportlessTypes[v.Type()] {
+		return
+	}
+	if v.Type() == commentPlaceType {
+		// An enum, not a counter: an ordinal outside it is not a
+		// document, and the transport refuses one by name.
+		v.SetInt(int64(CommentTrailing))
 		return
 	}
 	if v.Type() == rawJSONType {
