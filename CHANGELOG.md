@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.185.1](https://github.com/SocialGouv/iterion/compare/v3.185.0...v3.185.1) (2026-09-22)
+
+### Bug Fixes
+
+* **repomap:** the docs map links resolve from docs/references on the site, not from the repository root ([#1625](https://github.com/SocialGouv/iterion/issues/1625)) ([774fc6b](https://github.com/SocialGouv/iterion/commit/774fc6b17f0577953c888780b61751e42d0b1015)), references [#1505](https://github.com/SocialGouv/iterion/issues/1505) [#1508](https://github.com/SocialGouv/iterion/issues/1508) [#1508](https://github.com/SocialGouv/iterion/issues/1508)
+
+    <details><summary>why</summary>
+
+    The Page column of docs/references/map-docs.md wrote every target as `../../docs/<page>.md`. github.com resolves that against the map's own directory and serves the page; the documentation site's root IS docs/, so the same target climbs out of the site and names nothing there. 318 dead links on one page: the `docs` job has failed on every push to main since 09bd1d0b1 (#1505) and the site has not published for three days.
+
+    </details>
+
 ## [3.185.0](https://github.com/SocialGouv/iterion/compare/v3.184.1...v3.185.0) (2026-09-22)
 
 ### Features
