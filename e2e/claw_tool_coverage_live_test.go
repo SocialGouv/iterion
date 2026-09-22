@@ -79,6 +79,13 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		t.Fatalf("build mcp_test_server: %v\n%s", berr, out)
 	}
 	t.Setenv("ITERION_MCP_TEST_BINARY", binPath)
+	// Every agent in the fixture must run claw — the coverage list, the
+	// dispatch assertions and the ask_user witness are claw claims, and
+	// five of the seven agents carry no `backend:` pin. The default
+	// override is cleared with it: it sits ABOVE the preference in the
+	// resolution order and would silently win.
+	t.Setenv("ITERION_DEFAULT_BACKEND", "")
+	t.Setenv("ITERION_BACKEND_PREFERENCE", "claw")
 
 	wf := compileFixture(t, "claw_tool_coverage.bot")
 

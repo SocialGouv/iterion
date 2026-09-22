@@ -18,7 +18,6 @@
 ##   - repl                    → besoin d'un runtime python/js
 ##   - notebook_edit           → besoin d'un .ipynb réel
 ##   - read_image / screenshot / computer_use → besoin X11
-##   - ask_user                → pauserait le workflow (incompatible test linéaire)
 ##   - worker_*                → worker = subprocess, lifecycle complexe
 ##                               (worker_create + worker_terminate testés
 ##                                via le smoke test au niveau dispatch)
@@ -89,6 +88,7 @@ schema files_output:
   structured_payload_echo: string
 
 agent files_runner:
+  backend: "claw"
   model: "anthropic/claude-haiku-4-5-20251001"
   input: files_input
   output: files_output
@@ -128,6 +128,7 @@ schema mcp_output:
   resource_text: string
 
 agent mcp_runner:
+  backend: "claw"
   model: "anthropic/claude-haiku-4-5-20251001"
   input: mcp_input
   output: mcp_output

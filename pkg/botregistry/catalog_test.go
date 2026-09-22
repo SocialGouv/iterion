@@ -63,7 +63,8 @@ func fixtureCatalogWorkspace(t *testing.T) string {
 	writeFile(t, filepath.Join(dir, "bots", "whats-next", "main.bot"), stub)
 	writeFile(t, filepath.Join(dir, "bots", "whats-next", catalogStaticName),
 		"---\nname: iterion-bot-catalog\n---\nPREAMBLE-TOP\n\n"+
-			catalogGeneratedBegin+"\n"+catalogGeneratedEnd+"\n\nPREAMBLE-BOTTOM\n")
+			catalogGeneratedBegin+"\n"+catalogGeneratedEnd+"\n\nPREAMBLE-BOTTOM\n\n"+
+			"See [backends](../../docs/backends.md).\n")
 
 	writeFile(t, filepath.Join(dir, "bots", "enabled-bot", "manifest.yaml"),
 		"name: enabled-bot\ndisplay_name: Enably\ndescription: An enabled bot.\nwhen_to_use: use the enabled bot\n")
@@ -105,10 +106,17 @@ func TestRegenerateWhatsNextCatalog_SplicesFiltersAndPreservesStatic(t *testing.
 		"### `enabled-bot`",
 		"use the enabled bot",
 		"`whats-next` (this bot)",
+		// The static tail's link resolved from the template's own directory
+		// at bots/whats-next/; the copy lives one level deeper, so the
+		// splice must have climbed it.
+		"](../../../docs/backends.md)",
 	} {
 		if !strings.Contains(got, must) {
 			t.Errorf("generated catalog missing %q\n---\n%s", must, got)
 		}
+	}
+	if strings.Contains(got, "](../docs/backends.md)") {
+		t.Errorf("generated catalog carries the template-depth link, which names nothing from skills/:\n%s", got)
 	}
 	// Disabled bundle and loose demo file must NOT appear.
 	for _, absent := range []string{"disabled-bot", "Offy", "loose-demo"} {
@@ -211,5 +219,53 @@ func TestRegenerateWhatsNextCatalog_LooseFileSkipDoesNotBlock(t *testing.T) {
 	}
 	if dest == "" {
 		t.Fatal("expected the catalog to regenerate")
+	}
+}
+
+// The template is spliced verbatim one directory deeper than where it is
+// authored; a relative target that resolved next to the template names
+// nothing next to the copy. The re-anchor is what keeps the spliced link
+// pointing at the file it named; its mutation to identity reddens every
+// case that carries a relative target — and the catalog-freshness gate
+// reddens the whole pipeline, since regen would re-emit the mis-anchored
+// form the tree no longer carries.
+func TestReanchorForDepthRewritesRelativeTargets(t *testing.T) {
+	const templateDir = "bots/whats-next"
+	const skillsDir = "bots/whats-next/skills"
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			// The static template's own tail link, spliced one level deeper.
+			name: "a template-root relative link",
+			text: "[docs/backends.md](../../docs/backends.md)",
+			want: "[docs/backends.md](../../../docs/backends.md)",
+		},
+		{
+			name: "a fragment rides its target",
+			text: "[the gate](../merge-gate.md#the-gate)",
+			want: "[the gate](../../merge-gate.md#the-gate)",
+		},
+		{
+			name: "a bare fragment keeps naming this document",
+			text: "the [decision tree](#decision-tree) below",
+			want: "the [decision tree](#decision-tree) below",
+		},
+		{
+			name: "scheme, protocol-relative and /-prefixed targets pass",
+			text: "[gh](https://github.com/x), [cdn](//cdn/x), [abs](/docs/a.md)",
+			want: "[gh](https://github.com/x), [cdn](//cdn/x), [abs](/docs/a.md)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reanchorForDepth(tc.text, templateDir, skillsDir); got != tc.want {
+				t.Errorf("reanchorForDepth(%q)\n  got  %s\n  want %s", tc.text, got, tc.want)
+			}
+		})
+	}
+	if got := reanchorForDepth("[a](b.md)", "same/dir", "same/dir"); got != "[a](b.md)" {
+		t.Errorf("same-directory splice must be a no-op, got %s", got)
 	}
 }

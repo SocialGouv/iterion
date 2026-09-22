@@ -53,6 +53,7 @@ agent mcp_caller:
   ## claw direct + Anthropic Haiku 4.5; the tool list pulls in the MCP
   ## tools resolved by iterion's MCP manager and forwarded as ToolDefs
   ## to the claw backend's tool loop.
+  backend: "claw"
   model: "anthropic/claude-haiku-4-5-20251001"
   input: mcp_agent_input
   output: mcp_agent_output

@@ -119,8 +119,7 @@ Measure **total cost divided by accepted results** across a representative batch
 
 For an embedded or customer-facing service, check redistribution and hosting rights. Iterion is MIT; n8n uses the Sustainable Use License; Activepieces separates its MIT core from Enterprise directories; Dify adds Apache conditions, including multi-tenancy and branding. [n8n license](https://raw.githubusercontent.com/n8n-io/n8n/master/LICENSE.md), [Activepieces license](https://raw.githubusercontent.com/activepieces/activepieces/main/LICENSE), [Dify license](https://raw.githubusercontent.com/langgenius/dify/main/LICENSE).
 
-## 🚀 Try Iterion on your project {#try-iterion}
-
+## <a id="try-iterion"></a>🚀 Try Iterion on your project
 Pick a representative mission. For a knowledge application: gather sources, produce a structured analysis, ask for missing information and deliver a reviewed report. For software delivery: analyze a request, change the repository, run tests, review and correct the result. Include your own tools, state and acceptance criteria.
 
 **Evaluate the outcome and the developer experience.** Inspect the deliverable, validation evidence, cost and human interventions. Exercise an interruption and recovery. Check how easily you can change the workflow, debug failures and connect it to your existing CI or application.

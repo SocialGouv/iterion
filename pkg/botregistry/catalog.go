@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -224,6 +225,7 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 			return first, fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
 		}
 		dest := filepath.Join(skillsDir, catalogGeneratedName)
+		out = reanchorForDepth(out, filepath.Dir(staticPath), skillsDir)
 		if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
 			return first, fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
 		}
@@ -246,4 +248,43 @@ func spliceGeneratedBlock(static, block string) (string, error) {
 	head := static[:beginAt+len(catalogGeneratedBegin)]
 	tail := static[endAt:]
 	return head + "\n\n" + block + "\n\n" + tail, nil
+}
+
+// relTargetRe matches the destination of an inline markdown link:
+// `](target)`.
+var relTargetRe = regexp.MustCompile(`\]\(([^)]*)\)`)
+
+// externalTargetRe matches a target that leaves the repository: a URL with
+// a scheme, or a protocol-relative one.
+var externalTargetRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.-]*:|//)`)
+
+// reanchorForDepth rewrites the relative link targets of text spliced from
+// fromDir into toDir, so each keeps naming the file it named where it was
+// written. The catalog template lives at the bundle root and becomes the
+// skill copy one directory deeper; its static text is spliced verbatim,
+// and the depth the copy descends is depth the targets must climb.
+// Scheme, `/`-prefixed and bare `#fragment` targets pass through — a
+// fragment keeps naming the copy's own headings, which the copy carries
+// whole (unlike the docs map, which quotes ANOTHER page's anchors and
+// must gain that page's path).
+func reanchorForDepth(content, fromDir, toDir string) string {
+	if fromDir == toDir {
+		return content
+	}
+	return relTargetRe.ReplaceAllStringFunc(content, func(m string) string {
+		target := m[2 : len(m)-1]
+		if target == "" || strings.HasPrefix(target, "#") ||
+			externalTargetRe.MatchString(target) || strings.HasPrefix(target, "/") {
+			return m
+		}
+		frag := ""
+		if i := strings.Index(target, "#"); i >= 0 {
+			frag, target = target[i:], target[:i]
+		}
+		rel, err := filepath.Rel(toDir, filepath.Join(fromDir, filepath.FromSlash(target)))
+		if err != nil {
+			return m
+		}
+		return "](" + filepath.ToSlash(rel) + frag + ")"
+	})
 }

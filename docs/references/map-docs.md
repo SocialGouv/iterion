@@ -133,7 +133,7 @@
 | [`docs/architecture.md`](../../docs/architecture.md) | Architecture | Iterion is organized around one compiled workflow and runtime model with | — |
 | [`docs/assistant-dock.md`](../../docs/assistant-dock.md) | The assistant dock | The studio's assistant is reachable from **every** authenticated route, | — |
 | [`docs/asymptote-bench.md`](../../docs/asymptote-bench.md) | 📈 Asymptote benchmark | `iterion bench asymptote` measures the **inter-session quality stabilisation curve** of a workflow: rerun the same task in N independent… | — |
-| [`docs/async-interaction.md`](../../docs/async-interaction.md) | Async human interaction — ask, keep working, sync later | ADR: [081-async-human-interaction](adr/081-async-human-interaction.md) | — |
+| [`docs/async-interaction.md`](../../docs/async-interaction.md) | Async human interaction — ask, keep working, sync later | ADR: [081-async-human-interaction](../adr/081-async-human-interaction.md) | — |
 | [`docs/attachments.md`](../../docs/attachments.md) | Attachments — file & image inputs | The `attachments:` block lets a workflow declare binary inputs (files, | — |
 | [`docs/backends.md`](../../docs/backends.md) | 🤝 Backends and credential auto-detection | A backend is the executor iterion routes a node to — either the in-process | — |
 | [`docs/bot-bundle-snapshots.md`](../../docs/bot-bundle-snapshots.md) | Cloud bot bundle snapshots | A cloud launch resolved through the server's bot authority freezes one bundle | — |
@@ -146,19 +146,19 @@
 | [`docs/bot-runs/adr-rechallenge.md`](../../docs/bot-runs/adr-rechallenge.md) | adr-rechallenge (ReArchi) — bilans | Human-in-the-loop ADR re-challenger. | — |
 | [`docs/bot-runs/app-dev.md`](../../docs/bot-runs/app-dev.md) | app-dev (Appy) — dogfood runs | Newest first. | — |
 | [`docs/bot-runs/arbitrate.md`](../../docs/bot-runs/arbitrate.md) | Themis — `arbitrate` run bilans | Doctrine-bound judge for the divergence cases a modernisation programme | — |
-| [`docs/bot-runs/bmady.md`](../../docs/bot-runs/bmady.md) | bmady (Bmady) — dogfood bilan | Index + template: [README.md](README.md). | — |
+| [`docs/bot-runs/bmady.md`](../../docs/bot-runs/bmady.md) | bmady (Bmady) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/branch-improve-loop.md`](../../docs/bot-runs/branch-improve-loop.md) | Billy — branch-improvement validation | a scratch repository, the in-loop review clean. | — |
 | [`docs/bot-runs/campaign.md`](../../docs/bot-runs/campaign.md) | Campy 🧭 — `campaign` run bilans | Supervises a whole modernisation programme by running `modernize` as a subbot | — |
 | [`docs/bot-runs/copilot.md`](../../docs/bot-runs/copilot.md) | Copi — `bots/copilot` | Conversational iterion assistant: the DSL, the Cxxx diagnostics, run/resume | — |
 | [`docs/bot-runs/dep-update-guard.md`](../../docs/bot-runs/dep-update-guard.md) | Vetty — `dep-update-guard` run bilans | Reactive security + alignment guard for automated dependency-update PRs | — |
-| [`docs/bot-runs/devbox-setup.md`](../../docs/bot-runs/devbox-setup.md) | devbox-setup (Devy) — dogfood bilan | Index + template: [README.md](README.md). | — |
+| [`docs/bot-runs/devbox-setup.md`](../../docs/bot-runs/devbox-setup.md) | devbox-setup (Devy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/docs-refresh.md`](../../docs/bot-runs/docs-refresh.md) | docs-refresh (Doki) — bilans | Documentation refresh bot (v3: adaptive paradigm). | — |
 | [`docs/bot-runs/e2e-coverage.md`](../../docs/bot-runs/e2e-coverage.md) | e2e-coverage (Endy) — run bilans | Matrix-anchored e2e coverage completion bot (ADR-058 v2, sibling of Testy). | — |
 | [`docs/bot-runs/evolve.md`](../../docs/bot-runs/evolve.md) | Evoly (`evolve`) — bot run bilan | Strategic / architectural evolution partner. | — |
 | [`docs/bot-runs/feature-dev.md`](../../docs/bot-runs/feature-dev.md) | Featurly — `feature-dev` run bilans | every LLM node of the graph exercised but the peer review (off by var). | — |
 | [`docs/bot-runs/feature-gap-fill.md`](../../docs/bot-runs/feature-gap-fill.md) | feature-gap-fill (Fini) — bilans | Gap-driven feature completer. | — |
 | [`docs/bot-runs/feed-watch.md`](../../docs/bot-runs/feed-watch.md) | feed-watch (Vigie) — run log | Newest first. | — |
-| [`docs/bot-runs/golden-master.md`](../../docs/bot-runs/golden-master.md) | golden-master (Goldy) — dogfood bilan | Index + template: [README.md](README.md). | — |
+| [`docs/bot-runs/golden-master.md`](../../docs/bot-runs/golden-master.md) | golden-master (Goldy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/instrument.md`](../../docs/bot-runs/instrument.md) | instrument (Obsy) — run bilans | Newest first. | — |
 | [`docs/bot-runs/issue-triage.md`](../../docs/bot-runs/issue-triage.md) | issue-triage — Triagy | Single-shot card router: fired by the trigger spine on `triage:auto` | — |
 | [`docs/bot-runs/keepalive.md`](../../docs/bot-runs/keepalive.md) | Bilans — always-on (`overlap: keepalive`) + `examples/keepalive` | The keepalive/always-on scheduling feature and its demo bot | — |
@@ -170,7 +170,7 @@
 | [`docs/bot-runs/rgaa-audit.md`](../../docs/bot-runs/rgaa-audit.md) | Acci — `rgaa-audit` run bilans | Universal RGAA 4.1.2 accessibility auditor (read-only): classify the UI | — |
 | [`docs/bot-runs/sec-audit-deps.md`](../../docs/bot-runs/sec-audit-deps.md) | Depsy — `sec-audit-deps` run bilans | Universal supply-chain / SCA auditor: enumerates installed deps per ecosystem, | — |
 | [`docs/bot-runs/sec-audit-source.md`](../../docs/bot-runs/sec-audit-source.md) | Seki + deepsec — validation | repository: three candidates triaged, a full pool of three voters, a clean | — |
-| [`docs/bot-runs/secured-renovacy.md`](../../docs/bot-runs/secured-renovacy.md) | secured-renovacy (Renovacy) — dogfood bilan | Index + template: [README.md](README.md). | — |
+| [`docs/bot-runs/secured-renovacy.md`](../../docs/bot-runs/secured-renovacy.md) | secured-renovacy (Renovacy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/supply-shield-cve.md`](../../docs/bot-runs/supply-shield-cve.md) | supply-shield-cve (Vulny) — run bilans | Newest first. | — |
 | [`docs/bot-runs/supply-shield.md`](../../docs/bot-runs/supply-shield.md) | supply-shield (Shieldy) — run bilans | Newest first. | — |
 | [`docs/bot-runs/test-coverage.md`](../../docs/bot-runs/test-coverage.md) | test-coverage (Testy) — run bilans | Universal test-coverage augmentation bot (ADR-058 v2). | — |

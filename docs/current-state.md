@@ -124,6 +124,15 @@ See [backends.md](backends.md), [delegation.md](delegation.md), and
 [oauth-forfait.md](oauth-forfait.md) for the exact credential and support
 matrix.
 
+The same page carries the **per-backend capability matrix**: only
+`claude_code` and `claw` are battle-tested, and each capability cell is
+`proven` (a live e2e through the real backend), `refused` (a typed
+diagnostic), `unwired (gap)` or `unknown` — `claw` is the only backend
+whose structured output, ask gate, fork, cost metering, MCP servers and
+ask_user are proven live, while codex/kimi/grok carry unwired MCP and
+kimi/grok an unguarded session-resume gap. The matrix and its citations:
+[per-backend capability matrix](backends.md#per-backend-capability-matrix).
+
 ## Isolation, permissions, and secrets
 
 The security posture is explicit rather than implied:

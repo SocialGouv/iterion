@@ -559,6 +559,19 @@ tasks:
     cmds:
       - go test -count=1 -run 'TestGeneratedDSLDocsAreFresh|TestRegistryMatchesTheParser|TestEBNF' ./pkg/dsl/spec/
 
+  docs:links:
+    desc: Check every relative link and #anchor of the tracked markdown against the tree, the way GitHub resolves them (0 broken is the contract), and hold the site's slugifier to the same GitHub-verified anchors
+    cmds:
+      - go run -mod=vendor ./scripts/docslinks
+      - node docs/scripts/check-anchor-slugs.mjs
+
+  docs:links:new:
+    desc: Only the links broken since the merge base with BASE (default origin/main) — what a change adds, the inherited backlog excluded; what the advisory CI step reports
+    vars:
+      BASE: '{{.BASE | default "origin/main"}}'
+    cmds:
+      - go run -mod=vendor ./scripts/docslinks -base {{.BASE}}
+
   brand:gen:
     desc: Regenerate every committed copy of the brand assets (favicons, app icon, docs logo, pkg/brand, studio mark) from assets/brand/
     cmds:

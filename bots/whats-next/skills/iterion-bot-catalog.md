@@ -1771,4 +1771,4 @@ agent reviewer:
   fall-through emits a `model_fallback` event and stamps
   `_fallback_used` / `_served_by` on the node output, so a deterministic
   gate can fail closed on a degraded input. See
-  [docs/backends.md](../../docs/backends.md) §Cross-backend fallback routes.
+  [docs/backends.md](../../../docs/backends.md) §Cross-backend fallback routes.

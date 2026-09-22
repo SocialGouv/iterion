@@ -44,7 +44,7 @@
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 1 · 1 | 0.1.1 |
 | `whats-next` | 🧭 Nexie | Conversational co-CTO. | 1 · 11 | 0.3.3 |
 | `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 1 · 10 | 2.4.2 |
-| `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1 · 2 | 1.0.3 |
+| `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1 · 2 | 1.0.4 |
 
 ## Skills
 

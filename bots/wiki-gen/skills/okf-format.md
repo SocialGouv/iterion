@@ -68,8 +68,11 @@ edges. There is nothing else to declare — no separate graph file.
 
 - **Put the link in the sentence that states the relationship**, and let
   the surrounding prose carry its meaning:
-  > The [dispatcher](../architecture/dispatcher.md) *dispatches a run to*
-  > the [runner](../architecture/runner.md) for each eligible issue.
+
+  ```markdown
+  The [dispatcher](../architecture/dispatcher.md) *dispatches a run to*
+  the [runner](../architecture/runner.md) for each eligible issue.
+  ```
 
   Good relationship verbs: `dispatches to`, `depends on`, `is configured
   through`, `is surfaced by`, `is secured by`, `shares infrastructure

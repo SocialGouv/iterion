@@ -116,7 +116,7 @@ flowchart LR
 ```
 
 Design it on the canvas or edit the source — both stay in sync in the
-[visual studio](/visual-editor):
+[visual studio](visual-editor.md):
 
 ![The Iterion studio — visual workflow editor with live diagnostics and a per-node inspector](images/studio/editor-canvas.png)
 
@@ -156,30 +156,30 @@ examples of what an operated agent workflow looks like. A few of the jobs they d
 | 📡 | **Watch & react** — feed/veille monitoring and digests | Vigie |
 | 🧭 | **A strategic partner** — a conversational co-CTO and roadmap, an architectural visionary | Nexie · Evoly |
 
-[Browse the full catalogue →](/examples)
+[Browse the full catalogue →](examples.md)
 
 ## 🧰 A catalogue you run — or make your own
 
 Run any bot as-is, **fork and adapt** one to your repo, or **author your own**
-from scratch — in the [visual studio builder](/visual-editor), with `iterion
-bots create`, or by hand in the readable [`.bot` DSL](/dsl). Package it as a
-`.botz` bundle and share it through the [marketplace](/plugins). The same
+from scratch — in the [visual studio builder](visual-editor.md), with `iterion
+bots create`, or by hand in the readable [`.bot` DSL](dsl.md). Package it as a
+`.botz` bundle and share it through the [marketplace](plugins.md). The same
 workflow runs unchanged from your laptop to CI to the cloud.
 
 ## 🏗️ Built for real engineering
 
 <div class="vp-features-lite">
 
-- 🔗 **Forge-native** — GitHub, GitLab & Forgejo: open and review PRs, answer PR/MR comments, trigger on webhooks, triage issues, and post results back. → [Forge integrations](/forge-integrations)
-- 🔐 **Secrets, done right** — a sealed local & cloud secret store, bring-your-own provider keys, per-run sealed bundles, egress-scoped file secrets — never printed, materialised only at execution sinks. → [Secrets](/secrets)
-- 🧱 **Safe by default** — per-run Docker/K8s sandboxes, a tool-permission gate against prompt injection, shared budget caps, and worktree isolation with an explicit merge policy. → [Sandbox](/sandbox)
-- ⚡ **Event-driven** — an issue-tracker [dispatcher](/dispatcher), cron [schedules](/scheduling), and a trigger spine over webhooks, board events, and run-completion chains.
-- 👁️ **Operable** — steer live runs, attach [supervisors](/supervisors) that watch and correct an agent, async human gates, checkpoint/[resume](/resume), and Prometheus/OTLP/Grafana observability.
-- ☁️ **Team scale** — orgs & teams, quotas, audit, SSO, PATs, and a remote CLI — the same engine from laptop to [multi-tenant cloud](/cloud-overview).
+- 🔗 **Forge-native** — GitHub, GitLab & Forgejo: open and review PRs, answer PR/MR comments, trigger on webhooks, triage issues, and post results back. → [Forge integrations](forge-integrations.md)
+- 🔐 **Secrets, done right** — a sealed local & cloud secret store, bring-your-own provider keys, per-run sealed bundles, egress-scoped file secrets — never printed, materialised only at execution sinks. → [Secrets](secrets.md)
+- 🧱 **Safe by default** — per-run Docker/K8s sandboxes, a tool-permission gate against prompt injection, shared budget caps, and worktree isolation with an explicit merge policy. → [Sandbox](sandbox.md)
+- ⚡ **Event-driven** — an issue-tracker [dispatcher](dispatcher.md), cron [schedules](scheduling.md), and a trigger spine over webhooks, board events, and run-completion chains.
+- 👁️ **Operable** — steer live runs, attach [supervisors](supervisors.md) that watch and correct an agent, async human gates, checkpoint/[resume](resume.md), and Prometheus/OTLP/Grafana observability.
+- ☁️ **Team scale** — orgs & teams, quotas, audit, SSO, PATs, and a remote CLI — the same engine from laptop to [multi-tenant cloud](cloud-overview.md).
 
 </div>
 
 ---
 
-New here? Start with [Why Iterion?](/why-iterion) for the vision, jump straight
-to [Install](/install), or [explore the bot fleet](/examples).
+New here? Start with [Why Iterion?](why-iterion.md) for the vision, jump straight
+to [Install](install.md), or [explore the bot fleet](examples.md).
