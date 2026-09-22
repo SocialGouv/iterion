@@ -584,6 +584,11 @@ template_namespace = "vars" | "input" | "outputs" | "artifacts"
    word — two words, a number with a unit — is still an error (E002). *)
 str_value = STRING_LIT | IDENT ;
 
+(* A word from a fixed list — session_mode, await_mode, router_mode,
+   mcp_transport, interaction_mode — reads quoted as well as bare
+   (`session: "fresh"` is `session: fresh`); a word outside the list is
+   refused either way. The productions below name the words. *)
+
 (* Every list may be written inline, or as one `- item` per line indented
    under the property (comment lines allowed between items); both read as
    the same list. `[]` is the empty list's only form. *)

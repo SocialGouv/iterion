@@ -307,16 +307,16 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 
 func (p *parser) parseRouterMode() ast.RouterMode {
 	t := p.next()
-	switch t.Type {
-	case TokenFanOutAll:
+	switch enumWord(t) {
+	case "fan_out_all":
 		return ast.RouterFanOutAll
-	case TokenFanOutEach:
+	case "fan_out_each":
 		return ast.RouterFanOutEach
-	case TokenCondition:
+	case "condition":
 		return ast.RouterCondition
-	case TokenRoundRobin:
+	case "round_robin":
 		return ast.RouterRoundRobin
-	case TokenLLM:
+	case "llm":
 		return ast.RouterLLM
 	default:
 		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, fan_out_each, condition, round_robin, llm), got '"+t.Value+"'")
@@ -328,10 +328,10 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 
 func (p *parser) parseAwaitMode() ast.AwaitMode {
 	t := p.next()
-	switch t.Type {
-	case TokenWaitAll:
+	switch enumWord(t) {
+	case "wait_all":
 		return ast.AwaitWaitAll
-	case TokenBestEffort:
+	case "best_effort":
 		return ast.AwaitBestEffort
 	default:
 		p.addError(DiagInvalidValue, t, "expected await mode (wait_all, best_effort), got '"+t.Value+"'")
@@ -438,7 +438,7 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 
 func (p *parser) parseInteractionMode() ast.InteractionMode {
 	t := p.next()
-	switch t.Value {
+	switch enumWord(t) {
 	case "none":
 		return ast.InteractionNone
 	case "human":

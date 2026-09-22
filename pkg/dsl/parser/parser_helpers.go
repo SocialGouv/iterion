@@ -27,20 +27,34 @@ func (p *parser) parseReasoningEffort() string {
 	}
 }
 
+// enumWord is the word an enum-valued property names — bare, as every listed
+// value is written, or quoted: `session: "fresh"` is `session: fresh`, as
+// `backend: "claw"` is `backend: claw`. Every enum reader takes its word
+// here, so the two spellings hold for the whole class rather than for the
+// one reader that happened to compare values instead of token types. Empty
+// when the token is neither a word nor a string; the reader's own
+// diagnostic then names the accepted words.
+func enumWord(t Token) string {
+	if t.Type == TokenString {
+		return t.Value
+	}
+	return tokenAsIdent(t)
+}
+
 func (p *parser) parseSessionMode() ast.SessionMode {
 	t := p.next()
-	switch t.Type {
-	case TokenFresh:
+	switch enumWord(t) {
+	case "fresh":
 		return ast.SessionFresh
-	case TokenInherit:
+	case "inherit":
 		return ast.SessionInherit
-	case TokenInheritIfAvailable:
+	case "inherit_if_available":
 		return ast.SessionInheritIfAvailable
-	case TokenArtifactsOnly:
+	case "artifacts_only":
 		return ast.SessionArtifactsOnly
-	case TokenFork:
+	case "fork":
 		return ast.SessionFork
-	case TokenPersist:
+	case "persist":
 		return ast.SessionPersist
 	default:
 		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only, persist), got '"+t.Value+"'")
