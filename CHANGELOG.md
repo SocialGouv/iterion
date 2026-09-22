@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.181.2](https://github.com/SocialGouv/iterion/compare/v3.181.1...v3.181.2) (2026-09-22)
+
+### Bug Fixes
+
+* **dispatcher/native:** the index watcher's default constructor goes through fswatch, and the class is inventoried ([#1568](https://github.com/SocialGouv/iterion/issues/1568)) ([6a682fe](https://github.com/SocialGouv/iterion/commit/6a682fe8063ff137cdd01dd630008b3b095c0b78)), references [#1200](https://github.com/SocialGouv/iterion/issues/1200) [#1051](https://github.com/SocialGouv/iterion/issues/1051) [#1198](https://github.com/SocialGouv/iterion/issues/1198)
+
+    <details><summary>why</summary>
+
+    The native board store opens one inotify instance per store, unconditionally, and logs a refused one with %v and nothing else. Its constructor was the raw fsnotify.NewWatcher, so that refusal reached the log as "too many open files" and nothing more — which on an ARC runner does not say whether the process ran out of descriptors or the real UID ran out of inotify instances, a budget shared with every other container under that UID. That distinction is what #1198's diagnosis rests on.
+
+    </details>
+
 ## [3.181.1](https://github.com/SocialGouv/iterion/compare/v3.181.0...v3.181.1) (2026-09-22)
 
 ### Bug Fixes
