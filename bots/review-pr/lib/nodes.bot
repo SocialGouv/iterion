@@ -351,6 +351,14 @@ def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped=''
 
 url = os.environ.get('PUB_URL', '').strip()
 tok = os.environ.get('PUB_TOKEN', '').strip()
+# Read HERE, not at the gate block below: every emit() has to be able to say
+# whether a gate was expected, and the three failure exits run long before that
+# block. Left there, gate_requested defaulted to False on exactly the paths
+# where the check did NOT land -- publish_health then reported the publish as
+# healthy over a pull request nobody can merge. (No double quotes and no
+# backticks in these comments: the body rides a python3 -c argument, and either
+# one truncates it. TestReviewPRPublishCommandsRunCleanly executes it to check.)
+gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 pr = os.environ.get('PR_URL', '').strip()
 mode = os.environ.get('MODE', '').strip() or 'inline'
 findings_parse_failed = False
@@ -423,7 +431,7 @@ questions = [q.strip() for q in (os.environ.get('QUESTIONS') or '').split(chr(10
 # TICKET_CONFORMANCE follows the same scalar newline-joined contract.
 tickets = [t.strip() for t in (os.environ.get('TICKET_CONFORMANCE') or '').split(chr(10)) if t.strip()]
 if not url or not tok:
-    emit(False, skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
+    emit(False, gate_requested=gate_enabled, gate_skipped_reason='no forge publish endpoint bound to this run', skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
 nl = chr(10)
 sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
@@ -618,7 +626,6 @@ except (ValueError, TypeError):
 # note, never a verdict.
 fallback_served = (ai_value('AI_REVIEWER_CLAUDE_FALLBACK').lower() in ('true', '1', 'yes')
                    or ai_value('AI_REVIEWER_CLAUDE_GLANCE_FALLBACK').lower() in ('true', '1', 'yes'))
-gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
     # sev_rank is INVERTED (critical=0 .. low=3), so a SMALLER rank is MORE
@@ -696,9 +703,9 @@ except urllib.error.HTTPError as e:
         detail = e.read().decode()[:500].strip()
     except Exception:
         detail = ''
-    emit(False, skipped='forge publish endpoint HTTP ' + str(e.code) + ': ' + detail, summary='deterministic publish FAILED: the iterion forge-publish endpoint refused the request (HTTP ' + str(e.code) + ').')
+    emit(False, gate_requested=gate_enabled, gate_skipped_reason='forge publish endpoint HTTP ' + str(e.code), skipped='forge publish endpoint HTTP ' + str(e.code) + ': ' + detail, summary='deterministic publish FAILED: the iterion forge-publish endpoint refused the request (HTTP ' + str(e.code) + ').')
 except Exception as e:
-    emit(False, skipped='forge publish endpoint unreachable: ' + str(e)[:300], summary='deterministic publish FAILED: could not reach the iterion forge-publish endpoint.')
+    emit(False, gate_requested=gate_enabled, gate_skipped_reason='forge publish endpoint unreachable', skipped='forge publish endpoint unreachable: ' + str(e)[:300], summary='deterministic publish FAILED: could not reach the iterion forge-publish endpoint.')
 
 posted = int(res.get('comments_posted') or 0)
 sugg = int(res.get('suggestions_posted') or 0)

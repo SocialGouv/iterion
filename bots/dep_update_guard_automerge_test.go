@@ -495,37 +495,67 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 	})
 
-	// Taking an arming down is only defensible when this run can put one back.
-	// `vouched_sha` refuses on four distinct disagreements, so a disarm placed
-	// ahead of it leaves the pull request BARE on refusals this run could have
-	// made without touching the forge at all.
+	// Taking an arming down is only defensible when this run can put one back —
+	// for the STRUCTURAL refusals. `vouched_sha` exits on four disagreements, and
+	// they are not the same kind: two say "the gate never ran / this run cannot
+	// name what it read", where the head may well still be the audited one, and
+	// two say "the head is demonstrably NOT what was audited". A disarm placed
+	// ahead of all four left the pull request bare on refusals this run could
+	// have made without touching the forge at all — worst with gate_enabled off,
+	// where no gate_sha is ever produced and EVERY pass tore an arming down.
 	for _, tc := range []struct {
 		name string
 		subs map[string]string
-		pr   map[string]any
 	}{
-		// Structural, not a race: gate_enabled off means no gate_sha is ever
-		// produced, so `vouched_sha` can NEVER succeed. Every pass would read
-		// the PR, tear the arming down and refuse — a de-arming machine.
 		{"the gate is off, so nothing can ever be vouched",
-			map[string]string{"{{vars.gate_enabled}}": "False", "{{input.gate_sha}}": `""`}, nil},
-		// The ordinary race form of the same shape.
-		{"the branch moved after the gate",
-			nil, map[string]any{"headRefOid": "b33fb33fb33f"}},
-		{"the gate landed on a commit this run never audited",
-			map[string]string{"{{input.gate_sha}}": `"0ther5ha0000"`}, nil},
+			map[string]string{"{{vars.gate_enabled}}": "False", "{{input.gate_sha}}": `""`}},
+		{"this run cannot name the commit it audited",
+			map[string]string{"{{input.audited_sha}}": `""`, "{{input.committed_sha}}": `""`}},
 	} {
-		t.Run("a refusal it could not replace touches nothing: "+tc.name, func(t *testing.T) {
-			over := map[string]any{"autoMergeRequest": map[string]any{"enabledAt": "2026-09-22T09:00:00Z"}}
-			for k, v := range tc.pr {
-				over[k] = v
-			}
-			res, calls, _ := runWith(t, tc.subs, withState(over), "", nil)
+		t.Run("a STRUCTURAL refusal touches nothing: "+tc.name, func(t *testing.T) {
+			res, calls, _ := runWith(t, tc.subs, withState(map[string]any{
+				"autoMergeRequest": map[string]any{"enabledAt": "2026-09-22T09:00:00Z"}}), "", nil)
 			if res["armed"] != false {
 				t.Fatalf("want a refusal, got %v", res)
 			}
-			if queried(calls, "disablePullRequestAutoMerge") {
-				t.Errorf("%s: the arming was taken down by a pass that then refused to replace it — the PR is left bare (reason=%q)", tc.name, res["reason"])
+			if queried(calls, "disablePullRequestAutoMerge") || queried(calls, "dequeuePullRequest") {
+				t.Errorf("%s: a commitment was taken down by a pass that then refused to replace it — the PR is left bare (reason=%q)", tc.name, res["reason"])
+			}
+		})
+	}
+
+	// The opposite half: when the head is demonstrably NOT the audited one, any
+	// standing commitment would land an unaudited revision. Leaving it is the
+	// expensive mistake, so these DO stand down — and say so.
+	for _, tc := range []struct {
+		name  string
+		subs  map[string]string
+		state map[string]any
+		want  string
+	}{
+		{"the branch moved after the gate", nil,
+			map[string]any{"headRefOid": "b33fb33fb33f", "autoMergeRequest": map[string]any{"enabledAt": "x"}},
+			"disablePullRequestAutoMerge"},
+		{"the gate landed on a commit this run never audited",
+			map[string]string{"{{input.gate_sha}}": `"0ther5ha0000"`},
+			map[string]any{"autoMergeRequest": map[string]any{"enabledAt": "x"}},
+			"disablePullRequestAutoMerge"},
+		// Once the forge moves an armed PR into the queue, autoMergeRequest is
+		// null and a disarm is a no-op while the queue still merges the bump.
+		{"the branch moved and the PR is already queued", nil,
+			map[string]any{"headRefOid": "b33fb33fb33f", "mergeQueueEntry": map[string]any{"id": "MQE_1"}},
+			"dequeuePullRequest"},
+	} {
+		t.Run("an unaudited head stands the commitment down: "+tc.name, func(t *testing.T) {
+			res, calls, _ := runWith(t, tc.subs, withState(tc.state), "", nil)
+			if res["armed"] != false {
+				t.Fatalf("want a refusal, got %v", res)
+			}
+			if !queried(calls, tc.want) {
+				t.Errorf("%s: %s was never sent — the forge still merges this PR the moment its checks go green (reason=%q)", tc.name, tc.want, res["reason"])
+			}
+			if !strings.Contains(res["reason"].(string), "re-arm by hand") {
+				t.Errorf("%s: a PR left bare must say so, got %q", tc.name, res["reason"])
 			}
 		})
 	}

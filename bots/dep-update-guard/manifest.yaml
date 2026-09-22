@@ -1,7 +1,20 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.9.0
+version: 2.9.1
+## 2.9.1 — a refusal stands EVERY commitment down, and vouching comes first.
+## (a) The four vouched_sha exits are no longer one class: the two structural
+## ones (no gate_sha, this run cannot name what it read) still touch nothing,
+## because the head may well still be the audited one; the two that prove the
+## head is NOT what was audited now take the commitment down, which is what
+## #1587 asked for. (b) A queue ENTRY is a commitment too, and a stronger one:
+## once the forge moves an armed PR into the queue, autoMergeRequest is null
+## and a disarm is a no-op while the queue merges the bump regardless. One
+## `stand_down` now removes both, and every refusal that leaves the PR bare —
+## or FAILS to — says so in its reason. (c) "already in the merge queue" was
+## acknowledged BEFORE vouching, so a queued revision this run never audited
+## read as success, the same hole "already armed" used to be. Vouching runs
+## first. (The dequeue input field is `id`, not `pullRequestId`.)
 ## 2.9.0 — the ARMING is pinned, an opaque one is replaced, and a refusal
 ## takes one down. (a) `enablePullRequestAutoMerge` carries `expectedHeadOid`
 ## like the merge and the enqueue already did. SCOPE, STATED HONESTLY: GitHub

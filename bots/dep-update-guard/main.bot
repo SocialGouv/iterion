@@ -1527,13 +1527,23 @@ tool arm_automerge:
     # Set once a prior arming has been taken down. Every exit runs through
     # out(), so the note reaches the reason whatever path refuses afterwards -
     # a PR left bare must never be silent about it.
-    state_note = {"disarmed": False}
+    state_note = {"disarmed": False, "dequeued": False, "stuck": ""}
 
     def out(armed, reason=""):
         reason = reason or ""
-        if state_note["disarmed"] and not bool(armed):
-            reason = (reason + " | " if reason else "") + \
-                     "the prior auto-merge arming was disarmed and NOT replaced - re-arm by hand if it was wanted"
+        notes = []
+        if not bool(armed):
+            if state_note["disarmed"]:
+                notes.append("the prior auto-merge arming was disarmed and NOT replaced")
+            if state_note["dequeued"]:
+                notes.append("the pull request was removed from the merge queue")
+            # A commitment this run could NOT take down is the one the reader
+            # most needs to hear about: the PR stays on course to merge.
+            if state_note["stuck"]:
+                notes.append("STILL STANDING: " + state_note["stuck"])
+        if notes:
+            reason = (reason + " | " if reason else "") + "; ".join(notes) + \
+                     " - re-arm by hand if it was wanted"
         print(json.dumps({"armed": bool(armed), "reason": reason}))
         raise SystemExit(0)
 
@@ -1630,6 +1640,14 @@ tool arm_automerge:
     disarm_mut = ("mutation(@id: ID!) { "
                   "disablePullRequestAutoMerge(input: { pullRequestId: @id }) "
                   "{ clientMutationId } }").replace("@", at)
+    # A queue ENTRY outlives the run exactly as an arming does, and is strictly
+    # more committed: once the forge moves an armed PR into the queue,
+    # autoMergeRequest is null and a disarm is a no-op while the queue still
+    # merges the bump. The input field is `id` (the pull request), NOT
+    # `pullRequestId` - the API rejects the latter.
+    dequeue_mut = ("mutation(@id: ID!) { "
+                   "dequeuePullRequest(input: { id: @id }) "
+                   "{ clientMutationId } }").replace("@", at)
     # expectedHeadOid is the safety pin: the forge merges this exact commit or
     # nothing, so a push racing the decision can never be merged unreviewed.
     merge_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
@@ -1697,10 +1715,17 @@ tool arm_automerge:
         # this run: a push landing between the alignment and the status read
         # would carry the gate onto a commit no auditor ever saw. It is only
         # trustworthy where it agrees with what this run produced.
+        # The two exits ABOVE are structural - the gate never ran, or this run
+        # cannot name what it read - so the current head may well still be the
+        # audited one and nothing is taken down. The two BELOW are the opposite:
+        # the head is demonstrably NOT what was audited, so any commitment
+        # standing on this PR would land an unaudited revision. Those disarm.
         if not same_commit(gated, mine):
+            stand_down(pr)
             out(False, "the gate landed on " + gated[:12] + " but this run audited " +
                        mine[:12] + " - the branch head and the audited commit disagree")
         if head and not same_commit(head, gated):
+            stand_down(pr)
             out(False, "the branch moved after the audit (gated " + gated[:12] +
                        ", head is now " + head[:12] + ") - the new head has not been audited")
         return gated
@@ -1729,16 +1754,37 @@ tool arm_automerge:
         graphql(disarm_mut, {"id": node_id})
         state_note["disarmed"] = True
 
+    def stand_down(pr):
+        # ONE place that removes every standing commitment to merge this PR:
+        # the arming AND the queue entry. Two, because the forge nulls
+        # autoMergeRequest once it moves an armed PR into the queue - taking
+        # only the arming down there is a no-op while the queue still merges.
+        # Best-effort and never masks the refusal it precedes: what could not
+        # be removed is named in the reason instead.
+        node_id = pr.get("id")
+        if not node_id:
+            return
+        if pr.get("autoMergeRequest"):
+            try:
+                disarm(node_id)
+            except Exception as e:
+                state_note["stuck"] = "the arming could not be removed (" + str(e)[:90] + ")"
+        if pr.get("mergeQueueEntry"):
+            try:
+                graphql(dequeue_mut, {"id": node_id})
+                state_note["dequeued"] = True
+            except Exception as e:
+                state_note["stuck"] = "the queue entry could not be removed (" + str(e)[:90] + ")"
+
     # A refusal that has to take an arming down: read the PR, disarm if one is
     # there, then report. A forge failure here never masks the refusal - the
     # bump's verdict is the thing the PR has to carry away.
     if refusal:
         try:
-            pr = read_pr()
-            if pr.get("id") and pr.get("autoMergeRequest"):
-                disarm(pr.get("id"))
+            stand_down(read_pr())
         except Exception as e:
-            out(False, refusal + " | an arming may still stand: the disarm failed (" + str(e)[:120] + ")")
+            out(False, refusal + " | a commitment to merge may still stand: the forge could not be "
+                       "read or written (" + str(e)[:110] + ")")
         out(False, refusal)
 
     try:
@@ -1746,8 +1792,11 @@ tool arm_automerge:
         node_id = pr.get("id")
         if not node_id:
             out(False, "pull request not found via the forge API")
-        if pr.get("mergeQueueEntry"):
-            out(True, "already in the merge queue")
+        # Vouching comes FIRST, before any state on the PR is acknowledged as
+        # good. An existing queue entry is as opaque as an existing arming -
+        # nothing says WHICH commit the forge queued - so acknowledging it
+        # before checking the head would bless a queued revision this run never
+        # audited, exactly the hole "already armed" used to be.
         # The pin is resolved BEFORE anything is taken down. vouched_sha exits
         # on four distinct disagreements, and a disarm placed ahead of it leaves
         # the pull request BARE on a refusal this run could have made without
@@ -1755,6 +1804,8 @@ tool arm_automerge:
         # gate_sha is ever produced, so EVERY pass would tear an arming down and
         # then refuse to replace it.
         pin = vouched_sha(pr, "arm")
+        if pr.get("mergeQueueEntry"):
+            out(True, "already in the merge queue")
         # An arming already on the PR is opaque - its expectedHeadOid cannot be
         # read back - so it is replaced by one this run places and can vouch
         # for, never accepted. Disarm first: enablePullRequestAutoMerge on an

@@ -1,7 +1,19 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.8
+version: 0.9.9
+## 0.9.9 — the lost-gate guard sees EVERY exit. 0.9.8 filled
+## gate_requested on the success emit only, so the three failure exits (no
+## endpoint bound, endpoint HTTP error, endpoint unreachable) left it at its
+## False default — and publish_health is blind wherever it is false. On a clean
+## review the inline-anchor predicate is false too, so a run whose check never
+## landed printed "forge publish OK" over a pull request nobody can merge: the
+## exact failure 0.9.8 claimed to close, on the paths where it matters most.
+## GATE_ENABLED is now read beside PUB_URL rather than in the gate block 200
+## lines down, which is why it was out of scope at the first exit.
+## Witnessed by driving publish_review's unreachable-endpoint exit and reading
+## what it emits — a test that drives publish_health alone stayed green on the
+## mutation, which is how the gap got in.
 ## 0.9.8 — the gate's outcome travels STRUCTURED, so a check that never landed
 ## cannot read as a healthy run. 0.9.7 pinned the verdict to the revision it
 ## judged, and the server refuses a stale pin — but `publish_health` only ever
