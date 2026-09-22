@@ -5,12 +5,14 @@ package bundle
 // only. See docs/tool-name-aliases.md for the release/rollback checklist.
 //
 // The pin is held by TestSyntaxFloorsNameReleasesThatExist, the same release
-// test that holds the parser floors: while the release is uncut the constant
-// must be exactly the next minor above the changelog's newest release, and
-// once cut, the release's notes must carry the syntax's word ("alias") — so
-// the number cannot rot the way 3.144.0 and 3.146.0 did while the resolver
-// waited on a branch, and a release taken without the resolver turns the test
-// red instead of shipping a floor that admits a runner without the feature.
+// test that holds the parser floors, and realigned by the release cut itself
+// (internal/floorsalign, release-it's before:git:beforeRelease hook):
+// while the release is uncut the constant must be exactly the next minor above the changelog's
+// newest release, and once cut, the release's notes must carry the syntax's
+// word ("alias") — so the number cannot rot the way 3.144.0 and 3.146.0 did
+// while the resolver waited on a branch, and a release taken without the
+// resolver turns the test red instead of shipping a floor that admits a
+// runner without the feature.
 const ToolAliasesSince = "3.179.0"
 
 // AllowsToolAliases makes requires.iterion the explicit opt-in to the newer

@@ -16,6 +16,12 @@ the changelog's newest release; once cut, the release's notes must carry the
 word "alias", or the test reddens with the re-pin instruction. Re-deriving the
 floor at merge is therefore not a memory task; run `devbox run -- go test
 ./pkg/bundle/ -run TestSyntaxFloorsNameReleasesThatExist` and do what it says.
+The release cut then writes the number itself: release-it runs
+`cmd/release-floors --apply` before it stages the release commit
+([internal/floorsalign](../internal/floorsalign)), which rewrites a pin still
+at the next minor to the version being released and refuses the release when
+the notes it just rendered do not carry the word — the same rule as the test,
+run once more at the one moment the number is known.
 
 ## The manifest opt-in
 
