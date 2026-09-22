@@ -175,7 +175,9 @@ func claudeSpawnBounds(task Task) []claudesdk.Option {
 // can be executed rather than reasoned about, and so that every spawn of a
 // task can take the same one: Execute's main pass and formatOutput's
 // structured-output pass both call it, and a boundary appended to one and not
-// the other is no boundary at all.
+// the other is no boundary at all. The one exception is a GATED task, whose
+// formatting spawn withholds the whole native surface instead of carrying the
+// declaration — the two lists stay disjoint there (see formatOutput).
 //
 // It is not the node's whole tool surface: the bounds that do not come from
 // the declaration live in claudeSpawnBounds (`Workflow`-withholding, the
@@ -1372,7 +1374,9 @@ func taskExtraEnvOpts(task Task) []claudesdk.Option {
 // session, so only a short formatting instruction is needed.
 //
 // It is a full CLI spawn, not a tool-less one: it carries every bound this
-// task has that can travel on argv (claudeToolOptions, claudeSpawnBounds).
+// task has that can travel on argv — claudeSpawnBounds always, and
+// claudeToolOptions unless the task is GATED, where the native surface is
+// withheld instead of the declaration being restated.
 // The hook-borne ones cannot travel — Prompt has no hook channel — so a gated
 // task has its native surface withheld here instead. The sentence that used
 // to sit here — "(no tools)" — is what kept that gap invisible for five
@@ -1407,21 +1411,26 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// the one tool the DATA in the resumed transcript can arm. No MCP extras:
 	// this pass passes no --mcp-config and reformats text the first pass
 	// already produced.
-	opts = append(opts, claudeToolOptions(task, nil)...)
-	opts = append(opts, claudeSpawnBounds(task)...)
 	// The permission gate cannot travel to THIS spawn: it is a PreToolUse
 	// hook, and hooks exist only on the Session path — claudesdk.Prompt has
-	// no hook channel and drops them silently. Execute's spawn carries the
-	// hook and therefore keeps everything the node DECLARED — `tools:` bounds
-	// what exists, the policy bounds what runs, and joining them would delete
-	// a gated node's own tools. Here, with no gate to run, the native surface
-	// is withheld instead. StructuredOutput, the only tool this pass needs,
-	// is not on claudeNativeTools. Appending the hook here would be a dead
-	// guard documented as a live one; a hook channel for Prompt is the real
-	// fix, and it is not this change's.
+	// no hook channel and drops them silently (#1672). Execute's spawn
+	// carries the hook and therefore keeps everything the node DECLARED —
+	// `tools:` bounds what exists, the policy bounds what runs, and joining
+	// them would delete a gated node's own tools. Here, with no gate to run,
+	// the native surface is withheld instead, and the DECLARATION is not
+	// emitted at all: naming a tool on `--allowedTools` and on
+	// `--disallowedTools` in one argv would make the withholding rest on the
+	// CLI resolving deny over allow — stated in WithDisallowedTools' godoc,
+	// never executed here. Disjoint lists hold whatever that precedence is.
+	// Nothing is lost: a declaration has no role on a spawn where nothing may
+	// run, and its own disallow half is a subset of the whole roster.
+	// StructuredOutput, the only tool this pass needs, is not on the roster.
 	if task.Permission.Enabled() {
 		opts = append(opts, claudesdk.WithDisallowedTools(claudeNativeDisallowedTools(nil, true, false)...))
+	} else {
+		opts = append(opts, claudeToolOptions(task, nil)...)
 	}
+	opts = append(opts, claudeSpawnBounds(task)...)
 
 	// Cwd / CLI path handling mirrors Execute(): on the host, pass workdir
 	// through; in the sandbox, leave cwd unset (the docker driver picks the

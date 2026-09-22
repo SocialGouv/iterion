@@ -772,6 +772,19 @@ func codexSandboxForAllowedTools(allowed []string) string {
 		// file's own: `find` and `glob` are one tool, and a private table
 		// gave them different sandboxes (#1579 — the same disagreement, on a
 		// fourth table).
+		//
+		// Unifying the spellings also settles three names the old list did
+		// not carry at all, so they fell to `default` and forced
+		// workspace-write: `toolsearch`, `todowrite`, `skill` — plus the
+		// `list_dir` spelling of `ls`. (`websearch` was already exempt, one
+		// line above, through isCodexWebSearchTool.) None of them writes the
+		// workspace — a todo list is session state, a skill is a read — so a
+		// node declaring read-ish names beside one of them is now read-only,
+		// which is what this function's contract (the LEAST-PRIVILEGE mode
+		// compatible with the declared intent) asks for. Measured over 53
+		// spellings and all 2809 ordered pairs: it narrows, never widens. The
+		// one `.bot` in the tree on `backend: "codex"` also sets
+		// `readonly: true`, so it short-circuits before this classifier.
 		switch toolcatalog.CanonicalToolName(t) {
 		case "read", "glob", "grep", "ls", "websearch", "toolsearch", "todowrite", "skill":
 			continue

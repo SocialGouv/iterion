@@ -114,9 +114,20 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 
 	// The diagnostic_shell opt-in is the one input that changes the answer,
 	// and it reaches the CLI through this same chokepoint: Bash must survive.
-	optIn := spawnArgv(t, Task{NodeID: "n", AllowedTools: []string{}, ToolsDeclared: true, DiagnosticShell: true})
-	if got := disallowed(optIn[0]); slices.Contains(got, "Bash") {
-		t.Errorf("the diagnostic_shell opt-in was revoked on the way to the CLI (disallowed=%v)", got)
+	optIn := spawnArgv(t, Task{
+		NodeID:          "n",
+		AllowedTools:    []string{},
+		ToolsDeclared:   true,
+		DiagnosticShell: true,
+		OutputSchema:    []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+	})
+	if len(optIn) < 2 {
+		t.Fatalf("expected two spawns for the diagnostic_shell row, got %d", len(optIn))
+	}
+	for i, argv := range optIn {
+		if got := disallowed(argv); slices.Contains(got, "Bash") {
+			t.Errorf("spawn #%d: the diagnostic_shell opt-in was revoked on the way to the CLI (disallowed=%v)", i+1, got)
+		}
 	}
 
 	// An UNDECLARED list keeps the legacy unrestricted surface: only
@@ -202,6 +213,7 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 			AllowedTools:    []string{"read_file", "bash"},
 			ToolsDeclared:   true,
 			DiagnosticShell: true,
+			ToolMaxSteps:    25,
 			OutputSchema:    []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
 		})
 		if len(gated) < 2 {
@@ -215,6 +227,48 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 				t.Errorf("mode %v: the ungated formatting spawn of a GATED task keeps %q (disallowed=%v)", mode, native, got)
 			}
 		}
+		// …and the two lists stay DISJOINT there. Emitting the declaration
+		// as well would name `Read` on --allowedTools and on
+		// --disallowedTools in one argv, which makes the withholding rest on
+		// the CLI resolving deny over allow — a precedence this repo has
+		// never executed. Disjoint lists hold whatever it is.
+		if f := strings.Fields(gated[1]); slices.Contains(f, "--allowedTools") {
+			t.Errorf("mode %v: the gated formatting spawn emits an approval list beside its withholding: %s", mode, gated[1])
+		}
+		// The bounds that are NOT the declaration reach this spawn from a
+		// statement OUTSIDE the gated/ungated branch. Asserted on the gated
+		// arm too: moving `claudeSpawnBounds` one indentation level, into the
+		// `else`, strips all three from every gated node — measured, with the
+		// whole suite green.
+		f := strings.Fields(gated[1])
+		if !slices.Contains(f, "--strict-mcp-config") {
+			t.Errorf("mode %v: the gated formatting spawn lost --strict-mcp-config — the operator's ~/.claude.json servers boot inside this bot node (#506)", mode)
+		}
+		if j := slices.Index(f, "--max-turns"); j < 0 || j+1 >= len(f) || f[j+1] != "25" {
+			t.Errorf("mode %v: the gated formatting spawn runs uncapped although the node set tool_max_steps: 25 (argv: %s)", mode, gated[1])
+		}
+		if got := disallowed(gated[1]); !slices.Contains(got, "Workflow") {
+			t.Errorf("mode %v: the gated formatting spawn keeps Workflow — the one tool the DATA in the resumed transcript can arm (disallowed=%v)", mode, got)
+		}
+	}
+
+	// The same spawn for an UNGATED task still carries the declaration —
+	// otherwise "skip it when gated" would have quietly become "never send
+	// it", and the tools half of this change would stop reaching pass 2.
+	ungated := spawnArgv(t, Task{
+		NodeID:        "n",
+		AllowedTools:  []string{"read_file"},
+		ToolsDeclared: true,
+		OutputSchema:  []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+	})
+	if len(ungated) < 2 {
+		t.Fatalf("expected two spawns for the ungated declared row, got %d", len(ungated))
+	}
+	if f := strings.Fields(ungated[1]); !slices.Contains(f, "--allowedTools") {
+		t.Errorf("the ungated formatting spawn lost the node's declaration: %s", ungated[1])
+	}
+	if got := disallowed(ungated[1]); slices.Contains(got, "Read") || !slices.Contains(got, "Bash") {
+		t.Errorf("the ungated formatting spawn must keep read_file and remove Bash (disallowed=%v)", got)
 	}
 
 	// A named list removes what it does not name and KEEPS what it does.
