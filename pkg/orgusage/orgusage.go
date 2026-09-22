@@ -131,7 +131,14 @@ func ForkAuthorSubject(tenantID, provider, authorID string) Subject {
 	// within the kind all three segments are caller-supplied and only one of
 	// them is a forge's numeric id. OrgSubject deliberately does NOT escape:
 	// its spelling is frozen by live documents.
-	esc := func(s string) string { return strings.ReplaceAll(s, "|", "%7C") }
+	//
+	// The ESCAPE CHARACTER is escaped first, or the escaping is not
+	// injective: with only "|" replaced, a segment holding the literal
+	// "%7C" and one holding "|" produce the same key — the collision moves
+	// rather than closes. Percent first, then the separator.
+	esc := func(s string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(s, "%", "%25"), "|", "%7C")
+	}
 	return Subject("forkauthor|" + esc(tenantID) + "|" + esc(provider) + "|" + esc(authorID))
 }
 

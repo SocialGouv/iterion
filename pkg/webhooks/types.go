@@ -225,6 +225,34 @@ type Config struct {
 	// store.RunTrustFork, which withdraws the publish grant, the tenant's
 	// workflow secrets and every mutating bot, wherever those are read.
 	//
+	// THAT LIST IS NOT #874's FIVE CONSTRAINTS. Two of them are UNENFORCED
+	// and belong to the admission half, and they are named here so the gap
+	// is carried forward rather than read as already closed:
+	//
+	//   - constraint 4b — fork code must not execute the TARGET repo's own
+	//     toolchain or config (`repo_devbox: off`, sandbox `network:
+	//     allowlist`). store.RunTrust DOES reach pkg/runtime and pkg/runner
+	//     — it rides queue.RunMessage, refuses a pinless untrusted workspace
+	//     (loop_gitws.go) and is stamped onto a sub-bot's document
+	//     (runtime.WithTrust). What no path routes it into is the TOOLCHAIN
+	//     and NETWORK policy: resolveRepoDevbox(override, workflow) takes no
+	//     trust argument, and the sandbox network policy has none either.
+	//   - constraint 5 beyond the gate context — the base repo's project
+	//     settings must not be honoured. Among THOSE surfaces only the
+	//     gate-context write is trust-gated: applyWebhookVarLayers still
+	//     layers cfg.LaunchVars and cfg.OperatorLaunchVars onto a target
+	//     whatever its trust, and the hold-label veto is trust-blind. The
+	//     per-fork-author bound exists as orgusage.ForkAuthorSubject with NO
+	//     production caller.
+	//
+	// Why deferred rather than done here: nothing sets RunTrustFork, so
+	// PR1's safety is safety-by-refusal — the marker's readers must be
+	// correct before anything can carry it. 4b and 5 are ADMISSION-time
+	// controls: they shape how a fork run is built, which is the half that
+	// does not exist yet, and a guard whose condition can never be true is
+	// documented as working, which is worse than absent. They are on #874's
+	// remainder.
+	//
 	// The two kinds are DISJOINT, enforced in both directions at the launch
 	// tail (launchWebhookTarget): a fork-lane config never launches a
 	// same-repo target, and an ordinary config never launches a fork target.

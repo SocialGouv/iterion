@@ -95,6 +95,16 @@ func TestForkAuthorSubject_SeparatorInASegmentCannotMergeTwoContributors(t *test
 			t.Fatalf("%v and %v build the same document id %q — two contributors would share one budget", p[0], p[1], a)
 		}
 	}
+	// The escape must be INJECTIVE, or the collision moves instead of
+	// closing: with only "|" replaced, a segment holding the literal "%7C"
+	// and one holding "|" build the same key. The escape character is
+	// escaped first, which is what makes the map reversible.
+	if a, b := usageKey(ForkAuthorSubject("t", "p", "%7C"), when), usageKey(ForkAuthorSubject("t", "p", "|"), when); a == b {
+		t.Fatalf("a literal %%7C and a separator produced the same document id %q — escaping that is not injective only relocates the collision", a)
+	}
+	if a, b := usageKey(ForkAuthorSubject("t", "%7C", "x"), when), usageKey(ForkAuthorSubject("t", "|", "x"), when); a == b {
+		t.Fatalf("same collision on the provider segment: %q", a)
+	}
 	// And the ordinary shape is untouched: no separator, no escaping.
 	if got := usageKey(ForkAuthorSubject("acme", "github", "1234"), when); got != "forkauthor|acme|github|1234|"+monthKey(when) {
 		t.Fatalf("plain key = %q — escaping must not change the ordinary spelling", got)

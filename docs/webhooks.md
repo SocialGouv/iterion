@@ -402,6 +402,21 @@ capabilities rather than inheriting them.
 | The same token by its SECOND carrier — the secret id pinned on the run, opened server-side at merge time | `forgeTokenForRun` | `runs on an untrusted workspace … the tenant's forge token is never opened for it` |
 | Executing a tree nobody approved | the runner compares the fetched commit against the one the admission pinned (`RepoSHAExpected`), after the fetch and before the checkout | the run is refused, naming both commits |
 
+**And what it does NOT withdraw yet.** That table is not #874's five
+constraints. Two are **unenforced**, and belong to the admission half:
+
+| #874 constraint | State | Why |
+|---|---|---|
+| **4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **deferred to PR2** | `store.RunTrust` *does* reach `pkg/runtime` and `pkg/runner` — it rides the queue message, refuses a pinless untrusted workspace, and is stamped onto a sub-bot's document. What no path routes it into is the **toolchain and network policy**: `resolveRepoDevbox(override, workflow)` takes no trust argument, and the sandbox network policy has none either |
+| **5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **deferred to PR2** | among those surfaces only the gate-context write is trust-gated; `applyWebhookVarLayers` layers `cfg.LaunchVars`/`OperatorLaunchVars` whatever the trust, the hold-label veto is trust-blind, and `orgusage.ForkAuthorSubject` has no production caller |
+
+Deferred rather than done here because nothing sets `RunTrustFork`: this half's
+safety is **safety-by-refusal**, so the marker's READERS must be right before
+anything can carry it. 4b and 5 are admission-time controls — they shape how a
+fork run is *built*, which is the half that does not exist yet, and a guard
+whose condition can never be true reads as working while proving nothing. Both
+are on #874's remainder.
+
 **Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
 KIND, not a permission. The check sits at the launch tail
 (`launchWebhookTarget`) rather than at the top of each provider handler,

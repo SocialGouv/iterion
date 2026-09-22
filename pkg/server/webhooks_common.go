@@ -1382,15 +1382,27 @@ func (s *Server) launchWebhookTarget(
 		delivery.FailedAt = &failedAt
 		s.updateWebhookDelivery(ctx, delivery)
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
-		// Every error out of the launcher means no run document was created,
-		// so the metered slot goes back — as the trigger spine, the board
-		// dispatcher and the retry sweeper already do. The row stays
-		// StatusLaunchError and stays RETRYABLE, and releasing the unit is
-		// what lets the redelivery meter its own instead of paying twice.
-		// Without it a repeatable failure (a required secret that cannot
-		// resolve, a bot the registry cannot load) spends one monthly run
-		// unit per delivery and never returns it, and the idempotency key
-		// carries the head SHA — so every push is a fresh charge.
+		// The metered slot goes back, as the trigger spine, the board
+		// dispatcher and the retry sweeper already do.
+		//
+		// Not because no run document exists — one often does. A publish
+		// failure inside cloudpublisher.SubmitLaunch deliberately KEEPS the
+		// row, flipped to `failed` with a typed code, because a vanished row
+		// explains nothing to the studio or to an operator (93 orphaned
+		// `queued` rows in one incident is why). What goes back is the
+		// monthly RUN slot, and that meters work that EXECUTES: a run failed
+		// at launch ran no node and spent no provider budget, so charging
+		// for it bills nothing. The three surfaces above draw the same line,
+		// one of them in as many words ("a run that never started consumes
+		// no monthly slot").
+		//
+		// The delivery row stays StatusLaunchError and stays RETRYABLE, and
+		// releasing the unit is what lets the redelivery meter its own
+		// instead of paying twice. Without it a repeatable failure (a
+		// required secret that cannot resolve, a bot the registry cannot
+		// load) spends one monthly run unit per delivery and never returns
+		// it — and the idempotency key carries the head SHA, so every push
+		// is a fresh charge.
 		adm.rollback(s.logger)
 		out.Status = webhooks.StatusLaunchError
 		out.Error = fmt.Sprintf("launch failed: %v", lerr)
