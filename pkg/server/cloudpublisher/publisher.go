@@ -406,13 +406,25 @@ func (p *Publisher) appBotLoginForForgeToken(ctx context.Context, tenantID strin
 	return ""
 }
 
+// errUntrustedRequiresSecrets refuses a launch that pairs an untrusted
+// workspace with a workflow whose secrets are not optional. The two cannot be
+// honoured together — the tier that would resolve them is exactly the one an
+// untrusted workspace must not reach — so the launch stops here, named, rather
+// than starting a bot whose credential is silently unset.
+var errUntrustedRequiresSecrets = errors.New("untrusted workspace cannot be given the workflow's required secrets")
+
 // resolveAndSealCredentials looks up every provider key visible to
 // (tenantID, ownerID), pairs it with any OAuth-forfait the owner has
 // connected — falling back to a contributor's pooled subscription when the
 // tenant has none — seals the resulting bundle, and persists it under a
 // fresh secrets ref. An empty ref means no credentials are available; the
 // runner then falls back to env.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry) (credResolution, error) {
+//
+// trust decides whether the tenant's WORKFLOW secrets are part of that
+// bundle. It is a required parameter rather than a field read from somewhere
+// convenient precisely so a future caller cannot omit it: the compiler asks
+// every call site who wrote the code this bundle is about to be handed to.
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry, trust store.RunTrust) (credResolution, error) {
 	if p.runSecrets == nil || p.sealer == nil {
 		return credResolution{}, nil
 	}
@@ -547,6 +559,29 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				}
 
 			case credentialTierGeneric:
+				// An untrusted workspace resolves NO workflow secret. This is
+				// the tier that puts the tenant's forge_token into the run's
+				// credential bundle, and the runner writes that token into
+				// the clone's git credential store (pkg/runner/loop_gitws.go)
+				// — i.e. into a working tree whose content the PR author
+				// wrote. The refusal is loud rather than a silent skip: a bot
+				// whose manifest declares a secret it cannot be given here is
+				// a misconfigured lane, not a run to start anyway.
+				//
+				// The predicate is Trusted(), not "== fork": a trust value
+				// this binary does not recognise must lose the secrets too.
+				if !trust.Trusted() {
+					if wf != nil {
+						if missing := secrets.UnresolvedRequired(requiredSecretNamesForWorkflow(wf), nil); len(missing) > 0 {
+							return fmt.Errorf("cloudpublisher: run %s runs on an untrusted workspace (trust=%q), so no workflow secret is resolved — but its workflow REQUIRES %v: %w",
+								runID, string(trust), missing, errUntrustedRequiresSecrets)
+						}
+					}
+					if p.logger != nil && wf != nil && len(wf.Secrets) > 0 {
+						p.logger.Info("cloudpublisher: run %s: trust=%q — %d declared workflow secret(s) withheld from the run bundle", runID, string(trust), len(wf.Secrets))
+					}
+					return nil
+				}
 				// 2. Workflow/user generic secrets. A declared secret with an empty
 				// value means "resolve a stored secret of the same name" for this run.
 				if p.genericSecrets != nil && wf != nil && len(wf.Secrets) > 0 {
@@ -2038,6 +2073,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		OwnerID:         ownerID,
 		RepoURL:         spec.RepoURL,
 		RepoSHA:         spec.RepoRef,
+		Trust:           spec.Trust,
+		RepoSHAExpected: spec.RepoSHAExpected,
 		ProjectPath:     spec.ProjectPath,
 		BotID:           spec.BotID,
 		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
@@ -2117,7 +2154,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     NO run record behind (never a stray queued/running run for a launch
 	//     that could not resolve its mandatory credentials).
 	orgID := p.orgIDForTeam(ctx, tenantID)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback), spec.Trust)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -2258,8 +2295,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// persisted run doc is the authoritative carrier of the slug.
 		RepoURL: spec.RepoURL,
 		RepoSHA: spec.RepoRef,
-		BotID:   spec.BotID,
-		Budget:  budget,
+		// Trust and the admitted commit ride the wire as well as the
+		// document: the runner compares before it has any reason to read
+		// the document, and a comparison that needs a second store round
+		// trip is one a degraded store turns off.
+		Trust:           spec.Trust,
+		RepoSHAExpected: spec.RepoSHAExpected,
+		BotID:           spec.BotID,
+		Budget:          budget,
 		// The operator's model/backend pins must ride the wire: the runner
 		// pod builds its own executor, so a pin only persisted on the run
 		// doc is display-only — the studio would show an override the
@@ -2519,7 +2562,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback))
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust)
 	// Armed before the error check — see SubmitLaunch.
 	if creds.grant != nil {
 		defer func() {
@@ -2618,7 +2661,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// is carried by the persisted run doc, not the wire.
 		RepoURL: prior.RepoURL,
 		RepoSHA: prior.RepoSHA,
-		BotID:   prior.BotID,
+		// A resume rebuilds the SAME workspace, so it inherits the same
+		// verdict on who wrote it — and the same pinned commit. Read off the
+		// prior document beside RepoURL/RepoSHA: an attempt that re-cloned
+		// the fork's head without them would resolve credentials as a
+		// trusted run and fetch whatever the ref points at now.
+		Trust:           prior.Trust,
+		RepoSHAExpected: prior.RepoSHAExpected,
+		BotID:           prior.BotID,
 	}
 	// The text this resume compiled, stamped WITH the hash of that same
 	// compile — the pair `rewind --auto` diffs against, and its only chance on

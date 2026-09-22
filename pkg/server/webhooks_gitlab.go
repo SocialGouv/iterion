@@ -1289,18 +1289,22 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 }
 
 // webhookLauncherFor builds the production launch path for one inbound
-// webhook config. It is a closure rather than a plain method because the
-// launch needs the config's retry policy, which the seam's positional
-// signature does not carry.
-func (s *Server) webhookLauncherFor(cfg webhooks.Config) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+// webhook config and ONE target of it. It is a closure rather than a plain
+// method because the launch needs facts the seam's positional signature does
+// not carry: the config's retry policy, and the target's own trust and
+// admitted commit. Those last two ride the closure rather than two more
+// positional parameters because the seam has 149 test doubles — and because a
+// test double that stands in for the launcher is not the thing that builds a
+// LaunchSpec, so widening it would prove nothing it does not already prove.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
-		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides)
+		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA)
 	}
 }
 
 // launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher).
-func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -1310,10 +1314,15 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 	}
 	defer lb.Cleanup()
 	spec := runview.LaunchSpec{
-		Vars:            vars,
-		RepoURL:         repoURL,
-		RepoRef:         repoRef,
-		ProjectPath:     projectPath,
+		Vars:        vars,
+		RepoURL:     repoURL,
+		RepoRef:     repoRef,
+		ProjectPath: projectPath,
+		// Stamped onto the run document, which is what a resume, a
+		// usage-window retry and a forked child read their credentials
+		// from — this launch's verdict has to outlive this launch.
+		Trust:           trust,
+		RepoSHAExpected: expectedSHA,
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
 		// A webhook-launched run is often the one an author is waiting on,

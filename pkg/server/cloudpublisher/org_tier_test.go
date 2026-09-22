@@ -29,7 +29,7 @@ func resolveBundleForOrg(t *testing.T, p *Publisher, runID, orgID, tenant, owner
 		t.Fatalf("resolveBundleForOrg needs a MemoryRunSecretsStore")
 	}
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

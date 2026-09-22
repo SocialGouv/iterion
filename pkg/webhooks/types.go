@@ -202,18 +202,37 @@ type Config struct {
 	// (review_on_sync_pinned: false) to hand the field back.
 	ReviewOnSyncPinned bool `bson:"review_on_sync_pinned,omitempty" json:"review_on_sync_pinned,omitempty"`
 
-	// There is no fork switch here on purpose. A pull request whose head lives
-	// in another repository is refused on EVERY lane, unconditionally: the
-	// auto-review lane, the /command lanes, the reply-in-thread lane, the
-	// gate relaunch and the auto-fix lane all require a PROVEN same-repo head
-	// before anything launches. The launch pair a fork produces (the base
-	// repo's clone URL + a head branch that lives elsewhere) does not name one
-	// repository, so the checkout misses or — worse — hits a same-named branch
-	// on the base and the bot answers, comments and pushes grounded in the
-	// wrong code under iterion's own identity.
+	// ForkLane makes this config the READ-ONLY FORK REVIEW LANE, and it is a
+	// lane KIND rather than a permission: it does not relax the fork guard on
+	// the ordinary lanes, it moves this whole config onto a different one.
 	//
-	// Serving forks needs a lane of its own (read-only, no publish grant, no
-	// fixer, no repo secrets), not a boolean: see docs/webhooks.md.
+	// There is still no switch that lets an ordinary lane serve a fork. A
+	// pull request whose head lives in another repository is refused on every
+	// ordinary lane, unconditionally — the auto-review lane, the /command
+	// lanes, the reply-in-thread lane, the gate relaunch and the auto-fix
+	// lane all require a PROVEN same-repo head before anything launches. What
+	// made that unconditional was not distrust alone: the launch pair a fork
+	// produces on those lanes (the base repo's clone URL + a head branch that
+	// lives elsewhere) does not name one repository, so the checkout misses
+	// or — worse — hits a same-named branch on the base and the bot answers,
+	// comments and pushes grounded in the wrong code under iterion's identity.
+	//
+	// The fork lane answers that by NOT building that pair: it launches on
+	// the base repo's clone URL and the base repo's own pull-request head ref
+	// (refs/pull/<n>/head), which names ONE repository — the base — and
+	// resolves to the fork's commit. The run it launches carries
+	// store.RunTrustFork, which withdraws the publish grant, the tenant's
+	// workflow secrets and every mutating bot, wherever those are read.
+	//
+	// The two kinds are DISJOINT, enforced in both directions at the launch
+	// tail (launchWebhookTarget): a fork-lane config never launches a
+	// same-repo target, and an ordinary config never launches a fork target.
+	// Immutable after create — see the webhook PATCH route — because the
+	// opt-in records and the per-author budget are keyed on this config, and
+	// flipping the kind under them would re-interpret rows written under the
+	// other one. Default false: an operator opts a repo in deliberately, with
+	// a second webhook. See docs/webhooks.md and docs/merge-gate.md.
+	ForkLane bool `bson:"fork_lane,omitempty" json:"fork_lane,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The

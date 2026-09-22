@@ -730,6 +730,16 @@ type forgeLaunchTarget struct {
 	Vars    map[string]string
 	RepoURL string
 	RepoRef string
+	// Trust says who wrote the code at (RepoURL, RepoRef). The zero value is
+	// the trusted default, so every target built before the fork lane existed
+	// keeps its meaning. launchWebhookTarget cross-checks it against the
+	// config's own lane kind before anything is metered — see the
+	// disjointness gate there.
+	Trust store.RunTrust
+	// ExpectedSHA is the commit the admission proved, for a RepoRef the code's
+	// author can move (a fork pull request's head). Carried to the runner,
+	// which refuses the run when the fetch lands elsewhere.
+	ExpectedSHA string
 }
 
 // webhookLaunchResult is one bot's outcome inside a (possibly multi-bot)
@@ -1085,6 +1095,32 @@ func (s *Server) launchWebhookTarget(
 	idemKey, botID, vars := t.IdemKey, t.BotID, t.Vars
 	out := webhookLaunchResult{BotID: botID}
 
+	// 0. Lane disjointness, BEFORE anything is metered, recorded or launched.
+	//
+	// This is the chokepoint and not the top of each provider handler,
+	// because three of this function's five callers never cross a handler:
+	// the debounce sweep (webhooks_debounce.go), the gate relaunch and the
+	// gate auto-fix each rebuild a target from stored state and enter here
+	// directly. A check placed in the handlers would be absent from exactly
+	// the paths that fire minutes to hours after the event, which is when the
+	// config or the pull request has had time to change.
+	//
+	// Both directions are refused, and both matter. A fork-lane config
+	// launching a trusted target would run a repo's own PR with the fork
+	// lane's neutering — a silent, confusing degradation. A trusted config
+	// launching a fork target is the real hazard: it is how an untrusted tree
+	// would reach a publish grant and the tenant's secrets.
+	if cfg.ForkLane != t.Trust.IsFork() {
+		reason := forkLaneMismatchRefusal(cfg.ForkLane, t.Trust)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+		if s.logger != nil {
+			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
+		}
+		out.Status = webhooks.StatusFiltered
+		out.Error = reason
+		return out
+	}
+
 	// 1. Idempotency replay check — BEFORE metering. gateLaunch performs the
 	// per-org quota CAS *increment* (the increment IS the metering), so a
 	// forge redelivery of an already-processed event (lost ack, operator
@@ -1215,7 +1251,7 @@ func (s *Server) launchWebhookTarget(
 		// launcher needs the webhook's own retry policy, and threading it
 		// as a ninth positional parameter would churn every test fake of
 		// this seam for one field.
-		launch = s.webhookLauncherFor(cfg)
+		launch = s.webhookLauncherFor(cfg, t)
 	}
 	// Hand the run any prior review of the same PR, if it asked for one. Done
 	// HERE, in the tail every lane funnels through, rather than per provider
@@ -1231,7 +1267,7 @@ func (s *Server) launchWebhookTarget(
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
+	vars, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r, t.Trust)
 	if verr != nil {
 		// The only refusal here is a launch pinning another team's publish
 		// grant (errForgePublishGrantTenant): the run would carry a
@@ -1264,6 +1300,16 @@ func (s *Server) launchWebhookTarget(
 		delivery.FailedAt = &failedAt
 		s.updateWebhookDelivery(ctx, delivery)
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
+		// Every error out of the launcher means no run document was created,
+		// so the metered slot goes back — as the trigger spine, the board
+		// dispatcher and the retry sweeper already do. The row stays
+		// StatusLaunchError and stays RETRYABLE, and releasing the unit is
+		// what lets the redelivery meter its own instead of paying twice.
+		// Without it a repeatable failure (a required secret that cannot
+		// resolve, a bot the registry cannot load) spends one monthly run
+		// unit per delivery and never returns it, and the idempotency key
+		// carries the head SHA — so every push is a fresh charge.
+		adm.rollback(s.logger)
 		out.Status = webhooks.StatusLaunchError
 		out.Error = fmt.Sprintf("launch failed: %v", lerr)
 		out.DeliveryID = delivery.ID
@@ -1312,6 +1358,29 @@ func (s *Server) launchWebhookTarget(
 // an explicit resume — the runner never imports the webhook layer, so the
 // vocabulary lives in the store, not here.
 const prClosedRunReason = store.RunEndReasonPRClosed
+
+// forkLaneMismatchRefusal words the launch tail's lane-disjointness refusal.
+// It exists as its own helper, beside forkGuardRefusal, because the two
+// refuse DIFFERENT things and a reader who confuses them looks in the wrong
+// place: forkGuardRefusal answers "this pull request's head is not provably
+// in this repository", while this one answers "this target and this
+// subscription are not the same KIND of lane".
+//
+// The two directions get different wording because they need different
+// operator actions. A fork target on an ordinary config means something
+// admitted an outsider's tree onto a lane that holds the repo's grant and
+// secrets — a defect to report, not a setting to change. A trusted target on
+// a fork-lane config means a same-repo pull request reached the opt-in lane,
+// where the review it would get is deliberately blind and mute; the
+// repository's ordinary webhook is what serves it.
+func forkLaneMismatchRefusal(cfgForkLane bool, trust store.RunTrust) string {
+	if cfgForkLane {
+		return "fork-lane mismatch — this subscription is the opt-in fork review lane and the target's workspace is not a fork's (trust=" +
+			string(trust) + "): a same-repo pull request is served by the repository's ordinary webhook, which holds the review capabilities this lane deliberately does not"
+	}
+	return "fork-lane mismatch — the target's workspace holds code this repository did not write (trust=" +
+		string(trust) + ") and this subscription is an ordinary lane, which carries the repo's publish grant and secrets: refused before metering, and no configuration lifts it (the opt-in fork lane is a separate subscription)"
+}
 
 // forkGuardRefusal is the fork guard of the unattended payload-side lanes
 // (PR auto lane, review-thread reply lane). The decision is the payload's

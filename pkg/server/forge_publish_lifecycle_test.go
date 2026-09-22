@@ -26,7 +26,7 @@ func TestInjectForgePublishVarsRefusesTheLaunchWhenTheGrantCannotBeMinted(t *tes
 	}
 
 	vars := map[string]string{"pr_url": "https://github.com/o/r/pull/42"}
-	out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil)
+	out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustDefault)
 	if err == nil {
 		t.Fatalf("a grant that cannot be minted must refuse the launch, got vars=%v", out)
 	}

@@ -55,6 +55,7 @@ type Opts struct {
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
+	t.Run("RunTrustRoundTrip", func(t *testing.T) { testRunTrustRoundTrip(t, factory(t)) })
 	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
@@ -529,6 +530,51 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 	if got.ContinuationState != store.ContinuationFinal {
 		t.Fatalf("ContinuationState after the admission park = %q, want final (nothing on the platform wakes a parked run)", got.ContinuationState)
+	}
+}
+
+// testRunTrustRoundTrip pins the untrusted-workspace marker across BOTH store
+// implementations. It is a conformance row rather than a per-store test
+// because the credential resolver, the publish grant and the runner's commit
+// check all read Trust off a run they LOADED: a backend that accepts the
+// field and returns it empty turns every one of those controls off, silently
+// and only in the deployment that uses that backend.
+//
+// RepoSHAExpected rides along for the same reason — a run whose pinned commit
+// does not survive a round trip is fetched at whatever its ref points at now.
+func testRunTrustRoundTrip(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const id = "run_trust_roundtrip"
+	if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// The zero value is the trusted default, and it must READ as trusted:
+	// every run written before this field existed decodes to it.
+	if !r.Trust.Trusted() {
+		t.Fatalf("a freshly created run reads Trust = %q; want the trusted default", r.Trust)
+	}
+	r.Trust = store.RunTrustFork
+	r.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	got, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after save: %v", err)
+	}
+	if got.Trust != store.RunTrustFork {
+		t.Errorf("persisted Trust = %q; want %q — a backend that drops it turns off the secret, grant and commit controls that read it back", got.Trust, store.RunTrustFork)
+	}
+	if got.Trust.Trusted() {
+		t.Errorf("persisted Trust %q reads as TRUSTED after a round trip; want untrusted", got.Trust)
+	}
+	if got.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Errorf("persisted RepoSHAExpected = %q; want the pinned commit", got.RepoSHAExpected)
 	}
 }
 

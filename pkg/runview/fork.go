@@ -221,6 +221,14 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		child.ProjectPath = parent.ProjectPath
 		child.BotID = parent.BotID
 		child.SecretOverrides = parent.SecretOverrides
+		// Trust travels with the clone coordinates, in the same statement
+		// block and for the same reason: the child clones the SAME tree, so
+		// it inherits the same answer to "who wrote this code". Carrying
+		// RepoURL and SecretOverrides without it is the dangerous half — the
+		// child would re-resolve the tenant's workflow secrets against the
+		// parent's pins, onto an outsider's working tree.
+		child.Trust = parent.Trust
+		child.RepoSHAExpected = parent.RepoSHAExpected
 	} else {
 		// Non-worktree local parent: child inherits the parent's WorkDir
 		// (typically the user's cwd). Rewind is meaningless; ignore

@@ -96,6 +96,17 @@ const grantTenantMismatchReason = "grant_tenant_mismatch"
 // the RUN's tenant — the tenant whose run tried to speak as another.
 const auditActionGrantTenantMismatch = "forge.grant.tenant_mismatch"
 
+// grantUntrustedRunReason is the typed refusal a publish attempt earns when
+// the RUN's workspace holds code the tenant did not write. Distinct word from
+// the tenant mismatch on purpose: the operator action is different (this one
+// is never a misconfiguration to correct — it is the lane working).
+const grantUntrustedRunReason = "grant_untrusted_run"
+
+// auditActionGrantUntrustedRun is its audit action, recorded on the run's own
+// tenant so the team sees that something asked to publish on their behalf
+// from an untrusted workspace.
+const auditActionGrantUntrustedRun = "forge.grant.untrusted_run"
+
 // runOwnsGrant proves a publish grant belongs to the run that carries it, and
 // is the ONE place that decides it: every reader holding a run funnels through
 // here, so the rule cannot hold at one surface and not the next.
@@ -125,6 +136,25 @@ const auditActionGrantTenantMismatch = "forge.grant.tenant_mismatch"
 // visible — and the rows collapse in one query on the run id.
 func (s *Server) runOwnsGrant(run *store.Run, grant ForgePublishGrant, what string) bool {
 	if run == nil {
+		return false
+	}
+	// Trust before tenancy: a fork-lane run and a trusted run of the SAME
+	// tenant are indistinguishable to the tenant comparison below, so that
+	// check alone would let an untrusted run present any grant its own team
+	// holds. This is the belt to injectForgePublishVars' braces — that one
+	// refuses to MINT, this one refuses to HONOUR, and they are on opposite
+	// sides of the run's creation so no single mistake clears both.
+	if !run.Trust.Trusted() {
+		if s.logger != nil {
+			s.logger.Warn("forge gate: %s for run %s refused (%s): the run's workspace holds code the tenant did not write (trust=%q), which is never allowed to publish — nothing posted",
+				what, run.ID, grantUntrustedRunReason, string(run.Trust))
+		}
+		s.auditSystem(strings.TrimSpace(run.TenantID), "forge-gate", auditActionGrantUntrustedRun, "run", run.ID, map[string]any{
+			"reason":     grantUntrustedRunReason,
+			"trust":      string(run.Trust),
+			"grant_repo": grant.Repo,
+			"surface":    what,
+		})
 		return false
 	}
 	runTenant := strings.TrimSpace(run.TenantID)
@@ -843,13 +873,31 @@ const (
 // registry is in-memory, so a restart empties it, and refusing there would
 // turn a stale token into a failed launch instead of a run that merely cannot
 // publish (the endpoint answers 401).
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
+// trust is the launch's own verdict on who wrote the code the run will hold.
+// It is a PARAMETER and not a field read off a run because at this point in
+// the tail there IS no run — the grant is minted before the launcher is
+// called, so "read the marker from the run document" is not available here.
+// An untrusted launch is refused a grant outright, and the refusal is an
+// error rather than a silent "no endpoint bound": the whole point of the
+// lane that sets it is that its output never reaches the forge, and a
+// capability that goes missing quietly is one nobody notices coming back.
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request, trust store.RunTrust) (map[string]string, error) {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, nil
 	}
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
 		return vars, nil
+	}
+	// Before the pin branch, so a caller cannot hand an untrusted launch a
+	// grant by PINNING one: the pin path returns early and would otherwise
+	// carry any token the caller already put in vars straight onto the run.
+	// Trusted() and not "== fork" — an unrecognised trust loses the grant too.
+	if !trust.Trusted() {
+		delete(vars, forgePublishVarToken)
+		delete(vars, forgePublishVarURL)
+		delete(vars, forgePublishVarPRState)
+		return vars, fmt.Errorf("%w: %s: trust=%q", errForgePublishGrantUntrusted, prURL, string(trust))
 	}
 	if pinned := strings.TrimSpace(vars[forgePublishVarToken]); pinned != "" {
 		if grant, ok := s.forgePublishTokens.lookup(pinned); ok &&
@@ -961,13 +1009,27 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 			preferredConnID = conn.ID
 		}
 	}
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+	// The launch surfaces that hold no webhook payload — the studio/API
+	// launch and the cloud board coordinator — are operator-authenticated and
+	// pass prLaunchForkGuard above, so the workspace they name is the
+	// tenant's own. Stated rather than inferred: if one of them ever grows a
+	// path that admits an outsider's tree, this is the line that has to
+	// change with it.
+	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r, store.RunTrustDefault)
 }
 
 // errForgePublishGrantTenant marks a launch that pinned a forge publish grant
 // belonging to another team — the operator's request is inadmissible, not a
 // forge that could not be asked, so the HTTP lane answers 422.
 var errForgePublishGrantTenant = errors.New("forge publish grant tenant mismatch")
+
+// errForgePublishGrantUntrusted marks a launch whose workspace holds code the
+// tenant did not write (store.RunTrust) asking for a forge publish grant. It
+// is a REFUSAL and not a quiet skip: the grant is the capability to post a
+// review, a comment and the revi/review commit status that gates the merge,
+// and a lane that is meant never to hold it must fail loudly the day
+// something asks on its behalf.
+var errForgePublishGrantUntrusted = errors.New("forge publish grant refused for an untrusted workspace")
 
 // errPRLaunchForkGuard marks a launch the fork guard refused — the operator's
 // pull request is not admissible, as opposed to a forge that could not be

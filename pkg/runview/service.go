@@ -180,6 +180,15 @@ type LaunchSpec struct {
 	// operator has no local checkout.
 	RepoURL string
 	RepoRef string
+	// Trust classifies who wrote the code RepoURL/RepoRef resolve to. The
+	// zero value is the trusted default; a launch surface that admits an
+	// outsider's tree (the fork review lane) sets store.RunTrustFork, and
+	// everything the run is then denied is decided from the RUN, not from
+	// here — this field only gets the fact onto the document.
+	Trust store.RunTrust
+	// RepoSHAExpected pins the commit this launch admitted, for a RepoRef an
+	// untrusted party can move. Empty disables the runner's comparison.
+	RepoSHAExpected string
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
 	// by repository. Set by inbound-webhook launches; empty otherwise.

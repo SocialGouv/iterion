@@ -161,6 +161,18 @@ type RunMessage struct {
 	IRRef            *IRRef                  `json:"ir_ref,omitempty"`
 	RepoURL          string                  `json:"repo_url,omitempty"`
 	RepoSHA          string                  `json:"repo_sha,omitempty"`
+	// RepoSHAExpected is the commit the LAUNCH admitted, when RepoSHA is a
+	// ref an untrusted party can move between the admission and this
+	// message being consumed (a fork pull request's head). The runner
+	// fetches RepoSHA and refuses the run when what arrived is not this
+	// commit. It rides the wire — not only the run document — because the
+	// comparison happens in the runner pod, before it has any reason to
+	// load the document. Empty disables the comparison.
+	RepoSHAExpected string `json:"repo_sha_expected,omitempty"`
+	// Trust is the run document's RunTrust, mirrored onto the wire so the
+	// runner can withhold workspace-level capabilities without a document
+	// read. Empty is the trusted default.
+	Trust store.RunTrust `json:"trust,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`
