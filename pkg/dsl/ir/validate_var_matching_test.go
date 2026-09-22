@@ -3,7 +3,10 @@ package ir
 import (
 	"regexp"
 	"regexp/syntax"
+	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
 // TestC160_VarMatchingNonString: a pattern constrains TEXT, so it is
@@ -331,5 +334,352 @@ func TestC164_VarRedeclaredWithoutItsConstraint(t *testing.T) {
 				t.Errorf("C164 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
 			}
 		})
+	}
+}
+
+// presetSrc wraps a `vars:` block and a `presets:` block in the smallest
+// file that compiles.
+func presetSrc(varsLines, presetLines string) string {
+	return "vars:\n" + varsLines + "\n\npresets:\n" + presetLines + `
+prompt sys:
+  hi
+
+agent a:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
+  system: sys
+
+workflow w:
+  entry: a
+  a -> done
+`
+}
+
+// TestC165_PresetViolatesConstraint.
+//
+// A preset value is a literal written in the `.bot`, as checkable as a
+// default and governed by the same constraint — but nothing checked it, so
+// a bot could ship a preset that no launch can accept: `iterion validate`
+// said OK and `iterion run --preset <name>` died at the gate (#1611).
+//
+// It is C165 rather than C126/C161 because the SITE differs, and the preset
+// family already draws that line: a type mismatch on a default is C109, the
+// same mismatch on a preset value is C071.
+//
+// Mutation that reddens it: drop the checkPresetConstraint call from
+// compilePresets.
+func TestC165_PresetViolatesConstraint(t *testing.T) {
+	cases := []struct {
+		name      string
+		vars      string
+		presets   string
+		want      int
+		wantInMsg string
+	}{
+		{
+			name:      "enum: a value outside the set",
+			vars:      `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets:   "  bad:\n    mode: \"yolo\"\n",
+			want:      1,
+			wantInMsg: "not one of the enum values",
+		},
+		{
+			name:      "matching: a value off the pattern",
+			vars:      `  agent: string [matching: "^[a-z]+$"] = "codex"`,
+			presets:   "  bad:\n    agent: \"Code X\"\n",
+			want:      1,
+			wantInMsg: "does not match its pattern",
+		},
+		{
+			// Both constraints are independent conjuncts here too: a value
+			// inside the enum but off the pattern is still refused.
+			name:      "in the enum, off the pattern",
+			vars:      `  mode: string [enum: "fast", "slow-and-careful"] [matching: "^[a-z]+$"] = "fast"`,
+			presets:   "  bad:\n    mode: \"slow-and-careful\"\n",
+			want:      1,
+			wantInMsg: "does not match its pattern",
+		},
+		{
+			name:    "a conforming value",
+			vars:    `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets: "  ok:\n    mode: \"slow\"\n",
+			want:    0,
+		},
+		{
+			// An unconstrained var accepts whatever the preset says: the
+			// check must not start refusing values nothing declared.
+			name:    "an unconstrained var",
+			vars:    `  free: string = ""`,
+			presets: "  ok:\n    free: \"anything at all\"\n",
+			want:    0,
+		},
+		{
+			// A non-string var cannot carry either constraint (C125/C160
+			// zero them), so it reaches the "declares no constraint"
+			// return. Kept as the witness that no C165 noise appears on an
+			// ordinary typed preset.
+			name:    "a non-string var",
+			vars:    `  count: int = 1`,
+			presets: "  ok:\n    count: 7\n",
+			want:    0,
+		},
+		{
+			// The comparison is EXACT — the launch gate does not trim, so
+			// trimming here would bless a value the run then refuses.
+			name:      "a leading space is not the enum value",
+			vars:      `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets:   "  bad:\n    mode: \" fast\"\n",
+			want:      1,
+			wantInMsg: "not one of the enum values",
+		},
+		{
+			// A value the expander REWRITES is not final: the run resolves
+			// it, and the compile-time environment is not the launch
+			// environment. Left to the gate, which judges the EXPANSION —
+			// docs/dsl.md promises a preset that reading.
+			name:    "a live reference is left to the gate",
+			vars:    `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets: "  ci:\n    mode: \"${ITERION_PROBE_MODE:-slow}\"\n",
+			want:    0,
+		},
+		{
+			name:    "a bare live reference is left to the gate too",
+			vars:    `  agent: string [matching: "^[a-z]+$"] = "codex"`,
+			presets: "  ci:\n    agent: \"$AGENT_NAME\"\n",
+			want:    0,
+		},
+		{
+			// A `$` is not a reference. The expander never acts on these,
+			// so the literal IS what the gate will see and the compiler can
+			// still judge it — a rule spelled over the text shipped all of
+			// them unchecked.
+			name:      "a trailing dollar is not a reference",
+			vars:      `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets:   "  bad:\n    mode: \"yolo$\"\n",
+			want:      1,
+			wantInMsg: "not one of the enum values",
+		},
+		{
+			name:      "a forgotten closing brace is not a reference",
+			vars:      `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets:   "  bad:\n    mode: \"yolo${\"\n",
+			want:      1,
+			wantInMsg: "not one of the enum values",
+		},
+		{
+			// A key written twice keeps the LAST, and the last is legal:
+			// the shadowed text is read by no run, so C165 says nothing.
+			//
+			// KNOWN GAP, recorded rather than decided: nothing says the
+			// shadowed line is dead either. A duplicate var is E010, a
+			// duplicate preset NAME is C072, a duplicate enum value is
+			// C127 — a duplicate preset KEY is silence. Out of this
+			// change's scope; the case is here so the silence is visible.
+			name:    "a shadowed duplicate key raises no C165 (and nothing else warns about it)",
+			vars:    `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets: "  probe:\n    mode: \"yolo\"\n    mode: \"fast\"\n",
+			want:    0,
+		},
+		{
+			// The mirror: the landing value is the bad one. Said ONCE —
+			// a key written twice is one setting, not two.
+			name:      "a duplicate key whose last value is bad is said once",
+			vars:      `  mode: string [enum: "fast", "slow"] = "fast"`,
+			presets:   "  probe:\n    mode: \"fast\"\n    mode: \"yolo\"\n",
+			want:      1,
+			wantInMsg: "not one of the enum values",
+		},
+		{
+			// …and the offender is not always the first value of the
+			// first preset: every value of every preset is judged.
+			name:      "the fourth value of the third preset",
+			vars:      `  mode: string [enum: "fast", "slow"] = "fast"` + "\n  a: string\n  b: string\n  c: string",
+			presets:   "  one:\n    mode: \"fast\"\n  two:\n    mode: \"slow\"\n  three:\n    a: \"x\"\n    b: \"y\"\n    c: \"z\"\n    mode: \"yolo\"\n",
+			want:      1,
+			wantInMsg: "not one of the enum values",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := compileFile(t, presetSrc(tc.vars, tc.presets))
+			if got := countCode(r, DiagPresetViolatesConstraint); got != tc.want {
+				t.Fatalf("C165 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
+			}
+			if tc.wantInMsg == "" {
+				return
+			}
+			var msg string
+			for _, d := range r.Diagnostics {
+				if d.Code == DiagPresetViolatesConstraint {
+					msg = d.Message
+					// A WARNING, never an error: an error blocks a run
+					// that selects another preset or none, and strands a
+					// paused run whose declaration was tightened — which
+					// Engine.Run's gate deliberately protects against.
+					if d.Severity != SeverityWarning {
+						t.Errorf("C165 severity = %v, want warning — an error blocks runs this preset does not touch", d.Severity)
+					}
+				}
+			}
+			// The refusal names the preset, the var, the value and what it
+			// failed: the author has to find one line in a file of them.
+			for _, want := range []string{"preset ", tc.wantInMsg} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message %q does not carry %q", msg, want)
+				}
+			}
+		})
+	}
+}
+
+// TestC165_NamesTheOffendingPresetLine: a bot declares many presets, and
+// the diagnostic has to point at the one value to edit — not at the vars
+// block, and not at the first preset.
+//
+// Mutation that reddens it: emit through c.errorf instead of
+// c.errorfAtSpan, so the diagnostic carries no position.
+func TestC165_NamesTheOffendingPresetLine(t *testing.T) {
+	src := presetSrc(
+		`  mode: string [enum: "fast", "slow"] = "fast"`,
+		"  first:\n    mode: \"fast\"\n  second:\n    mode: \"slow\"\n  third:\n    mode: \"yolo\"\n",
+	)
+	r := compileFile(t, src)
+	var d *Diagnostic
+	for i := range r.Diagnostics {
+		if r.Diagnostics[i].Code == DiagPresetViolatesConstraint {
+			d = &r.Diagnostics[i]
+		}
+	}
+	if d == nil {
+		t.Fatalf("no C165 raised\ndiagnostics: %v", r.Diagnostics)
+	}
+	if !strings.Contains(d.Message, `preset "third"`) {
+		t.Errorf("message %q must name the offending preset, not another one", d.Message)
+	}
+	if d.Line == 0 {
+		t.Fatalf("C165 carries no line: an editor and an agent have nowhere to jump\n%+v", d)
+	}
+	// The line is the preset VALUE's, so it lands on the text to change.
+	lines := strings.Split(src, "\n")
+	if d.Line > len(lines) || !strings.Contains(lines[d.Line-1], "yolo") {
+		t.Errorf("C165 points at line %d (%q), want the line carrying \"yolo\"",
+			d.Line, lines[min(d.Line, len(lines))-1])
+	}
+
+	// …and the guarantee stops at the TEXT path. The studio validates a
+	// document that has been through the JSON AST, where a preset value
+	// carries no span (jsonPresetValue has no field for one) — so C165
+	// arrives there with nowhere to jump, as C070/C071/C072 already do.
+	// Asserted rather than left implied: a test that only ever walks the
+	// parser reads as if it covered both.
+	data, err := ast.MarshalFile(parseFile(t, src))
+	if err != nil {
+		t.Fatalf("MarshalFile: %v", err)
+	}
+	back, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("UnmarshalFile: %v", err)
+	}
+	viaJSON := Compile(back)
+	var viaDoc *Diagnostic
+	for i := range viaJSON.Diagnostics {
+		if viaJSON.Diagnostics[i].Code == DiagPresetViolatesConstraint {
+			viaDoc = &viaJSON.Diagnostics[i]
+			break
+		}
+	}
+	if viaDoc == nil {
+		t.Fatal("C165 is lost entirely through the JSON transport")
+	}
+	if viaDoc.Line != 0 {
+		t.Logf("the JSON transport now carries a preset value's span (line %d) — tighten this test to require it", viaDoc.Line)
+	}
+}
+
+// TestAValueWithoutADollarIsItsOwnExpansion is the property C165's skip
+// rests on: the compiler judges a preset literal only when it can read it
+// WHOLE, and "whole" is defined by the expander, not by a list of
+// spellings. If a text carrying no `$` could ever expand to something
+// else, the check would be judging a value the run does not use.
+//
+// Proven against the expander itself over a hostile corpus, with an
+// expandFn that rewrites EVERY name it is asked about — so a text that
+// comes back unchanged was never asked.
+func TestAValueWithoutADollarIsItsOwnExpansion(t *testing.T) {
+	loud := func(string) string { return "!!!REWRITTEN!!!" }
+	for _, s := range []string{
+		"", "fast", " fast", "slow-and-careful", "a b c", "{braces}", "%s", "\\$notadollar",
+		"a\nb", "héllo", "100%", "{{vars.x}}", "[]", "${", "}", "a{b}c", "--flag", "path/to/x",
+	} {
+		if strings.ContainsRune(s, '$') {
+			continue
+		}
+		if got := ExpandWithDefault(s, loud); got != s {
+			t.Errorf("ExpandWithDefault(%q) = %q — a value with no $ must be its own expansion, or C165 judges text the run never uses", s, got)
+		}
+	}
+	// The converse, so the skip is not vacuous: a value that DOES carry a
+	// `$` is rewritten, which is exactly why it is left to the launch gate.
+	if got := ExpandWithDefault("${NAME}", loud); got == "${NAME}" {
+		t.Fatal("fixture is inert: the expander did not touch a ${...} value, so the skip proves nothing")
+	}
+}
+
+// TestC165WarnsButNeverBlocks is the guarantee the severity carries, and
+// the one that cost a round to find: a bad preset must not stop a program
+// from compiling. An error there blocks a run that selects ANOTHER preset,
+// a run that selects none — and it strands a paused run whose declaration
+// was tightened after it started, which `Engine.Run`'s gate deliberately
+// protects against and `resume --force` cannot reach, because a compile
+// error is refused before the engine is ever asked.
+//
+// Mutation that reddens it: warnfAtSpan → errorfAtSpan in
+// checkPresetConstraint.
+func TestC165WarnsButNeverBlocks(t *testing.T) {
+	r := compileFile(t, presetSrc(
+		`  mode: string [enum: "fast", "slow"] = "fast"`,
+		"  good:\n    mode: \"slow\"\n  other:\n    mode: \"yolo\"\n",
+	))
+	if countCode(r, DiagPresetViolatesConstraint) != 1 {
+		t.Fatalf("fixture is inert: no C165 raised\ndiagnostics: %v", r.Diagnostics)
+	}
+	if r.HasErrors() {
+		t.Errorf("a bad preset made the program fail to compile — a run selecting %q, or none, is blocked by it\ndiagnostics: %v",
+			"good", r.Diagnostics)
+	}
+	if r.Workflow == nil {
+		t.Fatal("no workflow compiled: the run cannot start at all")
+	}
+	// The good preset is still usable, values intact.
+	if got := r.Workflow.Presets["good"].Values["mode"]; got != "slow" {
+		t.Errorf("preset \"good\" carries mode = %#v, want \"slow\"", got)
+	}
+}
+
+// TestCarriesLiveReferenceAsksTheExpander pins the rule C165's skip rests
+// on to the expander's BEHAVIOUR, not to a spelling. A `$` is not a
+// reference: the first six values below are left exactly as written by the
+// run, so the compiler can still judge them — and a `strings.ContainsRune`
+// rule shipped all six unchecked.
+//
+// Mutation that reddens it: carriesLiveReference → strings.ContainsRune(s, '$').
+func TestCarriesLiveReferenceAsksTheExpander(t *testing.T) {
+	inert := []string{"yolo$", "$", "yolo${", "$$", "100$", "yo$-lo", "yolo", ""}
+	live := []string{"${A}", "${A:-yolo}", "$A", "a$b", "$1x", "yo$$lo"}
+
+	loud := func(string) string { return "!!!REWRITTEN!!!" }
+	for _, s := range inert {
+		if carriesLiveReference(s) {
+			t.Errorf("carriesLiveReference(%q) = true, but the expander leaves it alone", s)
+		}
+		// …and the expander agrees: that is what makes it checkable.
+		if got := ExpandWithDefault(s, loud); got != s {
+			t.Errorf("fixture wrong: ExpandWithDefault(%q) = %q", s, got)
+		}
+	}
+	for _, s := range live {
+		if !carriesLiveReference(s) {
+			t.Errorf("carriesLiveReference(%q) = false, but the run rewrites it — judging it would judge text the run never uses", s)
+		}
 	}
 }

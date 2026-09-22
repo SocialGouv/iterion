@@ -112,7 +112,7 @@
 | `pkg/dsl/fix` | applies the mechanical remedies of compile diagnostics to a `.bot` text — the edits a diagnostic can carry because its fix is the same every time… | — | 1 · 6 |
 | `pkg/dsl/internal/dsltest` | holds the equivalence oracle the DSL packages' tests share: "the program that comes out of this transport, serialiser or editor is the program that… | — | 1 · 2 |
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
-| `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 46 · 468 |
+| `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 46 · 469 |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — | 1 · 6 |
 | `pkg/dsl/parser` | — | — | 21 · 229 |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 7 · 53 |
