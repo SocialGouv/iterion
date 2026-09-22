@@ -2,6 +2,7 @@ package repomap
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -73,8 +74,12 @@ func (d docsPages) Extract(root string) (string, error) {
 		if status == "" {
 			status = "—"
 		}
-		fmt.Fprintf(&b, "| [`%s`](../../%s) | %s | %s | %s |\n",
-			r.Path, r.Path, orDash(r.Title), orDash(r.Summary), status)
+		href, err := linkTarget(r.Path)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "| [`%s`](%s) | %s | %s | %s |\n",
+			r.Path, href, orDash(r.Title), orDash(r.Summary), status)
 	}
 	return b.String(), nil
 }
@@ -92,12 +97,15 @@ var externalTargetRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.-]*:|//)`)
 // page's own prose, where `adr/081-….md` or `README.md` names a file next
 // to that page; on the map (docs/references/, one level below docs/) the
 // same text would name nothing. Each target is resolved against the page's
-// directory and rewritten relative to OutputDir, its fragment kept; a bare
+// directory and then written by linkTarget, its fragment kept; a bare
 // `#fragment` names the quoted page's own anchor, so it gains that page's
-// path. Scheme URLs and repository-root-absolute targets need nothing.
-func reanchor(summary, page string) string {
+// path. Scheme URLs pass through; so does a `/`-absolute target, which
+// github.com resolves against the site origin rather than this repository —
+// `task docs:links` reports that one on the page that wrote it.
+func reanchor(summary, page string) (string, error) {
 	pageDir := path.Dir(page)
-	return linkTargetRe.ReplaceAllStringFunc(summary, func(m string) string {
+	var failed error
+	out := linkTargetRe.ReplaceAllStringFunc(summary, func(m string) string {
 		target := m[2 : len(m)-1]
 		frag := ""
 		if i := strings.Index(target, "#"); i >= 0 {
@@ -115,12 +123,26 @@ func reanchor(summary, page string) string {
 		default:
 			resolved = path.Join(pageDir, target)
 		}
-		rel, err := filepath.Rel(OutputDir, resolved)
+		rel, err := linkTarget(resolved)
 		if err != nil {
+			// Join rather than overwrite: which refusal a single variable
+			// would keep is decided by the order of the targets in the
+			// sentence, and every one of them has to be fixed anyway. The
+			// text the page wrote is what the author greps for.
+			failed = errors.Join(failed, fmt.Errorf("%s: %w", m, err))
 			return m
+		}
+		// path.Join drops a directory target's trailing slash, and that slash
+		// is the whole signal: the site reads a directory from it and nothing
+		// else, so `../adr` is routed as a page it never builds. A slash on a
+		// target that is no directory is reproduced too — the link is broken
+		// on the page that wrote it, and cleaning it here hid that.
+		if strings.HasSuffix(target, "/") {
+			rel += "/"
 		}
 		return "](" + rel + frag + ")"
 	})
+	return out, failed
 }
 
 // readDocRow pulls a page's H1, its first prose sentence, and — for an
@@ -151,7 +173,11 @@ func readDocRow(abs, rel string) (docRow, error) {
 		case row.IsADR && row.Status == "" && strings.HasPrefix(line, "- **Status**:"):
 			row.Status = firstSentence(strings.TrimPrefix(line, "- **Status**:"), 60)
 		case row.Summary == "" && isProse(line):
-			row.Summary = reanchor(firstSentence(line, 140), rel)
+			summary, err := reanchor(firstSentence(line, 140), rel)
+			if err != nil {
+				return row, fmt.Errorf("%s: %w", rel, err)
+			}
+			row.Summary = summary
 		}
 		if row.Title != "" && row.Summary != "" && (!row.IsADR || row.Status != "") {
 			break

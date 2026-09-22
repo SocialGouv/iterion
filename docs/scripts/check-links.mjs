@@ -34,7 +34,11 @@ const distFiles = new Set()
 })(dist)
 
 const siteExists = (sitePath) => {
-  const p = sitePath
+  // '.' and './' both name the site root: normalize() collapses `..` and `../`
+  // to one or the other depending only on the href's trailing slash, from any
+  // depth. dist keys carry neither prefix (path.join never emits one), so both
+  // must map to '' or the root is reported dead from every subdirectory.
+  const p = sitePath === '.' ? '' : sitePath.replace(/^\.\//, '')
   if (p === '' || p.endsWith('/')) return distFiles.has(p + 'index.html')
   if (/\.[a-z0-9]+$/i.test(p)) return distFiles.has(p) // asset with extension (css/js/png/ico…)
   return distFiles.has(p + '.html') || distFiles.has(p + '/index.html')

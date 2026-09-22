@@ -30,7 +30,7 @@ concurrency:
 # it inside the merge queue buys a verdict nobody can act on — while holding a
 # runner slot the queue needs. The org shares 20 concurrent jobs across every
 # repository, and a queue entry is a full CI cycle, so those slots are what
-# decides how long a merge takes. The seven advisory jobs below therefore run
+# decides how long a merge takes. The eight advisory jobs below therefore run
 # on the pull request and on main, and skip in `merge_group`.
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
@@ -91,12 +91,12 @@ concurrency:
 # deliberately the mechanism rather than an edit to this file: repairing by
 # merging does not work when merging is what is broken. Unset means on.
 #
-# Three jobs stay GitHub-hosted whatever the ref. One of them for a settled
-# reason — the upstream image ships no C compiler, which -race needs — and two
-# because of a startup race and an unexplained kind failure. Each says what is
-# measured at its own definition, and what is not; #981 carries the remedy.
-# Measured 2026-09-08: the other six pass on self-hosted, nine runner pods
-# starting at once with no queueing at all.
+# Five jobs carry a GitHub-hosted label whatever the ref. Three say why at
+# their own definition: the upstream image ships no C compiler, which -race
+# needs — that one is settled — plus a startup race and an unexplained kind
+# failure; #981 carries the remedy. Each says what is measured, and what is
+# not. Measured 2026-09-08, on the six jobs routed self-hosted at the time:
+# all six passed there, nine runner pods starting at once with no queueing.
 #
 # So the expression below reads, in three clauses:
 #
@@ -1016,3 +1016,50 @@ jobs:
       - name: Whole-tree backlog (informational)
         continue-on-error: true
         run: go run -mod=vendor ./scripts/docslinks
+
+  docs-build:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file. It builds the documentation
+    # site the way the `docs` workflow builds it before deploying, and that is
+    # the only check that sees a link dead ON THE SITE: `docs-links` resolves
+    # a link the way github.com does, and a link can be valid there and dead
+    # on the site, whose root is docs/. Measured (#1508): 318 such links rode
+    # main for three days, green on every required check, while the site
+    # stopped publishing. To promote this to a required check: delete the
+    # pull-request pin and add it to the ruleset.
+    #
+    # On the pull request AND on main, like every other advisory job. Main is
+    # not covered by `docs.yml`: its push trigger is path-filtered to docs/**,
+    # CHANGELOG.md, pnpm-workspace.yaml and itself, while the build reads the
+    # root package.json, pnpm-lock.yaml, .npmrc and every workspace manifest.
+    # Measured over 400 commits touching those files, 120 matched none of the
+    # filtered paths — a dependency bump can stop the site rebuilding and
+    # leave main green, which is the silence this job exists to break.
+    #
+    # No path filter here, deliberately: the change that broke the site was a
+    # Go change under pkg/, and the generated pages in docs/references/ are
+    # exactly where a Go change lands.
+    if: github.event_name != 'merge_group'
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Node, corepack and the build invocation are docs.yml's, copied rather
+      # than restated: a check that builds the site differently from the
+      # deploy proves nothing about the deploy.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --prefer-offline
+
+      # No continue-on-error: an advisory job that cannot go red is a job that
+      # reports nothing. It does not block the merge; it is meant to be SEEN.
+      - name: Build VitePress site
+        run: pnpm --filter @iterion/docs build

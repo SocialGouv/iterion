@@ -57,6 +57,35 @@ func Extractors() []Extractor {
 // OutputDir is where the committed maps live, relative to the repo root.
 const OutputDir = "docs/references"
 
+// linkTarget renders a repository-root-relative path as the link target a
+// generated map writes. Every link a map emits goes through it, so no two
+// columns can spell the same rule differently.
+//
+// The rule is one rewrite: the path relative to OutputDir. The documentation
+// site's root is docs/, so a target that climbs to the repository root —
+// `../../docs/quickstart.md` — leaves the site and names nothing there, while
+// rendering fine on github.com; written from docs/references/ instead,
+// `../quickstart.md` resolves on both. A target outside docs/ keeps climbing
+// (`../../pkg/runtime/pause.go`): the site rewrites it to a github.com blob
+// URL, which docs/scripts/check-links.mjs then resolves against the real tree.
+func linkTarget(repoRelPath string) (string, error) {
+	// The input is a path from the repository root. One that names the root
+	// itself, or climbs above it, reaches no file a reader of the map can
+	// open, and rewriting it only makes it climb further: refuse, naming it,
+	// rather than write it down. Cleaning first tests the property rather
+	// than an orthography — `./`, `a/..` and `docs/..` are that same root.
+	repoRelPath = filepath.ToSlash(filepath.Clean(repoRelPath))
+	if repoRelPath == "." || repoRelPath == ".." || strings.HasPrefix(repoRelPath, "../") {
+		return "", fmt.Errorf("repomap: %q leaves the repository — the page that quotes it has a broken link", repoRelPath)
+	}
+	rel, err := filepath.Rel(OutputDir, repoRelPath)
+	if err != nil {
+		return "", fmt.Errorf("repomap: link from %s to %s: %w", OutputDir, repoRelPath, err)
+	}
+	// filepath separators are the host's; a markdown target is always slashes.
+	return filepath.ToSlash(rel), nil
+}
+
 // Path returns an extractor's artifact path relative to the repo root.
 func Path(e Extractor) string {
 	return filepath.Join(OutputDir, "map-"+e.Stem()+".md")
@@ -136,7 +165,9 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // skipDir names the trees no map ever describes: vendored or installed
-// third-party code, sibling worktrees, and the engine's own run scratch.
+// third-party code, sibling worktrees, the engine's own run scratch, and
+// docs/.vitepress/, which holds the site's machinery — config, theme, build
+// output — and never a documented page.
 // A map that indexed vendor/ would be mostly vendor/.
 // `testdata` is here for the same reason the Go toolchain ignores it:
 // it is where a parser project keeps DELIBERATELY broken fixtures. A
@@ -147,7 +178,7 @@ var skipDir = map[string]bool{
 	"vendor": true, "node_modules": true, ".git": true, ".works": true,
 	".repos": true, ".iterion": true, ".devbox": true, "graphify-out": true,
 	".claude": true, ".task": true, "dist": true, ".pnpm-store": true,
-	"testdata": true,
+	".vitepress": true, "testdata": true,
 }
 
 // walkDirs visits every directory under root that is not skipped,
