@@ -45,10 +45,21 @@ func TestCommand_OnClaudeCodeNoWarning(t *testing.T) {
 	expectNoDiag(t, r, DiagCommandIgnored)
 }
 
-// An env-ref backend resolves only at run time; the literal text isn't the
-// resolved backend, so the validator must defer and not warn.
-func TestCommand_EnvRefBackendSkips(t *testing.T) {
-	r := compileFile(t, commandSrc("${BACKEND:-claw}", "claude-canary"))
+// A backend written as a dial is read by what it RESOLVES to: with no env
+// set, `${BACKEND:-claw}` IS claw, and claw ignores `command:` exactly as
+// the literal spelling does. Deferring on the spelling meant an author
+// learned it at run time instead (#1389).
+func TestCommand_EnvRefBackendIsReadByItsDefault(t *testing.T) {
+	r := compileFile(t, commandSrc("${C174_UNSET:-claw}", "claude-canary"))
+	expectDiag(t, r, DiagCommandIgnored)
+
+	// claude_code honours the override, dialled or not.
+	r = compileFile(t, commandSrc("${C174_UNSET:-claude_code}", "claude-canary"))
+	expectNoDiag(t, r, DiagCommandIgnored)
+
+	// A reference nothing answers has no compile-time value: the run
+	// decides it, and the validator defers as it always did.
+	r = compileFile(t, commandSrc("${C174_UNSET}", "claude-canary"))
 	expectNoDiag(t, r, DiagCommandIgnored)
 }
 

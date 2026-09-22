@@ -197,6 +197,37 @@ a backend in this order (first non-empty wins):
    credentials are detected on the host
 5. `claw` — last-resort fallback
 
+Steps 1 and 2 are read through the same `${VAR}` / `${VAR:-default}`
+expansion every routing field honours, and **the compiler reads them by
+their DEFAULT**: `backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"` is
+screened as `claude_code`, so the cross-backend checks a dialled node used
+to escape — the `tools:` inversion, the session-continuity refusal, the
+permission gate on the primary route, the effort drift, the memory and
+provider-hint warnings (C047/C088/C135/C136/C173/C174/C176/C177/C267) —
+apply to it exactly as to a literal (#1389).
+
+The compiler reads the DEFAULT and never the shell it happens to run in:
+`ir.Compile` runs in the server pod, in the runner pod and on a laptop, and
+a verdict that moved with the ambient environment would give one artifact
+three answers. What the dial is actually set to is screened where it is
+actually read — the launch-time `--fallback` admission, which runs in the
+process that dispatches the node.
+
+Two forms fall through to the next step of the chain: an empty field, and
+`auto` — on a NODE. A third kind is undecided: a field the source writes
+but does not answer — a `${X}` with no `:-` default, a bare `$X`, a
+`{{vars.x}}` a launch may override. Those do **not** fall through to
+`default_backend:`, because which branch the run takes is not knowable from
+the source (an undeclared `{{vars.zz}}` reaches the registry as that text, a
+set `${X}` names a backend), and a screen that guessed would certify a
+backend the run never uses.
+
+`auto` on a **route** is not a step of the chain: `resolveChain` normalises
+`auto` on a route's `provider:` and never on its `backend:`, so an explicit
+`fallbacks: { r: { backend: "auto" } }` reaches a registry that has no
+backend by that name and dies at the moment the chain is needed. It is
+screened as the name it is.
+
 The empty-template path lands on step 4. The pill in the studio
 toolbar surfaces what the auto-resolver picked (and turns red when
 no credential is available). Settings → Backends lists every detected

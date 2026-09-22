@@ -66,12 +66,20 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 		if !ok {
 			continue
 		}
-		nodeBackend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
+		// The RUN's reading on both sides: this screen runs in the process
+		// that will dispatch the node, so a dial set in that process's
+		// environment IS the route, where the compiler may only read what
+		// the source declares.
+		nodeBackend := runBackend.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
 		perm := EffectivePermission(nn.GetPermission(), w.Permission)
 		for stage, route := range routes {
 			if route.Backend == "" && route.Model == "" && route.Provider == "" {
 				continue
 			}
+			// The route's backend as the run reads it, so an operator's
+			// `--fallback '${DIAL:-claw} …'` is screened by what it
+			// resolves to rather than by its spelling.
+			routeBackend := runBackend.routeName(route.Backend)
 			route.Name = RunFallbackName
 			route.RunStage = stage
 			route.RunStageSet = true
@@ -79,15 +87,15 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 				refusals = append(refusals, fmt.Sprintf(
 					"agent %q: run-level fallback stage %d %s", nn.NodeID(), stage+1, reason))
 			}
-			if reason := UngatedCrossingReasonForAskRules(route.Backend, perm, EffectiveAskRules(nn, w)); reason != "" {
+			if reason := UngatedCrossingReasonForAskRules(routeBackend, perm, EffectiveAskRules(nn, w)); reason != "" {
 				refuse(reason)
 				continue
 			}
-			if reason := toolsInversionReason(nodeBackend, route.Backend, nn.GetTools()); reason != "" {
+			if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
 				refuse(reason)
 				continue
 			}
-			if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, route.Backend); reason != "" {
+			if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
 				refuse(reason)
 				continue
 			}
@@ -97,7 +105,7 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 			// tool whose catalog is merged after compilation, and dropping an
 			// operator's explicit route on that guess is worse than taking it.
 			// Same tiering as the diagnostic — see toolDiagReporter.
-			if reason := unresolvableToolsReason(route.Backend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
+			if reason := unresolvableToolsReason(routeBackend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
 				refuse(reason)
 				continue
 			}
@@ -106,7 +114,7 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 			// so a codex stage on a sandboxed run would fail EXACTLY when
 			// the chain is needed, which is worse than not having it.
 			// Refused here, at launch, where the operator is told.
-			if route.Backend == "codex" && sandboxed {
+			if routeBackend == "codex" && sandboxed {
 				refuse("targets the codex CLI, which cannot run inside the sandbox this run resolves to — set sandbox: none (workflow block or ITERION_SANDBOX_OVERRIDE), or route to claude_code/claw")
 				continue
 			}

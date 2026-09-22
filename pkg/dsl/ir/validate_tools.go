@@ -74,14 +74,15 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 		// first claw route: every route shares this list, so repeating the
 		// message per route would say nothing new.
 		for _, fb := range nn.GetFallbacks() {
-			if !toolcatalog.ConstrainsTools(fb.Backend) {
+			route := sourceBackend.routeName(fb.Backend)
+			if !toolcatalog.ConstrainsTools(route) {
 				continue
 			}
 			for _, name := range unresolvable {
 				d := c.toolDiagReporter(w, n, name)
 				d.report(DiagUnknownTool, id, "",
 					"%s %q: tools: names %q, which fallback %s %s on backend %q — the route would fail at the moment the run is already falling back%s",
-					kind, id, name, fallbackLabel(fb), d.routeConsequence(), fb.Backend, d.hint(name))
+					kind, id, name, fallbackLabel(fb), d.routeConsequence(), route, d.hint(name))
 			}
 			break
 		}

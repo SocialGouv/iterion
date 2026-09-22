@@ -1,7 +1,5 @@
 package ir
 
-import "strings"
-
 // Per-node CLI-command diagnostics.
 const (
 	DiagCommandIgnored DiagCode = "C174" // `command:` set on a backend that does not consume it (warning)
@@ -45,18 +43,13 @@ func (c *compiler) validateCommand(w *Workflow) {
 		if f.Command == "" {
 			continue
 		}
-		// Resolve the effective backend: the node's own `backend:` wins; an
-		// empty/`auto` node backend falls back to the workflow default,
-		// exactly as resolveBackendName does at run time. An env-ref node
-		// backend is kept as-is (the node made an explicit, unresolvable
-		// choice — don't override it with the workflow default).
-		backend := f.Backend
-		if backend == "" || backend == "auto" {
-			backend = w.DefaultBackend
-		}
-		// Empty/auto backend and env-ref forms resolve at run time; the
-		// literal text isn't the resolved backend, so defer to runtime.
-		if backend == "" || backend == "auto" || strings.Contains(backend, "${") {
+		// The effective backend, read as the run reads it — the node's own
+		// `backend:` with its `${VAR:-default}` resolved, falling back to
+		// the workflow default when it answers nothing. The one reading
+		// every backend screen shares (effectiveNodeBackend); "" is the
+		// run's decision to make.
+		backend := effectiveNodeBackend(f.Backend, w.DefaultBackend)
+		if backend == "" {
 			continue
 		}
 		if commandIgnoringBackends[backend] {

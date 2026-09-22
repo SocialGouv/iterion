@@ -160,8 +160,8 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 		routes = append(routes, nodeBackend)
 	}
 	for _, fb := range nn.GetFallbacks() {
-		if externalHookGateBackends[fb.Backend] {
-			routes = append(routes, fb.Backend)
+		if route := sourceBackend.routeName(fb.Backend); externalHookGateBackends[route] {
+			routes = append(routes, route)
 		}
 	}
 	if len(routes) > 0 {
@@ -186,8 +186,8 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 			clawRoutes = append(clawRoutes, nodeBackend)
 		}
 		for _, fb := range nn.GetFallbacks() {
-			if fb.Backend == clawBackendName {
-				clawRoutes = append(clawRoutes, fb.Backend)
+			if sourceBackend.routeName(fb.Backend) == clawBackendName {
+				clawRoutes = append(clawRoutes, clawBackendName)
 			}
 		}
 		if len(clawRoutes) > 0 {
@@ -302,10 +302,10 @@ func (c *compiler) checkFallbackShape(kind, id string, fb Fallback, seen map[str
 	}
 	// A backend change with an inherited model cannot work: the
 	// model-spec forms are mutually incompatible across backends.
-	if fb.Backend != "" && fb.Model == "" && !strings.Contains(fb.Backend, "${") {
+	if route := sourceBackend.routeName(fb.Backend); route != "" && fb.Model == "" {
 		c.errorfAt(DiagFallbackMalformed, id, "",
 			"%s %q: fallback %s switches to backend %q without its own model: — model specs are not portable across backends (claw needs `provider/model`, claude_code accepts only a bare id or an `anthropic/` prefix)",
-			kind, id, label, fb.Backend)
+			kind, id, label, route)
 	}
 }
 
@@ -328,8 +328,11 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 // run-level route is screened by — so an operator cannot reach through
 // `--fallback` a crossing the compiler refuses in the .bot.
 func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, askRules []string) {
-	// An env-ref backend is not knowable here; defer to the runtime.
-	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
+	// The route's backend, read as the run reads it: a dial's default is
+	// the route this chain takes, and screening only the literal spelling
+	// left every dialled route unscreened.
+	routeBackend := sourceBackend.routeName(fb.Backend)
+	if routeBackend == "" {
 		return
 	}
 	label := fallbackLabel(fb)
@@ -339,7 +342,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := UngatedCrossingReasonForAskRules(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
+	if reason := UngatedCrossingReasonForAskRules(routeBackend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -349,11 +352,11 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	if nodeBackend == "" {
 		return
 	}
-	if reason := toolsInversionReason(nodeBackend, fb.Backend, nn.GetTools()); reason != "" {
+	if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
-	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, fb.Backend); reason != "" {
+	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -363,10 +366,10 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// the crossing, and it applies to the node's own backend too.
 
 	// Reasoning effort degrades rather than misleads, so it warns.
-	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[fb.Backend] {
+	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[routeBackend] {
 		c.warnfAt(DiagFallbackDrift, id, "",
 			"%s %q: fallback %s runs on backend %q, which has no reasoning-effort dial; the node's reasoning_effort: %s is ignored on that route",
-			kind, id, label, fb.Backend, effort)
+			kind, id, label, routeBackend, effort)
 	}
 }
 
@@ -532,24 +535,122 @@ func sessionContinuityCrossingReason(session SessionMode, nodeBackend, routeBack
 	}
 }
 
-// effectiveNodeBackend mirrors the runtime precedence knowable at
-// compile time: the node's own `backend:` wins, an empty/`auto` one
-// falls back to the workflow default. An env-ref or still-empty result
-// is returned as "" — the literal text is not the resolved backend, so
-// a check keyed on it would misfire.
+// backendReader is how a backend field is read. Two readings exist, and
+// the difference is which environment answers a `${…}`:
+//
+//   - sourceBackend — what the SOURCE declares. A dial is read by its
+//     DEFAULT and never by the shell that happens to be compiling: a
+//     compile verdict that moved with the ambient environment would make
+//     one artifact compile on one machine and fail on another, and the
+//     compiler here runs in the server and runner pods, neither of which
+//     is the process that will dispatch the node.
+//   - runBackend — what the RUN resolves, process environment included.
+//     The launch-time screen uses it, because there the environment IS
+//     the route.
+//
+// Before either existed, every screen keyed on the literal text, so a
+// backend written `${ITERION_SEC_AUDIT_BACKEND:-claude_code}` was "no
+// opinion" and `""` short-circuited every comparison: the `tools:`
+// inversion, the session-continuity refusal, the effort drift and the
+// primary-route gate check all silently stopped applying to it (#1389).
+// A dial's default is exactly as knowable as a literal.
+type backendReader struct {
+	lookup func(string) string
+	// asWritten keeps a reference nothing answers as written, so
+	// `${X}` with no `:-` reads as a field the SOURCE does not decide
+	// rather than as an absent one.
+	asWritten bool
+}
+
+var (
+	sourceBackend = backendReader{lookup: noEnvLookup, asWritten: true}
+	runBackend    = backendReader{lookup: lookupEnv}
+)
+
+// field answers what one backend field resolves to, and whether anything
+// at this level DECIDES it:
+//
+//	("claw", true)  — a name
+//	("", true)      — absent or `auto`: the next step of the chain decides
+//	("", false)     — present, and this reading cannot decide it: a
+//	                  `{{vars.x}}` a launch may override, a `${X}` or a
+//	                  bare `$X` the source does not answer. Which branch
+//	                  the run takes is not knowable here — an undeclared
+//	                  `{{vars.zz}}` reaches the registry as that text,
+//	                  while a set `${X}` names a backend — so a screen may
+//	                  neither name one nor substitute the workflow default.
+func (r backendReader) field(name string) (string, bool) {
+	if resolved, ok := r.resolve(name); ok {
+		if resolved == "auto" {
+			return "", true
+		}
+		return resolved, true
+	}
+	return "", false
+}
+
+// resolve expands a backend field and says whether the result is a name at
+// all. A reference the reading could not answer — `${X}` with no `:-`, a
+// bare `$X`, a `{{vars.x}}` a launch may override, an unterminated `${` —
+// is NOT a backend called that: the text is what the source wrote, and
+// naming a backend `$MY_BACKEND` refused a gated workflow that was fine
+// and passed a claw⇄CLI crossing that was not.
+func (r backendReader) resolve(name string) (string, bool) {
+	expanded, _ := expandWithDefault(name, r.lookup, expandPolicy{keepUnresolved: r.asWritten})
+	expanded = strings.TrimSpace(expanded)
+	if strings.ContainsRune(expanded, '$') || strings.Contains(expanded, "{{") {
+		return "", false
+	}
+	return expanded, true
+}
+
+// name is field without the decision bit, for a site that only screens a
+// backend it can name.
+func (r backendReader) name(field string) string {
+	n, _ := r.field(field)
+	return n
+}
+
+// routeName is the reading a ROUTE's backend takes, where `auto` is a NAME
+// rather than a step of a chain.
+//
+// The difference is the runtime's: resolveChain normalises `auto` on a
+// route's `provider:` and never on its `backend:`, so an explicit
+// `backend: "auto"` reaches the registry, which has no backend by that
+// name — the route dies at the moment the chain is needed. Reading it as
+// "the chain decides" would take every screen off a route that cannot run.
+func (r backendReader) routeName(field string) string {
+	n, _ := r.resolve(field)
+	return n
+}
+
+// effective mirrors the runtime precedence: the node's own `backend:`
+// wins, and only an ABSENT or `auto` one falls through to the workflow
+// default — exactly the two cases resolveBackendName falls through on.
+func (r backendReader) effective(nodeBackend, workflowDefault string) string {
+	if n, decides := r.field(nodeBackend); n != "" || !decides {
+		return n
+	}
+	return r.name(workflowDefault)
+}
+
+// SourceBackendName is the source reading of ONE backend field, for a host
+// outside this package: the Studio's launch preview screens a node the same
+// way the compiler does, and reading the raw text there made a dialled node
+// look like a backend nobody has — so the capability-drift disclosure the
+// picker owes the operator simply disappeared. "" means the source does not
+// name a backend (empty, `auto`, or a reference this reading cannot answer).
+func SourceBackendName(name string) string {
+	return sourceBackend.name(name)
+}
+
+// effectiveNodeBackend is the compile-time reading of a node's route.
 //
 // Copied from validateCommand rather than validateProviders, which
 // reads f.Backend raw and therefore under-fires on every node that
 // inherits `default_backend:`.
 func effectiveNodeBackend(nodeBackend, workflowDefault string) string {
-	backend := nodeBackend
-	if backend == "" || backend == "auto" {
-		backend = workflowDefault
-	}
-	if backend == "" || backend == "auto" || strings.Contains(backend, "${") {
-		return ""
-	}
-	return backend
+	return sourceBackend.effective(nodeBackend, workflowDefault)
 }
 
 // fallbackLabel renders a route for a diagnostic message.

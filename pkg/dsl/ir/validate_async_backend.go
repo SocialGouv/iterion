@@ -1,8 +1,9 @@
 package ir
 
 // validateAsyncBackends diagnoses the built-in routes whose lack of async
-// tools is knowable before launch. Auto/env-selected and out-of-tree backends
-// are checked against their actual capability by the executor at dispatch.
+// tools is knowable before launch. A route the source does not decide —
+// empty, `auto`, a `{{vars.x}}` the launch may override — is checked
+// against its actual capability by the executor at dispatch.
 func (c *compiler) validateAsyncBackends(w *Workflow) {
 	for _, node := range w.Nodes {
 		n, ok := node.(LLMNode)
@@ -20,8 +21,8 @@ func (c *compiler) validateAsyncBackends(w *Workflow) {
 		check(primary, "primary")
 		for _, fallback := range n.GetFallbacks() {
 			// An omitted backend uses the primary route, already checked.
-			if fallback.Backend != "" && fallback.Backend != "auto" && fallback.Backend != primary {
-				check(fallback.Backend, "fallback "+fallbackLabel(fallback))
+			if route := sourceBackend.routeName(fallback.Backend); route != "" && route != primary {
+				check(route, "fallback "+fallbackLabel(fallback))
 			}
 		}
 	}
