@@ -94,7 +94,7 @@ func (u *Unit) HasErrors() bool {
 // Files are parsed under their absolute path, so an include inside a
 // fragment resolves beside the fragment.
 func LoadDir(mainPath string) *Unit {
-	return loadDir(mainPath, "", nil)
+	return loadDir(mainPath, "", nil, nil)
 }
 
 // LoadDirStaged is LoadDir with some files' contents supplied — keyed by
@@ -102,7 +102,7 @@ func LoadDir(mainPath string) *Unit {
 // save checks, before it writes, that every importer of a rewritten
 // fragment still loads against the staged text.
 func LoadDirStaged(mainPath string, staged map[string][]byte) *Unit {
-	return loadDir(mainPath, "", staged)
+	return loadDir(mainPath, "", staged, nil)
 }
 
 // LoadDirWithMain is LoadDir with the main's text supplied — an editor's
@@ -111,10 +111,25 @@ func LoadDirStaged(mainPath string, staged map[string][]byte) *Unit {
 // caller compiles the document as; an include in it resolves beside that
 // name), the fragments under their own absolute paths.
 func LoadDirWithMain(mainPath, mainName string, source []byte) *Unit {
-	return loadDir(mainPath, mainName, map[string][]byte{filepath.Base(mainPath): source})
+	return loadDir(mainPath, mainName, map[string][]byte{filepath.Base(mainPath): source}, nil)
 }
 
-func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
+// LoadDirWithMainAST is LoadDirWithMain with the main already PARSED — an
+// author document (pkg/dsl/author) read into an AST whose positions are
+// the document's own — while the fragments its imports name are read
+// beside mainPath on disk and parsed as ever. The three identities of such
+// a unit are the caller's to name: mainPath is the `.bot` the document
+// stands for, whose directory is the unit's root (`lib/` under it holds
+// the fragments) and whose name is the main's Rel; mainName is the name
+// every position of the main carries — the document's own path — and what
+// its diagnostics point at; source is the document's text, which the
+// unit's Digest covers in place of a `.bot`'s. The main is the unit's main
+// whatever it declares: a document is never read as a fragment.
+func LoadDirWithMainAST(mainPath, mainName string, f *ast.File, source []byte) *Unit {
+	return loadDir(mainPath, mainName, map[string][]byte{filepath.Base(mainPath): source}, f)
+}
+
+func loadDir(mainPath, mainName string, staged map[string][]byte, mainAST *ast.File) *Unit {
 	abs, err := filepath.Abs(mainPath)
 	if err != nil {
 		abs = mainPath
@@ -127,8 +142,9 @@ func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
 	// name, so a sibling it imports by bare name resolves as it does
 	// through the main, held to the same rule. A main — a file with a
 	// workflow — stays where it is, whatever its directory is called, and
-	// so does the confinement of its imports.
-	if fragRoot, rel, ok := fragmentAlone(abs, staged[mainRel]); ok {
+	// so does the confinement of its imports. A main handed over parsed is
+	// held to the same rule, read off its AST instead of its text.
+	if fragRoot, rel, ok := fragmentAlone(abs, staged[mainRel], mainAST); ok {
 		root, mainRel = fragRoot, rel
 		if len(staged) > 0 {
 			prefix := path.Dir(rel)
@@ -176,17 +192,18 @@ func loadDir(mainPath, mainName string, staged map[string][]byte) *Unit {
 		}
 		return filepath.Join(root, filepath.FromSlash(rel))
 	}
-	u := Load(read, mainRel, name)
+	u := load(read, mainRel, name, mainAST)
 	u.Root = root
 	return u
 }
 
-// fragmentAlone reports whether the file at abs — read from text when
-// given, from disk otherwise — is a fragment loaded on its own: a file
-// that declares no workflow below a directory named lib/. It returns the
-// root of the bot that lib/ belongs to, the parent of the NEAREST lib/
-// ancestor, and the file's slash path from it.
-func fragmentAlone(abs string, text []byte) (root, rel string, ok bool) {
+// fragmentAlone reports whether the file at abs — its AST when the caller
+// parsed it, else read from text when given, from disk otherwise — is a
+// fragment loaded on its own: a file that declares no workflow below a
+// directory named lib/. It returns the root of the bot that lib/ belongs
+// to, the parent of the NEAREST lib/ ancestor, and the file's slash path
+// from it.
+func fragmentAlone(abs string, text []byte, parsed *ast.File) (root, rel string, ok bool) {
 	libDir := ""
 	for d := filepath.Dir(abs); ; d = filepath.Dir(d) {
 		if filepath.Base(d) == FragmentDir {
@@ -197,14 +214,17 @@ func fragmentAlone(abs string, text []byte) (root, rel string, ok bool) {
 			return "", "", false
 		}
 	}
-	if text == nil {
-		b, err := os.ReadFile(abs) // #nosec G304 -- the path the caller named
-		if err != nil {
-			return "", "", false
+	if parsed == nil {
+		if text == nil {
+			b, err := os.ReadFile(abs) // #nosec G304 -- the path the caller named
+			if err != nil {
+				return "", "", false
+			}
+			text = b
 		}
-		text = b
+		parsed = parser.Parse(abs, string(text)).File
 	}
-	if pr := parser.Parse(abs, string(text)); pr.File == nil || len(pr.File.Workflows) > 0 {
+	if parsed == nil || len(parsed.Workflows) > 0 {
 		return "", "", false
 	}
 	root = filepath.Dir(libDir)
@@ -232,7 +252,13 @@ func LoadMap(files map[string]string, main string) *Unit {
 // Load loads the unit through read, starting at main, naming each file for
 // the parser with name.
 func Load(read Reader, main string, name func(rel string) string) *Unit {
-	l := &loader{read: read, name: name, u: &Unit{Main: path.Clean(main)}, state: map[string]int{}}
+	return load(read, main, name, nil)
+}
+
+// load is Load with the main's AST supplied, when the caller parsed it
+// (LoadDirWithMainAST); the main's text is still read for the digest.
+func load(read Reader, main string, name func(rel string) string, mainAST *ast.File) *Unit {
+	l := &loader{read: read, name: name, u: &Unit{Main: path.Clean(main)}, state: map[string]int{}, mainAST: mainAST}
 	l.fragmentPrefix = fragmentPrefixOf(l.u.Main)
 	l.visit(l.u.Main, nil, "")
 	l.u.Files = l.files
@@ -274,6 +300,9 @@ type loader struct {
 	stack []string
 	// fragmentPrefix is where this unit's fragments live, from the root.
 	fragmentPrefix string
+	// mainAST is the main's AST when the caller parsed the main itself;
+	// nil when the loader parses it like every other file.
+	mainAST *ast.File
 }
 
 // fragmentPrefixOf is the slash prefix under which the fragments of the
@@ -323,7 +352,14 @@ func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
 	name := l.name(rel)
 	l.state[rel] = stateLoading
 	l.stack = append(l.stack, rel)
-	pr := parser.Parse(name, string(src))
+	var pr *parser.ParseResult
+	if isMain && l.mainAST != nil {
+		// Parsed by the caller: its diagnostics are the caller's, and a
+		// document has no profile-1 reads of its own text.
+		pr = &parser.ParseResult{File: l.mainAST}
+	} else {
+		pr = parser.Parse(name, string(src))
+	}
 	l.u.Diagnostics = append(l.u.Diagnostics, pr.Diagnostics...)
 	f := File{Rel: rel, Name: name, Source: src, AST: pr.File, ProfileReads: pr.ProfileReads}
 	if pr.File != nil {
