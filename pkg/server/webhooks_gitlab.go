@@ -256,7 +256,9 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
-		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra)
+		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra,
+		// Trusted: the MR lane refuses a proven fork above.
+		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a
 	// volley of pushes costs one review of the final head (a re-request

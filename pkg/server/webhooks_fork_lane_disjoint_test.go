@@ -183,3 +183,41 @@ func TestLaunchWebhookTarget_TrustPredicateAndPinCoupling(t *testing.T) {
 		}
 	})
 }
+
+// forgePREventTargets is the target builder for BOTH PR-event lanes — the
+// auto-review path, which IS the fork review lane's primary route. The
+// provenance was threaded through every other launch route (the command lane,
+// the debounce row, the board dispatch) and stopped one call short of this
+// one, so a fork-lane config could admit nothing: its own builder produced
+// targets with no trust, which the disjointness gate then refused.
+//
+// The shipped disjointness table cannot see that — it hand-builds its
+// targets, never calling this. A stub that supplies the field under test
+// certifies nothing about the code that must supply it.
+func TestForgePREventTargets_CarriesTheLaunchProvenance(t *testing.T) {
+	cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub}
+	rules := []webhooks.BotRule{{BotID: "review-pr"}, {BotID: "second-bot"}}
+	build := func(prov launchProvenance) []forgeLaunchTarget {
+		return forgePREventTargets(cfg, rules, "idem", "https://github.com/o/r/pull/7", "main", "notes",
+			"https://github.com/o/r.git", "refs/pull/7/head", nil, prov)
+	}
+
+	prov := launchProvenance{Trust: store.RunTrustFork, ExpectedSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	got := build(prov)
+	if len(got) != 2 {
+		t.Fatalf("built %d targets, want one per rule", len(got))
+	}
+	for _, target := range got {
+		if target.Trust != prov.Trust || target.ExpectedSHA != prov.ExpectedSHA {
+			t.Fatalf("%s: trust=%q pin=%q — every target of the fan-out must carry it, or one bot launches neutered and its sibling does not",
+				target.BotID, target.Trust, target.ExpectedSHA)
+		}
+	}
+
+	// And the zero value keeps both of today's callers byte-identical.
+	for _, target := range build(launchProvenance{}) {
+		if !target.Trust.Trusted() || target.ExpectedSHA != "" {
+			t.Fatalf("%s: a trusted caller produced trust=%q pin=%q, want the untouched defaults", target.BotID, target.Trust, target.ExpectedSHA)
+		}
+	}
+}

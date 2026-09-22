@@ -621,6 +621,30 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	if got.RepoSHAExpected == "" {
 		t.Errorf("RepoSHAExpected was cleared by a stale save; want the pinned commit to survive")
 	}
+	// And a saver carrying a DIFFERENT non-empty value must not overwrite it
+	// either: write-once means the first answer stands, whatever a later
+	// writer believes. The two store twins disagreed here — one kept the
+	// persisted value, the other let a non-empty incoming value win — and a
+	// guarantee that depends on which store a deployment runs is not one.
+	rival, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun (rival): %v", err)
+	}
+	rival.Trust = store.RunTrustDefault + "some-other-class"
+	rival.RepoSHAExpected = "1111111111111111111111111111111111111111"
+	if err := s.SaveRun(ctx, rival); err != nil {
+		t.Fatalf("SaveRun (rival): %v", err)
+	}
+	after, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after the rival save: %v", err)
+	}
+	if after.Trust != store.RunTrustFork {
+		t.Errorf("Trust = %q after a save carrying another class; want %q to stand — write-once means the first answer wins", after.Trust, store.RunTrustFork)
+	}
+	if after.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Errorf("RepoSHAExpected = %q after a rival save; want the original pin", after.RepoSHAExpected)
+	}
 }
 
 // testParentedRunCreator exercises the optional ParentedRunCreator surface

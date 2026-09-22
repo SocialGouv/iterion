@@ -538,6 +538,7 @@ func forgePREventTargets(
 	rules []webhooks.BotRule,
 	idemBase, prURL, baseRef, scopeNotes, cloneURL, sourceBranch string,
 	extra map[string]string,
+	prov launchProvenance,
 ) []forgeLaunchTarget {
 	targets := make([]forgeLaunchTarget, 0, len(rules))
 	for _, rule := range rules {
@@ -560,6 +561,13 @@ func forgePREventTargets(
 			Vars:    vars,
 			RepoURL: cloneURL,
 			RepoRef: sourceBranch,
+			// The PR-event lane IS the fork review lane's primary path, so
+			// this builder needs a seat for what the admission proved — the
+			// provenance was threaded through every other launch route and
+			// stopped one call short of this one. The zero value is the
+			// trusted default, so both of today's callers are unchanged.
+			Trust:       prov.Trust,
+			ExpectedSHA: prov.ExpectedSHA,
 		})
 	}
 	return targets
@@ -717,8 +725,27 @@ func (s *Server) writeSingleLaunchResult(w http.ResponseWriter, r *http.Request,
 		writeJSONStatus(w, http.StatusAccepted, map[string]string{
 			"status": webhooks.StatusLaunched, "run_id": res.RunID, "delivery_id": res.DeliveryID,
 		})
+	case res.Status == webhooks.StatusFiltered:
+		// A refusal the TAIL decided (lane-kind mismatch, a missing commit
+		// pin). It answers exactly what every other filtered outcome on these
+		// lanes answers — 200 with the reason — because a 4xx/5xx teaches the
+		// forge to disable the hook after repeated failures, and a refusal is
+		// a normal verdict, not a delivery it should retry.
+		writeJSONStatus(w, http.StatusOK, map[string]string{
+			"status": webhooks.StatusFiltered, "error": res.Error,
+		})
 	default:
-		httpError(w, res.httpStatus, "%s", res.Error)
+		// Floor the code. httpError with 0 reaches WriteHeader(0), which
+		// net/http PANICS on — killing the request goroutine, so the forge
+		// sees a dropped connection instead of an answer while the delivery
+		// row already reads terminal. Every status the tail can return needs
+		// an arm above; this makes the next one that forgets a 500 instead of
+		// a crash.
+		code := res.httpStatus
+		if code == 0 {
+			code = http.StatusInternalServerError
+		}
+		httpError(w, code, "%s", res.Error)
 	}
 }
 
@@ -1083,8 +1110,17 @@ func (s *Server) insertAndLaunchWebhookMulti(
 	case firstDenial != nil:
 		s.writeLaunchDenial(w, r, firstDenial)
 	default:
+		// The aggregate starts at "duplicate" because a fan-out where nothing
+		// launched was historically a replay. It is not, once the tail can
+		// REFUSE: a fan-out refused on lane kind or a missing commit pin
+		// reported itself as a replay, which is the one reading that makes an
+		// operator stop looking. Filtered wins over duplicate; a launch error
+		// still wins over both.
 		status, code := webhooks.StatusDuplicate, http.StatusOK
 		for _, res := range results {
+			if res.Status == webhooks.StatusFiltered && status == webhooks.StatusDuplicate {
+				status = webhooks.StatusFiltered
+			}
 			if res.Status == webhooks.StatusLaunchError || res.httpStatus >= 500 {
 				status, code = webhooks.StatusLaunchError, http.StatusBadGateway
 				break
@@ -1374,14 +1410,24 @@ func (s *Server) launchWebhookTarget(
 	// review, so the minutes between the push and the verdict read as
 	// "running" instead of as the absence they are indistinguishable from.
 	// After the launch, because the marker carries the run's URL.
-	s.markGateInFlight(ctx, cfg.TenantID, botID, vars, runID)
+	// Both of these WRITE to the forge, through the SERVER's connection rather
+	// than the run's grant — which is why withdrawing the grant vars does not
+	// stop them. An untrusted run must make no forge mutation at all: the
+	// pending status it would claim is one it can never answer (it has no
+	// grant to publish a verdict with, and the reconciler abstains on a run
+	// whose grant is absent), so a required check would stay pending forever
+	// and the pull request would be permanently unmergeable. One predicate
+	// for both writes, not a copy on each.
+	if t.Trust.Trusted() {
+		s.markGateInFlight(ctx, cfg.TenantID, botID, vars, runID)
 
-	// And, for a FIXER, claim a context of its own. It holds no gate_context
-	// — it answers a review rather than gating the merge — so the line above
-	// is silent for it, and a fixer rewriting the branch was visible nowhere
-	// until it reported. A push in that window collides with its push-back and
-	// costs the pass. Separate context on purpose: never the gate's.
-	s.markFixInFlight(ctx, cfg.TenantID, cfg.TenantID, botID, vars, runID)
+		// And, for a FIXER, claim a context of its own. It holds no gate_context
+		// — it answers a review rather than gating the merge — so the line above
+		// is silent for it, and a fixer rewriting the branch was visible nowhere
+		// until it reported. A push in that window collides with its push-back and
+		// costs the pass. Separate context on purpose: never the gate's.
+		s.markFixInFlight(ctx, cfg.TenantID, cfg.TenantID, botID, vars, runID)
+	}
 
 	// Mirror the launch onto the trigger spine (observational; carries
 	// launched_run_id so the evaluator never re-launches). Unifies forge with

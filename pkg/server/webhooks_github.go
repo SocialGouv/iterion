@@ -380,7 +380,11 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	}
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
-	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch, extra)
+	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch, extra,
+		// Trusted: the fork guard above proved the head lives in this
+		// repository. The fork review lane fills this in with the commit its
+		// opt-in gesture proved.
+		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a
 	// volley of pushes costs one review of the final head (a re-request
