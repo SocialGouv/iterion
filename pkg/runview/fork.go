@@ -204,7 +204,6 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// branch (checked FIRST, and taken by any workflow declaring
 	// `worktree: auto`) and the local branch silently dropped it.
 	child.Trust = parent.Trust
-	child.RepoSHAExpected = parent.RepoSHAExpected
 	if parent.Worktree {
 		// A fork materialises a checkout without entering Engine.Run, so it
 		// must ask the same shared-pool bound itself before growing the pool.
@@ -232,6 +231,16 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		child.ProjectPath = parent.ProjectPath
 		child.BotID = parent.BotID
 		child.SecretOverrides = parent.SecretOverrides
+		// The pin belongs HERE and not above the branch, beside the
+		// RepoURL/RepoSHA it certifies. Hoisted, it produced a child with an
+		// admitted commit and nothing to clone — a document the runner
+		// refuses outright, manufactured by the very commit that added the
+		// refusal. On the worktree and local arms there is no clone and no
+		// fetch, so there is nothing for a pin to certify: the child
+		// re-executes a tree already materialised from the parent's own
+		// verified checkout. Trust stays hoisted — it has no such
+		// precondition, and the child inherits every withdrawal.
+		child.RepoSHAExpected = parent.RepoSHAExpected
 	} else {
 		// Non-worktree local parent: child inherits the parent's WorkDir
 		// (typically the user's cwd). Rewind is meaningless; ignore

@@ -175,6 +175,8 @@ type Engine struct {
 	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
 	filePath                 string                               // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
 	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions
+	trust                    store.RunTrust                       // who wrote the code in this run's workspace, set via WithTrust
+	repoSHAExpected          string                               // the commit the admission pinned, set via WithTrust
 	parentNodeID             string                               // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                   string                               // in-source preset name selected at launch, set via WithPreset
 	runName                  string                               // deterministic human-friendly run label, set via WithRunName

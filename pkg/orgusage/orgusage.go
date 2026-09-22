@@ -12,6 +12,7 @@ package orgusage
 import (
 	"context"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -123,7 +124,15 @@ func OrgSubject(orgOrTeamID string) Subject { return Subject("org|" + orgOrTeamI
 // own budget is metered on (the org id, team id only for a pre-backfill row),
 // because pkg/cloud/orgsweep purges this collection by that second segment.
 func ForkAuthorSubject(tenantID, provider, authorID string) Subject {
-	return Subject("forkauthor|" + tenantID + "|" + provider + "|" + authorID)
+	// The separator is escaped in every segment: unescaped, ("", "|", "x")
+	// and ("|", "", "x") build the SAME key, which merges two contributors'
+	// budgets — one of them would spend the other's. Cross-kind confusion is
+	// impossible by construction ("org|" can never prefix "forkauthor|"), but
+	// within the kind all three segments are caller-supplied and only one of
+	// them is a forge's numeric id. OrgSubject deliberately does NOT escape:
+	// its spelling is frozen by live documents.
+	esc := func(s string) string { return strings.ReplaceAll(s, "|", "%7C") }
+	return Subject("forkauthor|" + esc(tenantID) + "|" + esc(provider) + "|" + esc(authorID))
 }
 
 // usageKey is the document id for one subject-month.

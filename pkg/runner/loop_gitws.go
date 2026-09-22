@@ -167,6 +167,16 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// forked child, the parked debounce row), so "they are always set
 	// together" is an assumption rather than a guarantee. Refuse: a caller
 	// asking for a pin without naming a ref asks for something unobtainable.
+	// The converse of the two guards below: an untrusted workspace with NO
+	// pin. verifyFetchedCommit returns nil on an empty pin, so this shape
+	// would fetch whatever the code's author points the ref at now, with the
+	// comparison silently disabled. Two carriers on purpose — the launch
+	// chokepoint refuses it too — because this one runs even for a message
+	// that reached the queue another way.
+	if !msg.Trust.Trusted() && strings.TrimSpace(msg.RepoSHAExpected) == "" {
+		return "", "", fmt.Errorf("runner: run %s: untrusted workspace (trust=%q) with no admitted commit — refusing rather than fetching whatever %q points at now",
+			msg.RunID, string(msg.Trust), msg.RepoSHA)
+	}
 	if strings.TrimSpace(msg.RepoSHAExpected) != "" && strings.TrimSpace(msg.RepoSHA) == "" {
 		return "", "", fmt.Errorf("runner: run %s: admitted for commit %s but carries no ref to fetch — refusing rather than running the clone's default branch with the pin unenforced",
 			msg.RunID, msg.RepoSHAExpected)
@@ -448,8 +458,14 @@ func seedRunScratchIgnore(dir string) {
 // sets — so every existing lane keeps its exact behaviour.
 //
 // The comparison is against FETCH_HEAD, read immediately after the fetch and
-// before the checkout: that is the object this run is about to execute, as
-// opposed to what the ref name resolved to when the launch was admitted. A
+// before the checkout, so it names the object this run checks out — as opposed
+// to what the ref name resolved to when the launch was admitted. One caveat,
+// stated rather than implied: on a RE-EXECUTION, restoreBankedChain later
+// fast-forwards HEAD onto the run's own banked chain, which by construction
+// holds work the verified commit does not. That chain lives on a ref only the
+// tenant can write, and a run that may not publish has no token to bank with —
+// so the property holds, but it holds because of who can write the chain, not
+// because of this comparison. A
 // fork contributor can force-push between those two moments, and the
 // debounce window alone is minutes (ITERION_WEBHOOK_SYNC_DEBOUNCE, default
 // 3m) and a fresh push RE-ARMS it with no ceiling, so the interval between

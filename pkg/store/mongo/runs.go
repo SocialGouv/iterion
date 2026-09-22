@@ -344,6 +344,10 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "continuation_state")
 	delete(doc, "failure_code")
 	delete(doc, "routing_policy")
+	// Removed from the literal half so the computed clause above decides
+	// them; left in, the $literal document would overwrite what it preserves.
+	delete(doc, "trust")
+	delete(doc, "repo_sha_expected")
 	doc["version"] = r.CASVersion + 1
 	terminalInc := 0
 	switch r.Status {
@@ -375,6 +379,15 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		// has not started producing (absent/queued/running status):
 		// fixing a contract onto ALREADY-TERMINAL work would decide
 		// retroactively — the exact attack the snapshot exists to stop.
+		// Trust and its commit pin are WRITE-ONCE, for the same reason and
+		// with a stricter rule: a run's answer to "who wrote this code" never
+		// legitimately changes, so once persisted it wins over any saver —
+		// including a binary too old to know the field, and any stale
+		// full-document save. There is no first-write window to reopen: a
+		// marker that could be cleared is a marker an attacker only has to
+		// race, and every capability this run is denied is read back from it.
+		"trust":             bson.M{"$ifNull": bson.A{"$trust", bson.M{"$ifNull": bson.A{bson.M{"$literal": string(r.Trust)}, "$$REMOVE"}}}},
+		"repo_sha_expected": bson.M{"$ifNull": bson.A{"$repo_sha_expected", bson.M{"$ifNull": bson.A{bson.M{"$literal": r.RepoSHAExpected}, "$$REMOVE"}}}},
 		"routing_policy": bson.M{"$cond": bson.A{
 			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$routing_policy", nil}}, nil}},
 			"$routing_policy",

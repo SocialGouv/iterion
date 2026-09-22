@@ -76,3 +76,27 @@ func TestForkAuthorSubject_IsEnforcedIndependentlyPerAuthor(t *testing.T) {
 		t.Fatalf("org usage = %+v err=%v, want 0 runs — fork-author metering must not charge the org document twice", u, err)
 	}
 }
+
+// The three fork-author segments are caller-supplied and only one of them is
+// a forge's numeric id. Unescaped, a separator inside any of them merges two
+// contributors into one budget document — one would spend the other's, which
+// is precisely the bound the key exists to enforce.
+func TestForkAuthorSubject_SeparatorInASegmentCannotMergeTwoContributors(t *testing.T) {
+	when := time.Now().UTC()
+	pairs := [][2][3]string{
+		{{"", "|", "x"}, {"|", "", "x"}},
+		{{"org", "", "|"}, {"org", "|", ""}},
+		{{"a|b", "github", "1"}, {"a", "b|github", "1"}},
+	}
+	for _, p := range pairs {
+		a := usageKey(ForkAuthorSubject(p[0][0], p[0][1], p[0][2]), when)
+		b := usageKey(ForkAuthorSubject(p[1][0], p[1][1], p[1][2]), when)
+		if a == b {
+			t.Fatalf("%v and %v build the same document id %q — two contributors would share one budget", p[0], p[1], a)
+		}
+	}
+	// And the ordinary shape is untouched: no separator, no escaping.
+	if got := usageKey(ForkAuthorSubject("acme", "github", "1234"), when); got != "forkauthor|acme|github|1234|"+monthKey(when) {
+		t.Fatalf("plain key = %q — escaping must not change the ordinary spelling", got)
+	}
+}

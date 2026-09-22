@@ -1127,8 +1127,33 @@ func (s *Server) launchWebhookTarget(
 	// lane's neutering — a silent, confusing degradation. A trusted config
 	// launching a fork target is the real hazard: it is how an untrusted tree
 	// would reach a publish grant and the tenant's secrets.
-	if cfg.ForkLane != t.Trust.IsFork() {
+	// Both predicates, each on the side it belongs to, and NOT `ForkLane !=
+	// IsFork()`: that spelling admits an unrecognised trust onto an ordinary
+	// lane, because IsFork() is false for it — the exact reading store.RunTrust
+	// forbids ("Never use it to gate a capability — Trusted() is that
+	// predicate"), at the one site that gates the most. An ordinary lane
+	// therefore requires PROVEN trusted; the fork lane requires the one
+	// untrusted class this binary can reason about, so a third class added
+	// later is served by neither until someone decides what it means.
+	if (cfg.ForkLane && !t.Trust.IsFork()) || (!cfg.ForkLane && !t.Trust.Trusted()) {
 		reason := forkLaneMismatchRefusal(cfg.ForkLane, t.Trust)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+		if s.logger != nil {
+			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
+		}
+		out.Status = webhooks.StatusFiltered
+		out.Error = reason
+		return out
+	}
+
+	// An untrusted launch MUST carry the commit its admission proved. The
+	// runner's comparison is a no-op on an empty pin, so the two facts are
+	// only a guarantee together — and "they always travel together" was
+	// written as a comment on DeferredTarget without ever being checked.
+	// Checked here, at the chokepoint all five callers cross.
+	if !t.Trust.Trusted() && strings.TrimSpace(t.ExpectedSHA) == "" {
+		reason := "untrusted launch carries no admitted commit (trust=" + string(t.Trust) +
+			"): the ref it would fetch is one its author can move, and an empty pin disables the runner's comparison entirely"
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		if s.logger != nil {
 			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
@@ -1286,9 +1311,13 @@ func (s *Server) launchWebhookTarget(
 	// through the server's live forge client (never a workspace token).
 	vars, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r, t.Trust)
 	if verr != nil {
-		// The only refusal here is a launch pinning another team's publish
-		// grant (errForgePublishGrantTenant): the run would carry a
-		// credential that speaks as that team. The delivery row is already
+		// Two refusals reach here: a launch pinning another team's publish
+		// grant (errForgePublishGrantTenant) — the run would carry a
+		// credential that speaks as that team — and the server's own grant
+		// capacity (errForgePublishGrantUnavailable). An untrusted workspace
+		// is NOT one of them: it loses the grant vars and launches without
+		// them, because a grant-less review is what that lane is.
+		// The delivery row is already
 		// claimed, so it is marked failed like a launch that could not
 		// start — a redelivery re-enters, and the operator's pin still
 		// refuses until it is corrected.

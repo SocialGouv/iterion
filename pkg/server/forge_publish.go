@@ -96,6 +96,16 @@ const grantTenantMismatchReason = "grant_tenant_mismatch"
 // the RUN's tenant — the tenant whose run tried to speak as another.
 const auditActionGrantTenantMismatch = "forge.grant.tenant_mismatch"
 
+// grantUntrustedMintReason is the typed token for "no grant was minted for
+// this launch, because its workspace holds code the tenant did not write".
+// It is an OUTCOME, not a refusal: the launch proceeds without a grant, which
+// is what the fork review lane is for. Named so a log line, an audit row and
+// a test say the same word.
+const grantUntrustedMintReason = "grant_untrusted_mint"
+
+// auditActionGrantUntrustedMint is its audit action, on the launching tenant.
+const auditActionGrantUntrustedMint = "forge.grant.untrusted_mint"
+
 // grantUntrustedRunReason is the typed refusal a publish attempt earns when
 // the RUN's workspace holds code the tenant did not write. Distinct word from
 // the tenant mismatch on purpose: the operator action is different (this one
@@ -908,13 +918,30 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		for _, k := range forgePublishVars() {
 			delete(vars, k)
 		}
-		if prURL == "" {
-			// Nothing was going to be minted anyway: withdraw whatever the
-			// caller brought and let the launch proceed. Erroring here would
-			// refuse every untrusted launch that is not about a pull request.
-			return vars, nil
+		// The WITHDRAWAL is the guarantee; it is not a reason to refuse the
+		// launch. An earlier revision returned an error here, and that was a
+		// defect of exactly the shape this repo warns about — a hardening
+		// that closes the path it exists to serve: reviewPRVars always sets
+		// pr_url, so EVERY fork-lane review would have failed to launch, and
+		// the lane could never have worked. A grant-less review is precisely
+		// what the lane is.
+		//
+		// Typed, greppable and logged all the same — silence is the thing
+		// forbidden, not continuing. The loud half lives where something
+		// actually ASKS to publish: runOwnsGrant refuses and audits there,
+		// holding a run, which is the only place the question is real.
+		if prURL != "" {
+			if s.logger != nil {
+				s.logger.Info("forge gate: %s: %s: no publish grant minted for an untrusted workspace (trust=%q) — the run reviews without one",
+					grantUntrustedMintReason, prURL, string(trust))
+			}
+			s.auditSystem(teamID, "forge-gate", auditActionGrantUntrustedMint, "launch", prURL, map[string]any{
+				"reason": grantUntrustedMintReason,
+				"trust":  string(trust),
+				"bot":    strings.TrimSpace(botID),
+			})
 		}
-		return vars, fmt.Errorf("%w: %s: trust=%q", errForgePublishGrantUntrusted, prURL, string(trust))
+		return vars, nil
 	}
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, nil
@@ -1045,14 +1072,6 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 // belonging to another team — the operator's request is inadmissible, not a
 // forge that could not be asked, so the HTTP lane answers 422.
 var errForgePublishGrantTenant = errors.New("forge publish grant tenant mismatch")
-
-// errForgePublishGrantUntrusted marks a launch whose workspace holds code the
-// tenant did not write (store.RunTrust) asking for a forge publish grant. It
-// is a REFUSAL and not a quiet skip: the grant is the capability to post a
-// review, a comment and the revi/review commit status that gates the merge,
-// and a lane that is meant never to hold it must fail loudly the day
-// something asks on its behalf.
-var errForgePublishGrantUntrusted = errors.New("forge publish grant refused for an untrusted workspace")
 
 // errPRLaunchForkGuard marks a launch the fork guard refused — the operator's
 // pull request is not admissible, as opposed to a forge that could not be

@@ -208,7 +208,13 @@ func TestFork_CarriesTrustOnTheNonRepoTargetedBranchToo(t *testing.T) {
 	if child.Trust != store.RunTrustFork {
 		t.Fatalf("child.Trust = %q, want %q — provenance is a fact about the parent, not about how its workspace was materialised", child.Trust, store.RunTrustFork)
 	}
-	if child.RepoSHAExpected != parent.RepoSHAExpected {
-		t.Fatalf("child.RepoSHAExpected = %q, want the parent's pin", child.RepoSHAExpected)
+	// The PIN, by contrast, must NOT travel here. It certifies a fetch, and
+	// this arm performs none: the child has no RepoURL and no RepoSHA, so a
+	// pin would describe a clone that never happens — and the runner refuses
+	// exactly that shape ("admitted for commit X but carries no repository to
+	// clone"). Carrying it would have the fork succeed and the child be
+	// unrunnable.
+	if child.RepoSHAExpected != "" {
+		t.Fatalf("child.RepoSHAExpected = %q on an arm with no clone — the runner refuses a pin it cannot enforce, so the fork would produce a run that can never start", child.RepoSHAExpected)
 	}
 }

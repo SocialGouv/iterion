@@ -62,11 +62,21 @@ func TestLaunchWebhookTarget_RefusesALaneKindMismatch(t *testing.T) {
 			ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1"})
 			cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: c.forkLane}
 			meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "pr:7", Kind: "pull_request"}
+			// The vars a REAL target carries. reviewPRVars always sets
+			// pr_url, and an earlier revision of the grant withdrawal turned
+			// that into a launch failure — invisible to this test precisely
+			// because its target carried none. A stub missing the lane's
+			// mandatory var certifies nothing.
 			target := forgeLaunchTarget{
 				IdemKey: "idem-disjoint-" + string(rune('a'+i)),
 				BotID:   "review-pr",
-				Vars:    map[string]string{},
+				Vars:    map[string]string{"pr_url": "https://github.com/o/r/pull/7", "base_ref": "main"},
 				Trust:   c.trust,
+			}
+			// An untrusted target must carry the commit its admission proved;
+			// the tail refuses one that does not.
+			if !c.trust.Trusted() {
+				target.ExpectedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 			}
 
 			res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
@@ -98,4 +108,78 @@ func TestLaunchWebhookTarget_RefusesALaneKindMismatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Two properties the lane's chokepoint must hold that the table above does
+// not reach, each the subject of a HIGH finding.
+func TestLaunchWebhookTarget_TrustPredicateAndPinCoupling(t *testing.T) {
+	newCase := func(t *testing.T) (*Server, context.Context, *orgusage.MemoryCounter, *int) {
+		t.Helper()
+		s := newWebhookTestServer(t)
+		counter := orgusage.NewMemoryCounter()
+		s.orgUsage = counter
+		launched := 0
+		s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+			launched++
+			return "run-1", nil
+		}
+		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1"}), counter, &launched
+	}
+	meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "pr:9", Kind: "pull_request"}
+	vars := func() map[string]string {
+		return map[string]string{"pr_url": "https://github.com/o/r/pull/9", "base_ref": "main"}
+	}
+
+	// `ForkLane != Trust.IsFork()` admits an unrecognised trust onto an
+	// ORDINARY lane, because IsFork() is false for it. store.RunTrust
+	// forbids that reading in as many words; this is the site where it
+	// would cost the most.
+	t.Run("an unrecognised trust is refused on an ordinary lane", func(t *testing.T) {
+		s, ctx, counter, launched := newCase(t)
+		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: false}
+		target := forgeLaunchTarget{
+			IdemKey: "idem-unknown", BotID: "review-pr", Vars: vars(),
+			Trust: store.RunTrust("quarantine-v2"), ExpectedSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		}
+		res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
+		if res.Status != webhooks.StatusFiltered || *launched != 0 {
+			t.Fatalf("status=%q launched=%d — an ordinary lane must require PROVEN trusted, not merely 'not fork'", res.Status, *launched)
+		}
+		if u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC()); u.Runs != 0 {
+			t.Fatalf("monthly runs = %d, want 0 — the refusal must precede metering", u.Runs)
+		}
+	})
+
+	// verifyFetchedCommit is a no-op on an empty pin, so an untrusted launch
+	// without one fetches whatever its author points the ref at now. The
+	// branch wrote that hazard down as a comment; it has to be a check.
+	t.Run("an untrusted launch with no admitted commit is refused", func(t *testing.T) {
+		s, ctx, _, launched := newCase(t)
+		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true}
+		target := forgeLaunchTarget{
+			IdemKey: "idem-nopin", BotID: "review-pr", Vars: vars(),
+			Trust: store.RunTrustFork, ExpectedSHA: "   ", // blank reads as absent everywhere
+		}
+		res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
+		if res.Status != webhooks.StatusFiltered || *launched != 0 {
+			t.Fatalf("status=%q launched=%d — an untrusted launch with no pin disables the runner's comparison entirely", res.Status, *launched)
+		}
+		if !strings.Contains(res.Error, "no admitted commit") {
+			t.Fatalf("refusal = %q, want it to name the missing pin", res.Error)
+		}
+	})
+
+	// And the pairing that MUST work, or the lane cannot exist.
+	t.Run("a fork lane with a pinned commit launches", func(t *testing.T) {
+		s, ctx, _, launched := newCase(t)
+		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true}
+		target := forgeLaunchTarget{
+			IdemKey: "idem-ok", BotID: "review-pr", Vars: vars(),
+			Trust: store.RunTrustFork, ExpectedSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		}
+		res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
+		if res.Status != webhooks.StatusLaunched || *launched != 1 {
+			t.Fatalf("status=%q launched=%d, want a launch — every guard added here must leave the lane's own shape working (err: %s)", res.Status, *launched, res.Error)
+		}
+	})
 }

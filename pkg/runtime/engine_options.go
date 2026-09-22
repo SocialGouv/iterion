@@ -298,6 +298,29 @@ func WithParentRunID(parentRunID string) EngineOption {
 	return func(e *Engine) { e.parentRunID = parentRunID }
 }
 
+// WithTrust records who wrote the code in this run's workspace, and the
+// commit its admission pinned, onto the run DOCUMENT.
+//
+// A sub-bot child inherits both from its parent's queue message (the runner
+// copies the message wholesale), but the child's document is built from a
+// named field list — so without this the child executed the parent's
+// untrusted tree while its own document read as trusted, and every
+// enforcement site that resolves a run BY ID (the publish grant, the
+// merge-time forge token) would have consulted that document.
+//
+// Empty values are ignored, mirroring WithParentRunID: a trusted launch says
+// nothing and keeps saying nothing.
+func WithTrust(trust store.RunTrust, repoSHAExpected string) EngineOption {
+	return func(e *Engine) {
+		if trust != "" {
+			e.trust = trust
+		}
+		if repoSHAExpected != "" {
+			e.repoSHAExpected = repoSHAExpected
+		}
+	}
+}
+
 // WithParentNodeID records the IR node id of the subbot node in the parent
 // workflow that spawned this child run. Empty values are ignored, mirroring
 // WithParentRunID.

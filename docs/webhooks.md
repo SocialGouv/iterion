@@ -419,6 +419,36 @@ create/PATCH request struct carries it — so every config decodes `false`. When
 the admission half makes it settable, the PATCH route must refuse changing it
 on an existing config, because the per-contributor budget will be keyed on it.
 
+**An opt-in is a GESTURE, not a record.** The admission half will be a
+maintainer `/command` on the pull request, authorised by the collaborator-
+permission gate the `/command` lanes already apply, resolving the head through
+the forge API at that moment and pinning THAT commit onto the launch. Iterion
+stores no "this PR is opted in" row, deliberately — and this is the design's
+invariant, not an implementation detail:
+
+- a stored opt-in is a standing grant, and a standing grant goes stale. The
+  gesture would be recorded against a pull request whose head the contributor
+  can replace a second later, so the record would have to be invalidated by
+  something, and every such scheme is a race between the invalidator and the
+  push;
+- a gesture cannot go stale because it is not kept: one gesture authorises one
+  review of one commit. "Opted in, then force-pushed" is not a case to defend
+  against — there is nothing left to reuse, and the runner refuses the run
+  when the fetched commit is not the pinned one;
+- and it removes the durable state entirely, with its two store
+  implementations and its whole time-of-check/time-of-use surface.
+
+The cost is honest and small: re-reviewing a new head is a new gesture.
+
+**GitLab: the seam is named, and nothing refuses it yet.** The lane's launch
+pair needs the base project's own merge-request head ref —
+`refs/merge-requests/<iid>/head`, GitLab's twin of `refs/pull/<n>/head` — and
+that is the seam a GitLab fork lane would be built on. It is named here rather
+than wired. Nothing refuses a GitLab fork-lane config today for the simple
+reason that nothing can set `ForkLane` at all; the admission half must add
+that provider refusal in the same change that makes the field settable, or
+GitLab gets a half-built path instead of an honest "no".
+
 **Why a fork lane can name one repository at all.** The launch pair that made
 the original refusal unconditional was `<base>.CloneURL` + a head branch
 living elsewhere. The lane does not build that pair: it launches on the base

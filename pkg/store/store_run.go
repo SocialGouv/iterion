@@ -196,6 +196,19 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 		} else if !persisted.Status.CountsAgainstLaunchLimit() {
 			rr.RoutingPolicy = nil
 		}
+		// Trust and its pin are write-once: a run's answer to "who wrote this
+		// code" never legitimately changes, and every capability the run is
+		// denied is read back from it. A saver that carries the zero value —
+		// a binary too old to know the field, a stale full-document save —
+		// must not clear it. No first-write window, unlike the contract
+		// above: a marker that can be cleared is one an attacker only has to
+		// race.
+		if persisted.Trust != "" {
+			rr.Trust = persisted.Trust
+		}
+		if persisted.RepoSHAExpected != "" {
+			rr.RepoSHAExpected = persisted.RepoSHAExpected
+		}
 		if persisted.Status == rr.Status {
 			rr.OutcomeSeq = persisted.OutcomeSeq
 			rr.ContinuationState = persisted.ContinuationState

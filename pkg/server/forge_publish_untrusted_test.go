@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -38,25 +37,35 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		}
 	})
 
-	t.Run("a fork-trust launch is refused, by name", func(t *testing.T) {
+	// The WITHDRAWAL is the guarantee, and it must NOT refuse the launch:
+	// reviewPRVars always sets pr_url, so an error here would make every
+	// fork-lane review fail to launch and the lane could never work. A
+	// grant-less review is what the lane IS.
+	t.Run("a fork-trust launch loses the grant and still launches", func(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"
 		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustFork)
-		if !errors.Is(err, errForgePublishGrantUntrusted) {
-			t.Fatalf("injectForgePublishVars = %v, want errForgePublishGrantUntrusted — the refusal has to be an error, not a quiet skip, or a capability going missing is indistinguishable from a misconfiguration", err)
+		if err != nil {
+			t.Fatalf("injectForgePublishVars = %v, want nil — erroring here refuses every fork-lane review (pr_url is always set by reviewPRVars), which closes the path the lane exists to serve", err)
 		}
 		if tok := out[forgePublishVarToken]; tok != "" {
-			t.Fatalf("token var = %q on a refused launch, want empty", tok)
+			t.Fatalf("token var = %q, want empty — the grant must be withheld even though the launch proceeds", tok)
+		}
+		if out["pr_url"] == "" {
+			t.Fatal("pr_url was stripped — only the grant vars may be withdrawn")
 		}
 	})
 
 	// Trusted(), not "== fork": an unrecognised trust must lose the grant.
-	t.Run("an unrecognised trust is refused too", func(t *testing.T) {
+	t.Run("an unrecognised trust loses the grant too", func(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"
-		_, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrust("vendored"))
-		if !errors.Is(err, errForgePublishGrantUntrusted) {
-			t.Fatalf("injectForgePublishVars = %v, want errForgePublishGrantUntrusted for a trust this binary does not know", err)
+		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrust("vendored"))
+		if err != nil {
+			t.Fatalf("injectForgePublishVars = %v, want nil", err)
+		}
+		if tok, ok := out[forgePublishVarToken]; ok {
+			t.Fatalf("token var = %q for a trust this binary does not know — an unknown trust must lose the grant", tok)
 		}
 	})
 
@@ -101,8 +110,8 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 			carried[k] = minted[k]
 		}
 		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", carried, nil, store.RunTrustFork)
-		if !errors.Is(err, errForgePublishGrantUntrusted) {
-			t.Fatalf("injectForgePublishVars = %v, want errForgePublishGrantUntrusted", err)
+		if err != nil {
+			t.Fatalf("injectForgePublishVars = %v, want nil", err)
 		}
 		for _, k := range mintedKeys {
 			if got, ok := out[k]; ok {
@@ -123,8 +132,8 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		vars[forgePublishVarURL] = "https://iterion.example/api/v1/forge/publish-review"
 		vars[forgePublishVarPRState] = "https://iterion.example/api/v1/forge/pull-request"
 		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustFork)
-		if !errors.Is(err, errForgePublishGrantUntrusted) {
-			t.Fatalf("injectForgePublishVars = %v, want errForgePublishGrantUntrusted", err)
+		if err != nil {
+			t.Fatalf("injectForgePublishVars = %v, want nil", err)
 		}
 		for _, k := range []string{forgePublishVarToken, forgePublishVarURL, forgePublishVarPRState} {
 			if got, ok := out[k]; ok {

@@ -56,6 +56,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("RunTrustRoundTrip", func(t *testing.T) { testRunTrustRoundTrip(t, factory(t)) })
+	t.Run("RunTrustImmutable", func(t *testing.T) { testRunTrustImmutable(t, factory(t)) })
 	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
@@ -575,6 +576,50 @@ func testRunTrustRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if got.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
 		t.Errorf("persisted RepoSHAExpected = %q; want the pinned commit", got.RepoSHAExpected)
+	}
+}
+
+// testRunTrustImmutable pins the marker as WRITE-ONCE in both stores. A run's
+// answer to "who wrote this code" never legitimately changes, and every
+// capability the run is denied is read back from it — so a saver carrying the
+// zero value (a binary too old to know the field, a stale full-document save)
+// must not be able to clear it. A marker that can be cleared is one an
+// attacker only has to race.
+func testRunTrustImmutable(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const id = "run_trust_immutable"
+	if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Trust = store.RunTrustFork
+	r.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	// A saver that does not know the fields: load, blank them, save.
+	stale, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun (stale): %v", err)
+	}
+	stale.Trust = ""
+	stale.RepoSHAExpected = ""
+	if err := s.SaveRun(ctx, stale); err != nil {
+		t.Fatalf("SaveRun (stale): %v", err)
+	}
+	got, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after the stale save: %v", err)
+	}
+	if got.Trust != store.RunTrustFork {
+		t.Errorf("Trust = %q after a save that carried the zero value; want %q — a cleared marker re-grants the publish grant, the tenant's secrets and the merge-time forge token", got.Trust, store.RunTrustFork)
+	}
+	if got.RepoSHAExpected == "" {
+		t.Errorf("RepoSHAExpected was cleared by a stale save; want the pinned commit to survive")
 	}
 }
 
