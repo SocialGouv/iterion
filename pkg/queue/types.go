@@ -428,6 +428,7 @@ const (
 	BackendKimi       Backend = "kimi"
 	BackendGrok       Backend = "grok"
 	BackendPi         Backend = "pi"
+	BackendOpenCode   Backend = "opencode"
 )
 
 // BackendConfig carries the LLM backend selection per run.

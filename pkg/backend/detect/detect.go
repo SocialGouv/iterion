@@ -6,6 +6,7 @@ package detect
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -27,6 +28,7 @@ const (
 	BackendCodex      = "codex"
 	BackendClaw       = "claw"
 	BackendPi         = "pi"
+	BackendOpenCode   = "opencode"
 )
 
 // Auth kinds.
@@ -130,7 +132,153 @@ func detectBackends(ctx context.Context, prov []ProviderStatus) []BackendStatus 
 			"$CODEX_HOME/auth.json (Codex OAuth)",
 		),
 		detectPi(prov),
+		detectOpenCode(prov),
 	}
+}
+
+// detectOpenCode probes for the opencode backend.
+//
+// Like pi it is reported but never auto-SELECTED: DefaultPreferenceOrder stays
+// {claude_code, claw}, so surfacing it changes no existing workflow — it makes
+// the studio able to show it and ITERION_BACKEND_PREFERENCE=opencode resolve at
+// all, since auto-selection filters on what this function reports.
+//
+// Availability ORs the two credential shapes opencode actually reads, because
+// gating on its own store alone would report it unavailable on the common host
+// that drives it from a provider key — and the model catalogue's opencode arm,
+// which only runs for an AVAILABLE backend, would then be dead exactly there.
+func detectOpenCode(prov []ProviderStatus) BackendStatus {
+	st := BackendStatus{Name: BackendOpenCode, Auth: AuthNone}
+
+	if _, ok := findOpenCodeBinary(); !ok {
+		if pinned := strings.TrimSpace(os.Getenv("ITERION_OPENCODE_BIN")); pinned != "" {
+			st.Hints = []string{fmt.Sprintf(
+				"ITERION_OPENCODE_BIN=%q does not resolve to an executable file (it must be an absolute path or a bare name on PATH)", pinned)}
+			return st
+		}
+		st.Hints = []string{"opencode CLI not found on PATH"}
+		return st
+	}
+
+	var sources []string
+	if openCodeOwnLoginPresent() {
+		sources = append(sources, openCodeAuthPath()+" (opencode auth)")
+		st.Auth = AuthAPIKey
+	}
+	for _, p := range prov {
+		if !p.Available || !OpenCodeReadsSource(p.Source) {
+			continue
+		}
+		sources = append(sources, p.Source)
+		if st.Auth == AuthNone {
+			st.Auth = AuthAPIKey
+		}
+	}
+
+	if len(sources) == 0 {
+		st.Hints = []string{
+			"opencode CLI found, but no credential: run `opencode auth login`, or set a provider key",
+		}
+		return st
+	}
+	st.Available = true
+	st.Sources = sources
+	return st
+}
+
+// findOpenCodeBinary probes the host for the opencode CLI, honouring the same
+// override the backend itself uses so detection and execution agree on one
+// binary.
+//
+// Deliberately NO ~/.opencode/bin fallback, although that is where opencode's
+// installer drops it: the delegate resolves argv[0] through os/exec against
+// PATH, so a path only detection can see would report a backend that dies at
+// spawn. ITERION_OPENCODE_BIN is the escape hatch for a host whose PATH the
+// server does not share, and it goes through Locate as an EXPLICIT path so a
+// stale value is a miss rather than a promise.
+var findOpenCodeBinary = locateOpenCodeBinary
+
+// locateOpenCodeBinary is the real resolution, named so a test can exercise
+// it rather than the stub isolateEnv installs over the var.
+//
+// It applies the SAME rule the delegate applies to the same variable
+// (delegate.resolveCLIBinary): an absolute path is taken as given, a bare
+// name is resolved through PATH, and a relative path with a separator is a
+// MISS here because it is a refusal there. A probe that resolves the string
+// differently from the spawn reports a backend the run cannot use.
+func locateOpenCodeBinary() (string, bool) {
+	return clilocate.LocatePinned(os.Getenv("ITERION_OPENCODE_BIN"), clilocate.Spec{Name: "opencode"})
+}
+
+// openCodeProviderEnv is the set of environment variables opencode itself
+// resolves a provider credential from. It is NOT iterion's set, and it is NOT
+// the models.dev catalogue's `env` list either: the membership below was read
+// off the BINARY, by running `opencode models` under one variable at a time
+// (1.1.19). The two differ — GOOGLE_CLOUD_PROJECT enables google-vertex there
+// while the catalogue names GOOGLE_VERTEX_PROJECT.
+//
+// The exclusions are the point. opencode reads ZHIPU_API_KEY where iterion
+// probes ZAI_API_KEY, and AZURE_API_KEY where iterion probes
+// AZURE_OPENAI_API_KEY; counting those would report opencode available — and
+// pair it with every model of that provider — on a host where every call
+// fails for want of a credential.
+var openCodeProviderEnv = map[string]bool{
+	"ANTHROPIC_API_KEY":    true,
+	"OPENAI_API_KEY":       true,
+	"XAI_API_KEY":          true,
+	"OPENROUTER_API_KEY":   true,
+	"AWS_REGION":           true, // enables amazon-bedrock
+	"GOOGLE_CLOUD_PROJECT": true, // enables google-vertex
+}
+
+// OpenCodeReadsSource reports whether a provider's winning credential is one
+// opencode can actually resolve, and is actually set. Exported because the
+// model catalogue must ask the same question before it offers a model on this
+// backend: a pairing detect refuses is one the catalogue must not make. Looking like a variable
+// name is not evidence the variable holds anything (piEnvVarSource documents
+// the same trap).
+func OpenCodeReadsSource(source string) bool {
+	source = strings.TrimSpace(source)
+	if !openCodeProviderEnv[source] {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv(source)) != ""
+}
+
+// openCodeAuthPath is opencode's own credential store. It lives under the XDG
+// data directory — `$XDG_DATA_HOME/opencode`, else ~/.local/share/opencode —
+// which is the path `opencode auth login` writes and `opencode auth list`
+// reads. Ignoring XDG_DATA_HOME would tell an operator who just logged in to
+// log in again.
+func openCodeAuthPath() string {
+	dir := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dir, "opencode", "auth.json")
+}
+
+// openCodeOwnLoginPresent reports whether opencode's own credential store
+// holds anything usable. A fresh install writes an empty object, so existence
+// is not enough — the same trap piOwnLoginKind documents.
+func openCodeOwnLoginPresent() bool {
+	path := openCodeAuthPath()
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path) // #nosec G304 — a fixed filename under the data dir.
+	if err != nil {
+		return false
+	}
+	var creds map[string]json.RawMessage
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return false
+	}
+	return len(creds) > 0
 }
 
 // detectPi probes for the pi backend.
@@ -705,13 +853,18 @@ var findCodexBinary = func() (string, bool) {
 // findPiBinary probes the host for the pi CLI, honouring the same override the
 // backend itself uses so detection and execution agree on one binary.
 //
-// The override goes through Locate as its EXPLICIT path rather than being
-// returned directly: Locate rejects a path that does not exist, so a typo'd or
-// stale ITERION_PI_BIN no longer makes detection report pi as present — which,
-// since availability now feeds auto-selection, would resolve to a backend that
-// dies at exec. Trimming matches what NewPiBackend does with the same variable.
-var findPiBinary = func() (string, bool) {
-	return clilocate.Locate(strings.TrimSpace(os.Getenv("ITERION_PI_BIN")), clilocate.Spec{
+// The override goes through the SAME classifier the delegate spawns with
+// (clilocate.LocatePinned): an absolute path as given, a bare name through
+// PATH, a relative path a miss — because it is a refusal at spawn time. A
+// stale or typo'd ITERION_PI_BIN therefore no longer makes detection report
+// pi as present, and detection can no longer report a binary the run would
+// refuse, nor miss one the run would happily use.
+var findPiBinary = locatePiBinary
+
+// locatePiBinary is the real resolution, named so a test can exercise it
+// rather than the stub isolateEnv installs over the var.
+func locatePiBinary() (string, bool) {
+	return clilocate.LocatePinned(os.Getenv("ITERION_PI_BIN"), clilocate.Spec{
 		Name:      "pi",
 		Fallbacks: clilocate.CommonBinaryCandidates("pi"),
 	})

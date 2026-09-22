@@ -597,7 +597,7 @@
             "type": "string"
           },
           "backend": {
-            "description": "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
             "type": "string"
           },
           "metered": {
@@ -874,7 +874,7 @@
           ]
         },
         "backend": {
-          "description": "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "type": "string"
         },
         "capabilities": {
@@ -1400,7 +1400,7 @@
           ]
         },
         "backend": {
-          "description": "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "type": "string"
         },
         "capabilities": {
@@ -1644,7 +1644,7 @@
           "type": "string"
         },
         "backend": {
-          "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "type": "string"
         },
         "depends_on": {
@@ -3213,7 +3213,7 @@
             "type": "string"
           },
           "backend": {
-            "description": "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
             "type": "string"
           },
           "metered": {
@@ -3486,7 +3486,7 @@
           ]
         },
         "backend": {
-          "description": "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "type": "string"
         },
         "capabilities": {
@@ -4012,7 +4012,7 @@
           ]
         },
         "backend": {
-          "description": "Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "type": "string"
         },
         "capabilities": {
@@ -4256,7 +4256,7 @@
           "type": "string"
         },
         "backend": {
-          "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "type": "string"
         },
         "depends_on": {

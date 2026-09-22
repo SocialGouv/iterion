@@ -549,7 +549,7 @@ func init() {
 	remoteRunsLaunchCmd.Flags().StringArrayVar(&remoteLaunchVars, "var", nil, "Workflow var key=value (repeatable)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchPreset, "preset", "", "In-source preset name")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchTimeout, "timeout", "", "Run timeout (Go duration, e.g. 30m)")
-	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchBackend, "backend", "", "Backend override (claude_code|claw)")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchBackend, "backend", "", "Backend override (claude_code|claw|pi|kimi|grok|opencode|codex)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchCompress, "compress", "", "Compression override (on|ultra|off)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchAutoMemory, "auto-memory", "", "Auto-memory (MEMORY.md) override (on|off)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchLoopBudgetGuard, "loop-budget-guard", "", "Loop back-edge affordability guard override (on|off): refuse a loop iteration the budget cannot fund so the run exits through its own tail")

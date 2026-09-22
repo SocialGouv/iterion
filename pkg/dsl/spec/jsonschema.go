@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -77,6 +78,9 @@ func renderSchemaFor(kinds []Kind, profile int) ([]byte, error) {
 	}
 	b := newSchemaBuilder(kinds, profile)
 	root := b.root()
+	if err := b.err(); err != nil {
+		return nil, err
+	}
 	root["$schema"] = SchemaDialect
 	root["$id"] = schemaIDBase + strings.TrimPrefix(SchemaFile(profile), "docs/references/")
 	root["title"] = fmt.Sprintf("iterion author document, syntax profile %d", profile)
@@ -89,6 +93,10 @@ func renderSchemaFor(kinds []Kind, profile int) ([]byte, error) {
 // definitions live under their own prefix, so two profiles never share a
 // fragment whose window differs.
 func RenderCombinedSchema(profiles []int) ([]byte, error) {
+	return renderCombinedFor(Kinds, profiles)
+}
+
+func renderCombinedFor(kinds []Kind, profiles []int) ([]byte, error) {
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("author schema: no profile to combine")
 	}
@@ -98,8 +106,11 @@ func RenderCombinedSchema(profiles []int) ([]byte, error) {
 		if p < 1 {
 			return nil, fmt.Errorf("author schema: %d is not a syntax profile", p)
 		}
-		b := newSchemaBuilder(Kinds, p)
+		b := newSchemaBuilder(kinds, p)
 		root := b.root()
+		if err := b.err(); err != nil {
+			return nil, err
+		}
 		key := fmt.Sprintf("v%d", p)
 		for name, def := range b.defs {
 			defs[key+"."+name] = rewriteRefs(def, "#/$defs/", "#/$defs/"+key+".")
@@ -159,10 +170,27 @@ type schemaBuilder struct {
 	profile int
 	kinds   []Kind
 	defs    obj
+	// errs are the gaps the registry left in what the renderer can say — a
+	// form with no rendering, a body naming no kind. An artefact is refused
+	// whole rather than written with a hole that accepts any value.
+	errs []error
 }
 
 func newSchemaBuilder(kinds []Kind, profile int) *schemaBuilder {
 	return &schemaBuilder{profile: profile, kinds: kinds, defs: obj{}}
+}
+
+// fail records a gap; err returns every gap recorded, nil when the registry
+// rendered whole.
+func (b *schemaBuilder) fail(err error) { b.errs = append(b.errs, err) }
+
+func (b *schemaBuilder) err() error { return errors.Join(b.errs...) }
+
+// gap records the error and returns a fragment that accepts NOTHING, so a
+// caller that ignored the error still could not ship a permissive schema.
+func (b *schemaBuilder) gap(err error) obj {
+	b.fail(err)
+	return obj{"not": obj{}}
 }
 
 func (b *schemaBuilder) lookup(name string) (Kind, bool) {
@@ -374,12 +402,14 @@ func (b *schemaBuilder) form(f Form, values []string, body string) obj {
 		if k, ok := b.lookup(body); ok {
 			return b.kindSchema(k)
 		}
+		return b.gap(fmt.Errorf("author schema: a block body names the kind %q, which the registry does not have", body))
 	case BlockOrIdent:
 		if k, ok := b.lookup(body); ok {
 			return obj{"anyOf": []any{obj{"type": "string", "pattern": identPattern}, b.kindSchema(k)}}
 		}
+		return b.gap(fmt.Errorf("author schema: a block body names the kind %q, which the registry does not have", body))
 	}
-	return obj{"description": "unrendered form " + string(f)}
+	return b.gap(fmt.Errorf("author schema: the form %q has no rendering", string(f)))
 }
 
 func jsonValueDef() obj {
@@ -488,6 +518,8 @@ func (b *schemaBuilder) entryObject(e *Entries, extra obj, requiredKeys []string
 				}
 				properties[p.Name] = b.property(p)
 			}
+		} else {
+			b.fail(fmt.Errorf("author schema: an entry body names the kind %q, which the registry does not have", e.Body))
 		}
 	}
 	o := obj{"type": "object", "additionalProperties": false, "properties": properties, "description": e.Doc}

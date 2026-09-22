@@ -13,7 +13,7 @@ func (c *compiler) validateAsyncBackends(w *Workflow) {
 		primary := effectiveNodeBackend(n.GetLLMFields().Backend, w.DefaultBackend)
 		check := func(backend, route string) {
 			switch backend {
-			case "codex", "kimi", "grok":
+			case "codex", "kimi", "grok", "opencode":
 				c.errorfAt(DiagAsyncBackendUnsupported, node.NodeID(), "",
 					"%s %q: %s backend %q cannot serve interaction: async — ask_user_async and await_answers are unavailable", node.NodeKind(), node.NodeID(), route, backend)
 			}

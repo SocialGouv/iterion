@@ -244,7 +244,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 |---|---|---|
 | `description` | string | Free-text description shown by the studio and the reports |
 | `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `command` | string | Executable that drives a CLI backend, overriding its default binary |
 | `input` | ident | Schema the node's input is validated against |
@@ -294,7 +294,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 |---|---|---|
 | `description` | string | Free-text description shown by the studio and the reports |
 | `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `command` | string | Executable that drives a CLI backend, overriding its default binary |
 | `input` | ident | Schema the node's input is validated against |
@@ -345,7 +345,7 @@ A node: `router <name>:` at the top level or inside a `group`.
 | `description` | string | Free-text description shown by the studio and the reports |
 | `mode` | one of `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` | Routing mode |
 | `model` | string | llm mode only (C023 otherwise): Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `system` | prompt name, or its text as a string | llm mode only (C023 otherwise): The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `user` | prompt name, or its text as a string | llm mode only (C023 otherwise): The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
@@ -695,7 +695,7 @@ An entry opened by `fallbacks:` inside `fallbacks`.
 
 | Property | Value | Meaning |
 |---|---|---|
-| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `on` | ident list over `usage_window`, `auth`, `unavailable`, `transient_exhausted`, `any` | Failure classes that take this route (default usage_window, unavailable; never any or auth by default) |

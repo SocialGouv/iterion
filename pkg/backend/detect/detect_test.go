@@ -35,6 +35,7 @@ func isolateEnv(t *testing.T) {
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
 		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR", "ITERION_PI_AGENT_DIR",
+		"XDG_DATA_HOME", "ITERION_OPENCODE_BIN",
 		"HOME",
 	} {
 		t.Setenv(k, "")
@@ -47,6 +48,8 @@ func isolateEnv(t *testing.T) {
 	// pi ships on some dev machines and not others; without this the pi
 	// hints differ per host.
 	stubBinary(t, &findPiBinary, "")
+	// opencode ships on some dev machines and not others; same reason.
+	stubBinary(t, &findOpenCodeBinary, "")
 	// The macOS Keychain probe shells out to /usr/bin/security and would
 	// read the dev machine's real Claude Code login on darwin — stub it to
 	// "absent" so detection is deterministic on every host. Tests that

@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.186.0](https://github.com/SocialGouv/iterion/compare/v3.185.1...v3.186.0) (2026-09-22)
+
+### Features
+
+* **backends:** opencode is a protocol value of the CLI-agent seam, honoured at every site that decides per backend ([#1656](https://github.com/SocialGouv/iterion/issues/1656)) ([24d53ff](https://github.com/SocialGouv/iterion/commit/24d53ff984f12df3f917489a15d975c66b6ab197)), references [#1416](https://github.com/SocialGouv/iterion/issues/1416) [#1](https://github.com/SocialGouv/iterion/issues/1) [#1655](https://github.com/SocialGouv/iterion/issues/1655)
+
+    <details><summary>why</summary>
+
+    `backend: "opencode"` used to validate clean and then die at dispatch on `delegate: unknown backend "opencode"` — after paying for a sandbox image and a container. It is now an instance of the existing `CLIAgentProtocol` seam (ADR-065), invoked as its own CLI is:
+
+    </details>
+* **dsl:** a var declares its own constraint, so an operator typo is refused at launch ([#1628](https://github.com/SocialGouv/iterion/issues/1628)) ([5f49b45](https://github.com/SocialGouv/iterion/commit/5f49b4560e30aadd0e75fd5b2eaa66dfe0cb0f65)), closes [#1609](https://github.com/SocialGouv/iterion/issues/1609), references [#1608](https://github.com/SocialGouv/iterion/issues/1608) [#1601](https://github.com/SocialGouv/iterion/issues/1601) [#1601](https://github.com/SocialGouv/iterion/issues/1601) [#1350](https://github.com/SocialGouv/iterion/issues/1350)
+
+    <details><summary>why</summary>
+
+    A `vars:` declaration could carry a type and an `[enum: "a","b"]` set, but nothing narrower: a value that is a legal string and a nonsense one — the ticket's ` codeX --some-flag` — reached the run untouched and degraded inside whatever node consumed it, at the same coverage value a MISSING binary produces. Measured before the change: `iterion run --var "agent= codeX --some-flag"` finished green.
+
+    </details>
+
+### Bug Fixes
+
+* **dsl:** a preset value is checked against its var's enum and matching constraints at compile time ([#1660](https://github.com/SocialGouv/iterion/issues/1660)) ([2beec3b](https://github.com/SocialGouv/iterion/commit/2beec3b162a3f6bc436569c9354ae717a7e6309d)), references [#1611](https://github.com/SocialGouv/iterion/issues/1611) [#1350](https://github.com/SocialGouv/iterion/issues/1350)
+
+    <details><summary>why</summary>
+
+    A `presets:` entry could set a var to a value its `[enum: ...]` or its `[matching: "<re>"]` constraint refuses, and nothing looked: `iterion validate` said `result: OK` and only `iterion run --preset <name>` died at the launch gate. A bot could ship a preset no launch can accept.
+
+    </details>
+
 ## [3.185.1](https://github.com/SocialGouv/iterion/compare/v3.185.0...v3.185.1) (2026-09-22)
 
 ### Bug Fixes
