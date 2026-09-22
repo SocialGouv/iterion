@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.188.0](https://github.com/SocialGouv/iterion/compare/v3.187.0...v3.188.0) (2026-09-22)
+
+### Features
+
+* **security:** a run carries who wrote its workspace, and an untrusted one can neither publish, read a forge token, nor pass a pin it cannot enforce ([#1670](https://github.com/SocialGouv/iterion/issues/1670)) ([6898e6c](https://github.com/SocialGouv/iterion/commit/6898e6c7806b622d4e2a5c69aa49a662eb3e70e1)), references [#874](https://github.com/SocialGouv/iterion/issues/874) [#874](https://github.com/SocialGouv/iterion/issues/874) [#874](https://github.com/SocialGouv/iterion/issues/874) [#1639](https://github.com/SocialGouv/iterion/issues/1639) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Groundwork for the opt-in fork review lane (#874): the five constraints the ticket sets are only enforceable if "who wrote this code" is a property of the RUN, not of the surface that launched it. A resume, a usage-window retry and a forked child all rebuild their credentials from the stored run document, long after the admitting lane is out of scope.
+
+    </details>
+
 ## [3.187.0](https://github.com/SocialGouv/iterion/compare/v3.186.0...v3.187.0) (2026-09-22)
 
 ### Features
