@@ -40,7 +40,7 @@ func TestResolve_pinnedKeyWithFreshRefusalsWarns(t *testing.T) {
 
 	ctx := store.WithTenant(context.Background(), "team1")
 	creds, err := p.resolveAndSealCredentials(ctx, "run-pin", "", "team1", "owner1", "",
-		nil, map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.ModelOverrides{}, nil)
+		nil, map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestResolve_pinnedHealthyKeyIsQuiet(t *testing.T) {
 
 	ctx := store.WithTenant(context.Background(), "team1")
 	if _, err := p.resolveAndSealCredentials(ctx, "run-pin2", "", "team1", "owner1", "",
-		nil, map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.ModelOverrides{}, nil); err != nil {
+		nil, map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.ModelOverrides{}, nil, store.RunTrustDefault); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
 	if strings.Contains(buf.String(), "pinned api key") {

@@ -135,9 +135,19 @@ func (s *Server) handleCommitAndFinalize(w http.ResponseWriter, r *http.Request)
 // a github_app connection — those installation tokens live one hour, so a
 // stored value is usually dead by merge time (same point-of-use re-mint
 // the launch path does).
+// It is also the SECOND carrier of that token, and the one the sealed-bundle
+// withdrawal does not cover: the bundle is built per run by the publisher,
+// while this opens the pinned secret id off the run document, server-side, at
+// merge time. A run whose workspace holds code the tenant did not write never
+// gets it — the merge would push that tree into the tenant's own branch under
+// the tenant's forge identity, which is the whole thing the fork lane exists
+// not to do.
 func (s *Server) forgeTokenForRun(ctx context.Context, r *store.Run) (string, error) {
 	if r == nil || r.RepoURL == "" {
 		return "", nil
+	}
+	if !r.Trust.Trusted() {
+		return "", fmt.Errorf("run %s runs on an untrusted workspace (trust=%q): the tenant's forge token is never opened for it", r.ID, string(r.Trust))
 	}
 	secID := r.SecretOverrides["forge_token"]
 	if secID == "" {

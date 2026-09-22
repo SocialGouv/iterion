@@ -185,7 +185,7 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 			// Live resolution is the independent oracle, with real sealed records and
 			// real pool admission. Every metadata-only dependency above rejects writes.
 			ctx := store.WithTenant(t.Context(), poolTeam)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, nil, spec.Launch.KeyOverrides, nil, model.ModelOverrides{}, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, nil, spec.Launch.KeyOverrides, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
 			if err != nil {
 				t.Fatal(err)
 			}

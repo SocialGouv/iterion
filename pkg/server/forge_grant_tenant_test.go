@@ -287,7 +287,7 @@ func TestInjectForgePublishVars_RefusesAForeignPinnedGrant(t *testing.T) {
 
 	t.Run("another tenant's grant is refused, nothing launches", func(t *testing.T) {
 		s := newServer(t)
-		_, err := s.injectForgePublishVars(context.Background(), "team-b", "", "review-pr", prVars("tok-team1"), nil)
+		_, err := s.injectForgePublishVars(context.Background(), "team-b", "", "review-pr", prVars("tok-team1"), nil, store.RunTrustDefault)
 		if err == nil {
 			t.Fatal("a pinned grant of another tenant was accepted — the run would publish as that tenant")
 		}
@@ -309,7 +309,7 @@ func TestInjectForgePublishVars_RefusesAForeignPinnedGrant(t *testing.T) {
 
 	t.Run("a run pinning its OWN tenant's grant keeps it", func(t *testing.T) {
 		s := newServer(t)
-		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars("tok-team1"), nil)
+		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars("tok-team1"), nil, store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("a team's own grant must be honoured: %v", err)
 		}
@@ -324,7 +324,7 @@ func TestInjectForgePublishVars_RefusesAForeignPinnedGrant(t *testing.T) {
 	// honoured, and the publish endpoint answers 401.
 	t.Run("an unknown token is not refused", func(t *testing.T) {
 		s := newServer(t)
-		out, err := s.injectForgePublishVars(context.Background(), "team-b", "", "review-pr", prVars("tok-gone"), nil)
+		out, err := s.injectForgePublishVars(context.Background(), "team-b", "", "review-pr", prVars("tok-gone"), nil, store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("an unresolvable pin must not fail the launch: %v", err)
 		}

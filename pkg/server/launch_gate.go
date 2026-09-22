@@ -104,7 +104,7 @@ func orValue[T int | float64](team, def T) T {
 // counter stays true.
 type launchAdmission struct {
 	counter  orgusage.Counter
-	usageKey string
+	usageKey orgusage.Subject
 	when     time.Time
 }
 
@@ -292,10 +292,11 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 	if s.orgUsage == nil {
 		return nil, nil
 	}
-	usageKey := org.ID
-	if usageKey == "" {
-		usageKey = t.ID
+	meteredID := org.ID
+	if meteredID == "" {
+		meteredID = t.ID
 	}
+	usageKey := orgusage.OrgSubject(meteredID)
 	maxRuns := orValue(org.MonthlyRunQuota, s.orgDefaults.MonthlyRunQuota)
 	capUSD := orValue(org.MonthlyCostCapUSD, s.orgDefaults.MonthlyCostCapUSD)
 	deny, err := s.orgUsage.AllowRun(ctx, usageKey, now, maxRuns, orgusage.CostToMillis(capUSD))
@@ -346,5 +347,14 @@ func (s *Server) writeLaunchDenial(w http.ResponseWriter, r *http.Request, d *la
 		body["reset_at"] = d.resetAt.Format(time.RFC3339)
 	}
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, d.status, body)
+	// Floor the code. WriteHeader(0) PANICS in net/http, killing the request
+	// goroutine — the caller sees a dropped connection, and a forge answers
+	// repeated failures by disabling the hook. No denial constructed today
+	// leaves status zero; that was equally true of the sibling arm in
+	// writeSingleLaunchResult until a new status reached it.
+	status := d.status
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	httpx.WriteJSON(w, status, body)
 }

@@ -256,7 +256,18 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
-		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra)
+		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra,
+		// The MR lane refuses a PROVEN fork above (`p.IsFork()`), and
+		// deliberately lets a payload naming neither project through — its
+		// own comment says so, and the API-resolving lanes fail closed on
+		// that shape instead. So this stamps "trusted" on a head this lane
+		// did not prove, which is weaker than the GitHub site next door
+		// (forkGuardRefusal fails closed on a withheld or unnamed head).
+		// It matches today's behaviour exactly — origin/main carried no
+		// marker at all — but when the admission half lands, an unproven
+		// GitLab head must get a non-trusted class here rather than this
+		// default.
+		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a
 	// volley of pushes costs one review of the final head (a re-request
@@ -311,7 +322,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{})
 }
 
 // gitlabIssueLabeledVars composes the implementer-bot launch vars for a
@@ -482,7 +493,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, converseBot,
-		vars, gitlabHeadCloneURL(head, p), gitlabHeadBranch(head, p), payloadHash, srcIP)
+		vars, gitlabHeadCloneURL(head, p), gitlabHeadBranch(head, p), payloadHash, srcIP, launchProvenance{})
 }
 
 // resolveGitLabNoteHead resolves the merge request a note sits on through the
@@ -632,7 +643,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if surface == "issue" {
 		ref = p.DefaultBranch
 	}
-	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP, launchProvenance{})
 }
 
 // buildCommandVars composes the launch vars for a generic command on a GitLab
@@ -1289,18 +1300,22 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 }
 
 // webhookLauncherFor builds the production launch path for one inbound
-// webhook config. It is a closure rather than a plain method because the
-// launch needs the config's retry policy, which the seam's positional
-// signature does not carry.
-func (s *Server) webhookLauncherFor(cfg webhooks.Config) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+// webhook config and ONE target of it. It is a closure rather than a plain
+// method because the launch needs facts the seam's positional signature does
+// not carry: the config's retry policy, and the target's own trust and
+// admitted commit. Those last two ride the closure rather than two more
+// positional parameters because the seam has 149 test doubles — and because a
+// test double that stands in for the launcher is not the thing that builds a
+// LaunchSpec, so widening it would prove nothing it does not already prove.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
-		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides)
+		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA)
 	}
 }
 
 // launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher).
-func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -1310,10 +1325,15 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 	}
 	defer lb.Cleanup()
 	spec := runview.LaunchSpec{
-		Vars:            vars,
-		RepoURL:         repoURL,
-		RepoRef:         repoRef,
-		ProjectPath:     projectPath,
+		Vars:        vars,
+		RepoURL:     repoURL,
+		RepoRef:     repoRef,
+		ProjectPath: projectPath,
+		// Stamped onto the run document, which is what a resume, a
+		// usage-window retry and a forked child read their credentials
+		// from — this launch's verdict has to outlive this launch.
+		Trust:           trust,
+		RepoSHAExpected: expectedSHA,
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
 		// A webhook-launched run is often the one an author is waiting on,

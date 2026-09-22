@@ -310,6 +310,15 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 			s.logger.Debug("gate relaunch: %s on %s#%d@%s is already escalated — nothing new to file",
 				d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA))
 		}
+	case webhooks.StatusFiltered:
+		// A refusal, not a failure to start: retrying cannot change it (the
+		// tail's refusals are pure functions of the config and the target),
+		// and this sweep re-offers the same run every minute for its whole
+		// lookback — so escalating or retrying would repeat a wrong
+		// diagnosis on a schedule. The refusal recorded its own terminal row.
+		if s.logger != nil {
+			s.logger.Info("gate relaunch: %s on %s#%d refused: %s", d.gateCtx, d.repo, d.number, strings.TrimSpace(res.Error))
+		}
 	default:
 		why := strings.TrimSpace(res.Error)
 		if why == "" {

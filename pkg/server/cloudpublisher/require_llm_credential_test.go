@@ -84,7 +84,7 @@ func TestResolve_RequireLLMCredentialRefusesOnlyARunThatCannotStart(t *testing.T
 			wf := compileTestSource(t, tc.bot)
 			ctx := store.WithTenant(context.Background(), "team1")
 			_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "",
-				wf, nil, nil, model.ModelOverrides{}, nil)
+				wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
 			if tc.refused {
 				if !errors.Is(err, runview.ErrNoLLMCredential) {
 					t.Fatalf("resolveAndSealCredentials = %v, want runview.ErrNoLLMCredential", err)
@@ -114,7 +114,7 @@ func TestResolve_RequireLLMCredentialNamesTheUnfundedProviders(t *testing.T) {
 		logger: iterlog.Nop(), requireLLMCredential: true}
 	ctx := store.WithTenant(context.Background(), "team1")
 	_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "",
-		compileTestSource(t, twoRoutesBot), nil, nil, model.ModelOverrides{}, nil)
+		compileTestSource(t, twoRoutesBot), nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
 	if err == nil || !strings.Contains(err.Error(), "anthropic") || !strings.Contains(err.Error(), "openai") {
 		t.Fatalf("refusal = %v, want it to name both pinned providers", err)
 	}

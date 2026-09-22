@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -467,7 +468,7 @@ func (s *Server) buildOrgUsageView(ctx context.Context, st identity.Store, o ide
 
 	// Org-keyed monthly counters: one read, keyed by org.ID.
 	if s.orgUsage != nil {
-		if u, err := s.orgUsage.Usage(ctx, o.ID, now); err == nil {
+		if u, err := s.orgUsage.Usage(ctx, orgusage.OrgSubject(o.ID), now); err == nil {
 			v.RunsThisMonth = u.Runs
 			v.CostUSDThisMonth = u.CostUSD
 			v.InputTokens = u.InputTokens

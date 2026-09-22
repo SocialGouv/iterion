@@ -85,7 +85,7 @@ func TestCredentialPreviewWebhookMatchesActualLaunchSourceAndIdentity(t *testing
 	}
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
 	vars := applyWebhookVarLayers(map[string]string{}, cfg)
-	if _, err := s.launchWebhookBot(ctx, cfg, "probe", vars, "", "", "", cfg.KeyOverrides, nil); err != nil {
+	if _, err := s.launchWebhookBot(ctx, cfg, "probe", vars, "", "", "", cfg.KeyOverrides, nil, store.RunTrustDefault, ""); err != nil {
 		t.Fatal(err)
 	}
 	if pub.preview.OwnerID != pub.launchedOwner || pub.preview.OwnerID != "webhook:hook" {

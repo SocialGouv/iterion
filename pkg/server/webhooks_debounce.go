@@ -188,6 +188,7 @@ func (s *Server) deferSyncLaunch(
 		d.Targets = append(d.Targets, webhooks.DeferredTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,
+			Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
 		})
 	}
 	accepted, err := s.webhookDeferred.Upsert(ctx, d)
@@ -377,11 +378,30 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		res := s.launchWebhookTarget(ctx, req, cfg, meta, forgeLaunchTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: t.Vars,
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef,
+			// The provenance the admission proved, replayed from the parked
+			// row. The sweep re-enters none of the admission the inbound
+			// request passed, so anything it does not carry here is a fact
+			// the launch silently loses — and this one decides capabilities.
+			Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
 		}, d.PayloadHash, d.SourceIP)
 		if res.Status == webhooks.StatusLaunched {
 			s.scheduleForgeBoardProjection(meta.ProjectPath)
 		}
 		if res.Status == webhooks.StatusLaunched || res.Status == webhooks.StatusDuplicate {
+			continue
+		}
+		// A REFUSAL is a verdict, not a transient failure. The tail's
+		// refusals (lane kind, a missing commit pin) are pure functions of
+		// facts frozen on this parked row and on the config the sweep just
+		// re-read, so retrying cannot change the answer: on the retry budget
+		// it burns 8 attempts, writes 8 terminal `filtered` audit rows, and
+		// finally tells the operator the review was ABANDONED with a
+		// launch_error — a diagnosis that sends them looking in the wrong
+		// place. It already recorded its own row naming the reason, so the
+		// parked row is acknowledged exactly as a duplicate is; a fresh push
+		// re-arms a new payload with a full budget.
+		if res.Status == webhooks.StatusFiltered {
+			s.warnf("webhook debounce sweeper: parked %s launch for %s refused: %s", t.BotID, d.SubjectID, res.Error)
 			continue
 		}
 		s.warnf("webhook debounce sweeper: parked %s launch for %s ended %s: %s", t.BotID, d.SubjectID, res.Status, res.Error)

@@ -148,6 +148,7 @@ func (s *Server) dispatchInvocation(
 	cfg webhooks.Config, meta webhookEventMeta, idemKey string,
 	route webhooks.CommandRoute, vars map[string]string,
 	repoURL, repoRef, payloadHash, srcIP string,
+	prov launchProvenance,
 ) {
 	// Seeding the declared hand-off vars has to happen HERE rather than only in
 	// the launch tail: a board-mode command with a dispatcher never reaches the
@@ -166,6 +167,30 @@ func (s *Server) dispatchInvocation(
 	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		if s.cfg.CloudBoardCoordinator != nil {
+			// This branch RETURNS without reaching the launch tail — the card
+			// is the launch — so neither the lane-disjointness gate nor the
+			// commit pin in launchWebhookTarget is crossed. The card has no
+			// seat for provenance either: it carries only BotArgs, which
+			// processBoardCard lifts into a LaunchSpec that hard-codes the
+			// trusted default. A launch that knows something about its code
+			// and cannot carry it must not be laundered into one that claims
+			// to know nothing.
+			//
+			// Only THIS branch: a direct-mode route, and a board route with
+			// no coordinator, both fall through to the tail carrying prov,
+			// and refusing them would close the path the fork review lane
+			// needs. Inert on every caller today (all six hand over the
+			// trusted zero value).
+			if !prov.Trust.Trusted() || prov.ExpectedSHA != "" {
+				reason := fmt.Sprintf("board-mode dispatch cannot carry this launch's provenance (trust=%q, pinned_commit=%v): the card holds only bot args, so the run it produces would read as trusted and unpinned",
+					string(prov.Trust), prov.ExpectedSHA != "")
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+				if s.logger != nil {
+					s.logger.Warn("webhooks: %s/%s refused for %s: %s", cfg.Provider, meta.ProjectPath, route.BotID, reason)
+				}
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered, "reason": reason})
+				return
+			}
 			// Dispatcher active: pre-check the org gate, create the card in
 			// the eligible state, and let the dispatcher own execution + state
 			// transitions — no direct launch (else the card would run twice).
@@ -200,7 +225,7 @@ func (s *Server) dispatchInvocation(
 		seed()
 		s.ensureBoardCard(ctx, cfg, route, vars, meta, "", repoURL, repoRef)
 	}
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, route.BotID, vars, repoURL, repoRef, payloadHash, srcIP)
+	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, route.BotID, vars, repoURL, repoRef, payloadHash, srcIP, prov)
 }
 
 // ensureBoardCard materialises a tracking kanban card for a board-mode

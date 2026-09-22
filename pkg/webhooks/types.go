@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Provider identifies the external event source.
@@ -202,18 +203,70 @@ type Config struct {
 	// (review_on_sync_pinned: false) to hand the field back.
 	ReviewOnSyncPinned bool `bson:"review_on_sync_pinned,omitempty" json:"review_on_sync_pinned,omitempty"`
 
-	// There is no fork switch here on purpose. A pull request whose head lives
-	// in another repository is refused on EVERY lane, unconditionally: the
-	// auto-review lane, the /command lanes, the reply-in-thread lane, the
-	// gate relaunch and the auto-fix lane all require a PROVEN same-repo head
-	// before anything launches. The launch pair a fork produces (the base
-	// repo's clone URL + a head branch that lives elsewhere) does not name one
-	// repository, so the checkout misses or — worse — hits a same-named branch
-	// on the base and the bot answers, comments and pushes grounded in the
-	// wrong code under iterion's own identity.
+	// ForkLane makes this config the READ-ONLY FORK REVIEW LANE, and it is a
+	// lane KIND rather than a permission: it does not relax the fork guard on
+	// the ordinary lanes, it moves this whole config onto a different one.
 	//
-	// Serving forks needs a lane of its own (read-only, no publish grant, no
-	// fixer, no repo secrets), not a boolean: see docs/webhooks.md.
+	// There is still no switch that lets an ordinary lane serve a fork. A
+	// pull request whose head lives in another repository is refused on every
+	// ordinary lane, unconditionally — the auto-review lane, the /command
+	// lanes, the reply-in-thread lane, the gate relaunch and the auto-fix
+	// lane all require a PROVEN same-repo head before anything launches. What
+	// made that unconditional was not distrust alone: the launch pair a fork
+	// produces on those lanes (the base repo's clone URL + a head branch that
+	// lives elsewhere) does not name one repository, so the checkout misses
+	// or — worse — hits a same-named branch on the base and the bot answers,
+	// comments and pushes grounded in the wrong code under iterion's identity.
+	//
+	// The fork lane answers that by NOT building that pair: it launches on
+	// the base repo's clone URL and the base repo's own pull-request head ref
+	// (refs/pull/<n>/head), which names ONE repository — the base — and
+	// resolves to the fork's commit. The run it launches carries
+	// store.RunTrustFork, which withdraws the publish grant, the tenant's
+	// workflow secrets and every mutating bot, wherever those are read.
+	//
+	// THAT LIST IS NOT #874's FIVE CONSTRAINTS. Two of them are UNENFORCED
+	// and belong to the admission half, and they are named here so the gap
+	// is carried forward rather than read as already closed:
+	//
+	//   - constraint 4b — fork code must not execute the TARGET repo's own
+	//     toolchain or config (`repo_devbox: off`, sandbox `network:
+	//     allowlist`). store.RunTrust DOES reach pkg/runtime and pkg/runner
+	//     — it rides queue.RunMessage, refuses a pinless untrusted workspace
+	//     (loop_gitws.go) and is stamped onto a sub-bot's document
+	//     (runtime.WithTrust). What no path routes it into is the TOOLCHAIN
+	//     and NETWORK policy: resolveRepoDevbox(override, workflow) takes no
+	//     trust argument, and the sandbox network policy has none either.
+	//   - constraint 5 beyond the gate context — the base repo's project
+	//     settings must not be honoured. Among THOSE surfaces only the
+	//     gate-context write is trust-gated: applyWebhookVarLayers still
+	//     layers cfg.LaunchVars and cfg.OperatorLaunchVars onto a target
+	//     whatever its trust, and the hold-label veto is trust-blind. The
+	//     per-fork-author bound exists as orgusage.ForkAuthorSubject with NO
+	//     production caller.
+	//
+	// Why deferred rather than done here: nothing sets RunTrustFork, so
+	// PR1's safety is safety-by-refusal — the marker's readers must be
+	// correct before anything can carry it. 4b and 5 are ADMISSION-time
+	// controls: they shape how a fork run is built, which is the half that
+	// does not exist yet, and a guard whose condition can never be true is
+	// documented as working, which is worse than absent. They are on #874's
+	// remainder.
+	//
+	// The two kinds are DISJOINT, enforced in both directions at the launch
+	// tail (launchWebhookTarget): a fork-lane config never launches a
+	// same-repo target, and an ordinary config never launches a fork target.
+	//
+	// NOT SETTABLE THROUGH THE API YET, deliberately: no create/PATCH request
+	// struct carries it, so today every config decodes false and the fork
+	// lane admits nothing. The admission half — the maintainer gesture that
+	// opts one pull request in, and the per-author budget — is a follow-up,
+	// and the field becomes settable WITH it. When it does, the PATCH route
+	// has to refuse changing it on an existing config: the per-author budget
+	// is keyed on the config, so flipping the kind under it re-interprets
+	// rows written for the other one. That guard does not exist today and
+	// this comment is not claiming it does.
+	ForkLane bool `bson:"fork_lane,omitempty" json:"fork_lane,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The
@@ -567,6 +620,16 @@ type DeferredTarget struct {
 	Vars    map[string]string `bson:"vars" json:"vars"`
 	RepoURL string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
 	RepoRef string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
+	// Trust and ExpectedSHA are the launch's provenance, parked with the
+	// rest of the target. They travel TOGETHER on purpose: carrying Trust
+	// alone would make a fork-lane row fire through the disjointness gate
+	// while its commit pin silently defaulted to empty — on the row with the
+	// LONGEST admission-to-fetch window in the system (the quiet window is
+	// minutes and a fresh push re-arms it with no ceiling), which is exactly
+	// where an unpinned fetch costs the most. A row written before these fields existed decodes to
+	// the trusted default and no pin, i.e. to what it did yesterday.
+	Trust       store.RunTrust `bson:"trust,omitempty" json:"trust,omitempty"`
+	ExpectedSHA string         `bson:"expected_sha,omitempty" json:"expected_sha,omitempty"`
 }
 
 // DeferredLaunch parks one webhook delivery's resolved launch for a

@@ -133,6 +133,16 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if spec.FilePath == "" && spec.Source == "" {
 		return nil, errors.New("runview: file_path or source is required")
 	}
+	// Only the cloud publisher persists Trust and RepoSHAExpected onto the run
+	// document. The in-process path builds its run from its own field list, so
+	// an untrusted launch would land as a run reading TRUSTED — and every
+	// enforcement site downstream (the publish grant, the credential resolve,
+	// a resume, a forked child) reads the marker off that document. Refuse
+	// rather than carry a fact this path cannot keep: silently downgrading an
+	// untrusted launch to a trusted run is worse than not launching it.
+	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "") && s.publisher == nil {
+		return nil, fmt.Errorf("runview: refusing a launch the in-process path cannot describe (trust=%q, pinned_commit=%v): it persists neither marker, so the run would read as trusted and unpinned", string(spec.Trust), spec.RepoSHAExpected != "")
+	}
 	if spec.BranchName != "" {
 		if err := gitlib.ValidateBranchName(spec.BranchName); err != nil {
 			return nil, fmt.Errorf("branch_name: %w", err)

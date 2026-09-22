@@ -138,7 +138,20 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		vars["head_sha"] = pr.HeadSHA
 	}
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%s|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.SubjectID())))
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP)
+	// Trusted: the fork guard above proved the head lives in THIS repository,
+	// so the launch pair names one repo and the run may hold the tenant's
+	// grant and secrets. The opt-in fork review lane is the one caller that
+	// will hand over store.RunTrustFork here instead — with the base repo's
+	// own pull-request head ref as repoRef and the resolved head commit as
+	// ExpectedSHA.
+	//
+	// Where that provenance is enforced depends on the route: a DIRECT
+	// dispatch reaches launchWebhookTarget, which refuses any pairing of a
+	// fork target with an ordinary subscription or the reverse; a BOARD-mode
+	// route returns inside dispatchInvocation without reaching the tail at
+	// all, and is refused there instead, because a card carries no seat for
+	// provenance.
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP, launchProvenance{})
 }
 
 // realWebhookPRForgePRResolver fetches the PR a command comment sits on, with
@@ -544,7 +557,7 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 	// Idempotency: one launch per reply comment; "rc|" keeps the key space
 	// disjoint from the pr|/cmd| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("rc|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.RepoID, p.SubjectID())))
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, converseBot, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, converseBot, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP, launchProvenance{})
 }
 
 // prforgeReviewCommentMeta builds the delivery-audit meta for a review-thread
