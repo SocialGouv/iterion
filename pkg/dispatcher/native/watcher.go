@@ -10,6 +10,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/SocialGouv/iterion/internal/fswatch"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
 
@@ -18,12 +19,15 @@ import (
 // like every seam in this package — see fireSeam.
 var newFSWatcher atomic.Pointer[func() (*fsnotify.Watcher, error)]
 
-// fsWatcherCtor is fsnotify's own constructor unless a test installed one.
+// fsWatcherCtor returns fswatch's constructor — whose refusal carries the
+// resource evidence store.go logs — unless a test installed one. It covers
+// inotify_init only: w.Add's refusal below still reaches that same log line
+// raw (#1554).
 func fsWatcherCtor() func() (*fsnotify.Watcher, error) {
 	if f := newFSWatcher.Load(); f != nil {
 		return *f
 	}
-	return fsnotify.NewWatcher
+	return fswatch.NewWatcher
 }
 
 // indexWatcher watches <root>/issues/ for filesystem changes made by
