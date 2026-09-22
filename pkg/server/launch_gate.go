@@ -347,5 +347,14 @@ func (s *Server) writeLaunchDenial(w http.ResponseWriter, r *http.Request, d *la
 		body["reset_at"] = d.resetAt.Format(time.RFC3339)
 	}
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, d.status, body)
+	// Floor the code. WriteHeader(0) PANICS in net/http, killing the request
+	// goroutine — the caller sees a dropped connection, and a forge answers
+	// repeated failures by disabling the hook. No denial constructed today
+	// leaves status zero; that was equally true of the sibling arm in
+	// writeSingleLaunchResult until a new status reached it.
+	status := d.status
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	httpx.WriteJSON(w, status, body)
 }

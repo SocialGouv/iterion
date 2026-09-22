@@ -257,7 +257,16 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
 		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra,
-		// Trusted: the MR lane refuses a proven fork above.
+		// The MR lane refuses a PROVEN fork above (`p.IsFork()`), and
+		// deliberately lets a payload naming neither project through — its
+		// own comment says so, and the API-resolving lanes fail closed on
+		// that shape instead. So this stamps "trusted" on a head this lane
+		// did not prove, which is weaker than the GitHub site next door
+		// (forkGuardRefusal fails closed on a withheld or unnamed head).
+		// It matches today's behaviour exactly — origin/main carried no
+		// marker at all — but when the admission half lands, an unproven
+		// GitLab head must get a non-trusted class here rather than this
+		// default.
 		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a

@@ -85,3 +85,34 @@ func TestWebhookTail_AFilteredRefusalAnswers200AndDoesNotPanic(t *testing.T) {
 		})
 	}
 }
+
+// The same hazard on the OTHER writer of that switch. writeLaunchDenial hands
+// d.status straight to httpx.WriteJSON, and no denial constructed today
+// leaves it zero — which was equally true of the sibling arm until a new
+// status reached it. A floor costs nothing and removes the whole class.
+func TestWriteLaunchDenial_FloorsAMissingStatusInsteadOfPanicking(t *testing.T) {
+	s := newWebhookTestServer(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A denial with no HTTP status — the shape a future reason token
+		// would have if its constructor forgot one.
+		s.writeLaunchDenial(w, r, &launchDenial{reason: "some_future_reason", detail: "constructed without a status"})
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("the request died (%v) — WriteHeader(0) panicked the handler", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — an unclassified denial must be a server error, not a crash", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]string
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("body %s: %v", body, err)
+	}
+	if got["error"] != "some_future_reason" {
+		t.Fatalf("error = %q, want the denial's own reason to survive the floor", got["error"])
+	}
+}

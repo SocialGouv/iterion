@@ -390,6 +390,20 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		if res.Status == webhooks.StatusLaunched || res.Status == webhooks.StatusDuplicate {
 			continue
 		}
+		// A REFUSAL is a verdict, not a transient failure. The tail's
+		// refusals (lane kind, a missing commit pin) are pure functions of
+		// facts frozen on this parked row and on the config the sweep just
+		// re-read, so retrying cannot change the answer: on the retry budget
+		// it burns 8 attempts, writes 8 terminal `filtered` audit rows, and
+		// finally tells the operator the review was ABANDONED with a
+		// launch_error — a diagnosis that sends them looking in the wrong
+		// place. It already recorded its own row naming the reason, so the
+		// parked row is acknowledged exactly as a duplicate is; a fresh push
+		// re-arms a new payload with a full budget.
+		if res.Status == webhooks.StatusFiltered {
+			s.warnf("webhook debounce sweeper: parked %s launch for %s refused: %s", t.BotID, d.SubjectID, res.Error)
+			continue
+		}
 		s.warnf("webhook debounce sweeper: parked %s launch for %s ended %s: %s", t.BotID, d.SubjectID, res.Status, res.Error)
 		failed = t.BotID + ": " + res.Error
 		if res.denial != nil {

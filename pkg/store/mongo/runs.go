@@ -247,12 +247,21 @@ func notDeleted(filter bson.M) bson.M {
 // materialised.
 //
 // Written as a $cond on emptiness rather than $ifNull on null, because
-// $ifNull only shields against a MISSING field: `{$literal: ""}` is non-null,
-// so the obvious spelling both materialises `""` where the field used to be
-// absent and lets a saver carrying a different non-empty value overwrite what
-// is stored. This matches the filesystem twin exactly — there, `if
-// persisted.X != "" { keep persisted }` — and the twins must agree, or the
-// guarantee depends on which store a deployment runs.
+// $ifNull only shields against a MISSING field. `{$literal: ""}` is non-null,
+// so the obvious `$ifNull` spelling MATERIALISES `""` on the first ordinary
+// save — and every launcher alive today saves a run knowing nothing about
+// trust. Once the field exists as `""`, `$ifNull` keeps it forever, so a lane
+// that later marks the run fork cannot: the value reads back as
+// RunTrustDefault, i.e. TRUSTED, and every capability keyed on the marker
+// stays granted. Silent, and fail-OPEN — the worst direction.
+//
+// (It did NOT let a rival non-empty value overwrite a stored one; both
+// spellings refuse that. Said explicitly because an earlier revision of this
+// comment claimed otherwise.)
+//
+// The rule matches the filesystem twin exactly — there, `if persisted.X != ""
+// { keep persisted }` — and the twins must agree, or the guarantee depends on
+// which store a deployment runs.
 func writeOnceString(field, incoming string) bson.M {
 	if incoming == "" {
 		// Nothing to write: keep what is stored, or leave the field absent.

@@ -596,10 +596,30 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	r.Trust = store.RunTrustFork
-	r.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	// FIRST, the order the product actually produces: every launcher alive
+	// today saves a run knowing nothing about trust, and only THEN does a lane
+	// mark it. A backend that MATERIALISES the empty value on that first save
+	// can never be marked afterwards — and an empty marker reads as
+	// RunTrustDefault, i.e. TRUSTED, so the failure is silent and fail-OPEN:
+	// every capability keyed on it stays granted. This is a different case
+	// from the stale and rival saves below, and it is the one a write-once
+	// rule most has to get right.
 	if err := s.SaveRun(ctx, r); err != nil {
-		t.Fatalf("SaveRun: %v", err)
+		t.Fatalf("SaveRun (a saver that knows no trust): %v", err)
+	}
+	marking, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun (marking): %v", err)
+	}
+	marking.Trust = store.RunTrustFork
+	marking.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	if err := s.SaveRun(ctx, marking); err != nil {
+		t.Fatalf("SaveRun (marking): %v", err)
+	}
+	if marked, lerr := s.LoadRun(ctx, id); lerr != nil {
+		t.Fatalf("LoadRun after marking: %v", lerr)
+	} else if marked.Trust != store.RunTrustFork {
+		t.Fatalf("Trust = %q after a lane marked the run fork; want %q — a backend that materialised the empty value on the earlier save can never be marked, and an empty marker reads as TRUSTED", marked.Trust, store.RunTrustFork)
 	}
 	// A saver that does not know the fields: load, blank them, save.
 	stale, err := s.LoadRun(ctx, id)
