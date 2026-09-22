@@ -14,6 +14,7 @@ import {
 } from "@/api/audit";
 
 import { useMaybeAuth } from "@/auth/AuthContext";
+import { findTeamGrant } from "@/hooks/useTenantSubject";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
@@ -40,22 +41,23 @@ export default function AuditTab({ teamID, orgID, platform, canManage }: Props) 
         ? listOrgAudit(orgID, q)
         : listTeamAudit(teamID ?? "", q);
   const [, navigate] = useLocation();
-  // Cross-link the two audit surfaces. When rendering the team audit we
-  // resolve the containing org (the team is expected to live under the
-  // active org's tree — the studio only routes to /teams/:id while
-  // switched into its org); when rendering the org audit we point at the
-  // Teams tab as the entry to each team's own audit page.
-  // Provider-optional: the cross-link is decoration — the tab must
-  // still mount without an AuthProvider (jsdom a11y harness).
+  // Cross-link the two audit surfaces: from a team's audit up to its org's,
+  // and from an org's audit down to the Teams tab as the entry to each
+  // team's own page.
+  //
+  // Resolved from the caller's grants through the shared selector, so it is
+  // the same lookup useTeamSubject and useCanManageTeam use rather than a
+  // fourth walk of the same tree. It yields nothing for a caller who holds
+  // no grant on the team (a super-admin browsing one), and that is accepted
+  // here: the cross-link is decoration, and this tab must also mount with
+  // no AuthProvider at all (jsdom a11y harness), which rules out the
+  // subject hooks and their fetch.
   const auth = useMaybeAuth();
   const orgs = auth?.orgs ?? [];
-  const activeOrg = auth?.activeOrg ?? null;
-  const containingOrgID = useMemo(() => {
-    if (!teamID) return "";
-    if (activeOrg?.teams.some((t) => t.team_id === teamID)) return activeOrg.org_id;
-    const owner = orgs.find((o) => o.teams.some((t) => t.team_id === teamID));
-    return owner?.org_id ?? "";
-  }, [orgs, activeOrg, teamID]);
+  const containingOrgID = useMemo(
+    () => (teamID ? (findTeamGrant(orgs, teamID)?.org.org_id ?? "") : ""),
+    [orgs, teamID],
+  );
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [filter, setFilter] = useState<AuditQuery>({});
   const [nextOffset, setNextOffset] = useState<number | null>(null);

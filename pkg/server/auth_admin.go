@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -28,7 +29,15 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	case limit > 200:
 		limit = 200
 	}
-	users, err := s.authStore().ListUsers(r.Context(), identity.Page{Offset: offset, Limit: limit})
+	// ?q narrows the page to the accounts whose email starts with it, or
+	// the one whose id equals it. Without it a console past a few dozen
+	// users can only page, which is how the 17/09 investigation had to
+	// find one account among the platform's.
+	query := strings.TrimSpace(q.Get("q"))
+	users, err := s.authStore().ListUsers(r.Context(), identity.UserFilter{
+		Page:  identity.Page{Offset: offset, Limit: limit},
+		Query: query,
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -41,7 +50,8 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		Users  []UserView `json:"users"`
 		Offset int        `json:"offset"`
 		Limit  int        `json:"limit"`
-	}{Users: views, Offset: offset, Limit: limit})
+		Query  string     `json:"query,omitempty"`
+	}{Users: views, Offset: offset, Limit: limit, Query: query})
 }
 
 func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {

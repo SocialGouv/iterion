@@ -57,7 +57,7 @@ export default function SchedulesTab({
   onUnavailable: () => void;
 }) {
   const { repos, enabled, teamID } = useActiveRepo();
-  const canManage = useCanManageTeam();
+  const canManage = useCanManageTeam(teamID ?? "");
   const [, navigate] = useLocation();
   const { confirm, dialog } = useConfirm();
 

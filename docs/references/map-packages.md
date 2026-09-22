@@ -127,7 +127,7 @@
 | `pkg/forge/github` | the GitHub implementation of forge.Admin: the outbound write-side client the orchestrator uses to list repos and create/update/delete the iterion… | — | 17 · 135 |
 | `pkg/forge/gitlab` | the GitLab implementation of forge.Admin: the OUTBOUND write-side client the orchestrator uses to list a connection's projects and… | — | 10 · 37 |
 | `pkg/git` | a minimal wrapper around the `git` CLI for the studio's modified-files panel. | — | 11 · 34 |
-| `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` | 4 · 159 |
+| `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` | 4 · 160 |
 | `pkg/internal/appinfo` | — | — | 1 · 7 |
 | `pkg/internal/clilocate` | centralises the host-side probe used by backends that shell out to a CLI binary (claude, codex, …). | — | 1 · 11 |
 | `pkg/internal/jsonl` | provides a crash-safe append-only JSONL file writer. | — | 3 · 2 |
@@ -180,7 +180,7 @@
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` | 6 · 52 |
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` | 20 · 341 |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | — | 1 · 5 |
-| `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 232 · 166 |
+| `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 233 · 166 |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `TeamResolver` | 9 · 14 |
 | `pkg/server/projects` | manages the studio's per-user project registry. | — | 1 · 11 |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` | 5 · 32 |

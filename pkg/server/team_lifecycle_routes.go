@@ -40,11 +40,23 @@ func (s *Server) registerTeamLifecycleRoutes() {
 // round trip was merely moved one level up.
 //
 // PATCH on the same path updates an EXISTING membership and 404s otherwise;
-// this creates or updates. Org admin, like every other org roster write.
+// this creates or updates.
+//
+// Super-admin only, unlike every other org roster write. The member_id is an
+// account id the caller names rather than an address its owner answers at:
+// under org admin it absorbs any account into the org at any role, discloses
+// that account's email through the roster, and turns the 404/200 split into
+// an existence oracle over arbitrary ids. An org admin adds someone by email
+// invitation (which the invitee accepts) and keeps PATCH/DELETE over the
+// members they already hold.
 func (s *Server) handlePutOrgMember(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	orgID := r.PathValue("id")
 	memberID := r.PathValue("user_id")
+	if !id.IsSuperAdmin {
+		httpError(w, http.StatusForbidden, "super-admin required to place an existing account in an org")
+		return
+	}
 	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "org admin or owner required")
 		return

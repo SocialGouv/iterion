@@ -23,7 +23,9 @@ type Store interface {
 	// of a Get per row.
 	GetUsersByIDs(ctx context.Context, ids []string) (map[string]User, error)
 	UpdateUser(ctx context.Context, u User) error
-	ListUsers(ctx context.Context, page Page) ([]User, error)
+	// ListUsers returns a page of users, oldest first. A zero UserFilter
+	// lists everyone; see UserFilter for what a non-empty Query selects.
+	ListUsers(ctx context.Context, f UserFilter) ([]User, error)
 	UserCount(ctx context.Context) (int64, error)
 
 	// Orgs
@@ -105,4 +107,19 @@ type Store interface {
 type Page struct {
 	Offset int
 	Limit  int
+}
+
+// UserFilter narrows a ListUsers page. The zero value selects every
+// user, which is what the method meant before a filter existed.
+type UserFilter struct {
+	Page
+	// Query selects the users whose normalized email STARTS WITH it, plus
+	// the single user whose id equals it. Empty matches everyone.
+	//
+	// A prefix and not a substring, deliberately: the users collection
+	// carries a unique index on `email` (MongoStore.EnsureIndexes), which
+	// an anchored match uses and a substring match cannot — an admin
+	// console's search box would collection-scan on every keystroke. An
+	// operator who knows only the middle of an address pages instead.
+	Query string
 }

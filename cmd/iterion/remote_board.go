@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
@@ -119,8 +120,11 @@ var remoteIssuesTransitionCmd = &cobra.Command{
 	Short: "Move an issue to a state",
 	Args:  cobra.ExactArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		body := fmt.Sprintf(`{"to":%q}`, args[1])
-		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/issues/"+args[0]+"/transition", []byte(body))
+		body, err := jsonBody(map[string]string{"to": args[1]})
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/issues/"+url.PathEscape(args[0])+"/transition", body)
 	}),
 }
 
@@ -220,8 +224,11 @@ var remoteLabelsRenameCmd = &cobra.Command{
 	Short: "Rename a label across all issues",
 	Args:  cobra.ExactArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		body := fmt.Sprintf(`{"from":%q,"to":%q}`, args[0], args[1])
-		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/labels/rename", []byte(body))
+		body, err := jsonBody(map[string]string{"from": args[0], "to": args[1]})
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/labels/rename", body)
 	}),
 }
 
@@ -230,8 +237,11 @@ var remoteLabelsMergeCmd = &cobra.Command{
 	Short: "Merge a label into another",
 	Args:  cobra.ExactArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		body := fmt.Sprintf(`{"from":%q,"to":%q}`, args[0], args[1])
-		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/labels/merge", []byte(body))
+		body, err := jsonBody(map[string]string{"from": args[0], "to": args[1]})
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/labels/merge", body)
 	}),
 }
 
