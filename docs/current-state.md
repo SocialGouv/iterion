@@ -111,11 +111,12 @@ diagnostic ranges are under [references/](references/dsl-grammar.md).
 | `pi` | Explicit opt-in | Multi-provider pi coding agent. RPC mode provides tool events, steering, provider-computed cost, the shared permission gate, async questions, and Iterion MCP tools through the embedded extension; print mode is the reduced fallback. |
 | `kimi` | Explicit opt-in | Moonshot Kimi Code CLI through the generic CLI-agent protocol. Sessions are observable but resume/fork is not wired. |
 | `grok` | Explicit opt-in | xAI Grok Build CLI through the same seam. This is distinct from `claw` calling the xAI HTTP API. Sessions are observable but resume/fork is not wired. |
+| `opencode` | Explicit opt-in | opencode agent CLI through the same seam, multi-provider with a provider-computed cost. It cannot enforce the permission gate in any mode (C176 refuses a gated node), async is refused (C267), resume/fork is not wired, and the target repo's `.opencode/` plugins are refused unless `ITERION_OPENCODE_TRUST_PROJECT=1`. |
 | `codex` | Supported, explicit opt-in | Codex CLI through the pinned Agent SDK, with native tools, sandbox, ChatGPT OAuth, images, sessions and structured output. |
 
 Automatic selection considers `claude_code` and `claw` in that order when the
 workflow, node, launch override, and environment do not choose a backend. Pi,
-Kimi, Grok, and Codex require explicit selection. OpenAI calls through `claw`
+Kimi, Grok, opencode, and Codex require explicit selection. OpenAI calls through `claw`
 can use an API key or, when configured, the OAuth token from a Codex CLI ChatGPT login;
 that credential reuse does not make the Codex delegate the execution
 backend.

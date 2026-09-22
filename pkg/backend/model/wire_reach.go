@@ -39,8 +39,10 @@ var anthropicWireProviders = map[string]bool{"anthropic": true, "zai": true}
 // exists to honour.
 //
 // Only a run whose every primary route is pinned off the wire —
-// codex/kimi/grok, or claw/pi with a resolved non-anthropic provider —
-// answers false.
+// codex/kimi/grok, or claw/pi/opencode with a resolved non-anthropic
+// provider — answers false. opencode sits with claw and pi rather than with
+// the vendor-bound CLIs: it picks its provider from what the process holds,
+// so an unresolved hint may still land on anthropic.
 func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides) bool {
 	if wf == nil {
 		return true

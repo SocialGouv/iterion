@@ -224,6 +224,22 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 			Default:   "medium",
 			Source:    "pi-thinking",
 		})
+	case "opencode":
+		// opencode's dial is `--variant`, and the accepted names are
+		// per-MODEL: it derives them from the model's own reasoning
+		// options, so there is no static set to look up. These are the
+		// levels iterion PASSES THROUGH verbatim (xhigh and ultracode
+		// collapse onto high before argv, so offering them here would
+		// promise a level the backend silently substitutes). Measured on
+		// opencode 1.1.19: a variant the model does not carry is dropped in
+		// silence, so offering a level is never a promise it took effect.
+		writeJSON(w, effortCapabilitiesResponse{
+			Supported: []string{"low", "medium", "high", "max"},
+			// No documented default: with no --variant, the model's own
+			// setting applies and iterion has nothing to name.
+			Default: "",
+			Source:  "opencode-variant",
+		})
 	case "codex":
 		resp, err := codexCapabilities(r.Context(), model)
 		if err != nil {

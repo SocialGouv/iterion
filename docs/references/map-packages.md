@@ -46,11 +46,11 @@
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` | 2 · 12 |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — | 2 · 22 |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — | 1 · 7 |
-| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 32 · 180 |
+| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 33 · 184 |
 | `pkg/backend/delegate/claudesdk` | provides a Go SDK for the Claude Code CLI. | `ContentBlock`, `MCPServerConfig`, `Message` | 16 · 117 |
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — | 1 · 4 |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — | 8 · 125 |
-| `pkg/backend/detect` | probes the host environment for available LLM credentials and CLI binaries, producing a Report consumed by the studio (UI hints) and the runtime… | — | 2 · 20 |
+| `pkg/backend/detect` | probes the host environment for available LLM credentials and CLI binaries, producing a Report consumed by the studio (UI hints) and the runtime… | — | 2 · 22 |
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` | 1 · 10 |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` | 1 · 3 |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` | 12 · 95 |
@@ -129,7 +129,7 @@
 | `pkg/git` | a minimal wrapper around the `git` CLI for the studio's modified-files panel. | — | 11 · 34 |
 | `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` | 4 · 159 |
 | `pkg/internal/appinfo` | — | — | 1 · 7 |
-| `pkg/internal/clilocate` | centralises the host-side probe used by backends that shell out to a CLI binary (claude, codex, …). | — | 1 · 4 |
+| `pkg/internal/clilocate` | centralises the host-side probe used by backends that shell out to a CLI binary (claude, codex, …). | — | 1 · 11 |
 | `pkg/internal/jsonl` | provides a crash-safe append-only JSONL file writer. | — | 3 · 2 |
 | `pkg/internal/mongotest` | supplies the contexts the Mongo-gated test suites use. | — | 1 · 3 |
 | `pkg/internal/mongoutil` | holds tiny helpers for the Mongo driver shared across iterion's storage packages (pkg/store/mongo, pkg/identity, pkg/secrets, pkg/auth). | — | 2 · 12 |
@@ -153,7 +153,7 @@
 | `pkg/plugin` | implements iterion's plugin ecosystem: declarative, out-of-process extensions described by a `plugin.yaml` manifest with typed contribution points. | — | 8 · 67 |
 | `pkg/pluginsource` | persists ORG-PRIVATE plugin bindings: "this team's runs get the plugin living in this git repository". | `Store` | 5 · 39 |
 | `pkg/projectenv` | builds immutable per-project process environments for a unified local Studio. | — | 1 · 1 |
-| `pkg/queue` | defines the message contract exchanged between the iterion server (publisher) and the iterion runner (consumer). | — | 1 · 30 |
+| `pkg/queue` | defines the message contract exchanged between the iterion server (publisher) and the iterion runner (consumer). | — | 1 · 31 |
 | `pkg/queue/nats` | wraps the NATS / JetStream / KV layer for iterion's cloud queue. | — | 7 · 95 |
 | `pkg/reliability` | centralises the staged rollout knobs and the small compatibility/baseline reports operators need while enabling workflow reliability contracts. | — | 1 · 18 |
 | `pkg/repograph` | builds one deterministic graph of this repository: Go packages and the symbols they declare, the calls between them, the links between documentation… | — | 4 · 41 |

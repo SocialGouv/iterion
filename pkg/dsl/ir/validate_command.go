@@ -8,11 +8,18 @@ const (
 // commandIgnoringBackends are the explicitly-named backends that do NOT
 // honor the per-node `command:` CLI-binary override. Only claude_code
 // swaps its CLI binary (default `claude`) for the given command (an
-// alternate claude-code-compatible CLI); claw makes a direct API call (no CLI) and codex resolves its
-// own binary, so a `command:` there is inert.
+// alternate claude-code-compatible CLI): it is the sole reader of
+// delegate.Task.Command. claw makes a direct API call (no CLI); codex
+// resolves its own binary; and every CLI-agent backend resolves argv[0]
+// from the binary its REGISTRY entry was constructed with, which the
+// default registry builds empty — so a `command:` on any of them is inert.
 var commandIgnoringBackends = map[string]bool{
-	"claw":  true,
-	"codex": true,
+	"claw":     true,
+	"codex":    true,
+	"kimi":     true,
+	"grok":     true,
+	"pi":       true,
+	"opencode": true,
 }
 
 // validateCommand walks every LLM-capable node (agent, judge) and warns
@@ -20,8 +27,8 @@ var commandIgnoringBackends = map[string]bool{
 // that cannot consume it:
 //
 //   - C174 (warning) when `command:` is non-empty AND the effective
-//     backend resolves to `claw` or `codex`. Only claude_code honors the
-//     override.
+//     backend is one of commandIgnoringBackends above. Only claude_code
+//     honors the override.
 //
 // The effective backend mirrors the runtime precedence knowable at compile
 // time: the node's own `backend:`, falling back to the workflow-level

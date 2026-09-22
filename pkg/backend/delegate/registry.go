@@ -32,7 +32,7 @@ func (r *Registry) Resolve(name string) (Backend, error) {
 
 // DefaultRegistry returns a registry pre-loaded with the standard
 // claude_code and codex backends, plus the dedicated third-party
-// CLI-agent backends (kimi, grok — see ADR-065 — and pi, ADR-085).
+// CLI-agent backends (kimi, grok, opencode — see ADR-065 — and pi, ADR-085).
 func DefaultRegistry(logger *iterlog.Logger) *Registry {
 	r := NewRegistry()
 	r.Register(BackendClaudeCode, &ClaudeCodeBackend{Logger: logger})
@@ -40,5 +40,6 @@ func DefaultRegistry(logger *iterlog.Logger) *Registry {
 	r.Register(BackendKimi, NewKimiBackend(logger, ""))
 	r.Register(BackendGrok, NewGrokBackend(logger, ""))
 	r.Register(BackendPi, NewPiBackend(logger, ""))
+	r.Register(BackendOpenCode, NewOpenCodeBackend(logger, ""))
 	return r
 }

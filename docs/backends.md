@@ -34,6 +34,7 @@ flowchart LR
 | `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
 | `grok` | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
+| `opencode` | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267; session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
@@ -69,6 +70,9 @@ from a plausible one (#1417). The cells:
 - **unwired (gap)** — no code path **and** no diagnostic guards it: the
   parity rule above ("wired — or typed-refused — for the other") is not
   yet honoured. Each one is a gap a session can pick up.
+- **unwired (no image)** — a variant of the gap above: the code path is
+  there, but the stock sandbox image does not ship the CLI, so the
+  capability cannot be reached from a sandboxed run at all.
 - **unknown** — wired in code (path cited below), but no live e2e through
   this backend exercises it yet. It may work; nothing has paid to find
   out. Turning an unknown into proven costs one live e2e — extend
@@ -83,6 +87,7 @@ from a plausible one (#1417). The cells:
 | `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
 | `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown |
 | `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown |
+| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · unwired (sync) |
 
 The citations, per cell that is not self-evident from the table:
 
@@ -130,6 +135,18 @@ The citations, per cell that is not self-evident from the table:
   `permission:` node is refused at runtime *without a diagnostic code*
   (`pkg/backend/delegate/pi.go`), which is its own parity gap. Nothing
   pi does has a live e2e; every pi cell stays unknown.
+- **opencode.** The gate is refused in **both** modes (C176): opencode
+  exposes no `PreToolUse` hook at all, and its own declarative policy
+  (`OPENCODE_PERMISSION`) is deliberately not wired — gate membership is
+  earned by a live denial, and none has been bought. `ask_user` is
+  `refused (C267)` for the async pair and unwired for the synchronous one
+  (the tool list never reaches the CLI). Sandbox is `unwired (no image)`:
+  the stock image ships no opencode binary, so a sandboxed node dies at
+  `exec: not found` with nothing refusing it earlier — see
+  [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork:
+  the CLI has `-s/--session` and reports a session id, but
+  `SessionResumeCapability` does not list opencode, so `session: persist`
+  logs `cannot resume; running fresh`.
 - **kimi / grok.** The gate is **deny-only** — an external `PreToolUse`
   hook can hard-block but cannot pause the run — so `ask` is refused at
   compile time (C176). The deny half *is* proven live with a filesystem
@@ -150,7 +167,7 @@ The citations, per cell that is not self-evident from the table:
   are wired at best and unproven: unknown.
 - **`{{outputs.*}}` / `{{run.*}}`.** The resolver is engine-side — the
   executor substitutes templates before any backend sees the prompt
-  (`pkg/backend/model/executor_template.go`), one resolver for six
+  (`pkg/backend/model/executor_template.go`), one resolver for seven
   backends — but what a template reads is what the backend's delegate
   captured into the node's output, and that capture is per backend. The
   `claude_code` cell is proven by `TestLive_Lite_SessionInheritValidation`
@@ -161,10 +178,10 @@ The citations, per cell that is not self-evident from the table:
   maps an output across nodes (the exhaustive-DSL fixture's unpinned
   nodes float to host detection), so every other cell stays unknown.
   `interaction: async` (`ask_user_async`) is refused outright for
-  codex/kimi/grok (C267).
+  codex/kimi/grok/opencode (C267).
 
-The open parity gaps, in one list: codex/kimi/grok MCP servers;
-kimi/grok session resume/fork (silent, unguarded); pi's print-mode
+The open parity gaps, in one list: codex/kimi/grok/opencode MCP
+servers; kimi/grok/opencode session resume/fork (silent, unguarded); pi's print-mode
 runtime refusals without diagnostic codes; and every `unknown` cell,
 which is one live e2e away from proven.
 
@@ -1219,7 +1236,7 @@ gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
 
-## Third-party agent CLIs (`pi`, `kimi`, `grok`, and the CLI-agent seam)
+## Third-party agent CLIs (`pi`, `kimi`, `grok`, `opencode`, and the CLI-agent seam)
 
 Some agent CLIs have an argument protocol **disjoint from claude-code's**
 Session mode (`--print`, prompt on stdin, `--append-system-prompt`, …), so
@@ -1436,7 +1453,7 @@ only providers already authenticated on the host, so it will not list
 
 | Variable | Effect |
 |---|---|
-| `ITERION_PI_BIN` | Absolute path to the `pi` binary (e.g. a `bun --compile` single-file build on a host with no Node). |
+| `ITERION_PI_BIN` | The `pi` binary on the host (e.g. a `bun --compile` single-file build on a host with no Node): an absolute path, or a bare name on PATH. A relative path with a separator is refused — it would resolve against the workspace. |
 | `ITERION_PI_MODE` | `print` rolls back to the one-shot transport. The default is the long-lived `--mode rpc` session (tool events, native steering, authoritative accounting, pre-flight handshake). |
 | `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR`. Reproducible pi config, but hides the operator's own `auth.json` — so the OAuth breadth above goes with it. |
 | `ITERION_PI_OFFLINE` | `0` re-enables pi's catalogue refresh inside a sandbox (off by default there: an egress policy would stall startup). |
@@ -1492,6 +1509,139 @@ The node's `system:` is passed as **`--rules`** (append), never as
 login / `~/.grok` config) — iterion does not inject `XAI_API_KEY` for this
 backend. That is **distinct** from calling the xAI HTTP API via
 `backend: claw` + `model: "xai/…"`.
+
+### `opencode`
+
+[opencode](https://opencode.ai) is a multi-provider agent CLI. Its headless
+mode is a **subcommand**, and iterion drives it as:
+
+```
+opencode --format json [-m <provider/model>] [--variant <effort>] run
+```
+
+with the composed prompt on **stdin**.
+
+```iter fragment
+prompt task:
+  Implement the feature described in the issue and run the tests.
+
+agent implement:
+  backend: "opencode"
+  model: "anthropic/claude-sonnet-4-6"   # opencode's own -m format IS provider/model
+  system: task                           # folded into the prompt: opencode has no system flag
+  reasoning_effort: high                 # optional; mapped to --variant
+```
+
+#### What it brings
+
+- **Any provider opencode is configured for**, selected with the model spec
+  it already understands: `-m provider/model` is iterion's spec shape, so the
+  value passes through unchanged (no prefix stripping, unlike `grok`).
+- **A provider-computed cost and a real token split**, read off the stream's
+  `step-finish` parts (emitted as `step_finish`) rather than estimated. opencode reports `output`
+  excluding reasoning and `input` excluding the cache halves; iterion adds
+  both back so the figures mean what the rest of the engine means by them.
+- **A reasoning-effort dial** (`--variant`). The accepted variant names are
+  **per-model** — opencode derives them from each model's own reasoning
+  options — so iterion passes its level through verbatim and lets opencode
+  refuse an unknown one explicitly. `xhigh` and `ultracode` collapse onto
+  `high` before argv.
+
+#### What it does NOT bring
+
+The observations below were measured against **opencode 1.1.19**; opencode
+moves fast, so re-measure before trusting a claim against another build.
+
+- **No permission gate, in any mode.** opencode exposes no `PreToolUse`
+  hook, so a node with an armed gate is refused at compile time (**C176**)
+  and again at dispatch — never run ungated. opencode *does* carry a
+  declarative in-process policy (`OPENCODE_PERMISSION`, a JSON map of
+  tool → `ask|allow|deny`, verified to reach its resolved configuration),
+  which is a plausible route to native `deny` enforcement. It is deliberately
+  **not** wired: membership in the compiler's gate table is earned by a live
+  denial, never declared, and no credential was available to witness one.
+  Note also that in a headless run an `ask` verdict is auto-*rejected* (and
+  later builds add a `--auto` flag that auto-*allows* it instead) — neither
+  is "pause and ask the operator".
+- **No async questions.** `interaction: async` is refused by **C267**;
+  `interaction:` in its synchronous form is inert, as on every CLI-agent
+  backend.
+- **No session resume or fork.** The CLI has `-s/--session` and every event
+  carries a `sessionID`, so the pieces exist, but nothing is wired: a
+  `session: persist` node logs `backend "opencode" cannot resume; running
+  fresh` and runs fresh.
+- **No MCP forwarding, and `tools:` does not constrain it.** opencode runs
+  its own tool set.
+- **No `command:` override.** Only `claude_code` consumes a node's
+  `command:`; **C174** says so rather than letting it look honoured.
+- **No `provider:` hint.** opencode resolves its own credentials from its own
+  auth store, so iterion's credential-routing hint has nowhere to land
+  (**C088**).
+
+#### ⚠️ The target repository runs as code
+
+opencode loads project resources from **every `.opencode/` directory between
+the working directory and the repository root, and from an `opencode.json`
+(or `.jsonc`) at any of those levels** — and it EXECUTES what it finds,
+inside the process holding the run's credentials: `plugin/*.ts` and
+`tool/*.ts` are imported as modules, and a `package.json` there is installed
+with its lifecycle scripts. No config entry and no flag are needed. Against
+a checked-out branch you do not control, that turns prompt injection into
+code execution.
+
+iterion therefore **refuses** a run whose checkout carries opencode
+resources at any of those levels. The question asked per level is "is there
+a `.opencode/` here at all, or an `opencode.json`" rather than a list of
+known code paths — a guard that enumerates spellings gains one more every
+release:
+
+```
+delegate: opencode: /src/myrepo carries .opencode/, which opencode loads and
+executes inside the agent process; refusing to run against an untrusted
+checkout (set ITERION_OPENCODE_TRUST_PROJECT=1 for a repository you own)
+```
+
+The walk stops at the **git worktree root**, which is opencode's own stop
+(measured: a plugin one level above a git root is not loaded); above that is
+the operator's own tree, not the untrusted checkout.
+
+This is a refusal rather than a flag because opencode offers no way to turn
+the discovery off: `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_PURE` and
+`OPENCODE_DISABLE_DEFAULT_PLUGINS` were each measured on 1.1.19 to leave the
+plugin running.
+
+Separately, opencode's Claude-Code compatibility layer reads the
+**operator's** `~/.claude/CLAUDE.md` into its system prompt and loads
+`.claude` skills — which would make a node's effective prompt depend on a
+directory iterion does not compose, and which aborts the whole CLI on a
+single malformed skill file. iterion defaults
+`OPENCODE_DISABLE_CLAUDE_CODE=1` on every opencode invocation (a run's own
+`env:` still wins on that key), the same
+posture `pi` takes with `--no-prompt-templates --no-themes`.
+
+#### Behaviour worth knowing
+
+- **Not in the stock sandbox image.** The published image bakes claude-code,
+  pi and codex only; a sandboxed `opencode` node dies at `exec: not found`.
+- **Its stderr is a JavaScript stack trace.** The shared CLI-agent retry
+  classifier substring-matches stderr for network signatures, and an
+  opencode trace can contain one (a `JSON Parse error: Unexpected EOF` from
+  a malformed JSON file it reads matches `unexpected eof`), so a *deterministic* failure
+  can still be retried up to three times before it surfaces.
+- **The prompt goes on stdin, never in argv.** opencode takes its message as
+  a variadic positional, which silently swallows a prompt beginning with `-`
+  (it prints its help text instead of running) — an iterion prompt routinely
+  opens on a markdown bullet. Stdin also sidesteps `MAX_ARG_STRLEN`. opencode
+  reads non-TTY stdin to EOF, and **blocks forever on a stdin left open** —
+  which is exactly why iterion hands it a reader over the composed prompt
+  that EOFs immediately after it, and never an open pipe.
+
+#### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the target repository's `.opencode/` resources. Read from the **process** environment, so on a shared server it lifts the refusal for every concurrent run, not just yours. See the warning above. |
+| `ITERION_OPENCODE_BIN` | The opencode CLI on the HOST, for a host whose PATH the iterion process does not share: an absolute path, or a bare name on PATH. A relative path with a separator is refused — it would resolve against the workspace and run a binary out of the checkout. Detection and execution apply the same rule. Ignored inside a sandbox, where a host path means nothing. |
 
 ### Behavioural notes (generic Kimi/Grok delegates)
 
