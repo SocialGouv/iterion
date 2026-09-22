@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -317,6 +318,91 @@ func TestForgePublishReview_GatePostedWhenTheAuditedSHAIsTheHead(t *testing.T) {
 	}
 	if gc.setCalls != 1 {
 		t.Fatalf("SetCommitStatus calls = %d, want 1", gc.setCalls)
+	}
+}
+
+// The pin is compared as a commit id, not as a string. The producing bundle's
+// own validity predicate accepts an abbreviation (`looks_like_sha`: 7+ hex), so
+// a full-string compare would refuse the RIGHT commit whenever a bot sent a
+// short one — permanently, since nothing else fills the check.
+func TestForgePublishReview_GateAcceptsAnAbbreviatedPinOfTheSameCommit(t *testing.T) {
+	const head = "1e2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c"
+	for _, pin := range []string{"1e2a3b4", "1e2a3b4c5d6e", "1E2A3B4C5D6E", head, strings.ToUpper(head)} {
+		t.Run(pin, func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+			gc := &fakeGateClient{headSHA: head}
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+			w := httptest.NewRecorder()
+			s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+				`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"`+pin+`"}`)))
+			var resp publishReviewResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if !resp.GatePosted {
+				t.Fatalf("pin %q names the head and must post: gate_error=%q", pin, resp.GateError)
+			}
+			// The status lands on the FORGE's spelling, never on the caller's.
+			if gc.lastSHA != head {
+				t.Fatalf("status posted on %q, want the forge's head %q", gc.lastSHA, head)
+			}
+		})
+	}
+}
+
+// A pin that is PRESENT and unreadable is a third state. Collapsing it into
+// "absent" degrades silently to the unpinned certificate (the unsubstituted
+// template this repo has paid for before); collapsing it into "the head moved"
+// sends the reader hunting a push that never happened.
+func TestForgePublishReview_GateRefusesAnUnreadablePinAsItsOwnFault(t *testing.T) {
+	for _, pin := range []string{
+		"{{outputs.prepare.head_sha}}", "null", "HEAD", "refs/heads/main", "none",
+		" ", "\n", "abc", "zzzzzzzz", "1e2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4cff",
+	} {
+		t.Run(strconv.Quote(pin), func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+			gc := &fakeGateClient{headSHA: "1e2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c"}
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+			w := httptest.NewRecorder()
+			body, _ := json.Marshal(map[string]any{"enabled": true, "context": "revi/review", "blocking_count": 0, "audited_sha": pin})
+			s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(string(body))))
+			var resp publishReviewResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if gc.setCalls != 0 || resp.GatePosted {
+				t.Fatalf("an unreadable pin must certify nothing, got posted=%v calls=%d", resp.GatePosted, gc.setCalls)
+			}
+			if resp.GateSHAUnpinned {
+				t.Fatal("a pin that was SENT is not an absent pin — reporting it unpinned hides a bot that meant to pin and rendered garbage")
+			}
+			if !strings.Contains(resp.GateError, "cannot be read") {
+				t.Fatalf("the reason must blame the pin, not invent a push: %q", resp.GateError)
+			}
+		})
+	}
+}
+
+// The refusal's whole job is to tell two revisions apart. Abbreviating both
+// sides is how it names the same one twice.
+func TestForgePublishReview_GateMismatchNamesBothRevisionsInFull(t *testing.T) {
+	const audited = "abcdef012345" + "1111111111111111111111111111"
+	const head = "abcdef012345" + "2222222222222222222222222222"
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: head}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"`+audited+`"}`)))
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.GateError, audited) || !strings.Contains(resp.GateError, head) {
+		t.Fatalf("two revisions sharing their first 12 characters must both appear in full, got %q", resp.GateError)
 	}
 }
 

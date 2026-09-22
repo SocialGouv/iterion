@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -471,10 +472,6 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		} else {
 			s.logger.Warn("forge gate: %s %s#%d → not posted: %s", conn.Provider, grant.Repo, number, gate.errText)
 		}
-		if gate.shaUnpinned {
-			s.logger.Warn("forge gate: %s %s#%d @%s posted UNPINNED (no audited_sha) — the verdict is not tied to the revision the bot read; bump this repo's bundle",
-				conn.Provider, grant.Repo, number, gate.sha)
-		}
 	}
 
 	writeJSON(w, publishReviewResponse{
@@ -542,6 +539,24 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 // check via gate.context (Revi sends "revi/review"); this neutral fallback
 // only applies when a gate arrives with an empty context.
 const defaultGateContext = "merge-gate"
+
+// isCommitID reports whether s is shaped like a git object id: 7 to 40 hex
+// characters. The floor matters — `equalSHA` matches a PREFIX, so a one- or
+// two-character "pin" would match almost any head and the guard would wave
+// through what it exists to stop. 7 is what git itself abbreviates to, and
+// what the reviewer bundle's own `looks_like_sha` accepts.
+func isCommitID(s string) bool {
+	if len(s) < 7 || len(s) > 40 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
 
 // forgeGateClient is the capability the merge gate needs: resolve the PR head
 // SHA, then post a commit status on it. Satisfied by the github/gitlab/forgejo
@@ -774,16 +789,31 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	// pull requests the gate exists to protect. It is not silent: the outcome
 	// says unpinned and the caller logs it, and that signal is what turns
 	// "refuse unpinned too" into a measurable decision.
-	if audited := strings.TrimSpace(gate.AuditedSHA); audited != "" {
-		if !strings.EqualFold(audited, pr.HeadSHA) {
-			out.errText = "the head moved since the audit (audited " + shortSHA(audited) +
-				", head is now " + shortSHA(pr.HeadSHA) + ") — no status on a revision nobody audited"
-			return out
-		}
-	} else {
+	// Normalised ONCE: the emptiness check, the comparison and the status all
+	// have to read the same value, or the rule differs from the thing it guards.
+	head := strings.TrimSpace(pr.HeadSHA)
+	audited := strings.TrimSpace(gate.AuditedSHA)
+	switch {
+	case gate.AuditedSHA == "":
+		// Absent — the decided legacy post.
 		out.shaUnpinned = true
+	case !isCommitID(audited):
+		// PRESENT but unreadable is a third state, not "absent": a bot that
+		// meant to pin and rendered an unsubstituted template, a ref name or a
+		// blank would otherwise degrade silently to the unpinned certificate.
+		// It is also not "the head moved" — reporting it that way sends the
+		// reader diffing two revisions, or hunting a push that never happened.
+		out.errText = "audited_sha " + strconv.Quote(audited) + " is not a commit id (7-40 hex) — " +
+			"refusing to certify on a pin that cannot be read"
+		return out
+	case !equalSHA(head, audited):
+		// Full SHAs on both sides: this message's whole job is to tell two
+		// revisions apart, and abbreviating both is how it names one twice.
+		out.errText = "the head moved since the audit (audited " + audited +
+			", head is now " + head + ") — no status on a revision nobody audited"
+		return out
 	}
-	out.sha = pr.HeadSHA
+	out.sha = head
 
 	threshold := strings.TrimSpace(gate.Threshold)
 	if threshold == "" {
@@ -811,6 +841,15 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		return out
 	}
 	out.posted = true
+	// Warned HERE rather than at the caller: a certificate that landed without
+	// a pin is the measurement the "absent still posts" decision rests on, and
+	// the caller has two exits — the review-failure branch answers 502 and
+	// never reached this line's counterpart, which is the one path where an
+	// unpinned status lands and nothing says so.
+	if out.shaUnpinned && s.logger != nil {
+		s.logger.Warn("forge gate: %s %s @%s posted UNPINNED (no audited_sha) — the verdict is not tied to the revision the bot read; bump this repo's bundle",
+			out.context, repo, out.sha)
+	}
 	return out
 }
 
