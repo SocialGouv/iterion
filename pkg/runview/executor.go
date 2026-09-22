@@ -312,8 +312,19 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	//
 	// A refused stage is skipped and the operator is told; later stages
 	// continue through the same screen and are never silently taken.
-	for _, refusal := range ir.ApplyRunFallback(spec.Workflow, spec.RunFallback,
-		runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault)) {
+	//
+	// "Told" used to mean a line in the RUNNER's log, which the operator who
+	// asked for the route cannot read: a launch-time fallback declined by the
+	// screen looked, from every surface they have, exactly like one that was
+	// taken. Measured on a cloud run — the route was refused for a reason the
+	// screen states precisely and actionably, the run proceeded on its
+	// primary, and it died 39 minutes later of the very failure the route
+	// existed to survive. The refusal now also lands on the run's timeline
+	// (run_fallback_refused), because a refusal the decider cannot read is a
+	// silent fallback.
+	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback,
+		runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault))
+	for _, refusal := range fallbackRefusals {
 		spec.Logger.Warn("run-level fallback not applied — %s", refusal)
 	}
 
@@ -323,6 +334,19 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	ctx := spec.Ctx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Best effort on purpose: a timeline that cannot take the refusal must
+	// not stop a run the screen already made safe — the log line above
+	// remains, and the failure to record is itself logged.
+	if spec.Store != nil {
+		for _, refusal := range fallbackRefusals {
+			if _, err := spec.Store.AppendEvent(ctx, spec.RunID, store.Event{
+				Type: store.EventRunFallbackRefused,
+				Data: map[string]any{"reason": refusal},
+			}); err != nil {
+				spec.Logger.Warn("run-level fallback refusal not recorded on the timeline: %v", err)
+			}
+		}
 	}
 	// Local (desktop / CLI / non-cloud studio) secret injection: resolve the
 	// workflow's declared `secrets:` names from the local sealed store and
