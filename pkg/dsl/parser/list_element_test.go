@@ -39,6 +39,25 @@ func TestAListElementThatIsNotANameIsRefusedNotDropped(t *testing.T) {
 			func(r *ParseResult) []string { return r.File.Agents[0].Skills }},
 		{"agent_tools, number", "tool t:\n  command: \"x\"\n  recovery:\n    agent_tools: [bash, 2]\n", []string{"bash"}, "delete the element",
 			func(r *ParseResult) []string { return r.File.Tools[0].Recovery.AgentTools }},
+		// The string|ident lists (a sandbox's mounts, a network's rules):
+		// the inline form used to APPEND the refused element as an empty
+		// string — an empty egress rule, worse than a dropped one.
+		{"rules, number inline", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [1, github.com]\n", []string{"github.com"}, "",
+			func(r *ParseResult) []string { return r.File.Workflows[0].Sandbox.Network.Rules }},
+		{"rules, number dash form", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules:\n        - 1\n        - github.com\n", []string{"github.com"}, "",
+			func(r *ParseResult) []string { return r.File.Workflows[0].Sandbox.Network.Rules }},
+		{"mounts, list element inline", "workflow w:\n  entry: done\n  sandbox:\n    image: \"img\"\n    mounts: [[a], \"/x:/x\"]\n", []string{"/x:/x"}, "",
+			func(r *ParseResult) []string { return r.File.Workflows[0].Sandbox.Mounts }},
+		// A refused element that opens a bracket is skipped whole, and the
+		// element after it is read.
+		{"tools, nested bracket", "agent a:\n  tools: [[a], bash]\n", []string{"bash"}, "delete the element",
+			func(r *ParseResult) []string { return r.File.Agents[0].Tools }},
+		{"skills, nested brace", "agent a:\n  skills: [{a: b}, house.style]\n", []string{"house.style"}, "delete the element",
+			func(r *ParseResult) []string { return r.File.Agents[0].Skills }},
+		// A string list used to append the refused token's text (`1`) as a
+		// string beside the diagnostic.
+		{"images, number", "agent a:\n  images: [1, \"x.png\"]\n", []string{"x.png"}, "delete the element",
+			func(r *ParseResult) []string { return r.File.Agents[0].Images }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -47,13 +66,28 @@ func TestAListElementThatIsNotANameIsRefusedNotDropped(t *testing.T) {
 				t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
 			}
 			d := res.Diagnostics[0]
-			if d.Code != DiagExpectedToken || !strings.Contains(d.Message, "in the list") || !strings.Contains(strings.ToLower(d.Hint), c.hint) {
+			if d.Code != DiagExpectedToken || !strings.Contains(strings.ToLower(d.Hint), c.hint) {
 				t.Fatalf("got %s %q / hint %q", d.Code, d.Message, d.Hint)
+			}
+			if c.hint != "" && !strings.Contains(d.Message, "in the list") {
+				t.Fatalf("got %s %q", d.Code, d.Message)
 			}
 			if got := c.pick(res); !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("the other elements were not read: %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// A refused fallback action takes the rest of its line with it: `action: 123
+// 456` is ONE diagnostic, never one plus a phantom route property `456`.
+func TestARefusedFallbackActionTakesItsLine(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  model: \"m\"\n  fallbacks:\n    r:\n      on: [any]\n      action: 123 456\n      metered: true\n")
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Line != 6 {
+		t.Fatalf("want one diagnostic on line 6, got %v", res.Diagnostics)
+	}
+	if fd := res.File.Agents[0].Fallbacks[0]; fd.Action != "" || !fd.Metered {
+		t.Fatalf("the route after the refusal: %+v", fd)
 	}
 }
 

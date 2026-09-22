@@ -278,46 +278,35 @@ func (p *parser) parseStringMapBlock() map[string]string {
 // element to be a quoted string, this one also accepts bare idents
 // — useful for sandbox.network.rules where authors mix quoted globs
 // like "!**.evil.site" and bare hostnames like github.com.
+// It is the one list reader every list goes through (parseBracketList): a
+// refused element is reported and left out, the rest of the list read. Its
+// own inline loop used to APPEND the refusal as an empty string — an empty
+// egress rule beside the diagnostic.
 func (p *parser) parseStringOrIdentList() []string {
-	if lineEnds(p.peek()) {
-		return p.parseDashList(func() (string, bool) {
-			v := p.expectStringOrIdent()
-			return v, v != ""
-		})
-	}
-	if _, ok := p.expect(TokenLBrack); !ok {
-		return nil
-	}
-	var out []string
-	for {
-		t := p.peek()
-		if t.Type == TokenRBrack || t.Type == TokenEOF {
-			if t.Type == TokenRBrack {
-				p.next()
-			}
-			return out
-		}
-		out = append(out, p.expectStringOrIdent())
-		cm := p.peek()
-		if cm.Type == TokenComma {
-			p.next()
-		}
-	}
+	return p.parseBracketList(p.expectStringOrIdentOK)
 }
 
 // expectStringOrIdent accepts either a quoted string literal or a
 // bare ident (lifted as a string). Used in heterogeneous list/map
 // forms where users mix quoted globs and bare hostnames.
 func (p *parser) expectStringOrIdent() string {
+	v, _ := p.expectStringOrIdentOK()
+	return v
+}
+
+// expectStringOrIdentOK is expectStringOrIdent reporting whether it read a
+// value: a list reader appends nothing on a refusal, where the empty string
+// of the plain form would be an element.
+func (p *parser) expectStringOrIdentOK() (string, bool) {
 	t := p.peek()
 	if t.Type == TokenString {
-		return p.expectString()
+		return p.expectString(), true
 	}
 	if t.Type == TokenIdent || isKeywordToken(t.Type) {
 		// A bare hostname is dotted (`github.com`): read the whole of it.
-		return p.continueDottedRef(p.expectIdent())
+		return p.continueDottedRef(p.expectIdent()), true
 	}
 	p.addError(DiagExpectedToken, t, "expected string or identifier")
 	p.next()
-	return ""
+	return "", false
 }

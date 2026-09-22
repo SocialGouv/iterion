@@ -186,6 +186,9 @@ func Reference() string {
 		if len(k.Holds) > 0 {
 			fmt.Fprintf(&b, "The body holds %s declarations and edge lines.\n\n", codes(k.Holds))
 		}
+		if k.Text {
+			b.WriteString("The body is free text, one indented block.\n\n")
+		}
 		if len(k.Properties) > 0 {
 			b.WriteString(Table(k))
 			b.WriteString("\n")

@@ -45,8 +45,8 @@ const (
 	// line indented under the property; both read as the same list.
 	IdentList    Form = "ident list"         // [a, b] — an element that is not a bare name is refused
 	StringList   Form = "string list"        // ["a", "b"] — a bare word is the string it spells
-	ToolList     Form = "tool list"          // [bash, mcp.server.*, "quoted-literal"]
-	SkillList    Form = "skill list"         // ["kebab-name", dotted.ident]
+	ToolList     Form = "tool list"          // [bash, mcp.server.*, "quoted-literal"] — the same grammar as a skill list (a dotted bare ref, or a quoted literal); the two names tell the reader what the names ARE
+	SkillList    Form = "skill list"         // ["kebab-name", dotted.ident] — the same grammar as a tool list; the day one diverges (a wildcard refused here), the divergence needs its own witness
 	MixedList    Form = "string|ident list"  // ["!**.evil.site", github.com]
 	IdentOrList  Form = "ident | ident list" // godot or [godot, blender]
 	Map          Form = "map"                // { KEY: "v" } inline, or an indented `KEY: v` block; a value is a string or a bare word

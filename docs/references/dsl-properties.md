@@ -48,6 +48,8 @@ A named text block, referenced by `system:` / `user:` / `instructions:`; its bod
 
 A top-level declaration: `prompt <name>:`.
 
+The body is free text, one indented block.
+
 ### schema
 
 A structured-output shape; a bare header declares an empty schema.

@@ -51,9 +51,13 @@ type entryWitness struct {
 	expect []string
 }
 
+// missing, per block, is the entry line with ONE required part left out,
+// keyed by that part: the witness that a Required mark is the parser's,
+// not decoration. A block with no required part has none.
 var entryWitnesses = map[string]struct {
 	accepted []entryWitness
 	refused  []string
+	missing  map[string]string
 }{
 	"vars": {
 		accepted: []entryWitness{
@@ -68,8 +72,9 @@ var entryWitnesses = map[string]struct {
 			{`zz_k: string [enum: "zz_a"] [matching: "^zz"] = "zz_a"`, []string{"type", "enum", "matching", "default"}, []string{"^zz"}},
 			{`zz_k: string [matching: "^zz"] [enum: "zz_a"]`, []string{"type", "enum", "matching"}, []string{"zz_a", "^zz"}},
 		},
-		refused: []string{"zz_k: zz_type", "zz_k: string = [a]", "zz_k: string [enum: zz_a]", "zz_k: string = zz_word", "zz_k", "zz_k:",
+		refused: []string{"zz_k: zz_type", "zz_k: string = [a]", "zz_k: string [enum: zz_a]", "zz_k: string = zz_word", "zz_k",
 			"zz_k: string [matching: zz_bare]", `zz_k: string [matching: ""]`, `zz_k: string [enum: "a"] [enum: "b"]`, `zz_k: string [matching: "a"] [matching: "b"]`},
+		missing: map[string]string{"type": "zz_k:"},
 	},
 	"presets": {
 		accepted: []entryWitness{
@@ -77,6 +82,7 @@ var entryWitnesses = map[string]struct {
 			{"zz_p:\n  zz_v: \"zz_s\"\n  zz_w: true", []string{"entries.value"}, []string{"zz_s", "zz_w"}},
 		},
 		refused: []string{"zz_p: 1", "zz_p:\n  zz_v: [a]", "zz_p:\n  zz_v: zz_word"},
+		missing: map[string]string{"entries.value": "zz_p:\n  zz_v:"},
 	},
 	"attachments": {
 		accepted: []entryWitness{
@@ -85,6 +91,7 @@ var entryWitnesses = map[string]struct {
 			{"zz_k: file\n  required: true", []string{"type"}, []string{"zz_k"}},
 		},
 		refused: []string{"zz_k: string", "zz_k", `zz_k: "file"`, "zz_k: 1"},
+		missing: map[string]string{"type": "zz_k:"},
 	},
 	"secrets": {
 		accepted: []entryWitness{
@@ -102,12 +109,14 @@ var entryWitnesses = map[string]struct {
 			{"zz_k:\n  - \"zz_a\"\n  - \"zz_b\"", []string{"capacity"}, []string{"zz_a", "zz_b"}},
 		},
 		refused: []string{`zz_k: "3"`, "zz_k: zz_word", "zz_k: 1.5", "zz_k"},
+		missing: map[string]string{"capacity": "zz_k:"},
 	},
 	"expr": {
 		accepted: []entryWitness{
 			{`zz_k: "zz_x + 1"`, []string{"expression"}, []string{"zz_x + 1"}},
 		},
 		refused: []string{"zz_k: 1", "zz_k: [a]", "zz_k", "zz_k: zz_word"},
+		missing: map[string]string{"expression": "zz_k:"},
 	},
 	"params": {
 		accepted: []entryWitness{
@@ -117,6 +126,7 @@ var entryWitnesses = map[string]struct {
 			{`"zz-k": "zz_v"`, []string{"value"}, []string{"zz-k"}},
 		},
 		refused: []string{"zz_k: [a]", "zz_k", "1: \"v\""},
+		missing: map[string]string{"value": "zz_k:"},
 	},
 	"cursors": {
 		accepted: []entryWitness{
@@ -125,7 +135,8 @@ var entryWitnesses = map[string]struct {
 			{"zz_k: 1", []string{"value"}, []string{"zz_k"}},
 			{`zz_k: "${ZZ}"`, []string{"value"}, []string{"${ZZ}"}},
 		},
-		refused: []string{"zz_k: [a]", "zz_k:", "zz_k"},
+		refused: []string{"zz_k: [a]", "zz_k"},
+		missing: map[string]string{"value": "zz_k:"},
 	},
 	"cursor.values": {
 		accepted: []entryWitness{
@@ -133,12 +144,14 @@ var entryWitnesses = map[string]struct {
 			{"zz_k: zz_word", []string{"prompt"}, []string{"zz_word"}},
 		},
 		refused: []string{"zz_k: 1", "zz_k: [a]", "zz_k"},
+		missing: map[string]string{"prompt": "zz_k:"},
 	},
 	"cursor.bands": {
 		accepted: []entryWitness{
 			{`"0..0.5": "zz frag"`, []string{"prompt"}, []string{"0..0.5", "zz frag"}},
 		},
 		refused: []string{`zz_k: "f"`, `"0..1": 1`, `"0..1": [a]`},
+		missing: map[string]string{"prompt": `"0..1":`},
 	},
 	"schema": {
 		accepted: []entryWitness{
@@ -148,6 +161,7 @@ var entryWitnesses = map[string]struct {
 			{`zz_k: string [enum: "zz_a", "zz_b"]`, []string{"type", "enum"}, []string{"zz_a", "zz_b"}},
 		},
 		refused: []string{"zz_k: zz_type", "zz_k: string [enum: zz_a]", `zz_k: string = "x"`, "zz_k", "zz_k: 1"},
+		missing: map[string]string{"type": "zz_k:"},
 	},
 	"contract.ports": {
 		accepted: []entryWitness{
@@ -156,7 +170,8 @@ var entryWitnesses = map[string]struct {
 			{"zz_k: zz_schema[][]", []string{"type"}, []string{"zz_schema[][]"}},
 			{"zz_k: int\n  required: false", []string{"type"}, []string{"zz_k"}},
 		},
-		refused: []string{`zz_k: "string"`, "zz_k: 1", "zz_k", "zz_k:"},
+		refused: []string{`zz_k: "string"`, "zz_k: 1", "zz_k"},
+		missing: map[string]string{"type": "zz_k:"},
 	},
 	"contract.criteria": {
 		accepted: []entryWitness{
@@ -194,6 +209,21 @@ func fieldNames(e *spec.Entries) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// requiredFieldNames lists the Required parts of an entries structure,
+// nested ones as `entries.<name>`.
+func requiredFieldNames(e *spec.Entries, prefix string) []string {
+	var out []string
+	for _, f := range e.Fields {
+		if f.Required {
+			out = append(out, prefix+f.Name)
+		}
+	}
+	if e.Entries != nil {
+		out = append(out, requiredFieldNames(e.Entries, prefix+"entries.")...)
+	}
 	return out
 }
 
@@ -243,6 +273,25 @@ func TestEntriesMatchTheParser(t *testing.T) {
 		for _, r := range w.refused {
 			if res := parser.Parse("probe.bot", entryDoc(tmpl, r)); len(res.Diagnostics) == 0 {
 				t.Errorf("%s: refused entry %q is accepted", kind, r)
+			}
+		}
+		// A Required part is one the parser demands: the entry without it
+		// is refused — and only a Required part has such a witness.
+		required := map[string]bool{}
+		for _, name := range requiredFieldNames(k.Entries, "") {
+			required[name] = true
+		}
+		for part, line := range w.missing {
+			if !required[part] {
+				t.Errorf("%s: a missing-part witness for %q, which the registry does not mark Required", kind, part)
+			}
+			if res := parser.Parse("probe.bot", entryDoc(tmpl, line)); len(res.Diagnostics) == 0 {
+				t.Errorf("%s: the registry marks %q Required, yet the parser accepts the entry without it: %q", kind, part, line)
+			}
+		}
+		for part := range required {
+			if _, ok := w.missing[part]; !ok {
+				t.Errorf("%s: the registry marks %q Required, and no witness leaves it out", kind, part)
 			}
 		}
 		got := make([]string, 0, len(exercised))
@@ -328,16 +377,35 @@ func TestHeadersMatchTheParser(t *testing.T) {
 	if len(res.Diagnostics) != 0 || len(res.File.Groups[0].Params) != 0 || res.File.Uses[0].With != nil {
 		t.Errorf("without the optional parts: %v %+v %+v", res.Diagnostics, res.File.Groups[0], res.File.Uses[0])
 	}
-	// A required part left out, or a part of the wrong form, is refused.
+	// A part of the wrong form is refused.
 	for _, src := range []string{
-		"group g:" + body + "use g\n",
-		"group g:" + body + "use g as\n",
 		"group g:" + body + "use g as zz_p with 1\n",
 		"group g(1):" + body,
 		"group g(\"a\"):" + body,
 	} {
 		if res := parser.Parse("g.bot", src); len(res.Diagnostics) == 0 {
 			t.Errorf("accepted: %q", src)
+		}
+	}
+	// A Required header part is one the parser demands: the line without
+	// it is refused — and only a Required part has such a witness.
+	missing := map[string]map[string]string{
+		"group": {},
+		"use":   {"as": "group g:" + body + "use g\n"},
+	}
+	for _, k := range []spec.Kind{g, u} {
+		for _, f := range k.Header.Fields {
+			line, ok := missing[k.Name][f.Name]
+			switch {
+			case f.Required && !ok:
+				t.Errorf("%s header: %q is Required and no witness leaves it out", k.Name, f.Name)
+			case !f.Required && ok:
+				t.Errorf("%s header: a missing-part witness for %q, which is not Required", k.Name, f.Name)
+			case ok:
+				if res := parser.Parse("g.bot", line); len(res.Diagnostics) == 0 {
+					t.Errorf("%s header: %q is Required, yet the parser accepts the line without it: %q", k.Name, f.Name, line)
+				}
+			}
 		}
 	}
 }

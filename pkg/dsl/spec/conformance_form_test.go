@@ -83,8 +83,10 @@ var formWitnesses = map[spec.Form]witnesses{
 		refused:  []string{"a", `"a"`, "1", `["a"]`, "[1]"},
 	},
 	spec.StringList: {
+		// A bare element is one plain word: a dotted host is the mixed
+		// list's, not this one's.
 		accepted: []string{`["a", "b"]`, "[]", "[a, b]", "\n  - \"a\"\n  - b"},
-		refused:  []string{`"a"`, "a", "1", "[1]"},
+		refused:  []string{`"a"`, "a", "1", "[1]", "[github.com]"},
 	},
 	spec.ToolList: {
 		accepted: []string{`[a, b.c, mcp.x.*, "lit-name"]`, "[]", "\n  - a\n  - mcp.x.*"},

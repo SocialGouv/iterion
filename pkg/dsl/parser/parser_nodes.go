@@ -741,8 +741,11 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 			// A bare word, matching the DSL's enum style (`await: wait_all`),
 			// or a quoted string for the JSON round-trip authors — the one
 			// string|ident reader every such property goes through; the
-			// compiler narrows the word to `skip`.
+			// compiler narrows the word to `skip`. A refused value takes
+			// the rest of its line with it, so `action: 123 456` is one
+			// diagnostic, not one plus a phantom property `456`.
 			fd.Action = p.expectStringOrIdent()
+			p.skipToNewline()
 		case "when":
 			// A quoted expr over vars, like a compute `expr:` value.
 			fd.When = p.expectString()

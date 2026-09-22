@@ -98,8 +98,11 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 	p.expect(TokenLBrack)
 	var out []string
 	appendElem := func() {
+		first := p.peek()
 		if v, ok := parseElem(); ok {
 			out = append(out, v)
+		} else {
+			p.resyncListElement(first)
 		}
 	}
 	if p.peek().Type == TokenRBrack {
@@ -113,6 +116,36 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 	}
 	p.expect(TokenRBrack)
 	return out
+}
+
+// resyncListElement drops what remains of a refused inline element so the
+// next element is read: the tokens up to the next `,` or the list's own
+// `]`, a nested bracket (`[[a], bash]`) skipped whole — the element reader
+// consumed the refused token, so a bracket it opened counts as open. The
+// diagnostic is the reader's; this only keeps the rest of the list.
+func (p *parser) resyncListElement(refused Token) {
+	depth := 0
+	if opensBracket(refused) {
+		depth = 1
+	}
+	for {
+		t := p.peek()
+		switch {
+		case t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t):
+			return
+		case depth == 0 && (t.Type == TokenComma || t.Type == TokenRBrack):
+			return
+		case opensBracket(t):
+			depth++
+		case t.Type == TokenRBrack || t.Type == TokenRBrace || t.Type == TokenRParen:
+			depth--
+		}
+		p.next()
+	}
+}
+
+func opensBracket(t Token) bool {
+	return t.Type == TokenLBrack || t.Type == TokenLBrace || t.Type == TokenLParen
 }
 
 // parseDashList parses the YAML-style form of a list: after the property's
@@ -190,6 +223,13 @@ func (p *parser) listElementRefused(t Token, want string) {
 
 func (p *parser) parseStringList() []string {
 	return p.parseBracketList(func() (string, bool) {
+		if t := p.peek(); t.Type != TokenString && tokenAsIdent(t) == "" {
+			// A refused element is not an element: without this, the
+			// token's text (`1`) was appended as a string beside the
+			// diagnostic.
+			p.listElementRefused(p.next(), "a string")
+			return "", false
+		}
 		return p.expectString(), true
 	})
 }
@@ -201,53 +241,27 @@ func (p *parser) parseStringList() []string {
 // has to take, and the form the unparser writes for it; without it the
 // element was dropped in silence and such a document could never be saved.
 func (p *parser) parseToolList() []string {
-	return p.parseBracketList(func() (string, bool) {
-		if p.peek().Type == TokenString {
-			v := p.next().Value
-			return v, v != ""
-		}
-		name := p.parseToolRef()
-		return name, name != ""
-	})
+	return p.parseBracketList(p.refListElem)
 }
 
 // parseSkillList parses a `skills: [...]` list. Each element is either a
 // quoted string (required for kebab-case names like "changelog-writer", since
 // the lexer does not treat '-' as an identifier part) or a bare dotted ident
-// (e.g. house_style). Empty list [] is allowed.
+// (e.g. house_style) — the grammar of a tool list, read by the one list
+// reader every list goes through. Empty list [] is allowed.
 func (p *parser) parseSkillList() []string {
-	if lineEnds(p.peek()) {
-		return p.parseDashList(func() (string, bool) {
-			if p.peek().Type == TokenString {
-				v := p.next().Value
-				return v, v != ""
-			}
-			name := p.parseToolRef()
-			return name, name != ""
-		})
+	return p.parseBracketList(p.refListElem)
+}
+
+// refListElem reads one element of a tool or skill list: a quoted literal,
+// or a bare dotted reference.
+func (p *parser) refListElem() (string, bool) {
+	if p.peek().Type == TokenString {
+		v := p.next().Value
+		return v, v != ""
 	}
-	p.expect(TokenLBrack)
-	var names []string
-	if p.peek().Type == TokenRBrack {
-		p.next()
-		return names
-	}
-	appendRef := func() {
-		if p.peek().Type == TokenString {
-			names = append(names, p.next().Value)
-			return
-		}
-		if name := p.parseToolRef(); name != "" {
-			names = append(names, name)
-		}
-	}
-	appendRef()
-	for p.peek().Type == TokenComma {
-		p.next() // consume ,
-		appendRef()
-	}
-	p.expect(TokenRBrack)
-	return names
+	name := p.parseToolRef()
+	return name, name != ""
 }
 
 // parseToolRef parses a single tool reference: IDENT { "." IDENT } or
