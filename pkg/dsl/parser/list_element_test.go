@@ -91,6 +91,87 @@ func TestARefusedFallbackActionTakesItsLine(t *testing.T) {
 	}
 }
 
+// Every string|ident property that owns its line does the same: the tail of
+// a refused value is never read as the next property, and the property after
+// it is read. The `env:` map's block form used to make KEYS of the tail
+// (`KEY1: 123 456` gave a key `456` and destroyed the next entry).
+func TestARefusedStringOrIdentValueTakesItsLine(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		ok   func(r *ParseResult) bool
+	}{
+		{"human posture", "human h:\n  posture: 123 456\n  merge_strategy: squash\n", func(r *ParseResult) bool { return r.File.Humans[0].MergeStrategy == "squash" }},
+		{"human merge_strategy", "human h:\n  merge_strategy: 123 456\n  merge_into: current\n", func(r *ParseResult) bool { return r.File.Humans[0].MergeInto == "current" }},
+		{"human merge_into", "human h:\n  merge_into: 123 456\n  max_turns: 4\n", func(r *ParseResult) bool { return r.File.Humans[0].MaxTurns == 4 }},
+		{"fail code", "fail f:\n  code: 123 456\n  message: \"m\"\n", func(r *ParseResult) bool { return r.File.Fails[0].Message == "m" }},
+		{"await_answers from", "await_answers g:\n  from: 123 456\n  timeout: \"1s\"\n", func(r *ParseResult) bool { return r.File.AwaitAnswers[0].Timeout == "1s" }},
+		{"tool connection", "tool t:\n  command: \"x\"\n  connection: 123 456\n  description: \"d\"\n", func(r *ParseResult) bool { return r.File.Tools[0].Description == "d" }},
+		{"secret as", "secrets:\n  s:\n    as: 123 456\n    description: \"d\"\n", func(r *ParseResult) bool { return r.File.Secrets.Fields[0].Description == "d" }},
+		{"secret env", "secrets:\n  s:\n    env: 123 456\n    description: \"d\"\n", func(r *ParseResult) bool { return r.File.Secrets.Fields[0].Description == "d" }},
+		{"network preset", "workflow w:\n  entry: done\n  sandbox:\n    image: \"img\"\n    network:\n      preset: 123 456\n      rules: [github.com]\n", func(r *ParseResult) bool {
+			return reflect.DeepEqual(r.File.Workflows[0].Sandbox.Network.Rules, []string{"github.com"})
+		}},
+		{"env block value", "workflow w:\n  entry: done\n  sandbox:\n    image: \"img\"\n    env:\n      KEY1: 123 456\n      KEY2: \"v2\"\n", func(r *ParseResult) bool {
+			return reflect.DeepEqual(r.File.Workflows[0].Sandbox.Env, map[string]string{"KEY2": "v2"})
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := Parse("x.bot", c.src)
+			if len(res.Diagnostics) != 1 {
+				t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
+			}
+			if !c.ok(res) {
+				t.Fatalf("the property after the refusal was not read: %v", res.File)
+			}
+		})
+	}
+}
+
+// A list element with no comma before it is said once, then read; a stray
+// token inside the list is refused where it stands; nothing runs into the
+// next property. `[bash foo]` used to draw "expected ]" and then "unknown
+// property ']'", and a resync that ran at depth 0 ate `bash` in silence.
+func TestAMissingCommaInAListIsSaidAndTheElementsAreRead(t *testing.T) {
+	cases := []struct {
+		name  string
+		src   string
+		want  []string
+		diags int
+	}{
+		{"two names, no comma", "agent a:\n  tools: [bash foo]\n  description: \"after\"\n", []string{"bash", "foo"}, 1},
+		{"refused then a name, no comma", "agent a:\n  tools: [1 bash]\n  description: \"after\"\n", []string{"bash"}, 2},
+		{"refused then a stray closer", "agent a:\n  tools: [1}, bash]\n  description: \"after\"\n", []string{"bash"}, 3},
+		{"needs, refused then a name", "agent a:\n  needs: [1 cpu]\n  description: \"after\"\n", []string{"cpu"}, 2},
+		{"images, refused then a string", "agent a:\n  images: [1 \"x.png\"]\n  description: \"after\"\n", []string{"x.png"}, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := Parse("x.bot", c.src)
+			if len(res.Diagnostics) != c.diags {
+				t.Fatalf("want %d diagnostics, got %v", c.diags, res.Diagnostics)
+			}
+			for _, d := range res.Diagnostics {
+				if d.Line != 2 {
+					t.Fatalf("a diagnostic ran into another line: %v", d)
+				}
+			}
+			a := res.File.Agents[0]
+			got := a.Tools
+			switch {
+			case strings.Contains(c.name, "needs"):
+				got = a.Needs
+			case strings.Contains(c.name, "images"):
+				got = a.Images
+			}
+			if !reflect.DeepEqual(got, c.want) || a.Description != "after" {
+				t.Fatalf("list %v (want %v), description %q", got, c.want, a.Description)
+			}
+		})
+	}
+}
+
 // A group's parameter list is a list of names too: `group g("a", b):` used
 // to read as `group g(b):` in silence, and every `{{params.a}}` of the
 // group's prompts then stayed unbound.

@@ -415,13 +415,13 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 			hd.ReviewURL = p.expectString()
 		case "posture":
 			p.expect(TokenColon)
-			hd.Posture = p.expectStringOrIdent()
+			hd.Posture = p.expectStringOrIdentLine()
 		case "merge_strategy":
 			p.expect(TokenColon)
-			hd.MergeStrategy = p.expectStringOrIdent()
+			hd.MergeStrategy = p.expectStringOrIdentLine()
 		case "merge_into":
 			p.expect(TokenColon)
-			hd.MergeInto = p.expectStringOrIdent()
+			hd.MergeInto = p.expectStringOrIdentLine()
 		case "max_turns":
 			p.expect(TokenColon)
 			hd.MaxTurns = p.expectInt()
@@ -741,11 +741,8 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 			// A bare word, matching the DSL's enum style (`await: wait_all`),
 			// or a quoted string for the JSON round-trip authors — the one
 			// string|ident reader every such property goes through; the
-			// compiler narrows the word to `skip`. A refused value takes
-			// the rest of its line with it, so `action: 123 456` is one
-			// diagnostic, not one plus a phantom property `456`.
-			fd.Action = p.expectStringOrIdent()
-			p.skipToNewline()
+			// compiler narrows the word to `skip`.
+			fd.Action = p.expectStringOrIdentLine()
 		case "when":
 			// A quoted expr over vars, like a compute `expr:` value.
 			fd.When = p.expectString()
@@ -1187,7 +1184,7 @@ func (p *parser) parseFailDecl() *ast.FailDecl {
 		case t.Type == TokenIdent && t.Value == "code":
 			p.next()
 			p.expect(TokenColon)
-			fd.Code = p.expectStringOrIdent()
+			fd.Code = p.expectStringOrIdentLine()
 		case t.Type == TokenIdent && t.Value == "message":
 			p.next()
 			p.expect(TokenColon)
@@ -1241,7 +1238,7 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 		case "from":
 			p.next()
 			p.expect(TokenColon)
-			ad.From = p.expectStringOrIdent()
+			ad.From = p.expectStringOrIdentLine()
 		case "timeout":
 			p.next()
 			p.expect(TokenColon)

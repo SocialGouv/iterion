@@ -65,7 +65,7 @@ func (p *parser) expectActionID() string {
 // reader every such property goes through, so a dotted bare alias
 // (`forge.main`) reads here as it reads everywhere else.
 func (p *parser) expectConnectionAlias() string {
-	return p.expectStringOrIdent()
+	return p.expectStringOrIdentLine()
 }
 
 // expectScalarText reads a bare scalar (`30s`, `3`) or a quoted string, and

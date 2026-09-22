@@ -110,30 +110,46 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 		return out
 	}
 	appendElem()
-	for p.peek().Type == TokenComma {
-		p.next() // consume ,
-		appendElem()
+	for {
+		t := p.peek()
+		switch {
+		case t.Type == TokenComma:
+			p.next()
+			appendElem()
+		case t.Type == TokenRBrack:
+			p.next()
+			return out
+		case t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t):
+			p.expectFailed(t, TokenRBrack, "expected ] to close the list, got "+t.Type.String())
+			return out
+		default:
+			// Another element with no comma before it, or a stray token:
+			// said once, then read as the next element — a stray is refused
+			// by the element reader, which consumes it — so the list keeps
+			// its shape and nothing runs into the next property. Every
+			// iteration consumes at least one token.
+			p.addErrorHint(DiagExpectedToken, t, "expected `,` or `]` after a list element, got "+t.Type.String(), "Separate the elements with commas: `[a, b]`.")
+			appendElem()
+		}
 	}
-	p.expect(TokenRBrack)
-	return out
 }
 
-// resyncListElement drops what remains of a refused inline element so the
-// next element is read: the tokens up to the next `,` or the list's own
-// `]`, a nested bracket (`[[a], bash]`) skipped whole — the element reader
-// consumed the refused token, so a bracket it opened counts as open. The
-// diagnostic is the reader's; this only keeps the rest of the list.
+// resyncListElement drops what remains of a refused inline element that
+// OPENED a bracket, brace or paren — `[[a], bash]` — so the nested text is
+// skipped whole and the next element is read; the element reader consumed
+// the refused token, so the bracket it opened counts as open. A refused
+// token that opened nothing leaves the rest of the list to the list loop:
+// the token after it is either the comma, the closer, or another element
+// the loop reads — never eaten in silence. The diagnostic is the reader's.
 func (p *parser) resyncListElement(refused Token) {
 	depth := 0
 	if opensBracket(refused) {
 		depth = 1
 	}
-	for {
+	for depth > 0 {
 		t := p.peek()
 		switch {
 		case t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t):
-			return
-		case depth == 0 && (t.Type == TokenComma || t.Type == TokenRBrack):
 			return
 		case opensBracket(t):
 			depth++
