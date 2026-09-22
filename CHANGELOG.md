@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.184.0](https://github.com/SocialGouv/iterion/compare/v3.183.0...v3.184.0) (2026-09-22)
+
+### Features
+
+* **runtime:** a list value renders by its declaration, and a var's text has one reading ([#1601](https://github.com/SocialGouv/iterion/issues/1601)) ([b38cba0](https://github.com/SocialGouv/iterion/commit/b38cba0db45b2e1f20ca02fb01aa793bf7d1ecfb)), references [#1320](https://github.com/SocialGouv/iterion/issues/1320) [#1285](https://github.com/SocialGouv/iterion/issues/1285) [#1320](https://github.com/SocialGouv/iterion/issues/1320) [#1320](https://github.com/SocialGouv/iterion/issues/1320) [#1285](https://github.com/SocialGouv/iterion/issues/1285)
+
+    <details><summary>why</summary>
+
+    A `json` value and a `string[]` value reach a tool body as the same Go value — []any — so the renderer alone could never tell a document from an argv list. It guessed by shape: a scalar list space-joined, which is right for `string[]` and runs the second element as a command for `json`, and an EMPTY list rendered as nothing at all, so `cmd {{vars.x}} --flag` lost its argument and `--flag` shifted one place left, in silence, with the node reporting SUCCESS (#1320).
+
+    </details>
+
 ## [3.183.0](https://github.com/SocialGouv/iterion/compare/v3.182.1...v3.183.0) (2026-09-22)
 
 ### Features
