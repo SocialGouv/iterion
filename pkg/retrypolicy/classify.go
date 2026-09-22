@@ -153,6 +153,15 @@ var classification = map[store.FailureCode]Disposition{
 	// request WAS served and the next sample may conform.
 	store.FailureSchemaUnusable:        DispositionDeterministic,
 	store.FailureCapabilityUnsupported: DispositionDeterministic,
+	// The workflow requested an EXPLICIT sandbox mode (`sandbox: { mode:
+	// inline, image/build: … }`) and the host has no driver that can
+	// honour it. Every redelivery reaches the same absent runtime — a
+	// pod's kernel does not grow a docker between attempts — so a
+	// MaxDeliver spin on this code is pod-time burned on one verdict.
+	// Deterministic makes the runner ack it once; the schedule record
+	// keeps the code in last_run_error_code (#1426) for the operator
+	// who has to change the isolation ask or provision a driver. #1425.
+	store.FailureSandboxDriverUnavailable: DispositionDeterministic,
 }
 
 // Classify reports what an automatic resume can achieve for this code.

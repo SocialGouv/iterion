@@ -924,6 +924,7 @@ would re-hit it identically and only spend a pod per attempt.
 | An invalid spec (`CreateContainerConfigError`, `CreateContainerError`) or a crash-looping container | — | `failed` |
 | The pod reached `Running` (or `Unknown`) but never Ready | — | `failed` — a container came up; nothing says the run did nothing |
 | The pod could not be inspected at all (RBAC, apiserver blip) | — | `failed` — no evidence, nothing claimed |
+| No driver can honour an EXPLICIT `sandbox: { mode: inline, … }` (no runtime on the host / no usable cluster) | `SANDBOX_DRIVER_UNAVAILABLE` | `failed` — every redelivery reaches the same absent runtime, so `pkg/retrypolicy` classes it Deterministic and the runner acks. `sandbox: auto` does not land here: it degrades to an unsandboxed run with a `sandbox_skipped` event (#1425) |
 
 Both resumable codes are re-offered by the cloud runner on a DELAY
 rather than at once: 2 minutes for `SANDBOX_SETUP_TIMEOUT` (the stall is

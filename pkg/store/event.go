@@ -456,14 +456,30 @@ const (
 	// declared_model, effective_model, fingerprint.
 	EventModelServedViaFacade EventType = "model_served_via_facade"
 
-	// EventSandboxSkipped is emitted at run start when the workflow or a
-	// node requested an active sandbox mode (auto/inline) but the
-	// resolved driver cannot honour it — typically the noop driver on a
-	// host without docker, or the cloud V1 fallback where the runner
-	// pod is the de-facto sandbox. The Data field carries:
-	//   - driver: the driver that handled the request
+	// EventSandboxSkipped is emitted at run start when the workflow or
+	// a node requested an active sandbox mode (auto/inline) but the
+	// resolved driver cannot honour it — a host without docker, the
+	// cloud V1 fallback where the runner pod is the de-facto sandbox,
+	// or an EXPLICIT inline mode refused because no driver is
+	// available (#1425). The Data field carries:
 	//   - mode: the requested mode ("auto" or "inline")
+	//   - source: precedence label ("workflow sandbox: block",
+	//     "cli flag --sandbox", "global sandbox default", …)
 	//   - reason: human-readable explanation
+	//   - refused: bool — true on the INLINE refusal path (the run
+	//     parks with FailureCode=SANDBOX_DRIVER_UNAVAILABLE); absent
+	//     or false on the AUTO soft-skip path (the run continues
+	//     unsandboxed)
+	//   - error_code: string — the typed failure code, the same one
+	//     the run document carries as failure_code and the schedule
+	//     record copies into last_run_error_code (#1426). Set only
+	//     when refused=true.
+	//   - file_secrets_dropped: bool — set on an AUTO degrade whose
+	//     workflow declares `as: file` secrets: an unsandboxed run has
+	//     no container to mount them into, so they are not delivered
+	//   - driver: string — written only by the noop-pinned path
+	//     (startNoopSandbox), where a caller chose the passthrough
+	//     driver deliberately
 	EventSandboxSkipped EventType = "sandbox_skipped"
 	// EventSkillsInjected fires at run start when the OPERATOR added
 	// skill-library skills to this run on top of the workflow's own

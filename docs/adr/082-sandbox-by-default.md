@@ -43,10 +43,53 @@ isolation level. Rollout in three phases:
   without `WithSandboxDefault` (tests, embedders) keeps the historical
   behaviour. `runview.Service` grows a `WithSandboxDefault` option the
   product constructors fill.
-- The ambient default degrades instead of bricking: outside a git repo
-  it is quietly not applicable; without a container runtime the run
-  proceeds unsandboxed with a visible `sandbox_skipped` event. An
-  explicit request (CLI flag / workflow block) still hard-errors.
+- `auto` degrades instead of bricking: with no container runtime the
+  run proceeds unsandboxed with a visible `sandbox_skipped` event. The
+  resolver answers the same for its own obstacles (no repo root, no
+  image for an unreadable devcontainer), which only a library caller
+  can produce.
+
+> **Amended 2026-09-19 (#1425).** The "explicit request still hard-errors"
+> line above was the SOURCE-based reading — the workflow-block auto
+> and CLI-flag auto errored while the built-in-default auto degraded,
+> so the same mode carried different guarantees depending on
+> provenance. Measured on the operator's own host: **107 scheduled
+> ticks** (2026-07-20 → 2026-09-17) died with `sandbox: mode "auto"
+> requested but no container runtime is available` because they
+> reached `resolveAndStartSandbox` with `source != sandboxDefaultSource`.
+> The doctrine is now MODE-based, not source-based, and it holds at
+> BOTH layers a run crosses: spec resolution
+> (`resolveSandboxSpecWithFallback`, which no longer reads the source
+> at all) and driver selection (`resolveAndStartSandbox`, the one
+> place the split is written). `sandbox: auto` — however it got there
+> — means "isolate if you can": degrade to unsandboxed with
+> `sandbox_skipped`. In production the obstacle is the absent driver;
+> the resolver's own obstacles (no repo root, no image for an
+> unreadable devcontainer) take the same branch but need a library
+> caller to reach, since every product entry point resolves both. The
+> event names what
+> the degrade costs, `file_secrets_dropped: true` when the workflow
+> declares `as: file` secrets an unsandboxed run cannot be given.
+>
+> `sandbox: { mode: inline, image/build: … }` (an EXPLICIT container
+> the author wired) keeps the hard refusal — the author-declared
+> container IS the isolation contract, and running unsandboxed is not
+> an option. The refusal carries a typed sentinel
+> (`sandbox.ErrDriverUnavailable` → `store.FailureSandboxDriverUnavailable`
+> = `"SANDBOX_DRIVER_UNAVAILABLE"`), classified `DispositionDeterministic`
+> in `pkg/retrypolicy` so the runner acks the delivery instead of
+> redelivering the run into the same absent runtime, and the schedule
+> record keeps the code in `last_run_error_code` for the operator who
+> has to provision a driver or change the ask (#1426 — the record
+> STORES it; no surface branches on it yet). The escape
+> hatch is the one that exists: `--sandbox none` (or `sandbox: none`)
+> runs it on the host, deliberately.
+>
+> `pkg/sandbox` keeps NO mode policy: `Factory.DriverForSpec` answers
+> "can this host isolate?" identically for both modes, so the readers
+> that cannot degrade anything — `iterion sandbox doctor --strict`,
+> the launch pre-flight — keep reading a true capability instead of a
+> noop driver reported as available.
 - Explicit `sandbox: none` triggers warning diagnostic **C128**
   (workflow and node level), and the studio confirm dialog now fires
   only for it; an absent block shows `Sandbox: auto (default)`.

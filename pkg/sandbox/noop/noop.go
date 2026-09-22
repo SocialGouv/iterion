@@ -3,20 +3,20 @@
 //
 // The noop driver advertises empty [sandbox.Capabilities] and runs
 // [sandbox.Run.Exec] commands on the host directly via os/exec. It is
-// the fallback when:
+// always constructible, which is what makes it the factory's
+// last-resort answer and the reason [sandbox.Factory.DriverForSpec]
+// can detect "this host cannot isolate" by seeing it selected.
 //
-//   - the user does not request a sandbox (the default), or
-//   - the requested driver is unavailable on this host (e.g. desktop
-//     without docker), or
-//   - in cloud V1 mode, where the runner pod is the de-facto sandbox
-//     and per-run isolation is deferred to V2.
+// It is NOT the fallback for an active mode: since #1425 DriverForSpec
+// refuses rather than hand it back for [sandbox.ModeAuto] or
+// [sandbox.ModeInline], and the runtime then decides — auto runs
+// unsandboxed with a `sandbox_skipped` event, inline parks the run.
+// This driver serves a caller that pins it deliberately
+// (FactoryOptions.PreferredDriver).
 //
 // Calling [sandbox.Driver.Prepare] with a [sandbox.Spec] whose mode is
-// active ([sandbox.ModeAuto] or [sandbox.ModeInline]) returns a
-// special [PreparedSpec] that records the skip reason. The engine
-// emits a `sandbox_skipped` event when it sees this — that's the
-// observability hook that makes the noop fallback visible to
-// operators.
+// active returns a [PreparedSpec] recording the skip reason, for such
+// a caller to surface.
 package noop
 
 import (

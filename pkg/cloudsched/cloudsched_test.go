@@ -270,7 +270,7 @@ func assertMarkRunOutcomeContract(t *testing.T, store Store, scheduleID string, 
 	// Failure: stamps all four fields.
 	if err := store.MarkRunOutcome(ctx, scheduleID, "run-boom", "failed",
 		"sandbox: strict mode requested but no runtime available",
-		"sandbox_refused", now); err != nil {
+		"SANDBOX_DRIVER_UNAVAILABLE", now); err != nil {
 		t.Fatalf("MarkRunOutcome failure: %v", err)
 	}
 	got, err := store.Get(ctx, scheduleID)
@@ -280,8 +280,8 @@ func assertMarkRunOutcomeContract(t *testing.T, store Store, scheduleID string, 
 	if got.LastRunID != "run-boom" || got.LastRunStatus != "failed" {
 		t.Errorf("outcome fields = (%q, %q); want (run-boom, failed)", got.LastRunID, got.LastRunStatus)
 	}
-	if got.LastRunError == "" || got.LastRunErrorCode != "sandbox_refused" {
-		t.Errorf("outcome error = (%q, %q); want non-empty msg + sandbox_refused code", got.LastRunError, got.LastRunErrorCode)
+	if got.LastRunError == "" || got.LastRunErrorCode != "SANDBOX_DRIVER_UNAVAILABLE" {
+		t.Errorf("outcome error = (%q, %q); want non-empty msg + SANDBOX_DRIVER_UNAVAILABLE code", got.LastRunError, got.LastRunErrorCode)
 	}
 	if got.LastRunAt == nil {
 		t.Error("LastRunAt is nil after MarkRunOutcome")
@@ -304,7 +304,7 @@ func assertMarkRunOutcomeContract(t *testing.T, store Store, scheduleID string, 
 	// backwards. Mutation: drop the monotonicity guard in either twin →
 	// last_run_id reverts to "run-boom" → red.
 	if err := store.MarkRunOutcome(ctx, scheduleID, "run-boom", "failed",
-		"late delivery of the failed run", "sandbox_refused", now.Add(30*time.Second)); err != nil {
+		"late delivery of the failed run", "SANDBOX_DRIVER_UNAVAILABLE", now.Add(30*time.Second)); err != nil {
 		t.Fatalf("MarkRunOutcome out-of-order: %v", err)
 	}
 	got, _ = store.Get(ctx, scheduleID)

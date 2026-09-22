@@ -28,8 +28,9 @@ export interface ScheduledBot {
   // last_error above is the launch decision; these are the run result.
   // All empty until the first run reaches a terminal status.
   // last_run_error_code is a stable machine-readable classifier
-  // (e.g. "sandbox_refused") so dashboards can dispatch on it without
-  // parsing last_run_error. Cleared on a successful run.
+  // (a store.FailureCode, e.g. "SANDBOX_DRIVER_UNAVAILABLE") so
+  // dashboards can dispatch on it without parsing last_run_error.
+  // Cleared on a successful run.
   last_run_id?: string;
   last_run_status?: string;
   last_run_error?: string;

@@ -158,10 +158,26 @@ func runSandboxDoctorBasic(p *Printer) error {
 	}
 	fmt.Fprintln(p.W)
 	if driverName == "noop" {
-		fmt.Fprintln(p.W, "Note: the noop driver is the safe fallback. Workflows that declare")
-		fmt.Fprintln(p.W, "an active sandbox mode will run on the host with a sandbox_skipped event")
-		fmt.Fprintln(p.W, "in events.jsonl. Install Docker or Podman locally to enable container")
-		fmt.Fprintln(p.W, "isolation, or run iterion in cloud mode for k8s-native isolation.")
+		// State the DRIVER fact, not a host fact: on a cloud host the
+		// preference order is kubernetes → noop, so noop can be
+		// selected with docker sitting on this machine's PATH — the
+		// report prints that runtime two lines above.
+		fmt.Fprintln(p.W, "Note: no container-isolation driver is usable here (selected: noop).")
+		fmt.Fprintln(p.W, "A workflow declaring `sandbox: auto` runs on the host with a")
+		fmt.Fprintln(p.W, "sandbox_skipped event in events.jsonl; one declaring")
+		fmt.Fprintln(p.W, "`sandbox: { mode: inline, … }` is refused and parks with")
+		fmt.Fprintln(p.W, "SANDBOX_DRIVER_UNAVAILABLE.")
+		if factory.Host() == sandbox.HostCloud {
+			// No "driver error" line accompanies this note: the factory
+			// returns either a driver or an error, so a selected noop
+			// means the walk fell through and the candidates' own
+			// failures were not kept.
+			fmt.Fprintln(p.W, "This host reads as cloud, so the kubernetes driver is the one that")
+			fmt.Fprintln(p.W, "could not be constructed — check the in-cluster config and RBAC.")
+		} else {
+			fmt.Fprintln(p.W, "Install Docker or Podman locally to enable container isolation, or")
+			fmt.Fprintln(p.W, "run iterion in cloud mode for k8s-native isolation.")
+		}
 	}
 	return nil
 }
