@@ -1511,34 +1511,55 @@ tool arm_automerge:
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
 
+    # Set once a prior arming has been taken down. Every exit runs through
+    # out(), so the note reaches the reason whatever path refuses afterwards -
+    # a PR left bare must never be silent about it.
+    state_note = {"disarmed": False}
+
     def out(armed, reason=""):
-        print(json.dumps({"armed": bool(armed), "reason": reason or ""}))
+        reason = reason or ""
+        if state_note["disarmed"] and not bool(armed):
+            reason = (reason + " | " if reason else "") + \
+                     "the prior auto-merge arming was disarmed and NOT replaced - re-arm by hand if it was wanted"
+        print(json.dumps({"armed": bool(armed), "reason": reason}))
         raise SystemExit(0)
 
+    # Off means no mandate. Not "undo what somebody else decided": the forge is
+    # not touched at all, so an operator's own arming survives the switch.
     if not bool(enabled):
         out(False, "arm_automerge is off (default)")
+
+    # The verdict and gate checks below no longer exit on the spot. A refusal
+    # has to DISARM what an earlier pass armed: a hold says this revision must
+    # not merge, and an arming outlives the run that placed it - the forge goes
+    # on waiting for the checks either way. So the reason is computed here and
+    # acted on once the forge is reachable.
+    refusal = ""
     if s(verdict) not in ("clean", "committed"):
-        out(False, "verdict " + (s(verdict) or "(empty)") + " is not green")
+        refusal = "verdict " + (s(verdict) or "(empty)") + " is not green"
     # The gate is what a repo makes required. Arming while it is missing would
     # merge on the strength of a verdict the PR never displayed.
-    if bool(gate_on) and not bool(gate_posted):
-        out(False, "the merge gate did not land - not arming on a verdict the PR cannot show")
-    if bool(gate_on) and s(gate_state) and s(gate_state) != "success":
-        out(False, "merge gate is " + s(gate_state))
+    elif bool(gate_on) and not bool(gate_posted):
+        refusal = "the merge gate did not land - not arming on a verdict the PR cannot show"
+    elif bool(gate_on) and s(gate_state) and s(gate_state) != "success":
+        refusal = "merge gate is " + s(gate_state)
 
+    # Where the forge cannot be reached at all there is nothing to disarm, and
+    # the refusal - when there is one - is the more useful of the two reasons:
+    # it is about the bump, not about the plumbing.
     m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls)/(\d+)", s(pr_url))
     if not m:
-        out(False, "auto-merge arming is GitHub-only; no-op for " + (s(pr_url) or "(no pr_url)"))
+        out(False, refusal or ("auto-merge arming is GitHub-only; no-op for " + (s(pr_url) or "(no pr_url)")))
     host, owner, repo, num = m.group(1), m.group(2), m.group(3), int(m.group(4))
     if host != "github.com":
-        out(False, "auto-merge arming is GitHub-only; no-op for " + host)
+        out(False, refusal or ("auto-merge arming is GitHub-only; no-op for " + host))
 
     token = ""
     tref = s(token_ref)
     if tref:
         token = (open(tref).read().strip() if os.path.exists(tref) else tref)
     if not token:
-        out(False, "no forge_token bound")
+        out(False, refusal or "no forge_token bound")
 
     def graphql(query, variables):
         req = urllib.request.Request(
@@ -1580,9 +1601,22 @@ tool arm_automerge:
                "repository(owner: @owner, name: @name) { "
                "mergeQueue(branch: @branch) { id } "
                "} }").replace("@", at)
-    arm_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!) { "
-               "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method }) "
-               "{ clientMutationId } }").replace("@", at)
+    # The ARMING carries the pin too, and for a sharper reason than the merge
+    # does: an arming OUTLIVES this run. The forge keeps waiting for the checks,
+    # and a push landing afterwards moves the head under it - GitHub cancels an
+    # arming only when the pusher LACKS write, which a dependency bot's App does
+    # not. Unpinned, the commit that finally merges is whichever arrived last.
+    arm_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
+               "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method, "
+               "expectedHeadOid: @oid }) { clientMutationId } }").replace("@", at)
+    # An arming already on the PR cannot be inspected: AutoMergeRequest exposes
+    # enabledAt, enabledBy, mergeMethod and the commit message - and NOT
+    # expectedHeadOid. "Already armed" therefore says nothing about which commit
+    # the forge will merge. The only arming whose pin is known is the one this
+    # run places, so an existing one is REPLACED rather than trusted.
+    disarm_mut = ("mutation(@id: ID!) { "
+                  "disablePullRequestAutoMerge(input: { pullRequestId: @id }) "
+                  "{ clientMutationId } }").replace("@", at)
     # expectedHeadOid is the safety pin: the forge merges this exact commit or
     # nothing, so a push racing the decision can never be merged unreviewed.
     merge_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
@@ -1675,22 +1709,46 @@ tool arm_automerge:
         return s(pr.get("mergeStateStatus")).upper() == "CLEAN" and \
                s(pr.get("mergeable")).upper() == "MERGEABLE"
 
+    def disarm(node_id):
+        # Records the takedown BEFORE claiming it: out() appends the note to
+        # every later refusal, and a disarm that half-succeeded must not read
+        # as one that never happened.
+        graphql(disarm_mut, {"id": node_id})
+        state_note["disarmed"] = True
+
+    # A refusal that has to take an arming down: read the PR, disarm if one is
+    # there, then report. A forge failure here never masks the refusal - the
+    # bump's verdict is the thing the PR has to carry away.
+    if refusal:
+        try:
+            pr = read_pr()
+            if pr.get("id") and pr.get("autoMergeRequest"):
+                disarm(pr.get("id"))
+        except Exception as e:
+            out(False, refusal + " | an arming may still stand: the disarm failed (" + str(e)[:120] + ")")
+        out(False, refusal)
+
     try:
         pr = read_pr()
         node_id = pr.get("id")
         if not node_id:
             out(False, "pull request not found via the forge API")
-        if pr.get("autoMergeRequest"):
-            out(True, "auto-merge was already armed")
         if pr.get("mergeQueueEntry"):
             out(True, "already in the merge queue")
+        # An arming already on the PR is opaque - its expectedHeadOid cannot be
+        # read back - so it is replaced by one this run places and can vouch
+        # for, never accepted. Disarm first: enablePullRequestAutoMerge on an
+        # armed PR is refused, and re-arming is the whole point.
+        if pr.get("autoMergeRequest"):
+            disarm(node_id)
         # Arm FIRST, whatever the state. On a queue repo this is "merge when
         # ready" and covers CLEAN too; on a plain repo a CLEAN PR is refused
         # ("clean status") and falls through to the pinned direct merge. The
         # ordering matters: a merge-now-first bot direct-merges into a queue's
         # rejection and never lands anything on a queue-protected repo.
         try:
-            graphql(arm_mut, {"id": node_id, "method": s(method).upper() or "SQUASH"})
+            graphql(arm_mut, {"id": node_id, "method": s(method).upper() or "SQUASH",
+                              "oid": vouched_sha(pr, "arm")})
         except Exception as arm_err:
             if base_has_merge_queue(pr):
                 # The queue is the only door here; a direct merge would be

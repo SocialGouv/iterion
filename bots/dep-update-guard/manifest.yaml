@@ -1,7 +1,21 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.8.0
+version: 2.9.0
+## 2.9.0 — the ARMING is pinned, an opaque one is replaced, and a refusal
+## takes one down. (a) `enablePullRequestAutoMerge` carries `expectedHeadOid`
+## like the merge and the enqueue already did — and it needs it more, because
+## an arming OUTLIVES the run: the forge waits for the checks, and GitHub
+## cancels an arming only when the pusher lacks write, which a dependency
+## bot's App does not. Unpinned, whatever commit arrived last is what merged.
+## (b) "auto-merge was already armed" is no longer an answer: `AutoMergeRequest`
+## exposes enabledAt/enabledBy/mergeMethod and NOT expectedHeadOid, so an
+## existing arming says nothing about which commit the forge will take — it is
+## disarmed and replaced by one this run can vouch for. (c) A non-green verdict
+## or a red/absent gate now DISARMS what an earlier pass armed instead of
+## returning while it stands; every refusal that leaves the PR bare says so in
+## its reason. `arm_automerge: false` still touches the forge not at all — off
+## means no mandate, not "undo what somebody else decided".
 ## 2.8.0 — the verdict is PINNED to the revision it is about. The publish
 ## payload now carries `audited_sha`, and the server refuses a pin that is no
 ## longer the head instead of retargeting the status. Without it the endpoint

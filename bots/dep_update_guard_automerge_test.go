@@ -112,7 +112,28 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 				return
 			}
 			switch {
+			// Ordered before the arming case deliberately, even though the two
+			// names do not collide as substrings ("disable" carries no
+			// "enable"): the reader should not have to verify that to know
+			// which branch answers.
+			case strings.Contains(body.Query, "disablePullRequestAutoMerge"):
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{"disablePullRequestAutoMerge": map[string]any{"clientMutationId": nil}},
+				})
 			case strings.Contains(body.Query, "enablePullRequestAutoMerge"):
+				// The ARMING carries the same pin as the merge and the enqueue,
+				// and for a sharper reason: an arming outlives this run. The
+				// forge keeps waiting for the checks, and a push landing
+				// afterwards moves the head under it — GitHub only cancels an
+				// arming when the pusher LACKS write, which a dependency bot's
+				// App does not. Unpinned, the commit that finally merges is
+				// whichever one arrived last.
+				if !regexp.MustCompile(`expectedHeadOid:\s*\$oid`).MatchString(body.Query) {
+					t.Errorf("arming mutation is not pinned to the oid variable: %s", body.Query)
+				}
+				if body.Variables["oid"] != state["headRefOid"] {
+					t.Errorf("arming pinned to %v, want the reviewed head %v", body.Variables["oid"], state["headRefOid"])
+				}
 				if armErr != "" {
 					if after != nil {
 						state = after
@@ -455,23 +476,105 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 	})
 
+	// An arming placed by an EARLIER run — or by a human — cannot be trusted,
+	// because its pin cannot be read: `AutoMergeRequest` exposes enabledAt,
+	// enabledBy, mergeMethod and the commit message, and NOT expectedHeadOid.
+	// So "already armed" says nothing about which commit the forge will merge.
+	// The only arming whose pin is known is the one this run places itself.
+	t.Run("an existing arming is replaced, never trusted", func(t *testing.T) {
+		res, calls, _ := runWith(t, nil, withState(map[string]any{
+			"autoMergeRequest": map[string]any{"enabledAt": "2026-09-22T09:00:00Z"}}), "", nil)
+		if !queried(calls, "disablePullRequestAutoMerge") {
+			t.Error("an opaque arming must be DISARMED first — its expectedHeadOid is unreadable, so accepting it certifies a commit nobody chose")
+		}
+		if !queried(calls, "enablePullRequestAutoMerge") {
+			t.Error("after disarming, this run must place its OWN pinned arming")
+		}
+		if res["armed"] != true {
+			t.Fatalf("want armed after the replacement, got %v", res)
+		}
+	})
+
+	// The replacement must never leave the PR bare: if the disarm succeeds and
+	// the re-arm fails, saying "armed" would be a lie in the most expensive
+	// direction — and silently dropping a human's arming is not acceptable
+	// either. The reason has to carry it.
+	t.Run("replacement that cannot re-arm reports it, and claims nothing", func(t *testing.T) {
+		res, calls, _ := runWith(t, nil, withState(map[string]any{
+			"autoMergeRequest": map[string]any{"enabledAt": "2026-09-22T09:00:00Z"}}),
+			"Auto merge is not allowed for this repository", nil)
+		if !queried(calls, "disablePullRequestAutoMerge") {
+			t.Fatal("the disarm should still have been attempted")
+		}
+		if res["armed"] != false {
+			t.Fatalf("a failed re-arm must not report armed: %v", res)
+		}
+		if !strings.Contains(strings.ToLower(res["reason"].(string)), "disarm") {
+			t.Errorf("the reason must say the prior arming was removed and not replaced, got %q", res["reason"])
+		}
+	})
+
+	// A hold is a statement that this revision must NOT merge. An arming a
+	// previous pass left behind outlives that statement unless something takes
+	// it down — the forge keeps waiting for the checks either way.
 	for _, tc := range []struct {
 		name string
 		subs map[string]string
-		want string
 	}{
-		{"off by default", map[string]string{"{{vars.arm_automerge}}": "False"}, "off"},
-		{"held bump", map[string]string{"{{input.verdict}}": `"hold_security"`}, "not green"},
-		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}, "not green"},
-		{"pending human decision", map[string]string{"{{input.verdict}}": `"needs_decision"`}, "not green"},
-		{"alignment missing from the branch", map[string]string{"{{input.verdict}}": `"hold_lost_alignment"`}, "not green"},
-		{"unknown verdict", map[string]string{"{{input.verdict}}": `"probably_fine"`}, "not green"},
+		{"held bump", map[string]string{"{{input.verdict}}": `"hold_security"`}},
+		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}},
+		{"red gate", map[string]string{"{{input.gate_state}}": `"failure"`}},
+		{"gate never landed", map[string]string{"{{input.gate_posted}}": "False"}},
+	} {
+		t.Run("a refusal disarms what a previous pass armed: "+tc.name, func(t *testing.T) {
+			res, calls, _ := runWith(t, tc.subs, withState(map[string]any{
+				"autoMergeRequest": map[string]any{"enabledAt": "2026-09-22T09:00:00Z"}}), "", nil)
+			if res["armed"] != false {
+				t.Fatalf("want a refusal, got %v", res)
+			}
+			if !queried(calls, "disablePullRequestAutoMerge") {
+				t.Errorf("%s: refused without disarming — the forge still merges this PR the moment its checks go green", tc.name)
+			}
+			if queried(calls, "enablePullRequestAutoMerge") {
+				t.Errorf("%s: a refusal must never arm", tc.name)
+			}
+		})
+	}
+
+	// Off means no mandate, not "undo what someone else decided". The bot must
+	// not touch the forge at all.
+	t.Run("switched off: the forge is not touched, even to disarm", func(t *testing.T) {
+		_, calls, paths := runWith(t, map[string]string{"{{vars.arm_automerge}}": "False"},
+			withState(map[string]any{
+				"autoMergeRequest": map[string]any{"enabledAt": "2026-09-22T09:00:00Z"}}), "", nil)
+		if len(calls) != 0 || len(paths) != 0 {
+			t.Errorf("arm_automerge off must make no forge call, got %d call(s) %v", len(calls), paths)
+		}
+	})
+
+	// `silent` marks the refusals that cannot reach the forge at all — no
+	// mandate, wrong forge, no credential. The others DO read the pull request,
+	// because a refusal now has to take down an arming an earlier pass left:
+	// the property that matters is that nothing merges, not that nothing is
+	// read. Asserting "zero calls" on those would forbid the takedown.
+	for _, tc := range []struct {
+		name   string
+		subs   map[string]string
+		want   string
+		silent bool
+	}{
+		{"off by default", map[string]string{"{{vars.arm_automerge}}": "False"}, "off", true},
+		{"held bump", map[string]string{"{{input.verdict}}": `"hold_security"`}, "not green", false},
+		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}, "not green", false},
+		{"pending human decision", map[string]string{"{{input.verdict}}": `"needs_decision"`}, "not green", false},
+		{"alignment missing from the branch", map[string]string{"{{input.verdict}}": `"hold_lost_alignment"`}, "not green", false},
+		{"unknown verdict", map[string]string{"{{input.verdict}}": `"probably_fine"`}, "not green", false},
 		// A verdict whose status never reached the PR must not merge it: the
 		// gate is what the repo actually gates on.
-		{"gate never landed", map[string]string{"{{input.gate_posted}}": "False"}, "did not land"},
-		{"gate red", map[string]string{"{{input.gate_state}}": `"failure"`}, "merge gate is failure"},
-		{"non-github forge", map[string]string{"{{input.pr_url}}": `"https://gitlab.com/a/b/-/merge_requests/3"`}, "GitHub-only"},
-		{"no token", map[string]string{"{{secrets.forge_token.path}}": `""`}, "no forge_token"},
+		{"gate never landed", map[string]string{"{{input.gate_posted}}": "False"}, "did not land", false},
+		{"gate red", map[string]string{"{{input.gate_state}}": `"failure"`}, "merge gate is failure", false},
+		{"non-github forge", map[string]string{"{{input.pr_url}}": `"https://gitlab.com/a/b/-/merge_requests/3"`}, "GitHub-only", true},
+		{"no token", map[string]string{"{{secrets.forge_token.path}}": `""`}, "no forge_token", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res, calls, _ := run(t, tc.subs)
@@ -482,7 +585,14 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			if !strings.Contains(reason, tc.want) {
 				t.Errorf("reason = %q, want it to mention %q", reason, tc.want)
 			}
-			if len(calls) != 0 {
+			// The property worth pinning on every refusal: nothing that could
+			// land the bump was sent.
+			for _, mutation := range []string{"enablePullRequestAutoMerge", "mergePullRequest", "enqueuePullRequest"} {
+				if queried(calls, mutation) {
+					t.Errorf("a refusal sent %s", mutation)
+				}
+			}
+			if tc.silent && len(calls) != 0 {
 				t.Errorf("must not touch the forge at all, made %d call(s)", len(calls))
 			}
 		})
