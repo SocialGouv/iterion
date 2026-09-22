@@ -16,10 +16,11 @@ var fmtCmd = &cobra.Command{
 	Long: "Rewrite each .bot file in its canonical form: the text the studio saves,\n" +
 		"proven before it is written to read as the same program (same parse, same\n" +
 		"profile, same compiled workflow and diagnostics, prompt bodies canonical).\n\n" +
-		"A file that cannot be rewritten without changing it is refused by name and\n" +
-		"left as it is — one that does not parse, one carrying a comment after its\n" +
-		"first declaration (the writer keeps only the leading comments) — and the\n" +
-		"others are formatted all the same. Archives (.botz) are not formatted in\n" +
+		"A comment goes back where it was written — its own indentation and its\n" +
+		"paragraph breaks included — and the proof compares them too. A file that\n" +
+		"cannot be rewritten without changing it is refused by name and left as it\n" +
+		"is — one that does not parse, one whose comments the round trip would\n" +
+		"lose — and the others are formatted all the same. Archives (.botz) are not formatted in\n" +
 		"place. --check writes nothing and exits non-zero when a file would change\n" +
 		"or is refused.",
 	Args: cobra.MinimumNArgs(1),

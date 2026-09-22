@@ -98,24 +98,32 @@ func TestFmtRefusesWhatItCannotRewriteAndFormatsTheRest(t *testing.T) {
 	jp, out := jsonPrinter()
 	res, err := RunFmt(FmtOptions{Paths: []string{"c"}, Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) {
-		t.Fatalf("two refusals and the error is %v", err)
+		t.Fatalf("one refusal and the error is %v", err)
 	}
-	if len(res.Refused) != 2 || !strings.Contains(res.Refused[0], "does not parse") || !strings.Contains(res.Refused[1], "comment at line 10 follows the first declaration (line 4)") {
+	if len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "does not parse") {
 		t.Fatalf("refusals: %v", res.Refused)
 	}
-	for path, want := range map[string]string{commented: commentedText, broken: "agent :\n  model\n"} {
-		if got, _ := os.ReadFile(path); string(got) != want {
-			t.Fatalf("%s was rewritten:\n%s", path, got)
-		}
+	if got, _ := os.ReadFile(broken); string(got) != "agent :\n  model\n" {
+		t.Fatalf("%s was rewritten:\n%s", broken, got)
 	}
-	if len(res.Files) != 1 || res.Files[0].Path != loose || !res.Files[0].Written {
-		t.Fatalf("the file beside the refused ones was not formatted: %+v", res.Files)
+	// The commented file is formatted like any other now, and its comment
+	// comes back above the line it led (#1282).
+	if got, _ := os.ReadFile(commented); !strings.Contains(string(got), "  ## the model\n  model: \"m\"\n") {
+		t.Fatalf("the comment did not keep its place:\n%s", got)
+	}
+	if len(res.Files) != 2 {
+		t.Fatalf("the files beside the refused one were not formatted: %+v", res.Files)
+	}
+	for _, f := range res.Files {
+		if !f.Written || (f.Path != loose && f.Path != commented) {
+			t.Fatalf("outcome %+v", res.Files)
+		}
 	}
 	var decoded struct {
 		Files   []FmtFile `json:"files"`
 		Refused []string  `json:"refused"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil || len(decoded.Files) != 1 || len(decoded.Refused) != 2 {
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil || len(decoded.Files) != 2 || len(decoded.Refused) != 1 {
 		t.Fatalf("the JSON report: %v\n%s", err, out.String())
 	}
 }

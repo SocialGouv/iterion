@@ -106,20 +106,20 @@
 | `pkg/dispatcher/native/boardops` | contains the capability-gated operations that the __mcp-board MCP server and the /api/v1/mcp/board HTTP handler share. | — | 1 · 17 |
 | `pkg/dispatcher/tracker` | defines the issue-tracker abstraction used by the dispatcher (`iterion dispatch`). | `ClaimLeaser`, `ClaimReaper`, `LaunchStateLister`, `Tracker` | 13 · 63 |
 | `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 6 · 42 |
-| `pkg/dsl/ast` | MarshalFile / UnmarshalFile provide JSON serialization and deserialization for File types, converting Go iota-based enums to human-readable string… | — | 7 · 128 |
-| `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program before it is handed back… | — | 1 · 2 |
+| `pkg/dsl/ast` | MarshalFile / UnmarshalFile provide JSON serialization and deserialization for File types, converting Go iota-based enums to human-readable string… | — | 8 · 137 |
+| `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program AND to carry the same… | — | 1 · 2 |
 | `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 27 |
 | `pkg/dsl/fix` | applies the mechanical remedies of compile diagnostics to a `.bot` text — the edits a diagnostic can carry because its fix is the same every time… | — | 1 · 6 |
 | `pkg/dsl/internal/dsltest` | holds the equivalence oracle the DSL packages' tests share: "the program that comes out of this transport, serialiser or editor is the program that… | — | 1 · 2 |
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
 | `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 45 · 462 |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — | 1 · 6 |
-| `pkg/dsl/parser` | — | — | 19 · 220 |
+| `pkg/dsl/parser` | — | — | 21 · 227 |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 7 · 53 |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — | 1 · 44 |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — | 1 · 14 |
-| `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 3 · 3 |
-| `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — | 1 · 4 |
+| `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 4 · 3 |
+| `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — | 1 · 5 |
 | `pkg/errtrack` | iterion's optional error-tracking seam. | — | 7 · 26 |
 | `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` | 3 · 16 |
 | `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `ConnectionStore`, `FileClient`, `IssueClient`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProvisionApprovalStore`, `PullClient`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewRequestWithdrawer`, `ReviewerAssigner`, `TokenRefresher` | 31 · 354 |

@@ -71,7 +71,7 @@ workflow w:
 // contract yet: the AST mirror is the oracle).
 func documentJSON(t *testing.T, f *ast.File) []byte {
 	t.Helper()
-	raw, err := ast.MarshalFile(withoutComments(f))
+	raw, err := ast.MarshalFileWithoutComments(f)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -254,14 +254,6 @@ func headerValueEnd(toks []parser.Token, line int, runeToByte []int) int {
 func sameDocument(before, after *ast.File) string {
 	a, b := *before, *after
 	a.Profile, b.Profile = 0, 0
-	// The directive lines are the one comment the migration removes; every
-	// other comment must still be there.
-	a.Comments = nil
-	for _, c := range before.Comments {
-		if !parser.IsStrictEscapeDirective(c.Text) {
-			a.Comments = append(a.Comments, c)
-		}
-	}
 	b.Prompts = make([]*ast.PromptDecl, len(after.Prompts))
 	for i, p := range after.Prompts {
 		q := *p
@@ -270,11 +262,19 @@ func sameDocument(before, after *ast.File) string {
 		}
 		b.Prompts[i] = &q
 	}
-	ja, err := ast.MarshalFile(&a)
+	// The comments are compared apart, by what they SAY. Where a comment
+	// sits is not program, and inserting the `dsl:` header above the first
+	// declaration legitimately re-seats a comment that was written against
+	// it — what must hold is that the migration removes the directive
+	// lines and no other comment.
+	if why := sameComments(before, after); why != "" {
+		return why
+	}
+	ja, err := ast.MarshalFileWithoutComments(&a)
 	if err != nil {
 		return "cannot compare: " + err.Error()
 	}
-	jb, err := ast.MarshalFile(&b)
+	jb, err := ast.MarshalFileWithoutComments(&b)
 	if err != nil {
 		return "cannot compare: " + err.Error()
 	}
@@ -391,7 +391,61 @@ func firstSignificantLine(text string, starts []int) (int, int) {
 		if strings.HasPrefix(strings.TrimLeft(ln, " "), "#") {
 			continue
 		}
-		return start, i + 1
+		// The header goes ABOVE the run of comments GLUED to this line,
+		// not between them: those comments lead this declaration, and a
+		// line pushed in between hands them to the file's head on the
+		// next rewrite (#1282). A blank line ends the run.
+		//
+		// Unless the run OPENS the file: a single run with nothing above
+		// it is the head — which is how the parser reads it too — and
+		// the header belongs under it, where every `.bot` has carried it.
+		j := i
+		for j > 0 {
+			prev := strings.TrimRight(text[starts[j-1]:starts[j]], "\n")
+			if !strings.HasPrefix(strings.TrimLeft(prev, " "), "#") {
+				break
+			}
+			j--
+		}
+		opensTheFile := true
+		for k := j - 1; k >= 0; k-- {
+			if strings.TrimSpace(strings.TrimRight(text[starts[k]:starts[k+1]], "\n")) != "" {
+				opensTheFile = false
+				break
+			}
+		}
+		if opensTheFile {
+			return start, i + 1
+		}
+		return starts[j], j + 1
 	}
 	return len(text), len(starts)
+}
+
+// sameComments reports the first comment the migration lost or invented —
+// the directive lines it removes on purpose excepted — or "" when the two
+// documents say the same things.
+func sameComments(before, after *ast.File) string {
+	want := map[string]int{}
+	for _, t := range ast.AllCommentTexts(before) {
+		if parser.IsStrictEscapeDirective(t) {
+			continue
+		}
+		want[t]++
+	}
+	for _, t := range ast.AllCommentTexts(after) {
+		if parser.IsStrictEscapeDirective(t) {
+			continue
+		}
+		want[t]--
+	}
+	for t, n := range want {
+		switch {
+		case n > 0:
+			return fmt.Sprintf("the comment %q is not in the migrated text", t)
+		case n < 0:
+			return fmt.Sprintf("the migrated text carries a comment the file did not: %q", t)
+		}
+	}
+	return ""
 }

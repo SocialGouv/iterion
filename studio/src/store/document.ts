@@ -221,7 +221,7 @@ function removeNodeFromGroups(comments: Comment[], nodeName: string): Comment[] 
     if (!g) return [c];
     const remaining = g.nodeIds.filter((id) => id !== nodeName);
     if (remaining.length < 2) return []; // dissolve group
-    return [{ text: groupToCommentText({ ...g, nodeIds: remaining }) }];
+    return [{ ...c, text: groupToCommentText({ ...g, nodeIds: remaining }) }];
   });
 }
 
@@ -232,7 +232,7 @@ function renameNodeInGroups(comments: Comment[], oldName: string, newName: strin
     const g = parseGroups([c])[0];
     if (!g) return c;
     if (!g.nodeIds.includes(oldName)) return c;
-    return { text: groupToCommentText({ ...g, nodeIds: g.nodeIds.map((id) => (id === oldName ? newName : id)) }) };
+    return { ...c, text: groupToCommentText({ ...g, nodeIds: g.nodeIds.map((id) => (id === oldName ? newName : id)) }) };
   });
 }
 
@@ -401,6 +401,7 @@ export function createDocumentStore() {
     // Deep-clone with new name, copying nested arrays to avoid shared references
     const clone = { ...found.decl, name: newName };
     if ("tools" in clone && Array.isArray(clone.tools)) clone.tools = [...clone.tools];
+    if ("comments" in clone && Array.isArray(clone.comments)) clone.comments = [...clone.comments];
     const kindToArray: Record<string, keyof IterDocument> = {
       agent: "agents", judge: "judges", router: "routers",
       human: "humans", tool: "tools", compute: "computes",
@@ -725,7 +726,7 @@ export function createDocumentStore() {
         const first = parseGroups([c])[0];
         if (!first) return c;
         const updated = { ...first, ...updates };
-        return { text: groupToCommentText(updated) };
+        return { ...c, text: groupToCommentText(updated) };
       });
       return { document: { ...s.document, comments }, ...pushHistory(s) };
     }),

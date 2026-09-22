@@ -70,7 +70,7 @@ export function useAddSubNode() {
 
         applyBatch((doc) => {
           const currentFields = doc.vars?.fields ?? [];
-          const newVars: VarsBlock = { fields: [...currentFields, { name: varName, type: "string" }] };
+          const newVars: VarsBlock = { ...doc.vars, fields: [...currentFields, { name: varName, type: "string" }] };
           return { ...doc, vars: newVars };
         });
         addToast(`Variable "${varName}" created. Use {{vars.${varName}}} in a prompt`, "info");

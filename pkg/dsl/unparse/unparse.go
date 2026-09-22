@@ -25,9 +25,9 @@ func Unparse(f *ast.File) string {
 	profile := f.EffectiveProfile()
 	if profile > ast.DefaultProfile {
 		text, _ := render(f, true, profile)
-		return text
+		return placeComments(sourceFile(f), text, f)
 	}
-	strict := hasStrictEscapeDirective(f.Comments)
+	strict := hasStrictEscapeDirective(ast.AllCommentTexts(f))
 	text, needsStrict := render(f, strict, profile)
 	if needsStrict && !strict {
 		// A value no v1 form can hold (a backtick together with a quote,
@@ -36,7 +36,10 @@ func Unparse(f *ast.File) string {
 		// form.
 		text, _ = render(f, true, profile)
 	}
-	return text
+	// The comments each declaration carries go back last, into the text
+	// the writers produced: they are written around the program, never in
+	// it, so nothing the writers do depends on them (comments.go).
+	return placeComments(sourceFile(f), text, f)
 }
 
 // strictEscapeDirective is the leading comment that opts a profile-1 file
@@ -44,12 +47,15 @@ func Unparse(f *ast.File) string {
 const strictEscapeDirective = "strict-escape: on"
 
 // hasStrictEscapeDirective mirrors the lexer's recognition of the directive
-// among the file's comments. Unparse writes every comment at the top, so a
-// directive anywhere in f.Comments is a leading one in the output — the mode
-// the OUTPUT is read in is what the quoting has to match.
-func hasStrictEscapeDirective(comments []*ast.Comment) bool {
-	for _, c := range comments {
-		if parser.IsStrictEscapeDirective(c.Text) {
+// among EVERY comment of the document, not only the file's head: a comment
+// is carried by the declaration it was written around, so a directive can
+// sit on one, and the writer places it at the head all the same
+// (writeDirective). The mode the OUTPUT is read in is what the quoting has
+// to match — reading only the head rendered the file unescaped and wrote a
+// directive above it.
+func hasStrictEscapeDirective(texts []string) bool {
+	for _, t := range texts {
+		if parser.IsStrictEscapeDirective(t) {
 			return true
 		}
 	}
@@ -326,12 +332,17 @@ func (w *fileWriter) blankLine() {
 // the first line of code, then the other comments, then, from profile 2,
 // the `dsl: N` header on the first significant line (parser.ReadPreamble).
 func (w *fileWriter) writeHead(comments []*ast.Comment, imports []*ast.ImportDecl) {
+	comments = fileHeadComments(comments)
 	fm := frontmatterLen(comments)
-	w.writeComments(comments[:fm])
+	// `first` runs through BOTH calls: the frontmatter fence and what
+	// follows it are one run, and a paragraph break written under the
+	// closing fence belongs to it.
+	first := w.writeComments(comments[:fm], true)
 	if w.writeDirective {
 		w.writeComment(strictEscapeDirective)
+		first = false
 	}
-	w.writeComments(comments[fm:])
+	w.writeComments(comments[fm:], first)
 	if w.profile > ast.DefaultProfile {
 		if w.b.Len() > 0 {
 			w.b.WriteByte('\n')
@@ -348,6 +359,14 @@ func (w *fileWriter) writeHead(comments []*ast.Comment, imports []*ast.ImportDec
 		for _, im := range imports {
 			fmt.Fprintf(&w.b, "import %s\n", QuoteStrict(im.Path))
 		}
+		w.needBlank = true
+	}
+	if w.b.Len() > 0 {
+		// A blank line closes the head. It is what tells the file's own
+		// comments from the ones leading its first declaration, which the
+		// writer emits right after them: glued together, the next parse
+		// would read the whole run as the file's head and the comment
+		// that described a declaration would stop travelling with it.
 		w.needBlank = true
 	}
 }
@@ -367,20 +386,27 @@ func frontmatterLen(comments []*ast.Comment) int {
 	return 0
 }
 
-func (w *fileWriter) writeComments(comments []*ast.Comment) {
+func (w *fileWriter) writeComments(comments []*ast.Comment, first bool) bool {
 	for _, c := range comments {
 		if w.skipDirective && parser.IsStrictEscapeDirective(c.Text) {
 			continue
 		}
+		if c.Blank && !first {
+			// The author's paragraph break inside the run. Never before
+			// the first line of it: what separates the run from what
+			// comes above is blankLine's business.
+			w.b.WriteByte('\n')
+		}
 		w.writeComment(c.Text)
+		first = false
 	}
+	return first
 }
 
 func (w *fileWriter) writeComment(text string) {
 	w.blankLine()
 	w.needBlank = false // comments don't need blank line between them
-	w.b.WriteString("## ")
-	w.b.WriteString(text)
+	w.b.WriteString(commentLine("", text))
 	w.b.WriteByte('\n')
 }
 
@@ -669,12 +695,15 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeProp(&w.b, "publish", h.Publish)
 		}
 		writeArtifactLabels(&w.b, h.ArtifactLabels, "  ")
-		// Skip when it matches the implicit Human default. Emitting it
-		// unconditionally introduced parse → unparse → re-parse noise
-		// (every authored human node gained a synthetic
-		// `interaction: human` line), and mirrors the same skip-if-default
-		// guard already applied to `session:` further down.
-		if h.Interaction != ast.InteractionHuman {
+		// Only the ZERO is skipped. A human node with no `interaction:`
+		// parses to InteractionNone, which the compiler reads as the
+		// node's default (ir/compile.go) — writing that zero back as
+		// `interaction: none` made the writer's own output parse to a
+		// document it would then write differently. An explicit
+		// `interaction: human` is NOT the zero and is not the same
+		// thing either: under a workflow-level `interaction:` default it
+		// PINS the node to human, and dropping it changed the program.
+		if h.Interaction != ast.InteractionNone {
 			writeProp(&w.b, "interaction", h.Interaction.String())
 		}
 		if h.InteractionPrompt != "" {

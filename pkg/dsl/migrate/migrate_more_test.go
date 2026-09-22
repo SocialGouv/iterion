@@ -120,3 +120,40 @@ func TestProjectRootRefusalNamesThePropertyLine(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestTheHeaderGoesAboveTheCommentsThatLeadTheFirstDeclaration: the `dsl:`
+// header is inserted at the first significant line, and a comment run glued
+// to that line LEADS that declaration. A header pushed between the two
+// hands the run to the file's head on the next rewrite — the declaration
+// loses the comment that described it, and sameDocument (which compares
+// what the comments say, not where they sit) cannot see it.
+//
+// Unless the run OPENS the file: a single run with nothing above it is the
+// head, which is how the parser reads it too, and the header belongs under
+// it.
+func TestTheHeaderGoesAboveTheCommentsThatLeadTheFirstDeclaration(t *testing.T) {
+	body := "\nschema s:\n  x: string\n\ncompute a:\n  output: s\n  expr:\n    x: \"'v'\"\n"
+	for name, tc := range map[string]struct{ src, want string }{
+		"a run under a head block leads the declaration": {
+			"## ---\n## name: probe\n## ---\n\n## documents the workflow\nworkflow w:\n  entry: a\n  a -> done\n" + body,
+			"## ---\n## name: probe\n## ---\n\ndsl: 2\n\n## documents the workflow\nworkflow w:\n",
+		},
+		"a run that opens the file is the head": {
+			"## note\ntool t:\n  command: \"x\"\n\nworkflow w:\n  entry: t\n  t -> done\n",
+			"## note\ndsl: 2\n\ntool t:\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := mustMigrate(t, tc.src)
+			if !strings.HasPrefix(string(res.Migrated), tc.want) {
+				t.Fatalf("migrated:\n%s\nwant it to open with:\n%s", res.Migrated, tc.want)
+			}
+			after := parser.Parse("x.bot", string(res.Migrated))
+			for _, d := range after.Diagnostics {
+				if d.Severity == parser.SeverityError {
+					t.Fatalf("the migrated file does not parse: %s", d.Error())
+				}
+			}
+		})
+	}
+}

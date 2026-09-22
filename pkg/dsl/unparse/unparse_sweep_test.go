@@ -61,7 +61,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"ContractDecl", "PortDecl", "PortFileDecl", "CriterionDecl", "PublicEffect",
 	}
 	var writer []byte
-	for _, file := range []string{"unparse.go", "contracts.go"} {
+	for _, file := range []string{"unparse.go", "contracts.go", "comments.go"} {
 		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)

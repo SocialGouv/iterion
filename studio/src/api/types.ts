@@ -57,6 +57,10 @@ export interface UnitFileInfo {
  *  `failure_code` carries, a templated message, and whether the run stays
  *  resumable. The bare `fail` target has no declaration. */
 export interface FailDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -74,6 +78,16 @@ export interface Comment {
    *  the declaration back to that file, and a new one to the main. */
   file?: string;
   text: string;
+  /** Where the comment was written, inside the declaration that carries
+   *  it: the dotted key path of the line it names (`model`,
+   *  `sandbox.network`, `->2` for the second edge), empty for the
+   *  declaration itself. Carry it back untouched — the save writes the
+   *  comment above that line. */
+  anchor?: string;
+  /** How it sits relative to `anchor`: above it (absent, or "before"),
+   *  below the last line of the block it names ("end"), or at the end of
+   *  its line ("trailing"). */
+  place?: "before" | "end" | "trailing";
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +95,10 @@ export interface Comment {
 // ---------------------------------------------------------------------------
 
 export interface VarsBlock {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -120,6 +138,10 @@ export type LiteralKind = "string" | "int" | "float" | "bool";
 // ---------------------------------------------------------------------------
 
 export interface PresetsBlock {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -154,6 +176,10 @@ export interface PresetValue {
 export type AttachmentType = "file" | "image";
 
 export interface AttachmentsBlock {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -318,6 +344,10 @@ export interface StagedUpload {
 export type MCPTransport = "unknown" | "stdio" | "http" | "sse";
 
 export interface MCPServerDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -362,6 +392,10 @@ export interface CompactionBlock {
 // ---------------------------------------------------------------------------
 
 export interface PromptDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -374,6 +408,10 @@ export interface PromptDecl {
 }
 
 export interface SchemaDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -425,6 +463,10 @@ export interface FallbackDecl {
 }
 
 export interface AgentDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -464,6 +506,10 @@ export interface AgentDecl {
 }
 
 export interface JudgeDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -500,6 +546,10 @@ export interface JudgeDecl {
 // ---------------------------------------------------------------------------
 
 export interface CursorDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -540,6 +590,10 @@ export type RouterMode =
   | "llm";
 
 export interface RouterDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -564,6 +618,10 @@ export interface RouterDecl {
 }
 
 export interface HumanDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -586,6 +644,10 @@ export interface HumanDecl {
 }
 
 export interface ToolNodeDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -610,6 +672,10 @@ export interface ToolNodeDecl {
 // boolean ANDs, counters, and other plain computation that shouldn't
 // burn tokens.
 export interface ComputeDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -635,6 +701,10 @@ export interface ComputeExpr {
 // pkg/dsl/ast/jsonenc.go jsonSubbotDecl: all fields omitempty except name;
 // `with` reuses the {key,value} shape of edge data mappings.
 export interface SubbotDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -652,6 +722,10 @@ export interface SubbotDecl {
 // ---------------------------------------------------------------------------
 
 export interface WorkflowDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -700,6 +774,10 @@ export interface BudgetBlock {
 }
 
 export interface Edge {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   from: string;
   to: string;
   when?: WhenClause;
@@ -805,6 +883,10 @@ export type ServerWsEvent = FileEvent | ProjectSwitchedEvent;
  *  what it takes, produces and delivers, its deterministic checks and its
  *  visible effects. Mirrors pkg/dsl/ast/jsonenc_contract.go. */
 export interface ContractDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files. Read-only: the save writes the declaration back to
    *  that file, and a new one to the main. */

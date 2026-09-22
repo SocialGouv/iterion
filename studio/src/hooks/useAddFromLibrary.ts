@@ -225,7 +225,7 @@ function processVars(
       existingVarNames.add(v.name);
     }
   }
-  return { ...result, vars: { fields: newFields } };
+  return { ...result, vars: { ...result.vars, fields: newFields } };
 }
 
 /**
