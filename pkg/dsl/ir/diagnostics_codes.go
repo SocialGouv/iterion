@@ -229,6 +229,8 @@ const (
 
 	DiagAsyncBackendUnsupported DiagCode = "C267" // interaction: async on a backend without async question tools (error)
 
+	DiagSubbotAuthorSource DiagCode = "C305" // subbot `source:` names an author document (.bot.yaml): a child is a .bot (error)
+
 	// `with:` mapping references and literals. C149–C152 catch shapes the
 	// runtime cannot honour in a data mapping, so a typo or a namespace
 	// mismatch fires at compile time instead of resolving to nil (or a

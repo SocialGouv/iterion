@@ -681,6 +681,8 @@ func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err erro
 		s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
 	case errors.Is(err, botsource.ErrTenantMissing):
 		s.httpErrorFor(w, r, http.StatusForbidden, "%v", err)
+	case errors.Is(err, bundle.ErrAuthorDocument):
+		s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
 	default:
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 	}

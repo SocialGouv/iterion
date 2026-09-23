@@ -27,6 +27,8 @@ const parserPackagePath = "github.com/SocialGouv/iterion/pkg/dsl/parser"
 func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 	documentSurfaces := map[string]string{
 		"pkg/botimport/validate.go":                  "an imported draft is one generated file",
+		"pkg/bundle/frontmatter.go":                  "the catalogue reads ONE file's head for its frontmatter: the block the parser files at the head of the text it is given (parser.Frontmatter), the same head the author writer reads — no unit is loaded and nothing is compiled; a bot's identity is its main file's",
+		"pkg/cli/fmt_author.go":                      "`fmt --to yaml` writes the author document of ONE .bot from that file's own text — a document is the twin of a file, never of a unit, and a bot in several files converts file by file; the text is parsed to be refused when it does not parse, never compiled here (`validate` compiles the document in its unit through LoadDirWithMainAST)",
 		"pkg/dsl/author/author.go":                   "the converter reads ONE author document: it hands the parser the .bot text it spelled from the YAML, and returns the AST; the caller compiles it in its unit through LoadDirWithMainAST",
 		"pkg/dsl/author/internal/probecheck/main.go": "the authoring probe's harness: its --write mode reads one .bot to write its author document (no compile); its check mode compiles through LoadDirWithMainAST",
 		"pkg/dsl/canon/canon.go":                     "the canonical form rewrites one file on its own text — a unit is formatted file by file, each proven against itself, as the studio's per-file save is",

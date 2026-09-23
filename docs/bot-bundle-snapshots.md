@@ -13,8 +13,10 @@ edited or the runner catalog comes from a different release. A missing child,
 unreadable file, symlink, escape from the collection, or size limit is an
 explicit error; the runner never substitutes its own catalog. Collection size
 is bounded to 32 MiB of file bytes/paths and 4,096 files. Generated directories
-(`.git`, `.devbox`, `.iterion`, `node_modules`, `__pycache__`) and Go tests are
-excluded. Binary contents and executable bits are preserved.
+(`.git`, `.devbox`, `.iterion`, `node_modules`, `__pycache__`), Go tests and
+author documents (`*.bot.yaml` files — a draft of a `.bot`, never a member of
+the bundle; one a snapshot carried from before this rule is not materialized)
+are excluded. Binary contents and executable bits are preserved.
 
 `BotBundle` carries the snapshot JSON and its SHA-256 digest. If it would make
 the queue message too large, the publisher uses the existing out-of-band JSON

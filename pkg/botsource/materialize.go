@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
 )
 
 // Materialize writes a bundle file map under dir, creating it if needed.
@@ -28,6 +30,12 @@ func Materialize(dir string, files map[string]string) error {
 			_ = os.RemoveAll(dir)
 			return err
 		}
+		if bundle.IsDraftEntry(rel, false) {
+			// A row persisted before the rule may carry a draft: it is not
+			// materialised — the store holds what launches, and ReadBundleDir
+			// would not carry it back. The two stay inverses on what launches.
+			continue
+		}
 		dst := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			_ = os.RemoveAll(dir)
@@ -41,40 +49,25 @@ func Materialize(dir string, files map[string]string) error {
 	return nil
 }
 
-// ReadBundleDir is Materialize's inverse: it walks a bundle directory into
-// the path→content map the store persists. One definition of "what a
+// ReadBundleDir is Materialize's inverse on what launches — a draft a
+// persisted row still carries is neither materialised nor read back: it
+// walks a bundle directory into the path→content map the store persists. One definition of "what a
 // bundle dir contains" shared by the CLI push and the server-side
-// fork-from-catalog, so the two cannot drift: skips .git/ and Go test
-// files, refuses non-UTF-8 content explicitly (the store carries JSON
-// text — a binary file would be corrupted, not stored).
+// fork-from-catalog, so the two cannot drift: skips .git/, Go test files
+// and author documents (skipBundleEntry), refuses non-UTF-8 content
+// explicitly (the store carries JSON text — a binary file would be
+// corrupted, not stored).
 func ReadBundleDir(dir string) (map[string]string, error) {
 	files := map[string]string{}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
-		// Operator-owned runtime storage may itself be a symlink. Exclude
-		// that path segment before following or inspecting its contents.
-		if d.Name() == ".iterion" {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+		skipDir, skipFile := skipBundleEntry(d)
+		if skipDir {
+			return filepath.SkipDir
 		}
-		if d.IsDir() {
-			switch d.Name() {
-			// Generated / artifact trees that live INSIDE real bundle dirs:
-			// devbox regenerates .devbox/ next to a bot's devbox.json, and a
-			// dogfood run leaves .iterion/ run state — pushing either ships
-			// run inputs into the deployment-wide store (or fails on the
-			// first non-UTF-8 blob, naming a file the operator never meant
-			// to push).
-			case ".git", ".devbox", ".iterion", "node_modules", "__pycache__":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(d.Name(), "_test.go") {
+		if skipFile || d.IsDir() {
 			return nil
 		}
 		rel, rerr := filepath.Rel(dir, p)
@@ -98,10 +91,10 @@ func ReadBundleDir(dir string) (map[string]string, error) {
 }
 
 // ExecutableFiles lists the bundle-relative paths (same walk + skip rules
-// as ReadBundleDir) whose mode carries an execute bit. The path→content
-// map drops file modes — Materialize writes everything 0o644 — so a bundle
-// shipping an executable helper round-trips with the +x bit gone and a
-// tool node invoking it fails on permission denied. Push surfaces warn
+// as ReadBundleDir: skipBundleEntry) whose mode carries an execute bit. The
+// path→content map drops file modes — Materialize writes everything 0o644 —
+// so a bundle shipping an executable helper round-trips with the +x bit gone
+// and a tool node invoking it fails on permission denied. Push surfaces warn
 // from this list instead of failing silently at run time.
 func ExecutableFiles(dir string) []string {
 	var out []string
@@ -109,22 +102,11 @@ func ExecutableFiles(dir string) []string {
 		if werr != nil {
 			return werr
 		}
-		// Operator-owned runtime storage may itself be a symlink. Exclude
-		// that path segment before following or inspecting its contents.
-		if d.Name() == ".iterion" {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+		skipDir, skipFile := skipBundleEntry(d)
+		if skipDir {
+			return filepath.SkipDir
 		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", ".devbox", ".iterion", "node_modules", "__pycache__":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(d.Name(), "_test.go") {
+		if skipFile || d.IsDir() {
 			return nil
 		}
 		info, ierr := d.Info()
@@ -139,6 +121,34 @@ func ExecutableFiles(dir string) []string {
 		return nil
 	})
 	return out
+}
+
+// skipBundleEntry is the one rule for what the store's walkers leave
+// behind — ReadBundleDir and ExecutableFiles describe the same bundle, so
+// they walk by the same rule: the run store and the generated trees as
+// whole subtrees, Go test files and author documents as files
+// (bundle.IsDraftEntry: a draft is never a member of the bundle, and a
+// warning about one would name a file the store never receives).
+func skipBundleEntry(d fs.DirEntry) (skipDir, skipFile bool) {
+	// Operator-owned runtime storage may itself be a symlink. Exclude that
+	// path segment before following or inspecting its contents.
+	if d.Name() == ".iterion" {
+		return d.IsDir(), !d.IsDir()
+	}
+	if d.IsDir() {
+		switch d.Name() {
+		// Generated / artifact trees that live INSIDE real bundle dirs:
+		// devbox regenerates .devbox/ next to a bot's devbox.json, and a
+		// dogfood run leaves .iterion/ run state — pushing either ships
+		// run inputs into the deployment-wide store (or fails on the
+		// first non-UTF-8 blob, naming a file the operator never meant
+		// to push).
+		case ".git", ".devbox", ".iterion", "node_modules", "__pycache__":
+			return true, false
+		}
+		return false, false
+	}
+	return false, strings.HasSuffix(d.Name(), "_test.go") || bundle.IsDraftEntry(d.Name(), false)
 }
 
 // Digest returns the sha256 hex digest of the bundle content, computed

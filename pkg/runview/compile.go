@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // ErrInlineImport is the refusal of an inline source that imports: text
@@ -327,6 +328,12 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // bundle's main. Inline text alone is a unit of one file, and one that
 // imports is refused (ErrInlineImport): its fragments did not travel.
 func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
+	if workflowfile.IsAuthorDocument(path) {
+		// The floor under every compile entry: a draft never becomes a
+		// program here, whatever door named it — and it is refused by
+		// name, never as a parse error of a text that was YAML.
+		return nil, nil, bundle.AuthorDocumentError(path)
+	}
 	parserPath := path
 	if parserPath == "" {
 		parserPath = "<inline>"

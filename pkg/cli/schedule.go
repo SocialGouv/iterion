@@ -14,6 +14,8 @@ import (
 
 	yaml "go.yaml.in/yaml/v2"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -202,6 +204,10 @@ func validateScheduleEntry(e ScheduleEntry) error {
 	}
 	if strings.TrimSpace(e.Bot) == "" {
 		return fmt.Errorf("--bot is required (path to a .bot workflow or .botz bundle)")
+	}
+	if workflowfile.IsAuthorDocument(e.Bot) {
+		// Refused when the schedule is written, not at its first tick.
+		return bundle.AuthorDocumentError(e.Bot)
 	}
 	if err := validateCronExpr(e.Cron); err != nil {
 		return err

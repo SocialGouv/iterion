@@ -458,6 +458,12 @@ func copyTree(src, dst string) error {
 		if d.IsDir() && (d.Name() == ".git" || d.Name() == ".iterion") {
 			return filepath.SkipDir
 		}
+		if bundle.IsDraftEntry(d.Name(), d.IsDir()) {
+			// An author document is never a member of a bundle: the archive
+			// path never carries one, and an install from a directory or a
+			// clone lands the same tree.
+			return nil
+		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err

@@ -8,9 +8,11 @@ import (
 var validateOpts cli.ValidateOptions
 
 var validateCmd = &cobra.Command{
-	Use:   "validate <file.bot|file.botz|bundle-dir>",
+	Use:   "validate <file.bot|file.bot.yaml|file.botz|bundle-dir>",
 	Short: "Parse, compile, and validate a workflow file",
-	Long: `Parse, compile and validate a workflow file, a .botz bundle or a bundle directory.
+	Long: `Parse, compile and validate a workflow file, a .botz bundle, a bundle directory —
+or an author document (x.bot.yaml, the YAML twin of a .bot), read into the program it
+describes and validated as its .bot would be, every finding on the document.
 
 With --exec, a program that compiles is then run twice under a dry run —
 every condition true, then false — without a model, a shell or the

@@ -72,8 +72,8 @@ func TestMigrationHandlesTheHeaderAndTheDirective(t *testing.T) {
 
 // The original bytes are what is rewritten: a BOM and CRLF line endings
 // stay, and the header takes the file's own line ending. The frontmatter
-// is read on those bytes — a BOM makes it invisible today — so migrating
-// does not make a catalogue identity appear.
+// is read on those bytes as the lexer reads them — a BOM hides nothing —
+// so the catalogue identity is the same before and after.
 func TestMigrationPreservesTheOriginalBytes(t *testing.T) {
 	src := "\ufeff## ---\r\n## name: probe\r\n## triggers: [x]\r\n## ---\r\ntool t:\r\n  command: \"a\\tb\"\r\n\r\nworkflow w:\r\n  entry: t\r\n  t -> done\r\n"
 	res := mustMigrate(t, src)
@@ -84,10 +84,10 @@ func TestMigrationPreservesTheOriginalBytes(t *testing.T) {
 	if !strings.Contains(out, `command: "a\\tb"`) {
 		t.Fatalf("literal not re-spelled:\n%q", out)
 	}
-	if bundle.ParseFrontmatter([]byte(src)) != nil || bundle.ParseFrontmatter(res.Migrated) != nil {
-		t.Fatalf("a frontmatter behind a BOM became visible")
+	if fb, fa := bundle.ParseFrontmatter([]byte(src)), bundle.ParseFrontmatter(res.Migrated); fb == nil || fa == nil || fb.Name != "probe" || fa.Name != "probe" || len(fa.Triggers) != 1 {
+		t.Fatalf("the identity behind a BOM is not read on both sides: %+v / %+v", fb, fa)
 	}
-	// Without the BOM the identity is visible on both sides, and equal.
+	// Without the BOM the identity is the same, visible on both sides.
 	plain := strings.TrimPrefix(src, "\ufeff")
 	res = mustMigrate(t, plain)
 	fb, fa := bundle.ParseFrontmatter([]byte(plain)), bundle.ParseFrontmatter(res.Migrated)
@@ -128,16 +128,20 @@ func TestMigrationRefusesWhatItCannotRewrite(t *testing.T) {
 	}
 }
 
-// The catalogue-identity oracle sees a frontmatter that changed, and
-// neither one behind a BOM (invisible on both sides) nor two equal ones.
+// The catalogue-identity oracle sees a frontmatter that changed — behind
+// a BOM as well, which hides nothing from the reader — and not two equal
+// ones.
 func TestCatalogueIdentityOracleSeesAChange(t *testing.T) {
 	a := []byte("## ---\n## name: one\n## ---\nagent a:\n  description: \"x\"\n")
 	b := []byte("## ---\n## name: two\n## ---\nagent a:\n  description: \"x\"\n")
 	if sameCatalogueIdentity(a, b) {
 		t.Fatalf("two frontmatter names read as the same identity")
 	}
-	if !sameCatalogueIdentity(a, a) || !sameCatalogueIdentity([]byte("\ufeff"+string(a)), []byte("\ufeff"+string(b))) {
-		t.Fatalf("equal, or both invisible, identities read as different")
+	if !sameCatalogueIdentity(a, a) || !sameCatalogueIdentity([]byte("\ufeff"+string(a)), []byte("\ufeff"+string(a))) {
+		t.Fatalf("equal identities read as different")
+	}
+	if sameCatalogueIdentity([]byte("\ufeff"+string(a)), []byte("\ufeff"+string(b))) {
+		t.Fatalf("two identities behind a BOM read as the same")
 	}
 }
 

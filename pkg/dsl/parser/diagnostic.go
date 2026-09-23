@@ -42,10 +42,11 @@ const (
 	DiagImportCycle      DiagCode = "E047" // a fragment that imports itself, through however many files
 
 	// Author-document errors (the YAML twin of a .bot, pkg/dsl/author)
-	DiagAuthorDocument   DiagCode = "E050" // the YAML document itself is refused: not exactly one document, an anchor, an alias, a merge key or an explicit tag, a duplicate or non-string key, too deep or too large
-	DiagAuthorValue      DiagCode = "E051" // a value that is not the shape its property or part takes, or one the .bot cannot write: a negative or non-finite number, a float where an integer, a word where a bool, a key the document's top level does not have
-	DiagAuthorHeader     DiagCode = "E052" // no `dsl:` key — the author document names its syntax profile, always
-	DiagAuthorPromptBody DiagCode = "E053" // a text the .bot reads otherwise than the document wrote it — a prompt body the lexer settles, a block scalar holding a line separator: a warning names what changed, an error what has no written form
+	DiagAuthorDocument      DiagCode = "E050" // the YAML document itself is refused: not exactly one document, an anchor, an alias, a merge key or an explicit tag, a duplicate or non-string key, too deep or too large
+	DiagAuthorValue         DiagCode = "E051" // a value that is not the shape its property or part takes, or one the .bot cannot write: a negative or non-finite number, a float where an integer, a word where a bool, a key the document's top level does not have
+	DiagAuthorHeader        DiagCode = "E052" // no `dsl:` key — the author document names its syntax profile, always
+	DiagAuthorPromptBody    DiagCode = "E053" // a text the .bot reads otherwise than the document wrote it — a prompt body the lexer settles, a block scalar holding a line separator: a warning names what changed, an error what has no written form
+	DiagAuthorNoWrittenForm DiagCode = "E054" // the document reads, but the program it describes has no written .bot form: the text the writer produces reads back as another program (unparse.Verify names the cause)
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -78,6 +79,7 @@ var hints = map[DiagCode]string{
 	DiagAuthorDocument:      "Write one plain YAML document: no `---` document separator, no anchor (`&a`) or alias (`*a`), no `<<` merge key, no explicit `!!tag`, every key once per mapping and written as a plain word.",
 	DiagAuthorValue:         "Give the value the shape the property's form takes (docs/references/dsl-properties.md): a string, an integer as digits, `true`/`false`, a list as `[a, b]`, a block as an indented mapping. The .bot has no signed number, no exponent and no `.inf`, so neither has its YAML twin.",
 	DiagAuthorHeader:        "Add `dsl: 2` (or `dsl: 1`) at the top of the document: the syntax profile the .bot is written in. The author document never guesses one.",
+	DiagAuthorNoWrittenForm: "The .bot this document describes cannot be written so that it reads back as the same program; the message names the cause — a prompt body the .bot syntax cannot hold, a fallback route without a name, a profile-1 catalog long enough to push the strict-escape directive out of the lexer's window while a value needs it. Change what it names (`dsl: 2`, a shorter catalog, a named route, a reindented body): the written .bot would otherwise mean another program.",
 	DiagAuthorPromptBody:    "A prompt's text is read as the .bot lexer reads a body: leading and trailing blank lines dropped, the first line's indentation taken off every line, interior blank lines dropped in profile 1. A block scalar's line separator (U+2028, U+2029) is read as the line break the scanner meant, in a literal block; a folded block cannot say it. Write the text as it will be read, or accept the reading.",
 }
 

@@ -285,8 +285,8 @@ func sameDocument(before, after *ast.File) string {
 }
 
 // sameCatalogueIdentity reports whether two texts carry the same `## ---`
-// frontmatter, read on their ORIGINAL bytes as the catalogue reads it (a
-// frontmatter behind a BOM is invisible, and must stay so). No edit of
+// frontmatter, read on their ORIGINAL bytes as the catalogue reads it — as
+// the lexer reads the file, a BOM or CRLF endings hiding nothing. No edit of
 // today's migration touches a frontmatter line, so this is the guard that
 // outlives the edit rules: an edit kind added later that did would be
 // refused here, not discovered on the board.

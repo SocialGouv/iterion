@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -20,12 +22,12 @@ func localTools() []Tool {
 	return []Tool{
 		{
 			Name:        "local_validate",
-			Description: "Parse, compile and validate a local .bot workflow (or .botz bundle). Returns the validation result JSON including diagnostics; valid:false is a normal outcome, not a tool error. With exec:true a program that compiles is also run under a dry run (no model, no shell, no workspace) and the result carries `exec`: the references left unresolved, the shell text bash refuses, the nodes and edges no pass reached, the expressions left `inconclusive` on a shaped json value (kind `inconclusive` under findings), and two verdicts — `clean` (nothing to fix, nothing undecided) and `failing` (a pass died or a defect finding stands). The dry run is read-only in effect: it writes to a temporary store it removes, runs no command of the bot (bash -n parses the text), touches no workspace.",
+			Description: "Parse, compile and validate a local .bot workflow, a .botz bundle or an author document (x.bot.yaml, the YAML twin of a .bot: read into the program it describes, every finding positioned on the document, source_kind \"author\" and bot_path in the result; the run tools refuse a document). Returns the validation result JSON including diagnostics; valid:false is a normal outcome, not a tool error. With exec:true a program that compiles is also run under a dry run (no model, no shell, no workspace) and the result carries `exec`: the references left unresolved, the shell text bash refuses, the nodes and edges no pass reached, the expressions left `inconclusive` on a shaped json value (kind `inconclusive` under findings), and two verdicts — `clean` (nothing to fix, nothing undecided) and `failing` (a pass died or a defect finding stands). The dry run is read-only in effect: it writes to a temporary store it removes, runs no command of the bot (bash -n parses the text), touches no workspace.",
 			ReadOnly:    true,
 			InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "file_path": {"type": "string", "description": "Path to the .bot file or .botz bundle (relative paths resolve against the server's working directory)."},
+    "file_path": {"type": "string", "description": "Path to the .bot file, .botz bundle or author document (x.bot.yaml); relative paths resolve against the server's working directory."},
     "exec": {"type": "boolean", "description": "After a clean compile, run the program under a dry run and return its report as exec."},
     "fixtures": {"type": "string", "description": "Path to a JSON file of node outputs the dry run answers with ({node: output}, or a list of {node, output}); implies exec."},
     "exec_timeout": {"type": "string", "description": "Bound of one pass of the dry run, simulated children included, as a Go duration (default 1m); a pass that runs out of time is said so in the report."},
@@ -639,6 +641,11 @@ func handleLocalRun(ctx context.Context, s *Server, raw json.RawMessage) (string
 		return "", false, fmt.Errorf("file_path is required")
 	}
 	filePath := s.resolvePath(args.FilePath)
+	// A draft is refused before the pre-flight, on its own: validate reads
+	// an author document, and a run must never follow from one.
+	if workflowfile.IsAuthorDocument(filePath) {
+		return "", false, bundle.AuthorDocumentError(filePath)
+	}
 
 	// Synchronous pre-flight: reject an invalid workflow here with the
 	// full diagnostics instead of letting the detached runner die out of
@@ -756,6 +763,9 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 	}
 	if filePath == "" {
 		return "", false, fmt.Errorf("run %s recorded no workflow file path — pass file_path explicitly", r.ID)
+	}
+	if workflowfile.IsAuthorDocument(filePath) {
+		return "", false, bundle.AuthorDocumentError(filePath)
 	}
 
 	// The live-runner check and the spawn must be one atomic section:

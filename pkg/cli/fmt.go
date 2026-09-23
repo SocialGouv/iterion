@@ -8,15 +8,24 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/canon"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // FmtOptions drive `iterion fmt`.
 type FmtOptions struct {
-	// Paths are `.bot` files, bundle directories or directories to walk.
+	// Paths are `.bot` files, author documents (`.bot.yaml`), bundle
+	// directories or directories to walk; with To, named files only.
 	Paths []string
 	// Check writes nothing and fails when a file would change or is
 	// refused (a CI gate).
 	Check bool
+	// To converts each named file to its twin beside it instead of
+	// formatting it: "bot" writes the .bot an author document stands for
+	// (x.bot.yaml → x.bot), "yaml" the author document of a .bot (x.bot →
+	// x.bot.yaml). Force overwrites a destination that is there and is not
+	// what the source writes; without it that is a refusal.
+	To    string
+	Force bool
 	// Baseline names a file listing the paths this tree already knows its
 	// canonical form refuses (pkg/dsl/canon: one path per line, `#`
 	// comments ignored). With it, Check is green while the refusals are
@@ -33,6 +42,9 @@ type FmtFile struct {
 	Path    string `json:"path"`
 	Changed bool   `json:"changed"`
 	Written bool   `json:"written"`
+	// From is the file a conversion (To) read: Path is then the twin it
+	// wrote, or would write.
+	From string `json:"from,omitempty"`
 }
 
 // FmtResult is the whole run's outcome.
@@ -49,6 +61,10 @@ type FmtResult struct {
 	// printed lines: a JSON consumer got the error and no file.
 	NewlyRefused    []string `json:"newly_refused,omitempty"`
 	NoLongerRefused []string `json:"no_longer_refused,omitempty"`
+	// Notices say what a conversion did not carry, or read otherwise —
+	// the frontmatter keys beyond `catalog:`, the comments a document does
+	// not represent, a prompt body the .bot settles — without refusing.
+	Notices []string `json:"notices,omitempty"`
 }
 
 var (
@@ -59,10 +75,10 @@ var (
 	// without changing it; the others were formatted all the same.
 	ErrFmtRefused = errors.New("fmt: a file was refused")
 	// ErrFmtNothingToCheck is RunFmt's error under Check when the paths
-	// given hold no `.bot` at all. A gate that checked nothing is green
-	// for the one reason a gate must never be: a path renamed out from
-	// under it, a walk that stopped finding files.
-	ErrFmtNothingToCheck = errors.New("fmt: --check found no .bot file")
+	// given hold no `.bot` and no author document at all. A gate that
+	// checked nothing is green for the one reason a gate must never be: a
+	// path renamed out from under it, a walk that stopped finding files.
+	ErrFmtNothingToCheck = errors.New("fmt: --check found no .bot file or author document")
 	// ErrFmtBaselineStale is RunFmt's error when the refusals and the
 	// baseline disagree — in either direction.
 	ErrFmtBaselineStale = errors.New("fmt: the refusals do not match the baseline")
@@ -79,9 +95,17 @@ var (
 // files beside it are formatted: a refusal is that file's, not the tree's.
 // Under Check nothing is written. An archive is not a workflow file: named,
 // it is an error; met in a walk, it is passed over like any other file.
+// An author document (`.bot.yaml`) is formatted like a .bot — in its own
+// canonical YAML form, on its own bytes (canon.Document) — and refused, its
+// bytes intact, when a rewrite would lose what its author wrote: a YAML
+// comment, a text the .bot reads otherwise than written. With To, RunFmt
+// converts instead (runFmtConvert).
 func RunFmt(opts FmtOptions) (FmtResult, error) {
 	var res FmtResult
-	files, err := collectBotFiles("fmt", opts.Paths)
+	if opts.To != "" {
+		return runFmtConvert(opts)
+	}
+	files, err := collectWorkflowFiles("fmt", opts.Paths, true)
 	if err != nil {
 		return res, err
 	}
@@ -96,12 +120,16 @@ func RunFmt(opts FmtOptions) (FmtResult, error) {
 		if err != nil {
 			return res, fmt.Errorf("fmt: %w", err)
 		}
-		out, err := canon.Bytes(path, raw)
+		var out []byte
+		if workflowfile.IsAuthorDocument(path) {
+			out, err = canon.Document(path, raw)
+		} else {
+			out, err = canon.Bytes(path, raw)
+		}
 		if err != nil {
 			// canon states the fact; what to do about it is the caller's,
 			// and for `fmt` it is "this file stays as its author wrote it".
-			res.Refused = append(res.Refused, path+": "+strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")+". Left as it is")
-			res.RefusedPaths = append(res.RefusedPaths, canon.NormalizeBaselinePath(path))
+			res.refuse(path, strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")+". Left as it is")
 			continue
 		}
 		f := FmtFile{Path: path, Changed: !bytes.Equal(out, raw)}
@@ -178,6 +206,12 @@ func reportFmt(opts FmtOptions, res FmtResult) {
 	}
 	for _, f := range res.Files {
 		switch {
+		case f.From != "" && !f.Changed:
+			p.Line("%s: already what %s writes", f.Path, f.From)
+		case f.From != "" && f.Written:
+			p.Line("wrote %s from %s", f.Path, f.From)
+		case f.From != "":
+			p.Line("would write %s from %s", f.Path, f.From)
 		case !f.Changed:
 			p.Line("%s: already canonical", f.Path)
 		case f.Written:
@@ -185,6 +219,9 @@ func reportFmt(opts FmtOptions, res FmtResult) {
 		default:
 			p.Line("would format %s", f.Path)
 		}
+	}
+	for _, n := range res.Notices {
+		p.Line("note: %s", n)
 	}
 	for _, r := range res.Refused {
 		p.Line("refused: %s", r)

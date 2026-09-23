@@ -326,7 +326,7 @@ func (p *props) node() *yaml.Node {
 func (w *writer) file(f *ast.File) *yaml.Node {
 	root := newMap()
 	root.set("dsl", intNode(int64(f.EffectiveProfile())))
-	if cat := frontmatterOf(f.Comments); cat != nil {
+	if cat := frontmatterOf(f); cat != nil {
 		root.set("catalog", cat)
 	}
 	if len(f.Imports) > 0 {
@@ -413,34 +413,20 @@ func (w *writer) file(f *ast.File) *yaml.Node {
 	return root.node()
 }
 
-// frontmatterOf reads the catalog identity off the file's head comments —
-// the `---` fence through the closing one — as the bundle's frontmatter
-// reader reads it (bundle.ParseFrontmatter: the same YAML, the same four
-// keys), and returns it as the `catalog:` mapping; nil when the file
-// carries none.
-func frontmatterOf(comments []*ast.Comment) *yaml.Node {
-	if len(comments) == 0 || strings.TrimSpace(comments[0].Text) != workflowfile.FrontmatterFence {
+// frontmatterOf reads the catalog identity off the file's head — the
+// frontmatter block every reader of a catalog identity takes off the same
+// head (parser.Frontmatter), decoded through the one reading
+// (workflowfile.DecodeFrontmatter) — and returns it as the `catalog:`
+// mapping; nil when the file carries none, or one that reading does not
+// read: the catalogue would give the .bot no identity, so the document
+// carries no `catalog:` either.
+func frontmatterOf(f *ast.File) *yaml.Node {
+	block := parser.Frontmatter(f)
+	if !block.Found || !block.Closed {
 		return nil
 	}
-	var inner []string
-	closed := false
-	for _, c := range comments[1:] {
-		if strings.TrimSpace(c.Text) == workflowfile.FrontmatterFence {
-			closed = true
-			break
-		}
-		inner = append(inner, c.Text)
-	}
-	if !closed {
-		return nil
-	}
-	var fm struct {
-		Name         string   `yaml:"name"`
-		Description  string   `yaml:"description"`
-		Triggers     []string `yaml:"triggers"`
-		Capabilities []string `yaml:"capabilities"`
-	}
-	if err := yaml.Unmarshal([]byte(strings.Join(inner, "\n")), &fm); err != nil {
+	fm, _, err := workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"))
+	if err != nil {
 		return nil
 	}
 	m := newMap()

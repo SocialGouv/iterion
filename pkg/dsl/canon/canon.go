@@ -2,7 +2,10 @@
 // saves (pkg/dsl/unparse), proven to read as the same program AND to carry
 // the same comments before it is handed back (unparse.Verify), written on
 // the file's own bytes — its BOM and its line endings kept — and refused by
-// name when the writer cannot produce it without changing the file.
+// name when the writer cannot produce it without changing the file. An
+// author document, the YAML twin of a .bot, gets its own the same way
+// (Document): the author writer's text, proven the same program, on the
+// document's own bytes.
 package canon
 
 import (
@@ -30,13 +33,7 @@ var ErrRefused = errors.New("canonical form refused")
 func Bytes(name string, src []byte) ([]byte, error) {
 	norm := rewrite.Normalize(src)
 	pr := parser.Parse(name, norm.Text)
-	var errs []string
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			errs = append(errs, d.Error())
-		}
-	}
-	if len(errs) > 0 {
+	if errs := diagnosticsOf(pr.Diagnostics, parser.SeverityError); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: does not parse: %s", ErrRefused, strings.Join(errs, "; "))
 	}
 	text, err := Text(name, pr.File, []byte(norm.Text))
