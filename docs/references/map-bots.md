@@ -16,7 +16,7 @@
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 1 · 6 | 0.1.3 |
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.8.3 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 1 · 0 | 0.1.2 |
-| `copilot` | 💬 Copi | Conversational iterion assistant. | 1 · 5 | 0.2.8 |
+| `copilot` | 💬 Copi | Conversational iterion assistant. | 1 · 5 | 0.2.9 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 1 · 3 | 2.9.2 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 1 · 1 | 0.1.3 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 1 · 7 | 3.5.9 |
@@ -24,7 +24,7 @@
 | `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 1 · 8 | 0.1.3 |
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.6.1 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.3.3 |
-| `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1 · 3 | 1.6.1 |
+| `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1 · 3 | 1.6.2 |
 | `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 4 · 6 | 0.1.4 |
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 1 · 8 | 0.1.3 |
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 1 · 3 | 0.2.2 |
@@ -42,7 +42,7 @@
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 1 · 4 | 2.3.3 |
 | `ultra11y` | 🦮 Ally | Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a pull-request mode. | 1 · 3 | 0.1.3 |
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 1 · 1 | 0.1.1 |
-| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 1 · 11 | 0.3.4 |
+| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 1 · 11 | 0.3.5 |
 | `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 1 · 10 | 2.4.3 |
 | `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1 · 2 | 1.0.5 |
 

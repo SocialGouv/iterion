@@ -57,7 +57,11 @@ func TestSecAuditSource_CapFindings_BoundsScannerOutput(t *testing.T) {
 	// the node reads what the runtime would hand it rather than literal text.
 	cmd = strings.ReplaceAll(cmd, "{{vars.triage_inline_max_bytes}}", "0")
 	cmd = strings.ReplaceAll(cmd, "{{input.deepsec_paths}}", "{}")
-	cmd = strings.ReplaceAll(cmd, "{{vars.deepsec_out}}", "")
+	// The authored default names a slot UNDER scan_dir, and cap_findings
+	// reads it unconditionally to exclude that slot from its glob (#1322).
+	// Substituting the empty OVERRIDE instead would turn the exclusion off in
+	// the very harness that guards it.
+	cmd = strings.ReplaceAll(cmd, "{{vars.deepsec_out}}", filepath.Join(scanDir, "deepsec.json"))
 	requireNoUnsubstitutedRef(t, cmd)
 	out, err := exec.Command("sh", "-c", cmd).Output()
 	if err != nil {

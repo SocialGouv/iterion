@@ -321,10 +321,10 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 	}
 
 	// Aged directories: mtime 40 days ago. Fresh: mtime now.
-	// - deepsec-out-*, deepsec-logs-* and pass-* aged must GO (owned shapes,
-	//   past TTL). pass-<run.id> is the scanner scratch scan_dir_resolve keys
-	//   (#1475): it accumulates one directory per audit whether or not the
-	//   deep scan runs, and this sweep is the only thing that reclaims it.
+	// - deepsec-out-* and deepsec-logs-* aged must GO: the two shapes THIS
+	//   node writes, past TTL. pass-<run.id> is not one of them — it is
+	//   written by plan_shards on every pass and swept there, because this
+	//   node runs only when enable_deepsec is on. See agedAlien below.
 	// - alien aged (unprefixed) must STAY (Re56aa9 positive-scope fix): a
 	//   directory the operator or another node dropped is not enrolled in
 	//   this sweep by default.
@@ -427,7 +427,7 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 	}
 	for _, d := range agedAlien {
 		if _, err := os.Stat(d); err != nil {
-			t.Errorf("alien dir %s was pruned but must stay: %v -- the sweep is scoped to deepsec-out-* / deepsec-logs-* / pass-* only; enrolling anything else would delete operator or foreign-node state after the TTL", d, err)
+			t.Errorf("alien dir %s was pruned but must stay: %v -- the sweep is scoped to deepsec-out-* / deepsec-logs-* only; enrolling anything else would delete operator or foreign-node state after the TTL", d, err)
 		}
 	}
 	// The fresh dirs, current-run dirs, and deepsec-workspace must stay.

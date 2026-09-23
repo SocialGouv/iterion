@@ -10,7 +10,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -46,6 +45,16 @@ type actingPrompt struct {
 	reasons      []string
 }
 
+// resolvedBackend reads a node's backend at its authored default, falling back
+// to the workflow's, so the classification does not depend on the host.
+func resolvedBackend(llm ir.LLMNode, defaultBackend string) string {
+	b := strings.TrimSpace(ir.ExpandWithDefault(llm.GetLLMFields().Backend, authoredDefaults))
+	if b == "" {
+		b = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, authoredDefaults))
+	}
+	return b
+}
+
 // actingPrompts classifies every agent and judge of a compiled bot.
 // Capabilities follow the executor's inheritance rule: a node that declares
 // none runs with the workflow's list (pkg/backend/model/executor_build_task.go,
@@ -60,6 +69,16 @@ func actingPrompts(wf *ir.Workflow) []actingPrompt {
 		var reasons []string
 		if runtime.ToolSurfaceCanWrite(node, wf.DefaultBackend, authoredDefaults) {
 			reasons = append(reasons, toolSurfaceReason(llm, wf.DefaultBackend))
+		} else if resolvedBackend(llm, wf.DefaultBackend) == "claude_code" {
+			// A `tools:` list is NOT a bound on claude_code. The CLI takes it
+			// as --disallowedTools over a closed native roster iterion does
+			// not own (measured on 2.1.220, #1652), so a list that names only
+			// read-only tools still leaves every native writer the roster
+			// gained since. Declaring the list is a narrowing of intent, not
+			// of capability — and every LLM node of a catalog bot reads
+			// material it did not write, so on this backend the node is in
+			// the class whatever its list says.
+			reasons = append(reasons, "claude_code: a declared tools list is not a bound there (#1652)")
 		}
 		caps := llm.GetCapabilities()
 		if caps == nil {
@@ -185,10 +204,13 @@ func shippedWorkflows(t *testing.T) []shippedWorkflow {
 func compileBotFile(t *testing.T, path string) *ir.Workflow {
 	t.Helper()
 	pr := parseBotUnit(path)
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			t.Fatalf("%s does not parse: %+v", path, pr.Diagnostics)
-		}
+	// Any diagnostic, not the error-severity ones: parser.SeverityError is
+	// the ZERO value of parser.Severity, so a future warning that forgets to
+	// set the field would read as an error — and nothing in the parser
+	// constructs a warning today, which makes a severity filter here a no-op
+	// that only misleads.
+	if len(pr.Diagnostics) > 0 {
+		t.Fatalf("%s does not parse: %+v", path, pr.Diagnostics)
 	}
 	cr := ir.Compile(pr.File)
 	if cr.HasErrors() {

@@ -54,8 +54,9 @@ func runScanHealth(t *testing.T, scanDir, minGeneric, langs, workspaceDir string
 	// runtime.
 	cmd = strings.ReplaceAll(cmd, "{{input.langs}}", langs)
 	cmd = strings.ReplaceAll(cmd, "{{vars.workspace_dir}}", workspaceDir)
-	// The deepsec trio at its authored default: the deep scan is off by
-	// default, so this gate measures the generic + language layers, which is
+	// The deepsec trio pinned OFF: enable_deepsec is false by default, and it
+	// gates the other two, whose values this node never reads when it is
+	// false. So this gate measures the generic + language layers, which is
 	// what every sub-case here asserts on.
 	cmd = strings.ReplaceAll(cmd, "{{vars.enable_deepsec}}", "false")
 	cmd = strings.ReplaceAll(cmd, "{{vars.deepsec_out}}", "")

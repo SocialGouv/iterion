@@ -455,6 +455,20 @@ func TestPassDirIsSweptByTheNodeThatWritesIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Every pass directory carries the manifest plan_shards writes into it,
+	// and the sweep is gated on exactly that: the name alone would also match
+	// a pass-manager an operator dropped under a repointed scan_dir.
+	for _, d := range append(append([]string{}, agedMine...), keep...) {
+		if err := os.WriteFile(filepath.Join(d, "shard-files.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Aged, pass-prefixed, and NOT written by this bot: it must survive.
+	decoy := filepath.Join(scanDir, "pass-manager")
+	if err := os.MkdirAll(decoy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agedOthers = append(agedOthers, decoy)
 	old := time.Now().Add(-40 * 24 * time.Hour)
 	for _, d := range append(append([]string{}, agedMine...), agedOthers...) {
 		if err := os.Chtimes(d, old, old); err != nil {

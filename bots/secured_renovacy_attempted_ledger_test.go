@@ -120,8 +120,8 @@ func TestRenovacyAttemptedLedgerSeedIsNotSpreadAsAString(t *testing.T) {
 // and the compiler's C152 mirror uses the identical untrimmed test: one
 // leading space and the value is interpolated to text. A trimmed oracle here
 // was more lenient than the producer, so a space-padded reference — which
-// `iterion validate` refuses — read as a typed passthrough and this witness
-// stayed green on a mapping the engine had already broken.
+// `iterion validate` flags C152 on — read as a typed passthrough and this
+// witness stayed green on a mapping the engine had already broken.
 func isSingleRef(raw string) bool {
 	return strings.HasPrefix(raw, "{{") && strings.HasSuffix(raw, "}}") &&
 		strings.Count(raw, "{{") == 1 && strings.Count(raw, "}}") == 1
