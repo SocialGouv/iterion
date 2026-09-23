@@ -117,11 +117,13 @@ your head, because each is a place the ratchet slips silently:
   `verify_run` to mirror. Measured on exactly those four: an empty hatch written
   on pass 1 still reports `passed: true, skipped: false` on pass 2 against a tree
   that does not compile, and `skipped: false` means no reader downstream can tell.
-  **app-dev is the exception**: its probe fingerprints ten build manifests
-  (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, their locks …) and
-  forces a re-author when one changes — so a build system that ships one of them
-  does dislodge the hatch there, and a Makefile, CMake, Gradle or Maven project
-  does not. The refusal message warns the author, which is not the same as
+  **app-dev is the exception**: its probe fingerprints the **26** root-level
+  entries it lists (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml` and
+  their locks, plus `Makefile`, `Taskfile.yml`, `justfile`, `devbox.json`,
+  `flake.nix`, `Dockerfile` …) and forces a re-author when one changes — so a
+  build system that ships any of them, a plain `Makefile` included, does dislodge
+  the hatch there. Only a build system outside that list (CMake, Gradle, Maven,
+  Bazel) does not. The refusal message warns the author, which is not the same as
   preventing it (#1707).
 - **The merge gate blocks only when six things hold**: the run's
   forge-publish grant (without it the bot posts no status at all), the bot's
