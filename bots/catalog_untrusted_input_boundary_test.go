@@ -105,6 +105,70 @@ func toolSurfaceReason(llm ir.LLMNode, defaultBackend string) string {
 	return "tools: " + strings.Join(acting, ", ")
 }
 
+// shippedWorkflow is one compiled workflow of the catalogue, with the prefix
+// its nodes are keyed under.
+type shippedWorkflow struct {
+	prefix string
+	wf     *ir.Workflow
+}
+
+// shippedWorkflows compiles EVERY workflow this repository ships, not just the
+// `main.bot` of each bundle. A bundle may carry sibling entrypoints
+// (golden-master ships extend.bot, reanchor.bot and sync-harness.bot) and a
+// bundle may have no main.bot at all (smoke ships board_smoke.bot) — stat-ing
+// main.bot made all of those invisible to the class, which is how three acting
+// prompts shipped with no paragraph and no way to redden. The dispatcher's
+// zero-config fallback is shipped too, compiled into every binary and run
+// against a raw issue body, so it is walked from here rather than left
+// outside every guard.
+//
+// Nodes of a `main.bot` keep the historical `bot/node` key; a sibling
+// entrypoint is keyed `bot/file:node` so one file's node can never be
+// mistaken for another's.
+func shippedWorkflows(t *testing.T) []shippedWorkflow {
+	t.Helper()
+	var out []shippedWorkflow
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read bots dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "testdata" {
+			continue
+		}
+		bot := e.Name()
+		paths, err := filepath.Glob(filepath.Join(bot, "*.bot"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", bot, err)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			prefix := bot + "/"
+			if filepath.Base(path) != "main.bot" {
+				prefix = bot + "/" + strings.TrimSuffix(filepath.Base(path), ".bot") + ":"
+			}
+			out = append(out, shippedWorkflow{prefix: prefix, wf: compileBotFile(t, path)})
+		}
+	}
+	const dispatchFallback = "../pkg/cli/templates/dispatch_bots_default.bot"
+	if _, err := os.Stat(dispatchFallback); err == nil {
+		out = append(out, shippedWorkflow{prefix: "cli/dispatch_bots_default:", wf: compileBotFile(t, dispatchFallback)})
+	} else {
+		t.Fatalf("the dispatcher fallback template is no longer at %s: it is embedded in every binary and runs on a raw issue body, so it may not drop out of this walk silently", dispatchFallback)
+	}
+	return out
+}
+
+// compileBotFile compiles one workflow file with its imported fragments.
+func compileBotFile(t *testing.T, path string) *ir.Workflow {
+	t.Helper()
+	cr := ir.Compile(parseBotUnit(path).File)
+	if cr.HasErrors() {
+		t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
+	}
+	return cr.Workflow
+}
+
 // TestCatalogUntrustedInputBoundaryOnActingPrompts is the catalog-wide guard
 // for the class contract of #1324: every agent or judge that can act on what
 // it reads carries the UNTRUSTED INPUT BOUNDARY paragraph in its system
@@ -133,25 +197,13 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 		"modernize/upgrade_campaign":  "modernization campaign owns bots/modernize — fleet-contract § 1",
 	}
 
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read bots dir: %v", err)
-	}
 	var missing, stale []string
 	seen := map[string]bool{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		bot := e.Name()
-		if _, err := os.Stat(filepath.Join(bot, "main.bot")); err != nil {
-			continue
-		}
-		wf := compilePlanPhaseBot(t, bot)
-		for _, m := range actingPrompts(wf) {
-			key := bot + "/" + m.node
+	for _, sw := range shippedWorkflows(t) {
+		for _, m := range actingPrompts(sw.wf) {
+			key := sw.prefix + m.node
 			body := ""
-			if p := wf.Prompts[m.systemPrompt]; p != nil {
+			if p := sw.wf.Prompts[m.systemPrompt]; p != nil {
 				body = p.Body
 			}
 			has := strings.Contains(body, untrustedInputBoundaryMarker)
@@ -203,28 +255,16 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 // tried to enumerate them would be widened by the next field. Write the field
 // NAME in backticks; put anything that must render outside the paragraph.
 func TestUntrustedInputBoundaryParagraphInterpolatesNothing(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read bots dir: %v", err)
-	}
 	var offenders []string
 	checked := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		bot := e.Name()
-		if _, err := os.Stat(filepath.Join(bot, "main.bot")); err != nil {
-			continue
-		}
-		wf := compilePlanPhaseBot(t, bot)
-		names := make([]string, 0, len(wf.Prompts))
-		for name := range wf.Prompts {
+	for _, sw := range shippedWorkflows(t) {
+		names := make([]string, 0, len(sw.wf.Prompts))
+		for name := range sw.wf.Prompts {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			p := wf.Prompts[name]
+			p := sw.wf.Prompts[name]
 			if p == nil {
 				continue
 			}
@@ -236,7 +276,7 @@ func TestUntrustedInputBoundaryParagraphInterpolatesNothing(t *testing.T) {
 				checked++
 				for j := i + 1; j < len(lines) && strings.TrimSpace(lines[j]) != ""; j++ {
 					if strings.Contains(lines[j], "{{") {
-						offenders = append(offenders, fmt.Sprintf("%s/%s:+%d %s", bot, name, j-i, strings.TrimSpace(lines[j])))
+						offenders = append(offenders, fmt.Sprintf("%s%s:+%d %s", sw.prefix, name, j-i, strings.TrimSpace(lines[j])))
 					}
 					i = j
 				}
