@@ -273,16 +273,15 @@ var (
 	// Indentation is not bounded: GitHub renders a `##` continued inside a
 	// list item (four spaces in) as a heading, and a phantom anchor from an
 	// indented code block costs less than a phantom broken link.
-	atxHeadingRe   = regexp.MustCompile(`^\s*(?:(?:>|[-*+]|\d+[.)])\s+)*(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
-	setextLineRe   = regexp.MustCompile(`^\s{0,3}(=+|-{3,})\s*$`)
-	htmlHeadingRe  = regexp.MustCompile(`(?i)<h[1-6][^>]*>(.*?)</h[1-6]>`)
-	htmlAnchorRe   = regexp.MustCompile(`(?i)<[a-z][a-z0-9]*\b[^>]*\s(?:id|name)="([^"]+)"`)
-	refDefRe       = regexp.MustCompile(`^\s{0,3}\[([^\]^][^\]]*)\]:\s*(<[^>]*>|\S+)`)
-	htmlHrefRe     = regexp.MustCompile(`(?i)<(?:a|img)\b[^>]*\s(?:href|src)="([^"]+)"`)
-	schemeRe       = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
-	blockquoteRe   = regexp.MustCompile(`^\s{0,3}(?:>\s?)+`)
-	listOrHeadRe   = regexp.MustCompile(`^\s{0,3}(?:[-*+]\s|\d+[.)]\s|#|\||>)`)
-	frontMatterEnd = regexp.MustCompile(`^(---|\.\.\.)\s*$`)
+	atxHeadingRe  = regexp.MustCompile(`^\s*(?:(?:>|[-*+]|\d+[.)])\s+)*(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
+	setextLineRe  = regexp.MustCompile(`^\s{0,3}(=+|-{3,})\s*$`)
+	htmlHeadingRe = regexp.MustCompile(`(?i)<h[1-6][^>]*>(.*?)</h[1-6]>`)
+	htmlAnchorRe  = regexp.MustCompile(`(?i)<[a-z][a-z0-9]*\b[^>]*\s(?:id|name)="([^"]+)"`)
+	refDefRe      = regexp.MustCompile(`^\s{0,3}\[([^\]^][^\]]*)\]:\s*(<[^>]*>|\S+)`)
+	htmlHrefRe    = regexp.MustCompile(`(?i)<(?:a|img)\b[^>]*\s(?:href|src)="([^"]+)"`)
+	schemeRe      = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
+	blockquoteRe  = regexp.MustCompile(`^\s{0,3}(?:>\s?)+`)
+	listOrHeadRe  = regexp.MustCompile(`^\s{0,3}(?:[-*+]\s|\d+[.)]\s|#|\||>)`)
 )
 
 // Document is one parsed markdown file: the anchors it defines and the links

@@ -34,9 +34,14 @@ var (
 	// scanners that TRANSFORM a span's text rather than mask it.
 	spanRe = regexp.MustCompile("`+[^`]*`+")
 	// fenceRe matches the delimiter line of a fenced code block, including
-	// one inside a blockquote. Indentation is not bounded: a fence continued
-	// inside a list item is still a fence.
-	fenceRe = regexp.MustCompile("^\\s*(?:>\\s?)*(`{3,}|~{3,})")
+	// one a container has pushed off column 0: a blockquote, a list item, or
+	// a blockquote carrying a list. Both halves of the rule have to see the
+	// same lines — a scanner whose CLOSE rule understands containers while
+	// its DELIMITER rule stops at column 0 cannot see the opener at all, and
+	// then everything below a `>   ```md` or a `- ``` ` line reads as prose.
+	// Indentation is not bounded here: `mdcode` does not model the indented
+	// code block that four columns would otherwise mean.
+	fenceRe = regexp.MustCompile("^\\s*(?:>\\s?)*\\s*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \\t]+)?(`{3,}|~{3,})")
 )
 
 // SpanPattern returns the one-regexp approximation of a code span. Prefer
@@ -182,10 +187,20 @@ func (f *FenceScanner) Code(line string) bool {
 	}
 	// A fence closes only on a run of the SAME character, at least as long as
 	// the one that opened it, with nothing after it, at the SAME blockquote
-	// depth and no further than three columns in. Anything else is content —
-	// and the delimiter of a block a page is SHOWING is content by exactly
-	// this rule: `> ``` ` closing a block opened at depth 0 is a quote of a
-	// closer, not a closer.
+	// depth and no more than three columns further in. Anything else is
+	// content — and the delimiter of a block a page is SHOWING is content by
+	// exactly this rule: `> ``` ` closing a block opened at depth 0 is a
+	// quote of a closer, not a closer.
+	//
+	// STATED APPROXIMATION: CommonMark measures those three columns from the
+	// CONTAINER's content column, and this measures them from the opener's
+	// own. The two coincide unless a fence is opened and closed at different
+	// indentations inside the same container — `   ```` opened at three columns
+	// and closed at six, which CommonMark keeps open and this closes.
+	// Modelling it properly means tracking list-item content columns, i.e. a
+	// block parser; measuring from the container instead breaks the ordinary
+	// case of a fence indented four columns inside a list item, which the
+	// corpus really writes. Greppable here rather than silent.
 	rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
 	if quote == f.quote && indent <= f.indent+3 &&
 		marker[0] == f.char && len(marker) >= f.n && rest == "" {
@@ -231,6 +246,29 @@ func Mask(md string) string {
 		} else {
 			for _, r := range Spans(line) {
 				blank(pos+r[0], pos+r[1])
+			}
+		}
+		pos = next
+	}
+	return string(out)
+}
+
+// MaskDocument masks a whole page: its YAML front matter as well as its code.
+//
+// Mask alone answers for code, which is what a caller holding one LINE wants.
+// A caller holding a whole page wants both, because a `](target)` in front
+// matter is configuration, not a link the page makes.
+func MaskDocument(md string) string {
+	out := []byte(Mask(md))
+	var front FrontMatterScanner
+	for pos := 0; pos <= len(md); {
+		line, next := md[pos:], len(md)+1
+		if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+			line, next = line[:nl], pos+nl+1
+		}
+		if front.Skip(line) {
+			for i := pos; i < pos+len(line); i++ {
+				out[i] = ' '
 			}
 		}
 		pos = next

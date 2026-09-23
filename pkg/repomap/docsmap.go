@@ -188,7 +188,7 @@ func readDocRow(abs, rel string) (docRow, error) {
 		// it can measure them.
 		raw := scanner.Text()
 		line := strings.TrimSpace(raw)
-		if front.Skip(line) || fence.Code(raw) || line == "" {
+		if front.Skip(raw) || fence.Code(raw) || line == "" {
 			continue
 		}
 		switch {

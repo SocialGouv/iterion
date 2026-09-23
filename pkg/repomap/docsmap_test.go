@@ -355,9 +355,9 @@ func TestAFenceShownInsideAFenceDoesNotEndIt(t *testing.T) {
 // had never heard of front matter while the documentation link checker had —
 // two consumers, two answers about where a page begins.
 //
-// Latently worse than cosmetic: docs/index.md carries a 66-line front matter
-// holding a `](visual-editor.md)` form, which reanchor would rewrite the day
-// it became the first prose-shaped line.
+// Cosmetic on today's corpus — no front matter in the tree carries a `](…)`
+// form — but the cells were wrong in a published artifact, and the scanner
+// that skips front matter is the one that decides what reanchor is handed.
 func TestFrontMatterIsNotThePagesOpeningSentence(t *testing.T) {
 	root := t.TempDir()
 	body := "---\nlayout: home\ntitle: Changelog\nhero:\n  text: See [the editor](visual-editor.md)\n---\n\n" +
@@ -397,5 +397,58 @@ func TestFrontMatterIsNotThePagesOpeningSentence(t *testing.T) {
 	}
 	if !strings.Contains(out, "Prose after a horizontal rule") {
 		t.Errorf("a `---` below the first line was read as front matter:\n%s", out)
+	}
+}
+
+// A fence a CONTAINER indents is still a fence: a note carrying a shell
+// block, a bullet carrying one. Every row here OPENS the block from inside a
+// container, which is the half of the rule the closing-side witness above
+// cannot reach — and the half that survived four rounds, because a delimiter
+// pattern anchored near column 0 cannot see the opener at all, so everything
+// below it reads as prose.
+//
+// The mutation that reddens this: drop the list-marker alternative from
+// mdcode's fence pattern.
+func TestAFenceAContainerIndentsIsStillAFence(t *testing.T) {
+	for _, tc := range []struct{ name, opener, closer string }{
+		{"a bullet carrying a fence", "- ```", "  ```"},
+		{"a numbered item carrying a fence", "1. ```", "   ```"},
+		{"a note carrying a bullet carrying a fence", ">   ```md", ">   ```"},
+		{"a blockquote carrying a fence", "> ```sh", "> ```"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			body := "# Contained\n\n" + tc.opener +
+				"\nNever write the form ](../../elsewhere/foo.md) — it is an example.\n" +
+				tc.closer + "\n\nThe real opening sentence, which links to [the guide](guide.md).\n"
+			for rel, text := range map[string]string{
+				"docs/contained.md": body,
+				"docs/guide.md":     "# Guide\n\nA guide.\n",
+			} {
+				abs := filepath.Join(root, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(abs, []byte(text), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var docs Extractor
+			for _, e := range Extractors() {
+				if e.Stem() == "docs" {
+					docs = e
+				}
+			}
+			out, err := docs.Extract(root)
+			if err != nil {
+				t.Fatalf("the extractor refused a page whose links are sound: %v", err)
+			}
+			if strings.Contains(out, "elsewhere/foo.md") {
+				t.Errorf("a link form quoted inside the contained fence reached the map:\n%s", out)
+			}
+			if !strings.Contains(out, "The real opening sentence") {
+				t.Errorf("the summary is not the page's prose:\n%s", out)
+			}
+		})
 	}
 }

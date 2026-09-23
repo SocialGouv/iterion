@@ -540,3 +540,25 @@ func TestATruncatedDocCommentDoesNotEndInsideACodeSpan(t *testing.T) {
 		}
 	}
 }
+
+// A `](target)` in a page's YAML front matter is configuration — a theme's
+// hero link — not a link the page makes. An edge minted from one makes
+// `map path` answer that a route exists because a config key named a file.
+//
+// The mutation that reddens this: mask code only, not the document.
+func TestALinkInFrontMatterMintsNoEdge(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.test/m\n\ngo 1.26\n",
+		"docs/a.md": "---\nlayout: home\nhero:\n  text: See [the editor](c.md)\n---\n\n" +
+			"# A\n\nA real link to [b](b.md).\n",
+		"docs/b.md": "# B\n",
+		"docs/c.md": "# C\n",
+	})
+	g := build(t, root)
+	if !hasEdge(g, "doc:docs/a.md", "doc:docs/b.md", repograph.RelLinks) {
+		t.Error("the page's real link produced no edge")
+	}
+	if hasEdge(g, "doc:docs/a.md", "doc:docs/c.md", repograph.RelLinks) {
+		t.Error("a link in the front matter became an edge")
+	}
+}

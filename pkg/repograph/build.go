@@ -470,11 +470,12 @@ func linkDocs(g *Graph, root string, pages []docPage) {
 	}
 	for _, p := range pages {
 		// The scan runs over internal/mdcode's mask, which keeps the body's
-		// offsets: a `](…)` inside a fenced block or a code span is a form
-		// the page QUOTES — an example, a diagnostic's text — and an edge
-		// minted from one makes `map path` answer that a route exists
-		// because a page printed it.
-		masked := mdcode.Mask(p.body)
+		// offsets: a `](…)` inside a fenced block, a code span or the page's
+		// front matter is a form the page QUOTES — an example, a
+		// diagnostic's text, a theme's configuration — and an edge minted
+		// from one makes `map path` answer that a route exists because a
+		// page printed it.
+		masked := mdcode.MaskDocument(p.body)
 		for _, m := range mdLink.FindAllStringSubmatchIndex(masked, -1) {
 			target := p.body[m[2]:m[3]]
 			if strings.HasPrefix(target, "#") || strings.Contains(target, "://") ||
