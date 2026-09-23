@@ -186,7 +186,7 @@
 | [`docs/bundles.md`](../bundles.md) | Bundles — `.botz` packaged workflows | A **bundle** is a deterministic ZIP archive that ships a workflow | — |
 | [`docs/byok.md`](../byok.md) | BYOK API keys (cloud) — per-org, per-user, per-webhook | How iterion-cloud resolves the LLM provider API keys a run uses. | — |
 | [`docs/c082-board-emit-fix-plan.md`](../c082-board-emit-fix-plan.md) | C082 board-emit fix — implementation plan | Status: **RESOLVED + live-validated end-to-end (2026-06-14).** A sandboxed | — |
-| [`docs/changelog.md`](../changelog.md) | — | title: Changelog | — |
+| [`docs/changelog.md`](../changelog.md) | — | — | — |
 | [`docs/changelog/v0.md`](../changelog/v0.md) | Changelog — v0.x | Archived releases. | — |
 | [`docs/changelog/v1.md`](../changelog/v1.md) | Changelog — v1.x | Archived releases. | — |
 | [`docs/changelog/v2.md`](../changelog/v2.md) | Changelog — v2.x | Archived releases. | — |
@@ -209,10 +209,10 @@
 | [`docs/cloud-user.md`](../cloud-user.md) | Iterion cloud — user guide | You signed up for an iterion workspace (or got an invite). | — |
 | [`docs/cloud.md`](../cloud.md) | Cloud Mode | Cloud mode runs iterion as a multi-tenant **control plane for AI agents** — the | — |
 | [`docs/comparisons/assets/logos/README.md`](../comparisons/assets/logos/README.md) | Logo and icon provenance | Original assets retrieved on September 11, 2026, stored locally without graphical modification. | — |
-| [`docs/comparisons/feature-inventory.md`](../comparisons/feature-inventory.md) | 🧭 Iterion feature inventory | title: "Iterion feature inventory" | — |
-| [`docs/comparisons/feature-matrix.md`](../comparisons/feature-matrix.md) | 🧭 Iterion and alternatives — feature matrix | title: "Feature matrix" | — |
-| [`docs/comparisons/index.md`](../comparisons/index.md) | 🧭 Iterion and alternatives: choose your agent workflow architecture | title: "Iterion and alternatives" | — |
-| [`docs/comparisons/methodology.md`](../comparisons/methodology.md) | 🔎 Comparison methodology and sources | title: "Methodology and sources" | — |
+| [`docs/comparisons/feature-inventory.md`](../comparisons/feature-inventory.md) | 🧭 Iterion feature inventory | September 11, 2026 · Capabilities, use cases and limitations of the reviewed version. | — |
+| [`docs/comparisons/feature-matrix.md`](../comparisons/feature-matrix.md) | 🧭 Iterion and alternatives — feature matrix | Documentation reviewed on September 11, 2026. | — |
+| [`docs/comparisons/index.md`](../comparisons/index.md) | 🧭 Iterion and alternatives: choose your agent workflow architecture | Updated September 11, 2026. | — |
+| [`docs/comparisons/methodology.md`](../comparisons/methodology.md) | 🔎 Comparison methodology and sources | September 11, 2026 — companion to the [feature matrix](../comparisons/feature-matrix.md). | — |
 | [`docs/config-share.md`](../config-share.md) | Scoped config-share editor | The config-share editor lets an operator hand a **non-operator** a bookmarkable | — |
 | [`docs/connector-identities.md`](../connector-identities.md) | Connector identities across regeneration | `iterion connectors gen` maintains `identity.lock.yaml` beside `connector.yaml`. | — |
 | [`docs/credential-pool.md`](../credential-pool.md) | Credential pool — mutualising contributors' unused LLM capacity | How developers lend spare LLM capacity to an iterion deployment — a Claude | — |
@@ -246,7 +246,7 @@
 | [`docs/human-in-the-loop.md`](../human-in-the-loop.md) | Human in the loop | Most iterion nodes run unattended. | — |
 | [`docs/import.md`](../import.md) | `iterion import` — workflow scripts (.js) → draft .bot | `iterion import` converts a Claude-Code **workflow script** | — |
 | [`docs/improvement-ratchet.md`](../improvement-ratchet.md) | The ratchet | open. | — |
-| [`docs/index.md`](../index.md) | — | layout: home | — |
+| [`docs/index.md`](../index.md) | — | A `.bot` is a readable graph. | — |
 | [`docs/install.md`](../install.md) | 🖥️ Install | One Go core, delivered wherever you work — a scriptable CLI, a visual studio, a | — |
 | [`docs/live-e2e-coverage.md`](../live-e2e-coverage.md) | Live e2e coverage + quality/value snapshots | iterion ships an **optional, real-LLM** end-to-end layer that exercises | — |
 | [`docs/mcp-server.md`](../mcp-server.md) | The iterion MCP server — `iterion mcp` | `iterion mcp` serves the **operator-facing MCP server** on stdio: any | — |

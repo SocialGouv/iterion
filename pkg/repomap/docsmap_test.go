@@ -300,9 +300,17 @@ func backtickOutsideASpan(s string) (int, bool) {
 // The mutation that reddens this: a naive toggle in readDocRow, whatever set
 // of lines it recognises.
 func TestAFenceShownInsideAFenceDoesNotEndIt(t *testing.T) {
+	// The property, not a list of spellings: a block ends only at a delimiter
+	// matching its OPENER — same character, at least as long, same blockquote
+	// depth, no further indented. Each row differs from the opener in exactly
+	// one of those, so none of them may close it. A table shaped to the two
+	// spellings that happened to fail stayed green on the next two.
 	for _, tc := range []struct{ name, inner string }{
-		{"a tilde fence shown inside a backtick fence", "~~~"},
-		{"a blockquoted fence shown inside a backtick fence", "> ```sh"},
+		{"a different fence character", "~~~"},
+		{"a deeper blockquote, with an info string", "> ```sh"},
+		{"a deeper blockquote, bare", "> ```"},
+		{"further indented", "    ```"},
+		{"a shorter run", "``"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -338,5 +346,56 @@ func TestAFenceShownInsideAFenceDoesNotEndIt(t *testing.T) {
 				t.Errorf("a link form quoted inside the fenced example reached the map:\n%s", out)
 			}
 		})
+	}
+}
+
+// A page may open with a YAML front-matter block, and its keys are not the
+// page's prose. Six rows of the committed docs map published `title:
+// Changelog` and `layout: home` as the opening sentence because this scanner
+// had never heard of front matter while the documentation link checker had —
+// two consumers, two answers about where a page begins.
+//
+// Latently worse than cosmetic: docs/index.md carries a 66-line front matter
+// holding a `](visual-editor.md)` form, which reanchor would rewrite the day
+// it became the first prose-shaped line.
+func TestFrontMatterIsNotThePagesOpeningSentence(t *testing.T) {
+	root := t.TempDir()
+	body := "---\nlayout: home\ntitle: Changelog\nhero:\n  text: See [the editor](visual-editor.md)\n---\n\n" +
+		"# The page\n\nThe real opening sentence, which links to [the guide](guide.md).\n"
+	for rel, text := range map[string]string{
+		"docs/front.md": body,
+		"docs/guide.md": "# Guide\n\nA guide.\n",
+		// A `---` that is NOT on the first line is a horizontal rule, and the
+		// prose after it is still prose.
+		"docs/rule.md": "# Rule\n\n---\n\nProse after a horizontal rule.\n",
+	} {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var docs Extractor
+	for _, e := range Extractors() {
+		if e.Stem() == "docs" {
+			docs = e
+		}
+	}
+	out, err := docs.Extract(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"layout: home", "title: Changelog", "visual-editor.md"} {
+		if strings.Contains(out, key) {
+			t.Errorf("a front-matter key reached the map (%q):\n%s", key, out)
+		}
+	}
+	if !strings.Contains(out, "The real opening sentence") {
+		t.Errorf("the page's prose is not the summary:\n%s", out)
+	}
+	if !strings.Contains(out, "Prose after a horizontal rule") {
+		t.Errorf("a `---` below the first line was read as front matter:\n%s", out)
 	}
 }

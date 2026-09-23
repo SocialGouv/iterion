@@ -181,9 +181,14 @@ func readDocRow(abs, rel string) (docRow, error) {
 	// line inside it, which is content, and the sentence this function then
 	// hands to reanchor is quoted code.
 	var fence mdcode.FenceScanner
+	var front mdcode.FrontMatterScanner
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if fence.Code(line) || line == "" {
+		// The scanner reads the RAW line: a fence closes at its opener's own
+		// blockquote depth and indentation, and trimming erases both before
+		// it can measure them.
+		raw := scanner.Text()
+		line := strings.TrimSpace(raw)
+		if front.Skip(line) || fence.Code(raw) || line == "" {
 			continue
 		}
 		switch {

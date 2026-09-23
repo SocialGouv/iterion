@@ -103,6 +103,46 @@ func FenceMarker(line string) string {
 	return marker
 }
 
+// frontMatterEnd matches the delimiter of a YAML front-matter block.
+var frontMatterEnd = regexp.MustCompile(`^(---|\.\.\.)\s*$`)
+
+// FrontMatterScanner skips the YAML block a page may open on its FIRST line.
+//
+// It lives beside FenceScanner because it answers the other half of the same
+// question — where a page's prose begins — and because the two consumers that
+// disagreed about it published the disagreement: six rows of the committed
+// docs map carried `title: Changelog` and `layout: home` as the page's
+// opening sentence, because one scanner skipped front matter and the other
+// had never heard of it.
+//
+// The zero value is ready: a document starts before its first line.
+type FrontMatterScanner struct {
+	seenFirst bool
+	open      bool
+}
+
+// Skip reports whether the line belongs to the front matter — its delimiters
+// included — and advances the scanner.
+func (f *FrontMatterScanner) Skip(line string) bool {
+	if !f.seenFirst {
+		f.seenFirst = true
+		// Only the FIRST line can open it; a `---` further down is a
+		// horizontal rule or a setext underline.
+		if strings.HasPrefix(line, "---") && frontMatterEnd.MatchString(line) {
+			f.open = true
+			return true
+		}
+		return false
+	}
+	if !f.open {
+		return false
+	}
+	if frontMatterEnd.MatchString(line) {
+		f.open = false
+	}
+	return true
+}
+
 // FenceScanner tracks fenced code blocks across the lines of one document.
 //
 // A fence rule has TWO halves — which lines are delimiters, and which
@@ -116,9 +156,11 @@ func FenceMarker(line string) string {
 //
 // The zero value is ready: a document starts outside a fence.
 type FenceScanner struct {
-	open bool
-	char byte
-	n    int
+	open   bool
+	char   byte
+	n      int
+	quote  int
+	indent int
 }
 
 // Open reports whether the scanner is currently inside a fenced block — the
@@ -133,17 +175,34 @@ func (f *FenceScanner) Code(line string) bool {
 	if marker == "" {
 		return f.open
 	}
+	quote, indent := fencePrefix(line, marker)
 	if !f.open {
-		f.open, f.char, f.n = true, marker[0], len(marker)
+		f.open, f.char, f.n, f.quote, f.indent = true, marker[0], len(marker), quote, indent
 		return true
 	}
 	// A fence closes only on a run of the SAME character, at least as long as
-	// the one that opened it, with nothing after it. Anything else is content.
+	// the one that opened it, with nothing after it, at the SAME blockquote
+	// depth and no further than three columns in. Anything else is content —
+	// and the delimiter of a block a page is SHOWING is content by exactly
+	// this rule: `> ``` ` closing a block opened at depth 0 is a quote of a
+	// closer, not a closer.
 	rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
-	if marker[0] == f.char && len(marker) >= f.n && rest == "" {
+	if quote == f.quote && indent <= f.indent+3 &&
+		marker[0] == f.char && len(marker) >= f.n && rest == "" {
 		f.open = false
 	}
 	return true
+}
+
+// fencePrefix reads the blockquote depth and the indentation out of what
+// FenceMarker's pattern consumed before the marker.
+func fencePrefix(line, marker string) (quote, indent int) {
+	pre := line[:strings.Index(line, marker)]
+	quote = strings.Count(pre, ">")
+	if i := strings.LastIndex(pre, ">"); i >= 0 {
+		pre = pre[i+1:]
+	}
+	return quote, len(pre)
 }
 
 // Mask returns md with every byte of code replaced by a space: the body of a

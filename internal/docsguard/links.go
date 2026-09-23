@@ -318,8 +318,8 @@ func Parse(name string, content []byte) *Document {
 
 	var (
 		fence      mdcode.FenceScanner
+		front      mdcode.FrontMatterScanner
 		inComment  bool
-		inFront    bool
 		prevText   string // previous non-skipped line, for setext headings
 		prevIsText bool
 	)
@@ -329,14 +329,10 @@ func Parse(name string, content []byte) *Document {
 		lineNo := i + 1
 		line := raw
 
-		if i == 0 && frontMatterEnd.MatchString(line) && strings.HasPrefix(line, "---") {
-			inFront = true
-			continue
-		}
-		if inFront {
-			if frontMatterEnd.MatchString(line) {
-				inFront = false
-			}
+		// The front-matter rule is internal/mdcode's, shared with the docs
+		// map: the two used to answer differently and the map published the
+		// difference.
+		if front.Skip(line) {
 			continue
 		}
 
