@@ -69,6 +69,53 @@ func TestUsageCapCredKeys_TellsTheTwoFacadesApart(t *testing.T) {
 	}
 }
 
+// A slot the label NAMES but the run does not CARRY must charge nobody.
+//
+// It is a reachable state, not a curiosity: a pod-level MOONSHOT_API_KEY funds
+// a moonshot-pinned node (delegate.facadeCredEnvForHint reads it) and is not a
+// BYOK record, so the run holds no moonshot fingerprint at all while its
+// readings still say moonshot. Falling back to the head of the precedence
+// charges that Moonshot wall to the z.ai key — the meter then parks the
+// healthy credential and keeps handing out the walled one, which is the
+// inversion runCredKeys exists to prevent. The comment on bySlot already says
+// a guess would be that fault for an UNKNOWN label; it is the same fault here,
+// with the slot known.
+//
+// The four-fingerprint bench above cannot see this: it sows every slot, so
+// bySlot always answers.
+func TestUsageCapCredKeys_NamedButUnheldSlotChargesNobody(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderZAI: "zai-token"},
+		Fingerprints: map[string]string{string(secrets.ProviderZAI): "fp-zai"},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	scope := usagecap.TenantScope("team-7")
+
+	moonshot := facadeSource(secrets.ProviderMoonshot, secrets.MoonshotDefaultBaseURL)
+	// The label must be one the delegate actually names a slot for, or this
+	// bench is measuring its own spelling rather than the meter.
+	if got := delegate.AnthropicWireFacadeSlot(moonshot); got != string(secrets.ProviderMoonshot) {
+		t.Fatalf("inert bench: AnthropicWireFacadeSlot(%q) = %q, want moonshot", moonshot, got)
+	}
+	if got, want := keys.forSource(moonshot), usagecap.Key(delegate.BackendClaudeCode, scope, ""); got != want {
+		t.Errorf("forSource(%q) = %q, want %q — a named slot the run does not hold charges nobody", moonshot, got, want)
+	}
+
+	// The guard discriminates: the slot the run DOES hold is still charged,
+	// and a label naming no slot keeps falling to the bundle default (there,
+	// the default is the only answer available).
+	zai := facadeSource(secrets.ProviderZAI, secrets.ZAIDefaultBaseURL)
+	if got, want := keys.forSource(zai), usagecap.Key(delegate.BackendClaudeCode, scope, "fp-zai"); got != want {
+		t.Errorf("forSource(%q) = %q, want %q", zai, got, want)
+	}
+	for _, source := range []string{"facade:https://some.operator.proxy/anthropic", "", "anthropic-env"} {
+		if got, want := keys.forSource(source), usagecap.Key(delegate.BackendClaudeCode, scope, "fp-zai"); got != want {
+			t.Errorf("forSource(%q) = %q, want the bundle default %q", source, got, want)
+		}
+	}
+}
+
 // A Moonshot-only bundle is the tenant's own, so its readings must open a
 // TENANT meter — not the cross-tenant platform one, where what this team
 // measured would be read by every other borrower of a key they do not share.

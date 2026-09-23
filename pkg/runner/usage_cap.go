@@ -130,22 +130,30 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 // against. A rotated token therefore opens a fresh meter instead of
 // inheriting the readings of the account it replaced.
 //
-// Every facade renders as "facade:<base-url>", so the label alone no longer
-// names one vendor now that two ride this wire: the delegate maps it back to
-// the slot that paid (AnthropicWireFacadeSlot). Charging a Moonshot refusal
-// to the z.ai fingerprint would park the healthy key and keep the frozen
-// one — the failure this whole struct exists to avoid. An UNRECOGNISED
-// facade label (an operator base URL, a label from an older binary) names no
-// slot, and a guess would be that same failure: it falls to the default
-// precedence instead.
+// Every facade renders as "facade:<slot>:<base-url>", and the SLOT is what
+// names the vendor now that two ride this wire — the delegate stamps it on the
+// env it built (AnthropicWireFacadeSlot reads it back). Charging a Moonshot
+// refusal to the z.ai fingerprint would park the healthy key and keep the
+// frozen one — the failure this whole struct exists to avoid.
+//
+// A label that NAMES a slot is answered by that slot ALONE: when the run holds
+// no fingerprint for it, the reading is keyed on the scope with no credential
+// rather than on whichever key the precedence happens to start with. That
+// state is reachable — a pod-level MOONSHOT_API_KEY funds a moonshot-pinned
+// node (facadeCredEnvForHint) without being a BYOK record, so the run carries
+// no moonshot fingerprint while its readings still say moonshot — and the
+// neighbour it would otherwise charge is a healthy key the wall never touched.
+//
+// An UNRECOGNISED facade label (an operator base URL forwarded from the
+// ambient env, a label from a binary that predates the stamp) names no slot at
+// all, and there the bundle default is the only answer available.
 func (k runCredKeys) forSource(source string) string {
 	fp := ""
 	switch {
 	case strings.HasPrefix(source, "facade:"):
 		if slot := delegate.AnthropicWireFacadeSlot(source); slot != "" {
 			fp = k.bySlot(slot)
-		}
-		if fp == "" {
+		} else {
 			fp = k.firstHeld()
 		}
 	case source == "anthropic-direct" && k.anthropicFP != "":
