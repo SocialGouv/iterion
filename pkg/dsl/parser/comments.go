@@ -304,7 +304,8 @@ func (w *scanner) codeLine(toks []Token) {
 		}
 		// The frontmatter block is never cut: a bot's catalogue identity
 		// is read between an opening `## ---` and its closing one
-		// (bundle.ParseFrontmatter, on the file's first non-blank lines),
+		// (parser.Frontmatter, the block opening the head — what the
+		// catalogue reads through bundle.ParseFrontmatter),
 		// and a blank line inside it would otherwise send the second half
 		// travelling with the first declaration — leaving code between
 		// the two fences and the bot without a name.

@@ -28,11 +28,13 @@ var fmtCmd = &cobra.Command{
 		"refused: --check then passes while the refusals are exactly those, and\n" +
 		"names the difference in either direction otherwise.\n\n" +
 		"An author document (x.bot.yaml, the YAML twin of a .bot) is formatted in\n" +
-		"its canonical YAML form the same way — refused, bytes intact, when it\n" +
-		"carries YAML comments the writer does not keep. --to bot writes the .bot a\n" +
+		"its canonical YAML form the same way, on its own bytes — refused, bytes\n" +
+		"intact, when it carries YAML comments the writer does not keep, or a text\n" +
+		"the .bot reads otherwise than written (E053). --to bot writes the .bot a\n" +
 		"named document stands for beside it; --to yaml writes the document of a\n" +
 		"named .bot. A destination already there and not what the source writes is\n" +
-		"refused without --force; --check reports what a write would do.",
+		"refused without --force; --check reports what a write would do, that\n" +
+		"refusal included.",
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmtOpts.Paths = args

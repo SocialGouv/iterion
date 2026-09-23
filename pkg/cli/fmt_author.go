@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -25,51 +25,42 @@ var (
 	ErrFmtToNeedsFiles = errors.New("fmt: --to converts named files, not directories")
 	// ErrFmtToKind refuses a file of the wrong kind for the direction asked.
 	ErrFmtToKind = errors.New("fmt: --to bot converts an author document (x.bot.yaml), --to yaml a .bot")
+	// ErrFmtToDestination refuses a conversion whose destination its
+	// readers do not take by name: `UPPER.BOT.YAML` stands for `UPPER.BOT`,
+	// which `fmt`, a walk and `--to yaml` do not read (a workflow file's
+	// suffix is `.bot`, lower-case) — written, it would be a .bot only its
+	// launcher reads, and no twin.
+	ErrFmtToDestination = errors.New("fmt: --to would write a file its readers do not take by name")
 	// ErrFmtToBaseline refuses --baseline with --to: a baseline lists what a
 	// CHECK of canonical forms tolerates, and a conversion is not one.
 	ErrFmtToBaseline = errors.New("fmt: --baseline does not apply to --to")
 )
 
-// canonicalDocument is the canonical form of an author document: the
-// program it describes, written back by the author writer, proven to read
-// as the same program before it is handed back. Refused (canon.ErrRefused),
-// the bytes left the author's: a document that does not read; one that
-// carries YAML comments — the writer keeps none, and a rewrite would lose
-// them; one whose written form reads as another program.
-func canonicalDocument(path string, src []byte) ([]byte, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
+// twinPath is the file a conversion writes: the .bot an author document
+// stands for (`x.bot.yaml` → `x.bot`, the `.yaml` off whatever its case),
+// or the author document of a .bot (`x.bot` → `x.bot.yaml`).
+func twinPath(to, path string) string {
+	if to == "bot" {
+		return path[:len(path)-len(".yaml")]
 	}
-	res := author.Parse(abs, src)
-	if res.HasErrors() {
-		return nil, fmt.Errorf("%w: does not read: %s", canon.ErrRefused, diagnosticErrors(res.Diagnostics))
-	}
-	if comments := author.Comments(src); len(comments) > 0 {
-		return nil, fmt.Errorf("%w: carries %d YAML comment line(s) the writer does not keep (the first: %s)", canon.ErrRefused, len(comments), comments[0])
-	}
-	out, err := author.Write(res.File)
-	if err != nil {
-		return nil, fmt.Errorf("%w: cannot be written as a document: %v", canon.ErrRefused, err)
-	}
-	if bytes.Equal(out, src) {
-		return src, nil
-	}
-	// The proof before the write: the written document reads as the same
-	// program — the .bot text of the two is one.
-	back := author.Parse(abs, out)
-	if back.HasErrors() || unparse.Unparse(back.File) != unparse.Unparse(res.File) {
-		return nil, fmt.Errorf("%w: its written form reads as another program", canon.ErrRefused)
-	}
-	return out, nil
+	return path + ".yaml"
+}
+
+// refuse records one file fmt would not write, with why: for the report,
+// and by path for a baseline.
+func (r *FmtResult) refuse(path, why string) {
+	r.Refused = append(r.Refused, path+": "+why)
+	r.RefusedPaths = append(r.RefusedPaths, canon.NormalizeBaselinePath(path))
 }
 
 // runFmtConvert is `fmt --to bot|yaml`: each named file converted to its
 // twin beside it — x.bot.yaml → x.bot, x.bot → x.bot.yaml — proven the same
 // program before it is written. A destination already there and not what
 // the source writes is refused without --force, one that is already it is
-// a no-op, and --check reports what a write would do: the CI form of "is
-// the .bot beside the document the one it writes?".
+// a no-op, one that is there and is not a file (a directory) is refused
+// while the files named beside it are converted, and --check reports what
+// a write would do — the refusal included: the CI form of "is the .bot
+// beside the document the one it writes?".
 func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 	var res FmtResult
 	if opts.Baseline != "" {
@@ -86,9 +77,17 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 		if info.IsDir() {
 			return res, fmt.Errorf("%w: %s", ErrFmtToNeedsFiles, p)
 		}
+		if !info.Mode().IsRegular() {
+			return res, fmt.Errorf("fmt: %s is not a regular file", p)
+		}
 		isDoc := workflowfile.IsAuthorDocument(p)
 		if (opts.To == "bot") != isDoc || (opts.To == "yaml" && !workflowfile.IsWorkflowFile(p)) {
 			return res, fmt.Errorf("%w: %s", ErrFmtToKind, p)
+		}
+		// The twin is written under a name its readers take: a document's
+		// suffix is read case-folded, a workflow file's is not.
+		if dest := twinPath(opts.To, p); !workflowfile.IsWorkflowFile(dest) && !workflowfile.IsAuthorDocument(dest) {
+			return res, fmt.Errorf("%w: %s stands for %s, a name `fmt` would not read back (a workflow file ends in `.bot`, lower-case) — rename the document first", ErrFmtToDestination, p, dest)
 		}
 	}
 	changed := false
@@ -99,19 +98,23 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 		}
 		dest, out, notices, err := convertTwin(opts.To, path, raw)
 		if err != nil {
-			res.Refused = append(res.Refused, path+": "+strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")+". Nothing written")
-			res.RefusedPaths = append(res.RefusedPaths, canon.NormalizeBaselinePath(path))
+			res.refuse(path, strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")+". Nothing written")
 			continue
 		}
 		res.Notices = append(res.Notices, notices...)
+		existing, there, why := destinationBytes(dest)
+		if why != "" {
+			res.refuse(dest, why)
+			continue
+		}
 		f := FmtFile{Path: dest, From: path}
-		existing, statErr := os.ReadFile(dest)
 		switch {
-		case statErr == nil && bytes.Equal(existing, out):
+		case there && bytes.Equal(existing, out):
 			// The destination is already what the source writes.
-		case statErr == nil && !opts.Force && !opts.Check:
-			res.Refused = append(res.Refused, dest+": is there and is not what "+path+" writes; --force overwrites it. Left as it is")
-			res.RefusedPaths = append(res.RefusedPaths, canon.NormalizeBaselinePath(dest))
+		case there && !opts.Force:
+			// The same under --check: a check says what the write would
+			// do, and without --force the write refuses.
+			res.refuse(dest, "is there and is not what "+path+" writes; --force overwrites it. Left as it is")
 			continue
 		default:
 			f.Changed = true
@@ -139,27 +142,55 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 	return res, nil
 }
 
+// destinationBytes is what is at dest: its bytes when a regular file is
+// there, nothing when nothing is, and — for a destination that is there
+// and is not a regular file (a directory, a device), or cannot be read —
+// the reason the conversion refuses it, that file's alone: the files named
+// beside it are converted all the same.
+func destinationBytes(dest string) (existing []byte, there bool, why string) {
+	info, err := os.Stat(dest)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, false, ""
+	case err != nil:
+		return nil, false, "cannot be looked at (" + err.Error() + "). Nothing written"
+	case !info.Mode().IsRegular():
+		kind := "special file"
+		if info.IsDir() {
+			kind = "directory"
+		}
+		return nil, true, "is there and is a " + kind + ", not a file; nothing is written over it. Left as it is"
+	}
+	existing, err = os.ReadFile(dest)
+	if err != nil {
+		return nil, true, "is there and cannot be read to be compared (" + err.Error() + "). Left as it is"
+	}
+	return existing, true, ""
+}
+
 // convertTwin writes the twin of one file: the .bot an author document
 // stands for, proven to read back as the program the document describes
-// (unparse.Verify — the check `validate` reports as E054); or the author
-// document of a .bot, from a text that parses without an error — never
-// from one the parser recovered on — with a notice for what the document
-// does not carry: the frontmatter keys beyond the four of `catalog:`, a
-// frontmatter the catalog reader cannot read, the ordinary comments.
+// (unparse.Verify — the check `validate` reports as E054), with a notice
+// for what the .bot reads otherwise than the document wrote it (E053: the
+// .bot carries the reading); or the author document of a .bot, from a text
+// that parses without an error — never from one the parser recovered on —
+// with a notice for what the document does not carry: a frontmatter the
+// catalog reader does not read, the keys beyond the four of `catalog:`, the
+// ordinary comments.
 func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices []string, err error) {
+	dest = twinPath(to, path)
 	abs, aerr := filepath.Abs(path)
 	if aerr != nil {
 		abs = path
 	}
 	switch to {
 	case "bot":
-		dest = path[:len(path)-len(".yaml")] // `x.bot.yaml` stands for `x.bot`
 		res := author.Parse(abs, raw)
 		if res.HasErrors() {
-			return dest, nil, nil, fmt.Errorf("%w: does not read: %s", canon.ErrRefused, diagnosticErrors(res.Diagnostics))
+			return dest, nil, nil, fmt.Errorf("%w: does not read: %s", canon.ErrRefused, diagnosticErrors(namedAs(res.Diagnostics, path)))
 		}
-		for _, d := range res.Diagnostics {
-			notices = append(notices, path+": "+d.Error())
+		for _, d := range namedAs(res.Diagnostics, path) {
+			notices = append(notices, d.Error())
 		}
 		text := unparse.Unparse(res.File)
 		if verr := unparse.Verify(res.File, text); verr != nil {
@@ -167,22 +198,36 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 		}
 		return dest, []byte(text), notices, nil
 	case "yaml":
-		dest = path + ".yaml"
 		pr := parser.Parse(abs, string(raw))
-		if errs := diagnosticErrors(pr.Diagnostics); errs != "" {
+		if errs := diagnosticErrors(namedAs(pr.Diagnostics, path)); errs != "" {
 			return dest, nil, nil, fmt.Errorf("%w: does not parse: %s — a document is written from a program, never from a text the parser recovered on", canon.ErrRefused, errs)
 		}
 		out, werr := author.Write(pr.File)
 		if werr != nil {
 			return dest, nil, nil, fmt.Errorf("%w: cannot be written as a document: %v", canon.ErrRefused, werr)
 		}
-		notices = append(notices, frontmatterNotices(path, pr.File)...)
-		if n := commentsOutsideFrontmatter(pr.File); n > 0 {
+		// Whether the document carries a `catalog:` is read off the bytes
+		// written: the notes state what they hold, not what the writer meant.
+		carries := documentCarriesCatalog(out)
+		notices = append(notices, frontmatterNotices(path, pr.File, carries)...)
+		if n := commentsOutsideFrontmatter(pr.File, carries); n > 0 {
 			notices = append(notices, fmt.Sprintf("%s: %d comment line(s) are not represented in the document — a draft carries the catalog only, the .bot keeps them", path, n))
 		}
 		return dest, out, notices, nil
 	}
 	return "", nil, nil, fmt.Errorf("fmt: --to takes bot or yaml, not %q", to)
+}
+
+// namedAs gives the diagnostics the file name the command was given —
+// the parse carried the absolute path, so an include resolves beside the
+// file — so a refusal or a note names the file once, as the user wrote it.
+func namedAs(diags []parser.Diagnostic, name string) []parser.Diagnostic {
+	out := make([]parser.Diagnostic, len(diags))
+	for i, d := range diags {
+		d.File = name
+		out[i] = d
+	}
+	return out
 }
 
 // diagnosticErrors joins the error-severity diagnostics, "" when none.
@@ -196,60 +241,77 @@ func diagnosticErrors(diags []parser.Diagnostic) string {
 	return strings.Join(errs, "; ")
 }
 
-// frontmatterBlock is the head comments' `---` block: its inner lines and
-// whether it closed. fm is the number of head comments the block spans.
-func frontmatterBlock(head []*ast.Comment) (lines []string, closed bool, fm int) {
-	if len(head) == 0 || strings.TrimSpace(head[0].Text) != workflowfile.FrontmatterFence {
-		return nil, false, 0
+// frontmatterNotices says what the document written carries of the .bot's
+// frontmatter, and what it does not. carries is whether the document
+// written has a `catalog:` at all (documentCarriesCatalog), never
+// re-derived here; when it does not, the reason is the one reading's —
+// the block parser.Frontmatter takes off the head and
+// workflowfile.DecodeFrontmatter decodes, as the writer and the catalogue
+// do: a block that is not closed, one the reading does not read, one with
+// none of the four keys. The keys beyond the four are said by name.
+func frontmatterNotices(path string, f *ast.File, carries bool) []string {
+	block := parser.Frontmatter(f)
+	if !block.Found {
+		return nil
 	}
-	for i, c := range head[1:] {
-		if strings.TrimSpace(c.Text) == workflowfile.FrontmatterFence {
-			return lines, true, i + 2
+	var (
+		ident *workflowfile.Frontmatter
+		extra []string
+		err   error
+	)
+	if block.Closed {
+		ident, extra, err = workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"))
+	}
+	var notes []string
+	if !carries {
+		why := "the writer wrote none"
+		switch {
+		case !block.Closed:
+			why = "the frontmatter block is not closed (no second `## ---`)"
+		case err != nil:
+			why = "the frontmatter is not YAML the catalog reader reads (" + strings.Join(strings.Fields(err.Error()), " ") + ")"
+		case ident.Empty():
+			why = "the frontmatter carries none of the four keys of `catalog:` (" + strings.Join(workflowfile.FrontmatterKeys, ", ") + ")"
 		}
-		lines = append(lines, c.Text)
+		notes = append(notes, path+": "+why+" — the document carries no `catalog:`")
 	}
-	return lines, false, len(head)
+	if len(extra) > 0 {
+		notes = append(notes, fmt.Sprintf("%s: %d key(s) of the frontmatter are not carried by `catalog:` (%s) — the document is a draft, the .bot keeps them", path, len(extra), strings.Join(extra, ", ")))
+	}
+	return notes
 }
 
-// frontmatterNotices says what the document's `catalog:` does not carry of
-// the .bot's frontmatter: a block that is not closed or not YAML the
-// catalog reader reads (the document then carries no `catalog:`), and the
-// keys beyond the four of the catalog identity.
-func frontmatterNotices(path string, f *ast.File) []string {
-	lines, closed, fm := frontmatterBlock(f.Comments)
-	if fm == 0 {
-		return nil
+// documentCarriesCatalog reports whether the document written has a
+// top-level `catalog:` — read off the bytes that were written, so a note
+// about them states what they hold rather than what the writer meant.
+func documentCarriesCatalog(doc []byte) bool {
+	var root yaml.Node
+	if err := yaml.Unmarshal(doc, &root); err != nil || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return false
 	}
-	if !closed {
-		return []string{path + ": the frontmatter block is not closed (no second `## ---`) — the document carries no `catalog:`"}
-	}
-	var m map[string]any
-	if err := yaml.Unmarshal([]byte(strings.Join(lines, "\n")), &m); err != nil {
-		return []string{path + ": the frontmatter is not YAML the catalog reader reads (" + err.Error() + ") — the document carries no `catalog:`"}
-	}
-	var extra []string
-	for k := range m {
-		switch k {
-		case "name", "description", "triggers", "capabilities":
-		default:
-			extra = append(extra, k)
+	m := root.Content[0]
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == "catalog" {
+			return true
 		}
 	}
-	if len(extra) == 0 {
-		return nil
-	}
-	sort.Strings(extra)
-	return []string{fmt.Sprintf("%s: %d key(s) of the frontmatter are not carried by `catalog:` (%s) — the document is a draft, the .bot keeps them", path, len(extra), strings.Join(extra, ", "))}
+	return false
 }
 
 // commentsOutsideFrontmatter counts the comment lines of f the document
-// does not represent: the head's beyond the frontmatter block (the
-// strict-escape directive aside — the document says its profile with
-// `dsl:`), and every comment a declaration or an edge carries.
-func commentsOutsideFrontmatter(f *ast.File) int {
-	_, _, fm := frontmatterBlock(f.Comments)
+// does not represent: the head's — beyond the frontmatter block when the
+// block became the document's `catalog:` (carries), the block's own lines
+// included when it did not: not closed, not read, none of the four keys,
+// they are lost with the rest — the strict-escape directive aside (the
+// document says its profile with `dsl:`), and every comment a
+// declaration or an edge carries.
+func commentsOutsideFrontmatter(f *ast.File, carries bool) int {
+	represented := 0
+	if carries {
+		represented = parser.Frontmatter(f).Span
+	}
 	n := 0
-	for _, c := range f.Comments[fm:] {
+	for _, c := range f.Comments[represented:] {
 		if !parser.IsStrictEscapeDirective(c.Text) {
 			n++
 		}

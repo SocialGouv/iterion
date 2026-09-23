@@ -75,10 +75,10 @@ var (
 	// without changing it; the others were formatted all the same.
 	ErrFmtRefused = errors.New("fmt: a file was refused")
 	// ErrFmtNothingToCheck is RunFmt's error under Check when the paths
-	// given hold no `.bot` at all. A gate that checked nothing is green
-	// for the one reason a gate must never be: a path renamed out from
-	// under it, a walk that stopped finding files.
-	ErrFmtNothingToCheck = errors.New("fmt: --check found no .bot file")
+	// given hold no `.bot` and no author document at all. A gate that
+	// checked nothing is green for the one reason a gate must never be: a
+	// path renamed out from under it, a walk that stopped finding files.
+	ErrFmtNothingToCheck = errors.New("fmt: --check found no .bot file or author document")
 	// ErrFmtBaselineStale is RunFmt's error when the refusals and the
 	// baseline disagree — in either direction.
 	ErrFmtBaselineStale = errors.New("fmt: the refusals do not match the baseline")
@@ -96,9 +96,10 @@ var (
 // Under Check nothing is written. An archive is not a workflow file: named,
 // it is an error; met in a walk, it is passed over like any other file.
 // An author document (`.bot.yaml`) is formatted like a .bot — in its own
-// canonical YAML form (canonicalDocument) — and one that carries YAML
-// comments is refused, its bytes intact. With To, RunFmt converts instead
-// (runFmtConvert).
+// canonical YAML form, on its own bytes (canon.Document) — and refused, its
+// bytes intact, when a rewrite would lose what its author wrote: a YAML
+// comment, a text the .bot reads otherwise than written. With To, RunFmt
+// converts instead (runFmtConvert).
 func RunFmt(opts FmtOptions) (FmtResult, error) {
 	var res FmtResult
 	if opts.To != "" {
@@ -121,15 +122,14 @@ func RunFmt(opts FmtOptions) (FmtResult, error) {
 		}
 		var out []byte
 		if workflowfile.IsAuthorDocument(path) {
-			out, err = canonicalDocument(path, raw)
+			out, err = canon.Document(path, raw)
 		} else {
 			out, err = canon.Bytes(path, raw)
 		}
 		if err != nil {
 			// canon states the fact; what to do about it is the caller's,
 			// and for `fmt` it is "this file stays as its author wrote it".
-			res.Refused = append(res.Refused, path+": "+strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")+". Left as it is")
-			res.RefusedPaths = append(res.RefusedPaths, canon.NormalizeBaselinePath(path))
+			res.refuse(path, strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")+". Left as it is")
 			continue
 		}
 		f := FmtFile{Path: path, Changed: !bytes.Equal(out, raw)}

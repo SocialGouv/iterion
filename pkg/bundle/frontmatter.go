@@ -4,23 +4,19 @@ import (
 	"os"
 	"strings"
 
-	"go.yaml.in/yaml/v2"
-
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
-// Frontmatter is the optional `## ---` … `## ---` YAML block at the top of a
-// main.bot. It lets a loose .bot file or a bundle carry catalog metadata
+// Frontmatter is the optional `## ---` … `## ---` YAML block at the head of
+// a main.bot. It lets a loose .bot file or a bundle carry catalog metadata
 // (name / description / triggers / capabilities) inline. For a bundle the
 // manifest is authoritative; a non-empty frontmatter value OVERRIDES the
 // manifest's triggers/capabilities at discovery time
 // (botregistry.parseBundle). bundlelint flags that silent override (C221).
-type Frontmatter struct {
-	Name         string   `yaml:"name"`
-	Description  string   `yaml:"description"`
-	Triggers     []string `yaml:"triggers"`
-	Capabilities []string `yaml:"capabilities"`
-}
+// The type and its one reading live in workflowfile (DecodeFrontmatter),
+// where the author writer reads the same block the same way.
+type Frontmatter = workflowfile.Frontmatter
 
 // ReadFrontmatter reads the file at path and returns its parsed frontmatter,
 // or nil when the file is unreadable or carries no `## ---` block.
@@ -32,10 +28,18 @@ func ReadFrontmatter(path string) *Frontmatter {
 	return ParseFrontmatter(raw)
 }
 
-// ParseFrontmatter pulls a `## ---` … `## ---` block from the top of the file
-// and YAML-decodes the inner content. The block is allowed only at the very
-// top of the file, optionally after blank lines. Returns nil when the block
-// is absent or malformed.
+// ParseFrontmatter reads a `.bot` text as the parser does and takes the
+// `## ---` … `## ---` block that opens its head (parser.Frontmatter): the
+// head is what precedes the first declaration, so blank lines, the `dsl:`
+// header and `import` lines may come before the fence, and a comment that
+// is not the fence may not; a BOM or CRLF endings read as the lexer reads
+// them. The inner lines are decoded through workflowfile.DecodeFrontmatter.
+// Returns nil when there is no such block, when it is not closed, or when
+// the reading does not read it — a block no reader of a catalog identity
+// reads: the author writer takes the same block off the same head, so the
+// `catalog:` of a document is what the catalogue reads off its `.bot`, and
+// `fmt`, which writes the head's comments at the top, never changes an
+// identity.
 //
 // The fence and the inner lines are comment lines of the workflow source, so
 // they follow the lexer's definition of a comment (workflowfile.CommentText):
@@ -43,43 +47,13 @@ func ReadFrontmatter(path string) *Frontmatter {
 // same line. A reader that only knew `##` would silently drop the whole
 // catalogue identity of a file the parser accepts.
 func ParseFrontmatter(raw []byte) *Frontmatter {
-	lines := strings.Split(string(raw), "\n")
-	i := 0
-	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
-		i++
-	}
-	if i >= len(lines) || !isFrontmatterFence(lines[i]) {
+	block := parser.Frontmatter(parser.Parse("main.bot", string(raw)).File)
+	if !block.Found || !block.Closed {
 		return nil
 	}
-	start := i + 1
-	end := -1
-	for j := start; j < len(lines); j++ {
-		if isFrontmatterFence(lines[j]) {
-			end = j
-			break
-		}
-	}
-	if end < 0 {
+	fm, _, err := workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"))
+	if err != nil {
 		return nil
 	}
-	var yamlLines []string
-	for _, ln := range lines[start:end] {
-		if text, ok := workflowfile.CommentText(ln); ok {
-			yamlLines = append(yamlLines, text)
-		} else {
-			yamlLines = append(yamlLines, ln)
-		}
-	}
-	var fm Frontmatter
-	if err := yaml.Unmarshal([]byte(strings.Join(yamlLines, "\n")), &fm); err != nil {
-		return nil
-	}
-	return &fm
-}
-
-// isFrontmatterFence reports whether line is the `---` comment line that
-// opens or closes a frontmatter block, whichever hash count it uses.
-func isFrontmatterFence(line string) bool {
-	text, ok := workflowfile.CommentText(line)
-	return ok && strings.TrimSpace(text) == workflowfile.FrontmatterFence
+	return fm
 }
