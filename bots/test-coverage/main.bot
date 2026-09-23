@@ -529,7 +529,9 @@ schema verify_plan:
 ## untracked files) shows genuinely-new test code — the negative-space
 ## anti-façade floor (the agent cannot just CLAIM it added tests; the
 ## diff must show them). `skipped` is true only when no verify script was
-## produced (treated as pass but surfaced loudly, never a silent façade).
+## produced, which is a REFUSAL (`passed` false): a gate that did not run
+## cannot certify. A repo with genuinely nothing to build writes a verify.sh
+## that exits 0 — an explicit empty gate leaves an artefact, a missing one not.
 schema verify_result:
   passed: bool
   skipped: bool
@@ -925,9 +927,9 @@ script = os.path.join(scratch, 'verify.sh')
 skipped = False
 if not os.path.exists(script):
     skipped = True
-    passed = True
-    rc = 0
-    out = 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'
+    passed = False
+    rc = 6
+    out = 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build/test gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing. Write it DELIBERATELY -- verify_probe reuses an existing script for the rest of the run, so an empty gate written just to get past this refusal keeps reporting green after a build system appears.'
 else:
     def sh_uncommented(text):
         # The script and the CI config, read with comments removed -- shared by
@@ -1204,7 +1206,16 @@ new_test_code = added > 0 or untracked_test
 if not new_test_code:
     out = out + chr(10) + '[gate] no genuinely-new test code detected in this run (neither committed nor in the working tree) -- write real tests and commit them (everything but the .claude/ scaffold); see the test-coverage skill mutation rule.'
 
-print(json.dumps({'passed': passed, 'skipped': skipped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
+# A refusal is written at the FRONT of out, and the sections above append to it.
+# Tail-only truncation would therefore drop the very reason the gate refused --
+# measured: 40 matrix problems pushed NO VERIFY SCRIPT out of a 4000-char tail, and
+# log_tail is what fail_log hands the next pass. Keep both ends.
+def framed(s):
+    if len(s) <= 4000:
+        return s
+    return s[:800] + chr(10) + '[...truncated...]' + chr(10) + s[-3160:]
+
+print(json.dumps({'passed': passed, 'skipped': skipped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': framed(out)}))
 "`
   output: verify_result
 

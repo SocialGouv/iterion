@@ -330,9 +330,12 @@ prompt review_system:
   a campaign pass on invented work.
 
   Procedure:
-    1. If `build_passed` is false, the tree is mid-implementation — return
-       `clean: true` with empty findings immediately (the build failure is
-       handled by the deterministic gate; do not review a broken tree).
+    1. If `build_passed` is false AND `build_skipped` is false, the tree is
+       mid-implementation — return `clean: true` with empty findings
+       immediately (the build failure is handled by the deterministic gate;
+       do not review a broken tree). When `build_skipped` is true nothing was
+       built and nothing is mid-implementation: REVIEW NORMALLY, and say in
+       the findings that the build gate never ran.
     2. Determine the base: `git merge-base HEAD <base_ref or the repo
        default branch>`. Review the run's own work: `git diff <base>..HEAD`
        and `git diff --stat <base>..HEAD` for the whole footprint.

@@ -1,7 +1,8 @@
 name: adr-cartograph
 display_name: Adry
 icon: 🗺️
-version: 2.0.2
+version: 2.1.0
+## 2.1.0 — a missing verify.sh is a refusal, not a pass (#1598)
 ## 2.0.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (survey_code_system 7,
 ## survey_code_user 5, campaign_system 14, campaign_user 9, verify_system 2,

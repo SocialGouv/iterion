@@ -1,7 +1,8 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.3.3
+version: 0.4.0
+## 0.4.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 0.3.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside nineteen prompts (84 in all) now reach the
 ## models as blank lines instead of being folded away by the profile-1 lexer;

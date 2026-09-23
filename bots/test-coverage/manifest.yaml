@@ -1,7 +1,8 @@
 name: test-coverage
 display_name: Testy
 icon: 🧪
-version: 2.3.3
+version: 2.4.0
+## 2.4.0 — a missing verify.sh is a refusal, and its reason survives a loud tail (#1598)
 ## 2.3.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
 ## and the commit instruction excludes it (#1364); the bundle's skill says the same.

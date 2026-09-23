@@ -35,8 +35,10 @@ schema verify_plan:
 
 ## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
 ## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
-## LLM judgment. `skipped` is true only when no verify script was produced
-## (treated as pass but surfaced loudly, never a silent façade).
+## LLM judgment. `skipped` is true only when no verify script was produced,
+## which is a REFUSAL (`passed` false): a gate that did not run cannot
+## certify. A repo with genuinely nothing to build writes a verify.sh that
+## exits 0 — an explicit empty gate leaves an artefact, a missing one does not.
 schema verify_result:
   passed: bool
   skipped: bool
@@ -72,6 +74,9 @@ schema gate_state:
 schema review_input:
   base_ref: string
   build_passed: bool
+  ## No verify script existed for this pass, so `build_passed` is a REFUSAL
+  ## and not a verdict on the tree — the review must still run.
+  build_skipped: bool
   prior_findings: string
 
 schema review_output:

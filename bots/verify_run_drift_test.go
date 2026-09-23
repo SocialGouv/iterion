@@ -260,11 +260,23 @@ func TestVerifyRunDriftTail(t *testing.T) {
 		}
 	})
 
-	t.Run("missing_verify_sh_still_skips", func(t *testing.T) {
+	// A missing verify.sh is a REFUSAL, not a pass (#1598): the gate never
+	// ran, so it certifies nothing. What this subtest still guards is the
+	// drift tail's half — the refusal must be the no-script one, carrying its
+	// own reason, and must not arrive dressed as a drift accusation about a
+	// build that never happened.
+	t.Run("missing_verify_sh_is_refused_and_says_why", func(t *testing.T) {
 		ws, scratch := gitWorkspace(t), t.TempDir()
 		res := run(t, ws, scratch)
-		if !res.Passed || !res.Skipped {
-			t.Fatalf("missing verify.sh must keep the surfaced-skip contract: %+v", res)
+		if res.Passed {
+			t.Fatalf("missing verify.sh must be refused, not passed: %+v", res)
+		}
+		if !res.Skipped {
+			t.Fatalf("the refusal must stay distinguishable from a red build: %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "NO VERIFY SCRIPT") {
+			t.Fatalf("the refusal must carry its own reason, not a drift accusation "+
+				"about a build that never ran: %+v", res)
 		}
 	})
 
