@@ -441,8 +441,9 @@ func (s *Server) handleUpdateApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	// AuthZ: team-wide keys → admin/owner of that team. User-scoped
-	// keys → only the owning user (or super-admin).
+	// AuthZ: team-wide keys → whoever may manage that team, which is the
+	// same right that created the key. User-scoped keys → only the owning
+	// user (or super-admin).
 	if !s.canMutateApiKey(r.Context(), id, key) {
 		httpError(w, http.StatusForbidden, "cannot mutate this key")
 		return
