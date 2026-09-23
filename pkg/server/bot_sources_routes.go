@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -360,6 +361,15 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "cannot delete %s (the bundle entry)", botsource.MainBotFile)
 		return
 	}
+	// The if-match token, the same one the file put takes in its body. It
+	// rides the query here because a DELETE carries no body of its own and
+	// one is not reliably forwarded. Absent = last-write-wins, which is what
+	// a caller holding no token gets; malformed is refused rather than read
+	// as absent, or a typo would silently buy the weaker guarantee.
+	version, ok := s.parseIfMatchVersion(w, r)
+	if !ok {
+		return
+	}
 	// Clone before mutating — same aliasing hazard as the file put above.
 	files := make(map[string]string, len(bs.Files))
 	for k, v := range bs.Files {
@@ -375,7 +385,7 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// manifest still declares the floor its sources need.
 	before := validateBundleCompileSelected(bs.Files, []string{path})
 	bs.Files = files
-	bs.Version = 0 // no if-match on a delete
+	bs.Version = version
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -668,6 +678,25 @@ func newDiagnostics(before, after []string) []string {
 		}
 	}
 	return fresh
+}
+
+// parseIfMatchVersion reads the `version` query token a bodyless bot-source
+// write presents. Absent is 0, which both store twins read as "no if-match"
+// — last-write-wins, the behaviour a caller with no token has to get. A
+// token that is not a positive integer is REFUSED: read as absent it would
+// hand a caller that asked for the check the one that does not check, and
+// the client could not tell the two apart.
+func (s *Server) parseIfMatchVersion(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("version"))
+	if raw == "" {
+		return 0, true
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 1 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "version must be a positive integer, got %q", raw)
+		return 0, false
+	}
+	return v, true
 }
 
 // botSourceError maps store errors to actionable status codes.

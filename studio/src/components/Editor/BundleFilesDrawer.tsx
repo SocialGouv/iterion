@@ -3,6 +3,7 @@ import Editor from "@/lib/monaco";
 import { FileIcon, PlusIcon, TrashIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 
+import { ApiError } from "@/api/client";
 import {
   deleteBotSourceFile,
   getBotSource,
@@ -11,9 +12,13 @@ import {
 } from "@/api/botSources";
 import { botSourceEditorPath } from "@/api/client";
 import { Button, Drawer, Spinner } from "@/components/ui";
+import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useConfirm } from "@/hooks/useConfirm";
 import { usePromptText } from "@/hooks/usePromptText";
 import { inferMonacoLanguage } from "@/lib/inferMonacoLanguage";
+import { ITER_LANGUAGE_ID as ITER_LANGUAGE } from "@/lib/iterLanguage";
+import { registerIterLanguage } from "@/lib/iterMonaco";
+import { isWorkflowFile } from "@/lib/workflowFile";
 import { toastError } from "@/lib/errorHints";
 import { useTabsStore } from "@/store/tabs";
 import { useThemeStore } from "@/store/theme";
@@ -49,9 +54,18 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   );
   const [saving, setSaving] = useState(false);
   const [busyRel, setBusyRel] = useState<string | null>(null);
+  // Set when the store refused a write because the bundle moved under this
+  // drawer. It is NOT cleared by re-fetching in the background: the token
+  // this drawer holds is the one it READ, and silently adopting a fresh one
+  // would turn the refusal into the overwrite it just prevented. Only an
+  // explicit reload clears it, and that reload says what it discards.
+  const [conflict, setConflict] = useState(false);
 
   const handleOpenChange = (next: boolean) => {
-    if (!next) setEditing(null);
+    if (!next) {
+      setEditing(null);
+      setConflict(false);
+    }
     onOpenChange(next);
   };
 
@@ -122,17 +136,65 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     setEditing({ rel: clean, value: "", original: " new" });
   };
 
+  // The if-match token for every write this drawer makes: the version of the
+  // bundle it LOADED. Not a fresh read at write time — that would only cover
+  // the milliseconds between the read and the PUT, and the window that loses
+  // an author's work is the whole time the drawer has been open.
+  const ifMatch = (): number | "unchecked" => bundle?.version ?? "unchecked";
+
+  /** A write the store refused because the bundle moved under this drawer. */
+  const isStale = (err: unknown) => err instanceof ApiError && err.status === 409;
+
   const onSave = async () => {
     if (!editing) return;
     setSaving(true);
     try {
-      const updated = await putBotSourceFile(teamID, slug, editing.rel, editing.value);
+      const updated = await putBotSourceFile(
+        teamID,
+        slug,
+        editing.rel,
+        editing.value,
+        ifMatch(),
+      );
       setBundle(updated);
       setEditing(null);
+      setConflict(false);
     } catch (err) {
+      // The typed text stays in the buffer either way: the author's only
+      // copy of it is on screen.
+      if (isStale(err)) setConflict(true);
       toastError(addToast, err, "Save file failed");
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Re-read the bundle, discarding what is in the buffer. The one way out
+   *  of a conflict, and it says so before it takes the text. */
+  const onReloadAfterConflict = async () => {
+    const dirty = !!editing && editing.value !== editing.original;
+    if (dirty) {
+      const go = await confirm({
+        title: "Reload this bot from the store?",
+        message:
+          "Reloading replaces what you typed with the file as it is stored now, including the change made by the other editor. Copy your text out first if you need it.",
+        confirmLabel: "Reload and discard",
+        confirmVariant: "danger",
+      });
+      if (!go) return;
+    }
+    setLoading(true);
+    try {
+      const fresh = await getBotSource(teamID, slug);
+      setBundle(fresh);
+      setConflict(false);
+      setEditing((e) =>
+        e ? { rel: e.rel, value: fresh.files?.[e.rel] ?? "", original: fresh.files?.[e.rel] ?? "" } : e,
+      );
+    } catch (err) {
+      toastError(addToast, err, "Reload bundle failed");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -150,9 +212,11 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     }
     setBusyRel(rel);
     try {
-      const updated = await deleteBotSourceFile(teamID, slug, rel);
+      const updated = await deleteBotSourceFile(teamID, slug, rel, ifMatch());
       setBundle(updated);
+      setConflict(false);
     } catch (err) {
+      if (isStale(err)) setConflict(true);
       toastError(addToast, err, "Delete file failed");
     } finally {
       setBusyRel(null);
@@ -196,11 +260,36 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
           )
         }
       >
+        {conflict && (
+          <InlineBanner
+            tone="warning"
+            layout="inline"
+            title="This bot changed in the store"
+            action={
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void onReloadAfterConflict()}
+              >
+                Reload
+              </Button>
+            }
+          >
+            Another editor wrote to it since this panel opened, so a write from
+            here would overwrite that change. Reload to see it — what is typed
+            here is discarded.
+          </InlineBanner>
+        )}
         {editing ? (
           <div className="-mx-4 -my-3 flex h-[75vh] flex-col">
             <Editor
               theme={monacoTheme}
-              language={inferMonacoLanguage(editing.rel)}
+              // A `.bot` fragment is iterion's own DSL, not plain text —
+              // `inferMonacoLanguage` maps it to plaintext for the dialogs
+              // that show a file without registering the language, so this
+              // surface names the id and registers it in `beforeMount`.
+              language={isWorkflowFile(editing.rel) ? ITER_LANGUAGE : inferMonacoLanguage(editing.rel)}
+              beforeMount={registerIterLanguage}
               value={editing.value}
               onChange={(v) => setEditing((e) => (e ? { ...e, value: v ?? "" } : e))}
               onMount={(ed, monaco) => {
@@ -244,7 +333,24 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
                     {rel}
                     {isMain && <span className="ml-2 text-caption text-fg-subtle">workflow</span>}
                   </button>
-                  {!isMain && (
+                  {isMain ? (
+                    // The canvas is the main's editor, but it REFUSES a main
+                    // that does not parse: the document is then the file
+                    // minus the region the parser could not read, and every
+                    // write site turns it down. On the local twin an author
+                    // repairs the file where it lives; on the cloud twin the
+                    // bundle's files live here, so this is the only surface
+                    // that can, and routing the row to the canvas alone left
+                    // a stored bot unrepairable from the studio (#1659).
+                    <button
+                      type="button"
+                      onClick={() => openFileForEdit(rel)}
+                      className="shrink-0 rounded px-1.5 py-0.5 text-caption text-accent-text opacity-0 transition-opacity hover:bg-surface-2 group-hover:opacity-100"
+                      title={`Edit ${rel} as text — the way to repair a main the canvas cannot open`}
+                    >
+                      Edit as text
+                    </button>
+                  ) : (
                     <button
                       type="button"
                       onClick={() => void onDelete(rel)}

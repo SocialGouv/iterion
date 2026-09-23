@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import Editor, { type Monaco } from "@/lib/monaco";
+import Editor from "@/lib/monaco";
 import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
 import * as api from "@/api/client";
+import { parseBotSourceEditorPath } from "@/api/client";
 import type { IterDocument } from "@/api/types";
-import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "@/lib/iterLanguage";
-import { registerIterCompletionProvider } from "@/lib/iterMonacoCompletion";
+import { ITER_LANGUAGE_ID } from "@/lib/iterLanguage";
+import { registerIterLanguage } from "@/lib/iterMonaco";
 import { applyParsedSource } from "@/lib/salvage";
 import { useConfirm } from "@/hooks/useConfirm";
 import { Button } from "@/components/ui/Button";
@@ -93,6 +94,11 @@ export default function SourceView() {
   }, [unit, salvaged]);
 
   const perFile = !!unit && !!selected && selected !== MERGED && !salvaged;
+  // Which twin this tab is on. The control that repairs a main the canvas
+  // cannot open differs between them: a local author edits the file where
+  // it lives, a cloud author opens it as text from the bundle's files list
+  // (#1659). Naming the wrong one sends them to a surface they do not have.
+  const onCloudBundle = !!currentFilePath && !!parseBotSourceEditorPath(currentFilePath);
 
   // Which file the buffer currently HOLDS the text of. `editable` says the
   // view is ABOUT a file a save could land on; it says nothing about what
@@ -337,15 +343,6 @@ export default function SourceView() {
     rendered,
   ]);
 
-  const handleEditorWillMount = useCallback((monaco: Monaco) => {
-    if (!monaco.languages.getLanguages().some((l: { id: string }) => l.id === ITER_LANGUAGE_ID)) {
-      monaco.languages.register({ id: ITER_LANGUAGE_ID });
-      monaco.languages.setLanguageConfiguration(ITER_LANGUAGE_ID, iterLanguageConfig);
-      monaco.languages.setMonarchTokensProvider(ITER_LANGUAGE_ID, iterTokensProvider);
-    }
-    registerIterCompletionProvider(monaco);
-  }, []);
-
   // Editable when the view is ABOUT a file a save could land on: a bot in
   // one file — salvaged or not, since repairing it here is the way out —
   // or one file of a unit whose main parses. Not the merged program, which
@@ -403,7 +400,10 @@ export default function SourceView() {
           {unit && salvaged ? (
             <span className="text-xs text-fg-subtle" data-testid="source-view-salvaged-unit-note">
               Read-only: this bot&apos;s main did not parse. It is saved from its files as they
-              are stored, so the main has to be repaired there.
+              are stored, so the main has to be repaired there —{" "}
+              {onCloudBundle
+                ? "open it as text from the bundle's files list."
+                : "edit the file where this bot's files live, then reopen it."}
             </span>
           ) : unit && selected === MERGED ? (
             <span className="text-xs text-fg-subtle" data-testid="source-view-unit-note">
@@ -446,7 +446,7 @@ export default function SourceView() {
           height="100%"
           language={ITER_LANGUAGE_ID}
           theme={resolvedTheme === "dark" ? "vs-dark" : "vs"}
-          beforeMount={handleEditorWillMount}
+          beforeMount={registerIterLanguage}
           value={source}
           onChange={(v) => {
             if (editing) setSource(v ?? "");

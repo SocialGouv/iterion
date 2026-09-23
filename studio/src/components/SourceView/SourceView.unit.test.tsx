@@ -14,7 +14,14 @@ const api = vi.hoisted(() => ({
   unparseUnitFile: vi.fn(),
   parseUnitFile: vi.fn(),
 }));
-vi.mock("@/api/client", () => api);
+// The real module is kept and only the calls under test are stubbed: a
+// wholesale mock loses every other export (`parseBotSourceEditorPath`, which
+// the view reads to tell the local twin from the cloud one) and a hand-rolled
+// double of it would drift from the one production uses.
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/api/client")>()),
+  ...api,
+}));
 vi.mock("@/lib/monaco", () => ({
   default: ({
     value,
@@ -806,5 +813,39 @@ describe("the Source view of a bot in several files", () => {
     // after the await, which is where the store can be compared. What
     // matters is that nothing landed.
     expect(store.getState().document?.workflows?.[0]?.name).toBe("from-the-canvas");
+  });
+});
+
+// The salvage refusal names the CONSTRAINT and, since #1659, the control
+// that satisfies it. The control differs per twin: a local author edits the
+// file where this bot's files live; a cloud author has no filesystem, and
+// the bundle's files are reachable only through the files drawer — which is
+// why the sentence used to stop at the constraint.
+describe("the salvage refusal of a bot in several files names the control of ITS twin", () => {
+  async function salvagedUnitNote(path: string) {
+    const store = createDocumentStore();
+    store.getState().setDocument(createEmptyDocument());
+    // The path first: setting it clears the unit and the salvage flag, so a
+    // store built the other way round renders a bot in ONE file and the
+    // note under test never appears.
+    store.getState().setCurrentFilePath(path);
+    store.getState().setUnit(unit);
+    store.getState().setCurrentSource(MAIN_TEXT);
+    store.getState().setSalvaged(true);
+    store.getState().markSaved();
+    renderView(store);
+    return (await screen.findByTestId("source-view-salvaged-unit-note")).textContent ?? "";
+  }
+
+  it("sends a local author to the files on disk", async () => {
+    const note = await salvagedUnitNote("bots/demo/main.bot");
+    expect(note).toMatch(/edit the file where this bot's files live/i);
+    expect(note).not.toMatch(/files list/i);
+  });
+
+  it("sends a cloud author to the bundle's files list", async () => {
+    const note = await salvagedUnitNote("botsource://team-1/demo/main.bot");
+    expect(note).toMatch(/open it as text from the bundle's files list/i);
+    expect(note).not.toMatch(/where this bot's files live/i);
   });
 });
