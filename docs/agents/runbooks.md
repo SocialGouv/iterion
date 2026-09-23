@@ -126,6 +126,16 @@ the hours this one spent.
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
+- [docs/auto-maintenance.md](../auto-maintenance.md) — wiring a repository so
+  its dependencies update, align and merge with nobody watching: the eight
+  gestures in the only order that is safe, and `task
+  auto-maintenance:check REPO=owner/name`, the preflight that runs the seven
+  agreements and reddens. Read it before arming `arm_automerge` anywhere, or
+  when a dependency loop "is configured" and merges nothing — the settings live
+  in three systems (ruleset, iterion integration, App installations) and
+  nothing type-checks the agreement between them. Its exit codes separate a
+  measured disagreement (1) from a blind spot (2), because a comparison that
+  fails open restores confidence over real work.
 - [docs/merge-policy.md](../merge-policy.md) — how a change reaches `main`:
   the merge queue, the required checks, and the admin bypass. Read it when
   **nobody can merge** — three required checks (`test`, `vendor-check`,
