@@ -171,6 +171,8 @@ schema plan_output:
   lanes: json
   halted: bool
   halt: json
+  ## The operator-facing reason the typed fail node renders ("" when not halted).
+  halt_reason: string
   summary: string
 
 schema release_input:
@@ -296,6 +298,9 @@ schema decide_output:
   alertlog_file: string
   tick_file: string
   bootstrap: bool
+  ## The state generation decide read; commit_state refuses to overwrite a
+  ## state another tick rewrote since.
+  generation: int
   summary: string
 
 schema notify_input:
@@ -305,6 +310,10 @@ schema notify_input:
   sinks: json
   labels: json
   app: json
+  ## The deployed version as resolved ("" when unknown) and whether it was
+  ## verified: every message says which.
+  release: string
+  release_known: bool
   dry_run: bool
   max_message_chars: int
 
@@ -327,6 +336,8 @@ schema commit_input:
   state_next_file: string
   alertlog_file: string
   tick_file: string
+  ## The generation decide read: refused under the lock if the file moved on.
+  generation: int
   state_commit: bool
   workspace: string
   state_dir: string
@@ -482,7 +493,6 @@ tool plan:
         'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
         'halted': 'watchdog halted since {since}: {reason}',
         'severity': 'severity',
-        'evidence': 'evidence',
         'sample': 'masked sample',
     }
     for k, v in (cfg.get('labels') or {}).items():
@@ -500,6 +510,10 @@ tool plan:
             raise SystemExit('prod-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
     halt = state.get('halt') or None
     halted = bool(halt)
+    halt_reason = ''
+    if halted:
+        halt_reason = (labels['halted'].replace('{since}', str(halt.get('since') or '?'))
+                       .replace('{reason}', str(halt.get('reason') or '?')))
 
     now_ns = time.time_ns()
     to_ns = now_ns - ingest_lag * 10 ** 9
@@ -540,7 +554,7 @@ tool plan:
     print(json.dumps({'app': app, 'release': release, 'grafana': grafana, 'loki': loki_plan,
                       'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sinks': sinks,
                       'labels': labels, 'lanes': lanes, 'halted': halted, 'halt': halt or {},
-                      'summary': summary}, ensure_ascii=False))
+                      'halt_reason': halt_reason, 'summary': summary}, ensure_ascii=False))
 
 ## The deployed version, from the source the config names. This slice
 ## reads a field of the health endpoint; release_known stays FALSE until
@@ -1315,7 +1329,16 @@ tool decide:
     incidents = state.setdefault('incidents', {})
     health = state.setdefault('health', {})
     cursors = state.setdefault('cursors', {}).setdefault('loki', {})
-    state['generation'] = int(state.get('generation') or 0) + 1
+    ## The generation read HERE is what commit_state compares under its
+    ## lock: a state rewritten by another tick in between is refused, not
+    ## overwritten.
+    generation_seen = int(state.get('generation') or 0)
+    state['generation'] = generation_seen + 1
+    def ns_to_iso(ts):
+        try:
+            return datetime.datetime.fromtimestamp(int(ts) / 1e9, datetime.timezone.utc).isoformat(timespec='minutes')
+        except (TypeError, ValueError, OverflowError, OSError):
+            return str(ts)[:16]
 
     ## ── this tick's candidates ─────────────────────────────────────
     ## Each candidate: fingerprint, kind, severity, title key, detail
@@ -1342,7 +1365,7 @@ tool decide:
         cnt = int(t.get('count') or 0)
         cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'severity': 'high' if cnt >= 50 else 'medium',
                       'title_key': 'loki_template', 'title_arg': (t.get('template') or '')[:120], 'detail_key': 'loki_detail',
-                      'fields': {'count': cnt, 'first': (t.get('first_ts') or '')[:10], 'streams': ', '.join(t.get('streams') or []) or '-'},
+                      'fields': {'count': cnt, 'first': ns_to_iso(t.get('first_ts') or 0), 'streams': ', '.join(t.get('streams') or []) or '-'},
                       'evidence': {'sample': t.get('sample'), 'template': t.get('template'), 'query': t.get('query')},
                       'lane': 'loki', 'tick_count': cnt})
     for f in (signals.get('leak') or []):
@@ -1368,10 +1391,11 @@ tool decide:
         rec.setdefault('first_seen', now_iso)
         rec.setdefault('last_notified', None)
         rec.setdefault('alerted', False)
-        if prev is not None and RANK.get(c['severity'], 0) < RANK.get(prev.get('severity') or 'low', 0):
+        prev_sev = (prev or {}).get('severity') or ''
+        if prev is not None and RANK.get(c['severity'], 0) < RANK.get(prev_sev or 'low', 0):
             ## A severity never goes DOWN on its own: a template that spiked
             ## to high keeps its rank until the incident is forgotten.
-            rec['severity'] = prev['severity']
+            rec['severity'] = prev_sev
         state_word = None
         if bootstrap and c['kind'] == 'loki':
             ## The first window is history, not news: observe, do not post.
@@ -1387,7 +1411,7 @@ tool decide:
             alerts.append({'fingerprint': fp, 'kind': c['kind'], 'severity': rec['severity'], 'state': state_word,
                            'title_key': c['title_key'], 'title_arg': c['title_arg'], 'detail_key': c['detail_key'],
                            'fields': c['fields'], 'evidence': c['evidence'], 'count': rec['count'],
-                           'first_seen': rec['first_seen']})
+                           'first_seen': rec['first_seen'], 'prev_severity': prev_sev})
         incidents[fp] = rec
 
     ## ── incidents NOT seen this tick ───────────────────────────────
@@ -1404,11 +1428,12 @@ tool decide:
             del incidents[fp]
             continue
         if rec.get('alerted') and gone_h >= quiet_h and not rec.get('quiet_noted'):
+            ## The note is STAGED here and stamped only once it is posted
+            ## (below, after the cap) — a note the cap cuts must re-fire.
             alerts.append({'fingerprint': fp, 'kind': rec.get('kind'), 'severity': 'low', 'state': 'quiet',
                            'title_key': rec.get('title_key'), 'title_arg': rec.get('title_arg'), 'detail_key': rec.get('detail_key'),
                            'fields': rec.get('fields') or {}, 'evidence': {}, 'count': rec.get('count'),
-                           'first_seen': rec.get('first_seen')})
-            rec['quiet_noted'] = True
+                           'first_seen': rec.get('first_seen'), 'prev_severity': rec.get('severity') or ''})
 
     ## ── source health + staleness ──────────────────────────────────
     def mark(source, ok, err=''):
@@ -1449,13 +1474,22 @@ tool decide:
     alerts.sort(key=lambda a: (RANK.get(a['severity'], 0), order.get(a['state'], 0)), reverse=True)
     overflow = max(0, len(alerts) - max_alerts)
     posted, deferred = alerts[:max_alerts], alerts[max_alerts:]
+    ## Stamps happen HERE, on what was actually selected: a deferred alert
+    ## keeps its previous notification stamp, its previous severity and an
+    ## un-noted quiet flag, so the same rule re-selects it next tick.
     for a in posted:
         rec = incidents.get(a['fingerprint'])
-        if rec is not None and a['state'] != 'quiet':
+        if rec is None:
+            continue
+        if a['state'] == 'quiet':
+            rec['quiet_noted'] = True
+        else:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
-    ## Deferred alerts keep their previous notification stamp, so the same
-    ## rule re-selects them next tick.
+    for a in deferred:
+        rec = incidents.get(a['fingerprint'])
+        if rec is not None and a['state'] == 'escalated' and a.get('prev_severity'):
+            rec['severity'] = a['prev_severity']
     for q, info in loki_per_query.items():
         if not info.get('error') and info.get('covered_to_ns'):
             cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'at': now_iso,
@@ -1488,7 +1522,7 @@ tool decide:
                ' observed, ' + str(len(incidents)) + ' open incident(s), coverage ' + coverage +
                (', BOOTSTRAP' if bootstrap else '') +
                ((' -- lane errors: ' + json.dumps(loki_errors + prom_errors)[:400]) if (loki_errors or prom_errors) else ''))
-    print(json.dumps({'alerts': posted, 'alert_count': len(posted), 'overflow_count': overflow,
+    print(json.dumps({'alerts': posted, 'alert_count': len(posted), 'overflow_count': overflow, 'generation': generation_seen,
                       'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage}] if (coverage_changed and coverage == 'partial') else []),
                       'needs_analysis': needs_analysis, 'state_next_file': state_next, 'alertlog_file': alertlog,
                       'tick_file': tick, 'bootstrap': bootstrap, 'summary': summary}, ensure_ascii=False))
@@ -1514,6 +1548,8 @@ tool notify:
     sinks = {{input.sinks}} or []
     labels = {{input.labels}} or {}
     app = {{input.app}} or {}
+    release = {{input.release}} or ''
+    release_known = bool({{input.release_known}})
     dry_run = {{input.dry_run}}
     max_chars = int({{input.max_message_chars}} or 14000)
     webhooks_file = {{secrets.webhooks.path}}
@@ -1525,10 +1561,22 @@ tool notify:
         raise SystemExit(0)
     def flat(s, cap=300):
         return re.sub(r'\s+', ' ', str(s if s is not None else '')).strip()[:cap]
+    def inert(s, cap=300):
+        ## Untrusted text (a log line, a metric title, a container name) is
+        ## rendered with every markdown active escaped and bare URL schemes
+        ## defanged: a line an attacker influenced must never become a
+        ## clickable link, a heading or a second alert block in the channel.
+        t = re.sub(r'([\\`*_\[\]()~>|#!-])', lambda m: '\\' + m.group(1), flat(s, cap))
+        return re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t)
+    def code(s, cap=300):
+        ## Inline code renders no markdown; a URL scheme is still defanged so
+        ## nothing a reader copies out of the span is a live link either.
+        t = flat(s, cap).replace('`', "'")
+        return '`' + re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
     def fmt(key, **kw):
         t = labels.get(key) or key
         for k, v in kw.items():
-            t = t.replace('{' + k + '}', flat(v, 200))
+            t = t.replace('{' + k + '}', inert(v, 200))
         return t
 
     scope = flat(app.get('name'), 60) + ('/' + flat(app.get('environment'), 40) if app.get('environment') else '')
@@ -1538,29 +1586,36 @@ tool notify:
         state = a.get('state') or 'new'
         head = fmt(a.get('title_key') or 'alert')
         marker = {'new': labels.get('alert'), 'escalated': labels.get('escalated'), 'reminder': labels.get('reminder'), 'quiet': labels.get('quiet')}.get(state) or state
-        lines = [ICON.get(sev, ':bell:') + ' **' + flat(marker, 40).upper() + ' · ' + scope + ' — ' + flat(head, 120) + '**']
+        lines = [ICON.get(sev, ':bell:') + ' **' + inert(marker, 40).upper() + ' · ' + inert(scope, 100) + ' — ' + inert(head, 120) + '**']
         if a.get('title_arg'):
-            lines.append('`' + flat(a['title_arg'], 200) + '`')
+            lines.append(code(a['title_arg'], 200))
         fields = a.get('fields') or {}
         if a.get('detail_key'):
             lines.append(fmt(a['detail_key'], **{k: v for k, v in fields.items()}))
         meta = [labels.get('severity', 'severity') + ' ' + sev.upper(),
                 fmt('new_since', date=(a.get('first_seen') or '')[:16]),
                 fmt('count', n=a.get('count') or 0)]
+        if release:
+            meta.append(labels.get('release', 'release') + ' ' + inert(release, 60) +
+                        ('' if release_known else ' (' + inert(labels.get('release_unverified', 'unverified'), 40) + ')'))
         lines.append('_' + ' · '.join(meta) + '_')
         ev = a.get('evidence') or {}
         if ev.get('sample'):
-            lines.append('> ' + flat(ev['sample'], 300))
+            lines.append('> ' + code(ev['sample'], 300))
         if ev.get('sample_masked'):
-            lines.append('> ' + flat(labels.get('sample', 'masked sample'), 40) + ': `' + flat(ev['sample_masked'], 120) + '`')
-        messages.append((sev, chr(10).join(lines)))
+            lines.append('> ' + inert(labels.get('sample', 'masked sample'), 40) + ': ' + code(ev['sample_masked'], 120))
+        messages.append((sev, chr(10).join(lines), False))
+    ## Meta notices — overflow, a silent source, partial coverage — are
+    ## about the WATCHDOG's own sight, not an incident's severity: they
+    ## bypass the per-sink threshold and reach every sink, so a config that
+    ## only pages for high incidents still learns that the bot went blind.
     if overflow > 0:
-        messages.append(('medium', ':warning: ' + fmt('overflow', n=overflow)))
+        messages.append(('medium', ':warning: ' + fmt('overflow', n=overflow), True))
     for s in stale:
         if s.get('source') == 'coverage':
-            messages.append(('medium', ':warning: ' + labels.get('coverage_partial', 'coverage partial')))
+            messages.append(('medium', ':warning: ' + inert(labels.get('coverage_partial', 'coverage partial'), 300), True))
         else:
-            messages.append(('medium', ':warning: ' + fmt('stale', source=s.get('source'), hours=s.get('hours'), last=s.get('last_ok') or 'never')))
+            messages.append(('medium', ':warning: ' + fmt('stale', source=s.get('source'), hours=s.get('hours'), last=s.get('last_ok') or 'never'), True))
 
     if not messages:
         out({'posted': False, 'dry_run': bool(dry_run), 'messages': [], 'delivered': 0,
@@ -1570,9 +1625,9 @@ tool notify:
                          'to the workspace config (or run with --var dry_run=true to preview). Nothing was consumed: these alerts '
                          'will be re-computed on the next tick.')
     payloads = []  # (msg_index, sink, payload)
-    for idx, (sev, text) in enumerate(messages):
+    for idx, (sev, text, meta_notice) in enumerate(messages):
         for s in sinks:
-            if RANK.get(sev, 0) < RANK.get(s.get('min_severity') or 'low', 1):
+            if not meta_notice and RANK.get(sev, 0) < RANK.get(s.get('min_severity') or 'low', 1):
                 continue
             payloads.append((idx, s, {'text': text[:max_chars], 'channel': s.get('channel') or '',
                                       'username': s.get('username') or 'Argus', 'icon_emoji': s.get('icon_emoji') or ':eye:'}))
@@ -1639,13 +1694,22 @@ tool commit_state:
     state_next = {{input.state_next_file}}
     alertlog_delta = {{input.alertlog_file}}
     tick_file = {{input.tick_file}}
+    generation = int({{input.generation}} or 0)
     state_commit = {{input.state_commit}}
     ws = {{input.workspace}}
     state_dir = {{input.state_dir}}
     os.chdir(ws)
 
     def _commit_push_state(sdir, msg):
-        subprocess.run(['git', 'add', sdir], check=True, capture_output=True)
+        ## A gitignored state dir with state_commit=true is the expected
+        ## misconfiguration (the docs offer both options): name it, do not
+        ## die on a traceback with git's explanation swallowed.
+        if subprocess.run(['git', 'check-ignore', '-q', '--no-index', sdir], capture_output=True).returncode == 0:
+            raise SystemExit('prod-watch: state_commit=true but the state dir ' + repr(sdir) + ' is gitignored -- '
+                             'un-ignore it (git is the state store on ephemeral runners) or run with state_commit=false')
+        added = subprocess.run(['git', 'add', sdir], capture_output=True, text=True)
+        if added.returncode != 0:
+            raise SystemExit('prod-watch: git add of the state dir failed: ' + ((added.stderr or added.stdout or '')[-400:]).strip())
         prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'], capture_output=True, text=True).stdout.strip()
         sdir_repo = (prefix + sdir.rstrip('/')).lstrip('/')
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only'], capture_output=True, text=True).stdout.split(chr(10))
@@ -1681,6 +1745,21 @@ tool commit_state:
         raise SystemExit('prod-watch: git push failed after 5 retries (non-fast-forward or network)')
 
     os.makedirs(state_dir, exist_ok=True)
+    if state_commit:
+        ## Preflight BEFORE a byte of state is written: a misconfiguration
+        ## must not leave a consumed tick on disk that git will never carry.
+        ## --no-index: judge the ignore RULES, whether or not the dir is
+        ## already tracked (git add refuses an ignored pathspec either way).
+        if subprocess.run(['git', 'check-ignore', '-q', '--no-index', state_dir], capture_output=True).returncode == 0:
+            raise SystemExit('prod-watch: state_commit=true but the state dir ' + repr(state_dir) + ' is gitignored -- '
+                             'un-ignore it (git is the state store on ephemeral runners) or run with state_commit=false')
+        prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'], capture_output=True, text=True).stdout.strip()
+        sdir_repo = (prefix + state_dir.rstrip('/')).lstrip('/')
+        staged = subprocess.run(['git', 'diff', '--cached', '--name-only'], capture_output=True, text=True).stdout.split(chr(10))
+        outside = [q for q in staged if q.strip() and q != sdir_repo and not q.startswith(sdir_repo + '/')]
+        if outside:
+            raise SystemExit('prod-watch: refusing to commit path(s) outside the state dir ' + repr(state_dir) +
+                             ' already staged in this checkout: ' + ', '.join(outside[:10]))
     ga = os.path.join(state_dir, '.gitattributes')
     want = ['alertlog.jsonl merge=union', 'ticks.jsonl merge=union']
     have = open(ga, encoding='utf-8').read() if os.path.exists(ga) else ''
@@ -1689,8 +1768,26 @@ tool commit_state:
         with open(ga, 'a', encoding='utf-8') as fh:
             for w in missing:
                 fh.write(w + chr(10))
+    ## The lock file is host-local plumbing, never state: keep it out of git.
+    gi = os.path.join(state_dir, '.gitignore')
+    if not os.path.exists(gi) or '.lock' not in open(gi, encoding='utf-8').read():
+        with open(gi, 'a', encoding='utf-8') as fh:
+            fh.write('.lock' + chr(10))
     lock = open(os.path.join(state_dir, '.lock'), 'w')
     fcntl.flock(lock, fcntl.LOCK_EX)
+    ## The read-modify-write spans two nodes: decide read the state minutes
+    ## ago. Under the lock, refuse to overwrite a state another tick has
+    ## rewritten since (its generation moved) — the tick replays.
+    spath = os.path.join(state_dir, 'state.json')
+    if os.path.exists(spath):
+        try:
+            with open(spath, encoding='utf-8') as fh:
+                current = int((json.load(fh) or {}).get('generation') or 0)
+        except ValueError:
+            current = -1
+        if current != generation:
+            raise SystemExit('prod-watch: state.json moved from generation ' + str(generation) + ' to ' + str(current) +
+                             ' while this tick ran (another tick wrote it) -- refusing to overwrite; this tick replays')
     with open(state_next, encoding='utf-8') as fh:
         staged = fh.read()
     tmp = os.path.join(state_dir, 'state.json.tmp')
@@ -1727,7 +1824,7 @@ tool commit_state:
 fail watch_halted:
   description: "the watchdog is halted until an operator acknowledges the leak that armed it"
   code: PROD_WATCH_HALTED
-  message: "prod-watch refused to run: {{outputs.plan.summary}}"
+  message: "prod-watch refused to run — {{outputs.plan.halt_reason}}"
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -1816,6 +1913,8 @@ workflow prod_watch:
     sinks: "{{outputs.plan.sinks}}",
     labels: "{{outputs.plan.labels}}",
     app: "{{outputs.plan.app}}",
+    release: "{{outputs.resolve_release.release}}",
+    release_known: "{{outputs.resolve_release.release_known}}",
     dry_run: "{{vars.dry_run}}",
     max_message_chars: "{{vars.max_message_chars}}"
   }
@@ -1828,6 +1927,7 @@ workflow prod_watch:
     state_next_file: "{{outputs.decide.state_next_file}}",
     alertlog_file: "{{outputs.decide.alertlog_file}}",
     tick_file: "{{outputs.decide.tick_file}}",
+    generation: "{{outputs.decide.generation}}",
     state_commit: "{{vars.state_commit}}",
     workspace: "{{vars.workspace_dir}}",
     state_dir: "{{vars.state_dir}}"

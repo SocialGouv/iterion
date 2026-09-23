@@ -353,11 +353,12 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 	})
 	notify := run("notify", map[string]any{
 		"alerts": decide["alerts"], "overflow_count": decide["overflow_count"], "stale_sources": decide["stale_sources"],
-		"sinks": plan["sinks"], "labels": plan["labels"], "app": plan["app"], "dry_run": dryRun, "max_message_chars": 14000,
+		"sinks": plan["sinks"], "labels": plan["labels"], "app": plan["app"], "release": rel["release"], "release_known": rel["release_known"],
+		"dry_run": dryRun, "max_message_chars": 14000,
 	})
 	if notify["consume"] == true {
 		run("commit_state", map[string]any{"state_next_file": decide["state_next_file"], "alertlog_file": decide["alertlog_file"],
-			"tick_file": decide["tick_file"], "state_commit": false, "workspace": h.ws, "state_dir": ".prod-watch"})
+			"tick_file": decide["tick_file"], "generation": decide["generation"], "state_commit": false, "workspace": h.ws, "state_dir": ".prod-watch"})
 	}
 	return outs
 }
@@ -501,7 +502,9 @@ func TestProdWatch_LokiWindowPagingAndTruncation(t *testing.T) {
 	h := newPWHarness(t)
 	h.writeConfig(t, func(cfg map[string]any) {
 		cfg["loki"].(map[string]any)["page_size"] = 4
-		cfg["loki"].(map[string]any)["overlap_seconds"] = 600
+		// The shipped default overlap: the fixture must not be wider than
+		// the span it tests, or the overlap guard reads green while inert.
+		cfg["loki"].(map[string]any)["overlap_seconds"] = 60
 		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q"}
 		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
 		cfg["probes"] = []map[string]any{}
@@ -761,14 +764,17 @@ func TestProdWatch_DeliverySemantics(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
 	labels := map[string]any{"alert": "production alert", "severity": "severity", "new_since": "first seen {date}", "count": "{n} occurrence(s)",
-		"probe_down": "health probe failing", "probe_detail": "{url} answered {status} in {ms} ms (expected {expected})", "overflow": "{n} more"}
+		"probe_down": "health probe failing", "probe_detail": "{url} answered {status} in {ms} ms (expected {expected})", "overflow": "{n} more",
+		"stale":            "source silent: {source} without a successful poll for {hours}h (last OK: {last})",
+		"coverage_partial": "log coverage this tick was PARTIAL: absence of a finding is not evidence"}
 	alerts := []map[string]any{{"fingerprint": "probe:api", "kind": "probe", "severity": "critical", "state": "new", "title_key": "probe_down",
 		"title_arg": "api", "detail_key": "probe_detail", "fields": map[string]any{"url": "u", "status": 503, "ms": 12, "expected": 200},
 		"evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
 	run := func(sinks []map[string]any, dry bool) (map[string]any, string, error) {
 		return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 			"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": sinks, "labels": labels,
-			"app": map[string]any{"name": "demo", "environment": "preprod"}, "dry_run": dry, "max_message_chars": 14000},
+			"app": map[string]any{"name": "demo", "environment": "preprod"}, "release": "abc1234", "release_known": false,
+			"dry_run": dry, "max_message_chars": 14000},
 			nil, map[string]string{"webhooks": h.webhooksFile}))
 	}
 	// required sink down → fails, nothing consumed
@@ -804,8 +810,24 @@ func TestProdWatch_DeliverySemantics(t *testing.T) {
 	if err != nil || out["consume"] != true || out["delivered"].(float64) != 0 {
 		t.Fatalf("a medium alert must be filtered by a critical-threshold sink and still consume: %v", out)
 	}
-	if b := h.bodies(); len(b) == 0 || !strings.Contains(b[0], "503") || strings.Contains(b[0], "\n\n\n") {
-		t.Fatalf("delivered message must carry the detail: %v", b)
+	if b := h.bodies(); len(b) == 0 || !strings.Contains(b[0], "503") || strings.Contains(b[0], "\n\n\n") || !strings.Contains(b[0], "abc1234") || !strings.Contains(b[0], "unverified") {
+		t.Fatalf("delivered message must carry the detail and the (unverified) release: %v", b)
+	}
+	// A meta notice — the watchdog's own sight — reaches a sink whose
+	// threshold would filter an alert of the same severity.
+	before = h.sinkHits.Load()
+	out, stderr, err = runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
+		"alerts": []any{}, "overflow_count": 2, "stale_sources": []map[string]any{{"source": "loki", "hours": 30, "last_ok": "2026-09-22T05:10:12+00:00"}, {"source": "coverage", "hours": -1, "last_ok": "partial"}},
+		"sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "critical"}}, "labels": labels,
+		"app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": false, "max_message_chars": 14000},
+		nil, map[string]string{"webhooks": h.webhooksFile}))
+	if err != nil || out["delivered"].(float64) != 3 || h.sinkHits.Load() != before+3 {
+		t.Fatalf("overflow, staleness and partial coverage must bypass the sink threshold: %v %s", out, stderr)
+	}
+	bodies := h.bodies()
+	joined := strings.Join(bodies[len(bodies)-3:], "\n")
+	if !strings.Contains(joined, "loki") || !strings.Contains(joined, "30") || !strings.Contains(joined, "PARTIAL") || !strings.Contains(joined, "2 more") {
+		t.Fatalf("meta notices must name the source, the hours, the coverage and the overflow: %s", joined)
 	}
 }
 
@@ -861,6 +883,9 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	out, _, err = plan(h.tokenFile)
 	if err != nil || out["halted"] != true || !strings.Contains(fmt.Sprint(out["summary"]), "HALTED") {
 		t.Fatalf("an armed halt must surface as halted: %v %v", out, err)
+	}
+	if r := fmt.Sprint(out["halt_reason"]); !strings.Contains(r, "2026-09-23T10:00") || !strings.Contains(r, "leak") {
+		t.Fatalf("the typed fail node renders halt_reason, which must carry since + reason: %q", r)
 	}
 	_ = os.Remove(filepath.Join(h.ws, "prod-watch.json"))
 	if _, stderr, err := plan(h.tokenFile); err == nil || !strings.Contains(stderr, "not found") {
@@ -1051,5 +1076,332 @@ func TestProdWatch_ProbeRetriesOnce(t *testing.T) {
 	r := out["results"].([]any)[0].(map[string]any)
 	if r["ok"] != true || r["status"].(float64) != 200 {
 		t.Fatalf("a single 503 followed by 200 must be OK after the retry: %v", r)
+	}
+}
+
+// pwDecide drives decide alone over a synthetic signals file and state.
+func pwDecide(t *testing.T, wf *ir.Workflow, h *pwHarness, signals map[string]any, state map[string]any, inputs map[string]any) (map[string]any, string, error) {
+	t.Helper()
+	sig := filepath.Join(h.scratch, "signals-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".json")
+	b, _ := json.Marshal(signals)
+	if err := os.WriteFile(sig, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if state != nil {
+		sb, _ := json.Marshal(state)
+		if err := os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), sb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in := map[string]any{
+		"signals_file": sig, "prom_results": []any{}, "http_results": []any{}, "loki_ok": true, "loki_truncated": false,
+		"loki_errors": []any{}, "loki_per_query": map[string]any{}, "prom_ok": true, "prom_errors": []any{},
+		"release": "", "release_known": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": true},
+		"app": map[string]any{"name": "demo"}, "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20,
+	}
+	for k, v := range inputs {
+		in[k] = v
+	}
+	return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "decide").Script, in, nil, nil))
+}
+
+func pwStateNext(t *testing.T, out map[string]any) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(out["state_next_file"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st map[string]any
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func hoursAgo(h float64) string {
+	return time.Now().UTC().Add(-time.Duration(h * float64(time.Hour))).Format("2006-01-02T15:04:05+00:00")
+}
+
+func incident(kind, sev string, alerted bool, lastNotifiedH, lastSeenH float64) map[string]any {
+	return map[string]any{"fp": "", "kind": kind, "severity": sev, "title_key": "probe_down", "title_arg": "x", "detail_key": "probe_detail",
+		"fields": map[string]any{}, "first_seen": hoursAgo(lastSeenH + 1), "last_seen": hoursAgo(lastSeenH), "count": 3,
+		"alerted": alerted, "last_notified": map[bool]any{true: hoursAgo(lastNotifiedH), false: nil}[alerted], "quiet_noted": false}
+}
+
+// TestProdWatch_DecideLifecycle pins the lifecycle rules one by one — each
+// sub-test is the mutant that survived the first harness.
+func TestProdWatch_DecideLifecycle(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	base := func() map[string]any {
+		return map[string]any{"version": 1, "generation": 7, "cursors": map[string]any{"loki": map[string]any{"errors": map[string]any{"covered_to_ns": "111", "overlap_hashes": []any{}}}}, "incidents": map[string]any{}, "health": map[string]any{}}
+	}
+	probeDown := []map[string]any{{"id": "api", "url": "u", "ok": false, "status": 503, "ms": 5, "error": "HTTP 503", "expected": 200, "severity": "critical"}}
+
+	t.Run("renotify window: a reminder after the window, silence inside it", func(t *testing.T) {
+		h := newPWHarness(t)
+		st := base()
+		st["incidents"] = map[string]any{"probe:api": incident("probe", "critical", true, 25, 0.1)}
+		out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probeDown})
+		if err != nil || strings.Join(alertsOf(t, map[string]map[string]any{"decide": out}), ",") != "probe:reminder:critical" {
+			t.Fatalf("25h after the last notification the incident must be reminded: %v %s %v", out["summary"], stderr, err)
+		}
+		st["incidents"] = map[string]any{"probe:api": incident("probe", "critical", true, 1, 0.1)}
+		out, _, _ = pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probeDown})
+		if len(alertsOf(t, map[string]map[string]any{"decide": out})) != 0 {
+			t.Fatalf("1h after the last notification nothing re-fires: %v", out["summary"])
+		}
+	})
+	t.Run("severity never decays on its own", func(t *testing.T) {
+		h := newPWHarness(t)
+		st := base()
+		st["incidents"] = map[string]any{"prom:cpu": incident("prom", "high", true, 1, 0.1)}
+		out, _, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{
+			"prom_results": []map[string]any{{"id": "cpu", "title": "cpu", "state": "breached", "value": 2, "op": ">", "threshold": 1, "severity": "medium", "warnings": []any{}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := pwStateNext(t, out)["incidents"].(map[string]any)["prom:cpu"].(map[string]any)["severity"]; got != "high" {
+			t.Fatalf("a medium reading must not lower a high incident: %v", got)
+		}
+	})
+	t.Run("a dead lane keeps its incidents' clocks; a live one quiets them, once, only if alerted", func(t *testing.T) {
+		h := newPWHarness(t)
+		st := base()
+		st["incidents"] = map[string]any{"loki:abc": incident("loki", "medium", true, 100, 100), "loki:never": incident("loki", "medium", false, 100, 100)}
+		out, _, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"loki_ok": false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(alertsOf(t, map[string]map[string]any{"decide": out})) != 0 {
+			t.Fatalf("with the loki lane down no quiet note may fire: %v", out["summary"])
+		}
+		inc := pwStateNext(t, out)["incidents"].(map[string]any)
+		if inc["loki:abc"].(map[string]any)["quiet_noted"] == true {
+			t.Fatal("a dead lane must not stamp quiet_noted")
+		}
+		out, _, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := alertsOf(t, map[string]map[string]any{"decide": out}); strings.Join(got, ",") != "loki:quiet:low" {
+			t.Fatalf("a live lane quiets the ALERTED incident only (never the observed-only one): %v", got)
+		}
+		inc = pwStateNext(t, out)["incidents"].(map[string]any)
+		if inc["loki:abc"].(map[string]any)["quiet_noted"] != true {
+			t.Fatal("a posted quiet note is stamped")
+		}
+	})
+	t.Run("the cap defers: a cut quiet note and a cut escalation both re-fire next tick", func(t *testing.T) {
+		h := newPWHarness(t)
+		st := base()
+		st["incidents"] = map[string]any{
+			"probe:old": incident("probe", "high", true, 100, 100), // due for a quiet note
+			"prom:cpu":  incident("prom", "medium", true, 1, 0.1),  // about to escalate to high
+		}
+		prom := []map[string]any{{"id": "cpu", "title": "cpu", "state": "breached", "value": 2, "op": ">", "threshold": 1, "severity": "high", "warnings": []any{}}}
+		out, _, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probeDown, "prom_results": prom, "max_alerts": 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := alertsOf(t, map[string]map[string]any{"decide": out}); strings.Join(got, ",") != "probe:new:critical" || out["overflow_count"].(float64) != 2 {
+			t.Fatalf("cap 1: only the critical probe posts, two alerts overflow: %v %v", got, out["overflow_count"])
+		}
+		next := pwStateNext(t, out)["incidents"].(map[string]any)
+		if next["probe:old"].(map[string]any)["quiet_noted"] == true {
+			t.Fatal("a quiet note the cap cut must NOT be stamped as noted")
+		}
+		if next["prom:cpu"].(map[string]any)["severity"] != "medium" {
+			t.Fatalf("an escalation the cap cut must keep the previous severity so it re-fires: %v", next["prom:cpu"])
+		}
+		// Persist what decide staged and tick again with the cap open.
+		sb, _ := json.Marshal(pwStateNext(t, out))
+		_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), sb, 0o644)
+		out, _, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probeDown, "prom_results": prom, "max_alerts": 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// state.json was rewritten above (decide reads it, not `st`), so
+		// this tick sees the staged incidents.
+		got := alertsOf(t, map[string]map[string]any{"decide": out})
+		if !strings.Contains(strings.Join(got, ","), "prom:escalated:high") || !strings.Contains(strings.Join(got, ","), "probe:quiet:low") {
+			t.Fatalf("the deferred escalation and quiet note must fire once the cap opens: %v", got)
+		}
+	})
+	t.Run("a failed query keeps its cursor; the zero-façade guard refuses an all-dead tick", func(t *testing.T) {
+		h := newPWHarness(t)
+		out, _, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, base(), map[string]any{
+			"loki_ok": false, "loki_errors": []map[string]any{{"query": "errors", "error": "boom"}},
+			"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "boom", "covered_to_ns": "999"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cur := pwStateNext(t, out)["cursors"].(map[string]any)["loki"].(map[string]any)["errors"].(map[string]any)
+		if cur["covered_to_ns"] != "111" {
+			t.Fatalf("a failed query must not advance its cursor: %v", cur)
+		}
+		_, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, base(), map[string]any{
+			"loki_ok": false, "prom_ok": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": false}})
+		if err == nil || !strings.Contains(stderr, "every configured lane failed") {
+			t.Fatalf("every lane dead must refuse: %v %s", err, stderr)
+		}
+	})
+	t.Run("the ledgers carry what was posted, the tick record its counts, the release stays unverified", func(t *testing.T) {
+		h := newPWHarness(t)
+		out, _, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, base(), map[string]any{"http_results": probeDown, "release": "abc1234"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		al, _ := os.ReadFile(out["alertlog_file"].(string))
+		if !(strings.Contains(string(al), `"fp": "probe:api"`) || strings.Contains(string(al), `"fp":"probe:api"`)) {
+			t.Fatalf("the alert ledger must carry the posted alert: %s", al)
+		}
+		tk, _ := os.ReadFile(out["tick_file"].(string))
+		if !strings.Contains(string(tk), `"alerts": 1`) || !strings.Contains(string(tk), `"release_known": false`) {
+			t.Fatalf("the tick record carries the counts and the unverified release: %s", tk)
+		}
+		if out["generation"].(float64) != 7 {
+			t.Fatalf("decide reports the generation it read (7), got %v", out["generation"])
+		}
+	})
+	t.Run("a log template's first-seen renders as a date, not a nanosecond epoch", func(t *testing.T) {
+		h := newPWHarness(t)
+		sig := map[string]any{"templates": []map[string]any{{"template_id": "t1", "query": "errors", "template": "ERROR job # failed", "count": 3,
+			"first_ts": strconv.FormatInt(nsAgo(time.Hour), 10), "last_ts": strconv.FormatInt(nsAgo(time.Minute), 10), "sample": "ERROR job <num> failed", "streams": []string{"container=w"}}}, "leak": []any{}}
+		st := base()
+		// Not a bootstrap (state exists): the template posts as NEW.
+		out, _, err := pwDecide(t, wf, h, sig, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := out["alerts"].([]any)[0].(map[string]any)
+		first := fmt.Sprint(a["fields"].(map[string]any)["first"])
+		if !strings.Contains(first, "T") || strings.HasPrefix(first, "17") && len(first) == 10 {
+			t.Fatalf("first must be an ISO date, got %q", first)
+		}
+	})
+}
+
+// TestProdWatch_NotifyRendersUntrustedTextInert: a log line carrying a
+// markdown link, bold and a backtick renders as inert text — no clickable
+// link under the bot's name, no second block, no broken code span.
+func TestProdWatch_NotifyRendersUntrustedTextInert(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	labels := map[string]any{"alert": "production alert", "severity": "severity", "new_since": "first seen {date}", "count": "{n} occurrence(s)",
+		"loki_template": "new error pattern", "loki_detail": "{count} line(s) since {first}, containers: {streams}"}
+	hostile := "ERROR handler: rejected input [CLICK HERE TO RESET PROD](https://evil.example/pwn) **ALL CLEAR** `x"
+	alerts := []map[string]any{{"fingerprint": "loki:t", "kind": "loki", "severity": "medium", "state": "new", "title_key": "loki_template",
+		"title_arg": hostile, "detail_key": "loki_detail", "fields": map[string]any{"count": 1, "first": "2026-09-23T10:00", "streams": "container=api **bold**"},
+		"evidence": map[string]any{"sample": hostile}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
+		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
+		"labels": labels, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000},
+		nil, map[string]string{"webhooks": h.webhooksFile}))
+	if err != nil {
+		t.Fatalf("notify: %v %s", err, stderr)
+	}
+	text := out["messages"].([]any)[0].(map[string]any)["text"].(string)
+	if strings.Contains(text, "](https://evil.example/pwn)") {
+		t.Fatalf("a markdown link from a log line must not render clickable:\n%s", text)
+	}
+	if strings.Contains(text, "https://evil") {
+		t.Fatalf("a bare URL from a log line must be defanged:\n%s", text)
+	}
+	if strings.Contains(text, " **bold**") {
+		t.Fatalf("markdown actives in a field must be escaped:\n%s", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Count(line, "`")%2 != 0 {
+			t.Fatalf("a backtick in the source must not break a code span:\n%s", text)
+		}
+	}
+}
+
+// TestProdWatch_CommitStateGit exercises the real git path against a bare
+// remote: the happy push, the staged-path guard, the gitignored state dir,
+// the generation check, and the lock file kept out of git.
+func TestProdWatch_CommitStateGit(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	git := func(args ...string) string {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = h.ws
+		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "-q", bare).CombinedOutput(); err != nil {
+		t.Fatalf("bare: %v %s", err, out)
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@x")
+	git("config", "user.name", "t")
+	_ = os.WriteFile(filepath.Join(h.ws, "README.md"), []byte("ops\n"), 0o644)
+	git("add", "README.md")
+	git("commit", "-q", "-m", "init")
+	git("remote", "add", "origin", bare)
+	git("push", "-q", "-u", "origin", "main")
+
+	stage := func(gen int) map[string]any {
+		st := filepath.Join(h.scratch, "state_next.json")
+		_ = os.WriteFile(st, []byte(fmt.Sprintf(`{"version":1,"generation":%d,"cursors":{"loki":{}},"incidents":{},"health":{}}`, gen)), 0o644)
+		al := filepath.Join(h.scratch, "alertlog_delta.jsonl")
+		_ = os.WriteFile(al, []byte(`{"at":"x","fp":"probe:api"}`+"\n"), 0o644)
+		tk := filepath.Join(h.scratch, "tick.json")
+		_ = os.WriteFile(tk, []byte(`{"at":"x","alerts":1}`), 0o644)
+		return map[string]any{"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": gen - 1, "state_commit": true, "workspace": h.ws, "state_dir": ".prod-watch"}
+	}
+	run := func(in map[string]any) (map[string]any, string, error) {
+		return runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, "commit_state").Script, in, nil, nil),
+			[]string{"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x"})
+	}
+	// happy path: committed, pushed, the lock file NOT in git
+	out, stderr, err := run(stage(1))
+	if err != nil || out["committed"] != true {
+		t.Fatalf("first commit must land: %v %s %v", out, stderr, err)
+	}
+	tracked := git("ls-files", ".prod-watch")
+	if strings.Contains(tracked, ".lock") || !strings.Contains(tracked, "state.json") || !strings.Contains(tracked, ".gitattributes") || !strings.Contains(tracked, ".gitignore") {
+		t.Fatalf("the state dir is tracked without its lock file: %q", tracked)
+	}
+	if log := git("log", "--oneline", "origin/main"); !strings.Contains(log, "chore(prod-watch)") {
+		t.Fatalf("the state commit must reach the remote: %s", log)
+	}
+	// the generation check: state.json moved on since decide read it
+	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(`{"version":1,"generation":9,"cursors":{"loki":{}},"incidents":{},"health":{}}`), 0o644)
+	_, stderr, err = run(stage(2)) // decide read generation 1, the file says 9
+	if err == nil || !strings.Contains(stderr, "moved from generation 1 to 9") {
+		t.Fatalf("a state rewritten by another tick must be refused, not overwritten: %v %s", err, stderr)
+	}
+	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(`{"version":1,"generation":1,"cursors":{"loki":{}},"incidents":{},"health":{}}`), 0o644)
+	// the staged-path guard: an operator's pre-staged file must not ride the bot's commit
+	_ = os.WriteFile(filepath.Join(h.ws, "my_wip.txt"), []byte("wip\n"), 0o644)
+	git("add", "my_wip.txt")
+	_, stderr, err = run(stage(2))
+	if err == nil || !strings.Contains(stderr, "outside the state dir") || !strings.Contains(stderr, "my_wip.txt") {
+		t.Fatalf("a foreign staged path must refuse by name: %v %s", err, stderr)
+	}
+	git("reset", "-q", "my_wip.txt")
+	_ = os.Remove(filepath.Join(h.ws, "my_wip.txt"))
+	// a gitignored state dir with state_commit=true: a named refusal, not a traceback
+	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte(".prod-watch/\n"), 0o644)
+	_, stderr, err = run(stage(2))
+	if err == nil || !strings.Contains(stderr, "gitignored") || strings.Contains(stderr, "Traceback") {
+		t.Fatalf("a gitignored state dir must refuse by name: %v %s", err, stderr)
 	}
 }
