@@ -25,6 +25,7 @@ import type { DiagnosticIssue } from "@/api/client";
 import { createEmptyDocument, getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
 import type { GroupAnnotation } from "@/lib/groups";
 import {
+  documentComments,
   documentGroups,
   groupNameFromComment,
   groupToCommentText,
@@ -62,12 +63,17 @@ const MAX_HISTORY = 50;
  *  since typed. They part exactly when there is work a discard would take. */
 export interface SourceBuffer {
   /** The tab's file the buffer belongs to, and — for a bot in several files
-   *  — which file of its unit. Carried so a reader can say WHICH text is at
-   *  stake rather than only that some is. */
+   *  — which file of its unit. They are what lets the view recognise its own
+   *  buffer when it mounts again. */
   path: string | null;
   rel: string | null;
   text: string;
   base: string;
+  /** The document the buffer was rendered FROM. Carried so that a view
+   *  re-adopting it restores the provenance too: an Apply is refused when
+   *  the document moved under the text, and a re-adopted buffer that
+   *  claimed the CURRENT document would lose exactly that refusal. */
+  doc: IterDocument | null;
 }
 
 interface DocumentState {
@@ -247,9 +253,9 @@ function pushHistory(s: DocumentState): { _history: IterDocument[]; _future: Ite
   return { _history: history, _future: [], _generation: s._generation + 1 };
 }
 
-/** Remove a node from every @group comment of the document, wherever the
- *  comment lives. Drops groups that fall below 2 members. */
-function removeNodeFromGroups(doc: IterDocument, nodeName: string): IterDocument {
+/** Drop a node from every @group comment of a document, wherever the comment
+ *  lives. A group that falls below 2 members dissolves. */
+function dropNodeFromGroups(doc: IterDocument, nodeName: string): IterDocument {
   return mapDocumentComments(doc, (c) => {
     if (!groupNameFromComment(c)) return c;
     const g = parseGroups([c])[0];
@@ -258,6 +264,39 @@ function removeNodeFromGroups(doc: IterDocument, nodeName: string): IterDocument
     if (remaining.length < 2) return null; // dissolve group
     return { ...c, text: groupToCommentText({ ...g, nodeIds: remaining }) };
   });
+}
+
+/** Rewrite the document's groups for a node that is being removed.
+ *
+ *  A group's comment is carried by whatever the author wrote it next to —
+ *  a declaration, an edge, the file's head. Removing a node takes its
+ *  declaration and every edge touching it, so a group whose comment happened
+ *  to sit there would go with them even though the members that are LEFT are
+ *  still on the canvas. The comparison is made against what the group would
+ *  have become had its carrier survived, and any group that is missing after
+ *  the removal is re-declared on the document's own comment list — where the
+ *  studio writes the groups it creates, and where the save puts it above the
+ *  `dsl:` header. Keyed on group NAMES, so it covers every carrier kind
+ *  without naming any of them. */
+function removeNodeFromGroups(before: IterDocument, after: IterDocument, nodeName: string): IterDocument {
+  const doc = dropNodeFromGroups(after, nodeName);
+  const kept = dropNodeFromGroups(before, nodeName);
+  const survivors = documentComments(kept).filter((c) => groupNameFromComment(c));
+  if (survivors.length === 0) return doc;
+  const present = new Set(documentGroups(doc).map((g) => g.name));
+  // The comment is re-declared with its `file` — a comment with none is
+  // written to the main, so dropping it would move the author's line out of
+  // the fragment they wrote it in and into main.bot, on a save they asked
+  // for one node of.
+  const orphaned = survivors.filter((c) => {
+    const name = groupNameFromComment(c);
+    return !!name && !present.has(name);
+  });
+  if (orphaned.length === 0) return doc;
+  return {
+    ...doc,
+    comments: [...doc.comments, ...orphaned.map((c) => ({ ...c, anchor: undefined, place: undefined }))],
+  };
 }
 
 /** Rename a node in every @group comment of the document, wherever it lives. */
@@ -398,6 +437,7 @@ export function createDocumentStore() {
         // still there has to lose the node too, and one carried by the
         // declaration just removed is gone with it.
         document: removeNodeFromGroups(
+          doc,
           {
             ...doc,
             agents: doc.agents.filter((a) => a.name !== name),
@@ -462,7 +502,13 @@ export function createDocumentStore() {
     // Deep-clone with new name, copying nested arrays to avoid shared references
     const clone = { ...found.decl, name: newName };
     if ("tools" in clone && Array.isArray(clone.tools)) clone.tools = [...clone.tools];
-    if ("comments" in clone && Array.isArray(clone.comments)) clone.comments = [...clone.comments];
+    // The copy keeps the author's comments but NOT a @group annotation: a
+    // group names its members by id, so a verbatim copy declares a second
+    // group of the same name — two canvas nodes sharing one React Flow id,
+    // and the line written twice into the .bot on save.
+    if ("comments" in clone && Array.isArray(clone.comments)) {
+      clone.comments = (clone.comments as Comment[]).filter((c) => !groupNameFromComment(c));
+    }
     const kindToArray: Record<string, keyof IterDocument> = {
       agent: "agents", judge: "judges", router: "routers",
       human: "humans", tool: "tools", compute: "computes",

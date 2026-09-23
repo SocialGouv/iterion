@@ -22,6 +22,7 @@ const buffer = (text: string, base: string) => ({
   rel: null,
   text,
   base,
+  doc: null,
 });
 
 describe("the Source view's buffer, seen from outside", () => {

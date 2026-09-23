@@ -220,3 +220,65 @@ func TestABrokenMainIsRepairableThroughThePerFileRoute(t *testing.T) {
 		t.Fatalf("refused write landed anyway: %q", got)
 	}
 }
+
+// `?version=` — what `?version=${token ?? ""}` produces — must not read as
+// "no token": `Query().Get` cannot tell an absent key from an empty one, and
+// reading it as absent hands a caller that asked for the check the one that
+// does not check.
+func TestAnEmptyIfMatchVersionIsRefusedLikeAMalformedOne(t *testing.T) {
+	f := newIfMatchFixture(t)
+	for _, query := range []string{"?version=", "?version=%20"} {
+		w := f.deleteFile(t, "skills/help.md", query)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400: %s", query, w.Code, w.Body.String())
+		}
+		if _, held := f.files(t)["skills/help.md"]; !held {
+			t.Fatalf("%s removed the file", query)
+		}
+	}
+}
+
+// A token names a row the caller read. If the bot is deleted between the
+// handler's read and the write's, the write must not fall through to a
+// create and resurrect the bundle from that caller's stale snapshot — and
+// the refusal must say the bot is GONE rather than reuse the version
+// conflict, whose sentence sends a client looking for another editor's
+// change and offers a reload that 404s.
+func TestAnIfMatchTokenOnADeletedBotIsRefusedAsGoneNotResurrected(t *testing.T) {
+	s, editor, _ := newBotSourceTestServer(t)
+	ctx := auth.WithIdentity(context.Background(), editor)
+	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/ghost", nil).WithContext(ctx)
+	r.SetPathValue("id", "t1")
+	r.SetPathValue("slug", "ghost")
+	w := httptest.NewRecorder()
+	s.writeBotSource(w, r, "t1", "ed", botsource.BotSource{
+		TenantID: "t1",
+		Slug:     "ghost",
+		Files:    map[string]string{botsource.MainBotFile: testBotMain},
+		Version:  7,
+	})
+	// 404 and not the version conflict: the bot was DELETED, and a client
+	// told "another editor wrote to it, reload to see" is given a false
+	// diagnosis and a reload that cannot succeed — the studio's drawer maps
+	// every 409 to exactly that banner.
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("token on a vanished bot = %d, want 404: %s", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "deleted since you read") {
+		t.Fatalf("the refusal does not say the bot was deleted: %s", body)
+	}
+	if _, err := s.botSources.GetBySlug(ctx, "t1", "ghost"); err == nil {
+		t.Fatal("the refused write created the row anyway")
+	}
+
+	// …and a creation, which carries no token, still goes through.
+	w2 := httptest.NewRecorder()
+	s.writeBotSource(w2, r, "t1", "ed", botsource.BotSource{
+		TenantID: "t1",
+		Slug:     "ghost",
+		Files:    map[string]string{botsource.MainBotFile: testBotMain},
+	})
+	if w2.Code != http.StatusOK {
+		t.Fatalf("untokened create = %d: %s", w2.Code, w2.Body.String())
+	}
+}

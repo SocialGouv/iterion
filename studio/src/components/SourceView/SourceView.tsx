@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@/lib/monaco";
 import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
+import { useUIStore } from "@/store/ui";
 import * as api from "@/api/client";
 import { parseBotSourceEditorPath } from "@/api/client";
 import type { IterDocument } from "@/api/types";
@@ -38,6 +39,7 @@ export default function SourceView() {
   const isDirty = useDocumentStore((s) => s.isDirty);
   const setSourceBuffer = useDocumentStore((s) => s.setSourceBuffer);
   const { confirm, dialog } = useConfirm();
+  const addToast = useUIStore((s) => s.addToast);
   const [source, setSource] = useState("");
   const [editing, setEditingState] = useState(false);
   // The text the buffer was rendered FROM, frozen when the mode opens. It is
@@ -58,6 +60,7 @@ export default function SourceView() {
           rel: relRef.current,
           text: sourceRef.current,
           base: sourceRef.current,
+          doc: renderedRef.current?.doc ?? documentRef.current,
         });
       } else {
         setSourceBuffer(null);
@@ -79,10 +82,23 @@ export default function SourceView() {
   const [selected, setSelected] = useState<string | null>(null);
   const relRef = useRef<string | null>(null);
   relRef.current = selected;
+  const documentRef = useRef<IterDocument | null>(null);
+  documentRef.current = document;
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  // The buffer belongs to this mounted view: unmounting it (closing the tab,
-  // switching away) leaves nothing for a discard path to consult.
-  useEffect(() => () => setSourceBuffer(null), [setSourceBuffer]);
+  // The buffer OUTLIVES this mount when it holds work. The view is a
+  // half-pane inside a tab host inside a route: hiding the pane, expanding
+  // the canvas, leaving /editor, clicking the sidebar's Editor entry — every
+  // one of those unmounts it, and dropping the buffer there destroyed the
+  // author's text with no prompt. Three rounds of guarding those exits found
+  // a further one each time; keeping the buffer removes the exits instead,
+  // and the mount below adopts it back. A clean buffer is dropped: it holds
+  // nothing, and leaving it would keep the watcher from ever auto-reloading.
+  useEffect(
+    () => () => {
+      if (!documentStore.getState().isSourceDirty()) setSourceBuffer(null);
+    },
+    [documentStore, setSourceBuffer],
+  );
   // Every render this effect starts carries a generation. The cleanup bumps
   // it, so an answer that arrives after the author changed file — or
   // started typing — is dropped instead of landing in the editor. Without
@@ -117,9 +133,23 @@ export default function SourceView() {
       if (salvaged) return unit.main;
       if (cur === MERGED) return cur;
       if (cur && unit.files.some((f) => f.rel === cur)) return cur;
+      // The selection is component state and does not survive the unmount,
+      // so a buffer held for a FRAGMENT would come back to a view sitting on
+      // the main and never be adopted. Land on the file the held work is
+      // for, when the unit still has it.
+      const held = documentStore.getState().sourceBuffer;
+      if (
+        held &&
+        held.text !== held.base &&
+        held.path === currentFilePath &&
+        held.rel &&
+        unit.files.some((f) => f.rel === held.rel)
+      ) {
+        return held.rel;
+      }
       return unit.main;
     });
-  }, [unit, salvaged]);
+  }, [unit, salvaged, currentFilePath, documentStore]);
 
   const perFile = !!unit && !!selected && selected !== MERGED && !salvaged;
   // Which twin this tab is on. The control that repairs a main the canvas
@@ -144,10 +174,58 @@ export default function SourceView() {
   // gone, and no control inside this view to bring it back. Setting the
   // same key twice bails harmlessly; setting a new one always re-renders.
   const [rendered, setRendered] = useState<{ key: string; doc: IterDocument | null } | null>(null);
+  const renderedRef = useRef<{ key: string; doc: IterDocument | null } | null>(null);
+  renderedRef.current = rendered;
   // `stale` keeps the FILE axis only. Adding the document here would eject
   // the author from edit mode on every canvas keystroke; what the document
   // decides is whether the buffer may be WRITTEN, which is moved()'s job.
   const stale = rendered?.key !== bufferKey;
+
+  // Adopt a buffer this view left behind. The pane is mounted and unmounted
+  // by three nesting conditions it does not own (the view toggle, the canvas
+  // expand, the active tab, the route), so an author who hides it mid-edit
+  // gets their text BACK rather than a prompt asking whether to lose it.
+  // Once only, and only for the same file: the buffer lives in THIS tab's
+  // store, so a path that no longer matches means this tab has moved file
+  // (Save As, File → New, an open) and the text is not about what is on
+  // screen.
+  const adopted = useRef(false);
+  useEffect(() => {
+    if (adopted.current || editing) return;
+    const held = documentStore.getState().sourceBuffer;
+    if (!held || held.text === held.base) return;
+    if (held.path !== currentFilePath) return;
+    if (held.rel !== (unit ? selected : null)) return;
+    adopted.current = true;
+    baseRef.current = held.base;
+    setSource(held.text);
+    // The provenance comes back with the text, not reset to the current
+    // document: if the document moved while the pane was shut, the Apply
+    // must still be refused.
+    setRendered({ key: bufferKey, doc: held.doc });
+    // Not through `setEditing`: that publishes a FRESH buffer whose base is
+    // the text on screen, which would mark the author's work clean.
+    setEditingState(true);
+  }, [editing, currentFilePath, selected, unit, bufferKey, documentStore]);
+
+  // A held buffer whose file the unit no longer has cannot be selected, so
+  // it can never be adopted — and holding it keeps the watcher from ever
+  // auto-reloading this tab and lights `beforeunload` for text no surface
+  // can show. The file went while the author was editing it; say so and let
+  // go, rather than keep work nobody can reach.
+  useEffect(() => {
+    if (editing || !unit) return;
+    const held = documentStore.getState().sourceBuffer;
+    if (!held || held.text === held.base) return;
+    if (held.path !== currentFilePath) return;
+    if (!held.rel || unit.files.some((f) => f.rel === held.rel)) return;
+    setSourceBuffer(null);
+    addToast(
+      `${held.rel} is no longer one of this bot's files — the text you had not applied for it was discarded.`,
+      "warning",
+      { persistent: true },
+    );
+  }, [editing, unit, currentFilePath, documentStore, setSourceBuffer, addToast]);
 
   // Sync document → source (when not in editing mode)
   useEffect(() => {
@@ -341,6 +419,11 @@ export default function SourceView() {
       // canvas cannot do this — it never held the region the parser could
       // not read — which is why the refusal points here.
       applyParsedSource(result, { setDocument, setSalvaged });
+      // The provenance follows the apply, as it does on the per-file branch:
+      // without it the buffer keeps naming the PRE-apply document for the
+      // whole debounce, and a second Apply to the same file is refused as
+      // stale although nothing but this view had moved it.
+      setRendered({ key: bufferKey, doc: documentStore.getState().document });
       setDiagnostics(result.diagnostics);
       // The applied text becomes the buffer's own. A repair that does not
       // parse YET leaves the document a salvage, and the sync above would
@@ -409,9 +492,18 @@ export default function SourceView() {
   // sits on screen as though it were this one's file. One place rather
   // than three guards — it covers the salvaged unit, the merged program
   // and a refused file alike.
+  // Leaving the mode is not the same as discarding the work. This effect
+  // closes edit mode when the view turns read-only under it — another bot
+  // opened, a salvage appeared, a unit arrived — and it must leave the text
+  // where a discard path can still see it, exactly as the unmount cleanup
+  // does. Going through `setEditing(false)` dropped the buffer, which made
+  // the author watch a repair vanish under a read-only editor with no Apply,
+  // no Cancel and no undo.
   useEffect(() => {
-    if (!editable || stale) setEditing(false);
-  }, [editable, stale, setEditing]);
+    if (!editing || (editable && !stale)) return;
+    setEditingState(false);
+    if (!documentStore.getState().isSourceDirty()) setSourceBuffer(null);
+  }, [editing, editable, stale, documentStore, setSourceBuffer]);
 
   return (
     <div className="h-full flex flex-col">
@@ -527,6 +619,7 @@ export default function SourceView() {
               rel: relRef.current,
               text,
               base: baseRef.current,
+              doc: renderedRef.current?.doc ?? documentRef.current,
             });
           }}
           options={{

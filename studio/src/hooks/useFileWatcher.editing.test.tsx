@@ -34,6 +34,7 @@ vi.mock("@/api/ws", () => ({ fileWatcher: ws.fileWatcher }));
 import { createEmptyDocument } from "@/lib/defaults";
 import { DocumentStoreProvider, createDocumentStore, type DocumentStore } from "@/store/document";
 import { useFileWatcher } from "./useFileWatcher";
+import { useUIStore } from "@/store/ui";
 
 function Watcher() {
   useFileWatcher();
@@ -58,6 +59,7 @@ function mount(store: DocumentStore) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  useUIStore.setState({ toasts: [] });
   api.openFile.mockResolvedValue({
     source: "",
     document: createEmptyDocument(),
@@ -79,7 +81,9 @@ describe("the watcher against an open Source-view edit", () => {
 
   it("does not reload when an edit is already open", async () => {
     const store = boundStore();
-    store.getState().setSourceBuffer({ path: "bots/demo/main.bot", rel: null, text: "x", base: "x" });
+    store.getState().setSourceBuffer({ path: "bots/demo/main.bot", rel: null, text: "x", base: "x",
+      doc: null,
+    });
     mount(store);
     ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
     await new Promise((r) => setTimeout(r, 900));
@@ -93,8 +97,114 @@ describe("the watcher against an open Source-view edit", () => {
     mount(store);
     ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
     await new Promise((r) => setTimeout(r, 100));
-    store.getState().setSourceBuffer({ path: "bots/demo/main.bot", rel: null, text: "x", base: "x" });
+    store.getState().setSourceBuffer({ path: "bots/demo/main.bot", rel: null, text: "x", base: "x",
+      doc: null,
+    });
     await new Promise((r) => setTimeout(r, 900));
     expect(api.openFile).not.toHaveBeenCalled();
+  });
+});
+
+// The third window, after the branch and the debounce: the author opens the
+// edit while `openFile` is in flight. Applying the answer then swaps the
+// document and the revision under what they are typing, and
+// `applyOpenedFile` → `setCurrentFilePath` drops the buffer — so the text
+// goes invisible to every discard path AND the next Apply is refused as
+// stale, with the repair stranded.
+describe("an edit opened while the reload is in flight", () => {
+  it("is not applied over, and the change is offered instead", async () => {
+    const store = boundStore();
+    let release!: (v: unknown) => void;
+    api.openFile.mockReturnValue(new Promise((r) => { release = r; }));
+    mount(store);
+
+    ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
+    await waitFor(() => expect(api.openFile).toHaveBeenCalledTimes(1));
+
+    // The author starts typing while the answer is on the wire.
+    store.getState().setSourceBuffer({
+      path: "bots/demo/main.bot",
+      rel: null,
+      text: "a repair the author typed",
+      base: "workflow w:\n  entry: a\n",
+      doc: null,
+    });
+    release({ path: "bots/demo/main.bot", document: createEmptyDocument(), source: "" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The buffer is still there, and still visible to every discard path.
+    expect(store.getState().sourceBuffer).not.toBeNull();
+    expect(store.getState().hasUnsavedWork()).toBe(true);
+    // …and the author is told, with a way to take the change when ready.
+    const toasts = useUIStore.getState().toasts;
+    expect(toasts.map((t) => t.message)).toContain("File changed externally");
+    // The label says what the action takes: it applies the reload without a
+    // second prompt, so a neutral "Reload" would be one click from the loss.
+    expect(toasts[toasts.length - 1]?.action?.label).toBe("Reload and discard");
+  });
+
+  it("still applies a reload that lands on a clean buffer", async () => {
+    const store = boundStore();
+    let release!: (v: unknown) => void;
+    api.openFile.mockReturnValue(new Promise((r) => { release = r; }));
+    mount(store);
+
+    ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
+    await waitFor(() => expect(api.openFile).toHaveBeenCalledTimes(1));
+    release({ path: "bots/demo/main.bot", document: createEmptyDocument(), source: "" });
+
+    await waitFor(() =>
+      expect(useUIStore.getState().toasts.map((t) => t.message)).toContain("File reloaded"),
+    );
+  });
+});
+
+// The FIRST window — the edit was already open when the external write
+// landed — offers the same one-click reload. It applies without a second
+// prompt, so its label owes the same sentence as the third window's.
+describe("the toast raised when the edit was already open", () => {
+  it("names what its action takes", async () => {
+    const store = boundStore();
+    store.getState().setSourceBuffer({
+      path: "bots/demo/main.bot",
+      rel: null,
+      text: "a repair the author typed",
+      base: "workflow w:\n  entry: a\n",
+      doc: null,
+    });
+    mount(store);
+    ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
+
+    await waitFor(() =>
+      expect(useUIStore.getState().toasts.map((t) => t.message)).toContain(
+        "File changed externally",
+      ),
+    );
+    const toasts = useUIStore.getState().toasts;
+    expect(toasts[toasts.length - 1]?.action?.label).toBe("Reload and discard");
+    expect(api.openFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps the neutral label when only the document moved", async () => {
+    const store = boundStore();
+    store.getState().addAgent({
+      name: "a",
+      model: "m",
+      input: "in",
+      output: "out",
+      system: "s",
+      user: "u",
+      session: "fresh",
+    });
+    mount(store);
+    ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
+
+    await waitFor(() =>
+      expect(useUIStore.getState().toasts.map((t) => t.message)).toContain(
+        "File changed externally",
+      ),
+    );
+    const toasts = useUIStore.getState().toasts;
+    expect(toasts[toasts.length - 1]?.action?.label).toBe("Reload");
   });
 });

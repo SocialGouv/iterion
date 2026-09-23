@@ -423,6 +423,18 @@ func (s *Server) writeBotSource(w http.ResponseWriter, r *http.Request, tenantID
 		s.auditBotSource(r, tenantID, "updated", out)
 		s.writeJSONFor(w, r, botSourceView{BotSource: out, Warnings: warnings})
 	case errors.Is(err, botsource.ErrNotFound):
+		// An if-match token names a row the caller READ. Falling through to
+		// a create here would drop it and resurrect the bundle from that
+		// caller's snapshot — the bot was deleted between this handler's
+		// read and this one, and the token is exactly what says so.
+		//
+		// 404 and not the version conflict: the bot was DELETED, not written
+		// by someone else, and a client told "another editor wrote to it,
+		// reload to see" would offer a reload that cannot succeed.
+		if bs.Version != 0 {
+			s.httpErrorFor(w, r, http.StatusNotFound, "bot source %q no longer exists: it was deleted since you read version %d", bs.Slug, bs.Version)
+			return
+		}
 		bs.CreatedBy = userID
 		out, cerr := s.botSources.Create(ctx, bs)
 		if cerr != nil {
@@ -687,10 +699,16 @@ func newDiagnostics(before, after []string) []string {
 // hand a caller that asked for the check the one that does not check, and
 // the client could not tell the two apart.
 func (s *Server) parseIfMatchVersion(w http.ResponseWriter, r *http.Request) (int, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("version"))
-	if raw == "" {
+	// Presence, not emptiness: `Get` cannot tell an ABSENT key from one
+	// present and empty, and `?version=` is what `?version=${token ?? ""}`
+	// produces. Read as absent it hands a caller that asked for the check
+	// the one that does not check — the very thing the refusal below exists
+	// to prevent.
+	q := r.URL.Query()
+	if !q.Has("version") {
 		return 0, true
 	}
+	raw := strings.TrimSpace(q.Get("version"))
 	v, err := strconv.Atoi(raw)
 	if err != nil || v < 1 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "version must be a positive integer, got %q", raw)

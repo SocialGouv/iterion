@@ -56,8 +56,8 @@ function node(name: string): AgentDecl & JudgeDecl {
   };
 }
 
-function seed(kind: Kind): IterDocument {
-  const decl = node(kind === "agent" ? "worker" : "verdict");
+function seed(kind: Kind, over: Partial<AgentDecl> = {}): IterDocument {
+  const decl = { ...node(kind === "agent" ? "worker" : "verdict"), ...over };
   return {
     prompts: [],
     schemas: [],
@@ -83,9 +83,9 @@ function Inspector({ kind }: { kind: Kind }) {
   return <AgentForm decl={decl} kind={kind} />;
 }
 
-function mount(kind: Kind) {
+function mount(kind: Kind, over: Partial<AgentDecl> = {}) {
   const store: DocumentStore = createDocumentStore();
-  store.getState().setDocument(seed(kind));
+  store.getState().setDocument(seed(kind, over));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -171,6 +171,67 @@ describe.each(["agent", "judge"] as const)("AgentForm permission controls (%s)",
     // so the node goes on inheriting the workflow's two.
     expect(current().allow).toBeUndefined();
     expect(current().ask).toBeUndefined();
+  });
+
+  it.each(["allow", "ask", "deny"] as const)(
+    "records a %s rule that differs from another only in CASE",
+    (rules) => {
+      const { current } = mount(kind);
+      addRule(rules, "Read(.env*)");
+      addRule(rules, "Read(.ENV*)");
+      // The engine matches rule arguments case-sensitively: `Read(.env*)`
+      // does not cover `.ENV`. The tag widget was written for board labels
+      // and folds case by default, which silently dropped the second rule
+      // with the draft cleared and no message — on a security control.
+      expect(current()[rules]).toEqual(["Read(.env*)", "Read(.ENV*)"]);
+    },
+  );
+
+  it.each(["allow", "ask", "deny"] as const)(
+    "keeps a comma inside a %s rule instead of committing there",
+    (rules) => {
+      const { current } = mount(kind);
+      addRule(rules, 'Bash(git commit -m "a,b":*)');
+      expect(current()[rules]).toEqual(['Bash(git commit -m "a,b":*)']);
+    },
+  );
+
+  it.each(["Deny", "DENY", "ask ", " off"])(
+    "shows the legal mode spelling %j as the mode it is, not as inherit",
+    (spelling) => {
+      mount(kind, { permission: spelling });
+      expect((screen.getByLabelText(/^Permission/) as HTMLSelectElement).value).toBe(
+        spelling.trim().toLowerCase(),
+      );
+    },
+  );
+
+  it("leaves an absent mode on the inherit option", () => {
+    mount(kind);
+    // C110 accepts the mode case-insensitively and trimmed, and the writer
+    // round-trips it verbatim — so this document is legal and draws no
+    // diagnostic. Read raw, the select fell through to "-- inherit workflow --"
+    // and told the author a hard-denying node inherited its workflow. The
+    // normalisation must not swallow the genuinely empty case.
+    expect((screen.getByLabelText(/^Permission/) as HTMLSelectElement).value).toBe("");
+  });
+
+  it("says what each gate mode actually does to an unmatched call", () => {
+    mount(kind);
+    const hint = screen.getByLabelText(/Tool-permission gate for this node/);
+    const text = hint.getAttribute("aria-label") ?? "";
+    // The mode decides the default for what NOTHING matched — described as
+    // rule-triggered, `ask` reads as permissive and a headless node stalls on
+    // the first unlisted call, `deny` reads as a blocklist and the node can
+    // run nothing.
+    expect(text).toMatch(/ask PAUSES it for a human/);
+    expect(text).toMatch(/deny BLOCKS it with no pause/);
+    // …and an `ask:` rule pauses under `deny` too: Evaluate matches the ask
+    // list before it ever reaches the mode default, so "deny = the headless
+    // boundary" on its own sends a cron run into a pause nobody will answer.
+    expect(text).toMatch(/ask: always pauses \(yes, under deny too\)/);
+    // …and `off` is not the neutral choice: it outranks ITERION_PERMISSION.
+    expect(text).toMatch(/OVERRIDES ITERION_PERMISSION/);
   });
 
   it("says a node list replaces the workflow's, on each of the three", () => {

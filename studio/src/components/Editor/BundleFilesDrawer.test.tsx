@@ -15,23 +15,45 @@ const botSources = vi.hoisted(() => ({
 }));
 vi.mock("@/api/botSources", () => botSources);
 
+// `@monaco-editor/react` captures `onMount` at the editor's FIRST render and
+// calls it exactly once. The stub reproduces that contract — it is what makes
+// a keybinding bound there close over stale state — and exposes the command
+// it registered so a test can fire it later. No hook: "once, at the first
+// render" is the behaviour under test, and a flag says it without pretending
+// the double has a lifecycle.
+const keybinding = vi.hoisted(() => ({ run: null as null | (() => void), mounted: false }));
 vi.mock("@/lib/monaco", () => ({
-  default: ({
+  default: function MonacoStub({
     value,
     onChange,
     language,
+    onMount,
   }: {
     value?: string;
     onChange?: (v?: string) => void;
     language?: string;
-  }) => (
-    <textarea
-      aria-label="file"
-      data-language={language}
-      value={value ?? ""}
-      onChange={(e) => onChange?.(e.target.value)}
-    />
-  ),
+    onMount?: (ed: unknown, monaco: unknown) => void;
+  }) {
+    if (!keybinding.mounted) {
+      keybinding.mounted = true;
+      onMount?.(
+        {
+          addCommand: (_k: number, run: () => void) => {
+            keybinding.run = run;
+          },
+        },
+        { KeyMod: { CtrlCmd: 1 }, KeyCode: { KeyS: 2 } },
+      );
+    }
+    return (
+      <textarea
+        aria-label="file"
+        data-language={language}
+        value={value ?? ""}
+        onChange={(e) => onChange?.(e.target.value)}
+      />
+    );
+  },
 }));
 
 import BundleFilesDrawer from "./BundleFilesDrawer";
@@ -39,6 +61,8 @@ import BundleFilesDrawer from "./BundleFilesDrawer";
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  keybinding.run = null;
+  keybinding.mounted = false;
 });
 
 const BUNDLE = {
@@ -248,5 +272,96 @@ describe("BundleFilesDrawer and the bundle's main", () => {
     open();
     await screen.findByTitle("Open the workflow in the Canvas editor");
     expect(screen.queryByTitle("Delete main.bot")).toBeNull();
+  });
+});
+
+describe("BundleFilesDrawer when the bundle could not be read", () => {
+  it("offers no way to write, since nothing here could be checked", async () => {
+    botSources.getBotSource.mockRejectedValue(new ApiError(503, "API error 503: down"));
+    render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    // A failed read used to leave a fully functional EMPTY file list: every
+    // write went out with no if-match token at all, and "New file" typed
+    // with an existing path opened an empty buffer over a real file.
+    await screen.findByText(/could not be read/i);
+    expect(screen.queryByRole("button", { name: "New file" })).toBeNull();
+    expect(botSources.putBotSourceFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("BundleFilesDrawer when its props move to another bot", () => {
+  it("drops the buffer and the refusal rather than writing them into the new bot", async () => {
+    botSources.putBotSourceFile.mockRejectedValue(
+      new ApiError(409, "API error 409: version conflict", undefined, "version conflict"),
+    );
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "text meant for demo\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/This bot changed in the store/);
+
+    // The toolbar derives these props from the active editor file, so they
+    // can move while the panel is open. Adopting the new bundle's version
+    // under the old bot's text writes that text into the new bot under a
+    // token the store has no reason to refuse.
+    botSources.getBotSource.mockResolvedValue({ ...BUNDLE, slug: "other", version: 42 });
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+
+    await screen.findByRole("button", { name: "skills/notes.md" });
+    expect(screen.queryByLabelText("file")).toBeNull();
+    expect(screen.queryByText(/This bot changed in the store/)).toBeNull();
+  });
+});
+
+describe("BundleFilesDrawer's Ctrl+S", () => {
+  it("saves what is typed NOW, under the version held NOW", async () => {
+    botSources.putBotSourceFile.mockResolvedValue({ ...BUNDLE, version: 8 });
+    const buffer = await openForEdit("skills/notes.md");
+    fireEvent.change(buffer, { target: { value: "the author's work\n" } });
+
+    // The keybinding was registered once, at the editor's first render. Bound
+    // to the handler of THAT render it wrote the file's pre-edit text and then
+    // cleared the editor from the same stale closure — erasing the typed text
+    // from the only place it existed.
+    expect(keybinding.run).not.toBeNull();
+    keybinding.run!();
+
+    await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(1));
+    expect(botSources.putBotSourceFile).toHaveBeenCalledWith(
+      "team-1",
+      "demo",
+      "skills/notes.md",
+      "the author's work\n",
+      7,
+    );
+  });
+
+  it("presents the token a Reload read, not the one it started with", async () => {
+    botSources.putBotSourceFile.mockRejectedValue(
+      new ApiError(409, "API error 409: version conflict", undefined, "version conflict"),
+    );
+    const buffer = await openForEdit("skills/notes.md");
+    fireEvent.change(buffer, { target: { value: "# mine\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/This bot changed in the store/);
+
+    botSources.getBotSource.mockResolvedValue({ ...BUNDLE, version: 9 });
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reload and discard" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("# notes\n"),
+    );
+
+    botSources.putBotSourceFile.mockResolvedValue({ ...BUNDLE, version: 10 });
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "# merged\n" } });
+    keybinding.run!();
+    await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(2));
+    expect(botSources.putBotSourceFile.mock.calls[1]![4]).toBe(9);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@/lib/monaco";
 import { FileIcon, PlusIcon, TrashIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
@@ -57,8 +57,9 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   // Set when the store refused a write because the bundle moved under this
   // drawer. It is NOT cleared by re-fetching in the background: the token
   // this drawer holds is the one it READ, and silently adopting a fresh one
-  // would turn the refusal into the overwrite it just prevented. Only an
-  // explicit reload clears it, and that reload says what it discards.
+  // would turn the refusal into the overwrite it just prevented. It is
+  // cleared by an explicit reload, which says what it discards, and by the
+  // load effect, which re-reads the bundle in the same breath.
   const [conflict, setConflict] = useState(false);
 
   const handleOpenChange = (next: boolean) => {
@@ -72,6 +73,14 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // The buffer and the refusal belong to the bundle they were read from.
+    // The drawer's props follow the active editor file, so they can move to
+    // ANOTHER bot while it is open — and adopting the new bundle's version
+    // under the old bot's text writes that text into the new bot under a
+    // token the store has no reason to refuse.
+    setBundle(null);
+    setEditing(null);
+    setConflict(false);
     setLoading(true);
     getBotSource(teamID, slug)
       .then((b) => {
@@ -144,6 +153,14 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
 
   /** A write the store refused because the bundle moved under this drawer. */
   const isStale = (err: unknown) => err instanceof ApiError && err.status === 409;
+
+  const onSaveRef = useRef<() => Promise<void>>(async () => {});
+  // In an effect, not during render: a concurrent render React starts and
+  // ABANDONS would still have written the ref, leaving the keybinding closed
+  // over state that never committed.
+  useEffect(() => {
+    onSaveRef.current = onSave;
+  });
 
   const onSave = async () => {
     if (!editing) return;
@@ -223,6 +240,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     }
   };
 
+
   const monacoTheme = resolvedTheme === "dark" ? "vs-dark" : "vs";
 
   return (
@@ -293,7 +311,16 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
               value={editing.value}
               onChange={(v) => setEditing((e) => (e ? { ...e, value: v ?? "" } : e))}
               onMount={(ed, monaco) => {
-                ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void onSave());
+                // Through a ref: `@monaco-editor/react` captures `onMount`
+                // at the editor's first render and calls it once, so a
+                // handler bound here closes over the buffer and the version
+                // as they were when it opened. Ctrl+S then wrote the file's
+                // PRE-EDIT text, cleared the editor from that stale closure
+                // — taking the author's typing with it — and kept presenting
+                // the pre-reload token after a conflict.
+                ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
+                  void onSaveRef.current(),
+                );
               }}
               options={{
                 automaticLayout: true,
@@ -306,6 +333,16 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
           <div className="flex flex-1 items-center justify-center py-8">
             <Spinner size="sm" label="Loading bundle" />
           </div>
+        ) : !bundle ? (
+          // No bundle means the read FAILED. The list then renders empty and
+          // fully functional: every write goes out with no if-match token at
+          // all, and "New file" typed with an existing path opens an empty
+          // buffer that replaces a real file. Nothing here can be checked
+          // against what is stored, so nothing here may write.
+          <InlineBanner tone="danger" layout="inline" title="This bot could not be read">
+            Its files are unavailable, so nothing written here could be checked against
+            what is stored. Close and reopen this panel to try again.
+          </InlineBanner>
         ) : (
           <div className="flex flex-col gap-1">
             <button

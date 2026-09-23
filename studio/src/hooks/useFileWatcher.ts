@@ -81,6 +81,30 @@ export function useFileWatcher() {
               .then((result) => {
                 const s = docStoreRef.current.getState();
                 if (s.currentFilePath !== path) return;
+                // The gate is read once more HERE, next to the write. It was
+                // read at the event and again at the debounce, but the round
+                // trip is a third window: the author can open a Source-view
+                // edit while `openFile` is in flight, and applying the answer
+                // would swap the document and the revision under what they
+                // are typing — `setCurrentFilePath` inside `applyOpenedFile`
+                // then drops the buffer, so the text goes invisible to every
+                // discard path AND their next Apply is refused as stale.
+                // Only the automatic path is gated: the manual Reload action
+                // is the author asking for exactly this.
+                if (notifySuccess && (s.isDirty() || !!s.sourceBuffer)) {
+                  // The action takes whatever is unsaved, and the manual path
+                  // deliberately skips the gate — so the LABEL has to say so.
+                  // A neutral "Reload" on a toast is one click away from the
+                  // loss this guard exists to prevent.
+                  useUIStore.getState().addToast("File changed externally", "warning", {
+                    persistent: true,
+                    action: {
+                      label: s.isSourceDirty() ? "Reload and discard" : "Reload",
+                      onClick: () => reload(path, false),
+                    },
+                  });
+                  return;
+                }
                 // Through the shared helper: a reload of a file that stopped
                 // parsing must mark the document a SALVAGE too. An external
                 // write is all it takes, with no user action, and the next
@@ -130,10 +154,14 @@ export function useFileWatcher() {
               reload(targetPath, true);
             }, RELOAD_DEBOUNCE_MS);
           } else {
+            // The commonest case: the edit was already open when the write
+            // landed. The action applies the reload without a second prompt,
+            // so the label says what it takes — the same sentence the other
+            // window owes, and for the same reason.
             addToast("File changed externally", "warning", {
               persistent: true,
               action: {
-                label: "Reload",
+                label: store.isSourceDirty() ? "Reload and discard" : "Reload",
                 onClick: () => {
                   const path = docStoreRef.current.getState().currentFilePath;
                   if (path) reload(path, false);

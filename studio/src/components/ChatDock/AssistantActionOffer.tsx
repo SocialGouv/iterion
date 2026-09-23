@@ -156,7 +156,7 @@ function resolveAuthoringCommitSnapshot(
     !session ||
     !isEditorSessionActive(sessionId) ||
     session.store.getState()._generation !== revision ||
-    session.store.getState().isDirty()
+    session.store.getState().hasUnsavedWork()
   ) {
     throw new Error("Return to the unchanged editor tab before committing declared authoring files.");
   }

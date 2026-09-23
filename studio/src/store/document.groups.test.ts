@@ -108,13 +108,57 @@ describe("group operations reach an annotation carried by a declaration", () => 
     expect(s.getState().document!.agents[0]!.comments).toEqual([]);
   });
 
-  // The annotation is on the declaration being removed: it goes with it,
-  // and nothing is left pointing at a node that no longer exists.
-  it("removeNode takes the annotation with the declaration that carried it", () => {
+});
+
+// A group survives the loss of the DECLARATION that happened to carry its
+// comment: the annotation names its members by id, and the members that are
+// left are still on the canvas. Before comment provenance was honoured this
+// was invisible — the group was not drawn at all — so the loss only became
+// observable once the canvas started reading it.
+describe("a group outliving the declaration that carried it", () => {
+  it("keeps the group when its carrier is removed and two members remain", () => {
     const s = store();
     expect(documentGroups(s.getState().document)).toHaveLength(1);
     s.getState().removeNode("plan");
+    expect(documentGroups(s.getState().document)).toEqual([
+      { name: "review", nodeIds: ["write", "ship"] },
+    ]);
+  });
+
+  it("still dissolves it when the removal leaves fewer than two members", () => {
+    const s = store();
+    s.getState().removeNode("write");
+    s.getState().removeNode("plan");
     expect(documentGroups(s.getState().document)).toEqual([]);
-    expect(s.getState().document!.agents.map((a) => a.name)).toEqual(["write", "ship"]);
+  });
+});
+
+// `duplicateNode` deep-clones a declaration, comments included. A @group
+// annotation names its members by id, so a verbatim copy declares a SECOND
+// group of the same name — two canvas nodes sharing one React Flow id, and
+// the line written twice into the .bot on save.
+describe("duplicating a node that carries a group annotation", () => {
+  it("does not clone the annotation", () => {
+    const s = store();
+    s.getState().duplicateNode("plan");
+    expect(documentGroups(s.getState().document)).toEqual([
+      { name: "review", nodeIds: ["plan", "write", "ship"] },
+    ]);
+  });
+
+  it("keeps the declaration's other comments on the copy", () => {
+    const s = store();
+    const doc = s.getState().document!;
+    s.getState().setDocument({
+      ...doc,
+      agents: doc.agents.map((a) =>
+        a.name === "plan"
+          ? { ...a, comments: [{ text: "why this node exists" }, ...(a.comments ?? [])] }
+          : a,
+      ),
+    });
+    const copy = s.getState().duplicateNode("plan");
+    const cloned = s.getState().document!.agents.find((a) => a.name === copy);
+    expect(cloned?.comments).toEqual([{ text: "why this node exists" }]);
   });
 });

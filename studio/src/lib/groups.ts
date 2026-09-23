@@ -24,12 +24,17 @@ const GROUP_PREFIX = "@group ";
 
 /** A `comments` array holds Comment objects at every carrier the document
  *  type declares — the marker is the key, so a declaration kind added later
- *  is covered the day its JSON arrives, without a list to keep in step. */
+ *  is covered the day its JSON arrives, without a list to keep in step.
+ *
+ *  The test is only that the elements are objects. Keying it on `text` being
+ *  a string was wrong in the direction that loses data: `Comment.Text` is
+ *  `omitempty` on the wire (pkg/dsl/ast/jsonenc.go), so a bare `##` — the
+ *  paragraph break every long head block uses, 8 of them in
+ *  bots/feature-dev/main.bot alone — arrives as `{}`, and one of those in a
+ *  list made `every()` false for the WHOLE list. Every group in it then
+ *  disappeared from the canvas and no rewrite could reach it. */
 function isCommentList(value: unknown): value is Comment[] {
-  return (
-    Array.isArray(value) &&
-    value.every((c) => typeof c === "object" && c !== null && typeof (c as Comment).text === "string")
-  );
+  return Array.isArray(value) && value.every((c) => typeof c === "object" && c !== null);
 }
 
 function isWalkable(value: unknown): value is Record<string, unknown> {

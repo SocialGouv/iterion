@@ -137,7 +137,15 @@ export function useDocumentSaveAs() {
       const clean = stillCurrent && after._generation === savedGeneration;
 
       if (stillCurrent) {
-        after.setCurrentFilePath(result.path);
+        // `setCurrentFilePath` drops the Source view's buffer, and the tab is
+      // about a new path afterwards so it could never be adopted back. Save
+      // As is the SAME program under a new name: the un-applied text belongs
+      // to it, and carrying it is the only outcome that loses nothing.
+      const heldSource = after.sourceBuffer;
+      after.setCurrentFilePath(result.path);
+      if (heldSource && heldSource.text !== heldSource.base) {
+        after.setSourceBuffer({ ...heldSource, path: result.path });
+      }
         after.setCurrentSource(result.source);
         if (clean) after.markSaved();
       }

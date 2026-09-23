@@ -126,6 +126,43 @@ describe("documentGroups over every comment provenance", () => {
     );
   });
 
+  // `Comment.text` is `omitempty` on the wire (pkg/dsl/ast/jsonenc.go:182),
+  // and a bare `##` — the paragraph break every long head block uses — has
+  // no text, so it arrives as `{}` in the SAME array as the @group lines.
+  // 8 of them in bots/feature-dev/main.bot alone.
+  it("sees the groups of a list that also holds a bare ## comment", () => {
+    const d = doc({
+      comments: [
+        group("@group head: a, b"),
+        { text: "" } as Comment,
+        JSON.parse('{"file":"main.bot"}') as Comment,
+      ],
+    });
+    expect(documentGroups(d)).toEqual([{ name: "head", nodeIds: ["a", "b"] }]);
+  });
+
+  it("sees one on a declaration whose comments include a bare ##", () => {
+    const d = doc({
+      agents: [
+        {
+          name: "a",
+          model: "m",
+          input: "in",
+          output: "out",
+          system: "s",
+          user: "u",
+          session: "fresh",
+          comments: [
+            { text: "pipeline stage" },
+            JSON.parse('{"file":"lib/nodes.bot"}') as Comment,
+            group("@group attached: a, b"),
+          ],
+        },
+      ],
+    });
+    expect(documentGroups(d)).toEqual([{ name: "attached", nodeIds: ["a", "b"] }]);
+  });
+
   it("returns nothing for an absent document rather than throwing", () => {
     expect(documentGroups(null)).toEqual([]);
     expect(documentComments(undefined)).toEqual([]);

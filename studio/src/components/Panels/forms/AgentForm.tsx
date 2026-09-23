@@ -269,7 +269,12 @@ export default function AgentForm({ decl, kind }: Props) {
           workflow's list and inherit it instead. */}
       <SelectField
         label="Permission"
-        value={decl.permission ?? ""}
+        // C110 accepts the mode case-insensitively and whitespace-trimmed,
+        // and the writer puts it back verbatim, so `permission: Deny` is a
+        // legal, diagnostic-free spelling. Matched raw it falls through to
+        // the empty option and the inspector would report a hard-denying
+        // node as inheriting its workflow.
+        value={(decl.permission ?? "").trim().toLowerCase()}
         onChange={(v) => update({ permission: v || undefined })}
         options={PERMISSION_OPTIONS}
         allowEmpty
@@ -280,6 +285,7 @@ export default function AgentForm({ decl, kind }: Props) {
         label="Allow"
         values={decl.allow ?? []}
         onChange={(v) => update({ allow: v.length > 0 ? v : undefined })}
+        literalValues
         placeholder="Add allow rule, e.g. Read(**)..."
         help={PERMISSION_RULES_HELP}
       />
@@ -287,6 +293,7 @@ export default function AgentForm({ decl, kind }: Props) {
         label="Ask"
         values={decl.ask ?? []}
         onChange={(v) => update({ ask: v.length > 0 ? v : undefined })}
+        literalValues
         placeholder="Add ask rule, e.g. Bash(git push:*)..."
         help={PERMISSION_RULES_HELP}
       />
@@ -294,6 +301,7 @@ export default function AgentForm({ decl, kind }: Props) {
         label="Deny"
         values={decl.deny ?? []}
         onChange={(v) => update({ deny: v.length > 0 ? v : undefined })}
+        literalValues
         placeholder="Add deny rule, e.g. Read(.env*)..."
         help={PERMISSION_RULES_HELP}
       />
