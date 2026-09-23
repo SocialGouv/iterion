@@ -114,7 +114,10 @@ machine), or `--var state_commit=true` (required on ephemeral cloud
 runners — git is the state store; the workspace needs push credentials).
 **`state_commit=true` expects a DEDICATED ops clone**: the bot declares
 `worktree: none` and commits on whatever branch is checked out; it only
-ever stages the state dir (a staged path outside it hard-fails the push).
+ever stages the files it writes in the state dir, by name — a staged path
+outside it, or a state file still untracked under an ignore rule, refuses
+before a byte of state is written (a tracked state commits whatever the
+rules say, as git carries it).
 
 Delivery-before-persist: the state advances only after the webhooks
 accepted the messages (or nothing needed posting). A failed delivery
