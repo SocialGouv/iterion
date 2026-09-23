@@ -48,6 +48,26 @@ secrets:
   forge_token:
     as: file
     optional: true
+  ## Platform credential — a single READ-ONLY file used BY REFERENCE (env
+  ## $DEPLOY_CREDENTIAL = its PATH), never opened or printed. Same store name
+  ## and same shape as the review-env, app-dev and product-docs bots', so one
+  ## installed credential serves them all.
+  ##
+  ## This bot deploys nothing of its own. It needs the credential because a
+  ## LOT's exit gate is declared in the target repository's contract, and a
+  ## programme is entitled to declare a gate that judges a DEPLOYED
+  ## application rather than a locally started one — that is the only way a
+  ## contract can require proof on a real deployment. With no platform
+  ## identity reachable, such a gate can only refuse, whatever the lot did,
+  ## and its refusal says nothing about the work.
+  ##
+  ## optional:true, so every contract that does not ask for one is untouched
+  ## and dry runs keep working; a gate that needs the credential and finds
+  ## none reports that, instead of passing in silence.
+  deploy_credential:
+    as: file
+    env: DEPLOY_CREDENTIAL
+    optional: true
 
 ## ─── Prompts ───────────────────────────────────────────────────────
 
