@@ -1103,6 +1103,7 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		"raw_output_len":       info.RawOutputLen,
 		"parse_fallback":       info.ParseFallback,
 		"formatting_pass_used": info.FormattingPassUsed,
+		"prompt_diverged":      info.PromptDiverged,
 	}
 	if info.Skipped {
 		// `backend` above is the FAILED route's (the spend's origin, which

@@ -43,7 +43,16 @@ type DelegateInfo struct {
 	MaxOutputTokens int
 	// PeakInputTokens is the largest context load observed across the
 	// session. Zero when unknown.
-	PeakInputTokens    int
+	PeakInputTokens int
+	// PromptDiverged says the element that SERVED this node received a
+	// user prompt different from the one the node's single llm_prompt
+	// event recorded — a workspace command expands for claw and not for
+	// claude_code, so a `fallbacks:` route that crosses backends changes
+	// the text. PromptDivergedOn names the backend that received it.
+	// Without this the divergence is invisible: the run succeeds and every
+	// reader shows the primary's prompt.
+	PromptDiverged     bool
+	PromptDivergedOn   string
 	Duration           time.Duration // subprocess wall-clock time
 	Tokens             int           // estimated total tokens consumed
 	ExitCode           int           // process exit code

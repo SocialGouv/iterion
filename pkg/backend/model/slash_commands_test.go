@@ -200,7 +200,7 @@ func TestExpandWorkspaceSlashCommandPassesAnUnknownNameThrough(t *testing.T) {
 		"/tmp is full, clean it up and report",
 		"/status",
 	} {
-		got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+		got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 		if hit || got != prompt {
 			t.Errorf("expand(%q) = (%q, %v), want the text unchanged", prompt, got, hit)
 		}
@@ -213,7 +213,7 @@ func TestExpandWorkspaceSlashCommandPassesAnUnknownNameThrough(t *testing.T) {
 func TestExpandWorkspaceSlashCommandIgnoresAProsePathPrompt(t *testing.T) {
 	ws := commandWorkspace(t, "usr.md", "SHOULD NOT BE USED\n")
 
-	got, hit := expandWorkspaceSlashCommand("/usr/bin/foo is broken, fix it", ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+	got, hit := expandWorkspaceSlashCommand("/usr/bin/foo is broken, fix it", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 	if hit {
 		t.Fatal("a prose path prompt was expanded")
 	}
@@ -232,14 +232,14 @@ func TestExpandWorkspaceSlashCommandHonoursTheEscapeHatch(t *testing.T) {
 
 	for _, off := range []string{"off", "0", "false", "OFF"} {
 		t.Setenv(SlashCommandsEnv, off)
-		got, hit := expandWorkspaceSlashCommand("/probe-secret", ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+		got, hit := expandWorkspaceSlashCommand("/probe-secret", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 		if hit || got != "/probe-secret" {
 			t.Errorf("%s=%s: got (%q, %v), want the raw invocation", SlashCommandsEnv, off, got, hit)
 		}
 	}
 	// The control: any other value leaves the capability on.
 	t.Setenv(SlashCommandsEnv, "on")
-	if got, hit := expandWorkspaceSlashCommand("/probe-secret", ws, delegate.BackendClaw, "n", 0, iterlog.Nop()); !hit || got != probeBody {
+	if got, hit := expandWorkspaceSlashCommand("/probe-secret", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil); !hit || got != probeBody {
 		t.Errorf("on: got (%q, %v), want the expansion", got, hit)
 	}
 }
@@ -256,7 +256,7 @@ func TestExpandWorkspaceSlashCommandSkipsAWorkspaceWithoutCommands(t *testing.T)
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &buf)
 
-	got, hit := expandWorkspaceSlashCommand("/anything", t.TempDir(), delegate.BackendClaw, "n", 0, logger)
+	got, hit := expandWorkspaceSlashCommand("/anything", t.TempDir(), delegate.BackendClaw, "n", 0, logger, nil)
 	if hit || got != "/anything" {
 		t.Errorf("= (%q, %v), want an untouched no-op", got, hit)
 	}
@@ -358,7 +358,7 @@ func TestExpandWorkspaceSlashCommandKeepsArgumentsABodyDoesNotConsume(t *testing
 	ws := commandWorkspace(t, "review.md", "Review the code and report.\n")
 
 	got, hit := expandWorkspaceSlashCommand(
-		"/review the auth module, focus on session fixation", ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+		"/review the auth module, focus on session fixation", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 	if !hit {
 		t.Fatal("the command did not resolve")
 	}
@@ -393,7 +393,7 @@ func TestExpandWorkspaceSlashCommandKeepsArgumentsALookalikePlaceholderDoesNotTa
 		ws := commandWorkspace(t, "c.md", body)
 		// ONE argument, so $3 is genuinely out of range: with three words
 		// it would substitute legitimately and prove nothing.
-		got, hit := expandWorkspaceSlashCommand("/c auth-module", ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+		got, hit := expandWorkspaceSlashCommand("/c auth-module", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 		if !hit {
 			t.Fatalf("%q did not resolve", body)
 		}
@@ -409,7 +409,7 @@ func TestExpandWorkspaceSlashCommandKeepsArgumentsALookalikePlaceholderDoesNotTa
 func TestExpandWorkspaceSlashCommandDoesNotDuplicateConsumedArguments(t *testing.T) {
 	for _, body := range []string{"ARGS=[$ARGUMENTS]\n", "FIRST=[$1]\n"} {
 		ws := commandWorkspace(t, "c.md", body)
-		got, hit := expandWorkspaceSlashCommand("/c alpha", ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+		got, hit := expandWorkspaceSlashCommand("/c alpha", ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 		if !hit {
 			t.Fatalf("%q did not resolve", body)
 		}
@@ -437,7 +437,7 @@ func TestExpandWorkspaceSlashCommandRefusesToSendAnEmptyBody(t *testing.T) {
 		// first would make an empty body look non-empty, and the model would
 		// get a bare "ARGUMENTS: …" with no instruction at all.
 		for _, prompt := range []string{"/" + name, "/" + name + " please do the thing"} {
-			got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+			got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 			if hit || got != prompt {
 				t.Errorf("%s: = (%q, %v), want the prompt left alone", prompt, got, hit)
 			}
@@ -459,7 +459,7 @@ func TestExpandWorkspaceSlashCommandPassesThroughAnUnreadableFile(t *testing.T) 
 		t.Fatal(err)
 	}
 	prompt := "/tmp is full, clean it up and report"
-	got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop())
+	got, hit := expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil)
 	if hit || got != prompt {
 		t.Errorf("= (%q, %v), want the prose prompt to survive", got, hit)
 	}
@@ -482,7 +482,7 @@ func TestSlashCommandDiagnosticsCarryTheStudioNodePrefix(t *testing.T) {
 	ws := commandWorkspace(t, "dyn.md", "run !`git status` and use $1\n")
 	writeExtraCommand(t, ws, "empty.md", "")
 	for _, prompt := range []string{"/dyn alpha", "/absent", "/empty"} {
-		expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "mynode", 3, logger)
+		expandWorkspaceSlashCommand(prompt, ws, delegate.BackendClaw, "mynode", 3, logger, nil)
 	}
 	out := buf.String()
 
@@ -647,7 +647,7 @@ func TestExpandWorkspaceSlashCommandRefusesAnOversizedBody(t *testing.T) {
 	big := strings.Repeat("A", defaultSlashCommandMaxBytes+1)
 	ws := commandWorkspace(t, "huge.md", big)
 
-	got, hit := expandWorkspaceSlashCommand("/huge", ws, delegate.BackendClaw, "n", 0, logger)
+	got, hit := expandWorkspaceSlashCommand("/huge", ws, delegate.BackendClaw, "n", 0, logger, nil)
 	if hit || got != "/huge" {
 		t.Errorf("= (%d bytes, %v), want the prompt left unchanged", len(got), hit)
 	}
@@ -665,7 +665,7 @@ func TestExpandWorkspaceSlashCommandRefusesAnOversizedBody(t *testing.T) {
 	// The control: one byte under the ceiling still expands, so the bound
 	// bounds the abuse and not the use.
 	okWS := commandWorkspace(t, "fits.md", strings.Repeat("B", defaultSlashCommandMaxBytes-1))
-	if _, hit := expandWorkspaceSlashCommand("/fits", okWS, delegate.BackendClaw, "n", 0, iterlog.Nop()); !hit {
+	if _, hit := expandWorkspaceSlashCommand("/fits", okWS, delegate.BackendClaw, "n", 0, iterlog.Nop(), nil); !hit {
 		t.Error("a body one byte under the ceiling was refused")
 	}
 }
@@ -773,7 +773,7 @@ func TestExpandWorkspaceSlashCommandRefusesABodyThatAMPLIFIESPastTheCeiling(t *t
 	ws := commandWorkspace(t, "amp.md", body)
 	args := strings.Repeat("x", 1024)
 
-	got, hit := expandWorkspaceSlashCommand("/amp "+args, ws, delegate.BackendClaw, "n", 0, logger)
+	got, hit := expandWorkspaceSlashCommand("/amp "+args, ws, delegate.BackendClaw, "n", 0, logger, nil)
 	if hit {
 		t.Errorf("an amplifying body expanded to %d bytes and was accepted", len(got))
 	}
@@ -865,7 +865,7 @@ func TestExpandWorkspaceSlashCommandRefusesWhenTheArgumentsPushItOver(t *testing
 	ws := commandWorkspace(t, "tail.md", body)
 	args := strings.Repeat("d", 256) // pushes the total over
 
-	got, hit := expandWorkspaceSlashCommand("/tail "+args, ws, delegate.BackendClaw, "n", 0, logger)
+	got, hit := expandWorkspaceSlashCommand("/tail "+args, ws, delegate.BackendClaw, "n", 0, logger, nil)
 	if hit {
 		t.Errorf("the appended arguments pushed it to %d bytes and it was accepted", len(got))
 	}
@@ -890,7 +890,7 @@ func TestExpandWorkspaceSlashCommandWarnsAboutDiscardedFrontmatter(t *testing.T)
 	ws := commandWorkspace(t, "narrow.md",
 		"---\ndescription: narrowed\nallowed-tools: Read, Grep\nmodel: claude-3-5-haiku\n---\nAudit the diff.\n")
 
-	got, hit := expandWorkspaceSlashCommand("/narrow", ws, delegate.BackendClaw, "n", 0, logger)
+	got, hit := expandWorkspaceSlashCommand("/narrow", ws, delegate.BackendClaw, "n", 0, logger, nil)
 	if !hit || got != "Audit the diff." {
 		t.Fatalf("= (%q, %v), want the command body", got, hit)
 	}
@@ -910,10 +910,141 @@ func TestExpandWorkspaceSlashCommandWarnsAboutDiscardedFrontmatter(t *testing.T)
 	var quiet bytes.Buffer
 	plainWS := commandWorkspace(t, "plain.md", "---\ndescription: plain\n---\nJust do it.\n")
 	if _, hit := expandWorkspaceSlashCommand("/plain", plainWS, delegate.BackendClaw, "n", 0,
-		iterlog.New(iterlog.LevelInfo, &quiet)); !hit {
+		iterlog.New(iterlog.LevelInfo, &quiet), nil); !hit {
 		t.Fatal("the plain command did not resolve")
 	}
 	if strings.Contains(quiet.String(), "frontmatter") {
 		t.Errorf("a description-only command warned anyway:\n%s", quiet.String())
+	}
+}
+
+// A `fallbacks:` route can cross backends (ADR-087), and the user prompt is
+// now backend-dependent: a workspace command expands for claw and not for
+// claude_code. So a node whose primary is claude_code and whose fallback is
+// claw records the INVOCATION in its single llm_prompt and sends the BODY —
+// the run succeeds and every reader (events.jsonl, iterion report, inspect
+// --node, the studio LLM Trace) shows the primary's text.
+//
+// One llm_prompt per node stays the invariant, so the divergence travels as
+// a FACT on the delegate event instead of as a second prompt.
+//
+// Mutation: drop the comparison in claimPrompt (or stop handing it the text)
+// and the divergence goes unreported while the two prompts still differ.
+func TestCrossBackendFallbackReportsThePromptDivergence(t *testing.T) {
+	sess := &nodeBuildSession{}
+
+	// The primary builds first and claims the event with the raw invocation.
+	if !sess.claimPrompt("/probe-secret", delegate.BackendClaudeCode) {
+		t.Fatal("the first build did not claim the prompt event")
+	}
+	if sess.promptDiverged {
+		t.Error("a single build cannot diverge from itself")
+	}
+	// The fall-through element builds for claw, which expands.
+	if sess.claimPrompt(probeBody, delegate.BackendClaw) {
+		t.Error("a second build claimed the prompt event — one per node is the invariant")
+	}
+	if !sess.promptDiverged {
+		t.Fatal("the divergence went unreported: the event says /probe-secret, claw was sent the body")
+	}
+	if sess.divergedBackend != delegate.BackendClaw {
+		t.Errorf("divergedBackend = %q, want the backend that received the other text", sess.divergedBackend)
+	}
+
+	var di DelegateInfo
+	sess.describeDivergence(&di)
+	if !di.PromptDiverged || di.PromptDivergedOn != delegate.BackendClaw {
+		t.Errorf("DelegateInfo = {%v, %q}, want the divergence named for the reader",
+			di.PromptDiverged, di.PromptDivergedOn)
+	}
+
+	// The ordinary chain — same text on every element — reports nothing: a
+	// flag that is always set is one nobody reads.
+	quiet := &nodeBuildSession{}
+	quiet.claimPrompt("same", delegate.BackendClaudeCode)
+	quiet.claimPrompt("same", delegate.BackendClaw)
+	if quiet.promptDiverged {
+		t.Error("an identical prompt on both elements was reported as diverging")
+	}
+	var qi DelegateInfo
+	quiet.describeDivergence(&qi)
+	if qi.PromptDiverged {
+		t.Error("DelegateInfo carries a divergence that did not happen")
+	}
+}
+
+// Every value a diagnostic interpolates from untrusted input is bounded by
+// ONE helper: the command name is the whole whitespace-delimited token of a
+// prompt that is routinely model- or repo-derived, and these lines fire per
+// node per iteration into the process log AND the run log stream.
+//
+// Mutation: drop safeDiag from the unresolved-name branch and a 4 MB prompt
+// token becomes a 4 MB log line.
+func TestSlashCommandDiagnosticsAreBounded(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+	ws := commandWorkspace(t, "present.md", "body\n")
+
+	huge := strings.Repeat("z", 4<<20)
+	got, hit := expandWorkspaceSlashCommand("/"+huge, ws, delegate.BackendClaw, "n", 0, logger, nil)
+	if hit || got != "/"+huge {
+		t.Errorf("the prompt was not left unchanged")
+	}
+	if n := buf.Len(); n > 4096 {
+		t.Errorf("the refusal logged %d bytes for a 4 MiB command name, want it bounded", n)
+	}
+	if !strings.Contains(buf.String(), "zzz") {
+		t.Errorf("the refusal stopped naming the command at all:\n%s", buf.String())
+	}
+}
+
+// A divergence notice is worth one line per command file per run. The
+// divergence is REAL on every invocation — claw's `$1` is the first argument
+// and the CLI's is the second — so suppressing it by "does it diverge" would
+// suppress it always; suppressing the REPEAT is what keeps the other
+// warnings their audience.
+//
+// Mutation: drop the once-guard and a node in a loop repeats the line every
+// iteration.
+func TestSlashCommandDivergenceWarnsOncePerCommand(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+	once := &slashWarnOnce{}
+	ws := commandWorkspace(t, "review.md", "Review $1 and report.\n")
+
+	for i := range 3 {
+		if _, hit := expandWorkspaceSlashCommand("/review alpha beta", ws,
+			delegate.BackendClaw, "n", i, logger, once); !hit {
+			t.Fatalf("iteration %d did not resolve", i)
+		}
+	}
+	if n := strings.Count(buf.String(), "uses "); n != 1 {
+		t.Errorf("the divergence warned %d times over 3 iterations, want once:\n%s", n, buf.String())
+	}
+
+	// A different command file gets its own line.
+	writeExtraCommand(t, ws, "other.md", "Other $2 here.\n")
+	if _, hit := expandWorkspaceSlashCommand("/other a b", ws, delegate.BackendClaw, "n", 0, logger, once); !hit {
+		t.Fatal("the second command did not resolve")
+	}
+	if n := strings.Count(buf.String(), "uses "); n != 2 {
+		t.Errorf("a second command file was suppressed too: %d lines", n)
+	}
+}
+
+// os.Root refuses an ABSOLUTE symlink wherever it points — including inside
+// the workspace — so the raw "path escapes from parent" would tell the
+// operator the repository tried to escape when it did not. The refusal names
+// the boundary instead, and keeps the raw error alongside.
+func TestSlashCommandRefusalNamesTheContainmentBoundary(t *testing.T) {
+	got := readFailureReason(errors.New("openat x.md: path escapes from parent"))
+	for _, want := range []string{"containment boundary", "absolute symlink", "path escapes from parent"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("readFailureReason = %q, want it to mention %q", got, want)
+		}
+	}
+	// An ordinary failure is not dressed up as a containment refusal.
+	if got := readFailureReason(errors.New("permission denied")); got != "permission denied" {
+		t.Errorf("readFailureReason on a plain error = %q, want it unchanged", got)
 	}
 }

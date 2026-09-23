@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	clawcmds "github.com/SocialGouv/claw-code-go/pkg/api/commands"
 
@@ -61,7 +62,7 @@ const slashCommandArgsPrefix = "\n\nARGUMENTS: "
 // full, clean it up"). Every abstention is logged with its reason and the
 // text travels unchanged, which is also what the backend did before this
 // existed: degraded, never silent.
-func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, iteration int, logger *iterlog.Logger) (string, bool) {
+func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, iteration int, logger *iterlog.Logger, once *slashWarnOnce) (string, bool) {
 	if backendName != delegate.BackendClaw || workDir == "" || userText == "" {
 		return userText, false
 	}
@@ -87,15 +88,16 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	case errors.Is(err, clawcmds.ErrBodyTooLarge):
 		warnSlashCommand(logger, nodeID, iteration,
 			"/%s is larger than the %d-byte ceiling (%s) — sending the prompt unchanged rather than loading it",
-			name, max, SlashCommandMaxBytesEnv)
+			safeDiag(name), max, SlashCommandMaxBytesEnv)
 		return userText, false
 	case err != nil:
-		warnSlashCommand(logger, nodeID, iteration, "/%s could not be read (%v) — sending the prompt unchanged", name, err)
+		warnSlashCommand(logger, nodeID, iteration,
+			"/%s could not be read (%s) — sending the prompt unchanged", safeDiag(name), readFailureReason(err))
 		return userText, false
 	}
 	if !found {
 		warnSlashCommand(logger, nodeID, iteration, "prompt opens with /%s, which %s does not define — sending the text unchanged",
-			name, clawcmds.CommandsDir(workDir))
+			safeDiag(name), clawcmds.CommandsDir(workDir))
 		return userText, false
 	}
 	// The bound travels INTO the expander, which aborts as it produces. A
@@ -107,7 +109,7 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	if err != nil {
 		warnSlashCommand(logger, nodeID, iteration,
 			"/%s (%s) expands past the %d-byte ceiling (%s) — sending the prompt unchanged rather than materialising it",
-			name, cmd.Path, max, SlashCommandMaxBytesEnv)
+			safeDiag(name), cmd.Path, max, SlashCommandMaxBytesEnv)
 		return userText, false
 	}
 	// Judged on the EXPANDED text and before the arguments are appended:
@@ -119,7 +121,7 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	// message has to say which of the two happened or the trail goes cold.
 	if strings.TrimSpace(expanded) == "" {
 		warnSlashCommand(logger, nodeID, iteration, "/%s (%s) expands to nothing (body %q) — sending the prompt unchanged rather than an empty one",
-			name, cmd.Path, iterlog.Truncate(cmd.Body, 200))
+			safeDiag(name), cmd.Path, safeDiag(cmd.Body))
 		return userText, false
 	}
 	// A body that took none of the arguments still has to carry them, or the
@@ -137,15 +139,23 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	if max > 0 && len(expanded) > max {
 		warnSlashCommand(logger, nodeID, iteration,
 			"/%s (%s) reaches %d bytes with its arguments, over the %d-byte ceiling (%s) — sending the prompt unchanged rather than billing it",
-			name, cmd.Path, len(expanded), max, SlashCommandMaxBytesEnv)
+			safeDiag(name), cmd.Path, len(expanded), max, SlashCommandMaxBytesEnv)
 		return userText, false
 	}
 	if logger != nil {
 		logger.Info("[%s#%d/claw] 📎 workspace command /%s from %s", nodeID, iteration, name, cmd.Path)
 	}
-	if forms := clawcmds.DynamicBodyForms(cmd.Body, args); len(forms) > 0 {
+	// Once per command file per run, not once per invocation. The
+	// divergence is REAL every time — claw's `$1` is the first argument and
+	// the CLI's is the second, so they differ on every substitution — but a
+	// node in a loop would otherwise repeat the same line every iteration,
+	// and a warning that repeats on correct usage costs the others their
+	// audience. That is the standard `@path` was dropped under; the answer
+	// there was to stop warning on something that was never a divergence,
+	// and the answer here is to say a real one once.
+	if forms := clawcmds.DynamicBodyForms(cmd.Body, args); len(forms) > 0 && once.first("forms\x00"+cmd.Path) {
 		warnSlashCommand(logger, nodeID, iteration, "/%s uses %s — those mean something else here than in claude_code; see docs/backends.md#workspace-slash-commands",
-			name, strings.Join(forms, ", "))
+			safeDiag(name), strings.Join(forms, ", "))
 	}
 	// The frontmatter is the divergence that carries a SECURITY consequence
 	// and it was the only one that expanded in silence: a command narrowing
@@ -155,10 +165,10 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	// it in bold and saying nothing at runtime is the "one file means two
 	// things silently" outcome this warning exists to prevent. Enforcement
 	// is #1717; this is the diagnostic that stops it being invisible.
-	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 {
+	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 && once.first("fm\x00"+cmd.Path) {
 		warnSlashCommand(logger, nodeID, iteration,
 			"/%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them, so a command that narrows itself keeps this node's full tool set (#1717)",
-			name, cmd.Path, strings.Join(keys, ", "))
+			safeDiag(name), cmd.Path, safeDiag(strings.Join(keys, ", ")))
 	}
 	return expanded, true
 }
@@ -200,6 +210,61 @@ func slashCommandMaxBytes() int {
 	}
 	return n
 }
+
+// slashWarnOnce keeps a divergence notice to one line per command file per
+// run. It is shared across a run's nodes and branches run in parallel, so it
+// locks.
+type slashWarnOnce struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// first reports whether this is the first time key is seen. A nil receiver
+// never suppresses, so a caller that does not care keeps every line.
+func (o *slashWarnOnce) first(key string) bool {
+	if o == nil {
+		return true
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.seen[key] {
+		return false
+	}
+	if o.seen == nil {
+		o.seen = map[string]bool{}
+	}
+	o.seen[key] = true
+	return true
+}
+
+// readFailureReason renders why a command file could not be read, in terms
+// an operator can act on. os.Root reports its refusal as "path escapes from
+// parent", which reads as an accusation the repository tried to escape —
+// true for a symlink pointing out of the workspace, and MISLEADING for an
+// absolute symlink whose target is inside it, which os.Root refuses just as
+// flatly. Naming the boundary is the honest form; the raw error is kept
+// alongside so nothing is hidden. Matching the wording is a diagnostic
+// refinement, never the guarantee: the guarantee is that the read failed and
+// the prompt travelled unchanged.
+func readFailureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "escapes from parent") {
+		return "refused by the workspace containment boundary — a command file that is a symlink out of the workspace, or ANY absolute symlink, is refused whatever it points at: " + msg
+	}
+	return msg
+}
+
+// safeDiag bounds a value a diagnostic interpolates from untrusted input.
+// A command name is the whole whitespace-delimited token of a prompt that is
+// routinely model- or repo-derived, and the frontmatter keys come from a
+// file in a checkout the run does not control — either can be megabytes, and
+// these lines fire per node per iteration into the process log AND the run
+// log stream. The body was already truncated; this is the rest of that class,
+// in one place so the next value cannot be forgotten.
+func safeDiag(s string) string { return iterlog.Truncate(s, 200) }
 
 // warnSlashCommand emits one abstention or divergence notice, tagged the way
 // every other per-node line in this package is (`[<node>#<iter>/claw]`).

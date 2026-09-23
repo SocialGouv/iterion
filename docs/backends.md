@@ -115,10 +115,12 @@ The citations, per cell that is not self-evident from the table:
     a sandboxed or multi-tenant run. The read goes through `os.Root`, so a
     repository that ships a command file — or the `.claude/commands`
     directory, or `.claude` itself — as a **symlink out of the workspace**
-    gets a refusal rather than the target. A symlink that stays INSIDE the
-    workspace is followed, so a `tools: []` node is not a read barrier for
-    files the checkout already contains: what the boundary buys is that the
-    repository under review cannot reach the host through it.
+    gets a refusal rather than the target. A **relative** symlink that stays
+    inside the workspace is followed, so a `tools: []` node is not a read
+    barrier for files the checkout already contains; an **absolute** symlink
+    is refused wherever it points, because `os.Root` rejects absolute
+    targets outright. What the boundary buys is that the repository under
+    review cannot reach the host through it.
   - A command's **frontmatter** other than `description:` (`model:`,
     `allowed-tools:`, `argument-hint:`, `disable-model-invocation:`) is
     honoured by `claude_code` and **ignored** by `claw`, which keeps only
@@ -128,7 +130,8 @@ The citations, per cell that is not self-evident from the table:
     it is the one the runtime says out loud: a command declaring any of
     those keys logs a warning naming them and #1717, where the enforcement
     is tracked. Documenting it was never enough.
-  - `$1` … `$9` are **one-based** on `claw` (`$1` is the first argument),
+  - `$1`, `$2`, … (any index, not just the single digits) are **one-based**
+    on `claw` (`$1` is the first argument),
     which is Claude Code's documented contract; the CLI itself resolves
     them off by one (`/x alpha beta gamma` on `[$1][$2][$3]` expands to
     `[beta][gamma][$3]`).

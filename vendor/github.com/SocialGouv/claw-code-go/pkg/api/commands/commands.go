@@ -29,8 +29,10 @@ func HasWorkspaceCommands(workDir string) bool { return intl.HasWorkspaceCommand
 
 // ParseInvocation reports whether prompt opens with a slash-command
 // invocation and splits it into the command name and its argument string.
-// A token carrying `/` or `.` is a path, not a command name, so ordinary
-// prose beginning with a filesystem path is left alone.
+// A token carrying `/` is a path, not a command name, so ordinary prose
+// beginning with a filesystem path is left alone. Dots are accepted INSIDE
+// a component (`db.migrate`, as on Claude Code); a component that is
+// nothing but dots is refused, so a name cannot spell traversal.
 func ParseInvocation(prompt string) (name, args string, ok bool) {
 	return intl.ParseInvocation(prompt)
 }

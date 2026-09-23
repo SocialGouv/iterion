@@ -353,6 +353,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 	chain []chainElement,
 	baseModel string,
 	build elementBuilder,
+	sess *nodeBuildSession,
 ) (chainOutcome, error) {
 	if e.hooks.OnDelegateStarted != nil {
 		e.hooks.OnDelegateStarted(nodeID, DelegateInfo{
@@ -367,6 +368,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 			di := delegateInfoFromResult(bn, out.Result)
 			di.DeclaredModel = baseModel
 			di.Error = err
+			sess.describeDivergence(&di)
 			e.hooks.OnDelegateError(nodeID, di)
 		}
 		return out, fmt.Errorf("%s %q: backend %q failed: %w", errPrefix, nodeID, backendName, err)
@@ -379,6 +381,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 		// origin — the metrics claw-exclusion keys on it) but flag it so
 		// recordServed and the event do not claim a backend SERVED.
 		di.Skipped = out.Skipped
+		sess.describeDivergence(&di)
 		e.hooks.OnDelegateFinished(nodeID, di)
 	}
 	return out, nil
@@ -399,20 +402,53 @@ func (e *ClawExecutor) dispatchWithObservability(
 // single-shot caller want.
 type nodeBuildSession struct {
 	promptEmitted bool
-	boardToken    string
-	boardMinted   bool
+	// emittedPrompt is the user text the claimed llm_prompt event
+	// recorded. A chain can cross backends (a `fallbacks:` route names
+	// one), and the user prompt is now backend-dependent — a workspace
+	// command expands for claw and not for claude_code — so the element
+	// that SERVES may receive text the recorded event does not show.
+	emittedPrompt   string
+	promptDiverged  bool
+	divergedBackend string
+	boardToken      string
+	boardMinted     bool
+}
+
+// describeDivergence records on the outgoing delegate event that the
+// element which served this node received a user prompt the recorded
+// llm_prompt does not show. Without it a cross-backend `fallbacks:` route
+// is a silent lie in events.jsonl, iterion report, inspect --node and the
+// studio's LLM Trace: the run succeeds and every reader shows the primary's
+// text.
+func (s *nodeBuildSession) describeDivergence(di *DelegateInfo) {
+	if s == nil || !s.promptDiverged {
+		return
+	}
+	di.PromptDiverged = true
+	di.PromptDivergedOn = s.divergedBackend
 }
 
 // claimPrompt reports whether THIS build should emit the node's prompt
 // event, and records that it did.
-func (s *nodeBuildSession) claimPrompt() bool {
+//
+// Every build hands over the text it produced, claiming or not: the first
+// claims and is recorded, and a later element on the same chain compares
+// against it. One llm_prompt per node stays the invariant (three readers
+// start an LLM step per event), so a divergence is reported as a FACT on
+// the delegate_finished event rather than as a second prompt.
+func (s *nodeBuildSession) claimPrompt(userText, backendName string) bool {
 	if s == nil {
 		return true
 	}
 	if s.promptEmitted {
+		if userText != s.emittedPrompt && !s.promptDiverged {
+			s.promptDiverged = true
+			s.divergedBackend = backendName
+		}
 		return false
 	}
 	s.promptEmitted = true
+	s.emittedPrompt = userText
 	return true
 }
 
@@ -527,7 +563,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			}
 			return &built, nil
 		})
-	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
+	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build, sess)
 	if err != nil {
 		// A failed delegation still SPENT, and everything below this line
 		// went to trouble to keep the figure: claude_code's `typedFailure`
@@ -993,7 +1029,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	// Emit prompt content for observability — once per node execution,
 	// not once per chain element (see nodeBuildSession).
-	if e.hooks.OnLLMPrompt != nil && sess.claimPrompt() {
+	if sess.claimPrompt(userText, backendName) && e.hooks.OnLLMPrompt != nil {
 		e.hooks.OnLLMPrompt(f.id, systemText, userText)
 	}
 
@@ -1323,7 +1359,7 @@ func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields
 	// ask_user prepend just below, and the schema re-ask that appends its
 	// feedback to this text. Expanding later would emit one prompt and
 	// send another.
-	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger)
+	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce)
 	if hit {
 		userText = expanded
 		// The blocks above were split around the INVOCATION, so their TEXT

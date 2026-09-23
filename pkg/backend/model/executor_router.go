@@ -200,7 +200,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		// A router prompt may invoke a workspace `.claude/commands/`
 		// command too. Resolved per backend, inside assemble, because the
 		// substitution is claw's alone — claude_code expands it natively.
-		routerText, _ := expandWorkspaceSlashCommand(userText, e.workDir, bn, node.ID, LoopIterationFromContext(ctx), e.logger)
+		routerText, _ := expandWorkspaceSlashCommand(userText, e.workDir, bn, node.ID, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce)
 		// ONE prompt event, emitted here rather than before the chain, and
 		// carrying the text this backend actually receives. Before the
 		// chain it could only carry the invocation; emitting a second,
@@ -235,7 +235,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
-		e.newElementBuilder(node.ID, backendName, backend, assemble))
+		e.newElementBuilder(node.ID, backendName, backend, assemble), nil)
 	if err != nil {
 		// The other seam that spends: an LLM router is a model call, and a
 		// router that burned a fallback chain's worth of routes before
