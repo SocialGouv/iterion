@@ -119,7 +119,8 @@ Iterion has a **plugin ecosystem**: declarative, out-of-process packages
 (`plugin.yaml`) with typed `contributes:` kinds — `rewriters` (command-output
 compressors), `mcp_servers` (e.g. knowledge-graph explorers), `skills` /
 `commands` / `agents` (markdown mirrored into `.claude/{skills,commands,agents}/`,
-discovered by claude_code via `--setting-sources project`), `hooks` (JSON
+all three read by claude_code, skills and commands also by claw — see the
+[capability matrix](../backends.md#workspace-slash-commands)), `hooks` (JSON
 fragments idempotently merged into `.claude/settings.json`), and
 `lifecycle` (index/refresh). Builtins are embedded
 ([pkg/plugin/builtin/](../../pkg/plugin/builtin/)); `rtk` ships **enabled**,

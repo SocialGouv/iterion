@@ -79,17 +79,90 @@ from a plausible one (#1417). The cells:
   [the e2e coverage matrix](e2e-coverage-matrix.md), which stays the
   single feature×coverage inventory.
 
-| Backend | Structured output (`schema:`/`output:`) | Permission gate `ask` | Session resume / fork | Tool events & cost | `{{outputs.*}}` / `{{run.*}}` | Sandbox | MCP servers | ask_user |
-|---|---|---|---|---|---|---|---|---|
-| `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | proven | unknown | unknown | unknown |
-| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | unknown | unknown | proven | proven |
-| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | unknown | proven (readonly) | unwired (gap) | unknown |
-| `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
-| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown |
-| `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown |
-| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · unwired (sync) |
+| Backend | Structured output (`schema:`/`output:`) | Permission gate `ask` | Session resume / fork | Tool events & cost | `{{outputs.*}}` / `{{run.*}}` | Sandbox | MCP servers | ask_user | Workspace `/commands` |
+|---|---|---|---|---|---|---|---|---|---|
+| `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | proven | unknown | unknown | unknown | proven |
+| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | unknown | unknown | proven | proven | proven |
+| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | unknown | proven (readonly) | unwired (gap) | unknown | unwired (gap) |
+| `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unwired (gap) |
+| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown | unwired (gap) |
+| `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown | unwired (gap) |
+| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · unwired (sync) | unwired (gap) |
 
 The citations, per cell that is not self-evident from the table:
+
+- **Workspace `/commands`.** <a id="workspace-slash-commands"></a>A user
+  prompt that OPENS with `/<name>` is replaced by the body of
+  `<workspace>/.claude/commands/<name>.md` — the files a plugin's
+  `contributes: commands` mirrors there (see
+  [plugins.md](plugins.md)). `claude_code` resolves them from the workspace
+  itself; `claw` resolves them in-process through claw-code-go's
+  `pkg/api/commands`, from `pkg/backend/model/slash_commands.go`. Both
+  cells are proven by `TestLive_Feat_WorkspaceCommands`
+  (`task test:live:feat:workspace-commands`): one workflow sends the same
+  invocation to a `claude_code` node and a `claw` node, both with
+  `tools: []`, so resolving the command is the only path to the token its
+  file carries. Four differences from `claude_code`, deliberate and
+  measured on CLI 2.1.220:
+  - `claw` reads the **workspace only** — no walk up the ancestors, and no
+    user-level `~/.claude/commands/`: a workspace is a checkout of a
+    repository the run does not control, and host state does not belong in
+    a sandboxed or multi-tenant run. The read goes through `os.Root`, so a
+    repository that ships a command file — or the `.claude/commands`
+    directory, or `.claude` itself — as a **symlink out of the workspace**
+    gets a refusal rather than the target. A symlink that stays INSIDE the
+    workspace is followed, so a `tools: []` node is not a read barrier for
+    files the checkout already contains: what the boundary buys is that the
+    repository under review cannot reach the host through it.
+  - A command's **frontmatter** other than `description:` (`model:`,
+    `allowed-tools:`, `argument-hint:`, `disable-model-invocation:`) is
+    honoured by `claude_code` and **ignored** by `claw`, which keeps only
+    the body. A command that narrows itself with `allowed-tools:` therefore
+    keeps the node's full tool set on `claw` — bound it with the node's own
+    `tools:` instead.
+  - `$1` … `$9` are **one-based** on `claw` (`$1` is the first argument),
+    which is Claude Code's documented contract; the CLI itself resolves
+    them off by one (`/x alpha beta gamma` on `[$1][$2][$3]` expands to
+    `[beta][gamma][$3]`).
+  - `` !`cmd` ``, ` ```! ` shell substitution, `$0`, `$ARGUMENTS[n]`,
+    `\$` escapes and the `${CLAUDE_PROJECT_DIR}` / `${CLAUDE_SESSION_ID}` /
+    `${CLAUDE_EFFORT}` placeholders are not evaluated. A body using any of these — or the
+    positional forms above — is logged with a warning naming the form, so
+    one file never means two things silently. `@path` file references are
+    not evaluated either and are deliberately **not** warned about:
+    telling one from an npm scope (`@anthropic-ai/sdk`) or a decorator
+    (`@mcp.tool(`) by text alone measured 0% precision on real command
+    bodies, and a warning that is always wrong teaches an author to ignore
+    the ones that are not.
+
+  Arguments a body does **not** consume are appended as
+  `ARGUMENTS: <args>`, which is what the CLI does; dropping them would
+  delete the operator's message rather than merely leave it unexpanded.
+  Whether a body consumed them is the expander's own answer, not a second
+  reading of the text — a placeholder a reader counts (`$0`, an
+  out-of-range `$N`) is one the expander leaves literal, and on that
+  disagreement the arguments were neither substituted nor appended.
+  Arguments are split on whitespace; the CLI splits them with a
+  quote-aware shell tokenizer, so `"two words"` is one argument there and
+  two here.
+
+  Nothing here fails a node. A name that resolves to nothing, a file that
+  cannot be read, and a body that is empty each leave the text unchanged and
+  log the reason. The CLI answers an unknown command locally
+  (`num_turns: 0`, `total_cost_usd: 0`, `is_error: false`) and its node
+  succeeds, so failing here would be a divergence — and it would break an
+  ordinary prompt that merely opens with a slash-shaped word ("/tmp is full,
+  clean it up"). `ITERION_CLAW_SLASH_COMMANDS=off` restores the
+  pre-capability behaviour. The other backends have no workspace-command
+  convention; a `/name` prompt reaches them as written.
+
+  On `claude_code` a workspace command resolves with `--setting-sources`
+  omitted entirely, and stops resolving under a list that names only `user`
+  — measured both ways. So the flag does not *enable* project commands, it
+  *scopes* them: iterion always passes it and its default is `user,project`
+  (`ITERION_CLAUDE_CODE_SETTING_SOURCES`), which keeps the project scope
+  that carries them and additionally gives a `claude_code` node the
+  operator's own `~/.claude/commands/` — a `claw` node never sees those.
 
 - **claw, five proven cells.** Structured output:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its

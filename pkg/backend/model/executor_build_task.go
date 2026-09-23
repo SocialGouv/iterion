@@ -989,7 +989,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
-	userText, userContent := e.buildUserPromptParts(f, input, td, backendName)
+	userText, userContent := e.buildUserPromptParts(ctx, f, input, td, backendName)
 
 	// Emit prompt content for observability — once per node execution,
 	// not once per chain element (see nodeBuildSession).
@@ -1306,13 +1306,31 @@ func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]a
 // the (stateless) LLM doesn't lose the thread — without this, claw
 // would re-ask the same question because its conversation history isn't
 // persisted.
-func (e *ClawExecutor) buildUserPromptParts(f backendFields, input map[string]any, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
+func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields, input map[string]any, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
 	userText := e.buildUserMessage(f.userPrompt, input, td)
 	// And the multimodal variant when this backend supports it AND the
 	// resolved prompt references at least one image attachment.
 	var userContent []delegate.ContentBlock
 	if backendName == delegate.BackendClaw {
 		_, userContent = e.buildUserContent(f.userPrompt, input, td, e.imageAttachs)
+	}
+
+	// A workspace `.claude/commands/` command, substituted for its
+	// invocation — the capability claude_code gets from the workspace
+	// natively. It happens HERE, not in the claw
+	// backend, because everything downstream consumes the prompt as final:
+	// the OnLLMPrompt event that feeds events.jsonl and the run log, the
+	// ask_user prepend just below, and the schema re-ask that appends its
+	// feedback to this text. Expanding later would emit one prompt and
+	// send another.
+	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger)
+	if hit {
+		userText = expanded
+		// A command file is a prompt body, not a bot prompt: it cannot
+		// carry `{{attachments.*}}`, and the blocks above were split from
+		// the INVOCATION. Keeping them would send the raw `/name`, since
+		// the multimodal path ignores the text prompt entirely.
+		userContent = nil
 	}
 
 	// On re-invocation after an ask_user pause, prepend the prior

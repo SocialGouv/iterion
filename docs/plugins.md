@@ -21,9 +21,9 @@ A manifest's `contributes:` block lists one or more typed extension points:
 | `rewriters`   | command-output compressors (the rtk generalization)       | the rewrite chain on all three shell surfaces (claude_code Bash hook, claw bash builtin, tool nodes) |
 | `mcp_servers` | MCP servers (e.g. a knowledge-graph explorer)             | the workflow MCP catalog — ambient, workflow-wide, like a project `.mcp.json` entry |
 | `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start, in BOTH the directory form `<name>/SKILL.md` (what claude_code's Skill tool discovers — Agent Skills spec) and the flat alias `<name>.md` (what prompt Reads by path resolve) |
-| `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/<name>.md` (claude_code discovers via `--setting-sources project`) |
+| `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/<name>.md`; a prompt opening with `/<name>` resolves to that file's body on claude_code **and** claw ([capability matrix](backends.md#workspace-slash-commands)) |
 | `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/<name>.md` (claude_code discovers via `--setting-sources project`) |
-| `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`) |
+| `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`; claw fires a subset — see the parity table) |
 | `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
 
 `skills` / `commands` / `agents` share one mirror mechanism + the bundle
@@ -397,17 +397,17 @@ The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
 CLI, and marketplace. Skills and MCP servers reach both `claude_code` and
 `claw`. Pi also consumes the resolved plugin skills through an explicit
 `--skill` directory in both transports, and the MCP catalog through its embedded
-RPC extension. The remaining work is claw-side discovery/execution for commands,
-named agents, and hooks. Kimi, Grok, and Codex do not consume these
+RPC extension. The remaining work is claw-side discovery of named agents, and the hook
+events claw skips. Kimi, Grok, and Codex do not consume these
 plugin contribution surfaces:
 
 | Claude plugin type | iterion kind | parity note |
 |--------------------|--------------|-------------|
 | skills             | `skills` ✅ shipped      | claude_code native lookup, claw's `skill` tool, and pi's explicit `--skill` path consume `.claude/skills/` |
 | MCP servers        | `mcp_servers` ✅ shipped | `claude_code`, claw, and pi RPC consume the resolved MCP catalog |
-| slash commands     | `commands` ✅ shipped (claude_code) | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`. claw reads commands only from CLAUDE.md today → a `.claude/commands/` loader is staged in `.works/claw-code-go` (`internal/commands/`), lands on the next claw release + `go.mod` bump |
+| slash commands     | `commands` ✅ shipped | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`, claw resolves the same files in-process (claw-code-go `pkg/api/commands`). A prompt opening with `/<name>` becomes that file's body on either backend — see the [capability matrix](backends.md#workspace-slash-commands) for the four measured differences — **frontmatter beyond `description:` is ignored on claw, so a command that narrows itself with `allowed-tools:` keeps the node's full tool set there**, plus workspace-only scope, one-based `$1`, and the unevaluated `` !`cmd` ``/`@path`/`$0` forms |
 | subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool + SubagentRunner but no named-agent file loader → claw-side follow-on |
-| hooks              | `hooks` ✅ shipped (claude_code) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw has shell + Go hook runners but no settings discovery → claw-side follow-on |
+| hooks              | `hooks` ✅ shipped (claude_code) · partial (claw) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw re-reads the same file per node execution (`registerSettingsHooks`, `pkg/backend/model/settings_hooks.go`) and runs the **`command`**-type entries of `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `Stop` only — `prompt`-type entries and every other event (`UserPromptSubmit`, `SessionStart`, `PreCompact`, …) are skipped without a diagnostic, and a **sandboxed** claw node reads none at all → claw-side follow-on |
 
 The principle: where claude_code has a native surface and claw does not (or they
 diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw
@@ -415,9 +415,9 @@ source) so a plugin behaves identically on either backend, rather than papered
 over with a claude_code-only adapter. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
-The `commands`, `agents`, and `hooks` manifest kinds are shipped today. Their
-claude_code wiring is live; only the claw parity work called out in the table is
-follow-on.
+The `commands`, `agents`, and `hooks` manifest kinds are shipped today.
+`commands` reaches claw as well as claude_code; `hooks` reaches it partially
+(see the row above); named subagents stay claude_code-only.
 
 ## Public skill libraries (shipped)
 

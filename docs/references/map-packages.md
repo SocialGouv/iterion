@@ -54,7 +54,7 @@
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` | 1 · 10 |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` | 1 · 3 |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` | 12 · 95 |
-| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 58 · 256 |
+| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 59 · 257 |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — | 1 · 13 |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — | 3 · 41 |
 | `pkg/backend/permissionhook` | adapts third-party CLI PreToolUse payloads to iterion's shared permission.Policy evaluator. | — | 1 · 5 |

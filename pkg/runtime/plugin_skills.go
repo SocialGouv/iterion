@@ -66,7 +66,8 @@ func (t *contribClaimTracker) report(destPath string) bool {
 // <workDir>/.claude/<skills|commands|agents>/ directories, applying the same
 // 4-branch collision policy as bundle skills (copy / no-op / refresh / shadow)
 // via reconcileSkillFile. claude_code discovers all three via
-// --setting-sources project; the claw backend reads the same dirs.
+// --setting-sources project. claw reads the skills and the commands; named
+// agents are claude_code-only for now (docs/plugins.md, parity table).
 //
 // It runs at run start and on resume, right after the bundle skills are
 // mirrored, so a plugin file is shadowed by a same-named bundle/workspace file

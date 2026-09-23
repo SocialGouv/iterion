@@ -199,12 +199,19 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	// prompt to append to). A wrong route is a silently wrong RUN, not a
 	// failed node.
 	assemble := func(ctx context.Context, bn string) (*delegate.Task, error) {
+		// A router prompt may invoke a workspace `.claude/commands/`
+		// command too. Resolved per backend, inside assemble, because the
+		// substitution is claw's alone — claude_code expands it natively.
+		// The OnLLMPrompt event above fired before any backend was chosen,
+		// so for a router it carries the invocation; the expansion logs its
+		// own line naming the command and its file.
+		routerText, _ := expandWorkspaceSlashCommand(userText, e.workDir, bn, node.ID, LoopIterationFromContext(ctx), e.logger)
 		return &delegate.Task{
 			NodeID:           node.ID,
 			Iteration:        LoopIterationFromContext(ctx),
 			SystemPrompt:     systemText,
 			SystemPromptMode: delegate.SystemPromptModeForBackend(bn),
-			UserPrompt:       userText,
+			UserPrompt:       routerText,
 			OutputSchema:     jsonSchema,
 			Model:            expanded,
 			WorkDir:          e.workDir,
