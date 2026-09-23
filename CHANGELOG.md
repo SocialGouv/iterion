@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.191.2](https://github.com/SocialGouv/iterion/compare/v3.191.1...v3.191.2) (2026-09-23)
+
+### Bug Fixes
+
+* **delegate:** a facade's dated wall is a window, not a throttle ([#1602](https://github.com/SocialGouv/iterion/issues/1602)) ([8fbe427](https://github.com/SocialGouv/iterion/commit/8fbe427fc72aa91f30e18db3bd860e9b2265b71c)), references [#1583](https://github.com/SocialGouv/iterion/issues/1583)
+
+    <details><summary>why</summary>
+
+    The ZAI-shaped facade words its multi-day wall differently from its 5h one: "Usage limit reached for 5 hour. Your limit will reset at …" against "[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at …]". Only the first was in usageWindowSignals, so the second fell through to RateLimitKindTransient — a dated wall filed as a retryable throttle.
+
+    </details>
+* **gate:** a verdict certifies the revision it read, and the auto-merge arming is pinned to it ([#1657](https://github.com/SocialGouv/iterion/issues/1657)) ([92ba384](https://github.com/SocialGouv/iterion/commit/92ba384a82862d3f22f5aa76b5a006faffac6cbc)), references [#1586](https://github.com/SocialGouv/iterion/issues/1586) [#1586](https://github.com/SocialGouv/iterion/issues/1586) [#1585](https://github.com/SocialGouv/iterion/issues/1585) [#1587](https://github.com/SocialGouv/iterion/issues/1587) [#1587](https://github.com/SocialGouv/iterion/issues/1587) [#1587](https://github.com/SocialGouv/iterion/issues/1587) [#1633](https://github.com/SocialGouv/iterion/issues/1633)
+
+    <details><summary>why</summary>
+
+    The publish endpoint resolved the pull request's head at the moment it wrote the commit status, and the payload carried no revision at all (`pkg/server/forge_publish.go:720-762`). So a bot could audit A, a push land B, and A's verdict certify B. With a required check, `required_approving_review_count: 0` and auto-merge armed — the exact shape `SocialGouv/buildkit-operator` carries — that is a path for an unaudited commit to reach the default branch.
+
+    </details>
+
 ## [3.191.1](https://github.com/SocialGouv/iterion/compare/v3.191.0...v3.191.1) (2026-09-23)
 
 ### Bug Fixes
