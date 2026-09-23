@@ -1888,6 +1888,11 @@ schema commit_result:
   ## previously did `output.slice(0, 7)` and got "committ" (the first
   ## 7 chars of the literal string "committed ...") in INDEX.md.
   sha: string
+  ## The empty batch ledger the per-package audit edge binds. This node
+  ## commits ONE package, so the list is always empty; a `with:` literal
+  ## `"[]"` would reach write_audit_md's json field as text (C152) and
+  ## the expr language has no list literal, so the producer prints it.
+  batch_packages: json
 
 schema revert_input:
   workspace_dir: string
@@ -2073,6 +2078,11 @@ schema bucket_families_output:
   families_count: int
   solos: json
   solos_count: int
+  ## The empty ledger select_family's attempted_families seeds from. A
+  ## `with:` literal `"{}"` would reach that json field as text (C152)
+  ## and the expr language has no object literal, so the producer
+  ## prints it; mark_family_attempted grows it on every loop-back.
+  attempted_families_seed: json
 
 ## select_family_input is the loop input — each iteration picks the
 ## next un-attempted family from bucket_families.families.
@@ -2892,11 +2902,11 @@ if git diff --cached --quiet; then
   ## HEAD lets the loop continue with write_audit_md (which detects
   ## the no-op marker) instead of hard-failing the whole run.
   SHA=$(git rev-parse HEAD)
-  printf '{"success":true,"output":"noop: nothing staged (HEAD=%s)","sha":"%s"}\n' "$SHA" "$SHA"
+  printf '{"success":true,"output":"noop: nothing staged (HEAD=%s)","sha":"%s","batch_packages":[]}\n' "$SHA" "$SHA"
   exit 0
 fi
 if ! printf '%s' "$MSG" | git commit -F - >&2; then
-  printf '{"success":false,"output":"git commit failed","sha":""}\n'
+  printf '{"success":false,"output":"git commit failed","sha":"","batch_packages":[]}\n'
   exit 1
 fi
 # Amend pass: when an upstream hook (lint --fix, prettier, husky)
@@ -2930,13 +2940,13 @@ if git status --porcelain -- ':/' $ITERION_TREE_NOISE ':(exclude)go' ':(exclude)
 git reset -q -- 'go' 'target' '.cargo' 'node_modules' '.yarn' '.cache' '.iterion' '__pycache__' '.venv' 'venv' ':(glob)**/node_modules' ':(glob)**/__pycache__' ':(glob)**/.venv' 2>/dev/null || true
   if ! git diff --cached --quiet; then
     if ! git commit --amend --no-edit >&2; then
-      printf '{"success":false,"output":"git commit --amend failed","sha":""}\n'
+      printf '{"success":false,"output":"git commit --amend failed","sha":"","batch_packages":[]}\n'
       exit 1
     fi
   fi
 fi
 SHA=$(git rev-parse HEAD)
-printf '{"success":true,"output":"committed %s","sha":"%s"}\n' "$SHA" "$SHA"
+printf '{"success":true,"output":"committed %s","sha":"%s","batch_packages":[]}\n' "$SHA" "$SHA"
 `
   input: commit_tool_input
   output: commit_result
@@ -3972,6 +3982,7 @@ tool bucket_families:
       families_count: families.length,
       solos: solos,
       solos_count: solos.length,
+      attempted_families_seed: {},
     }));
   input: bucket_families_input
   output: bucket_families_output
@@ -4689,11 +4700,14 @@ workflow secured_renovacy:
   }
 
   ## !has_patches → go straight to per-package loop with an empty
-  ## attempted slot (legacy entry shape preserved).
+  ## attempted slot. bucket_patches always prints attempted_after_batch,
+  ## and with no patches it is the empty ledger {} — the same typed
+  ## field the has_families sibling edge binds, so both entries into the
+  ## solo loop carry one shape.
   bucket_patches -> select_candidate when not has_patches with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
-    attempted: "[]",
+    attempted: "{{outputs.bucket_patches.attempted_after_batch}}",
     max_packages: "{{vars.max_packages_per_run}}",
     workspace_dir: "{{vars.workspace_dir}}",
     update_scope: "{{vars.update_scope}}"
@@ -4744,7 +4758,7 @@ workflow secured_renovacy:
   ## or revert) before the per-package solo loop picks up what's left.
   bucket_families -> select_family when has_families with {
     families: "{{outputs.bucket_families.families}}",
-    attempted_families: "{}",
+    attempted_families: "{{outputs.bucket_families.attempted_families_seed}}",
     attempted_members: "{{outputs.bucket_patches.attempted_after_batch}}",
     workspace_dir: "{{vars.workspace_dir}}",
     max_families: "{{vars.max_families_per_run}}"
@@ -5112,7 +5126,7 @@ workflow secured_renovacy:
     align_summary: "{{outputs.align_code.summary}}",
     validate_report: "{{outputs.validate_upgrade}}",
     commit_sha: "{{outputs.commit_changes.sha}}",
-    batch_packages: "[]"
+    batch_packages: "{{outputs.commit_changes.batch_packages}}"
   }
 
   ## Loop back to select_candidate. The attempted slot differs per

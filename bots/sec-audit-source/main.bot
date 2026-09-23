@@ -844,6 +844,15 @@ schema remediation_mode_gate_output:
   is_apply_auto: bool
   needs_gate:    bool
   mode:          string
+  ## Typed constants the remediation mappings need. A `with:` value is
+  ## text unless it is exactly one reference, so a literal `"false"` /
+  ## `"0"` reaches a bool / int field as a string (C152). The three
+  ## passthrough computes republish these, so every edge of the phase
+  ## has a typed source in scope.
+  const_false:   bool
+  const_true:    bool
+  const_zero:    int
+  const_one:     int
 
 ## prepare_branch output. Runs once before the per-finding loop in
 ## apply modes (gated AND auto). Captures the operator's original
@@ -993,6 +1002,12 @@ schema select_finding_output:
   has_more:   bool
   remaining:  int
   attempted:  string
+  ## The typed empty list patch_author's `prior_attempts` binds to. A
+  ## `with:` literal `"[]"` would reach that json field as text (C152)
+  ## and the expr language has no list literal, so the producer prints
+  ## the value. D5a runs one attempt per finding; D5b's nested retry
+  ## loop fills this ledger.
+  prior_attempts: json
 
 ## fix_ledger output. Passthrough that re-publishes select_finding's
 ## attempted ledger from a NON-loop-target node. A loop edge's with{}
@@ -4999,6 +5014,10 @@ compute remediation_mode_gate:
     is_apply_auto: "vars.remediation_mode == 'apply_auto'"
     needs_gate:    "vars.remediation_mode == 'apply_gated'"
     mode:          "vars.remediation_mode"
+    const_false:   "false"
+    const_true:    "true"
+    const_zero:    "0"
+    const_one:     "1"
 
 ## exit_router (D5b). Passthrough compute that re-publishes the mode
 ## bools so the EXIT edges (after the per-finding loop) can branch
@@ -5015,6 +5034,10 @@ compute exit_router:
     is_apply_auto: "outputs.remediation_mode_gate.is_apply_auto"
     needs_gate:    "outputs.remediation_mode_gate.needs_gate"
     mode:          "outputs.remediation_mode_gate.mode"
+    const_false:   "false"
+    const_true:    "true"
+    const_zero:    "0"
+    const_one:     "1"
 
 ## apply_router (D5b). Splits the two APPLY modes:
 ##   - apply_auto:  -> merge_fixes  (no gate)
@@ -5030,6 +5053,10 @@ compute apply_router:
     is_apply_auto: "outputs.remediation_mode_gate.is_apply_auto"
     needs_gate:    "outputs.remediation_mode_gate.needs_gate"
     mode:          "outputs.remediation_mode_gate.mode"
+    const_false:   "false"
+    const_true:    "true"
+    const_zero:    "0"
+    const_one:     "1"
 
 ## remediation_plan splits the confirmed[] stream into to_fix (loop
 ## eligible) and hard_stopped (recorded but never auto-patched). A
@@ -5257,6 +5284,7 @@ print(json.dumps({
     'has_more':  has_more,
     'remaining': remaining,
     'attempted': ','.join(sorted(seen)),
+    'prior_attempts': [],
 }))
 "`
   input: select_finding_input
@@ -6249,7 +6277,7 @@ workflow sec_audit_source:
   select_finding -> patch_author when has_more with {
     workspace_dir:  "{{vars.workspace_dir}}",
     finding:        "{{outputs.select_finding.finding}}",
-    prior_attempts: "[]"
+    prior_attempts: "{{outputs.select_finding.prior_attempts}}"
   }
   select_finding -> exit_router when not has_more
 
@@ -6268,7 +6296,7 @@ workflow sec_audit_source:
     workspace_dir: "{{vars.workspace_dir}}",
     finding:       "{{outputs.select_finding.finding}}",
     candidate:     "{{outputs.patch_author}}",
-    attempt:       "1"
+    attempt:       "{{outputs.remediation_mode_gate.const_one}}"
   }
   reattack -> project_review_input
   ## Forward the 4-field projection into the judge's input. Without this
@@ -6334,10 +6362,10 @@ workflow sec_audit_source:
     mode:            "{{outputs.remediation_mode_gate.mode}}",
     branch:          "",
     original_branch: "",
-    merged:          "false",
-    approved:        "false",
-    abandoned:       "false",
-    commits_merged:  "0",
+    merged:          "{{outputs.exit_router.const_false}}",
+    approved:        "{{outputs.exit_router.const_false}}",
+    abandoned:       "{{outputs.exit_router.const_false}}",
+    commits_merged:  "{{outputs.exit_router.const_zero}}",
     merge_sha:       ""
   }
   exit_router -> apply_router when not is_propose
@@ -6398,8 +6426,8 @@ workflow sec_audit_source:
     branch:          "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
     merged:          "{{outputs.merge_fixes.merged}}",
-    approved:        "true",
-    abandoned:       "false",
+    approved:        "{{outputs.exit_router.const_true}}",
+    abandoned:       "{{outputs.exit_router.const_false}}",
     commits_merged:  "{{outputs.merge_fixes.commits_merged}}",
     merge_sha:       "{{outputs.merge_fixes.merge_sha}}"
   }
@@ -6410,10 +6438,10 @@ workflow sec_audit_source:
     mode:            "{{outputs.remediation_mode_gate.mode}}",
     branch:          "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    merged:          "false",
-    approved:        "false",
+    merged:          "{{outputs.exit_router.const_false}}",
+    approved:        "{{outputs.exit_router.const_false}}",
     abandoned:       "{{outputs.abandon_fixes.abandoned}}",
-    commits_merged:  "0",
+    commits_merged:  "{{outputs.exit_router.const_zero}}",
     merge_sha:       ""
   }
 
