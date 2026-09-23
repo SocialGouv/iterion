@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Operator uploads at a human pause ("late-bound attachments").
@@ -98,18 +96,6 @@ func hasUploadEnvelope(answers map[string]any) bool {
 		}
 	}
 	return false
-}
-
-// attachmentDescriptor projects a promoted attachment into the map a
-// workflow reads off the answer. `path` is added later by the runtime.
-func attachmentDescriptor(rec store.AttachmentRecord) map[string]any {
-	return map[string]any{
-		"attachment": rec.Name,
-		"filename":   rec.OriginalFilename,
-		"mime":       rec.MIME,
-		"size":       rec.Size,
-		"sha256":     rec.SHA256,
-	}
 }
 
 // gateAttachmentName derives the run-unique attachment name for a gate
@@ -247,7 +233,7 @@ func (s *Server) promoteAnswerUploads(
 		if !ok {
 			return nil, fmt.Errorf("attachment %q was not promoted", name)
 		}
-		out[field] = attachmentDescriptor(rec)
+		out[field] = rec.AnswerDescriptor()
 	}
 	if len(adHocNames) > 0 {
 		descriptors := make([]any, 0, len(adHocNames))
@@ -256,7 +242,7 @@ func (s *Server) promoteAnswerUploads(
 			if !ok {
 				return nil, fmt.Errorf("attachment %q was not promoted", name)
 			}
-			descriptors = append(descriptors, attachmentDescriptor(rec))
+			descriptors = append(descriptors, rec.AnswerDescriptor())
 		}
 		out[answerUploadsKey] = descriptors
 	}
