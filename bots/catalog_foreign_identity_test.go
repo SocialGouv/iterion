@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // A catalog bot ships to a PUBLIC repository and is read by anyone. Nothing in
@@ -59,7 +61,6 @@ var catalogHostAllowlist = map[string]string{
 	"raw.githubusercontent.com": "GitHub's public raw-content host",
 	"gitlab.com":                "the public GitLab instance",
 	"codeberg.org":              "a public forge",
-	"cache.nixos.org":           "the public Nix binary cache, named in devbox locks",
 	"nixhub.io":                 "the public devbox package index, named in devbox locks",
 	"json.schemastore.org":      "the public JSON schema store",
 	"dl.min.io":                 "a public download host for an object-store client",
@@ -82,10 +83,9 @@ var catalogHostAllowlist = map[string]string{
 	"x.fr":                "a placeholder URL in a truncation test fixture",
 	// Identities the engine writes into throwaway git commits. They are not
 	// hosts: nothing resolves them, and they exist so a commit has an author.
-	"golden-master.iterion":  "the synthetic committer identity of a bot's own commits",
-	"golden-master.iterionz": "the same identity, in a bundle-name fixture",
-	"iterion.local":          "the synthetic committer identity of a bot's own commits",
-	"noreply.local":          "the synthetic committer identity of a bot's own commits",
+	"golden-master.iterion": "the synthetic committer identity of a bot's own commits",
+	"iterion.local":         "the synthetic committer identity of a bot's own commits",
+	"noreply.local":         "the synthetic committer identity of a bot's own commits",
 }
 
 type foreignHost struct {
@@ -93,23 +93,47 @@ type foreignHost struct {
 	line       int
 }
 
-// scanForForeignHosts walks a directory and returns every host reference that
-// is neither reserved nor allowlisted. Factored out of the test so the guard
-// can be shown to BITE on an injected example — a bench that cannot go red is
-// not a bench.
-func scanForForeignHosts(t *testing.T, root string, skip func(path string) bool) []foreignHost {
+// catalogFiles is the set this guard judges: the files of bots/ and examples/
+// that are IN THE COMMIT, read from git rather than from the checkout.
+//
+// The distinction is not pedantry, it is the finding that made this function
+// exist. A working directory carries `.devbox/` profiles, `__pycache__/`
+// artefacts and build output that no commit holds; scanning it made the guard
+// certify the checkout instead of the tree, and the allowlist grew two entries
+// justified by files that only existed on one machine. The CI run named both.
+// A guard whose verdict moves with the directory it runs in certifies nothing.
+func catalogFiles(t *testing.T) []string {
+	t.Helper()
+	out, err := gittest.Cmd("..", "ls-files", "-z", "--", "bots", "examples").Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	var files []string
+	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if rel != "" {
+			files = append(files, filepath.Join("..", filepath.FromSlash(rel)))
+		}
+	}
+	if len(files) == 0 {
+		t.Fatal("git lists no file under bots/ or examples/ — the guard would pass by scanning nothing")
+	}
+	return files
+}
+
+// scanForeignHosts returns every host reference in the named files that is
+// neither reserved nor allowlisted. Factored out of the test so the guard can
+// be shown to BITE on injected examples — a bench that cannot go red is not a
+// bench.
+func scanForeignHosts(t *testing.T, files []string, skip func(path string) bool) []foreignHost {
 	t.Helper()
 	var found []foreignHost
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
+	for _, path := range files {
 		if skip != nil && skip(path) {
-			return nil
+			continue
 		}
 		body, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return nil
+			t.Fatalf("read %s: %v", path, readErr)
 		}
 		for index, line := range strings.Split(string(body), "\n") {
 			hosts := hostRe.FindAllStringSubmatch(line, -1)
@@ -132,26 +156,21 @@ func scanForForeignHosts(t *testing.T, root string, skip func(path string) bool)
 				found = append(found, foreignHost{file: path, host: host, line: index + 1})
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
 	}
 	return found
 }
 
+// skipTheGuardItself: this file carries the allowlist and the injected
+// examples of the bite test, so it names every host by construction. ONE
+// definition, used by every test here — a second copy would drift and exempt
+// something nobody meant to exempt. Nothing else is exempt: a fixture in a
+// test is as public as a skill.
+func skipTheGuardItself(path string) bool {
+	return filepath.Base(path) == "catalog_foreign_identity_test.go"
+}
+
 func TestCatalogNamesNoForeignInfrastructure(t *testing.T) {
-	skip := func(path string) bool {
-		// This file carries the allowlist, so it names every host by
-		// construction. Nothing else is exempt — a fixture in a test is as
-		// public as a skill.
-		return filepath.Base(path) == "catalog_foreign_identity_test.go"
-	}
-	var found []foreignHost
-	for _, root := range []string{".", "../examples"} {
-		found = append(found, scanForForeignHosts(t, root, skip)...)
-	}
-	for _, hit := range found {
+	for _, hit := range scanForeignHosts(t, catalogFiles(t), skipTheGuardItself) {
 		t.Errorf("%s:%d names the host %q, which is neither a reserved documentation name nor "+
 			"on the catalog allowlist. A shipped bot must not carry a third party's "+
 			"infrastructure: if this host is public and the reference is deliberate, add it to "+
@@ -176,7 +195,11 @@ func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 		}
 	}
 
-	found := scanForForeignHosts(t, dir, nil)
+	var injected []string
+	for name := range fixtures {
+		injected = append(injected, filepath.Join(dir, name))
+	}
+	found := scanForeignHosts(t, injected, nil)
 	caught := map[string]bool{}
 	for _, hit := range found {
 		caught[hit.host] = true
@@ -203,25 +226,19 @@ func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 // purpose. Drained the same way the universality exemptions are.
 func TestCatalogHostAllowlistCarriesNoDeadEntry(t *testing.T) {
 	seen := map[string]bool{}
-	for _, root := range []string{".", "../examples"} {
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || filepath.Base(path) == "catalog_foreign_identity_test.go" {
-				return nil
-			}
-			body, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return nil
-			}
-			lowered := strings.ToLower(string(body))
-			for host := range catalogHostAllowlist {
-				if strings.Contains(lowered, host) {
-					seen[host] = true
-				}
-			}
-			return nil
-		})
+	for _, path := range catalogFiles(t) {
+		if skipTheGuardItself(path) {
+			continue
+		}
+		body, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
+			t.Fatalf("read %s: %v", path, err)
+		}
+		lowered := strings.ToLower(string(body))
+		for host := range catalogHostAllowlist {
+			if strings.Contains(lowered, host) {
+				seen[host] = true
+			}
 		}
 	}
 	for host, reason := range catalogHostAllowlist {
@@ -229,5 +246,36 @@ func TestCatalogHostAllowlistCarriesNoDeadEntry(t *testing.T) {
 			t.Errorf("the allowlist permits %q (%q) and nothing in the catalog names it any more — "+
 				"remove the entry so it cannot silently re-permit that host later", host, reason)
 		}
+	}
+}
+
+// The regression CI caught, pinned. The first form of this guard walked the
+// working DIRECTORY, so its verdict moved with whatever was lying in the
+// checkout: a `.devbox/` profile and a `__pycache__/` artefact justified two
+// allowlist entries that the commit does not need, and CI — which checks out
+// clean — named both. The set judged is now the COMMIT's, so an untracked file
+// can neither excuse an entry nor hide a leak.
+func TestCatalogIdentityGuardJudgesTheCommitNotTheCheckout(t *testing.T) {
+	listed := catalogFiles(t)
+	untracked := filepath.Join("assessment", "skills", "untracked-scratch.md")
+	if err := os.WriteFile(untracked, []byte("see https://forge.internal.acme-industries.fr/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(untracked) }()
+
+	after := catalogFiles(t)
+	if len(after) != len(listed) {
+		t.Fatalf("an untracked file changed the judged set (%d -> %d): the guard is reading the checkout, not the commit",
+			len(listed), len(after))
+	}
+	for _, path := range after {
+		if path == filepath.Join("..", "bots", "assessment", "skills", "untracked-scratch.md") {
+			t.Fatal("the judged set carries an untracked file")
+		}
+	}
+	// And the allowlist's dead-entry check must be blind to it too — that is
+	// the half that grew the two bogus entries.
+	if found := scanForeignHosts(t, after, skipTheGuardItself); len(found) > 0 {
+		t.Fatalf("the committed catalog names %d foreign host(s) — unrelated to this fixture: %v", len(found), found)
 	}
 }
