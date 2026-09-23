@@ -86,12 +86,12 @@ func Spans(line string) [][2]int {
 	return spans
 }
 
-// fenceMarker returns the fenced-block delimiter a line carries, or "".
+// FenceMarker returns the fenced-block delimiter a line carries, or "".
 //
 // A backtick fence's info string may not itself contain a backtick: "```go
 // `x`" is a PARAGRAPH, not a fence. Reading one as an opener costs the whole
 // rest of the page, because no later line closes it.
-func fenceMarker(line string) string {
+func FenceMarker(line string) string {
 	m := fenceRe.FindStringSubmatch(line)
 	if m == nil {
 		return ""
@@ -129,7 +129,7 @@ func Mask(md string) string {
 			line, next = line[:nl], pos+nl+1
 		}
 		delimiter := false
-		if marker := fenceMarker(line); marker != "" {
+		if marker := FenceMarker(line); marker != "" {
 			switch {
 			case !inFence:
 				inFence, fenceChar, fenceLen, delimiter = true, marker[0], len(marker), true
@@ -152,22 +152,38 @@ func Mask(md string) string {
 	return string(out)
 }
 
-// CutBeforeDanglingSpan returns s truncated before the backtick run that
-// opens a code span s does not close.
+// CloseDanglingSpan repairs a string whose last backtick run opens a code
+// span the string does not close, by appending the run that closes it.
 //
 // It is what a caller that TRUNCATES prose owes every scanner downstream. A
-// cut lands where a byte bound falls, and one that lands between a span's two
+// cut lands where a byte bound falls, and one landing between a span's two
 // runs leaves half a span: the renderers then show a stray backtick, and
 // every reader of this package sees the quoted text as prose — so a link form
 // the page only quoted is read as a link, refused, and the generator that was
 // cutting the sentence fails on a page whose links are sound.
-func CutBeforeDanglingSpan(s string) string {
+//
+// Closing rather than cutting, because cutting loses text: a cut at the first
+// backtick of a 60-byte ADR status leaves an EMPTY cell, and a cut mid-cell
+// drops the very name the sentence was quoting. Closing keeps every byte the
+// truncation kept and costs at most a few backticks.
+func CloseDanglingSpan(s string) string {
 	end := 0
 	for _, r := range Spans(s) {
 		end = r[1]
 	}
-	if i := strings.IndexByte(s[end:], '`'); i >= 0 {
-		return s[:end+i]
+	i := strings.IndexByte(s[end:], '`')
+	if i < 0 {
+		return s
 	}
-	return s
+	open := end + i
+	n := 0
+	for j := open; j < len(s) && s[j] == '`'; j++ {
+		n++
+	}
+	// A run with nothing after it opened nothing worth keeping: drop it
+	// rather than close an empty span.
+	if strings.TrimSpace(s[open+n:]) == "" {
+		return s[:open]
+	}
+	return s + strings.Repeat("`", n)
 }

@@ -3,6 +3,8 @@ package repomap
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/mdcode"
 )
 
 // The summary column quotes the page's opening sentence, relative links
@@ -234,9 +236,11 @@ func TestALongSentenceQuotingALinkFormIsNotCutInsideItsCodeSpan(t *testing.T) {
 				t.Fatalf("the truncated sentence was refused as a broken link: %v\n  summary: %s", err, summary)
 			}
 			// The cell must not end mid-span either: a stray backtick is what
-			// makes every reader disagree about where the code was.
-			if strings.Count(got, "`")%2 != 0 {
-				t.Errorf("the summary ends inside a code span (odd backtick count): %s", got)
+			// makes every reader disagree about where the code was. Asked of
+			// the rule itself, not of a parity count — parity is not balance
+			// (``a`b` has four backticks and a dangling run).
+			if mdcode.CloseDanglingSpan(got) != got {
+				t.Errorf("the summary ends inside a code span: %s", got)
 			}
 		})
 	}

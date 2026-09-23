@@ -182,18 +182,44 @@ func TestAnInfoStringCarryingABacktickDoesNotOpenAFence(t *testing.T) {
 // A caller that truncates prose can cut between a code span's two runs. The
 // half span renders a stray backtick, and every scanner downstream reads what
 // the span was quoting as prose.
-func TestCutBeforeDanglingSpanRefusesToEndInsideASpan(t *testing.T) {
+func TestCloseDanglingSpanKeepsTheTextAndClosesTheSpan(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
-		{"a cut inside a span drops the half span", "the form `](../../docs/foo.md) ou", "the form "},
+		{"a span the cut opened is closed, not dropped", "the form `](../../docs/foo.md) ou", "the form `](../../docs/foo.md) ou`"},
 		{"a closed span is kept whole", "the form `](../x.md)` and more", "the form `](../x.md)` and more"},
 		{"prose with no backtick is untouched", "just prose", "just prose"},
-		{"a closed span followed by a dangling run", "`a` then `b", "`a` then "},
-		{"a dangling double run", "text ``half", "text "},
+		{"a closed span followed by a dangling run", "`a` then `b", "`a` then `b`"},
+		{"a dangling double run", "text ``half", "text ``half``"},
+		{"a run with nothing after it opened nothing", "text `", "text "},
+		{"a run followed only by space is dropped too", "text `  ", "text "},
+		// The cell whose payload the first version of this helper threw away.
+		{"the real corpus cell keeps its name", "the stdio server (`iterion", "the stdio server (`iterion`"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mdcode.CutBeforeDanglingSpan(tc.src); got != tc.want {
-				t.Errorf("CutBeforeDanglingSpan(%q) = %q, want %q", tc.src, got, tc.want)
+			got := mdcode.CloseDanglingSpan(tc.src)
+			if got != tc.want {
+				t.Errorf("CloseDanglingSpan(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+			// Whatever it returns must read as code-complete: a second pass
+			// changes nothing, and Mask hides the span it just closed.
+			if again := mdcode.CloseDanglingSpan(got); again != got {
+				t.Errorf("not idempotent: %q then %q", got, again)
 			}
 		})
+	}
+}
+
+// A truncation must never empty a cell: firstSentence cuts the ADR status
+// column at 60 bytes, where a code span crosses the bound easily, and a cut
+// at the FIRST backtick used to leave the whole cell empty.
+func TestCloseDanglingSpanNeverEmptiesATextThatHadText(t *testing.T) {
+	for _, src := range []string{
+		"`Remplacé par ADR-140 le 2026-04-12, voir la note de",
+		"`iterion",
+		"``a",
+		"a `b",
+	} {
+		if got := mdcode.CloseDanglingSpan(src); strings.TrimSpace(strings.Trim(got, "`")) == "" {
+			t.Errorf("CloseDanglingSpan(%q) = %q — a cell that had text lost all of it", src, got)
+		}
 	}
 }

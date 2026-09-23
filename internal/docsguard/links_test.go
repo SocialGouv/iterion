@@ -469,3 +469,33 @@ func TestExcludedMatchesDirectoryPrefixesOnly(t *testing.T) {
 		}
 	}
 }
+
+// A backtick fence's info string may not itself contain a backtick, so
+// "```go `x`" is a paragraph. Read as a fence opener it is never closed, and
+// the rest of the page stops existing for this checker: every heading below
+// it loses its anchor — which `task docs:links` reports as a broken link on
+// the OTHER page, the one that linked the anchor — and every link below it
+// goes unchecked, which is the silent direction.
+//
+// The rule lives in internal/mdcode, so Mask and this scanner cannot answer
+// it differently; the mutation that reddens this is FenceMarker returning the
+// raw pattern match.
+func TestAParagraphThatLooksLikeAFenceDoesNotSwallowThePage(t *testing.T) {
+	target := Parse("target.md", []byte("# Target\n\n```go `x`\n\n## Review tiers\n\nBody.\n"))
+	if !target.Anchors["review-tiers"] {
+		t.Errorf("the heading below the paragraph lost its anchor; anchors = %v", target.Anchors)
+	}
+	source := Parse("source.md", []byte("# Source\n\n```go `x`\n\nSee [the tiers](target.md#review-tiers).\n"))
+	if len(source.Links) != 1 {
+		t.Errorf("the link below the paragraph was not checked at all: %d link(s) found", len(source.Links))
+	}
+	// A real fence still hides what it holds, or this guard would pass by
+	// disabling fences altogether.
+	fenced := Parse("fenced.md", []byte("# F\n\n```go\n[x](nope.md)\n```\n\n## Kept\n"))
+	if len(fenced.Links) != 0 {
+		t.Errorf("a genuine fenced block stopped hiding its links: %v", fenced.Links)
+	}
+	if !fenced.Anchors["kept"] {
+		t.Error("a genuine fenced block swallowed the heading after it")
+	}
+}

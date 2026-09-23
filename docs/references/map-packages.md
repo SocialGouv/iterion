@@ -32,13 +32,13 @@
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — | 3 · 1 |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — | 3 · 8 |
 | `internal/httpx` | provides the shared JSON request/response helpers used by iterion's HTTP handlers. | — | 1 · 5 |
-| `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — | 1 · 5 |
+| `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — | 1 · 6 |
 | `internal/proctest` | checks OS resources owned by a test binary. | — | 2 · 2 |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — | 1 · 3 |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — | 1 · 3 |
 | `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `Sink` | 5 · 45 |
 | `pkg/artifactlabels` | derives semantic labels for a published artifact from the SHAPE of its output data — so an artifact groups under "Plans", "Verdicts", etc. | — | 1 · 3 |
-| `pkg/askusermcp` | holds the ask-user MCP tool surface shared by the two transports that expose it to a claude_code session: - the stdio server (… | — | 2 · 7 |
+| `pkg/askusermcp` | holds the ask-user MCP tool surface shared by the two transports that expose it to a claude_code session: - the stdio server (`iterion`… | — | 2 · 7 |
 | `pkg/assistantmission` | persists bounded, host-authorized control loops between a conversational assistant and one target run. | `Store` | 4 · 57 |
 | `pkg/audit` | persists control-plane mutations into a queryable, tenant-scoped log. | `Store` | 3 · 20 |
 | `pkg/auth` | implements the multitenant authentication core: password hashing, JWT issuance/verification, refresh token rotation, and the per-request Identity… | `JWTDenylist`, `PasswordResetStore`, `SessionStore` | 7 · 128 |

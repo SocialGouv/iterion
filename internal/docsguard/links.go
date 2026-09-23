@@ -277,7 +277,6 @@ var (
 	setextLineRe   = regexp.MustCompile(`^\s{0,3}(=+|-{3,})\s*$`)
 	htmlHeadingRe  = regexp.MustCompile(`(?i)<h[1-6][^>]*>(.*?)</h[1-6]>`)
 	htmlAnchorRe   = regexp.MustCompile(`(?i)<[a-z][a-z0-9]*\b[^>]*\s(?:id|name)="([^"]+)"`)
-	fenceRe        = mdcode.FencePattern()
 	refDefRe       = regexp.MustCompile(`^\s{0,3}\[([^\]^][^\]]*)\]:\s*(<[^>]*>|\S+)`)
 	htmlHrefRe     = regexp.MustCompile(`(?i)<(?:a|img)\b[^>]*\s(?:href|src)="([^"]+)"`)
 	schemeRe       = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
@@ -351,8 +350,7 @@ func Parse(name string, content []byte) *Document {
 			}
 		}
 
-		if m := fenceRe.FindStringSubmatch(line); m != nil {
-			marker := m[1]
+		if marker := mdcode.FenceMarker(line); marker != "" {
 			if !inFence {
 				inFence, fenceChar, fenceLen = true, marker[0], len(marker)
 				prevIsText = false

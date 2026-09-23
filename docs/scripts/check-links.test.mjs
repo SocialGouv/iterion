@@ -8,12 +8,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 
 import { BASE, BLOB, TREE, brokenLinks, collectDistFiles, repoResolver, trackedPaths } from './check-links.mjs'
 import { PUBLIC_ROOT, publicSitePath } from '../.vitepress/public-links.mjs'
+import { rewriteHref } from '../.vitepress/rewrite-href.mjs'
 
 // A built site carrying exactly the pages the cases below link to. The files
 // are real and the checker walks them: nothing here stands in for dist/.
@@ -217,16 +218,6 @@ test('a tree URL with a doubled trailing slash names the same directory', () => 
   assert.deepEqual([...flagged([href], { repoHas: (p) => p === 'docs' })], [])
 })
 
-// A writing aid, not the guarantee: it asserts that config.ts still ROUTES
-// docs/public/ through the module that owns the mapping, so deleting the
-// branch is noticed. What the site really serves is the build's verdict, and
-// the earlier attempt to make the link checker judge this instead blocked
-// publishing on a correct, resolving github URL written deliberately in prose.
-test('config.ts routes docs/public/ through public-links.mjs', () => {
-  const config = readFileSync(new URL('../.vitepress/config.ts', import.meta.url), 'utf8')
-  assert.match(config, /publicSitePath/, 'config.ts no longer calls publicSitePath')
-  assert.match(config, /from '\.\/public-links\.mjs'/, 'config.ts no longer imports the mapping module')
-})
 
 // A github URL into docs/public/ is a link that RESOLVES. The site serves
 // those files from its own root too, so linking the github copy is a routing
@@ -241,4 +232,53 @@ test('config.ts routes docs/public/ through public-links.mjs', () => {
 test('a github URL into docs/public/ resolves and is not a reason to fail', () => {
   const href = `${BLOB}${PUBLIC_ROOT}/comparisons/feature-inventory.csv`
   assert.deepEqual([...flagged([href], { repoHas: (p) => p === `${PUBLIC_ROOT}/comparisons/feature-inventory.csv` })], [])
+})
+
+// ---------------------------------------------------------------------------
+// The routing itself. These assert what the SITE will carry, which is what a
+// text assertion about config.ts could not: deleting the docs/public/ arm and
+// leaving its import behind satisfied "config.ts mentions publicSitePath",
+// and the build then published happily — the one link that arm governs fell
+// through to the RAW_SOURCE arm and became a github URL that resolves.
+
+test('a link into docs/public/ is routed to the path the site serves', () => {
+  // The github-correct source form, from the one page that writes it.
+  assert.deepEqual(rewriteHref('../public/comparisons/feature-inventory.csv', 'comparisons/feature-inventory.md'), {
+    href: '/comparisons/feature-inventory.csv',
+    external: false,
+  })
+  assert.deepEqual(rewriteHref('../public/comparatifs/index.html', 'comparisons/methodology.md'), {
+    href: '/comparatifs/index.html',
+    external: false,
+  })
+  // The fragment rides along.
+  assert.deepEqual(rewriteHref('../public/og.png#x', 'comparisons/methodology.md'), {
+    href: '/og.png#x',
+    external: false,
+  })
+})
+
+test('the public/ rule is decided before the extension rule', () => {
+  // `.csv` is in RAW_SOURCE. If the arms were ordered the other way this
+  // would be a github blob URL — which resolves, so no gate would notice.
+  const rewritten = rewriteHref('../public/comparisons/feature-inventory.csv', 'comparisons/feature-inventory.md')
+  assert.equal(rewritten.external, false, 'a file the site ships was routed away to github.com')
+})
+
+test('the other arms of rewriteHref still answer as they did', () => {
+  // Escapes docs/ → github blob.
+  assert.deepEqual(rewriteHref('../pkg/repomap/repomap.go', 'dsl.md'), {
+    href: 'https://github.com/SocialGouv/iterion/blob/main/pkg/repomap/repomap.go',
+    external: true,
+  })
+  // A raw source artifact inside docs/ → github blob.
+  assert.equal(rewriteHref('./sample.bot', 'recipes.md').external, true)
+  // A doc-to-doc .md link is left to VitePress.
+  assert.equal(rewriteHref('./dsl.md', 'recipes.md'), null)
+  // Absolute, anchor and protocol-relative are not ours.
+  assert.equal(rewriteHref('https://example.com/x', 'dsl.md'), null)
+  assert.equal(rewriteHref('#section', 'dsl.md'), null)
+  assert.equal(rewriteHref('//example.com/x', 'dsl.md'), null)
+  // The top-level docs README is the site home.
+  assert.deepEqual(rewriteHref('./README.md', 'dsl.md'), { href: '/', external: false })
 })

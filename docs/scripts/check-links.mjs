@@ -206,6 +206,15 @@ function main() {
 }
 
 // Through the REAL path of argv[1]: `import.meta.url` is already resolved, so
-// comparing it to an unresolved argv[1] leaves a publish-blocking gate that
-// prints nothing and exits 0 when it is invoked through a symlinked path.
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main()
+// comparing it to an unresolved argv[1] left a publish-blocking gate that
+// printed nothing and exited 0 when it was invoked through a symlinked path.
+// `existsSync` first because `realpathSync` THROWS on a path that is not
+// there, and this runs at module load — a throw here would kill the importer,
+// which is how this file is read by its own tests.
+//
+// One residue, deliberately not chased: under `--preserve-symlinks-main`
+// node leaves `import.meta.url` unresolved, the two sides disagree again and
+// main() does not run. Nothing in this repository sets that flag.
+const invokedDirectly =
+  process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+if (invokedDirectly) main()
