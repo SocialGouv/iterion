@@ -1542,7 +1542,7 @@ func (c *compiler) compileSubbots() {
 			// Refused where the parent is compiled — validate and launch
 			// alike — not in the runtime resolver, which runs after the
 			// parent has launched and which a snapshot bypasses.
-			c.errorfAt(DiagSubbotAuthorSource, sd.Name, "", "subbot %q names an author document as its source (%s): a child is a .bot; write the .bot it stands for and name that", sd.Name, sd.Source)
+			c.errorfAt(DiagSubbotAuthorSource, sd.Name, "", "subbot %q names an author document as its source (%s): a child is a .bot; `iterion fmt --to bot` writes the one it stands for — name that", sd.Name, sd.Source)
 		}
 		if sd.Output != "" {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)

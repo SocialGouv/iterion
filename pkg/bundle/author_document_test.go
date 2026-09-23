@@ -22,7 +22,7 @@ func TestDetectRefusesAnAuthorDocumentByName(t *testing.T) {
 	if !errors.Is(err, ErrAuthorDocument) {
 		t.Fatalf("Detect(%s) = %v, want ErrAuthorDocument", path, err)
 	}
-	if !strings.Contains(err.Error(), "write the .bot") || !strings.Contains(err.Error(), path) {
+	if !strings.Contains(err.Error(), "fmt --to bot") || !strings.Contains(err.Error(), path) {
 		t.Fatalf("the refusal names neither the remedy nor the path: %v", err)
 	}
 	if strings.Contains(err.Error(), "unsupported workflow extension") {
