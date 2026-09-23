@@ -305,10 +305,28 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Launch admission: suspend → concurrency → rate → cost cap →
 	// monthly run quota (which also meters). Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	adm, d := s.gateLaunch(r.Context())
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
+	// The quota increment IS the metering, so every return between here and
+	// the call into the run service abandons an admitted launch and has to
+	// hand the MONTHLY unit back — a malformed body or an unresolvable bot
+	// would otherwise spend the org's month one request at a time. rollback is
+	// nil-safe and a no-op when nothing was metered (local mode, super-admin,
+	// the fail-open arms), so this is inert on those paths.
+	//
+	// It hands back the monthly unit and nothing else: gateLaunch also spends
+	// a per-minute launch-rate token, which launchAdmission does not carry, so
+	// a client looping a bad request still empties that bucket. That belongs
+	// to the gate, not to this handler.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	// Root span for the launch path. Keeping it on the request ctx
 	// means the OTel HTTP middleware (when wired) sees it as a child
 	// of the inbound HTTP server span. The detached ctx below
@@ -640,6 +658,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		spec.BundleDir = dir
 	}
+	// Past this statement the slot is SPENT, whatever the call returns. An
+	// error out of Launch does NOT mean no run started: spawnRun persists the
+	// run document and can still fail afterwards (the budget-override write),
+	// and a cloud publish reports failure after the message landed — the
+	// publisher's own rollback exists for that case and says so. Releasing
+	// there would under-count, letting the org exceed its paid quota, which is
+	// worse than the leak this defer closes. The launch-error arm therefore
+	// keeps its unit deliberately.
+	runMayExist = true
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {
@@ -695,10 +722,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	adm, d := s.gateLaunch(r.Context())
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
+	// Same rule as handleLaunchRun: the increment is the metering, so the
+	// returns that precede the resume hand the unit back.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	id := r.PathValue("id")
 	if id == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
@@ -852,8 +888,22 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if resumeLB != nil {
 		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
 	}
+	// Past this statement the slot is spent — see handleLaunchRun: a resume
+	// publish can report an error after the runner already claimed the
+	// revision it published.
+	runMayExist = true
 	res, err := s.runs.Resume(ctx, resumeSpec)
 	if err != nil {
+		// One error value proves the opposite, and it travels WITH the result
+		// rather than being reconstructed here: ErrRunNotResumable comes only
+		// from validateResumable, which Resume calls before it compiles,
+		// spawns or publishes anything. A parked gate has two legitimate
+		// resumers (the operator and the assistant-watch coordinator), so the
+		// loser of that race is routine — and charging it a monthly unit each
+		// time is the leak this handler is closing, one layer down.
+		if errors.Is(err, runview.ErrRunNotResumable) {
+			runMayExist = false
+		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
 			span.SetStatus(codes.Error, "server draining")
