@@ -5,6 +5,7 @@ import { useRecentsStore } from "@/store/recents";
 import * as api from "@/api/client";
 import ConfirmDialog from "../shared/ConfirmDialog";
 import { useConfirm } from "@/hooks/useConfirm";
+import { useLatchedBundleRef } from "@/hooks/useLatchedBundleRef";
 import { Spinner } from "@/components/ui/Spinner";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
 import FilePicker from "../FilePicker/FilePicker";
@@ -159,8 +160,18 @@ export default function Toolbar() {
   // A team-authored cloud bot is a multi-file bundle: expose its files (skills,
   // manifest, …) via the Bundle-files drawer. Detected from the botsource://
   // virtual path the editor loads a tenant bot under.
-  const bundleRef = api.parseBotSourceEditorPath(currentFilePath ?? "");
+  const parsedBundleRef = api.parseBotSourceEditorPath(currentFilePath ?? "");
   const [bundleDrawerOpen, setBundleDrawerOpen] = useState(false);
+  // The drawer is mounted conditionally on this, so losing it UNMOUNTS the
+  // drawer — past its own discard gate, which is the one place that can ask
+  // about the buffer it holds (that buffer is component state, invisible to
+  // `hasUnsavedWork()`). File → New, Import and "Start blank" all reach here
+  // after their own guard said "nothing to lose", because none of them can
+  // see it. Latching the last bundle while the drawer is OPEN keeps the
+  // drawer mounted so its gate is reachable; it also keeps `onOpenChange`
+  // firing, without which the parent still believes the drawer is open and
+  // pops it back up on the next bundle.
+  const bundleRef = useLatchedBundleRef(parsedBundleRef, bundleDrawerOpen);
 
   // "Duplicate & edit" for a read-only catalog bot open in the cloud editor:
   // fork it into the team's bot store and reopen the editable tenant copy.

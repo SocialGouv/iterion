@@ -8,7 +8,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ parseSource: vi.fn(), unparse: vi.fn() }));
+const api = vi.hoisted(() => ({ parseSource: vi.fn(), unparse: vi.fn(), unparseUnitFile: vi.fn() }));
 vi.mock("@/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/client")>()),
   ...api,
@@ -66,6 +66,7 @@ async function startEditing(store: ReturnType<typeof openStore>) {
 beforeEach(() => {
   vi.resetAllMocks();
   api.unparse.mockResolvedValue({ source: RENDERED });
+  api.unparseUnitFile.mockResolvedValue({ source: "agent worker:\n  model: \"m\"\n" });
 });
 
 afterEach(() => {
@@ -424,5 +425,47 @@ describe("closing a tab that holds unsaved CANVAS work", () => {
     fireEvent.click(screen.getByRole("button", { name: "drop" }));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
     expect(dropped).toBe(false);
+  });
+});
+
+// `applyParsedSource` (lib/salvage.ts) sets the document AND `salvaged`
+// WITHOUT `setCurrentFilePath` — so a salvage can appear under an open
+// per-file edit through a path that does not drop the buffer on the way in
+// (an assistant proposal, the Toolbar's apply). The view turns read-only and
+// is forced out of edit mode; what must NOT follow is the text going with
+// it. The forced-exit effect releases only a CLEAN buffer, which is the
+// chokepoint this asserts.
+describe("a salvage appearing under an open per-file edit", () => {
+  it("forces the mode closed and keeps the typed text visible to every discard path", async () => {
+    const store = openStore();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    mount(store);
+    await screen.findByTestId("source-view-file-picker");
+    fireEvent.change(screen.getByTestId("source-view-file-picker"), {
+      target: { value: "lib/nodes.bot" },
+    });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Edit" })).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), {
+      target: { value: "a repair the author typed" },
+    });
+    await waitFor(() => expect(store.getState().isSourceDirty()).toBe(true));
+
+    // The shape of applyParsedSource: a new document and the salvage flag,
+    // and no path change.
+    store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "moved" }] });
+    store.getState().setSalvaged(true);
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Apply" })).toBeNull());
+    expect(store.getState().isSourceDirty()).toBe(true);
+    expect(store.getState().hasUnsavedWork()).toBe(true);
+    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+      "a repair the author typed",
+    );
   });
 });

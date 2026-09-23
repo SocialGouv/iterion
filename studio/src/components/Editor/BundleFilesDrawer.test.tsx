@@ -57,9 +57,11 @@ vi.mock("@/lib/monaco", () => ({
 }));
 
 import BundleFilesDrawer from "./BundleFilesDrawer";
+import { useUIStore } from "@/store/ui";
 
 afterEach(() => {
   cleanup();
+  useUIStore.setState({ toasts: [] });
   vi.clearAllMocks();
   keybinding.run = null;
   keybinding.mounted = false;
@@ -291,7 +293,7 @@ describe("BundleFilesDrawer when the bundle could not be read", () => {
 });
 
 describe("BundleFilesDrawer when its props move to another bot", () => {
-  it("drops the buffer and the refusal rather than writing them into the new bot", async () => {
+  it("drops the buffer and the refusal rather than writing them into the new bot, once asked", async () => {
     botSources.putBotSourceFile.mockRejectedValue(
       new ApiError(409, "API error 409: version conflict", undefined, "version conflict"),
     );
@@ -312,6 +314,12 @@ describe("BundleFilesDrawer when its props move to another bot", () => {
     view.rerender(
       <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
     );
+    // The reset is no longer silent (#1749): the typed text is the author's
+    // only copy, so following the editor to another bot asks first. What the
+    // reset must still guarantee is that neither the buffer nor the refusal
+    // TRAVELS — bot demo's text under bot other's token is the write the
+    // store has no reason to refuse.
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
 
     await screen.findByRole("button", { name: "skills/notes.md" });
     expect(screen.queryByLabelText("file")).toBeNull();
@@ -363,5 +371,381 @@ describe("BundleFilesDrawer's Ctrl+S", () => {
     keybinding.run!();
     await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(2));
     expect(botSources.putBotSourceFile.mock.calls[1]![4]).toBe(9);
+  });
+});
+
+// The drawer's exits drop the typed buffer, which is the author's only copy
+// of it: the drawer is a modal, so Escape, a click outside, the Close button
+// and Back all reach the same loss. They go through one gate now.
+describe("BundleFilesDrawer leaving a file with typed text", () => {
+  it("asks before Back takes it, and keeps it when the author declines", async () => {
+    const buffer = await openForEdit("skills/notes.md");
+    fireEvent.change(buffer, { target: { value: "# mine\n" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    // Still in the file, still holding the text.
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("# mine\n"),
+    );
+  });
+
+  it("takes it once the author confirms", async () => {
+    const buffer = await openForEdit("skills/notes.md");
+    fireEvent.change(buffer, { target: { value: "# mine\n" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(screen.queryByLabelText("file")).toBeNull());
+  });
+
+  it("asks before the drawer closes, and does not close while the answer is pending", async () => {
+    const onOpenChange = vi.fn();
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={onOpenChange} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "# mine\n" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    // `onOpenChange` is a REQUEST — the parent owns `open`. Asking the parent
+    // to close before the author answered would unmount the very buffer the
+    // dialog is asking about.
+    await screen.findByRole("button", { name: "Discard" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("# mine\n"),
+    );
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("asks nothing when the buffer holds what was loaded", async () => {
+    await openForEdit("skills/notes.md");
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(screen.queryByLabelText("file")).toBeNull());
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+  });
+});
+
+// #1749 — the ninth member of the same class. The drawer's props follow the
+// active editor file, so they can move to another bot while it is open; the
+// load effect used to reset the buffer silently. It asks now, and declining
+// keeps the drawer on the bundle the text belongs to — which the title names
+// — so the author can save it.
+describe("BundleFilesDrawer when the editor moves to another bot", () => {
+  it("asks before following, and stays put when the author declines", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "text meant for demo\n" } });
+
+    botSources.getBotSource.mockResolvedValue({ ...BUNDLE, slug: "other", version: 42 });
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    // The text survives, and a save from here still names the bundle it
+    // belongs to — not the bot the editor moved to.
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe(
+        "text meant for demo\n",
+      ),
+    );
+    botSources.putBotSourceFile.mockResolvedValue({ ...BUNDLE, version: 8 });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(1));
+    expect(botSources.putBotSourceFile.mock.calls[0]![1]).toBe("demo");
+  });
+
+  it("follows once the author confirms", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "text meant for demo\n" } });
+
+    botSources.getBotSource.mockResolvedValue({ ...BUNDLE, slug: "other", version: 42 });
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+
+    await waitFor(() => expect(screen.queryByLabelText("file")).toBeNull());
+    await screen.findByRole("button", { name: "skills/notes.md" });
+  });
+
+  it("asks nothing when the buffer holds nothing", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("button", { name: "skills/notes.md" });
+
+    botSources.getBotSource.mockResolvedValue({ ...BUNDLE, slug: "other", version: 42 });
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("button", { name: "skills/notes.md" });
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+  });
+});
+
+// Round 6's own findings: the gate was reachable only while the parent kept
+// the drawer mounted, and the bundle in state was not keyed to the bundle on
+// screen.
+describe("BundleFilesDrawer's bundle identity", () => {
+  it("shows nothing from a bundle it is no longer on", async () => {
+    // A save in flight when the editor moves answers AFTER the rebind. An
+    // unstamped bundle then put one bot's files under the other's title and
+    // carried the first's if-match token into a write aimed at the second —
+    // which two bundles at the same version would not even refuse.
+    //
+    // The two answers are deferred explicitly: left to race, the new
+    // bundle's load happens to land last and overwrite the stale write, and
+    // the test passes whatever the code does.
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    let settleSave!: (v: unknown) => void;
+    botSources.putBotSourceFile.mockReturnValue(new Promise((r) => { settleSave = r; }));
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "# demo\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const other = {
+      ...BUNDLE,
+      slug: "other",
+      version: 42,
+      files: { "main.bot": "x", "docs/readme.md": "y" },
+    };
+    let settleLoad!: (v: unknown) => void;
+    botSources.getBotSource.mockReturnValue(new Promise((r) => { settleLoad = r; }));
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+
+    // `other` lands first, so the drawer is fully on it — no spinner left to
+    // hide what comes next.
+    settleLoad(other);
+    await screen.findByRole("button", { name: "docs/readme.md" });
+
+    // NOW the stale save answers, naming `demo`. An unstamped bundle takes
+    // it: demo's files appear under other's title, and the next write
+    // carries demo's version 8 against a bundle at 42.
+    settleSave({ ...BUNDLE, version: 8 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("button", { name: "skills/notes.md" })).toBeNull();
+    expect(screen.getByRole("button", { name: "docs/readme.md" })).toBeTruthy();
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+
+    // The token the next write presents is the one the shown bundle carries.
+    botSources.deleteBotSourceFile.mockResolvedValue(other);
+    fireEvent.click(screen.getByTitle("Delete docs/readme.md"));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(botSources.deleteBotSourceFile).toHaveBeenCalledTimes(1));
+    expect(botSources.deleteBotSourceFile.mock.calls[0]![3]).toBe(42);
+  });
+});
+
+describe("BundleFilesDrawer's follow latch", () => {
+  it("follows again once the buffer is saved, rather than pinning for ever", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "# mine\n" } });
+
+    const other = { ...BUNDLE, slug: "other", version: 42, files: { "docs/readme.md": "y" } };
+    botSources.getBotSource.mockResolvedValue(other);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("# mine\n"),
+    );
+
+    // Saving removes the reason the drawer was pinned; it must then follow.
+    botSources.putBotSourceFile.mockResolvedValue({ ...BUNDLE, version: 8 });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("button", { name: "docs/readme.md" });
+  });
+
+  it("does not ask about a brand-new file nobody has typed in", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    render(<BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "New file" }));
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "skills/fresh.md" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await screen.findByLabelText("file");
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(screen.queryByLabelText("file")).toBeNull());
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+  });
+});
+
+// Round 7: an open dialog is not a dirty buffer, so the follow gate does not
+// see it — the drawer can rebind underneath a prompt and resolve its answer
+// against the bundle it left.
+describe("BundleFilesDrawer when the editor moves under an open dialog", () => {
+  it("refuses to create a file resolved against the bundle it left", async () => {
+    const other = {
+      ...BUNDLE,
+      slug: "other",
+      version: 42,
+      files: { "main.bot": "x", "docs/readme.md": "REAL CONTENT — must not be truncated\n" },
+    };
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "New file" }));
+
+    // The editor moves while the prompt is up. The buffer is not dirty — it
+    // does not exist yet — so nothing asks.
+    botSources.getBotSource.mockResolvedValue(other);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+
+    // `docs/readme.md` exists in `other` and not in `demo`, so an answer
+    // resolved against the LEFT bundle takes the "create" branch: an empty
+    // buffer, Save enabled from birth, and the first click writes "" over a
+    // real file under a token the store has every reason to accept.
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "docs/readme.md" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    // The answer is dropped, and said out loud rather than swallowed.
+    await waitFor(() =>
+      expect(
+        useUIStore.getState().toasts.map((t) => t.message).join(" "),
+      ).toContain("moved to other"),
+    );
+    expect(screen.queryByLabelText("file")).toBeNull();
+    expect(botSources.putBotSourceFile).not.toHaveBeenCalled();
+  });
+});
+
+// Round 7, a regression of round 6's own latch: releasing it on "the buffer
+// is clean" made the conflict Reload — which cleans the buffer WITHOUT
+// closing it — rebind the drawer to the bot the author had just refused to
+// follow, so the reloaded content they asked to see was never shown.
+describe("BundleFilesDrawer reloading after a conflict, having declined to follow", () => {
+  it("stays on the bundle the author kept", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    botSources.putBotSourceFile.mockRejectedValue(
+      new ApiError(409, "API error 409: version conflict", undefined, "version conflict"),
+    );
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "# mine\n" } });
+
+    // The editor moves; the author keeps their text.
+    const other = { ...BUNDLE, slug: "other", version: 42, files: { "docs/readme.md": "y" } };
+    botSources.getBotSource.mockResolvedValue(other);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("# mine\n"),
+    );
+
+    // A 409, then the banner's Reload — which promises "Reload to see it".
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/This bot changed in the store/);
+    botSources.getBotSource.mockResolvedValue({
+      ...BUNDLE,
+      version: 9,
+      files: { ...BUNDLE.files, "skills/notes.md": "# theirs\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reload and discard" }));
+
+    // The reloaded content of the bundle the author KEPT, not a jump to the
+    // one they refused.
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("# theirs\n"),
+    );
+    // The rebind, if it happens, lands after the reload settles — assert
+    // once it has had the chance, or the test passes for want of waiting.
+    await new Promise((r) => setTimeout(r, 80));
+    expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("# theirs\n");
+    expect(screen.queryByRole("button", { name: "docs/readme.md" })).toBeNull();
+  });
+});
+
+// Round 7: the follow effect can be torn down while the question it asked is
+// still on screen (a save lands, the buffer goes clean, `dirty` is in the
+// deps). `useConfirm` keeps the dialog up until it is settled, and a Radix
+// modal aria-hides and pointer-blocks the whole app — so an unanswerable
+// question would outlive the move it was asking about.
+describe("BundleFilesDrawer when the follow question is overtaken", () => {
+  it("takes its own dialog down instead of leaving a modal nobody can answer", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    let settleSave!: (v: unknown) => void;
+    botSources.putBotSourceFile.mockReturnValue(new Promise((r) => { settleSave = r; }));
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "# mine\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const other = { ...BUNDLE, slug: "other", version: 42, files: { "docs/readme.md": "y" } };
+    botSources.getBotSource.mockResolvedValue(other);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    await screen.findByText(/The editor moved to another bot/);
+
+    // The in-flight save lands: the buffer is clean and closed, so the
+    // question is moot.
+    settleSave({ ...BUNDLE, version: 8 });
+    await waitFor(() =>
+      expect(screen.queryByText(/The editor moved to another bot/)).toBeNull(),
+    );
+  });
+
+  it("keeps a brand-new file creatable after a conflict reload", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    botSources.putBotSourceFile.mockRejectedValue(
+      new ApiError(409, "API error 409: version conflict", undefined, "version conflict"),
+    );
+    render(<BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "New file" }));
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "skills/fresh.md" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    fireEvent.change(await screen.findByLabelText("file"), { target: { value: "# draft\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/This bot changed in the store/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reload and discard" }));
+
+    // `created` is part of the buffer's identity: rebuilt without it, Save
+    // was disabled for ever on a file that does not exist yet.
+    await waitFor(() =>
+      expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe(""),
+    );
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
