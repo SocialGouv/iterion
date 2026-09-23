@@ -14,37 +14,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/treeskip"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
-
-// skipDir names the trees the graph never describes. Vendored code would
-// dominate every ranking; sibling worktrees and run scratch are not this
-// repository.
-var skipDir = map[string]bool{
-	"vendor": true, "node_modules": true, ".git": true, ".works": true,
-	".repos": true, ".iterion": true, ".devbox": true, "graphify-out": true,
-	".claude": true, ".task": true, "dist": true, ".pnpm-store": true,
-	"testdata": true,
-}
-
-// skippedPath reports whether a slash-separated path lies inside a
-// skipped tree.
-//
-// Every walk in this package asks `skipDir[d.Name()]` and prunes, which
-// only answers for a directory it is standing in. A link resolves to a
-// PATH, with no walk behind it — and the one site that reached the
-// filesystem by `os.Stat` instead of by a walk minted nodes for files
-// the fingerprint never hashes, so deleting one left the cache serving a
-// graph of a tree that no longer existed.
-func skippedPath(rel string) bool {
-	for _, seg := range strings.Split(rel, "/") {
-		if skipDir[seg] {
-			return true
-		}
-	}
-	return false
-}
 
 // Build walks the tree once and returns the finalised graph.
 func Build(root string) (*Graph, error) {
@@ -153,7 +126,7 @@ func buildGo(g *Graph, root, modulePath string, replaces map[string]string) erro
 		}
 		if d.IsDir() {
 			rel, _ := filepath.Rel(root, abs)
-			if rel != "." && skipDir[d.Name()] {
+			if rel != "." && treeskip.Dir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -442,7 +415,7 @@ func buildDocs(g *Graph, root string) ([]docPage, error) {
 			return err
 		}
 		if d.IsDir() {
-			if skipDir[d.Name()] {
+			if treeskip.Dir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -509,7 +482,7 @@ func linkDocs(g *Graph, root string, pages []docPage) {
 			if strings.HasPrefix(resolved, "..") {
 				continue // outside the tree
 			}
-			if skippedPath(resolved) {
+			if treeskip.Path(resolved) {
 				continue // a tree the graph never describes, and the fingerprint never hashes
 			}
 			id, known := byPath[resolved]
@@ -542,7 +515,7 @@ func buildBots(g *Graph, root string) error {
 		// an edit there left the graph asserting flows between workflow
 		// nodes that no longer existed — with the CLI printing "Cache is
 		// current".
-		if !e.IsDir() || skipDir[e.Name()] {
+		if !e.IsDir() || treeskip.Dir(e.Name()) {
 			continue
 		}
 		bot := e.Name()

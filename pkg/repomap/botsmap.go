@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/treeskip"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
@@ -54,7 +55,7 @@ func (b botBundles) Extract(root string) (string, error) {
 	var bots []botRow
 	var skills []skillRow
 	for _, e := range entries {
-		if !e.IsDir() || skipDir[e.Name()] {
+		if !e.IsDir() || treeskip.Dir(e.Name()) {
 			continue
 		}
 		// A bundle is a directory with a manifest. Without this test the
