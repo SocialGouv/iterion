@@ -1,10 +1,13 @@
 package runtime
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // The parallel-branch guard exists to stop N branches racing one git index. It
@@ -265,20 +268,46 @@ func TestFanOutRefusesTwoBranchesThatBothHoldAWriterTheyNeverDeclared(t *testing
 	}
 }
 
-// stubExecutorNoSurface is an executor that resolves backends and nothing else
-// — the shape `iterion validate --exec` runs on (pkg/dryrun's executor
-// implements no tool surface).
+// decoratorWithoutTheSeam wraps the production executor and forgets the
+// tool-surface method — the shape the seam is reached by, since it is an
+// optional type assertion. Embedding NodeExecutor keeps it a legal executor.
+type decoratorWithoutTheSeam struct{ NodeExecutor }
+
+// The two executors an engine is built with in production both answer the
+// tool-surface seam, and that is a COMPILE-time guarantee (the pins beside the
+// interface and in pkg/dryrun). This test names the class the pins protect, so
+// removing the pin AND the method is a red test, not only a build that still
+// passes: an executor that stops answering is read at the worst case, its
+// fan-outs refused as if every agent and judge not marked `readonly:` declared
+// a write tool.
+func TestBothProductionExecutorsAnswerTheToolSurfaceSeam(t *testing.T) {
+	var claw any = (*model.ClawExecutor)(nil)
+	if _, ok := claw.(EffectiveToolSurfaceResolver); !ok {
+		t.Error("*model.ClawExecutor no longer answers the seam — admission would read every agent and judge it runs at the worst case, as if each declared a write tool")
+	}
+	// dryrun's executor is pinned in its own package: pkg/dryrun imports
+	// pkg/runtime, so this package cannot name it.
+}
+
+// stubExecutorNoSurface is an executor that resolves backends and nothing else.
+// No production executor has this shape any more — both leaves answer the seam,
+// and both are pinned — so it is not a double of one: it exists so the verdict
+// can be measured against an executor that CANNOT answer.
 type stubExecutorNoSurface struct{ NodeExecutor }
 
 func (stubExecutorNoSurface) EffectiveBackendName(ir.Node) string { return "" }
 
-// The shared-worktree question must be answered the same way whatever the
-// engine's executor happens to implement. Keyed on "a tool-surface resolver was
+// A route that no `tools:` list bounds must be refused whatever the engine's
+// executor happens to implement. Keyed on "a tool-surface resolver was
 // supplied", `iterion validate --exec --strict` — a documented CI gate, whose
-// dry-run executor implements none — reported a clean verdict on a fan-out the
-// same tree kills at the router. Two products of one tree disagreeing about one
-// file is the defect; the rule is a property of the QUESTION, not of the
-// caller's capabilities.
+// dry-run executor implemented no tool surface at the time — reported a clean
+// verdict on a fan-out the same tree kills at the router. It answers the seam
+// since #1652, so that divergence cannot recur through THAT executor; the
+// parameter is what keeps the next one from re-opening it. Two products of one
+// tree disagreeing about one file is the defect; the rule is a property of the
+// QUESTION, not of the caller's capabilities. What the tool seam's absence
+// changes, it changes only toward refusal: an executor that cannot answer is
+// read at the worst case (the witnesses below).
 func TestTheSharedWorktreeQuestionDoesNotDependOnWhatTheExecutorImplements(t *testing.T) {
 	branch := func(id string) *ir.AgentNode {
 		return agentNode(id, []string{"read_file"}, "claude_code", nil)
@@ -299,6 +328,347 @@ func TestTheSharedWorktreeQuestionDoesNotDependOnWhatTheExecutorImplements(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.eng.validateWorkspaceSafety("fan", wf.Edges); err == nil {
 				t.Fatalf("two claude_code branches were admitted onto one worktree — the verdict moved with the executor's capabilities, so `iterion validate --exec` and `iterion run` answer differently about one file")
+			}
+		})
+	}
+}
+
+// An executor that cannot answer the seam is read at the worst case, and the
+// run says WHICH executor, by concrete type, once however many branches ask —
+// and by the time the refusal it causes is returned, so a refused fan-out is
+// not the first an operator hears of it.
+func TestTheRunSaysWhichExecutorCannotAnswerTheToolSurfaceSeam(t *testing.T) {
+	var buf bytes.Buffer
+	wf := twoReaderBranches()
+	production := model.NewClawExecutor(model.NewRegistry(), wf)
+	e := &Engine{workflow: wf, executor: decoratorWithoutTheSeam{production}, logger: iterlog.New(iterlog.LevelWarn, &buf)}
+
+	var refusal error
+	for i := 0; i < 3; i++ {
+		refusal = e.validateWorkspaceSafety("fan", wf.Edges)
+	}
+	if refusal == nil {
+		t.Fatal("the fan-out was admitted — this test needs the refusal to check the warning precedes it")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "decoratorWithoutTheSeam") {
+		t.Fatalf("by the time the refusal is returned, the run has not named the executor that could not answer: %q", out)
+	}
+	if got := strings.Count(out, "does not implement runtime.EffectiveToolSurfaceResolver"); got != 1 {
+		t.Errorf("warned %d times for one engine, want 1 — admission asks per node, per branch, on every fan-out", got)
+	}
+
+	// The executor that DOES answer says nothing: a line an operator sees on
+	// every healthy run is a line they learn to ignore.
+	var quiet bytes.Buffer
+	ok := &Engine{workflow: wf, executor: production, logger: iterlog.New(iterlog.LevelWarn, &quiet)}
+	if err := ok.validateWorkspaceSafety("fan", wf.Edges); err != nil {
+		t.Fatalf("the production executor refused two reader branches: %v", err)
+	}
+	if strings.Contains(quiet.String(), "EffectiveToolSurfaceResolver") {
+		t.Errorf("the production executor warned although it answers the seam: %q", quiet.String())
+	}
+}
+
+// twoReaderBranches is a fan-out of two claw agents that declare only a reader
+// and are granted nothing more: the production executor admits it onto one
+// worktree, so any refusal of it comes from the executor, not from the nodes.
+func twoReaderBranches(mutate ...func(*ir.AgentNode)) *ir.Workflow {
+	return twoBranches(func(id string) ir.Node {
+		n := agentNode(id, []string{"read_file"}, "claw", nil)
+		for _, m := range mutate {
+			m(n)
+		}
+		return n
+	})
+}
+
+// twoBranches is a fan_out_all router `fan` with one branch per id, `a` and
+// `b`, each built by mk. Its Edges are exactly the router's fan edges.
+func twoBranches(mk func(id string) ir.Node) *ir.Workflow {
+	router := &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fan"}, RouterMode: ir.RouterFanOutAll}
+	return &ir.Workflow{
+		Nodes: map[string]ir.Node{"fan": router, "a": mk("a"), "b": mk("b")},
+		Edges: []*ir.Edge{{From: "fan", To: "a"}, {From: "fan", To: "b"}},
+	}
+}
+
+func judgeNode(id string, tools []string, backend string) *ir.JudgeNode {
+	return &ir.JudgeNode{BaseNode: ir.BaseNode{ID: id}, LLMFields: ir.LLMFields{Backend: backend}, Tools: tools}
+}
+
+// resolvesBackendTo resolves every node to one backend and answers nothing
+// else — a silent executor whose backend resolution still decides verdicts.
+type resolvesBackendTo struct {
+	NodeExecutor
+	backend string
+}
+
+func (r resolvesBackendTo) EffectiveBackendName(ir.Node) string { return r.backend }
+
+// resolvesBackendToAndAnswers is resolvesBackendTo answering the tool seam too,
+// adding nothing: the same routing, from an executor that is not silent.
+type resolvesBackendToAndAnswers struct{ resolvesBackendTo }
+
+func (resolvesBackendToAndAnswers) EffectiveToolNames(ir.Node, bool) []string { return nil }
+
+// The zero value of the seam is the refusal. An executor that cannot say what
+// its nodes will hold — a wrapper that forgot to forward the method, an
+// executor of an embedder's own — gets the worst case at parallel-branch
+// admission: the reader branches the production executor admits are refused
+// with the typed WORKSPACE_SAFETY error, and the reason names the executor and
+// the method to implement.
+func TestAnExecutorThatCannotAnswerTheSeamIsRefusedAParallelFanOutByName(t *testing.T) {
+	for _, shape := range []struct {
+		name           string
+		mk             func(id string) ir.Node
+		defaultBackend string
+	}{
+		{"agents declaring only a reader", func(id string) ir.Node { return agentNode(id, []string{"read_file"}, "claw", nil) }, ""},
+		{"agents declaring no tools", func(id string) ir.Node { return agentNode(id, nil, "claw", nil) }, ""},
+		{"judges declaring only a reader", func(id string) ir.Node { return judgeNode(id, []string{"read_file"}, "claw") }, ""},
+		{"judges declaring no tools", func(id string) ir.Node { return judgeNode(id, nil, "claw") }, ""},
+		{"agents on a backend whose declaration bounds them, not claw", func(id string) ir.Node { return agentNode(id, []string{"read_file"}, "codex", nil) }, ""},
+		{"agents whose backend is the workflow's default_backend", func(id string) ir.Node { return agentNode(id, []string{"read_file"}, "", nil) }, "claw"},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			wf := twoBranches(shape.mk)
+			wf.DefaultBackend = shape.defaultBackend
+			production := model.NewClawExecutor(model.NewRegistry(), wf)
+			if err := (&Engine{workflow: wf, executor: production}).validateWorkspaceSafety("fan", wf.Edges); err != nil {
+				t.Fatalf("precondition: the production executor must admit these two branches, or the refusal below proves nothing about the executor: %v", err)
+			}
+			for _, ex := range []struct {
+				name     string
+				executor NodeExecutor
+				typ      string
+			}{
+				{"a wrapper around the production executor that does not forward the method", decoratorWithoutTheSeam{production}, "runtime.decoratorWithoutTheSeam"},
+				{"an executor that resolves backends and nothing else", stubExecutorNoSurface{}, "runtime.stubExecutorNoSurface"},
+			} {
+				t.Run(ex.name, func(t *testing.T) {
+					err := (&Engine{workflow: wf, executor: ex.executor}).validateWorkspaceSafety("fan", wf.Edges)
+					if err == nil {
+						t.Fatal("two branches whose tool surface nobody can read were admitted onto one shared worktree — the declaration decided, which is the reading #1652 removed")
+					}
+					rerr, ok := err.(*RuntimeError)
+					if !ok || rerr.Code != ErrCodeWorkspaceSafety {
+						t.Fatalf("err = %v, want the typed workspace-safety refusal a node declaring a write tool gets", err)
+					}
+					for _, id := range []string{"a", "b"} {
+						want := `node "` + id + `" counts as writing because executor ` + ex.typ + " does not implement runtime.EffectiveToolSurfaceResolver, so the tools it will hold cannot be read — implement or forward EffectiveToolNames and EffectiveBackendName on the executor, or mark the node `readonly:`"
+						if !strings.Contains(rerr.Message, want) {
+							t.Errorf("the refusal does not say why branch %q counts, nor what to implement:\n got: %s\nwant: …%s…", id, rerr.Message, want)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// The worst case reads a node exactly as a declared writer, and nowhere else:
+// one branch the executor cannot vouch for is still admitted beside a reader,
+// `readonly:` still opts a node out, and a fan_out_each template is refused
+// only when it would actually replay concurrently — then with the executor
+// named. Each verdict is checked against the same topology with a node that
+// DECLARES a writer, under the production executor.
+func TestAnUnvouchedNodeIsAdmittedExactlyWhereADeclaredWriterWouldBe(t *testing.T) {
+	cannotAnswer := func(wf *ir.Workflow) *Engine {
+		return &Engine{workflow: wf, executor: stubExecutorNoSurface{}}
+	}
+	production := func(wf *ir.Workflow) *Engine {
+		return &Engine{workflow: wf, executor: model.NewClawExecutor(model.NewRegistry(), wf)}
+	}
+	writes := func(n *ir.AgentNode) { n.Tools = []string{"write_file"} }
+
+	t.Run("one unvouched branch beside a readonly one is admitted", func(t *testing.T) {
+		wf := twoReaderBranches()
+		wf.Nodes["b"].(*ir.AgentNode).Readonly = true
+		if err := cannotAnswer(wf).validateWorkspaceSafety("fan", wf.Edges); err != nil {
+			t.Fatalf("at most one mutating branch is allowed, and there is one: %v", err)
+		}
+		twin := twoReaderBranches(writes)
+		twin.Nodes["b"].(*ir.AgentNode).Readonly = true
+		if err := production(twin).validateWorkspaceSafety("fan", twin.Edges); err != nil {
+			t.Fatalf("precondition: a declared writer beside a readonly branch is admitted: %v", err)
+		}
+	})
+	t.Run("readonly branches are admitted", func(t *testing.T) {
+		wf := twoReaderBranches(func(n *ir.AgentNode) { n.Readonly = true })
+		if err := cannotAnswer(wf).validateWorkspaceSafety("fan", wf.Edges); err != nil {
+			t.Fatalf("`readonly:` is the author's assertion and is honoured before the surface is read: %v", err)
+		}
+	})
+
+	tmpl := agentNode("t", []string{"read_file"}, "claw", nil)
+	router := &ir.RouterNode{BaseNode: ir.BaseNode{ID: "each"}, RouterMode: ir.RouterFanOutEach}
+	each := &ir.Workflow{
+		Nodes: map[string]ir.Node{"each": router, "t": tmpl},
+		Edges: []*ir.Edge{{From: "each", To: "t"}},
+	}
+	writerTmpl := agentNode("t", []string{"write_file"}, "claw", nil)
+	writerEach := &ir.Workflow{
+		Nodes: map[string]ir.Node{"each": router, "t": writerTmpl},
+		Edges: []*ir.Edge{{From: "each", To: "t"}},
+	}
+	t.Run("a fan_out_each template replayed one at a time is admitted", func(t *testing.T) {
+		if err := cannotAnswer(each).validateFanOutEachWorkspaceSafety("each", each.Edges[0], "", 3, 1); err != nil {
+			t.Fatalf("max_parallel_branches=1 replays in sequence: %v", err)
+		}
+		if err := production(writerEach).validateFanOutEachWorkspaceSafety("each", writerEach.Edges[0], "", 3, 1); err != nil {
+			t.Fatalf("precondition: a declared-writer template replayed one at a time is admitted: %v", err)
+		}
+	})
+	t.Run("a fan_out_each template replayed concurrently is refused, naming the executor", func(t *testing.T) {
+		if err := production(writerEach).validateFanOutEachWorkspaceSafety("each", writerEach.Edges[0], "", 3, 2); err == nil {
+			t.Fatal("precondition: a declared-writer template replayed concurrently is refused")
+		}
+		err := cannotAnswer(each).validateFanOutEachWorkspaceSafety("each", each.Edges[0], "", 3, 2)
+		rerr, ok := err.(*RuntimeError)
+		if !ok || rerr.Code != ErrCodeWorkspaceSafety {
+			t.Fatalf("err = %v, want the typed workspace-safety refusal", err)
+		}
+		if !strings.Contains(rerr.Message, `node "t" counts as writing because executor runtime.stubExecutorNoSurface does not implement runtime.EffectiveToolSurfaceResolver`) {
+			t.Errorf("the fan_out_each refusal does not say the executor is why the template counts: %s", rerr.Message)
+		}
+	})
+	t.Run("a parallel_safe tool the template exempts is not the reason given", func(t *testing.T) {
+		fetch := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "fetch"}, Command: "curl -fsS https://example.invalid", ParallelSafe: true}
+		wf := &ir.Workflow{
+			Nodes: map[string]ir.Node{"each": router, "fetch": fetch, "t": agentNode("t", []string{"read_file"}, "claw", nil)},
+			Edges: []*ir.Edge{{From: "each", To: "fetch"}, {From: "fetch", To: "t"}},
+		}
+		err := cannotAnswer(wf).validateFanOutEachWorkspaceSafety("each", wf.Edges[0], "", 3, 2)
+		rerr, ok := err.(*RuntimeError)
+		if !ok || rerr.Code != ErrCodeWorkspaceSafety {
+			t.Fatalf("err = %v, want the typed workspace-safety refusal", err)
+		}
+		if !strings.Contains(rerr.Message, `node "t" counts as writing because executor runtime.stubExecutorNoSurface`) || strings.Contains(rerr.Message, `node "fetch"`) {
+			t.Errorf("the reason must be read in the template's own context, where `parallel_safe:` exempts fetch: %s", rerr.Message)
+		}
+	})
+	t.Run("the production executor admits the same concurrent template", func(t *testing.T) {
+		e := &Engine{workflow: each, executor: model.NewClawExecutor(model.NewRegistry(), each)}
+		if err := e.validateFanOutEachWorkspaceSafety("each", each.Edges[0], "", 3, 2); err != nil {
+			t.Fatalf("precondition: a reader template the production executor vouches for replays concurrently: %v", err)
+		}
+	})
+}
+
+// The executor is blamed only when its silence is what made a BRANCH count. A
+// branch that writes on its own account anywhere along it is refused for that
+// and never blamed on the executor, since implementing the method would not
+// change its verdict, and a refusal telling the author to would send them the
+// wrong way. These fixtures' reasons do not depend on what an executor answers,
+// so the two refusals read the same, word for word.
+func TestARefusalBlamesTheExecutorOnlyWhenItsSilenceDecided(t *testing.T) {
+	chain := func() *ir.Workflow {
+		router := &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fan"}, RouterMode: ir.RouterFanOutAll}
+		return &ir.Workflow{
+			Nodes: map[string]ir.Node{
+				"fan": router,
+				"a":   agentNode("a", []string{"read_file"}, "claw", nil),
+				"a2":  agentNode("a2", []string{"write_file"}, "claw", nil),
+				"b":   agentNode("b", []string{"read_file"}, "claw", nil),
+				"b2":  agentNode("b2", []string{"write_file"}, "claw", nil),
+			},
+			Edges: []*ir.Edge{{From: "fan", To: "a"}, {From: "fan", To: "b"}, {From: "a", To: "a2"}, {From: "b", To: "b2"}},
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		wf    *ir.Workflow
+		fanTo int
+	}{
+		{"each branch declares a writer", twoReaderBranches(func(n *ir.AgentNode) { n.Tools = []string{"write_file"} }), 2},
+		{"each branch reaches a declared writer after a reader", chain(), 2},
+		{"each branch is a parallel_safe tool, which a static fan-out does not exempt", twoBranches(func(id string) ir.Node {
+			return &ir.ToolNode{BaseNode: ir.BaseNode{ID: id}, Command: "true", ParallelSafe: true}
+		}), 2},
+		{"each branch has full_access", twoReaderBranches(func(n *ir.AgentNode) { n.FullAccess = true }), 2},
+		{"each branch is a subbot that does not assert isolation", twoBranches(func(id string) ir.Node {
+			return &ir.SubbotNode{BaseNode: ir.BaseNode{ID: id}}
+		}), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fan := tc.wf.Edges[:tc.fanTo]
+			production := model.NewClawExecutor(model.NewRegistry(), tc.wf)
+			answered := (&Engine{workflow: tc.wf, executor: production}).validateWorkspaceSafety("fan", fan)
+			unanswered := (&Engine{workflow: tc.wf, executor: decoratorWithoutTheSeam{production}}).validateWorkspaceSafety("fan", fan)
+			if answered == nil || unanswered == nil {
+				t.Fatalf("both branches write on their own account and must be refused by any executor: answered=%v unanswered=%v", answered, unanswered)
+			}
+			if strings.Contains(unanswered.Error(), "counts as writing because executor") {
+				t.Errorf("the refusal blames the executor for branches that write on their own account: %s", unanswered.Error())
+			}
+			if answered.Error() != unanswered.Error() {
+				t.Errorf("a branch refused on its own account reads differently depending on the executor:\n answered:   %s\n unanswered: %s", answered.Error(), unanswered.Error())
+			}
+		})
+	}
+
+	// The executor's own backend resolution counts as the branch's own
+	// account: a node it routes to claude_code is unbounded by its list
+	// whatever the tool seam would say.
+	t.Run("the executor routes each branch where no list bounds it", func(t *testing.T) {
+		wf := twoReaderBranches()
+		silent := resolvesBackendTo{backend: "claude_code"}
+		unanswered := (&Engine{workflow: wf, executor: silent}).validateWorkspaceSafety("fan", wf.Edges)
+		answered := (&Engine{workflow: wf, executor: resolvesBackendToAndAnswers{silent}}).validateWorkspaceSafety("fan", wf.Edges)
+		if unanswered == nil || answered == nil {
+			t.Fatalf("two claude_code branches must be refused by any executor: answered=%v unanswered=%v", answered, unanswered)
+		}
+		if !strings.Contains(unanswered.Error(), `node "a" runs on claude_code, where a`) || unanswered.Error() != answered.Error() {
+			t.Errorf("the reason must be the route the executor resolved, which implementing the tool seam would not change:\n answered:   %s\n unanswered: %s", answered.Error(), unanswered.Error())
+		}
+	})
+}
+
+// forwardsBothSeams is a wrapper that follows the refusal's remedy to the
+// letter: it forwards the two methods admission reads, and nothing else.
+type forwardsBothSeams struct {
+	NodeExecutor
+	inner *model.ClawExecutor
+}
+
+func (f forwardsBothSeams) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string {
+	return f.inner.EffectiveToolNames(node, mayEscalateToUltracode)
+}
+
+func (f forwardsBothSeams) EffectiveBackendName(node ir.Node) string {
+	return f.inner.EffectiveBackendName(node)
+}
+
+// The refusal's remedy, followed to the letter, gives back the production
+// verdict — including where a launch override routes a node elsewhere than its
+// IR backend, which admission reads through EffectiveBackendName, not through
+// the tool seam.
+func TestFollowingTheRefusalsRemedyGivesBackTheProductionVerdict(t *testing.T) {
+	toClaudeCode, err := model.ParseModelOverrides(nil, []string{"claude_code"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict := func(err error) string {
+		if err == nil {
+			return "admitted"
+		}
+		return err.Error()
+	}
+	for _, tc := range []struct {
+		name string
+		opts []model.ClawExecutorOption
+	}{
+		{"no launch override", nil},
+		{"a launch override routing every node to claude_code", []model.ClawExecutorOption{model.WithModelOverrides(toClaudeCode)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := twoReaderBranches()
+			production := model.NewClawExecutor(model.NewRegistry(), wf, tc.opts...)
+			want := verdict((&Engine{workflow: wf, executor: production}).validateWorkspaceSafety("fan", wf.Edges))
+			got := verdict((&Engine{workflow: wf, executor: forwardsBothSeams{production, production}}).validateWorkspaceSafety("fan", wf.Edges))
+			if got != want {
+				t.Errorf("a wrapper forwarding both methods the refusal names reads differently from the executor it wraps:\n wrapper:    %s\n production: %s", got, want)
 			}
 		})
 	}
