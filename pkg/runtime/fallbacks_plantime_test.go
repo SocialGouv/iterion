@@ -75,7 +75,7 @@ func TestWorkspaceSafety_ClawNodeWithCLIRouteIsMutating(t *testing.T) {
 		BaseNode:  ir.BaseNode{ID: "a"},
 		LLMFields: ir.LLMFields{Backend: "claw"},
 	}
-	if isMutatingNodeCtx(readOnly, "", nil, false) {
+	if isMutatingNodeCtx(readOnly, "", nil, nil, false) {
 		t.Fatal("precondition: a tools-less claw node is read-only")
 	}
 
@@ -84,7 +84,7 @@ func TestWorkspaceSafety_ClawNodeWithCLIRouteIsMutating(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "claw"},
 		Fallbacks: []ir.Fallback{{Name: "cli", Backend: "claude_code", Model: "claude-opus-5"}},
 	}
-	if !isMutatingNodeCtx(withCLIRoute, "", nil, false) {
+	if !isMutatingNodeCtx(withCLIRoute, "", nil, nil, false) {
 		t.Error("a tools-less claw node with a CLI route must be admitted as MUTATING — its empty tools list becomes the full native toolset the moment the chain falls through")
 	}
 }
@@ -102,7 +102,7 @@ func TestWorkspaceSafety_ToolsListDoesNotShelterCLIRoute(t *testing.T) {
 		Tools:     []string{"read_file"},
 		Fallbacks: []ir.Fallback{{Name: "cli", Backend: "claude_code", Model: "claude-opus-5"}},
 	}
-	if !isMutatingNodeCtx(node, "", nil, false) {
+	if !isMutatingNodeCtx(node, "", nil, nil, false) {
 		t.Error("a read-only tools list must not shelter a claw→CLI route from the mutation classifier")
 	}
 }
@@ -116,7 +116,7 @@ func TestWorkspaceSafety_ClawOnlyRouteStaysReadOnly(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "claw"},
 		Fallbacks: []ir.Fallback{{Name: "other", Backend: "claw", Model: "openai/gpt-5.5"}},
 	}
-	if isMutatingNodeCtx(node, "", nil, false) {
+	if isMutatingNodeCtx(node, "", nil, nil, false) {
 		t.Error("a claw→claw route must not make a read-only node mutating")
 	}
 }

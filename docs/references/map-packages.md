@@ -46,7 +46,7 @@
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` | 2 · 12 |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — | 2 · 22 |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — | 1 · 7 |
-| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 33 · 184 |
+| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 33 · 185 |
 | `pkg/backend/delegate/claudesdk` | provides a Go SDK for the Claude Code CLI. | `ContentBlock`, `MCPServerConfig`, `Message` | 16 · 117 |
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — | 1 · 4 |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — | 8 · 125 |
@@ -54,7 +54,7 @@
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` | 1 · 10 |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` | 1 · 3 |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` | 12 · 95 |
-| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 58 · 256 |
+| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 59 · 257 |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — | 1 · 13 |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — | 3 · 41 |
 | `pkg/backend/permissionhook` | adapts third-party CLI PreToolUse payloads to iterion's shared permission.Policy evaluator. | — | 1 · 5 |
@@ -165,9 +165,9 @@
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — | 30 · 32 |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — | 1 · 8 |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
-| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 245 |
+| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 246 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 51 · 349 |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 52 · 351 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` | 3 · 67 |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `PreparedSpec`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` | 7 · 72 |

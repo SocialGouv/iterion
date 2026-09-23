@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -41,6 +43,65 @@ var readOnlyTools = map[string]bool{
 	"tree":            true,
 }
 
+// nonWorkspaceTools names the tools the RUNTIME opens for its own plumbing,
+// which act somewhere other than the shared worktree.
+//
+// It is deliberately NOT merged into readOnlyTools. That map answers a wider
+// question — "can this node act at all" — and two other readers depend on that
+// reading: pkg/runtime's own declared-tools contract, and the catalog guard
+// that decides which bot nodes must carry the UNTRUSTED INPUT BOUNDARY
+// paragraph. A name added there would silently take a node out of that class.
+// This map is read by ONE arm, the effective-surface check below, and answers
+// only "does this touch the workspace two parallel branches share".
+//
+// `todo_write` writes a file, and out of tree on purpose: claw keeps the list
+// outside the repository precisely because a copy inside it dirtied git status
+// on every run. `ask_user` and its async pair are question channels. The
+// board/runs MCP tools act on the board and the run store, recognised through
+// the delegate package's own predicate rather than a prefix spelled here.
+var nonWorkspaceTools = map[string]bool{
+	"ask_user":       true,
+	"ask_user_async": true,
+	"await_answers":  true,
+	"todo_write":     true,
+	"read_image":     true,
+}
+
+// toolIsWorkspaceSafe reports whether holding this tool leaves the shared
+// worktree untouched.
+func toolIsWorkspaceSafe(name string) bool {
+	return readOnlyTools[name] || nonWorkspaceTools[name] || delegate.IsIterionMCPTool(name)
+}
+
+// effectiveToolSurfaceResolver is implemented by the production model
+// executor. A node's `tools:` list is not the list it holds: the runtime folds
+// its own opt-ins over it at build time, from state that is not in the IR (a
+// launch-time --auto-memory, a per-node model override raising the node to
+// ultracode). So the guard asks the executor for the effective surface instead
+// of re-deriving the append rules — the same seam, and the same reason, as
+// effectiveBackendResolver.
+//
+// Admission runs when a fan-out router DISPATCHES, once per invocation, not
+// before the run: the router's own output is already resolved by then, but the
+// per-branch mappings are not read here, so a value an edge would inject is
+// taken pessimistically rather than resolved. That is a deliberate
+// simplification of a guard that must answer for a whole branch, not a claim
+// that the value is unknowable.
+type effectiveToolSurfaceResolver interface {
+	EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string
+}
+
+// toolSurfaceResolver is the ONE place the engine asks its executor what a
+// node will really hold. Returns nil for an executor that cannot answer (a
+// stub), which every caller reads as "the declaration is all there is".
+func (e *Engine) toolSurfaceResolver() effectiveToolSurfaceResolver {
+	if e == nil {
+		return nil
+	}
+	r, _ := e.executor.(effectiveToolSurfaceResolver)
+	return r
+}
+
 // isMutatingNode returns true if the node may modify the workspace.
 // Tool nodes are always mutating in this general classifier. Agent/judge nodes
 // are mutating when full_access is set, when they have at least one tool that is
@@ -60,7 +121,7 @@ var readOnlyTools = map[string]bool{
 // writes — in a static fan_out_all / llm-router the branches are different nodes
 // with no such guarantee.
 func isMutatingNode(node ir.Node) bool {
-	return isMutatingNodeWithBackend(node, "", nil)
+	return isMutatingNodeWithBackend(node, "", nil, nil)
 }
 
 // effectiveBackendResolver is implemented by the production model executor.
@@ -85,8 +146,8 @@ func (e *Engine) backendResolver() effectiveBackendResolver {
 	return r
 }
 
-func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver effectiveBackendResolver) bool {
-	return isMutatingNodeCtx(node, defaultBackend, resolver, false)
+func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver effectiveBackendResolver, surfaces effectiveToolSurfaceResolver) bool {
+	return isMutatingNodeCtx(node, defaultBackend, resolver, surfaces, false)
 }
 
 // isMutatingNodeCtx classifies a node for workspace-safety. fanOutEachTemplate is
@@ -99,7 +160,16 @@ func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver eff
 // mutating even with the flag: static fan_out_all / llm-router branches are
 // DISTINCT nodes with no item-key disjointness guarantee. Subbot Isolated and
 // agent/judge Readonly are context-independent and honoured in both.
-func isMutatingNodeCtx(node ir.Node, defaultBackend string, resolver effectiveBackendResolver, fanOutEachTemplate bool) bool {
+func isMutatingNodeCtx(node ir.Node, defaultBackend string, resolver effectiveBackendResolver, surfaces effectiveToolSurfaceResolver, fanOutEachTemplate bool) bool {
+	return isMutatingNodeIn(nil, node, defaultBackend, resolver, surfaces, fanOutEachTemplate)
+}
+
+// isMutatingNodeIn is isMutatingNodeCtx with the graph in hand, so it can tell
+// whether an incoming edge may raise the node to ultracode at dispatch — an
+// input that does not exist before the run and that widens the node's tool
+// surface when it arrives.
+func isMutatingNodeIn(wf *ir.Workflow, node ir.Node, defaultBackend string, resolver effectiveBackendResolver, surfaces effectiveToolSurfaceResolver, fanOutEachTemplate bool) bool {
+	escalates := edgeMayEscalateEffort(wf, node)
 	switch n := node.(type) {
 	case *ir.ToolNode:
 		return !fanOutEachTemplate || !n.ParallelSafe
@@ -114,12 +184,12 @@ func isMutatingNodeCtx(node ir.Node, defaultBackend string, resolver effectiveBa
 		if n.Readonly {
 			return false
 		}
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, nil)
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, surfaces, escalates, true, nil)
 	case *ir.JudgeNode:
 		if n.Readonly {
 			return false
 		}
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, nil)
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, surfaces, escalates, true, nil)
 	}
 	return false
 }
@@ -151,9 +221,9 @@ func IsReadOnlyTool(name string) bool {
 func ToolSurfaceCanWrite(node ir.Node, defaultBackend string, lookup func(string) string) bool {
 	switch n := node.(type) {
 	case *ir.AgentNode:
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, lookup)
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, nil, false, false, lookup)
 	case *ir.JudgeNode:
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, lookup)
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, nil, false, false, lookup)
 	}
 	return false
 }
@@ -167,14 +237,32 @@ func llmToolSurfaceCanWrite(
 	tools []string,
 	defaultBackend string,
 	resolver effectiveBackendResolver,
+	surfaces effectiveToolSurfaceResolver,
+	escalatesToUltracode bool,
+	sharedWorkspace bool,
 	lookup func(string) string,
 ) bool {
-	if fields.FullAccess || unrestrictedCLIBackendCanWrite(node, fields, tools, defaultBackend, resolver, lookup) {
+	if fields.FullAccess || unrestrictedCLIBackendCanWrite(node, fields, tools, defaultBackend, resolver, lookup, sharedWorkspace) {
 		return true
 	}
 	for _, t := range tools {
 		if !readOnlyTools[t] {
 			return true
+		}
+	}
+	// The declared list is not the list the node holds. `assembleEffectiveTools`
+	// folds the runtime's own opt-ins over it, and two of them widen the
+	// workspace surface: `auto_memory: on` grants write_file on claw, and
+	// ultracode grants claw's unbounded `agent` subagent tool. A node that
+	// declared `tools: [read_file]` and is admitted read-only on that basis
+	// then shares one worktree with N siblings while holding a writer.
+	//
+	// Asked, never re-derived: both opt-ins resolve outside the IR.
+	if surfaces != nil {
+		for _, t := range surfaces.EffectiveToolNames(node, escalatesToUltracode) {
+			if !toolIsWorkspaceSafe(t) {
+				return true
+			}
 		}
 	}
 	return false
@@ -187,6 +275,7 @@ func unrestrictedCLIBackendCanWrite(
 	defaultBackend string,
 	resolver effectiveBackendResolver,
 	lookup func(string) string,
+	sharedWorkspace bool,
 ) bool {
 	backend := strings.TrimSpace(ir.ExpandWithDefault(fields.Backend, lookup))
 	if backend == "" {
@@ -226,6 +315,35 @@ func unrestrictedCLIBackendCanWrite(
 	if backend == "claw" && fallbacksReachCLIBackend(node, lookup) {
 		return true
 	}
+	// A declaration only bounds a route that can be bounded BY it, and two
+	// kinds cannot.
+	//
+	// pi, kimi, grok and opencode never receive the list at all (C270 says so
+	// at compile time), so `tools: [read_file]` there is a note to the reader
+	// while the agent keeps its own full toolset.
+	//
+	// claude_code receives it, and still is not bounded by it: the list
+	// becomes `--disallowedTools` over a CLOSED native roster this project
+	// does not own, so it removes the names iterion happens to enumerate and
+	// nothing else. Which names survive is a property of the installed CLI,
+	// not of the declaration — measured on 2.1.220, the surviving set includes
+	// tools that move the worktree the session acts in. #1671 already drew
+	// this conclusion for `tools: []`; a non-empty list has no better claim,
+	// and a guard that tried to enumerate the survivors found a new spelling
+	// every round. So the rule names no tool: on a route whose declaration is
+	// not a bound, the declaration proves nothing, and `readonly:` — the
+	// scheduling assertion the engine already documents, honoured before this
+	// is ever reached — is how an author says otherwise.
+	//
+	// An unnamed backend is deliberately NOT included: `backend: ""` is
+	// resolved at dispatch, and a pre-run reading of it would be a guess.
+	// Widening that one is a separate question with its own measure.
+	//
+	// A DECLARED-EMPTY list is covered as well as a named one: reading the
+	// stricter declaration as safer than the looser one would invert the guard.
+	if (len(tools) > 0 || toolcatalog.ToolsDeclared(tools)) && routeDeclarationIsNoBound(node, backend, lookup, sharedWorkspace) {
+		return true
+	}
 	if len(tools) > 0 {
 		return false
 	}
@@ -249,6 +367,111 @@ func unrestrictedCLIBackendCanWrite(
 	// racing on one worktree with every guard already passed.
 	return fallbacksReachCLIBackend(node, lookup)
 }
+
+// routeDeclarationIsNoBound reports whether the node's primary backend, or any
+// of its `fallbacks:` routes, runs somewhere a `tools:` declaration does not
+// bound what the node holds. An empty/auto name is not one: it is resolved at
+// dispatch and answered by the arm that follows.
+func routeDeclarationIsNoBound(node ir.Node, backend string, lookup func(string) string, sharedWorkspace bool) bool {
+	if declarationIsNoBound(backend, sharedWorkspace) {
+		return true
+	}
+	llm, ok := node.(ir.LLMNode)
+	if !ok {
+		return false
+	}
+	for _, fb := range llm.GetFallbacks() {
+		b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, lookup))
+		if declarationIsNoBound(b, sharedWorkspace) {
+			return true
+		}
+	}
+	return false
+}
+
+// declarationIsNoBound answers for ONE named backend, and names no tool.
+//
+// Two routes fail to bound a declaration, for two different reasons. pi, kimi,
+// grok and opencode never receive the list at all (C270's subject), so the
+// agent keeps its own toolset whatever the author wrote. claude_code does
+// receive it and still is not bounded by it: the list becomes
+// `--disallowedTools` over a CLOSED native roster this project does not own, so
+// it removes the names iterion happens to enumerate and nothing else — measured
+// on CLI 2.1.220, a node declaring `tools: [read_file]` still registers
+// `EnterWorktree` and `ExitWorktree`, which move the worktree the session acts
+// in.
+//
+// Both answers are scoped to the SHARED-WORKSPACE question — "may two branches
+// run on one worktree" — and deliberately not to the wider one
+// `ToolSurfaceCanWrite` answers for the catalog's prompt-injection contract
+// ("what can this node do"). The two are the same fact read at two altitudes,
+// and moving the second one re-classifies bots across the catalog: a real
+// change, with its own measure and its own review, and not this one.
+//
+// `sharedWorkspace` is therefore a parameter of the QUESTION, passed by each
+// entry point, and never derived from what the engine's executor happens to
+// implement: keyed on the resolver, `iterion validate --exec --strict` — whose
+// dry-run executor implements no tool surface — answered OK on a workflow the
+// same tree kills at the router.
+func declarationIsNoBound(backend string, sharedWorkspace bool) bool {
+	b := strings.TrimSpace(backend)
+	if b == "" || b == "auto" || !sharedWorkspace {
+		return false
+	}
+	return !toolcatalog.ReceivesToolList(b) || b == delegate.BackendClaudeCode
+}
+
+// edgeMayEscalateEffort reports whether any edge INTO this node may hand it
+// `_reasoning_effort: "ultracode"`, which grants claw's unbounded `agent` tool
+// — a widening this classifier would otherwise miss, because the mapped value
+// is resolved when the router dispatches.
+//
+// A LITERAL mapping is decided here and now: `_reasoning_effort: "low"` can
+// never be ultracode, and reading every effort edge as a possible escalation
+// refused fan-outs that are perfectly safe. Only a mapping carrying references
+// (`{{outputs.…}}`, `{{vars.…}}`) is unknowable at this point, and only that
+// one is read pessimistically.
+//
+// With no graph in hand the answer is false: the node's own declaration is
+// then all there is to read.
+func edgeMayEscalateEffort(wf *ir.Workflow, node ir.Node) bool {
+	if wf == nil || node == nil {
+		return false
+	}
+	id := node.NodeID()
+	for _, edge := range wf.Edges {
+		if edge == nil || edge.To != id {
+			continue
+		}
+		for _, m := range edge.With {
+			if m == nil || m.Key != dynamicEffortInputKey {
+				continue
+			}
+			if len(m.Refs) > 0 {
+				return true // a template; its value arrives later
+			}
+			// Compared EXACTLY, against the value the compiler produces
+			// (the parser has already stripped the quotes). Trimming would
+			// escalate on `" ultracode "`, which the runtime itself refuses —
+			// ir.ValidReasoningEfforts has no such key — so the guard would
+			// refuse a fan-out for an escalation that cannot happen.
+			if m.Raw == ultracodeEffort {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ultracodeEffort is the one `_reasoning_effort` value that widens a node's
+// tool surface: it is the mode that grants the orchestration prerogative, not
+// an API effort level (see ir.ValidReasoningEfforts, which carries it).
+const ultracodeEffort = "ultracode"
+
+// dynamicEffortInputKey is the mapped input an edge raises a node's reasoning
+// effort with (see model.resolveReasoningEffort). Spelled once here because
+// the model package keeps its own copy unexported.
+const dynamicEffortInputKey = "_reasoning_effort"
 
 // fallbacksReachCLIBackend reports whether any of a node's `fallbacks:`
 // routes runs on a backend where an empty `tools:` list means the full
@@ -320,7 +543,7 @@ func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string, f
 		if isTerminalNode(node) {
 			continue
 		}
-		if isMutatingNodeCtx(node, e.workflow.DefaultBackend, e.backendResolver(), fanOutEachTemplate) {
+		if isMutatingNodeIn(e.workflow, node, e.workflow.DefaultBackend, e.backendResolver(), e.toolSurfaceResolver(), fanOutEachTemplate) {
 			return true
 		}
 		for _, edge := range e.workflow.Edges {
@@ -353,10 +576,105 @@ func (e *Engine) validateWorkspaceSafety(routerNodeID string, fanEdges []*ir.Edg
 	}
 	if mutatingCount > 1 {
 		return &RuntimeError{
-			Code:    ErrCodeWorkspaceSafety,
-			Message: fmt.Sprintf("workspace safety violation: %d branches contain mutating nodes %v", mutatingCount, mutatingBranches),
-			Hint:    "at most 1 mutating branch is allowed in parallel on the same workspace; move tool nodes to separate sequential steps",
+			Code: ErrCodeWorkspaceSafety,
+			Message: fmt.Sprintf("workspace safety violation: %d branches contain mutating nodes %v%s",
+				mutatingCount, mutatingBranches, e.mutationCauses(mutatingBranches, globalConvergence)),
+			Hint: "at most 1 mutating branch is allowed in parallel on the same workspace; move the mutating work to sequential steps, or assert the branch is safe where the node kind allows it — `readonly:` on an agent/judge, `isolated:` on a subbot, `parallel_safe:` on a fan_out_each tool",
 		}
+	}
+	return nil
+}
+
+// mutationCauses names, per refused branch, the first node that can write and
+// the tool that decides it. The verdict is computed from a surface the author
+// never wrote — `auto_memory:` grants write_file, ultracode grants the subagent
+// tool, a route that ignores the list grants everything — so a message naming
+// only the branch sends the reader looking for a tool node that is not there.
+// Recomputed on the error path alone.
+func (e *Engine) mutationCauses(branches []string, convergence string) string {
+	var parts []string
+	for _, b := range branches {
+		if cause := e.branchMutationCause(b, convergence); cause != "" {
+			parts = append(parts, cause)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " — " + strings.Join(parts, "; ")
+}
+
+func (e *Engine) branchMutationCause(startNodeID, globalConvergence string) string {
+	visited := map[string]bool{}
+	queue := []string{startNodeID}
+	surfaces := e.toolSurfaceResolver()
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+		if visited[nodeID] {
+			continue
+		}
+		visited[nodeID] = true
+		if globalConvergence != "" && nodeID == globalConvergence {
+			continue
+		}
+		node, ok := e.workflow.Nodes[nodeID]
+		if !ok || isTerminalNode(node) {
+			continue
+		}
+		if !isMutatingNodeIn(e.workflow, node, e.workflow.DefaultBackend, e.backendResolver(), surfaces, false) {
+			for _, edge := range e.workflow.Edges {
+				if edge.From == nodeID {
+					queue = append(queue, edge.To)
+				}
+			}
+			continue
+		}
+		if surfaces != nil {
+			// Declared names are compared through the shared spelling table,
+			// not literally: the surface carries the runtime's own vocabulary
+			// and an author's `agent` is the same tool as a backend's `Agent`.
+			declared := map[string]bool{}
+			for _, t := range llmDeclaredTools(node) {
+				declared[toolcatalog.CanonicalToolName(t)] = true
+			}
+			for _, t := range surfaces.EffectiveToolNames(node, edgeMayEscalateEffort(e.workflow, node)) {
+				if toolIsWorkspaceSafe(t) || declared[toolcatalog.CanonicalToolName(t)] {
+					continue
+				}
+				return fmt.Sprintf("node %q holds %q, which its `tools:` list does not declare", nodeID, t)
+			}
+		}
+		if llm, ok := node.(ir.LLMNode); ok {
+			// Read exactly as the classifier read it, expansion included: a
+			// message quoting `${VAR:-claw}` as if it were a backend, and
+			// blaming a rule the verdict never used, is worse than no message.
+			backend := strings.TrimSpace(ir.ExpandWithDefault(llm.GetLLMFields().Backend, nil))
+			if backend == "" {
+				backend = strings.TrimSpace(ir.ExpandWithDefault(e.workflow.DefaultBackend, nil))
+			}
+			if r := e.backendResolver(); r != nil {
+				if eff := strings.TrimSpace(r.EffectiveBackendName(node)); eff != "" {
+					backend = eff
+				}
+			}
+			if declarationIsNoBound(backend, true) { // the cause of a shared-worktree refusal
+				return fmt.Sprintf("node %q runs on %s, where a `tools:` list does not bound what the node holds", nodeID, backend)
+			}
+		}
+		return fmt.Sprintf("node %q", nodeID)
+	}
+	return ""
+}
+
+// llmDeclaredTools is the node's own `tools:` list, or nil for a kind that has
+// none.
+func llmDeclaredTools(node ir.Node) []string {
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		return n.Tools
+	case *ir.JudgeNode:
+		return n.Tools
 	}
 	return nil
 }
