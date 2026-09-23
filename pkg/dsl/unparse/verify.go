@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -418,6 +420,9 @@ func firstJSONDifference(a, b []byte) string {
 	return "the documents differ in their encoding"
 }
 
+// diffAny names the first difference between two decoded JSON values: a
+// mapping's keys walked in sorted order, so the difference a refusal names
+// is the same on every run — never the one a map's iteration happened on.
 func diffAny(path string, x, y any) string {
 	switch xv := x.(type) {
 	case map[string]any:
@@ -425,16 +430,16 @@ func diffAny(path string, x, y any) string {
 		if !ok {
 			return path + " differs in kind"
 		}
-		for k, xe := range xv {
+		for _, k := range slices.Sorted(maps.Keys(xv)) {
 			ye, ok := yv[k]
 			if !ok {
 				return path + "." + k + " is missing after the round-trip"
 			}
-			if d := diffAny(path+"."+k, xe, ye); d != "" {
+			if d := diffAny(path+"."+k, xv[k], ye); d != "" {
 				return d
 			}
 		}
-		for k := range yv {
+		for _, k := range slices.Sorted(maps.Keys(yv)) {
 			if _, ok := xv[k]; !ok {
 				return path + "." + k + " appeared after the round-trip"
 			}
