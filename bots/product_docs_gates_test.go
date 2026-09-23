@@ -1861,13 +1861,23 @@ type coverageOut struct {
 
 func coverageCommand(t *testing.T, ws, productDir, oraclePath string) string {
 	t.Helper()
+	return coverageCommandWith(t, ws, productDir, oraclePath, defaultExclusionsToken, "")
+}
+
+// coverageCommandWith exposes the two declared identifiers a product may
+// override: the exclusions-chapter token (the pages are not written in the
+// gate's language) and the corpus-id pattern (which replaces the shape
+// inference with an exact rule).
+func coverageCommandWith(t *testing.T, ws, productDir, oraclePath, exclToken, entryPattern string) string {
+	t.Helper()
 	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "coverage_check"), map[string]string{
 		"vars.workspace_dir":               ws,
 		"input.product_dir":                productDir,
 		"input.oracle_path":                oraclePath,
-		"vars.coverage_exclusions_heading": defaultExclusionsToken,
+		"vars.coverage_exclusions_heading": exclToken,
 		"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
 		"vars.coverage_routes_file":        "routes.txt",
+		"vars.coverage_entry_id_pattern":   entryPattern,
 		"vars.coverage_placeholders":       defaultPlaceholders,
 		"vars.coverage_min_prose":          "60",
 	})
@@ -2217,6 +2227,119 @@ func TestProductDocsCoverageGateIgnoresFencedSamples(t *testing.T) {
 	got = runCoverage(t, ws)
 	if got.OK || !strings.Contains(got.Log, "the path /dashboard/invented") {
 		t.Fatalf("the same citation in prose slipped through:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateScopesTheChapterToItsPage: chapter state is PER
+// PAGE, like fence state. A page ending inside the exclusions chapter must not
+// mark the NEXT page's lines as being under it — an exclusion id cited with
+// enough prose in an unrelated page would otherwise satisfy
+// CONCEALED_EXCLUSION, which is the exact false green this gate exists to
+// refuse. The page names below fix the read order (sorted): README, then the
+// exclusions page, then the annex.
+func TestProductDocsCoverageGateScopesTheChapterToItsPage(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	if err := os.Remove(filepath.Join(ws, "docs/demo/exclusions.md")); err != nil {
+		t.Fatal(err)
+	}
+	// A one-chapter-per-file exclusions page that names nothing.
+	writeFile(t, ws, "docs/demo/a-exclusions.md",
+		"# Exclusions "+defaultNoAnchorMarker+"\n\nThis page lists what the documentation leaves out.\n")
+	// An unrelated annex. Its first heading is DEEPER than the exclusions
+	// chapter, so a leaked chapter state would survive into it.
+	writeFile(t, ws, "docs/demo/b-annex.md",
+		"## Extra notes "+defaultNoAnchorMarker+"\n\n"+
+			"- `menu.logout` — signing out tears the session down without showing a "+
+			"screen of its own, so the net never captures it and this page mentions it only in passing.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("an exclusion named OUTSIDE the exclusions chapter satisfied the gate — the chapter state leaked across the page boundary:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout") {
+		t.Fatalf("the gate is red without the expected cause:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateFoldsTheDeclaredToken: the var's contract says
+// the exclusions token matches case- and accent-insensitively. Folding only
+// the heading would make every natural spelling — `Exclusions`, an accented
+// French token — a token that can NEVER match, so every exclusion would redden
+// and the run could never converge. Only the lowercase-ASCII default worked.
+func TestProductDocsCoverageGateFoldsTheDeclaredToken(t *testing.T) {
+	requireGitPython(t)
+	for _, token := range []string{"Exclusions", "EXCLUSIONS", "exclusions"} {
+		t.Run(token, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			var got coverageOut
+			runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), token, ""), &got)
+			if !got.OK {
+				t.Fatalf("the declared token %q never matched the chapter it names:\n%s", token, got.Log)
+			}
+		})
+	}
+	// An accented token against an accented heading: both sides folded.
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions ", "## Périmètre exclu ")
+	var got coverageOut
+	runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "PÉRIMÈTRE EXCLU", ""), &got)
+	if !got.OK {
+		t.Fatalf("an accented declared token never matched its accented heading:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateDoesNotRefuseOrdinaryProse: a code span that
+// merely RESEMBLES a corpus id is not a citation. With a three-digit net any
+// inline `404` or `250` would otherwise be a blocking PHANTOM_DOC — and
+// because this gate is a convergence term, the campaign is told to fix
+// exactly those causes, so it would delete reader-facing prose to go green.
+// Co-location is what turns a resemblance into a citation.
+func TestProductDocsCoverageGateDoesNotRefuseOrdinaryProse(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/faq.md",
+		"# Questions "+defaultNoAnchorMarker+"\n\n"+
+			"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
+			"The server answers `404` and the list shows `250` rows at most; `items.json` is never exposed.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("ordinary prose was read as a citation — the campaign would be told to delete it:\n%s", got.Log)
+	}
+	// The same token ON A CITING LINE is a citation, and is still refused.
+	mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page (`404`)")
+	got = runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "the entry 404 is cited and DOES NOT EXIST") {
+		t.Fatalf("a look-alike token on a line that is already citing references slipped through:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateHonoursADeclaredIDPattern: a product whose prose
+// carries look-alike tokens declares its corpus-id spelling and the inference
+// stops entirely — the check becomes exact rather than wider.
+func TestProductDocsCoverageGateHonoursADeclaredIDPattern(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page (`404`, `entry-nope`)")
+	run := func(pattern string) coverageOut {
+		t.Helper()
+		var got coverageOut
+		runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), defaultExclusionsToken, pattern), &got)
+		return got
+	}
+	got := run("^entry-")
+	if got.OK {
+		t.Fatalf("a token matching the DECLARED pattern and absent from the corpus was not refused:\n%s", got.Log)
+	}
+	if strings.Contains(got.Log, "the entry 404") {
+		t.Fatalf("the declared pattern did not REPLACE the shape inference — 404 does not match ^entry-:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "the entry entry-nope is cited and DOES NOT EXIST") {
+		t.Fatalf("the declared pattern did not catch its own spelling:\n%s", got.Log)
+	}
+	// A pattern that does not compile is a NAMED refusal, never a traceback.
+	got = run("^[0-9")
+	if got.OK || !strings.Contains(got.Log, "does not compile") {
+		t.Fatalf("a malformed declared pattern was not refused by name:\n%s", got.Log)
 	}
 }
 

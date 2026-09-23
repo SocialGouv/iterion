@@ -22,7 +22,11 @@ version: 1.2.0
 ## identifiers (`coverage_*` vars), not French literals, and the anchor
 ## vocabulary is read off the net rather than assumed. page_lint
 ## exempts exactly the declared marker, so the two gates cannot order
-## the campaign to add and to remove the same characters.
+## the campaign to add and to remove the same characters. A resemblance
+## only becomes a CITATION on a line that is already citing references,
+## so an inline `404` in a three-digit net is prose and not a refusal —
+## and `coverage_entry_id_pattern` stops the inference outright for a
+## product whose pages carry look-alike tokens.
 ## Also: a catalog entry may now name a source by `path` — a repository
 ## already on disk, RELATIVE to the workspace (`.` being the workspace
 ## itself), cloned locally with no forge, no network and no credential,
@@ -173,7 +177,8 @@ launch:
   primary: [catalog_path, product_id, scope_notes, open_mr]
   hidden: [workspace_dir, dismissed_path, scratch_dir, max_hints,
            coverage_exclusions_heading, coverage_no_anchor_marker,
-           coverage_routes_file, coverage_placeholders, coverage_min_prose]
+           coverage_routes_file, coverage_entry_id_pattern,
+           coverage_placeholders, coverage_min_prose]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
 ## release that reads the profile would refuse the header as an unknown

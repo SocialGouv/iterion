@@ -242,6 +242,16 @@ vars:
   ## Degraded is loud and still refuses; it is never silently green.
   coverage_routes_file: string = "routes.txt"
 
+  ## Regex a code span must match to be READ AS a corpus entry id. Empty
+  ## (the default) infers it from the shape the corpus itself uses —
+  ## length plus character classes — so `001` and `checkout-pay` are both
+  ## read without either convention being written into the bot. Declare
+  ## it (`^[0-9]{3}$`, `^gm-`) when the inference is too loose for a
+  ## product whose prose carries look-alike tokens; the inference then
+  ## stops entirely and the check is exact. Either way a resemblance only
+  ## becomes a CITATION on a line that is already citing references.
+  coverage_entry_id_pattern: string = ""
+
   ## Substitutes that do not count as writing when a page names an
   ## exclusion, and the minimum number of prose characters that does.
   ## A bare identifier under a heading is silence wearing a label.
@@ -2180,7 +2190,7 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 ## double quote, no literal backtick and no dollar sign.
 tool coverage_check:
   input: coverage_input
-  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES_FILE={{vars.coverage_routes_file}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} python3 -c "
+  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES_FILE={{vars.coverage_routes_file}} ENTRY_ID_PATTERN={{vars.coverage_entry_id_pattern}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} python3 -c "
 import os, json, glob, re, unicodedata
 from urllib.parse import urlsplit, parse_qsl
 ws = os.environ['WS']
@@ -2190,6 +2200,7 @@ product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
 excl_token = (os.environ.get('EXCL_HEADING') or '').strip()
 no_anchor = (os.environ.get('NO_ANCHOR') or '').strip()
 routes_file = (os.environ.get('ROUTES_FILE') or '').strip()
+entry_pattern = (os.environ.get('ENTRY_ID_PATTERN') or '').strip()
 placeholders = [p.strip() for p in (os.environ.get('PLACEHOLDERS') or '').split(',') if p.strip()]
 try:
     min_prose = int((os.environ.get('MIN_PROSE') or '60').strip() or '60')
@@ -2348,6 +2359,20 @@ def shape(s):
         kinds.add('d' if c.isdigit() else ('a' if c.isalpha() else 'x'))
     return (len(s), frozenset(kinds))
 entry_shapes = set(shape(i) for i in corpus_ids)
+ENTRY_ID_RE = None
+if entry_pattern:
+    try:
+        ENTRY_ID_RE = re.compile(entry_pattern)
+    except re.error as exc:
+        refuse('NET_UNREADABLE', 'coverage_entry_id_pattern', 'the declared corpus-id pattern does not compile -- ' + ' '.join(str(exc).split())[:200])
+
+def entry_shaped(tok):
+    ## The corpus declares its own id vocabulary. A campaign that wants the
+    ## check EXACT declares the pattern and the inference stops entirely;
+    ## otherwise the shape the corpus ITSELF uses stands in for it.
+    if ENTRY_ID_RE is not None:
+        return bool(ENTRY_ID_RE.match(tok))
+    return shape(tok) in entry_shapes
 inventory_names = set(entry_lists) | set(exclusion_reasons)
 CODE_SPAN_RE = re.compile(BT + '([^' + BT + chr(10) + ']+)' + BT)
 HEADING_RE = re.compile(r'^(#{1,6})\s+(.*\S)\s*' + chr(36))
@@ -2382,10 +2407,15 @@ in_exc = False
 in_fence = False
 current = ''
 for where, no, text in lines:
-    ## Fence state is PER FILE: an unclosed fence at the end of one page
-    ## would otherwise blind the gate to every page after it.
+    ## Fence state and CHAPTER state are both PER PAGE. An unclosed fence
+    ## at the end of one page would otherwise blind the gate to every page
+    ## after it -- and a page ending inside the exclusions chapter would
+    ## mark the NEXT page's lines as being under it, which is the exact
+    ## false green this gate exists to refuse: an exclusion id cited with
+    ## enough prose in an unrelated page would satisfy the rule.
     if where != current:
         current, in_fence = where, False
+        in_exc, exc_level = False, None
     if FENCE_RE.match(text):
         in_fence = not in_fence
         continue
@@ -2400,27 +2430,42 @@ for where, no, text in lines:
         level, title = len(m.group(1)), m.group(2)
         if level > 1:
             headings.append((where, no, level, title))
-        if excl_token and excl_token in fold(title):
+        if excl_token and fold(excl_token) in fold(title):
             in_exc, exc_level = True, level
         elif exc_level is not None and level <= exc_level:
             in_exc, exc_level = False, None
-    ents, ids, paths, unknown = [], [], [], []
+    ents, ids, paths, unknown, candidates = [], [], [], [], []
+    anchored = False
     for tok in CODE_SPAN_RE.findall(text):
         tok = tok.strip()
         if not tok:
             continue
+        ## A leading slash is a path by SYNTAX -- nothing is inferred, and
+        ## a path is an anchor whether or not it turns out to exist.
         if tok.startswith('/'):
             paths.append(tok)
+            anchored = True
         elif tok in corpus_ids:
             ents.append(tok)
+            anchored = True
         elif tok in inventory_names:
             ids.append(tok)
+            anchored = True
         elif '.' in tok and tok.split('.')[0] in prefixes:
-            unknown.append(('inventory', tok))
-            ids.append(tok)
-        elif shape(tok) in entry_shapes:
-            unknown.append(('entry', tok))
-            ents.append(tok)
+            candidates.append(('inventory', tok))
+        elif entry_shaped(tok):
+            candidates.append(('entry', tok))
+    ## CO-LOCATION is what turns a resemblance into a CITATION. A token is
+    ## offered as a reference when the line it sits on is ALREADY citing
+    ## references; anywhere else a code span that merely LOOKS like an id
+    ## is prose. Without this, a three-digit net makes every inline 404 or
+    ## 250 a blocking refusal, and a gate that is a convergence term does
+    ## not merely annoy: the campaign is told to fix exactly those causes,
+    ## so it would delete reader-facing prose to go green.
+    if anchored:
+        for kind, tok in candidates:
+            unknown.append((kind, tok))
+            (ents if kind == 'entry' else ids).append(tok)
     anchors_by_line[(where, no)] = (ents, ids, paths, unknown, text)
     under_exclusions[(where, no)] = in_exc
 ## STRUCTURAL RULE -- every chapter carries an anchor, or DECLARES that it
@@ -2432,8 +2477,11 @@ for where, no, level, title in headings:
     if no_anchor and no_anchor in title:
         marked.append({'page': where, 'line': no, 'title': title.replace(no_anchor, '').strip()})
         continue
+    ## A chapter is anchored by a reference that EXISTS (or by a path,
+    ## which is a citation by syntax) -- never by a token that merely
+    ## resembles one, which would let a chapter fake its own anchor.
     toks = [t.strip() for t in CODE_SPAN_RE.findall(title)]
-    if not any(t.startswith('/') or t in corpus_ids or t in inventory_names or ('.' in t and t.split('.')[0] in prefixes) or shape(t) in entry_shapes for t in toks if t):
+    if not any(t.startswith('/') or t in corpus_ids or t in inventory_names for t in toks if t):
         refuse('UNANCHORED_CHAPTER', where + ':' + str(no), 'the chapter ' + title + ' names NO reference it restitutes -- anchor it on a corpus entry, an inventory id or a path, or declare it observes nothing with ' + (no_anchor or '<coverage_no_anchor_marker>'))
 ## PHANTOM_DOC -- every cited anchor must exist, in the corpus, in the
 ## inventory or in the declarations; never in the writer's memory.

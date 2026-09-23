@@ -149,6 +149,12 @@ Three things the gate deliberately does not assume:
 - **The anchor vocabulary.** Inventory identifiers are recognised by the
   prefixes the inventory itself uses and corpus ids by the shape the
   corpus itself uses. `001` is one campaign's convention, not a rule.
+  A resemblance only becomes a **citation** on a line that is already
+  citing references — otherwise a three-digit net would make every inline
+  `404` a blocking refusal, and since this gate is a convergence term the
+  campaign would be told to delete reader-facing prose to go green. A
+  product whose pages carry look-alike tokens declares
+  `coverage_entry_id_pattern` and the inference stops entirely.
 - **A catch-all route.** A route made only of placeholders (`/{slug}`,
   `/**`) matches every path and proves none: for a path only such a
   route covers, the corpus reference is the only evidence.
@@ -245,6 +251,7 @@ computed is **never** reported as an empty one.
 | `coverage_exclusions_heading` | `exclusions` | Token a heading must carry to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive substring) |
 | `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token; empty disables the escape hatch |
 | `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir`, in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
+| `coverage_entry_id_pattern` | `""` | Regex a code span must match to be read as a corpus entry id. Empty infers it from the shape the corpus itself uses; declaring it stops the inference and makes the check exact |
 | `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page names an exclusion |
 | `coverage_min_prose` | `60` | Minimum prose characters on the line that names an exclusion |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
