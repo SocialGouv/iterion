@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.192.2](https://github.com/SocialGouv/iterion/compare/v3.192.1...v3.192.2) (2026-09-23)
+
+### Bug Fixes
+
+* **dsl:** a prompt written in place is read from a block scalar as the scanner read it ([#1691](https://github.com/SocialGouv/iterion/issues/1691)) ([bd8b60e](https://github.com/SocialGouv/iterion/commit/bd8b60eb98d5bccfba8ef8a4df33ef1103cbd50a)), references [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1664](https://github.com/SocialGouv/iterion/issues/1664)
+
+    <details><summary>why</summary>
+
+    The author document's three text readers — a string value, a prompt declaration, a prompt written in place of its reference (`system:`, `user:`, `instructions:`) — must read a block scalar as yaml.v3's scanner read it: a line separator (U+2028/U+2029) it left in a literal block is the line break it meant, said by a warning at its line; a folded block holding one is refused. Two of the three did; the third took the scalar raw, so two authored lines of a `user: |` reached the model joined by an…
+
+    </details>
+
 ## [3.192.1](https://github.com/SocialGouv/iterion/compare/v3.192.0...v3.192.1) (2026-09-23)
 
 ### Bug Fixes
