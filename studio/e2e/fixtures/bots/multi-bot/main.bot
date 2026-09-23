@@ -1,0 +1,22 @@
+## Multi-file studio-UI fixture: the main imports three fragments, so the
+## Source view's picker lists four files plus the merged program — one of
+## them a file the writer cannot reproduce (#1612).
+
+import "lib/schemas.bot"
+import "lib/nodes.bot"
+import "lib/refused.bot"
+
+workflow ui_unit_fixture:
+  worktree: none
+  sandbox: none
+
+  entry: collect_facts
+
+  budget:
+    max_iterations: 5
+
+  collect_facts -> decide
+
+  decide -> done when ok
+
+  decide -> fail

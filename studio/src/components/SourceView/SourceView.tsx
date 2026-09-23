@@ -417,10 +417,19 @@ export default function SourceView() {
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-2 py-1 bg-surface-1 border-b border-border-default shrink-0 gap-2">
         {unit ? (
-          <label className="flex items-center gap-1 text-xs text-fg-subtle min-w-0">
+          <label className="flex min-w-0 items-center gap-1 text-xs text-fg-subtle">
+            {/* The picker deliberately does NOT pass `fit`. `fit` makes its
+                wrapper `inline-block`, which sizes to the longest option
+                (248 px, the merged entry) and overflows the label; the
+                wrapper is `position: relative` — it overlays the chevron —
+                so the overflow painted ABOVE the static Apply/Cancel buttons
+                and swallowed their clicks. Without `fit` the wrapper is
+                `w-full` and shrinks with the pane. Clipping the label
+                instead would ALSO bound it, and was measured erasing the
+                picker to zero painted pixels in the merged state, under a
+                note telling the author to pick a file above. */}
             <span className="shrink-0">File</span>
             <Select
-              fit
               aria-label="File of this bot"
               data-testid="source-view-file-picker"
               className="max-w-[18rem]"
@@ -444,9 +453,18 @@ export default function SourceView() {
         ) : (
           <span className="text-xs text-fg-subtle">.bot Source</span>
         )}
-        <div className="flex gap-2 shrink-0">
+        {/* `min-w-0` rather than `shrink-0`: the two read-only notes below are
+            long (the salvage one runs to ~950 px), and a row that refuses to
+            shrink them takes the picker's width instead — measured erasing it
+            entirely in the merged state. The buttons branch keeps its natural
+            width, being three short labels. */}
+        <div className="flex min-w-0 gap-2">
           {unit && salvaged ? (
-            <span className="text-xs text-fg-subtle" data-testid="source-view-salvaged-unit-note">
+            <span
+              className="truncate text-xs text-fg-subtle"
+              title="Read-only: this bot's main did not parse."
+              data-testid="source-view-salvaged-unit-note"
+            >
               Read-only: this bot&apos;s main did not parse. It is saved from its files as they
               are stored, so the main has to be repaired there —{" "}
               {onCloudBundle
@@ -454,7 +472,11 @@ export default function SourceView() {
                 : "edit the file where this bot's files live, then reopen it."}
             </span>
           ) : unit && selected === MERGED ? (
-            <span className="text-xs text-fg-subtle" data-testid="source-view-unit-note">
+            <span
+              className="truncate text-xs text-fg-subtle"
+              title="Read-only: the merged program is not a file. Pick a file above to edit it."
+              data-testid="source-view-unit-note"
+            >
               Read-only: the merged program is not a file. Pick a file above to edit it.
             </span>
           ) : !editable || stale ? null : !editing ? (
