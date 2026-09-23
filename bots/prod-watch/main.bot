@@ -532,7 +532,9 @@ tool plan:
         c = cursors.get(name) or {}
         prev = int(c.get('covered_to_ns') or 0)
         if prev > 0:
-            frm = max(floor_ns, prev - overlap_s * 10 ** 9)
+            ## A band cut at the producer's bound carries where it still
+            ## covers from: the window opens there, never earlier.
+            frm = max(floor_ns, prev - overlap_s * 10 ** 9, int(c.get('overlap_from_ns') or 0))
             gap = prev < floor_ns
         else:
             ## Bootstrap: a short first window, so an install does not
@@ -543,7 +545,7 @@ tool plan:
         ## (late ingestion); the lines already counted there travel as
         ## hashes so they are not counted twice.
         windows[name] = {'from_ns': str(frm), 'to_ns': str(to_ns), 'gap': gap, 'bootstrap': prev == 0,
-                         'prev_covered_to_ns': str(prev), 'overlap_hashes': list(c.get('overlap_hashes') or [])[:4000],
+                         'prev_covered_to_ns': str(prev), 'overlap_hashes': list(c.get('overlap_hashes') or []),
                          'overlap_ns': str(overlap_s * 10 ** 9)}
     loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
                  'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
@@ -741,8 +743,25 @@ tool poll_loki:
         for name, logql in queries.items():
             w = windows.get(name) or {}
             frm, to = int(w.get('from_ns') or 0), int(w.get('to_ns') or 0)
-            if not frm or not to or frm >= to:
-                per_query[name] = {'lines': 0, 'truncated': False, 'covered_to_ns': str(to), 'error': 'empty window'}
+            if not frm or not to or frm > to:
+                ## A window that does not exist, or that starts after its own
+                ## end (the cursor ahead of `now - ingest_lag`: a lag raised
+                ## between two ticks, a clock): the query's error, the cursor
+                ## stays where it is, time heals it.
+                err = 'missing window' if not frm or not to else 'inverted window: from ' + str(frm) + ' > to ' + str(to)
+                errors.append({'query': name, 'error': err})
+                per_query[name] = {'lines': 0, 'truncated': False, 'covered_to_ns': str(to), 'error': err,
+                                   'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
+                                   'skipped_overlap': 0, 'overlap_hashes': [], 'overlap_from_ns': '0'}
+                continue
+            if frm == to:
+                ## A zero-width window (a bootstrap of 0 minutes, explicit or
+                ## floored) is fully covered: the cursor is established at
+                ## `to` and the next tick reads from there. An error here
+                ## would never persist a cursor — every tick a bootstrap.
+                per_query[name] = {'lines': 0, 'truncated': False, 'covered_to_ns': str(to), 'error': '',
+                                   'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
+                                   'skipped_overlap': 0, 'overlap_hashes': [], 'overlap_from_ns': '0'}
                 ok_count += 1
                 continue
             start, n, truncated, last_ts, err = frm, 0, False, 0, ''
@@ -803,8 +822,11 @@ tool poll_loki:
                         ## at `start` cannot get past it with this page size.
                         ## Widen (bounded by the cap) instead of losing lines.
                         if page_limit >= max_lines:
-                            truncated = True
-                            break
+                            ## The walk cannot get past the group within the
+                            ## cap: the query's error (loud, the cursor stays),
+                            ## never a cursor parked on the group for good.
+                            raise ValueError('a group of lines at one timestamp (' + str(start) + ') is wider than max_lines=' +
+                                             str(max_lines) + ' -- raise max_lines')
                         page_limit = min(page_limit * 2, max_lines)
                         continue
                     if len(entries) < limit:
@@ -829,10 +851,17 @@ tool poll_loki:
             ## the COVERED bound minus the overlap — the bound actually
             ## persisted, not the frozen window end, or a truncated tick
             ## hands over an empty list and the overlap band is re-counted.
-            tail_hashes = [h for ts, h in band if ts >= covered - overlap_ns]
+            tail = [(ts, h) for ts, h in band if ts >= covered - overlap_ns]
+            ## The band is bounded (state size). When it is cut, the bound it
+            ## still covers travels with it and the next window opens THERE,
+            ## not at covered - overlap: the cut lines would be counted again
+            ## every tick. This is the one place the band is cut.
+            capped = len(tail) > 4000
+            tail = tail[-4000:]
             per_query[name] = {'lines': n, 'truncated': truncated, 'covered_to_ns': str(covered), 'error': err,
                                'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
-                               'skipped_overlap': skipped, 'overlap_hashes': tail_hashes[-4000:]}
+                               'skipped_overlap': skipped, 'overlap_hashes': [h for ts, h in tail],
+                               'overlap_from_ns': str(tail[0][0] if capped else 0)}
             total += n
             truncated_any = truncated_any or truncated
             if not err:
@@ -1115,17 +1144,26 @@ tool leak_scan:
             total += x
         return total % 10 == 0
     CARD_CONTEXT = re.compile(r'(?i)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
+    def card_shape(raw):
+        ## A card's own grouping — 4-4-4-4 with a 1-3 digit tail for 17-19
+        ## digits, or the Amex 4-6-5 — under any one separator. A decimal, a
+        ## dashed build id or a list of counters is separated too, and Luhn
+        ## alone passes one run in ten of them.
+        groups = [len(g) for g in re.split(r'[ .-]', raw) if g]
+        if groups == [4, 6, 5]:
+            return True
+        return groups[:4] == [4, 4, 4, 4] and (len(groups) == 4 or (len(groups) == 5 and 1 <= groups[4] <= 3))
     def card_ok(m):
-        ## Luhn over a context-free, separator-free digit run is a coin flip
-        ## on trace ids, references and epoch timestamps — so a BARE run is a
-        ## card only with a card word within 40 chars (which then outranks
-        ## every other heuristic: a 2-series Mastercard or a JCB reads like a
-        ## timestamp by value). A spaced / dotted / hyphenated run is a
-        ## card's own shape and needs Luhn alone.
+        ## Luhn over a context-free digit run is a coin flip on trace ids,
+        ## references and epoch timestamps — so a run is a card when Luhn
+        ## holds AND either it has a card's own grouping, or a card word
+        ## stands within 40 chars before it (which then outranks every other
+        ## heuristic: a 2-series Mastercard or a JCB reads like a timestamp
+        ## by value).
         raw = m.group(0)
         if not luhn_ok(raw):
             return False
-        if re.search(r'[ .-]', raw):
+        if card_shape(raw):
             return True
         window = m.string[max(0, m.start() - 40):m.start()]
         return bool(CARD_CONTEXT.search(window))
@@ -1156,9 +1194,11 @@ tool leak_scan:
         return v[:2] + '***' + v[-1]
     def normalize(line):
         ## Fold full-width and other Unicode digits/letters to ASCII so a
-        ## "０６１２…" phone or a decorative NIR is still seen. Bounded: one
-        ## NFKC pass, no decoding of encodings (the policy slice adds them).
-        return unicodedata.normalize('NFKC', line)
+        ## "０６１２…" phone or a decorative NIR is still seen, and every run
+        ## of blanks (tabs, double spaces) to one space so a PAN's groups
+        ## keep their shape for every class. Bounded: one NFKC pass, no
+        ## decoding of encodings (the policy slice adds them).
+        return re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFKC', line))
 
     findings = {}
     def note(cls, value, q, stream, ts):
@@ -1497,7 +1537,8 @@ tool decide:
     for q, info in loki_per_query.items():
         if not info.get('error') and info.get('covered_to_ns'):
             cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'at': now_iso,
-                          'overlap_hashes': list(info.get('overlap_hashes') or [])[:4000]}
+                          'overlap_hashes': list(info.get('overlap_hashes') or []),
+                          'overlap_from_ns': str(info.get('overlap_from_ns') or 0)}
     needs_analysis = any(a['state'] in ('new', 'escalated') and a['kind'] in ('probe', 'prom', 'loki') for a in posted)
 
     ## Zero-façade guard: if EVERY configured lane errored this tick there
@@ -1828,6 +1869,10 @@ tool commit_state:
     with open(tmp, 'w', encoding='utf-8') as fh:
         fh.write(staged)
     os.replace(tmp, os.path.join(state_dir, 'state.json'))
+    ## The ledgers exist after every tick, empty or not: the node stages them
+    ## by name, and a quiet tick (nothing posted) has nothing to append.
+    for _f in ('alertlog.jsonl', 'ticks.jsonl'):
+        open(os.path.join(state_dir, _f), 'a', encoding='utf-8').close()
     appended = 0
     if alertlog_delta and os.path.exists(alertlog_delta):
         with open(alertlog_delta, encoding='utf-8') as src:

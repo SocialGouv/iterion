@@ -105,7 +105,9 @@ Cloud: bind team secrets by name (`POST /api/teams/<id>/secrets` with
 
 The Loki cursors also carry short hashes of the lines counted in the
 overlap band (`overlap_hashes`, sha1 prefixes of `timestamp + line`) so the
-next tick does not count them twice. They are not reversible, but they are
+next tick does not count them twice — bounded to the last 4000 lines; when
+the band is cut, the cursor also carries the bound it still covers
+(`overlap_from_ns`) and the next window opens there. They are not reversible, but they are
 a **confirmation oracle** over raw log content — one more reason the ops
 repository that carries the state is private.
 

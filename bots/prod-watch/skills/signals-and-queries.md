@@ -46,16 +46,17 @@ The only node that opens `loki_raw.jsonl`. For every line, in this order
 | `secret_kv` | `password=…`, `token: …`, `api_key=…` (the value only) | key kept, value replaced |
 | `nir` | 13 digits + 2-digit key, **key validated** (Corsica 2A/2B handled) | `[REDACTED:nir]` |
 | `iban` | country code + check digits + BBAN, **mod-97 validated** | `[REDACTED:iban]` |
-| `card` | 15–19 digits, spaced / dotted / hyphenated or bare, **Luhn-validated**; a bare run also needs a card word within 40 chars | `[REDACTED:card]` |
+| `card` | 15–19 digits, **Luhn-validated**, and either grouped like a card (4-4-4-4 with a 1–3 digit tail for 17–19 digits, or the Amex 4-6-5, under spaces, dots or hyphens) or preceded by a card word within 40 chars | `[REDACTED:card]` |
 | `email` | RFC-lite address | `[REDACTED:email]` |
 | `phone_fr` | French national or `+33` number | `[REDACTED:phone_fr]` |
 
 Lines are NFKC-normalised first, so full-width digits are seen. The
 detection is **heuristic**: validators narrow the false positives (a
-timestamp is not an IBAN; a bare digit run is a card only next to a card
-word, since Luhn alone is a coin flip on trace ids and epochs — a spaced,
-dotted or hyphenated run is a card's own shape and needs Luhn alone), they
-do not make it a proof. A bare run of 12+ digits that is not a card is
+timestamp is not an IBAN; a digit run is a card only with a card's own
+grouping or a card word next to it, since Luhn alone is a coin flip on
+trace ids, epochs, decimals and lists of counters), they do not make it a
+proof. Runs of blanks are folded to one space first, so tabs between a
+card's groups do not hide it. A bare run of 12+ digits that is not a card is
 still masked as `<num>` in every sample. This slice reports every class at severity `high`; the
 policy slice adds per-class `critical` with keyword context and the
 circuit-breaker.

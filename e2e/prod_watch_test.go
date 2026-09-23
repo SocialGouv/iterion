@@ -680,6 +680,14 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 		`order 1234-5678-9012-3456 shipped`,                                   // separated, not Luhn: no card, but never shown in a sample — R2
 		`ref 4539-1488-0343-6467 done`,                                        // hyphenated, Luhn ok, NO card word: a card's own shape — R2
 		`cb 3530111333300000 ok`,                                              // JCB: reads like a timestamp by value, the card word wins — R2
+		`buckets 81074 16347 65709 8727 ms`,                                   // Luhn-valid by chance, separated, NOT a card's grouping — R3
+		`build 2026-09-01-000000002 released`,                                 // dashed build id, Luhn-valid by chance — R3
+		`rate 1000.000000000008 req/s`,                                        // a decimal, Luhn-valid by chance — R3
+		`ts=1758635412.000007 request finished`,                               // a microsecond float epoch, Luhn-valid by chance — R3
+		`ref 3782 822463 10005 settled`,                                       // Amex 4-6-5, no card word: a card's own shape — R3
+		`ref 4012.8888.8888.1881 ok`,                                          // dotted 4-4-4-4, no card word: a card's own shape — R3
+		"carte\t4111\t1111\t1111\t1111\trefusee",                              // tabs between the groups — R3
+		`paiement carte 4111  1111  1111  1111 refuse`,                        // double spaces between the groups — R3
 		`auth token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz used`,
 		`Authorization: Bearer sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 sent`,
 		`db password=SuperSecret123 connected`,
@@ -713,7 +721,7 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 		counts[m["class"].(string)] = m["count"].(float64)
 		samples[m["class"].(string)] = m["sample_masked"].(string)
 	}
-	want := map[string]float64{"nir": 2, "iban": 3, "card": 7, "jwt": 1, "bearer": 1, "secret_kv": 2, "email": 2, "phone_fr": 1}
+	want := map[string]float64{"nir": 2, "iban": 3, "card": 11, "jwt": 1, "bearer": 1, "secret_kv": 2, "email": 2, "phone_fr": 1}
 	for cls, n := range want {
 		if counts[cls] != n {
 			t.Fatalf("class %s count = %v, want %v (all: %v)", cls, counts[cls], n, counts)
@@ -730,7 +738,7 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 	// Two pairs collapse into one template each once redacted — the two
 	// JSON epoch lines (`{"...":"...","...":#,"...":"..."}`) and the two
 	// IBAN lines (`iban [REDACTED:iban] saved`) — and the sweep line adds
-	// none: 24 lines, 22 templates.
+	// none: 32 lines, 30 templates.
 	if out["templates"].(float64) != float64(len(lines)-2) {
 		t.Fatalf("templates = %v, want %d (two redaction collapses, no template for the sweep line)", out["templates"], len(lines)-2)
 	}
@@ -738,7 +746,7 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 	for _, raw := range []string{"1 85 03 75 123 456 41", "3456 7890 189", "4539 1488 0343 6467", "SuperSecret123", "marie.curie", "pierre@", "eyJhbGciOiJIUzI1NiJ9",
 		"fr7630006000011234567890189", "nl91abna0417164300", "hunter2SuperSecret", "4539148803436467",
 		"2223000048400011", "4111.1111.1111.1111", "1-85-03-75-123-456-41", "4012888888881881", "1234-5678-9012-3456",
-		"4539-1488-0343-6467", "3530111333300000"} {
+		"4539-1488-0343-6467", "3530111333300000", "3782 822463 10005", "4012.8888.8888.1881", "4111\t1111", "4111  1111"} {
 		if strings.Contains(string(sig), raw) {
 			t.Fatalf("raw value %q reached the derived signals", raw)
 		}
@@ -1068,6 +1076,167 @@ func TestProdWatch_LokiOverlapAfterTruncation(t *testing.T) {
 	pq3 := loki3["per_query"].(map[string]any)["errors"].(map[string]any)
 	if loki3["lines"].(float64) != 0 || pq3["skipped_overlap"].(float64) < 1 || len(pq3["overlap_hashes"].([]any)) == 0 || loki3["truncated"] == true {
 		t.Fatalf("a skip-only tick writes nothing, is not truncated, and still hands over the band's hashes: %v", pq3)
+	}
+}
+
+// TestProdWatch_ZeroWidthBootstrapEstablishesTheCursor: a bootstrap window
+// of 0 minutes (explicit, or floored from a negative) reads nothing and is
+// fully covered — the cursor is established at the window's end and the
+// second tick reads from there. Reported as an error it would never
+// persist a cursor: every tick a bootstrap, the lane blind for good behind
+// a coverage note that fires once.
+func TestProdWatch_ZeroWidthBootstrapEstablishesTheCursor(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) { cfg["loki"].(map[string]any)["bootstrap_window_minutes"] = 0 })
+	h.lines.Store([]pwLine{{TS: nsAgo(5 * time.Minute), Line: "ERROR old", Container: "api", Q: "errors-q"}})
+	outs := h.tick(t, wf, false)
+	for q, v := range outs["poll_loki"]["per_query"].(map[string]any) {
+		pq := v.(map[string]any)
+		if pq["error"] != "" || pq["covered_to_ns"] != pq["to_ns"] || pq["lines"].(float64) != 0 {
+			t.Fatalf("query %s: a zero-width window is covered, not an error: %v", q, pq)
+		}
+	}
+	if outs["poll_loki"]["ok"] != true {
+		t.Fatalf("the lane is up: %v", outs["poll_loki"])
+	}
+	if cur := h.state(t)["cursors"].(map[string]any)["loki"].(map[string]any); len(cur) == 0 {
+		t.Fatalf("the cursor must be persisted after a zero-width bootstrap: %v", cur)
+	}
+	outs2 := h.tick(t, wf, false)
+	for q, v := range outs2["plan"]["loki"].(map[string]any)["windows"].(map[string]any) {
+		if w := v.(map[string]any); w["bootstrap"] == true {
+			t.Fatalf("tick 2 must read from the cursor, not bootstrap again (%s): %v", q, w)
+		}
+	}
+}
+
+// TestProdWatch_LokiInvertedWindowIsAnError: a window that starts after
+// its own end (the cursor ahead of `now - ingest_lag`) is the query's error
+// — the cursor stays, time heals it — never a covered window.
+func TestProdWatch_LokiInvertedWindowIsAnError(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q", "other": "other-q"}
+	})
+	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+	secrets := map[string]string{"grafana_token": h.tokenFile}
+	plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := plan["loki"].(map[string]any)["windows"].(map[string]any)["errors"].(map[string]any)
+	to, _ := strconv.ParseInt(w["to_ns"].(string), 10, 64)
+	w["from_ns"] = strconv.FormatInt(to+1, 10)
+	loki, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+		"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+	if err != nil {
+		t.Fatalf("poll_loki: %v\n%s", err, stderr)
+	}
+	pq := loki["per_query"].(map[string]any)["errors"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(pq["error"]), "inverted window") || loki["ok"] == true || len(loki["errors"].([]any)) != 1 {
+		t.Fatalf("an inverted window is the query's error, and the lane is degraded: %v ok=%v errors=%v", pq, loki["ok"], loki["errors"])
+	}
+}
+
+// TestProdWatch_LokiOverlapCapCarriesItsBound: more lines in the overlap
+// than the band carries (4000 hashes). The cut band travels with the bound
+// it still covers, and the next window opens THERE — not at
+// covered − overlap, or the cut lines are counted again every tick.
+func TestProdWatch_LokiOverlapCapCarriesItsBound(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["loki"].(map[string]any)["page_size"] = 1000
+		cfg["loki"].(map[string]any)["overlap_seconds"] = 120
+		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q"}
+		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
+		cfg["probes"] = []map[string]any{}
+	})
+	// 4100 lines over ~29 s, all inside the overlap of a cursor parked at
+	// "now" (the burst ends 70 s before the first tick).
+	base := nsAgo(100 * time.Second)
+	var lines []pwLine
+	for i := 0; i < 4100; i++ {
+		lines = append(lines, pwLine{TS: base + int64(i)*int64(7*time.Millisecond), Line: fmt.Sprintf("ERROR burst %d", i), Container: "api", Q: "errors-q"})
+	}
+	h.lines.Store(lines)
+	outs := h.tick(t, wf, false)
+	pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+	if outs["poll_loki"]["lines"].(float64) != 4100 || len(pq["overlap_hashes"].([]any)) != 4000 {
+		t.Fatalf("tick 1 reads the burst and hands over the last 4000 hashes: lines=%v band=%d", outs["poll_loki"]["lines"], len(pq["overlap_hashes"].([]any)))
+	}
+	if from, _ := strconv.ParseInt(fmt.Sprint(pq["overlap_from_ns"]), 10, 64); from != lines[100].TS {
+		t.Fatalf("the cut band must carry the bound it still covers (line 100 at %d): %v", lines[100].TS, pq["overlap_from_ns"])
+	}
+	outs2 := h.tick(t, wf, false)
+	pq2 := outs2["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+	if outs2["poll_loki"]["lines"].(float64) != 0 || pq2["skipped_overlap"].(float64) != 4000 {
+		t.Fatalf("tick 2 must count nothing a second time: lines=%v skipped=%v", outs2["poll_loki"]["lines"], pq2["skipped_overlap"])
+	}
+}
+
+// TestProdWatch_LokiGroupWiderThanCapIsAnError: lines sharing one
+// nanosecond, more of them than max_lines allows — the walk cannot get past
+// the group. It is the query's error (the lane degrades loudly, the cursor
+// does not move), not a cursor parked on the group for good with the lane
+// reported healthy and every later line lost.
+func TestProdWatch_LokiGroupWiderThanCapIsAnError(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["loki"].(map[string]any)["page_size"] = 2
+		cfg["loki"].(map[string]any)["overlap_seconds"] = 1
+		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q", "other": "other-q"}
+		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
+		cfg["probes"] = []map[string]any{}
+	})
+	base := nsAgo(5 * time.Minute)
+	var lines []pwLine
+	for i := 0; i < 10; i++ {
+		lines = append(lines, pwLine{TS: base, Line: fmt.Sprintf("ERROR group %d", i), Container: "api", Q: "errors-q"})
+	}
+	lines = append(lines, pwLine{TS: base + int64(5*time.Second), Line: "ERROR after", Container: "api", Q: "errors-q"})
+	h.lines.Store(lines)
+	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 2}
+	secrets := map[string]string{"grafana_token": h.tokenFile}
+	poll := func() map[string]any {
+		t.Helper()
+		plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+		if err != nil {
+			t.Fatal(err)
+		}
+		loki, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+			"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+		if err != nil {
+			t.Fatalf("poll_loki: %v\n%s", err, stderr)
+		}
+		return loki
+	}
+	loki := poll()
+	pq := loki["per_query"].(map[string]any)["errors"].(map[string]any)
+	if loki["lines"].(float64) != 2 || loki["truncated"] != true {
+		t.Fatalf("tick 1 takes the first two lines of the group: %v", pq)
+	}
+	if err := os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateJSON := fmt.Sprintf(`{"version":1,"generation":1,"cursors":{"loki":{"errors":{"covered_to_ns":"%s","overlap_hashes":%s}}},"incidents":{},"health":{}}`,
+		pq["covered_to_ns"], mustJSON(t, pq["overlap_hashes"]))
+	if err := os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(stateJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loki2 := poll()
+	pq2 := loki2["per_query"].(map[string]any)["errors"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(pq2["error"]), "wider than max_lines") || loki2["ok"] == true {
+		t.Fatalf("a group wider than the cap is the query's error and the lane is degraded: %v ok=%v", pq2, loki2["ok"])
 	}
 }
 
@@ -1419,11 +1588,13 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	git("remote", "add", "origin", bare)
 	git("push", "-q", "-u", "origin", "main")
 
-	stage := func(gen int) map[string]any {
+	// alerts=0 is the watchdog's normal tick: nothing posted, an EMPTY
+	// alertlog delta.
+	stage := func(gen, alerts int) map[string]any {
 		st := filepath.Join(h.scratch, "state_next.json")
 		_ = os.WriteFile(st, []byte(fmt.Sprintf(`{"version":1,"generation":%d,"cursors":{"loki":{}},"incidents":{},"health":{}}`, gen)), 0o644)
 		al := filepath.Join(h.scratch, "alertlog_delta.jsonl")
-		_ = os.WriteFile(al, []byte(`{"at":"x","fp":"probe:api"}`+"\n"), 0o644)
+		_ = os.WriteFile(al, []byte(strings.Repeat(`{"at":"x","fp":"probe:api"}`+"\n", alerts)), 0o644)
 		tk := filepath.Join(h.scratch, "tick.json")
 		_ = os.WriteFile(tk, []byte(`{"at":"x","alerts":1}`), 0o644)
 		return map[string]any{"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": gen - 1, "state_commit": true, "workspace": h.ws, "state_dir": ".prod-watch"}
@@ -1444,7 +1615,7 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 		}
 	}
 	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte(".prod-watch/\n"), 0o644)
-	_, stderr, err := run(stage(1))
+	_, stderr, err := run(stage(1, 0))
 	if err == nil || !strings.Contains(stderr, "git ignores") || !strings.Contains(stderr, ".prod-watch") || strings.Contains(stderr, "Traceback") {
 		t.Fatalf("a gitignored state dir must refuse by name: %v %s", err, stderr)
 	}
@@ -1452,7 +1623,7 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	// a FILE-level rule lets the dir through and would drop state.json from
 	// the commit in silence: refused by file name.
 	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte("*.json\n"), 0o644)
-	_, stderr, err = run(stage(1))
+	_, stderr, err = run(stage(1, 0))
 	if err == nil || !strings.Contains(stderr, "git ignores") || !strings.Contains(stderr, "state.json") || strings.Contains(stderr, "Traceback") {
 		t.Fatalf("a file-level ignore rule must refuse naming the file: %v %s", err, stderr)
 	}
@@ -1464,7 +1635,7 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755)
 	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "stray.md"), []byte("notes\n"), 0o644)
 	var out map[string]any
-	out, stderr, err = run(stage(1))
+	out, stderr, err = run(stage(1, 0))
 	if err != nil || out["committed"] != true {
 		t.Fatalf("first commit must land: %v %s %v", out, stderr, err)
 	}
@@ -1472,10 +1643,13 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	if strings.Contains(tracked, ".lock") || strings.Contains(tracked, "stray.md") || !strings.Contains(tracked, "state.json") || !strings.Contains(tracked, ".gitattributes") || !strings.Contains(tracked, ".gitignore") {
 		t.Fatalf("the state dir is tracked without its lock file or a stray file: %q", tracked)
 	}
+	if !strings.Contains(tracked, "alertlog.jsonl") || !strings.Contains(tracked, "ticks.jsonl") {
+		t.Fatalf("a quiet first tick (nothing posted) must land with its ledgers, empty or not: %q", tracked)
+	}
 	// git failing to stage (an index.lock left by a crashed git): a refusal
 	// that names it, never a "committed" — the add is judged by the index.
 	_ = os.WriteFile(filepath.Join(h.ws, ".git", "index.lock"), []byte(""), 0o644)
-	_, stderr, err = run(stage(2))
+	_, stderr, err = run(stage(2, 1))
 	if err == nil || !strings.Contains(stderr, "unstaged") || !strings.Contains(stderr, "index.lock") {
 		t.Fatalf("a failed git add must refuse by name: %v %s", err, stderr)
 	}
@@ -1485,7 +1659,7 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	}
 	// the generation check: state.json moved on since decide read it
 	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(`{"version":1,"generation":9,"cursors":{"loki":{}},"incidents":{},"health":{}}`), 0o644)
-	_, stderr, err = run(stage(2)) // decide read generation 1, the file says 9
+	_, stderr, err = run(stage(2, 1)) // decide read generation 1, the file says 9
 	if err == nil || !strings.Contains(stderr, "moved from generation 1 to 9") {
 		t.Fatalf("a state rewritten by another tick must be refused, not overwritten: %v %s", err, stderr)
 	}
@@ -1493,7 +1667,7 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	// the staged-path guard: an operator's pre-staged file must not ride the bot's commit
 	_ = os.WriteFile(filepath.Join(h.ws, "my_wip.txt"), []byte("wip\n"), 0o644)
 	git("add", "my_wip.txt")
-	_, stderr, err = run(stage(2))
+	_, stderr, err = run(stage(2, 1))
 	if err == nil || !strings.Contains(stderr, "outside the state dir") || !strings.Contains(stderr, "my_wip.txt") {
 		t.Fatalf("a foreign staged path must refuse by name: %v %s", err, stderr)
 	}
@@ -1511,7 +1685,7 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	// not refuse what git accepts, or a repo-wide `*.json` rule halts the
 	// watchdog for nothing.
 	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte("*.json\n.prod-watch/\n"), 0o644)
-	out, stderr, err = run(stage(2))
+	out, stderr, err = run(stage(2, 1))
 	if err != nil || out["committed"] != true {
 		t.Fatalf("a tracked state under an ignore rule must still commit: %v %s %v", out, stderr, err)
 	}
