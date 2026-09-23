@@ -694,6 +694,12 @@ func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequir
 	if req.UsesToolAliases() {
 		consequence = "a runner older than the release that reads it keeps resolving the aliased spellings as exact tools or unique MCP shorthand only, and the node's tool list fails at dispatch"
 	}
+	if req.UsesDeclaredEmptyTools() {
+		// This floor is the one whose failure is SILENT: an older runner
+		// parses `tools: []` without complaint and reads it as an absent
+		// list, which is the opposite bound.
+		consequence = "a runner older than the release that reads it parses `tools: []` as an ABSENT list — the opposite bound — and hands the node the CLI backend's own toolset instead of none"
+	}
 	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: %s", uses, consequence)
 	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest, so such a runner refuses the bundle at admission instead", floor)
 	if pf.Declared != "" {

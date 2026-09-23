@@ -328,7 +328,7 @@ agent reviewer:
   system: review_system
   user: review_user
   session: fresh
-  tools: [bash, read_file, grep]
+  tools: [bash, read_file, grep]   ## `tools: []` = declared empty; no line = undeclared
   tool_policy: [git.*, read_file]
   capabilities: [board.read]
   skills: ["review-playbook"]

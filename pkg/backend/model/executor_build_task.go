@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/google/uuid"
 )
@@ -1040,6 +1041,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		UserPrompt:            userText,
 		UserContent:           userContent,
 		AllowedTools:          f.tools,
+		ToolsDeclared:         toolcatalog.ToolsDeclared(f.tools),
 		DiagnosticShell:       slices.Contains(f.tools, "diagnostic_shell"),
 		Readonly:              f.readonly,
 		FullAccess:            f.fullAccess,

@@ -25,6 +25,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 )
 
 // Mode is the top-level permission posture, mirroring Claude Code's
@@ -670,41 +672,5 @@ func normalizeMCPName(name string) string {
 // Unknown names are lower-cased and stripped of separators so a custom
 // rule still matches its own spelling.
 func canonicalToolName(name string) string {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if alias, ok := toolAliases[n]; ok {
-		return alias
-	}
-	// MCP FQNs (mcp__server__tool / mcp_server_tool) are kept verbatim
-	// (lower-cased) so server-scoped globs match.
-	if strings.HasPrefix(n, "mcp__") || strings.HasPrefix(n, "mcp_") {
-		return n
-	}
-	return n
-}
-
-// toolAliases collapses cross-backend synonyms onto a canonical key.
-var toolAliases = map[string]string{
-	// shell
-	"bash": "bash", "shell": "bash", "sh": "bash", "run_terminal_command": "bash",
-	// read
-	"read": "read", "read_file": "read", "readfile": "read", "cat": "read",
-	// write
-	"write": "write", "write_file": "write", "writefile": "write",
-	// edit
-	"edit": "edit", "edit_file": "edit", "file_edit": "edit",
-	"multiedit": "edit", "edit_mode": "edit", "str_replace": "edit", "search_replace": "edit",
-	// notebook
-	"notebookedit": "notebookedit", "notebook_edit": "notebookedit",
-	// search. pi names its glob tool `find` (it takes a `pattern`, not a
-	// directory to walk), so without the alias a `Glob(**)` rule silently
-	// fails to match it and the gate reaches a different verdict on pi than
-	// on the other backends.
-	"glob": "glob", "find": "glob", "grep": "grep",
-	// web
-	"webfetch": "webfetch", "web_fetch": "webfetch", "fetchurl": "webfetch", "web": "webfetch",
-	"websearch": "websearch", "web_search": "websearch",
-	// misc
-	"ls": "ls", "list_dir": "ls", "todowrite": "todowrite", "todo_write": "todowrite",
-	"agent": "agent", "task": "agent", "spawn_subagent": "agent",
-	"use_tool": "use_tool",
+	return toolcatalog.CanonicalToolName(name)
 }

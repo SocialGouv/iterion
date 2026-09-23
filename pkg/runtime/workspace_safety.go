@@ -204,6 +204,18 @@ func unrestrictedCLIBackendCanWrite(
 	if strings.Contains(backend, "{{") {
 		return true
 	}
+	// A DECLARED-EMPTY `tools: []` reaches exactly the verdict an undeclared
+	// list reaches, and that is deliberate: it is not a proof that the node
+	// holds nothing. On claude_code the bound is `--disallowedTools` over
+	// `claudeNativeTools`, a hardcoded 14-name enumeration of a roster
+	// iterion does not own — the package's own `orchestrationTools` names
+	// `Agent`, `TaskOutput` and `Monitor` outside it, and MCP tools are not
+	// on it either, so all of those survive. On claw the runtime's own
+	// `interaction:` append puts `ask_user` back, and the appends below it
+	// `todo_write` and, under `auto_memory:`, `write_file` (C270 says so at
+	// compile time). The loop below cannot see any of it: it iterates the
+	// declared names, and there are none.
+	//
 	// A claw→CLI route un-restricts the node's tool set WHATEVER it
 	// declared: under the always-on bypassPermissions, claude_code
 	// ignores the lowercase `tools:` list entirely and always carries

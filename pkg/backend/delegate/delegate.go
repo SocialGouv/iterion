@@ -389,6 +389,21 @@ type Task struct {
 	// Used by CLI-based backends; API-based backends use ToolDefs instead.
 	AllowedTools []string
 
+	// ToolsDeclared says whether the node DECLARED a tool surface at all —
+	// `tools: []` (declared, empty) against no `tools:` line (undeclared).
+	// An undeclared surface is "no restriction" on the CLI backends; a
+	// declared empty one is "no tools", and a backend that reads the list as
+	// a boundary must apply it either way.
+	//
+	// It travels as a bool rather than as the nilness of AllowedTools
+	// because the list crosses `omitempty` seams (this task's own IPC
+	// envelope) that erase nil-from-empty, and because AllowedTools carries
+	// the EFFECTIVE list — the runtime's interaction/capability appends may
+	// have made it non-empty on a node that declared nothing.
+	// toolcatalog.ToolsDeclared is the one derivation; buildTask is the one
+	// place that applies it.
+	ToolsDeclared bool
+
 	// DiagnosticShell opts this task into Claude Code's narrow native-Bash
 	// bridge for the workflow's diagnostic_shell approval rule. It is derived
 	// from the node's DECLARED tools before backend-added effective tools are

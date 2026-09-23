@@ -207,6 +207,12 @@ const (
 	// declaration, so a disagreement used to be resolved in silence.
 	DiagDuplicateForeach DiagCode = "C269" // two edges declare the same `as foreach` name with a different collection or element binding (error)
 
+	// `tools: []` — a DECLARED empty tool surface (#1615). It is a real
+	// bound on claw, claude_code and codex; pi, kimi and grok never receive
+	// the list, so there the author's "no tools" is silently the CLI's own
+	// full toolset.
+	DiagEmptyToolsNotEnforced DiagCode = "C270" // a declared-empty `tools: []` on a backend (or a fallback route) that does not enforce it (warning — the bound is dropped, the node runs with the CLI's native toolset)
+
 	// Connector actions (ADR-098) — the `tool … action:` recipe. The band is
 	// about ONE promise: an action node reaches a third-party API with no LLM
 	// deciding the operation, the arguments or the reading of the answer.

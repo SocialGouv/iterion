@@ -483,8 +483,10 @@ func askRulesReachableByBackend(routeBackend string, askRules []string) bool {
 //     falls through — and the parallel-branch admission was already
 //     computed on the claw reading.
 //   - CLI → claw restricts, which is only a hazard when the list is
-//     EMPTY: on claw that means zero tools, so the node becomes a
-//     schema-shaped narrator with no way to verify anything.
+//     UNDECLARED: on claw that means zero tools, so the node becomes a
+//     schema-shaped narrator with no way to verify anything. A DECLARED
+//     `tools: []` says the same thing on both sides and is not an inversion
+//     (a route that cannot receive the list at all is C270's subject).
 //
 // Both backends must be statically known for the comparison to mean
 // anything.
@@ -498,12 +500,16 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 		return ""
 	}
 	if nodeClaw {
-		return "routes a claw node to a CLI backend, which ignores the lowercase tools: list under bypassPermissions and always carries the full native toolset — the route silently un-restricts this node (and the parallel-branch admission was already decided on the claw reading); declare the node on the CLI backend instead, or route to another claw model"
+		return "routes a claw node to a CLI backend, where the tools: list does not mean what it means on claw — claude_code narrows only its own 14-name native roster (every MCP tool and every name outside it survives), codex maps the list onto a sandbox mode, and pi/kimi/grok never receive it at all — so the route changes what this node can do, and the parallel-branch admission was already decided on the claw reading; declare the node on the CLI backend instead, or route to another claw model"
 	}
-	if len(tools) > 0 {
+	// A DECLARED list — `tools: []` included — says the same thing on both
+	// sides, so there is nothing to invert. Only an UNDECLARED list does:
+	// "everything" on the CLI side, "nothing" on claw. A declared-empty list
+	// on a route that drops it is C270's subject, not this one.
+	if toolcatalog.ToolsDeclared(tools) {
 		return ""
 	}
-	return "crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list"
+	return "crosses the claw⇄CLI boundary on a node with no tools: list — an undeclared list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list (`tools: []` for none)"
 }
 
 // ToolRestrictionLossReason reports the non-security capability drift the
@@ -516,10 +522,25 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 // fallback is automatic. A launch picker may still offer this deliberate
 // crossing, but must never present it as capability-neutral.
 func ToolRestrictionLossReason(nodeBackend, routeBackend string, tools []string) string {
-	if nodeBackend != clawBackendName || routeBackend == clawBackendName || len(tools) == 0 {
+	if nodeBackend != clawBackendName || routeBackend == clawBackendName || !toolcatalog.ToolsDeclared(tools) {
 		return ""
 	}
-	return "this claw node's tools: restriction is not enforced by the selected CLI backend; the permission gate remains active, but the backend's full native toolset becomes available"
+	if !toolcatalog.ReceivesToolList(routeBackend) {
+		// The crossing that really loses the list, and the one worth the
+		// loudest sentence: pi, kimi and grok never receive it, so an EMPTY
+		// declaration — the strictest thing an author can write — becomes
+		// that CLI's whole toolset.
+		return "this claw node's tools: list is never passed to the selected backend, which runs its own full toolset whatever the list says — an empty list included; the permission gate remains active"
+	}
+	if len(tools) == 0 {
+		// claude_code turns it into --disallowedTools over its whole native
+		// roster and codex drops to the read-only sandbox: an empty
+		// declaration is narrower there, not wider, so there is nothing to
+		// disclose. (What still reaches such a node — MCP tools, and the
+		// natives outside claudeNativeTools — is C270's and the docs' subject.)
+		return ""
+	}
+	return "this claw node's tools: list is narrowed rather than enforced by the selected backend: claude_code removes only the native names the list does not carry (MCP tools, and Agent/TaskOutput/Monitor, survive it), codex maps the list onto a sandbox mode; the permission gate remains active"
 }
 
 // sessionContinuityCrossingReason refuses inherit / inherit_if_available /

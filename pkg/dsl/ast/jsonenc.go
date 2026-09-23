@@ -452,7 +452,7 @@ type jsonAgentDecl struct {
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
 	SessionSlot       string               `json:"session_slot,omitempty"`
-	Tools             []string             `json:"tools,omitempty"`
+	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
@@ -501,7 +501,7 @@ type jsonJudgeDecl struct {
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
 	SessionSlot       string               `json:"session_slot,omitempty"`
-	Tools             []string             `json:"tools,omitempty"`
+	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
@@ -1521,7 +1521,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		User:              a.User,
 		Session:           sessionModeToStr[a.Session],
 		SessionSlot:       a.SessionSlot,
-		Tools:             a.Tools,
+		Tools:             declaredListToJSON(a.Tools),
 		ToolPolicy:        a.ToolPolicy,
 		Capabilities:      a.Capabilities,
 		Skills:            a.Skills,
@@ -1568,7 +1568,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		User:              j.User,
 		Session:           sessionModeToStr[j.Session],
 		SessionSlot:       j.SessionSlot,
-		Tools:             j.Tools,
+		Tools:             declaredListToJSON(j.Tools),
 		ToolPolicy:        j.ToolPolicy,
 		Capabilities:      j.Capabilities,
 		Skills:            j.Skills,
@@ -2313,7 +2313,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			User:              ja.User,
 			Session:           sess,
 			SessionSlot:       ja.SessionSlot,
-			Tools:             ja.Tools,
+			Tools:             declaredListFromJSON(ja.Tools),
 			ToolPolicy:        ja.ToolPolicy,
 			Capabilities:      ja.Capabilities,
 			Skills:            ja.Skills,
@@ -2374,7 +2374,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			User:              jj.User,
 			Session:           sess,
 			SessionSlot:       jj.SessionSlot,
-			Tools:             jj.Tools,
+			Tools:             declaredListFromJSON(jj.Tools),
 			ToolPolicy:        jj.ToolPolicy,
 			Capabilities:      jj.Capabilities,
 			Skills:            jj.Skills,
@@ -2562,4 +2562,32 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 		})
 	}
 	return e, nil
+}
+
+// declaredListToJSON / declaredListFromJSON carry a list whose EMPTY form is
+// a declared value across the JSON seam. `omitempty` on a slice erases
+// nil-from-empty — the trap the per-node permission lists were written around
+// — so a list that must tell "declared, and empty" from "not declared" crosses
+// as a POINTER: nil is absent, a pointer to an empty slice is `[]`.
+//
+// The one field with that semantics today is an agent/judge `tools:`
+// (toolcatalog.ToolsDeclared). The rule lists deliberately do not have it.
+func declaredListToJSON(v []string) *[]string {
+	if v == nil {
+		return nil
+	}
+	return &v
+}
+
+func declaredListFromJSON(v *[]string) []string {
+	if v == nil {
+		return nil
+	}
+	if *v == nil {
+		// A present key is a declaration even when it is empty: this side
+		// never hands back a nil slice, or the seam would erase exactly what
+		// the pointer was introduced to carry.
+		return []string{}
+	}
+	return *v
 }

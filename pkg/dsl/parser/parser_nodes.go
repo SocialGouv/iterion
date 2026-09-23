@@ -64,7 +64,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.Session = p.parseSessionMode()
 	case TokenTools:
 		p.expect(TokenColon)
-		d.Tools = p.parseToolList()
+		d.Tools = p.parseDeclaredToolList()
 	case TokenToolPolicy:
 		p.expect(TokenColon)
 		d.ToolPolicy = p.parseToolList()

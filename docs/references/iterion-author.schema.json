@@ -1087,7 +1087,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -1618,7 +1618,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -3699,7 +3699,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -4230,7 +4230,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },

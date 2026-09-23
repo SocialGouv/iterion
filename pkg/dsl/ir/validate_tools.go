@@ -89,6 +89,65 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 	}
 }
 
+// validateEmptyToolsEnforced reports a `tools: []` that does not hold.
+//
+// A declared-empty list is the author saying "this node has no tools"
+// (toolcatalog.ToolsDeclared). Two shapes defeat it, and the diagnostic names
+// both:
+//
+//   - a backend that never RECEIVES the list. pi, kimi and grok are driven
+//     through the CLI-agent seam, which does not pass it to the agent, so the
+//     node runs with that CLI's own toolset — the opposite of what the file
+//     says. Same for a `fallbacks:` route, at the moment the run is already
+//     falling back.
+//   - the runtime RE-POPULATING it. On claw `interaction:` grants `ask_user`
+//     whatever the list holds (claw needs the tool loop to carry it), and
+//     that one entry makes the list non-empty for every append below it:
+//     `todo_write`, then `read_file`/`write_file`/`glob` under `auto_memory:`.
+//     A node that declared no tools ends up holding a file writer. The engine
+//     does not silently drop either the tools declaration or the interaction
+//     one — it says so and leaves the author to choose.
+//
+// A warning, not an error: the node still runs, and an operator who knows the
+// route may want it anyway (philosophy: warn over reject, never silently
+// replace an explicit choice).
+func (c *compiler) validateEmptyToolsEnforced(w *Workflow) {
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		tools := nn.GetTools()
+		if !toolcatalog.ToolsDeclared(tools) || len(tools) > 0 {
+			continue
+		}
+		kind, id := nn.NodeKind().String(), nn.NodeID()
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if backend == clawBackendName && NodeInteraction(n) != InteractionNone {
+			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
+				"%s %q declares `tools: []` (no tools) and `interaction:` on claw — claw carries `ask_user` through its tool loop, so the list is re-populated with it, and that one entry unlocks every other runtime append the node qualifies for: `todo_write`, the `agent` spawner under ultracode, the board tools its `capabilities:` grant (`transition_issue` included), and `read_file`/`write_file`/`glob` under `auto_memory:`; drop one of the two declarations, or move the node to claude_code, where an empty list removes the whole native roster (MCP tools and Agent/TaskOutput/Monitor still reach it)",
+				kind, id)
+			continue
+		}
+		if backend != "" && !toolcatalog.ReceivesToolList(backend) {
+			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
+				"%s %q declares `tools: []` (no tools) but backend %q never receives the list — the node runs with that CLI's own full toolset; bound it with `deny:` rules (on kimi and grok those need `sandbox: none` — C136), or run it on a backend that receives the list (claw, claude_code, codex)",
+				kind, id, backend)
+			continue
+		}
+		for _, fb := range nn.GetFallbacks() {
+			route := sourceBackend.routeName(fb.Backend)
+			if route == "" || toolcatalog.ReceivesToolList(route) {
+				continue
+			}
+			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
+				"%s %q declares `tools: []` (no tools) but fallback %s runs on backend %q, which never receives the list — the node regains that CLI's full toolset at the moment the run is already falling back; bound it with `deny:` rules (on kimi and grok those need `sandbox: none` — C136), or route to a backend that receives the list",
+				kind, id, fallbackLabel(fb), route)
+			break
+		}
+	}
+}
+
 // validateRecoveryAgentTools covers the other place a declared tool list
 // reaches a backend: a Verified Action's rung-4 recovery agent (ADR-044).
 // executor_verified_action hand-builds an ir.AgentNode carrying `agent_tools:`
