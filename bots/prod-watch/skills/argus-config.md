@@ -176,12 +176,13 @@ managed secret under the name `forge_token` (see vuln-watch's
   series on this cluster: the metric name or labels are wrong for this
   deployment (the ingress/kube-state presets are examples). Fix the
   query; the incident quiets down once the probe answers.
-- **`:warning: log coverage this tick was PARTIAL`** — a Loki query was
-  truncated at `max_lines` or failed (the failure is quoted under the
-  note); the frontier stopped at the last line fetched, so nothing is
-  skipped, but absence of a finding proves nothing for that tick. The note
-  repeats when the coverage or the kind of failure changes, not every
-  tick.
+- **`:warning: coverage this tick was PARTIAL (reasons below)`** — a Loki
+  query was truncated at `max_lines`, fell out of the max window (a gap)
+  or failed, or the template list was cut at 200; the reasons are quoted
+  under the note. The frontier stopped at the last line fetched, so
+  nothing is skipped, but absence of a finding proves nothing for that
+  tick. The note repeats when the coverage or the kind of failure
+  changes, not every tick.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

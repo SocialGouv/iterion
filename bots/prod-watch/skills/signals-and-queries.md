@@ -28,8 +28,9 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   (default 5000) new lines were written. Reaching the cap **truncates**
   the window: the frontier stops at the last line fetched, the tick
   reports `truncated: true` and the scan reports `coverage: partial`.
-  Nothing is skipped — the next tick reopens at the frontier — but "no
-  finding" proves nothing for a partial tick. A group of lines sharing one
+  Nothing is skipped — the next tick reopens at the frontier (a complete
+  walk moves it to its window's end, never past it) — but "no finding"
+  proves nothing for a partial tick. A group of lines sharing one
   nanosecond wider than the cap drains across ticks, `max_lines` a tick.
 - Every line is written exactly once across ticks: the overlap re-reads
   the tail of the previous window on purpose (late ingestion) and the
@@ -44,18 +45,26 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   first tick), or only partly (a truncated one), retries that window from
   its bound — it does not slide with the clock — and the end of the first
   window is the query's HISTORY boundary, carried in its cursor until the
-  walk passes it: a line below it is history, not news, whichever tick
-  reads it and whichever query returned it (a line the sweep and a
-  template query both return is one record; a template counts its live
-  lines apart, ranks by them, and renders their own first-seen, sample and
-  streams — never the order of the queries decides); a lane that did not
+  walk passes it: a line read while the first window is still being read
+  is history, not news, whichever tick reads it and whichever query
+  returned it; once the walk passed the boundary it is dropped, and a late
+  line stamped below it and read in the overlap afterwards is news (a
+  line the sweep and a template query both return is one record; a
+  template counts its live lines apart, ranks by them, and renders their
+  own first-seen, sample and streams — never the order of the queries
+  decides; a known incident seen only in history lines keeps its count,
+  fields and quiet note, and its clock follows the newest of those lines);
+  a lane that did not
   observe everything this tick — a failed query, a truncated walk, a
   declared gap, an empty window — concludes nothing about incidents it
   did not see (no "not observed any more"): template incidents are judged
   by the template queries and a full template list (a sweep running
   behind yields no template and blocks nothing), leak incidents by every
-  query; an incident unseen for `forget_after_days` is forgotten whatever
-  the lane observed (retention, not a conclusion); the run goes on with
+  query, and with no template query configured template incidents are
+  never concluded on; an incident unseen for `forget_after_days` is
+  forgotten whatever the lane observed (retention, not a conclusion — if
+  its pattern comes back later, it is posted again as new); the run goes
+  on with
   its other
   lanes (decide refuses a tick only when EVERY configured lane failed) and
   the lane's health is not refreshed while a query fails, so a query dark
@@ -118,7 +127,8 @@ What leaves the node (`signals.json`, scratch; counts on stdout):
   same for the LIVE lines alone (`count_live`, `first_ts_live`,
   `sample_live`, `streams_live`, `query_live`) — what decide posts on.
   The list keeps the 200 templates with the most live lines;
-  `templates_cut` says when it was cut (coverage is partial then).
+  `templates_cut` says when it was cut (coverage is partial then) and
+  `templates_total` how many there were.
 - **leak** — per class: `count`, `distinct` (hashes of the values, never
   the values), `sources` (query + container/pod + first/last), one
   `sample_masked` (`jo***@***` style, or `nir:***12`).
@@ -167,6 +177,8 @@ Messages carry a marker (`PRODUCTION ALERT` / `ESCALATED` / `STILL OPEN`
 / `NOT OBSERVED ANY MORE` — wording from `labels`), the app/environment,
 the incident title, the detail line, severity, first-seen date and the
 occurrence count, and — for a log template — the redacted sample as a
-quote. Notes (`:warning:`) announce an overflow, a silent source, or a
-partial-coverage tick — once per change of coverage or of the lane
-errors' kind, with the errors quoted, so a query dark for good says why.
+quote. Notes (`:warning:`) announce an overflow, a silent source (its
+last error quoted), or a partial-coverage tick — once per change of
+coverage or of the lane errors' kind, with its reasons quoted (lane
+errors, truncated or gapped queries, a cut template list), so a query
+dark for good says why.

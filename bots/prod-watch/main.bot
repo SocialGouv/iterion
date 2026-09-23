@@ -488,7 +488,7 @@ tool plan:
         'loki_detail': '{count} line(s) since {first}, containers: {streams}',
         'leak': 'personal data or secret detected in the logs',
         'leak_detail': '{count} match(es) of class {class} ({distinct} distinct) in {sources}',
-        'coverage_partial': 'log coverage this tick was PARTIAL (window truncated or a query failed): absence of a finding is not evidence',
+        'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
         'overflow': '{n} more alert(s) exceeded the per-run cap; they stay open and will fire on the next tick',
         'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
         'halted': 'watchdog halted since {since}: {reason}',
@@ -508,6 +508,16 @@ tool plan:
                 state = json.load(fh)
         except ValueError:
             raise SystemExit('prod-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
+    ## The whole state is validated here, before any lane runs: its
+    ## top-level containers are objects or absent, and every cursor of the
+    ## Loki map — configured or not: decide trims the dropped ones — parses
+    ## below. A foreign value is refused by name; a falsy one is never read
+    ## as empty.
+    if not isinstance(state, dict):
+        raise SystemExit('prod-watch: state file ' + spath + ' is not a JSON object -- repair or remove it')
+    for key in ('cursors', 'incidents', 'health', 'halt'):
+        if state.get(key) is not None and not isinstance(state.get(key), dict):
+            raise SystemExit('prod-watch: state.' + key + ' is not an object (' + repr(state.get(key))[:60] + ') -- repair it or remove the state file')
     halt = state.get('halt') or None
     halted = bool(halt)
     halt_reason = ''
@@ -526,10 +536,11 @@ tool plan:
     if boot_min < 0:
         print('prod-watch: loki.bootstrap_window_minutes ' + str(boot_min) + ' is negative -- using 0 (a first window may not start after its own end)', file=sys.stderr)
         boot_min = 0
-    all_cursors = state.get('cursors') or {}
-    if not isinstance(all_cursors, dict) or not isinstance(all_cursors.get('loki') or {}, dict):
-        raise SystemExit('prod-watch: state.cursors.loki is not an object -- delete the state file and let the queries bootstrap')
-    cursors = all_cursors.get('loki') or {}
+    cursors = (state.get('cursors') or {}).get('loki')
+    if cursors is None:
+        cursors = {}
+    if not isinstance(cursors, dict):
+        raise SystemExit('prod-watch: state.cursors.loki is not an object (' + repr(cursors)[:60] + ') -- delete it (or the state file) and let the queries bootstrap')
     windows = {}
 
     def cursor_int(c, name, field, default=0):
@@ -548,24 +559,31 @@ tool plan:
             raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': ' + field + ' is not a number (' + repr(v)[:60] +
                              ') -- delete that cursor (or the state file) and let the query bootstrap')
 
-    for name in queries:
-        c = cursors.get(name)
-        if c is None:
-            c = {}
+    def parse_cursor(name, c):
         if not isinstance(c, dict):
             raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ' is not an object (' + repr(c)[:60] +
                              ') -- delete that cursor (or the state file) and let the query bootstrap')
         prev = cursor_int(c, name, 'covered_to_ns')
-        prev_bound = cursor_int(c, name, 'overlap_from_ns')
-        frontier = cursor_int(c, name, 'frontier_ns', prev)
-        band_base = cursor_int(c, name, 'band_base_ns')
-        history_to = cursor_int(c, name, 'history_to_ns')
         band = c.get('band')
         if band is None:
             band = []
-        if not isinstance(band, list) or any(not isinstance(e, str) or ':' not in e for e in band):
+        def offset_ok(e):
+            try:
+                int(e.split(':', 1)[0])
+                return True
+            except ValueError:
+                return False
+        if not isinstance(band, list) or any(not isinstance(e, str) or ':' not in e or not offset_ok(e) for e in band):
             raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': band is not a list of offset:hash strings -- '
                              'delete that cursor (or the state file) and let the query bootstrap')
+        return {'prev': prev, 'prev_bound': cursor_int(c, name, 'overlap_from_ns'), 'frontier': cursor_int(c, name, 'frontier_ns', prev),
+                'band_base': cursor_int(c, name, 'band_base_ns'), 'history_to': cursor_int(c, name, 'history_to_ns'), 'band': band}
+
+    parsed = {name: parse_cursor(name, c) for name, c in cursors.items()}
+    for name in queries:
+        pc = parsed.get(name) or parse_cursor(name, {})
+        prev, prev_bound, frontier = pc['prev'], pc['prev_bound'], pc['frontier']
+        band_base, history_to, band = pc['band_base'], pc['history_to'], pc['band']
         if prev > 0:
             ## The window reopens where the last walk stopped (its frontier,
             ## below the high-water mark after a truncated walk) or at the
@@ -994,7 +1012,13 @@ tool poll_loki:
                 frontier = last_ts
                 covered = max(prev_to, last_ts)
             else:
-                frontier = covered = max(prev_to, to)
+                ## The walk read its whole window: the frontier moves to its
+                ## end — never up to the mark, which lies above `to` when the
+                ## ingest lag was raised after a walk that stopped below it:
+                ## the unread stretch between `to` and the mark reopens next
+                ## tick.
+                covered = max(prev_to, to)
+                frontier = max(frontier_prev, to)
             band, bbase, overlap_from = hand_over(band_prev, seen, covered, frontier, overlap_ns, frm)
             per_query[name] = dict(meta, lines=n, truncated=truncated, error='', covered_to_ns=str(covered),
                                    frontier_ns=str(frontier), band=band, band_base_ns=bbase,
@@ -1417,7 +1441,6 @@ tool leak_scan:
         return t[:240]
 
     templates = {}
-    seen_pairs = set()
     scanned = 0
     counted = [info for info in per_query.values() if isinstance(info, dict) and 'lines' in info]
     expected = sum(int(info.get('lines') or 0) for info in counted)
@@ -1429,9 +1452,10 @@ tool leak_scan:
     ## One record per (timestamp, line) whatever the queries that returned
     ## it: the sweep returns every line, and the first record must not
     ## decide whether a line makes a template or is live — the fact travels
-    ## with the line, not with the order of the queries.
-    by_pair, pair_order = {}, []
-    if os.path.exists(raw_path):
+    ## with the line, not with the order of the queries. Two passes keep
+    ## memory flat: the first maps each line's hash to the queries that
+    ## returned it, the second scans each line once, at its first record.
+    def raw_records():
         with open(raw_path, encoding='utf-8') as fh:
             for ln in fh:
                 ln = ln.strip()
@@ -1441,18 +1465,23 @@ tool leak_scan:
                     rec = json.loads(ln)
                 except ValueError:
                     continue
-                records += 1
-                q, ts, line, stream = rec.get('q') or '', str(rec.get('ts') or ''), rec.get('line') or '', rec.get('stream') or {}
-                pair = hashlib.sha1((ts + chr(0) + line).encode('utf-8', 'replace')).hexdigest()
-                if pair in by_pair:
-                    by_pair[pair][3].add(q)
-                    continue
-                by_pair[pair] = [ts, line, stream, {q}]
-                pair_order.append(pair)
+                ts, line = str(rec.get('ts') or ''), rec.get('line') or ''
+                yield rec, ts, line, hashlib.sha1((ts + chr(0) + line).encode('utf-8', 'replace')).hexdigest()
+    queries_of = {}
+    if os.path.exists(raw_path):
+        for rec, ts, line, pair in raw_records():
+            records += 1
+            queries_of.setdefault(pair, set()).add(rec.get('q') or '')
+    if counted and records != expected:
+        raise SystemExit('prod-watch: the raw file holds ' + str(records) + ' record(s) but the lanes reported ' + str(expected) +
+                         ' -- the handoff is inconsistent; refusing to score a partial read as an observation')
     def history_to(q):
         return int((per_query.get(q) or {}).get('history_to_ns') or 0)
-    for pair in pair_order:
-        ts, line, stream, qs = by_pair[pair]
+    for rec, ts, line, pair in (raw_records() if os.path.exists(raw_path) else []):
+        qs = queries_of.pop(pair, None)
+        if qs is None:
+            continue   # a later record of a line already scanned
+        stream = rec.get('stream') or {}
         ## The template queries of the line, on a stable key (sorted names)
         ## — never the arrival order; a line only the sweep returned is
         ## scanned for leaks and makes no template.
@@ -1471,11 +1500,11 @@ tool leak_scan:
                                        'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set(),
                                        'first_ts_live': '', 'sample_live': '', 'streams_live': set(), 'query_live': ''})
         t['count'] += 1
-        ## A line below the end of its query's first window is history,
-        ## not news, whichever tick reads it and whichever query read it;
-        ## the template counts its LIVE lines apart and keeps their own
-        ## first-seen, sample and streams, so a live alert never shows
-        ## history.
+        ## A line read while its query's first window is still being read —
+        ## below the end of that window, the history boundary — is history,
+        ## not news, whichever query returned it; the template counts its
+        ## LIVE lines apart and keeps their own first-seen, sample and
+        ## streams, so a live alert never shows history.
         live_qs = [x for x in tqs if int(ts) >= history_to(x)]
         if live_qs:
             t['count_live'] += 1
@@ -1491,9 +1520,6 @@ tool leak_scan:
                 t['streams'].add(k + '=' + str(stream[k]))
                 if live_qs:
                     t['streams_live'].add(k + '=' + str(stream[k]))
-    if counted and records != expected:
-        raise SystemExit('prod-watch: the raw file holds ' + str(records) + ' record(s) but the lanes reported ' + str(expected) +
-                         ' -- the handoff is inconsistent; refusing to score a partial read as an observation')
     tpl_list = []
     for t in templates.values():
         t['streams'] = sorted(t['streams'])[:6]
@@ -1516,7 +1542,8 @@ tool leak_scan:
     if templates_cut:
         coverage = 'partial'
     signals = {'app': app.get('name') or '', 'coverage': coverage, 'lines_scanned': scanned,
-               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'leak': leak_list, 'per_query': per_query}
+               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list),
+               'leak': leak_list, 'per_query': per_query}
     with open(signals_path, 'w', encoding='utf-8') as fh:
         json.dump(signals, fh, ensure_ascii=False, indent=1)
     summary = ('scanned ' + str(scanned) + ' line(s), ' + str(len(tpl_list)) + ' error template(s), ' +
@@ -1578,6 +1605,12 @@ tool decide:
         except (TypeError, ValueError):
             return 10 ** 6
 
+    def iso_of_ns(ts):
+        try:
+            return datetime.datetime.fromtimestamp(int(ts) / 1e9, datetime.timezone.utc).isoformat(timespec='seconds')
+        except (TypeError, ValueError, OverflowError, OSError):
+            return ''
+
     signals = jload(signals_file, {})
     spath = os.path.join(state_dir, 'state.json')
     bootstrap = not os.path.exists(spath)
@@ -1625,7 +1658,7 @@ tool decide:
             raise SystemExit('prod-watch: a template without count_live in the signals -- a scan from another version of the bot; relaunch the tick')
         cnt = int(t.get('count_live') or 0)
         live = cnt > 0
-        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'severity': 'high' if cnt >= 50 else 'medium',
+        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'last_ts': t.get('last_ts'), 'severity': 'high' if cnt >= 50 else 'medium',
                       'title_key': 'loki_template', 'title_arg': (t.get('template') or '')[:120], 'detail_key': 'loki_detail',
                       'fields': {'count': cnt, 'first': ns_to_iso((t.get('first_ts_live') if live else t.get('first_ts')) or 0),
                                  'streams': ', '.join((t.get('streams_live') if live else t.get('streams')) or []) or '-'},
@@ -1647,9 +1680,14 @@ tool decide:
         fp = c['fp']
         prev = incidents.get(fp)
         if c['kind'] == 'loki' and int(c['tick_count'] or 0) == 0 and prev is not None:
-            ## A known template seen only as history (the rest of a first
-            ## window) is not a recurrence: the incident keeps its clocks,
-            ## its fields and its quiet note as they are.
+            ## A known template seen only in history lines (a first window)
+            ## is not a recurrence: its count, fields and quiet note stay as
+            ## they are. Its clock follows the newest history line, though,
+            ## when that shows the pattern later than the incident knew — so
+            ## no "not observed any more" is concluded against it.
+            last = iso_of_ns(c.get('last_ts'))
+            if last and age_h(last) < age_h(prev.get('last_seen') or ''):
+                prev['last_seen'] = last
             observed_new += 1
             continue
         seen_fps.add(fp)
@@ -1691,7 +1729,10 @@ tool decide:
     ## did the lane read EVERYTHING it could have seen this tick. A
     ## truncated walk, an empty window, a declared gap or a failed query
     ## observed less than the window: nothing is concluded about what was
-    ## not seen — the bot's own coverage note says so.
+    ## not seen. (A truncated walk, a gap or a failed query also make the
+    ## tick's coverage partial; an empty window does not — nothing was there
+    ## to read, and the next window reads what comes.) Template incidents
+    ## need at least one template query: the sweep alone yields none.
     loki_healthy = bool(loki_ok and not loki_errors)
     def partial(i):
         return bool(i.get('error') or i.get('truncated') or i.get('gap') or int(i.get('to_ns') or 0) <= int(i.get('from_ns') or 0))
@@ -1700,8 +1741,9 @@ tool decide:
     ## sweep query yields no template, and a sweep running behind must not
     ## freeze every template incident's lifecycle; a cut template list is
     ## not complete either.
-    tpl_complete = bool(loki_ok) and not signals.get('templates_cut') and not any(
-        partial(i) for q, i in loki_per_query.items() if q != 'leak_sweep')
+    tpl_complete = (bool(loki_ok) and not signals.get('templates_cut')
+                    and any(q != 'leak_sweep' for q in loki_per_query)
+                    and not any(partial(i) for q, i in loki_per_query.items() if q != 'leak_sweep'))
     observe_ok = dict(lane_ok, loki=loki_complete)
     for fp, rec in list(incidents.items()):
         if fp in seen_fps:
@@ -1769,6 +1811,18 @@ tool decide:
     lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
                                    for e in (loki_errors + prom_errors)))[:600]
     error_kind = re.sub(r'\d+', '#', lane_errors)
+    ## What the coverage note says: the lane errors, the truncated and
+    ## gapped queries, and a cut template list.
+    reasons = [lane_errors] if lane_errors else []
+    for q, i in sorted(loki_per_query.items()):
+        if i.get('truncated'):
+            reasons.append(q + ': truncated at max_lines')
+        if i.get('gap'):
+            reasons.append(q + ': gap (the cursor fell out of the max window)')
+    if signals.get('templates_cut'):
+        reasons.append('template list cut: ' + str(signals.get('templates_total') or '?') +
+                       ' templates, the 200 with the most live lines kept')
+    coverage_reasons = '; '.join(reasons)[:600]
     coverage_changed = coverage != (state.get('last_coverage') or 'full') or error_kind != (state.get('last_lane_errors') or '')
     state['last_coverage'] = coverage
     state['last_lane_errors'] = error_kind
@@ -1867,7 +1921,7 @@ tool decide:
                (', BOOTSTRAP' if bootstrap else '') +
                ((' -- lane errors: ' + json.dumps(loki_errors + prom_errors)[:400]) if (loki_errors or prom_errors) else ''))
     print(json.dumps({'alerts': posted, 'alert_count': len(posted), 'overflow_count': overflow, 'generation': generation_seen,
-                      'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage, 'errors': lane_errors}] if (coverage_changed and (coverage == 'partial' or lane_errors)) else []),
+                      'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage, 'reasons': coverage_reasons}] if (coverage_changed and (coverage == 'partial' or lane_errors)) else []),
                       'needs_analysis': needs_analysis, 'state_next_file': state_next, 'alertlog_file': alertlog,
                       'tick_file': tick, 'bootstrap': bootstrap, 'summary': summary}, ensure_ascii=False))
 
@@ -1958,8 +2012,8 @@ tool notify:
     for s in stale:
         if s.get('source') == 'coverage':
             text = ':warning: ' + inert(labels.get('coverage_partial', 'coverage partial'), 300)
-            if s.get('errors'):
-                text += chr(10) + '> ' + code(str(s.get('errors')), 400)
+            if s.get('reasons'):
+                text += chr(10) + '> ' + code(str(s.get('reasons')), 600)
             messages.append(('medium', text, True))
         else:
             text = ':warning: ' + fmt('stale', source=s.get('source'), hours=s.get('hours'), last=s.get('last_ok') or 'never')

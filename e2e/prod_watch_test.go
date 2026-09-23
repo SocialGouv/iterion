@@ -148,6 +148,7 @@ type pwHarness struct {
 	srv                                  *httptest.Server
 	callMu                               sync.Mutex
 	lokiCalls                            []url.Values
+	served                               []pwServed   // every Loki call as the fake answered it (under callMu)
 	failLokiFrom                         atomic.Int64 // Loki calls numbered from here (1-based) answer 500…
 	failLokiCount                        atomic.Int64 // …for this many consecutive calls (the node retries a 5xx once)
 	sinkMu                               sync.Mutex
@@ -181,6 +182,7 @@ func newPWHarness(t *testing.T) *pwHarness {
 		n := int64(len(h.lokiCalls))
 		h.callMu.Unlock()
 		if from := h.failLokiFrom.Load(); from > 0 && n >= from && n < from+h.failLokiCount.Load() {
+			h.recordServed(pwServed{Query: q.Get("query"), Failed: true})
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -207,6 +209,11 @@ func newPWHarness(t *testing.T) *pwHarness {
 		if len(sel) > limit {
 			sel = sel[:limit]
 		}
+		served := pwServed{Query: q.Get("query"), N: len(sel)}
+		if len(sel) > 0 {
+			served.MaxTS = sel[len(sel)-1].TS
+		}
+		h.recordServed(served)
 		streams := map[string][][]string{}
 		for _, l := range sel {
 			streams[l.Container] = append(streams[l.Container], []string{strconv.FormatInt(l.TS, 10), l.Line})
@@ -1365,10 +1372,161 @@ func countRawLines(t *testing.T, tally map[string]int, rawFile string) map[strin
 	return tally
 }
 
+// pwServed is one Loki call as the fake answered it: the query, how many
+// lines it returned and the newest timestamp among them — or a failure.
+type pwServed struct {
+	Query  string
+	N      int
+	MaxTS  int64
+	Failed bool
+}
+
+func (h *pwHarness) recordServed(s pwServed) {
+	h.callMu.Lock()
+	defer h.callMu.Unlock()
+	h.served = append(h.served, s)
+}
+
+func (h *pwHarness) servedLen() int {
+	h.callMu.Lock()
+	defer h.callMu.Unlock()
+	return len(h.served)
+}
+
+// servedSince returns the calls the fake answered from index i on.
+func (h *pwHarness) servedSince(i int) []pwServed {
+	h.callMu.Lock()
+	defer h.callMu.Unlock()
+	return append([]pwServed(nil), h.served[i:]...)
+}
+
+// setState overwrites the workspace's state file.
+func (h *pwHarness) setState(t *testing.T, st map[string]any) {
+	t.Helper()
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pwTemplateFP is decide's fingerprint of a log template.
+func pwTemplateFP(template string) string {
+	sum := sha1.Sum([]byte(template))
+	return "loki:" + hex.EncodeToString(sum[:])[:12]
+}
+
+// pwQuietFPs lists the fingerprints decide posted a "not observed any more"
+// note for.
+func pwQuietFPs(outs map[string]map[string]any) []string {
+	var fps []string
+	for _, a := range outs["decide"]["alerts"].([]any) {
+		if m := a.(map[string]any); m["state"] == "quiet" {
+			fps = append(fps, fmt.Sprint(m["fingerprint"]))
+		}
+	}
+	return fps
+}
+
+// pwReadOracle follows one query across ticks and derives, from what the
+// fake Loki SERVED — never from what the node reports — how far each walk
+// read (the read point) and which lines the node owes: every line of a
+// window it opened. A window that opens above the read point is a HOLE,
+// unless the cursor fell out of the max window and the gap is declared: the
+// window then opens exactly at the floor, and only the lines between the
+// read point and the floor are excused. A node that moves its cursor past
+// what it read cannot hide the stretch it skipped.
+type pwReadOracle struct {
+	query   string
+	read    int64 // 0 = nothing read yet
+	owed    map[string]int
+	excused map[string]bool
+	onFail  func()
+}
+
+func newPWReadOracle(query string) *pwReadOracle {
+	return &pwReadOracle{query: query, owed: map[string]int{}, excused: map[string]bool{}, onFail: func() {}}
+}
+
+// observe folds one tick of the query into the oracle and fails on a hole:
+// served is what the fake answered during the tick, lines what it held,
+// maxWinMin the tick's max_window_minutes.
+func (o *pwReadOracle) observe(t *testing.T, k int, pq map[string]any, served []pwServed, lines []pwLine, maxWinMin int) {
+	t.Helper()
+	from, _ := strconv.ParseInt(fmt.Sprint(pq["from_ns"]), 10, 64)
+	to, _ := strconv.ParseInt(fmt.Sprint(pq["to_ns"]), 10, 64)
+	errText := fmt.Sprint(pq["error"])
+	if strings.HasPrefix(errText, "inverted") || strings.HasPrefix(errText, "missing") {
+		return // no walk: nothing read, nothing owed
+	}
+	if o.read != 0 && from > o.read {
+		if pq["gap"] != true {
+			o.onFail()
+			t.Fatalf("tick %d: HOLE — the window opens at %d, %.3fs above where the last walk read (%d), and no gap is declared", k, from, float64(from-o.read)/1e9, o.read)
+		}
+		if floor := to - int64(maxWinMin)*60*int64(time.Second); from != floor {
+			o.onFail()
+			t.Fatalf("tick %d: a gap is declared but the window opens at %d, not at the floor %d", k, from, floor)
+		}
+		for _, l := range lines {
+			if l.Q == o.query && l.TS >= o.read && l.TS < from {
+				o.excused[l.Line] = true
+			}
+		}
+	}
+	for _, l := range lines {
+		if l.Q == o.query && l.TS >= from && l.TS < to {
+			if _, ok := o.owed[l.Line]; !ok {
+				o.owed[l.Line] = k
+			}
+		}
+	}
+	switch {
+	case from == to:
+		if o.read == 0 {
+			o.read = to // an empty first window is read to its end
+		}
+	case errText == "" && pq["truncated"] != true:
+		o.read = max(o.read, to)
+	default: // truncated or failed: read up to the newest line served
+		var newest int64
+		for _, sv := range served {
+			if sv.Query == o.query && sv.N > 0 && sv.MaxTS > newest {
+				newest = sv.MaxTS
+			}
+		}
+		o.read = max(from, newest)
+	}
+}
+
+// settle fails on every owed line not written exactly once, unless a
+// legitimately declared gap excused it.
+func (o *pwReadOracle) settle(t *testing.T, written map[string]int) {
+	t.Helper()
+	for l, k := range o.owed {
+		if o.excused[l] || written[l] == 1 {
+			continue
+		}
+		o.onFail()
+		t.Fatalf("%q was owed since tick %d (inside a window the node opened) and was written %d times", l, k, written[l])
+	}
+}
+
 // cursorTick drives plan → poll_loki → leak_scan → decide with the given
 // vars and persists decide's state as commit_state would (state_commit
 // off): the cursor chain alone, no delivery.
 func (h *pwHarness) cursorTick(t *testing.T, wf *ir.Workflow, vars map[string]any) map[string]map[string]any {
+	t.Helper()
+	return h.cursorTickWith(t, wf, vars, nil)
+}
+
+// cursorTickWith is cursorTick with decide inputs overridden.
+func (h *pwHarness) cursorTickWith(t *testing.T, wf *ir.Workflow, vars map[string]any, decideExtra map[string]any) map[string]map[string]any {
 	t.Helper()
 	outs := map[string]map[string]any{}
 	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}
@@ -1385,13 +1543,17 @@ func (h *pwHarness) cursorTick(t *testing.T, wf *ir.Workflow, vars map[string]an
 	loki := run("poll_loki", map[string]any{"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5,
 		"scratch_dir": h.scratch, "allow_private": true})
 	leak := run("leak_scan", map[string]any{"raw_file": loki["raw_file"], "per_query": loki["per_query"], "app": plan["app"], "scratch_dir": h.scratch})
-	decide := run("decide", map[string]any{
+	decideIn := map[string]any{
 		"signals_file": leak["signals_file"], "prom_results": []any{}, "http_results": []any{},
 		"loki_ok": loki["ok"], "loki_truncated": loki["truncated"], "loki_errors": loki["errors"], "loki_per_query": loki["per_query"],
 		"prom_ok": true, "prom_errors": []any{}, "release": "unknown", "release_known": false,
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
 		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20,
-	})
+	}
+	for k, v := range decideExtra {
+		decideIn[k] = v
+	}
+	decide := run("decide", decideIn)
 	b, err := os.ReadFile(decide["state_next_file"].(string))
 	if err != nil {
 		t.Fatal(err)
@@ -1876,8 +2038,9 @@ func TestProdWatch_DecideDarkQueryDoesNotHealTheLane(t *testing.T) {
 	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "partial", "lines_scanned": 0}
 	out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
 		"loki_ok": true, "loki_errors": []any{map[string]any{"query": "errors", "error": "HTTPError: 500"}},
-		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "HTTPError: 500"}, "other": map[string]any{"lines": 0, "error": "", "covered_to_ns": "999"}},
-		"lanes":          map[string]any{"loki": true, "prometheus": false, "probes": false}})
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "HTTPError: 500", "from_ns": "100", "to_ns": "900"},
+			"other": map[string]any{"lines": 0, "error": "", "from_ns": "100", "to_ns": "900", "covered_to_ns": "999"}},
+		"lanes": map[string]any{"loki": true, "prometheus": false, "probes": false}})
 	if err != nil {
 		t.Fatalf("decide: %v %s", err, stderr)
 	}
@@ -1910,8 +2073,9 @@ func TestProdWatch_DecideDarkQueryDoesNotWashTheLifecycle(t *testing.T) {
 	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "partial", "lines_scanned": 0}
 	out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
 		"loki_ok": true, "loki_errors": []any{map[string]any{"query": "errors", "error": "HTTPError: 500"}},
-		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "HTTPError: 500"}, "other": map[string]any{"lines": 0, "error": "", "covered_to_ns": "999"}},
-		"lanes":          map[string]any{"loki": true, "prometheus": false, "probes": false}})
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "HTTPError: 500", "from_ns": "100", "to_ns": "900"},
+			"other": map[string]any{"lines": 0, "error": "", "from_ns": "100", "to_ns": "900", "covered_to_ns": "999"}},
+		"lanes": map[string]any{"loki": true, "prometheus": false, "probes": false}})
 	if err != nil {
 		t.Fatalf("decide: %v %s", err, stderr)
 	}
@@ -2172,7 +2336,7 @@ func TestProdWatch_CoverageNoteCarriesTheLaneErrorAndRefiresOnChange(t *testing.
 	coverageNote := func(decide map[string]any) (bool, string) {
 		for _, s := range decide["stale_sources"].([]any) {
 			if m := s.(map[string]any); m["source"] == "coverage" {
-				return true, fmt.Sprint(m["errors"])
+				return true, fmt.Sprint(m["reasons"])
 			}
 		}
 		return false, ""
@@ -2198,10 +2362,11 @@ func TestProdWatch_CoverageNoteCarriesTheLaneErrorAndRefiresOnChange(t *testing.
 // TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion drives the cursor
 // chain (plan → poll_loki → decide → state) over many ticks with random
 // caps, page sizes, overlaps, late-arriving lines, same-nanosecond groups
-// and ingest-lag changes, and asserts the guarantee the cursor sells: every
-// line that was inside a window is written exactly once, no line is
-// written twice, and the high-water mark never moves backwards. The seeds
-// are fixed (PW_SEEDS raises the count).
+// and ingest-lag changes, and asserts the guarantee the cursor sells: no
+// window opens above where the last walk read (the read-point oracle,
+// derived from what the fake served), every line of a window is written
+// exactly once, no line is written twice, and the high-water mark never
+// moves backwards. The seeds are fixed (PW_SEEDS raises the count).
 func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -2249,9 +2414,7 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 				configure()
 				now := time.Now().UnixNano()
 				var lines []pwLine
-				type window struct{ from, to int64 }
-				var windows []window
-				firstVisible := map[string]int{} // line -> index of the first window it was inside
+				oracle := newPWReadOracle("errors-q")
 				written := map[string]int{}
 				var hwm int64
 				inject := func(n, tick int) {
@@ -2282,6 +2445,7 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 					} else {
 						h.failLokiFrom.Store(0)
 					}
+					servedFrom := h.servedLen()
 					outs := h.cursorTick(t, wf, cursorVars(h, 60, lag, maxLines))
 					pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
 					if pq["error"] != "" && !failing {
@@ -2289,12 +2453,7 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 					}
 					from, _ := strconv.ParseInt(pq["from_ns"].(string), 10, 64)
 					to, _ := strconv.ParseInt(pq["to_ns"].(string), 10, 64)
-					windows = append(windows, window{from, to})
-					for _, l := range lines {
-						if _, seen := firstVisible[l.Line]; !seen && l.TS >= from && l.TS < to {
-							firstVisible[l.Line] = len(windows) - 1
-						}
-					}
+					oracle.observe(t, k, pq, h.servedSince(servedFrom), lines, 60)
 					countRawLines(t, written, outs["poll_loki"]["raw_file"].(string))
 					c, _ := strconv.ParseInt(pq["covered_to_ns"].(string), 10, 64)
 					if os.Getenv("PW_DEBUG") != "" {
@@ -2331,14 +2490,7 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 						t.Fatalf("%q written %d times (overlap=%d page=%d)", l, n, overlap, page)
 					}
 				}
-				for _, l := range lines {
-					if _, ok := firstVisible[l.Line]; ok && written[l.Line] != 1 {
-						if os.Getenv("PW_DEBUG") != "" {
-							t.Logf("lost line %q ts=%d (now-ts=%.1fs) first visible in window %d [%d, %d)", l.Line, l.TS, float64(time.Now().UnixNano()-l.TS)/1e9, firstVisible[l.Line], windows[firstVisible[l.Line]].from, windows[firstVisible[l.Line]].to)
-						}
-						t.Fatalf("%q was inside a window and was written %d times (overlap=%d page=%d)", l.Line, written[l.Line], overlap, page)
-					}
-				}
+				oracle.settle(t, written)
 			})
 		}
 	}
@@ -2442,7 +2594,7 @@ func pwDecide(t *testing.T, wf *ir.Workflow, h *pwHarness, signals map[string]an
 	}
 	in := map[string]any{
 		"signals_file": sig, "prom_results": []any{}, "http_results": []any{}, "loki_ok": true, "loki_truncated": false,
-		"loki_errors": []any{}, "loki_per_query": map[string]any{}, "prom_ok": true, "prom_errors": []any{},
+		"loki_errors": []any{}, "loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}}, "prom_ok": true, "prom_errors": []any{},
 		"release": "", "release_known": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": true},
 		"app": map[string]any{"name": "demo"}, "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
 		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20,
