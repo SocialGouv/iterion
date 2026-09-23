@@ -34,17 +34,24 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   lines seen there travel in the cursor's band, as `[timestamp, hash]`
   pairs; the scan additionally deduplicates by `(timestamp, line)`.
 - A query that failed keeps its previous cursor (the window is retried
-  next tick) and is listed in `errors`; the lane is degraded, the run goes
-  on with its other lanes (decide refuses a tick only when EVERY
-  configured lane failed); a 401/403 hard-fails immediately (a credential
-  problem is actionable now).
+  next tick) and is listed in `errors`; the lines it wrote before failing
+  are scanned this tick and its band knows them, so the retry does not
+  write them again; the lane is degraded, the run goes on with its other
+  lanes (decide refuses a tick only when EVERY configured lane failed) and
+  the lane's health is not refreshed while a query fails, so a query dark
+  for good surfaces as a silent source after `source_stale_hours`, with
+  its error; a 401/403 hard-fails immediately (a credential problem is
+  actionable now).
 
 The persisted cursor is `cursors.loki.<query>` in `state.json`:
 `covered_to_ns` (the high-water mark, never moving backwards),
 `frontier_ns` (where the last walk stopped; below the mark after a
-truncated walk), `band` (the pairs of the overlap, about 4000 at most, cut
-only on a timestamp boundary) and `overlap_from_ns` (the band's lower
-bound).
+truncated walk), `band` (the lines of the overlap as `offset:hash` strings
+from `band_base_ns`, about 4000 at most, cut only on a timestamp boundary)
+and `overlap_from_ns` (the band's lower bound, which never descends: a cut
+or a raised overlap must not reopen the window over lines the band no
+longer knows). A query absent from the config keeps its mark for
+`forget_after_days` and loses its band.
 
 ## The redaction scan (`leak_scan`)
 
@@ -70,10 +77,12 @@ timestamp is not an IBAN; a digit run is a card only with a card's own
 grouping or a card word next to it, since Luhn alone is a coin flip on
 trace ids, epochs, decimals and lists of counters), they do not make it a
 proof. Runs of blanks are folded to one space first, so tabs between a
-card's groups do not hide it. A run of 12+ digits, bare or under one
-repeated separator of any kind, that no class claimed is masked as `<num>`
-before the contact classes run (a PAN in pairs is not a phone number) and
-therefore in every sample. This slice reports every class at severity `high`; the
+card's groups do not hide it. A run of 12+ digits, bare or under
+non-alphanumeric separators (mixed or not — a timestamp glued to other
+numbers by separators is masked with them), that no class claimed is
+masked as `<num>` before the contact classes run (a PAN in pairs is not a
+phone number) and therefore in every sample. Outside that boundary, by
+design: digits joined by letters (`4111x1111x1111x1111`) match no class. This slice reports every class at severity `high`; the
 policy slice adds per-class `critical` with keyword context and the
 circuit-breaker.
 

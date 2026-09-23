@@ -558,7 +558,8 @@ tool plan:
         ## (timestamp, hash) pairs so they are not counted twice.
         windows[name] = {'from_ns': str(frm), 'to_ns': str(to_ns), 'gap': gap, 'bootstrap': prev == 0,
                          'prev_covered_to_ns': str(prev), 'frontier_ns': str(int(c.get('frontier_ns') or prev)),
-                         'band': list(c.get('band') or []), 'overlap_from_ns': str(int(c.get('overlap_from_ns') or 0)),
+                         'band': list(c.get('band') or []), 'band_base_ns': str(int(c.get('band_base_ns') or 0)),
+                         'overlap_from_ns': str(int(c.get('overlap_from_ns') or 0)),
                          'overlap_ns': str(overlap_s * 10 ** 9)}
     loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
                  'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
@@ -755,18 +756,36 @@ tool poll_loki:
     BAND_CAP = 4000
     total, truncated_any, errors, per_query, ok_count = 0, False, [], {}, 0
 
-    def hand_over(band_prev, seen, covered, frontier, overlap_ns, truncated):
+    def encode(pairs):
+        ## One short string per entry, timestamps as offsets from a base
+        ## carried once: the state is committed every tick, and a list of
+        ## stable lines packs 17x smaller in git than nested pairs.
+        base = pairs[0][0] if pairs else 0
+        return [str(ts - base) + ':' + h for ts, h in pairs], str(base)
+
+    def decode(w):
+        base = int(w.get('band_base_ns') or 0)
+        out = []
+        for e in (w.get('band') or []):
+            off, h = str(e).split(':', 1)
+            out.append((base + int(off), h))
+        return out
+
+    def hand_over(band_prev, seen, covered, frontier, overlap_ns, known_from):
         ## The band the next tick dedups against, as (ts, hash) pairs: every
         ## line this walk SAW plus what the previous band still knew inside
-        ## the next window (a truncated walk does not re-read all it
-        ## inherited), windowed at the earliest point the next window can
-        ## open. Bounded to about BAND_CAP entries, cut only on a TIMESTAMP
-        ## boundary — never inside a group sharing one nanosecond — and
-        ## never inside the frontier group of a truncated walk (the next
-        ## window reopens there). `overlap_from` is the band's lower bound:
-        ## the next window never opens before it, or the cut lines would be
-        ## counted again every tick.
-        low = min(frontier, covered - overlap_ns)
+        ## the next window (a truncated or a failed walk does not re-read
+        ## all it inherited), windowed at the earliest point the next window
+        ## can open — and never below `known_from`, the earliest point the
+        ## band is complete from (this walk's window start, or what it
+        ## inherited): a bound that fell back below a cut, or below what an
+        ## overlap raised afterwards would reach, reopens the window over
+        ## lines nobody knows. Bounded to about BAND_CAP entries, cut only on
+        ## a TIMESTAMP boundary — never inside a group sharing one
+        ## nanosecond — and never at or above the frontier, where the next
+        ## window reopens. `overlap_from` is the band's lower bound: the
+        ## next window never opens before it.
+        low = max(min(frontier, covered - overlap_ns), known_from)
         merged = {}
         for ts, h in band_prev:
             if ts >= low:
@@ -778,14 +797,14 @@ tool poll_loki:
         overlap_from = low
         if len(pairs) > BAND_CAP:
             cut = len(pairs) - BAND_CAP
-            if truncated:
-                cut = min(cut, next((k for k, pr in enumerate(pairs) if pr[0] >= frontier), len(pairs)))
+            cut = min(cut, next((k for k, pr in enumerate(pairs) if pr[0] >= frontier), len(pairs)))
             while cut > 0 and pairs[cut][0] == pairs[cut - 1][0]:
                 cut -= 1
             if cut > 0:
                 overlap_from = pairs[cut - 1][0] + 1
                 pairs = pairs[cut:]
-        return [[str(ts), h] for ts, h in pairs], overlap_from
+        band, base = encode(pairs)
+        return band, base, overlap_from
 
     with open(raw_path, 'w', encoding='utf-8') as raw:
         for name, logql in queries.items():
@@ -794,7 +813,8 @@ tool poll_loki:
             prev_to = int(w.get('prev_covered_to_ns') or 0)
             frontier_prev = int(w.get('frontier_ns') or prev_to)
             overlap_ns = int(w.get('overlap_ns') or 0)
-            band_prev = [(int(ts), h) for ts, h in (w.get('band') or [])]
+            band_prev = decode(w)
+            inherited_from = int(w.get('overlap_from_ns') or 0)
             meta = {'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap'))}
             if not frm or not to or frm > to:
                 ## A window that does not exist, or that starts after its own
@@ -803,18 +823,20 @@ tool poll_loki:
                 ## degrades, the cursor stays where it is, time heals it.
                 err = 'missing window' if not frm or not to else 'inverted window: from ' + str(frm) + ' > to ' + str(to)
                 errors.append({'query': name, 'error': err})
+                band, bbase = encode(band_prev)
                 per_query[name] = dict(meta, lines=0, truncated=False, error=err, covered_to_ns=str(prev_to),
-                                       frontier_ns=str(frontier_prev), band=[[str(ts), h] for ts, h in band_prev],
-                                       overlap_from_ns=str(w.get('overlap_from_ns') or 0), skipped_overlap=0)
+                                       frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
+                                       overlap_from_ns=str(inherited_from), skipped_overlap=0)
                 continue
             if frm == to:
                 ## A zero-width window (a bootstrap of 0 minutes, or a window
                 ## floor at `to`) is fully covered: nothing to read, the
                 ## high-water mark moves to `to`, the band is kept.
                 covered = max(to, prev_to)
-                band, overlap_from = hand_over(band_prev, [], covered, covered, overlap_ns, False)
+                band, bbase, overlap_from = hand_over(band_prev, [], covered, covered, overlap_ns, inherited_from or to)
                 per_query[name] = dict(meta, lines=0, truncated=False, error='', covered_to_ns=str(covered),
-                                       frontier_ns=str(covered), band=band, overlap_from_ns=str(overlap_from), skipped_overlap=0)
+                                       frontier_ns=str(covered), band=band, band_base_ns=bbase,
+                                       overlap_from_ns=str(overlap_from), skipped_overlap=0)
                 ok_count += 1
                 continue
             start, n, truncated, last_ts, err = frm, 0, False, 0, ''
@@ -895,10 +917,13 @@ tool poll_loki:
                 errors.append({'query': name, 'error': err})
             if err:
                 ## The cursor does not move on a failed walk (decide keeps
-                ## the previous one); the lines written so far are counted.
+                ## the previous one); the lines written before the failure
+                ## are scanned this tick, and the band knows them, so the
+                ## retried window does not write them again.
+                band, bbase, overlap_from = hand_over(band_prev, seen, prev_to, frontier_prev, overlap_ns, frm)
                 per_query[name] = dict(meta, lines=n, truncated=truncated, error=err, covered_to_ns=str(prev_to),
-                                       frontier_ns=str(frontier_prev), band=[[str(ts), h] for ts, h in band_prev],
-                                       overlap_from_ns=str(w.get('overlap_from_ns') or 0), skipped_overlap=skipped)
+                                       frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
+                                       overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
                 total += n
                 continue
             ## Two marks travel: the high-water mark `covered` (never moves
@@ -910,9 +935,10 @@ tool poll_loki:
                 covered = max(prev_to, last_ts)
             else:
                 frontier = covered = max(prev_to, to)
-            band, overlap_from = hand_over(band_prev, seen, covered, frontier, overlap_ns, truncated)
+            band, bbase, overlap_from = hand_over(band_prev, seen, covered, frontier, overlap_ns, frm)
             per_query[name] = dict(meta, lines=n, truncated=truncated, error='', covered_to_ns=str(covered),
-                                   frontier_ns=str(frontier), band=band, overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
+                                   frontier_ns=str(frontier), band=band, band_base_ns=bbase,
+                                   overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
             total += n
             truncated_any = truncated_any or truncated
             ok_count += 1
@@ -1234,9 +1260,10 @@ tool leak_scan:
         window = m.string[max(0, m.start() - 40):m.start()]
         return bool(CARD_CONTEXT.search(window))
     ## The belt under the card class: a run of 12+ digits, bare or under
-    ## ONE repeated separator of any kind, that no class claimed is masked
-    ## before the contact classes run — a PAN in pairs must not be read as
-    ## a phone number, and no sample ever shows such a run.
+    ## non-alphanumeric separators (mixed or not — broader than the card
+    ## class on purpose: a PAN under mixed separators must still never
+    ## reach a sample), that no class claimed is masked before the contact
+    ## classes run — a PAN in pairs must not be read as a phone number.
     BELT_BARE = re.compile(r'(?<!\d)\d{12,}(?!\d)')
     BELT_GROUPED = re.compile(r'(?<![A-Za-z0-9])\d{1,8}(?:([^A-Za-z0-9\n])\d{1,8}){1,12}(?![A-Za-z0-9])')
     def belt(text):
@@ -1569,7 +1596,11 @@ tool decide:
         elif err:
             h['last_error'] = err[:300]
     if lanes.get('loki'):
-        mark('loki', loki_ok, json.dumps(loki_errors)[:300] if loki_errors else '')
+        ## `loki_ok` answers "may this tick be reported" (one query covered
+        ## is enough); the lane's HEALTH asks another question: a query
+        ## dark for good must not be washed by its healthy neighbour, or
+        ## the staleness note never fires for it.
+        mark('loki', loki_ok and not loki_errors, json.dumps(loki_errors)[:300] if loki_errors else '')
     if lanes.get('prometheus'):
         mark('prometheus', prom_ok, json.dumps(prom_errors)[:300] if prom_errors else '')
     if lanes.get('probes'):
@@ -1586,7 +1617,7 @@ tool decide:
             warned = h.get('last_warned') or ''
             if warned and age_h(warned) < stale_h:
                 continue
-            stale.append({'source': source, 'hours': int(a) if a < 10 ** 6 else -1, 'last_ok': last_ok})
+            stale.append({'source': source, 'hours': int(a) if a < 10 ** 6 else -1, 'last_ok': last_ok, 'error': h.get('last_error') or ''})
             h['last_warned'] = now_iso
 
     ## ── coverage note, once per change ────────────────────────────
@@ -1625,11 +1656,24 @@ tool decide:
             rec['severity'] = a['prev_severity']
     if lanes.get('loki'):
         for q in [q for q in cursors if q not in loki_per_query]:
-            del cursors[q]   # a query dropped from the config does not keep its band in the state for ever
+            ## A query absent this tick keeps its high-water mark (a
+            ## re-added query reopens there instead of replaying a bootstrap
+            ## window) and loses its band (the bulk of the state); a cursor
+            ## untouched for longer than forget_after_days goes.
+            c = cursors[q]
+            if c.get('at') and age_h(c['at']) >= forget_d * 24:
+                del cursors[q]
+                continue
+            cursors[q] = {'covered_to_ns': str(c.get('covered_to_ns') or 0), 'frontier_ns': str(c.get('frontier_ns') or c.get('covered_to_ns') or 0),
+                          'at': c.get('at') or now_iso, 'band': [], 'band_base_ns': '0', 'overlap_from_ns': str(c.get('covered_to_ns') or 0)}
     for q, info in loki_per_query.items():
-        if not info.get('error') and info.get('covered_to_ns'):
+        ## Persisted on a failed walk too: poll_loki hands back the previous
+        ## marks untouched and a band that knows the lines written before
+        ## the failure — dropping it would write them again on the retry.
+        if info.get('covered_to_ns') is not None:
             cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'frontier_ns': str(info.get('frontier_ns') or info['covered_to_ns']),
-                          'at': now_iso, 'band': list(info.get('band') or []), 'overlap_from_ns': str(info.get('overlap_from_ns') or 0)}
+                          'at': now_iso, 'band': list(info.get('band') or []), 'band_base_ns': str(info.get('band_base_ns') or 0),
+                          'overlap_from_ns': str(info.get('overlap_from_ns') or 0)}
     needs_analysis = any(a['state'] in ('new', 'escalated') and a['kind'] in ('probe', 'prom', 'loki') for a in posted)
 
     ## Zero-façade guard: if EVERY configured lane errored this tick there
@@ -1754,7 +1798,10 @@ tool notify:
                 text += chr(10) + '> ' + code(str(s.get('errors')), 400)
             messages.append(('medium', text, True))
         else:
-            messages.append(('medium', ':warning: ' + fmt('stale', source=s.get('source'), hours=s.get('hours'), last=s.get('last_ok') or 'never'), True))
+            text = ':warning: ' + fmt('stale', source=s.get('source'), hours=s.get('hours'), last=s.get('last_ok') or 'never')
+            if s.get('error'):
+                text += chr(10) + '> ' + code(str(s.get('error')), 400)
+            messages.append(('medium', text, True))
 
     if not messages:
         out({'posted': False, 'dry_run': bool(dry_run), 'messages': [], 'delivered': 0,
