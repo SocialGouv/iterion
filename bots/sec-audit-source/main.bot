@@ -49,16 +49,18 @@ vars:
   ## (FP memory, file records, context, patches) lives under the repo's
   ## .sec-audit/ dotdir instead — see the vars below.
   scan_dir:            string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan"
-  ## TTL (in days) for the per-run subdirs the scan_dir carries -- the deep
-  ## scanner keys its export on the run id (see #1322), so scan_dir now
-  ## accumulates one `deepsec-out-<run.id>/` and one `deepsec-logs-<run.id>/`
-  ## per pass (the prefix is what lets the retention sweep scope positively,
-  ## Re56aa9).
+  ## TTL (in days) for the per-run subdirs the scan_dir carries. THREE
+  ## shapes accumulate one directory per pass under it: the scanner
+  ## scratch `pass-<run.id>/` every writer and reader resolves through
+  ## scan_dir_resolve (#1475), and the deep scanner's own
+  ## `deepsec-out-<run.id>/` and `deepsec-logs-<run.id>/` (#1322). Each
+  ## carries a prefix, which is what lets the retention sweep scope
+  ## positively on the three shapes this bot owns (Re56aa9).
   ## The engine's scratch sweep reclaims only entries nothing has written to
   ## within its retention window (runtime/scratch_sweep.go), but a workspace
   ## used regularly keeps writing under scan_dir, so its own subdirs never
   ## age out on their own. Prune at scanner entry: entries older than TTL
-  ## days go, the current run's two directories always stay. The sweep
+  ## days go, the current run's three directories always stay. The sweep
   ## runs on every entry with a usable run id, above the deepsec preflight
   ## (revi R58b272). 0 disables the sweep. Matches records_ttl_days's
   ## default. The sweep prunes directories only; the pre-0.1.4 shared-slot
@@ -458,18 +460,35 @@ schema deepsec_bank:
   truncated:  bool
   note:       string
 
+## The scanner scratch of THIS pass, derived once by compute
+## scan_dir_resolve and carried IN on every edge that reaches a node writing
+## into it or reading out of it. A tool command resolves {{input.X}} and
+## {{vars.X}}; an {{outputs.X}} ref written in a body is refused catalogue-wide
+## (bots/catalog_command_refs_test.go), so the edge is the transport.
+schema scan_scratch_input:
+  scan_dir:  string
+
 schema lang_input:
   langs:  json
 
+## run_lang_scanners reads the same langs as the ladder rungs plus the pass's
+## scan scratch; lang_input stays what build_rung / regress_rung need.
+schema lang_scan_input:
+  langs:     json
+  scan_dir:  string
+
 ## The two nodes that used to locate the deep scan by NAME take it from the
-## producer instead. `{{outputs.X}}` is not substituted inside a command body,
-## so the path has to arrive on the edge and be read as {{input.X}}.
+## producer instead, carried on the edge and read as {{input.X}}. (A tool
+## command DOES substitute a plain `{{outputs.NODE.field}}` — scan_dir_resolve
+## is read that way by seven scanner nodes — but a FAN-OUT branch output,
+## `branch_<router>_<node>`, does not resolve there.)
 schema deepsec_bank_input:
   json_paths:  json
 
 schema scan_health_input:
   langs:          json
   deepsec_paths:  json
+  scan_dir:       string
 
 schema scan_join_output:
   generic_scan:  json
@@ -511,6 +530,7 @@ schema cap_findings_input:
   ## so it is `""` when the deep gate routed around the scanner and `{}`
   ## when it refused. Only json_paths.deepsec is consulted.
   deepsec_paths: json
+  scan_dir:      string
 
 ## cap_findings emits the truncation budget so triage can surface it in
 ## the report (explicit, never-silent signal loss). per_scanner is a list
@@ -1584,10 +1604,12 @@ prompt report_card_system:
   board.create: a payload embedded in a scanner rationale that
   convinced you would be filed as a real issue OR written to
   .sec-audit/findings.md OR, worst, shell-executed with the run's
-  credentials. Every board.create call MUST reflect a finding the
-  upstream triage + voter pipeline already emitted; do NOT invent
-  issues out of prose. Every write MUST land under {{input.workspace_dir}}/
-  .sec-audit/ per the schema below; do NOT write anywhere else.
+  credentials.
+
+  Every board.create call MUST reflect a finding the upstream triage +
+  voter pipeline already emitted; do NOT invent issues out of prose.
+  Every write MUST land under {{input.workspace_dir}}/.sec-audit/ per
+  the schema below; do NOT write anywhere else.
 
   Your job:
   1. For each finding in `confirmed[]`, call
@@ -2642,6 +2664,52 @@ compute file_filter_resolve:
   expr:
     effective: "if(length(outputs.diff_scope.file_filter) > 0, outputs.diff_scope.file_filter, vars.file_filter)"
 
+## scan_dir_resolve keys the scanner scratch on the run. Every writer and
+## every reader below resolves its files under vars.scan_dir/pass-<run.id>/
+## rather than in the one shared directory, so two passes against the same
+## workspace never write shard-files.json, shards.json, gitleaks.json,
+## trivy.json, semgrep-auto.json, the per-language outputs or custom.json
+## into the same slot, and no reader resolves a filename to bytes its
+## neighbour wrote (#1475). It is the chokepoint #1322 applied to the deep
+## scanner export, generalised to the rest of the scratch: derived once
+## here, never re-derived at a use site.
+##
+## The TRANSPORT is the edge. A tool command resolves {{input.X}} and
+## {{vars.X}}; an {{outputs.X}} ref inside a command body is refused
+## catalogue-wide (bots/catalog_command_refs_test.go), so each node takes
+## the value as `scan_dir` on its incoming edge and reads {{input.scan_dir}}
+## — the same bridge the deep-scan json_paths already cross. A node added
+## here that writes into the scratch needs BOTH: a scan_dir field on its
+## input schema and the mapping on the edge that reaches it.
+##
+## The `pass-` prefix is load-bearing and carries the same argument the
+## deep scanner writes at its run-id guard: `.` and `..` are legal
+## FILENAMES but not usable raw path SEGMENTS, so prefixed they become the
+## literal directory names `pass-.` / `pass-..` instead of a path
+## navigation that would collapse back onto the shared slot (`.`) or
+## escape one level above it (`..`). The prefix is also what lets the
+## retention sweep in run_deepsec_scanner scope POSITIVELY on `pass-*`
+## alongside `deepsec-out-*` / `deepsec-logs-*`, rather than by a
+## deny-list of the names it does not own.
+##
+## Deliberately NOT moved under the per-pass dir: `deepsec-workspace/`
+## (the deep scanner data root, file-record cache and claim mutex — a
+## second pass skipping what a first analysed is the point) and the
+## `.sec-audit/` state (file records, fp-known.yaml, context.md), both
+## per-workspace by design.
+##
+## String concatenation is `+`. `concat()` is the ARRAY builtin and
+## refuses a string argument at RUNTIME ("concat() argument 1 is string,
+## want array") while `iterion validate` stays green.
+schema scan_dir_output:
+  ## vars.scan_dir + "/pass-" + run.id — the scanner scratch of THIS pass.
+  run_scan_dir: string
+
+compute scan_dir_resolve:
+  output: scan_dir_output
+  expr:
+    run_scan_dir: "vars.scan_dir + '/pass-' + run.id"
+
 ## plan_shards (Cap. 3) walks the workspace and decides whether to
 ## fan the run out to N child runs. When shard_size > 0, it lists
 ## every source file the scanners would touch and emits a plan.
@@ -2654,7 +2722,7 @@ compute file_filter_resolve:
 ## (node_modules, vendor, .git, .iterion, build artefacts, …) so
 ## the shard count tracks meaningful workload.
 tool plan_shards:
-  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SHARD_SIZE={{vars.shard_size}} OUT={{vars.scan_dir}}/shard-files.json python3 -c "
+  command: `mkdir -p {{input.scan_dir}} && WS={{vars.workspace_dir}} SHARD_SIZE={{vars.shard_size}} OUT={{input.scan_dir}}/shard-files.json python3 -c "
 import os, sys, json
 ws = os.environ['WS']
 shard_size = int(os.environ.get('SHARD_SIZE','0'))
@@ -2679,6 +2747,7 @@ print(json.dumps({
     'file_count': len(files),
 }))
 "`
+  input: scan_scratch_input
   output: shard_plan_output
   ## Publish the shard manifest as a versioned artifact for the audit
   ## trail — visible in the studio Artifact tab and `iterion report`.
@@ -2689,7 +2758,8 @@ print(json.dumps({
 ## dispatch_shards (Cap. 3) calls the hidden `iterion __scan-shards`
 ## subcommand, which spawns N child `iterion run` invocations
 ## sharing the same store and polls them to terminal status. The
-## envelope JSON is captured to {{vars.scan_dir}}/shards.json for
+## envelope JSON is captured to shards.json under the pass's own scan
+## subdirectory (the scan_dir input arrives from scan_dir_resolve) for
 ## the audit trail; the tool returns a structured summary so the
 ## parent's exit code reflects shard failures.
 tool dispatch_shards:
@@ -2776,7 +2846,7 @@ tool run_generic_scanners:
   ## and .works (sibling worktrees on the self-host) so the scanners
   ## don't traverse accumulated repo copies. sh -c is dash on some
   ## hosts, bash inside devbox — keep POSIX-compatible.
-  command: `mkdir -p {{vars.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{vars.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{vars.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{vars.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; SCAN_DIR={{vars.scan_dir}} GEN_ERRS="$ERRS" python3 -c '
+  command: `mkdir -p {{input.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{input.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{input.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{input.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; SCAN_DIR={{input.scan_dir}} GEN_ERRS="$ERRS" python3 -c '
 import json, os
 scan_dir = os.environ["SCAN_DIR"]
 failed = os.environ.get("GEN_ERRS", "").split()
@@ -2805,17 +2875,19 @@ for tid, key, fname in TOOLS:
 # run carried one empty string and no consumer could use it as a signal.
 print(json.dumps({"scanner": "generic", "subscanners": ["gitleaks", "trivy", "semgrep-auto"], "json_paths": paths, "finding_count": 0, "errors": errs}))
 '`
+  input: scan_scratch_input
   output: scanner_output
 
 ## run_lang_scanners — skill-driven, DETERMINISTIC (no LLM in the path).
 ## Reads the `iterion:scanners` data block from .claude/skills/lang-<lang>.md
 ## for each detected language (outputs.detect_tech.langs) and runs the listed
-## scanners into scan_dir. Adding a language = drop a lang-<id>.md skill with a
+## scanners into the pass's own scan subdirectory. Adding a language = drop a
+## lang-<id>.md skill with a
 ## scanners block — no DSL or schema edit. scan_health reads the SAME blocks to
 ## verify per-language coverage. Replaces the old per-language run_js/go/python
 ## scanner nodes + the closed has_js/has_go/has_python enum.
 tool run_lang_scanners:
-  command: `mkdir -p {{vars.scan_dir}} && LANGS={{input.langs}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
+  command: `mkdir -p {{input.scan_dir}} && LANGS={{input.langs}} SCAN_DIR={{input.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
 import os, sys, json, re, subprocess
 _alias = {'javascript': 'js', 'typescript': 'js', 'ts': 'js', 'node': 'js', 'nodejs': 'js', 'golang': 'go', 'py': 'python', 'py3': 'python', 'python3': 'python'}
 def _norm_langs(_raw):
@@ -2901,7 +2973,7 @@ for lang in langs:
             paths.pop(sid, None)
 print(json.dumps({'scanner': 'lang', 'subscanners': sub, 'json_paths': paths, 'finding_count': 0, 'errors': errs}))
 "`
-  input: lang_input
+  input: lang_scan_input
   output: scanner_output
 ## run_custom_matchers — programmatic matchers (Cap. 2). Enumerates
 ## executables under attachments/matchers/, invokes each with the
@@ -2909,11 +2981,12 @@ print(json.dumps({'scanner': 'lang', 'subscanners': sub, 'json_paths': paths, 'f
 ## skills/programmatic-matchers.md for the protocol.
 ##
 ## Each matcher is responsible for stdout JSON; the wrapper writes
-## the merged envelope to {{vars.scan_dir}}/custom.json. A matcher
+## the merged envelope to custom.json under the pass's own scan
+## subdirectory. A matcher
 ## that fails (non-zero exit, invalid JSON) is logged in errors[]
 ## and skipped; the workflow continues.
 tool run_custom_matchers:
-  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} OUT={{vars.scan_dir}}/custom.json MATCHERS_DIR={{vars.matchers_dir}} python3 -c "
+  command: `mkdir -p {{input.scan_dir}} && WS={{vars.workspace_dir}} OUT={{input.scan_dir}}/custom.json MATCHERS_DIR={{vars.matchers_dir}} python3 -c "
 import os, sys, json, glob, subprocess, stat
 ws = os.environ['WS']
 out_path = os.environ['OUT']
@@ -2981,6 +3054,7 @@ print(json.dumps({
     'errors': results['errors'],
 }))
 "`
+  input: scan_scratch_input
   output: scanner_output
 
 ## ─── Enhancement 4 — deepsec scanner backend ──────────────────────
@@ -3079,17 +3153,23 @@ case "$RUN_ID" in
 esac
 
 # ── retention ─────────────────────────────────────────────────────
-# Per-run keying leaves one deepsec-out-<run.id>/ and one
-# deepsec-logs-<run.id>/ at the top of $SCAN_DIR per pass; the engine
-# scratch sweep does not reclaim them because a workspace used regularly
-# keeps writing under scan_dir (see runtime/scratch_sweep.go: sweep is by
-# whole-workspace mtime). Prune older entries by mtime, POSITIVELY scoped
-# to the two shapes THIS node owns -- deepsec-out-* and deepsec-logs-*,
-# both prefixed for exactly this reason (Re56aa9). deepsec-workspace is
-# the shared data root, not per-run, and stays. Every other directory
-# under scan_dir stays whatever its mtime -- an operator setting or a
-# future node writing there is not enrolled in this sweep by default. 0
-# disables the sweep entirely.
+# Per-run keying leaves THREE directories at the top of $SCAN_DIR per
+# pass: deepsec-out-<run.id>/ and deepsec-logs-<run.id>/ from this node,
+# and pass-<run.id>/ -- the scanner scratch scan_dir_resolve keys, which
+# accumulates on every pass whether or not the deep scan runs (#1475).
+# The engine scratch sweep does not reclaim any of them because a
+# workspace used regularly keeps writing under scan_dir (see
+# runtime/scratch_sweep.go: sweep is by whole-workspace mtime). Prune
+# older entries by mtime, POSITIVELY scoped to the three shapes the bot
+# owns -- deepsec-out-*, deepsec-logs-* and pass-*, all prefixed for
+# exactly this reason (Re56aa9). deepsec-workspace is the shared data
+# root, not per-run, and stays. Every other directory under scan_dir
+# stays whatever its mtime -- an operator setting or a future node
+# writing there is not enrolled in this sweep by default. 0 disables the
+# sweep entirely.
+# The sweep lives in THIS node rather than beside the writer because it
+# is the one node that has already proven $RUN_ID usable as a path
+# segment, and the exclusions below embed it.
 # Placement: BELOW the RUN_ID guards -- the predicates embed $RUN_ID and a
 # charset-safe segment cannot widen them -- and ABOVE the node / deepsec
 # preflight, so the sweep runs on EVERY entry with a usable run id,
@@ -3098,9 +3178,10 @@ esac
 # passes of this node left behind (revi R58b272).
 if [ "$SCAN_DIR_TTL_DAYS" -gt 0 ] 2>/dev/null; then
   find "$SCAN_DIR" -mindepth 1 -maxdepth 1 -type d \
-    \( -name "deepsec-out-*" -o -name "deepsec-logs-*" \) \
+    \( -name "deepsec-out-*" -o -name "deepsec-logs-*" -o -name "pass-*" \) \
     ! -name "deepsec-out-$RUN_ID" \
     ! -name "deepsec-logs-$RUN_ID" \
+    ! -name "pass-$RUN_ID" \
     -mtime "+$SCAN_DIR_TTL_DAYS" \
     -exec rm -rf {} + 2>/dev/null
 fi
@@ -3634,8 +3715,8 @@ _counts = [
 ]
 processed = sum(_counts) if _counts else None
 
-# The PHASE stays that of the last run. A pass is complete when the run that
-# decided its outcome says done; summing counts across attempts does not let
+# The PHASE stays that of the last run. A pass is complete when the run that decided
+# its outcome says done; summing counts across attempts does not make an
 # an earlier attempt speak for the phase of the pass.
 pphase = phase(proc)
 
@@ -3916,7 +3997,7 @@ compute scan_join:
 ## test resolves against the producer's own json_paths, which points at the
 ## per-pass path or is empty on every refusal.
 tool scan_health:
-  command: `SCAN_DIR={{vars.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
+  command: `SCAN_DIR={{input.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
 import os, sys, json, re
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -4150,7 +4231,8 @@ if generic_present < min_generic:
 ## thousands of findings on a large repo; triage reads the scanner JSON
 ## via its tools and overflows the model context (the historical
 ## detect_tech/triage failure on iterion-sized trees). This deterministic
-## step rewrites every scanner JSON in {{vars.scan_dir}} in place:
+## step rewrites every scanner JSON in the pass's own scan subdirectory
+## in place:
 ## severity-sorts each findings array, keeps the top findings_cap_per_file,
 ## drops bulky per-finding fields (matched code, dataflow traces, metadata)
 ## and truncates long strings — preserving the scanner's NATIVE shape so
@@ -4159,7 +4241,7 @@ if generic_present < min_generic:
 ## emitted so triage surfaces the truncation in the report. Security signal
 ## is bounded, never silently dropped.
 tool cap_findings:
-  command: `SCAN_DIR={{vars.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -c "
+  command: `SCAN_DIR={{input.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -c "
 import os, json, glob
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -6098,11 +6180,15 @@ workflow sec_audit_source:
   ## for shard children, else "" = no filter). Read by the triage edge.
   diff_scope -> file_filter_resolve
 
-  file_filter_resolve -> plan_shards
+  ## scan_dir_resolve derives the per-pass scanner scratch once, upstream
+  ## of every node that writes into it or reads out of it (#1475).
+  file_filter_resolve -> scan_dir_resolve
+
+  scan_dir_resolve -> plan_shards with {scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
 
   plan_shards -> dispatch_shards when enabled with {
     workspace_dir:      "{{vars.workspace_dir}}",
-    scan_dir:           "{{vars.scan_dir}}",
+    scan_dir:           "{{outputs.scan_dir_resolve.run_scan_dir}}",
     shard_size:         "{{vars.shard_size}}",
     shard_concurrency:  "{{vars.shard_concurrency}}",
     severity_threshold: "{{vars.severity_threshold}}",
@@ -6122,10 +6208,10 @@ workflow sec_audit_source:
   ## outputs. deepsec_gate routes through run_deepsec_scanner when
   ## vars.enable_deepsec=true (the DEFAULT); set it false to skip straight
   ## to scan_join (the pre-E4, deepsec-free workflow).
-  plan_shards -> run_generic_scanners when not enabled
+  plan_shards -> run_generic_scanners when not enabled with {scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
 
-  run_generic_scanners -> run_lang_scanners with {langs: "{{outputs.detect_tech.langs}}"}
-  run_lang_scanners    -> run_custom_matchers
+  run_generic_scanners -> run_lang_scanners with {langs: "{{outputs.detect_tech.langs}}", scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
+  run_lang_scanners    -> run_custom_matchers with {scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
   run_custom_matchers  -> deepsec_gate
 
   deepsec_gate -> run_deepsec_scanner when enabled
@@ -6133,8 +6219,8 @@ workflow sec_audit_source:
   run_deepsec_scanner -> bank_deepsec_findings with {json_paths: "{{outputs.run_deepsec_scanner.json_paths}}"}
   bank_deepsec_findings -> scan_join
 
-  scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}", deepsec_paths: "{{outputs.scan_join.deepsec_paths}}"}
-  scan_health -> cap_findings with {deepsec_paths: "{{outputs.scan_join.deepsec_paths}}"}
+  scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}", deepsec_paths: "{{outputs.scan_join.deepsec_paths}}", scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
+  scan_health -> cap_findings with {deepsec_paths: "{{outputs.scan_join.deepsec_paths}}", scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
 
   ## ZERO-FINDINGS IS DELIBERATELY NOT SHORT-CIRCUITED. On a clean repo
   ## cap_findings yields an empty set and triage runs one cheap LLM pass
@@ -6201,11 +6287,11 @@ workflow sec_audit_source:
     project_context: "{{outputs.project_context_resolve.contents}}"
   }
 
-  ## Converge: majority_verdict needs the three voter verdicts + the
-  ## fresh candidates threaded via with{} because tool command:` strings
-  ## only interpolate {{input.*}} / {{vars.*}} — they do NOT resolve
-  ## {{outputs.NODE.field}} (edge with{} values DO, so the mappings
-  ## here cross the bridge).
+  ## Converge: majority_verdict takes the three voter verdicts + the fresh
+  ## candidates via with{} so each arrives as one named {{input.*}} field
+  ## the command reads positionally. A tool command does resolve a plain
+  ## {{outputs.NODE.field}} (scan_dir_resolve is read that way); what it
+  ## does NOT resolve is a fan-out BRANCH output, branch_<router>_<node>.
   voter_v3 -> majority_verdict with {
     v1:         "{{outputs.voter_v1.verdicts}}",
     v2:         "{{outputs.voter_v2.verdicts}}",
