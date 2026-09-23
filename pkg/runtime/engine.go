@@ -251,12 +251,16 @@ type Engine struct {
 	// studio falls back to the wall-clock display for that run). One run
 	// per engine, so a single slot suffices.
 	activeBudget atomic.Pointer[SharedBudget]
+	// budgetClock, when set, is the clock of every run budget this engine
+	// builds — only tests set it, to advance a run's age by hand.
+	budgetClock func() time.Time
 }
 
 // ActiveElapsed returns the monotonic active time consumed by the run
 // currently executing in this engine, or 0 when no run is active or the
 // workflow declares no budget. The value comes from the run's
-// SharedBudget (CLOCK_MONOTONIC via startedAt): OS-suspend time is
+// SharedBudget, on its clock — time.Now outside tests, so CLOCK_MONOTONIC
+// via startedAt: OS-suspend time is
 // EXCLUDED (the monotonic clock freezes while the machine sleeps), long
 // LLM thinking IS counted, and prior active time is preserved across
 // resume (Restore shifts startedAt back). This is the engine-
@@ -800,7 +804,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		nodeSessions:       make(map[string]store.NodeSessionSlot),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
-		budget:             newSharedBudget(e.workflow.Budget, e.logger),
+		budget:             e.newRunBudget(),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),
 		startedAt:          time.Now(),

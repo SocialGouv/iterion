@@ -84,11 +84,31 @@ func TestReserveLoopbackPortNeverRepeats(t *testing.T) {
 	}
 	// The draw above depends on the kernel not re-offering a port it just
 	// took back, which it usually does not — so assert the mechanism that
-	// makes the guarantee, not only the outcome.
+	// makes the guarantee, not only the outcome. Twice: the assertion must
+	// leave the claim set as it found it, or its next reading — the second
+	// iteration of a `-count` run, or another test probing the same port —
+	// is red for a reason that is not the claim set's.
+	for i := 0; i < 2; i++ {
+		assertTheClaimSetHolds(t)
+	}
+	// Releasing the probe drops the probe alone: every port the draw handed
+	// out stays claimed, as a daemon holding it would need.
+	for p := range seen {
+		if claimLoopbackPort(p) {
+			t.Fatalf("port %d, reserved above, was claimable again — releasing the probe dropped claims that are not its own", p)
+		}
+	}
+}
+
+// assertTheClaimSetHolds claims a probe port, requires a second claim of it to
+// fail, and releases it.
+func assertTheClaimSetHolds(t *testing.T) {
+	t.Helper()
 	probe := 1 // never in the ephemeral range, so no real reservation collides
 	if !claimLoopbackPort(probe) {
 		t.Fatalf("port %d read as already claimed before anyone claimed it", probe)
 	}
+	defer releaseLoopbackPort(probe)
 	if claimLoopbackPort(probe) {
 		t.Fatalf("port %d claimed twice — the claim set is inert and the draw above proves nothing", probe)
 	}
