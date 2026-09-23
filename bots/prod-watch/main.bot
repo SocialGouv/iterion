@@ -528,17 +528,40 @@ tool plan:
         boot_min = 0
     cursors = (state.get('cursors') or {}).get('loki') or {}
     windows = {}
+
+    def cursor_int(c, name, field, default=0):
+        ## A cursor field is a number or absent — a foreign value (an edited
+        ## state, another format) is refused by name, never swapped for a
+        ## default, and never a traceback.
+        v = c.get(field)
+        if v is None:
+            return default
+        if isinstance(v, bool) or not isinstance(v, (int, str)):
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': ' + field + ' is not a number (' + repr(v)[:60] +
+                             ') -- delete that cursor (or the state file) and let the query bootstrap')
+        try:
+            return int(v)
+        except ValueError:
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': ' + field + ' is not a number (' + repr(v)[:60] +
+                             ') -- delete that cursor (or the state file) and let the query bootstrap')
+
     for name in queries:
         c = cursors.get(name) or {}
-        prev = int(c.get('covered_to_ns') or 0)
+        prev = cursor_int(c, name, 'covered_to_ns')
+        prev_bound = cursor_int(c, name, 'overlap_from_ns')
+        frontier = cursor_int(c, name, 'frontier_ns', prev)
+        band_base = cursor_int(c, name, 'band_base_ns')
+        band = c.get('band') or []
+        if not isinstance(band, list) or any(not isinstance(e, str) or ':' not in e for e in band):
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': band is not a list of offset:hash strings -- '
+                             'delete that cursor (or the state file) and let the query bootstrap')
         if prev > 0:
             ## The window reopens where the last walk stopped (its frontier,
             ## below the high-water mark after a truncated walk) or at the
             ## overlap below the mark, whichever is earlier — but never
             ## before the band's lower bound: lines below it are no longer
             ## known and would be counted again.
-            frontier = int(c.get('frontier_ns') or prev)
-            frm = max(floor_ns, int(c.get('overlap_from_ns') or 0), min(frontier, prev - overlap_s * 10 ** 9))
+            frm = max(floor_ns, prev_bound, min(frontier, prev - overlap_s * 10 ** 9))
             gap = frontier < floor_ns
             if to_ns < frm <= to_ns + max_window_min * 60 * 10 ** 9:
                 ## The cursor is ahead of `now - ingest_lag` (a lag raised
@@ -550,16 +573,19 @@ tool plan:
                 frm = to_ns
         else:
             ## Bootstrap: a short first window, so an install does not
-            ## replay an hour of history as if it were news.
-            frm = to_ns - min(max_window_min, boot_min) * 60 * 10 ** 9
-            gap = False
+            ## replay an hour of history as if it were news. A first walk
+            ## that failed left where it opened (the band's bound): the
+            ## retry reopens THERE, not at a window that slid with the clock.
+            boot_from = to_ns - min(max_window_min, boot_min) * 60 * 10 ** 9
+            frm = max(floor_ns, min(boot_from, prev_bound) if prev_bound else boot_from)
+            gap = bool(prev_bound) and prev_bound < floor_ns
         ## The overlap re-reads the tail of the previous window on purpose
         ## (late ingestion); the lines already seen there travel as
         ## (timestamp, hash) pairs so they are not counted twice.
         windows[name] = {'from_ns': str(frm), 'to_ns': str(to_ns), 'gap': gap, 'bootstrap': prev == 0,
-                         'prev_covered_to_ns': str(prev), 'frontier_ns': str(int(c.get('frontier_ns') or prev)),
-                         'band': list(c.get('band') or []), 'band_base_ns': str(int(c.get('band_base_ns') or 0)),
-                         'overlap_from_ns': str(int(c.get('overlap_from_ns') or 0)),
+                         'prev_covered_to_ns': str(prev), 'frontier_ns': str(frontier),
+                         'band': list(band), 'band_base_ns': str(band_base),
+                         'overlap_from_ns': str(prev_bound),
                          'overlap_ns': str(overlap_s * 10 ** 9)}
     loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
                  'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
@@ -924,17 +950,20 @@ tool poll_loki:
                 err = type(e).__name__ + ': ' + str(e)[:200]
                 errors.append({'query': name, 'error': err})
             if err:
-                ## The cursor does not move on a failed walk (decide keeps
-                ## the previous one); the lines written before the failure
-                ## are scanned this tick, and the band knows them, so the
-                ## retried window does not write them again.
-                ## The cut is clamped at what THIS walk reached (everything
-                ## below was read), never at the stale frontier: a query that
-                ## fails past a page depth every tick would otherwise grow
-                ## the band by max_lines a tick, without bound.
-                band, bbase, overlap_from = hand_over(band_prev, seen, prev_to, max(frontier_prev, last_ts), overlap_ns, frm)
+                ## The high-water mark does not move on a failed walk; the
+                ## frontier does — to where the walk stopped (its window
+                ## start when it read nothing), like a truncated walk — so
+                ## the retry reopens THERE whatever the overlap becomes, not
+                ## at an overlap that may have shrunk above the failed
+                ## window. The lines written before the failure are scanned
+                ## this tick, and the band knows them, so the retry does not
+                ## write them again; the cut is clamped at that frontier
+                ## (everything below was read), so a query failing past a
+                ## page depth every tick does not grow the band without bound.
+                frontier = max(frm, last_ts)
+                band, bbase, overlap_from = hand_over(band_prev, seen, prev_to, frontier, overlap_ns, frm)
                 per_query[name] = dict(meta, lines=n, truncated=truncated, error=err, covered_to_ns=str(prev_to),
-                                       frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
+                                       frontier_ns=str(frontier), band=band, band_base_ns=bbase,
                                        overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
                 total += n
                 continue
@@ -1397,9 +1426,15 @@ tool leak_scan:
                 ## The sample is the scrubbed line: every class ran on it,
                 ## the belt included.
                 sample = scrubbed[:300]
-                t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0,
+                t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0, 'count_live': 0,
                                                'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set()})
                 t['count'] += 1
+                ## A line read inside a query's FIRST window is history, not
+                ## news; the template counts its live lines apart, so decide
+                ## judges by the lines, never by which query happened to
+                ## create the template first.
+                if not (per_query.get(q) or {}).get('bootstrap'):
+                    t['count_live'] += 1
                 t['first_ts'] = min(t['first_ts'], ts)
                 t['last_ts'] = max(t['last_ts'], ts)
                 for k in ('container', 'pod'):
@@ -1525,12 +1560,12 @@ tool decide:
                           'title_key': 'prom_no_data', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
                           'fields': {'title': r.get('title') or r['id'], 'value': 'no data', 'op': r.get('op'), 'threshold': r.get('threshold')},
                           'evidence': {'warnings': r.get('warnings') or []}, 'lane': 'prometheus', 'tick_count': 1})
-    ## A query still bootstrapping (its first window: a failed first tick
-    ## wrote the state before it read anything) is history, not news.
-    loki_bootstrap = set(q for q, i in loki_per_query.items() if i.get('bootstrap'))
+    ## Only a template's LIVE lines (read outside a query's first window)
+    ## count and post; the history lines are observed. The scan counted
+    ## them apart, per line — whichever query created the template.
     for t in (signals.get('templates') or []):
-        cnt = int(t.get('count') or 0)
-        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'query': t.get('query'), 'severity': 'high' if cnt >= 50 else 'medium',
+        cnt = int(t.get('count_live') or 0)
+        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'severity': 'high' if cnt >= 50 else 'medium',
                       'title_key': 'loki_template', 'title_arg': (t.get('template') or '')[:120], 'detail_key': 'loki_detail',
                       'fields': {'count': cnt, 'first': ns_to_iso(t.get('first_ts') or 0), 'streams': ', '.join(t.get('streams') or []) or '-'},
                       'evidence': {'sample': t.get('sample'), 'template': t.get('template'), 'query': t.get('query')},
@@ -1564,7 +1599,7 @@ tool decide:
             ## to high keeps its rank until the incident is forgotten.
             rec['severity'] = prev_sev
         state_word = None
-        if c['kind'] == 'loki' and (bootstrap or c.get('query') in loki_bootstrap):
+        if c['kind'] == 'loki' and (bootstrap or int(c['tick_count'] or 0) == 0):
             ## The first window is history, not news: observe, do not post.
             ## The template re-fires as NEW the first time it recurs.
             observed_new += 1
@@ -1582,10 +1617,18 @@ tool decide:
         incidents[fp] = rec
 
     ## ── incidents NOT seen this tick ───────────────────────────────
-    ## `lane_ok` answers "may this tick be reported" (one Loki query covered
-    ## is enough); concluding that an incident was NOT observed needs the
-    ## whole lane: a query dark this tick observed nothing.
-    observe_ok = dict(lane_ok, loki=bool(loki_ok and not loki_errors))
+    ## Three questions, three predicates: `lane_ok` — may this tick be
+    ## reported (one Loki query covered is enough); `loki_healthy` — did
+    ## every query answer (the lane's health record); `loki_complete` —
+    ## did the lane read EVERYTHING it could have seen this tick. A
+    ## truncated walk, an empty window, a declared gap or a failed query
+    ## observed less than the window: nothing is concluded about what was
+    ## not seen — the bot's own coverage note says so.
+    loki_healthy = bool(loki_ok and not loki_errors)
+    loki_complete = loki_healthy and not any(
+        i.get('truncated') or i.get('gap') or int(i.get('to_ns') or 0) <= int(i.get('from_ns') or 0)
+        for i in loki_per_query.values())
+    observe_ok = dict(lane_ok, loki=loki_complete)
     for fp, rec in list(incidents.items()):
         if fp in seen_fps:
             continue
@@ -1619,7 +1662,7 @@ tool decide:
         ## is enough); the lane's HEALTH asks another question: a query
         ## dark for good must not be washed by its healthy neighbour, or
         ## the staleness note never fires for it.
-        mark('loki', loki_ok and not loki_errors, json.dumps(loki_errors)[:300] if loki_errors else '')
+        mark('loki', loki_healthy, json.dumps(loki_errors)[:300] if loki_errors else '')
     if lanes.get('prometheus'):
         mark('prometheus', prom_ok, json.dumps(prom_errors)[:300] if prom_errors else '')
     if lanes.get('probes'):

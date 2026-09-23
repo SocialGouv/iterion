@@ -962,6 +962,19 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 		t.Fatalf("the newest pair of a long band is still known: %v %s %v", loki, stderr, err)
 	}
 	_ = os.Remove(filepath.Join(h.ws, ".prod-watch", "state.json"))
+	// Every cursor field is parsed under one named refusal: a foreign value
+	// names the query and the field, and a falsy foreign value is never
+	// swapped for a default.
+	for field, value := range map[string]string{"frontier_ns": "{}", "band_base_ns": `"x"`, "covered_to_ns": `[1]`} {
+		_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(fmt.Sprintf(
+			`{"version":1,"generation":1,"cursors":{"loki":{"errors":{"covered_to_ns":"5","frontier_ns":"5","band":[],"band_base_ns":"0","overlap_from_ns":"0","%s":%s}}},"incidents":{},"health":{}}`,
+			field, value)), 0o644)
+		_, stderr, err := plan(h.tokenFile)
+		if err == nil || !strings.Contains(stderr, field) || !strings.Contains(stderr, "errors") || strings.Contains(stderr, "Traceback") {
+			t.Fatalf("a foreign %s must refuse by name: %v %s", field, err, stderr)
+		}
+	}
+	_ = os.Remove(filepath.Join(h.ws, ".prod-watch", "state.json"))
 	// The typed refusal renders the REASON, not the summary — pinned on
 	// the compiled node so a template edit cannot silently drop it.
 	fn, ok := wf.Nodes["watch_halted"].(*ir.FailNode)
@@ -1630,14 +1643,9 @@ func TestProdWatch_LokiForeignBandFormatIsRefusedByName(t *testing.T) {
 		nsAgo(20*time.Second), nsAgo(20*time.Second))), 0o644)
 	vars := cursorVars(h, 60, 0, 5000)
 	secrets := map[string]string{"grafana_token": h.tokenFile}
-	plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
-		"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
-	if err == nil || !strings.Contains(stderr, "offset:hash") || strings.Contains(stderr, "Traceback") {
-		t.Fatalf("a foreign band format must refuse by name: %v %s", err, stderr)
+	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err == nil || !strings.Contains(stderr, "offset:hash") || !strings.Contains(stderr, "errors") || strings.Contains(stderr, "Traceback") {
+		t.Fatalf("a foreign band format must refuse by name, naming the query, before any lane runs: %v %s", err, stderr)
 	}
 }
 
@@ -1664,6 +1672,127 @@ func TestProdWatch_BootstrapAfterAFailedFirstTickIsStillHistory(t *testing.T) {
 	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
 	if outs["poll_loki"]["lines"].(float64) != 6 || len(outs["decide"]["alerts"].([]any)) != 0 {
 		t.Fatalf("tick 2 reads the query's first window and observes it, it does not post history as news: lines=%v alerts=%v", outs["poll_loki"]["lines"], outs["decide"]["alerts"])
+	}
+}
+
+// TestProdWatch_BootstrapGateFollowsTheLinesNotTheQueryOrder: a template
+// fed by an established query AND by a query still reading its first
+// window is news for the live lines only — whatever the order of the
+// queries in the config. Attributed to the first query that emitted it,
+// the gate either swallowed a live alert or replayed sixty lines of history
+// as an escalation.
+func TestProdWatch_BootstrapGateFollowsTheLinesNotTheQueryOrder(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for _, newq := range []string{"aaa_new", "zzz_new"} {
+		newq := newq
+		t.Run(newq, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, lokiTwoQueries(1000, 60))
+			lines := []pwLine{{TS: nsAgo(2 * time.Minute), Line: "ERROR warmup", Container: "api", Q: "errors-q"}}
+			h.lines.Store(lines)
+			h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000)) // the established query has its cursor
+			h.writeConfig(t, func(cfg map[string]any) {
+				lokiTwoQueries(1000, 60)(cfg)
+				cfg["loki"].(map[string]any)["queries"].(map[string]any)[newq] = "new-q"
+			})
+			for i := 0; i < 60; i++ { // the new query's first window: history
+				lines = append(lines, pwLine{TS: nsAgo(3*time.Minute) + int64(i)*int64(time.Second), Line: fmt.Sprintf("ERROR db timeout %d ms", i), Container: "api", Q: "new-q"})
+			}
+			lines = append(lines, pwLine{TS: nsAgo(5 * time.Second), Line: "ERROR db timeout 7 ms", Container: "api", Q: "errors-q"}) // live, on the established query
+			h.lines.Store(lines)
+			outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+			alerts := outs["decide"]["alerts"].([]any)
+			if len(alerts) != 1 {
+				t.Fatalf("exactly one alert, for the live line: %v (summary: %v)", alerts, outs["decide"]["summary"])
+			}
+			a := alerts[0].(map[string]any)
+			if a["state"] != "new" || a["severity"] != "medium" || a["count"].(float64) != 1 {
+				t.Fatalf("the live line is news once, at its own count; history is observed, not counted: %v", a)
+			}
+		})
+	}
+}
+
+// TestProdWatch_LokiFailedBootstrapWindowIsRetriedWhereItOpened: a query
+// whose first walk failed keeps no mark, and its bootstrap window must not
+// slide with the clock — the retry reopens where the failed attempt
+// opened, or the bottom of the window is lost silently.
+func TestProdWatch_LokiFailedBootstrapWindowIsRetriedWhereItOpened(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		lokiTwoQueries(1000, 60)(cfg)
+		cfg["loki"].(map[string]any)["bootstrap_window_minutes"] = 1
+	})
+	h.lines.Store([]pwLine{{TS: nsAgo(58 * time.Second), Line: "ERROR near the bottom", Container: "api", Q: "errors-q"}})
+	h.failLokiFrom.Store(int64(len(h.calls()) + 1))
+	h.failLokiCount.Store(2)
+	outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	if pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any); pq["error"] == "" || pq["lines"].(float64) != 0 {
+		t.Fatalf("tick 1: the first walk fails before reading: %v", pq)
+	}
+	h.failLokiFrom.Store(0)
+	time.Sleep(3 * time.Second) // the clock moves; a window computed from `now` would leave the line behind
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+	if pq["error"] != "" || pq["lines"].(float64) != 1 {
+		t.Fatalf("tick 2 retries the window where it opened and reads the line: %v", pq)
+	}
+}
+
+// TestProdWatch_LokiZeroWidthAfterTruncationAtTheBoundKeepsTheBand: with
+// no overlap, the band's bound lands exactly on the frontier line; a
+// zero-width tick right after must keep that line (nothing re-adds it), or
+// the next full window, opening at the bound inclusive, writes it again.
+func TestProdWatch_LokiZeroWidthAfterTruncationAtTheBoundKeepsTheBand(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiOnly(1000, 0))
+	var lines []pwLine
+	for i := 0; i < 3; i++ {
+		lines = append(lines, pwLine{TS: nsAgo(30*time.Second) + int64(i)*int64(time.Second), Line: fmt.Sprintf("ERROR L%d", i), Container: "api", Q: "errors-q"})
+	}
+	h.lines.Store(lines)
+	written := map[string]int{}
+	outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 2))
+	countRawLines(t, written, outs["poll_loki"]["raw_file"].(string))
+	if pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any); pq["truncated"] != true {
+		t.Fatalf("tick 1 is truncated at L1: %v", pq)
+	}
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 400, 5000))
+	if pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any); pq["from_ns"] != pq["to_ns"] || len(pq["band"].([]any)) == 0 {
+		t.Fatalf("tick 2 is zero-width and keeps the band: %v", pq)
+	}
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	countRawLines(t, written, outs["poll_loki"]["raw_file"].(string))
+	for _, l := range []string{"ERROR L0", "ERROR L1", "ERROR L2"} {
+		if written[l] != 1 {
+			t.Fatalf("%q written %d times: %v", l, written[l], written)
+		}
+	}
+}
+
+// TestProdWatch_LokiCursorOutOfTheWindowIsAGap: a cursor older than the max
+// window declares a gap — the lines between are lost for good — and the
+// tick's coverage is partial.
+func TestProdWatch_LokiCursorOutOfTheWindowIsAGap(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiOnly(1000, 60))
+	old := nsAgo(2 * time.Hour)
+	_ = os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755)
+	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(fmt.Sprintf(
+		`{"version":1,"generation":1,"cursors":{"loki":{"errors":{"covered_to_ns":"%d","frontier_ns":"%d","band":[],"band_base_ns":"0","overlap_from_ns":"%d"}}},"incidents":{},"health":{}}`,
+		old, old, old)), 0o644)
+	outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+	if pq["gap"] != true || outs["leak_scan"]["coverage"] != "partial" {
+		t.Fatalf("a cursor out of the max window is a gap and partial coverage: %v coverage=%v", pq, outs["leak_scan"]["coverage"])
 	}
 }
 
@@ -1773,6 +1902,64 @@ func TestProdWatch_DecideDarkQueryDoesNotWashTheLifecycle(t *testing.T) {
 	if _, kept := inc["loki:old"]; !kept || inc["loki:dark"].(map[string]any)["quiet_noted"] == true {
 		t.Fatalf("no incident is forgotten or quieted on a partially observed lane: %v", inc)
 	}
+}
+
+// TestProdWatch_DecidePartialObservationConcludesNothing: a Loki tick that
+// did not observe everything — a truncated walk, a zero-width window, a
+// gap, or a lane not configured — concludes nothing about the incidents it
+// did not see: no "not observed any more", no forgetting, for log and leak
+// incidents alike.
+func TestProdWatch_DecidePartialObservationConcludesNothing(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	incidents := func() map[string]any {
+		return map[string]any{"loki:quiet": incident("loki", "medium", true, 100, 100), "loki:old": incident("loki", "medium", true, 400, 400),
+			"leak:email": incident("leak", "high", true, 100, 100)}
+	}
+	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "partial", "lines_scanned": 0}
+	cases := map[string]map[string]any{
+		"truncated":  {"lines": 5, "error": "", "truncated": true, "gap": false, "covered_to_ns": "500", "from_ns": "100", "to_ns": "900"},
+		"zero-width": {"lines": 0, "error": "", "truncated": false, "gap": false, "covered_to_ns": "900", "from_ns": "900", "to_ns": "900"},
+		"gap":        {"lines": 3, "error": "", "truncated": false, "gap": true, "covered_to_ns": "900", "from_ns": "100", "to_ns": "900"},
+	}
+	for name, pq := range cases {
+		name, pq := name, pq
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "health": map[string]any{}, "incidents": incidents()}
+			out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
+				"loki_ok": true, "loki_truncated": pq["truncated"], "loki_errors": []any{}, "loki_per_query": map[string]any{"errors": pq},
+				"lanes": map[string]any{"loki": true, "prometheus": false, "probes": false}})
+			if err != nil {
+				t.Fatalf("decide: %v %s", err, stderr)
+			}
+			if got := alertsOf(t, map[string]map[string]any{"decide": out}); len(got) != 0 {
+				t.Fatalf("%s: a lane that did not observe everything concludes nothing: %v", name, got)
+			}
+			inc := pwStateNext(t, out)["incidents"].(map[string]any)
+			if len(inc) != 3 || inc["loki:quiet"].(map[string]any)["quiet_noted"] == true {
+				t.Fatalf("%s: no incident forgotten or quieted: %v", name, inc)
+			}
+		})
+	}
+	t.Run("lane-not-configured", func(t *testing.T) {
+		t.Parallel()
+		h := newPWHarness(t)
+		state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "health": map[string]any{}, "incidents": incidents()}
+		out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
+			"loki_ok": true, "loki_errors": []any{}, "loki_per_query": map[string]any{},
+			"lanes": map[string]any{"loki": false, "prometheus": false, "probes": true}})
+		if err != nil {
+			t.Fatalf("decide: %v %s", err, stderr)
+		}
+		if got := alertsOf(t, map[string]map[string]any{"decide": out}); len(got) != 0 {
+			t.Fatalf("a lane no longer configured concludes nothing: %v", got)
+		}
+		if inc := pwStateNext(t, out)["incidents"].(map[string]any); len(inc) != 3 {
+			t.Fatalf("no incident forgotten on an unconfigured lane: %v", inc)
+		}
+	})
 }
 
 // TestProdWatch_DecideDroppedQueryKeepsItsMark: a query absent from this
@@ -2011,6 +2198,7 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 		{"truncation-and-lag", []int{5, 20}, []int{0, 1}, false, false, false},
 		{"config-churn", []int{3, 7, 20, 5000}, []int{0}, true, false, false},
 		{"churn-and-lag", []int{5, 20}, []int{0, 1, 2}, true, false, false},
+		{"churn-lag-and-failures", []int{3, 7, 20}, []int{0, 1, 2}, true, true, false},
 		{"loki-failures", []int{7, 5000}, []int{0}, false, true, true},
 		{"burst-past-band-cap", []int{6000}, []int{0}, false, false, true},
 	}
@@ -2084,6 +2272,11 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 					}
 					countRawLines(t, written, outs["poll_loki"]["raw_file"].(string))
 					c, _ := strconv.ParseInt(pq["covered_to_ns"].(string), 10, 64)
+					if os.Getenv("PW_DEBUG") != "" {
+						t.Logf("tick %d max_lines=%d lag=%d overlap=%d page=%d failing=%v | from=%v to=%v lines=%v trunc=%v gap=%v err=%q covered=%v frontier=%v ofrom=%v band=%d | now-from=%.1fs now-to=%.1fs",
+							k, maxLines, lag, overlap, page, failing, pq["from_ns"], pq["to_ns"], pq["lines"], pq["truncated"], pq["gap"], pq["error"], pq["covered_to_ns"], pq["frontier_ns"], pq["overlap_from_ns"], len(pq["band"].([]any)),
+							float64(time.Now().UnixNano()-from)/1e9, float64(time.Now().UnixNano()-to)/1e9)
+					}
 					if c < hwm {
 						t.Fatalf("tick %d: the high-water mark moved backwards: %d < %d (max_lines=%d lag=%d overlap=%d page=%d)", k, c, hwm, maxLines, lag, overlap, page)
 					}
@@ -2115,6 +2308,9 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 				}
 				for _, l := range lines {
 					if _, ok := firstVisible[l.Line]; ok && written[l.Line] != 1 {
+						if os.Getenv("PW_DEBUG") != "" {
+							t.Logf("lost line %q ts=%d (now-ts=%.1fs) first visible in window %d [%d, %d)", l.Line, l.TS, float64(time.Now().UnixNano()-l.TS)/1e9, firstVisible[l.Line], windows[firstVisible[l.Line]].from, windows[firstVisible[l.Line]].to)
+						}
 						t.Fatalf("%q was inside a window and was written %d times (overlap=%d page=%d)", l.Line, written[l.Line], overlap, page)
 					}
 				}
@@ -2396,7 +2592,7 @@ func TestProdWatch_DecideLifecycle(t *testing.T) {
 	})
 	t.Run("a log template's first-seen renders as a date, not a nanosecond epoch", func(t *testing.T) {
 		h := newPWHarness(t)
-		sig := map[string]any{"templates": []map[string]any{{"template_id": "t1", "query": "errors", "template": "ERROR job # failed", "count": 3,
+		sig := map[string]any{"templates": []map[string]any{{"template_id": "t1", "query": "errors", "template": "ERROR job # failed", "count": 3, "count_live": 3,
 			"first_ts": strconv.FormatInt(nsAgo(time.Hour), 10), "last_ts": strconv.FormatInt(nsAgo(time.Minute), 10), "sample": "ERROR job <num> failed", "streams": []string{"container=w"}}}, "leak": []any{}}
 		st := base()
 		// Not a bootstrap (state exists): the template posts as NEW.

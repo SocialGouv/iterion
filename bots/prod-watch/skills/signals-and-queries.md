@@ -35,14 +35,20 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   the tail of the previous window on purpose (late ingestion) and the
   lines seen there travel in the cursor's band, as `[timestamp, hash]`
   pairs; the scan additionally deduplicates by `(timestamp, line)`.
-- A query that failed keeps its previous cursor (the window is retried
-  next tick) and is listed in `errors`; the lines it wrote before failing
+- A query that failed keeps its high-water mark and moves its frontier to
+  where the walk stopped (the window is retried from there next tick,
+  whatever the overlap becomes) and is listed in `errors`; the lines it wrote before failing
   are scanned this tick and its band knows them (bounded like any other:
   the cut applies up to where the walk reached), so the retry does not
   write them again; a query whose first window was never read (a failed
-  first tick) is still history, not news, when it finally reads it; the
-  lane is degraded — no "not observed any more" is concluded about
-  incidents it could have seen — and the run goes on with its other
+  first tick) retries that window where it opened — it does not slide
+  with the clock — and its lines are still history, not news (a template
+  counts its live lines apart from the lines read in a first window, so
+  the gate follows the lines, never the order of the queries); a lane that
+  did not observe everything this tick — a failed query, a truncated walk,
+  a declared gap, an empty window — concludes nothing about incidents it
+  did not see (no "not observed any more", no forgetting); the run goes on
+  with its other
   lanes (decide refuses a tick only when EVERY configured lane failed) and
   the lane's health is not refreshed while a query fails, so a query dark
   for good surfaces as a silent source after `source_stale_hours`, with
