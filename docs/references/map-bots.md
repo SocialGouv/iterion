@@ -17,7 +17,7 @@
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.8.2 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 1 · 0 | 0.1.2 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 1 · 5 | 0.2.8 |
-| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 1 · 3 | 2.9.0 |
+| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 1 · 3 | 2.9.1 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 1 · 1 | 0.1.2 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 1 · 7 | 3.5.9 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 1 · 5 | 0.4.2 |
@@ -32,7 +32,7 @@
 | `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1 · 7 | 1.1.1 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 1 · 1 | 0.1.2 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 1 · 0 | 0.1.2 |
-| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.8 |
+| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.9 |
 | `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 1 · 8 | 2.0.1 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 1 · 8 | 0.1.2 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.5 |
