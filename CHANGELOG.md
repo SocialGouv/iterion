@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.191.1](https://github.com/SocialGouv/iterion/compare/v3.191.0...v3.191.1) (2026-09-23)
+
+### Bug Fixes
+
+* **parser:** a list that is not written as one never reads the next property as its elements; an empty string is not a rule or a mount ([#1681](https://github.com/SocialGouv/iterion/issues/1681)) ([37e520e](https://github.com/SocialGouv/iterion/commit/37e520e38c200dcd0a52f5e51e6a3d4d428f8ec0)), references [#1631](https://github.com/SocialGouv/iterion/issues/1631) [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1631](https://github.com/SocialGouv/iterion/issues/1631) [#1671](https://github.com/SocialGouv/iterion/issues/1671)
+
+    <details><summary>why</summary>
+
+    Two findings of the gate's third verdict on PR A (#1631), merged before they could be treated there; both reproduced first.
+
+    </details>
+
 ## [3.191.0](https://github.com/SocialGouv/iterion/compare/v3.190.0...v3.191.0) (2026-09-23)
 
 ### Features
