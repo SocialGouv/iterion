@@ -37,6 +37,52 @@ func TestAListWithoutItsBracketNeverReadsTheNextProperty(t *testing.T) {
 	}
 }
 
+// The same invariant on the OTHER reader of an inline list: an agent/judge
+// `tools:` reaches the element loop through parseDeclaredToolList, which —
+// alone among the lists — falls through to it on a `[` that was NOT read, to
+// keep a broken line from being salvaged into a binding `tools: []`. The
+// refusal therefore has to live in parseBracketElems, where both paths meet;
+// hoisted up into parseBracketList it would leave this one eating the next
+// property. Reddens on that hoist: `tools` becomes ["model", "openai/gpt-5.5"]
+// and the node loses its model — an undeclared surface read as a declared one.
+func TestAToolListWithoutItsBracketNeverReadsTheNextProperty(t *testing.T) {
+	nl := string(rune(10))
+	src := strings.Join([]string{
+		`prompt sys:`, `  """s"""`, ``,
+		`prompt usr:`, `  """u"""`, ``,
+		`judge j:`,
+		`  system: sys`,
+		`  user: usr`,
+		`  tools: "bash"`,
+		`  model: "openai/gpt-5.5"`, ``,
+		`workflow w:`,
+		`  entry: j`,
+		`  j -> done`,
+	}, nl) + nl
+	res := Parse("x.bot", src)
+	if len(res.File.Judges) != 1 {
+		t.Fatalf("want one judge, got %d; diagnostics %v", len(res.File.Judges), res.Diagnostics)
+	}
+	j := res.File.Judges[0]
+	if j.Model != "openai/gpt-5.5" {
+		t.Errorf("the next property was read as elements: model = %q, want %q", j.Model, "openai/gpt-5.5")
+	}
+	// nil is UNDECLARED. A non-nil empty list would be the author declaring
+	// "this node has no tools" (toolcatalog.ToolsDeclared), which a line the
+	// parser refused must never assert on their behalf.
+	if j.Tools != nil {
+		t.Errorf("a refused tools: line must leave the surface undeclared, got %#v", j.Tools)
+	}
+	if len(res.Diagnostics) == 0 {
+		t.Error("want the refused tools: line said, got no diagnostic")
+	}
+	for _, d := range res.Diagnostics {
+		if d.Line != 10 {
+			t.Errorf("diagnostic escaped the tools: line: %d %q", d.Line, d.Message)
+		}
+	}
+}
+
 // An empty string is neither a rule nor a mount: the sandbox would refuse it
 // only when it starts. The reader says it where it stands and leaves it out,
 // in both written forms, and the rest of the list is read.
