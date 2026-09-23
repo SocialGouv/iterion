@@ -574,6 +574,12 @@ func (w *writer) promptRef(name string) *yaml.Node {
 		if isIdent(body) || !strings.Contains(body, "\n") && needsQuote(body) {
 			return quoted(body)
 		}
+		// A body ending with a newline is written quoted: in a block scalar
+		// the trailing newline would be read as the clip's and dropped —
+		// quoted, it is the author's character and comes back.
+		if strings.HasSuffix(body, "\n") {
+			return quoted(body)
+		}
 		return str(body)
 	}
 	if needsQuote(name) {

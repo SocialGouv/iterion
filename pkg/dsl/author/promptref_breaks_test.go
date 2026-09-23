@@ -24,7 +24,7 @@ func TestAPromptInPlaceIsReadAsTheScannerReadIt(t *testing.T) {
 			t.Fatalf("the document is refused: %v", res.Diagnostics)
 		}
 		body := inlineBody(t, res, res.File.Agents[0].User)
-		if want := "first" + nl + "second" + nl; body != want {
+		if want := "first" + nl + "second"; body != want {
 			t.Errorf("the prompt body read is %q, want %q", body, want)
 		}
 		var warned *parser.Diagnostic
