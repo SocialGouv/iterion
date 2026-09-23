@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.189.0](https://github.com/SocialGouv/iterion/compare/v3.188.0...v3.189.0) (2026-09-23)
+
+### Features
+
+* **dsl:** lot 5 PR A — structured registry, forms held to the parser, and the author JSON Schema ([#1584](https://github.com/SocialGouv/iterion/issues/1584)) ([#1631](https://github.com/SocialGouv/iterion/issues/1631)) ([8969915](https://github.com/SocialGouv/iterion/commit/8969915a2e17ae3c6d359ddc6be540e3f877f9bf)), references [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1094](https://github.com/SocialGouv/iterion/issues/1094) [#1094](https://github.com/SocialGouv/iterion/issues/1094) [#1624](https://github.com/SocialGouv/iterion/issues/1624) [#1627](https://github.com/SocialGouv/iterion/issues/1627) [#1628](https://github.com/SocialGouv/iterion/issues/1628) [#1628](https://github.com/SocialGouv/iterion/issues/1628) [#1656](https://github.com/SocialGouv/iterion/issues/1656)
+
+    <details><summary>why</summary>
+
+    `servers: ["forge"]`, `on: ["auth"]`, `watches: ["a"]`, `needs: ["gpu"]` read as EMPTY lists, `tools: [1, bash]` as `[bash]`: parseIdentList and parseToolRef consumed a token that could not open a name and reported nothing, so the server was never wired and no diagnostic said so. Both chokepoints now refuse the element where it stands — one E002 naming it, a hint that says "without quotes" for a quoted element — and the rest of the list is read. No shipped bot writes such an element (grep over…
+
+    </details>
+
 ## [3.188.0](https://github.com/SocialGouv/iterion/compare/v3.187.0...v3.188.0) (2026-09-22)
 
 ### Features
