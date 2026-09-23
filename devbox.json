@@ -17,7 +17,8 @@
     "pkg-config@latest",
     "gtk3@latest",
     "webkitgtk_4_1@latest",
-    "golangci-lint@latest"
+    "golangci-lint@latest",
+    "jq@latest"
   ],
   "shell": {
     "init_hook": [],
