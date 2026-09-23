@@ -461,20 +461,20 @@ describe("the Source view of a bot in several files", () => {
     const store = unitStore();
     const { unmount } = renderView(store);
     await screen.findByTestId("source-view-file-picker");
-    expect(store.getState().sourceEditing).toBe(false);
+    expect(store.getState().sourceBuffer).toBeNull();
 
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
-    expect(store.getState().sourceEditing).toBe(true);
+    expect(store.getState().sourceBuffer).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(store.getState().sourceEditing).toBe(false);
+    expect(store.getState().sourceBuffer).toBeNull();
 
     // And it is released when the view goes away, or the watcher would
     // never reload anything again.
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    expect(store.getState().sourceEditing).toBe(true);
+    expect(store.getState().sourceBuffer).not.toBeNull();
     unmount();
-    expect(store.getState().sourceEditing).toBe(false);
+    expect(store.getState().sourceBuffer).toBeNull();
   });
 
   // `editing` is this component's state; `unit` and `salvaged` are the

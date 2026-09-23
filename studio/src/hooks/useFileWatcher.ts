@@ -35,12 +35,13 @@ export function useFileWatcher() {
       const store = docStoreRef.current.getState();
       const { addToast, notifyFilesChanged } = useUIStore.getState();
       const filePath = store.currentFilePath;
-      // An open Source-view edit counts: its buffer is local to that
-      // component, so isDirty() alone cannot see it, and an auto-reload
-      // would swap the document and the revision under what the author is
-      // typing — the Apply that follows would then land on top of whoever
-      // wrote the file meanwhile.
-      const dirty = store.isDirty() || store.sourceEditing;
+      // An open Source-view edit counts, dirty or not: an auto-reload would
+      // swap the document and the revision under what the author is typing,
+      // and the Apply that follows would then land on top of whoever wrote
+      // the file meanwhile. `hasUnsavedWork()` is the narrower question —
+      // it does not hold for an editor opened and not yet typed in — so the
+      // gate here stays the buffer's PRESENCE.
+      const dirty = store.isDirty() || !!store.sourceBuffer;
 
       if (event.type === "file_created" || event.type === "file_deleted") {
         notifyFilesChanged();
@@ -116,13 +117,13 @@ export function useFileWatcher() {
             clearTimeout(reloadTimerRef.current);
             reloadTimerRef.current = setTimeout(() => {
               const current = docStoreRef.current.getState();
-              // sourceEditing too: the author can open a Source-view edit
+              // The buffer too: the author can open a Source-view edit
               // inside this debounce window, and reading isDirty() alone
               // here loses the guard the branch above applies.
               if (
                 current.currentFilePath !== targetPath ||
                 current.isDirty() ||
-                current.sourceEditing
+                !!current.sourceBuffer
               ) {
                 return;
               }

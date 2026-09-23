@@ -96,7 +96,7 @@ export function useDocumentFileOps({
   const READ_ONLY_MSG = sharedBundle
     ? "This workflow comes from a locked shared bundle. Edit its source bundle, update bots.lock, then run iterion bots sync."
     : "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
-  const isDirty = useDocumentStore((s) => s.isDirty);
+  const hasUnsavedWork = useDocumentStore((s) => s.hasUnsavedWork);
   const addWorkflow = useDocumentStore((s) => s.addWorkflow);
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
@@ -110,10 +110,12 @@ export function useDocumentFileOps({
   const [loading, setLoading] = useState(false);
   const [confirmRemoveWorkflow, setConfirmRemoveWorkflow] = useState(false);
 
+  // `hasUnsavedWork`, not `isDirty`: the Source view's un-applied text is
+  // work this discard takes too, and it moves no document generation (#1662).
   const confirmDiscard = useCallback(async () => {
-    if (!isDirty()) return true;
+    if (!hasUnsavedWork()) return true;
     return confirm(DISCARD_CHANGES_PROMPT);
-  }, [isDirty, confirm]);
+  }, [hasUnsavedWork, confirm]);
 
   const handleNew = useCallback(async () => {
     if (!(await confirmDiscard())) return;

@@ -36,25 +36,53 @@ export default function SourceView() {
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const setSalvaged = useDocumentStore((s) => s.setSalvaged);
   const isDirty = useDocumentStore((s) => s.isDirty);
-  const setSourceEditing = useDocumentStore((s) => s.setSourceEditing);
+  const setSourceBuffer = useDocumentStore((s) => s.setSourceBuffer);
   const { confirm, dialog } = useConfirm();
   const [source, setSource] = useState("");
   const [editing, setEditingState] = useState(false);
-  // Mirrored into the store: the watcher reads it to decide whether a file
-  // changed on disk may be reloaded under this buffer.
+  // The text the buffer was rendered FROM, frozen when the mode opens. It is
+  // what `text !== base` compares against, so every surface outside can tell
+  // an open editor from one holding work a discard would take.
+  const baseRef = useRef("");
+  // Published to the store, not merely flagged there: the file watcher, the
+  // assistant's reload-after-write, the tab close and File → New all decide
+  // whether to take this text, and a boolean could only tell them the editor
+  // was open, never whether anything was in it (#1662).
   const setEditing = useCallback(
     (on: boolean) => {
       setEditingState(on);
-      setSourceEditing(on);
+      if (on) {
+        baseRef.current = sourceRef.current;
+        setSourceBuffer({
+          path: pathRef.current,
+          rel: relRef.current,
+          text: sourceRef.current,
+          base: sourceRef.current,
+        });
+      } else {
+        setSourceBuffer(null);
+      }
     },
-    [setSourceEditing],
+    [setSourceBuffer],
   );
+  // Read inside `setEditing` and the editor's onChange, both of which must
+  // see the CURRENT text and file without re-creating themselves on every
+  // keystroke — a new onChange identity per character remounts nothing but
+  // costs a render of the editor for each one.
+  const sourceRef = useRef("");
+  sourceRef.current = source;
+  const pathRef = useRef<string | null>(null);
+  pathRef.current = currentFilePath;
   const [parseError, setParseError] = useState<string | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   // Which file of the unit the view is on; null until a unit names one.
   const [selected, setSelected] = useState<string | null>(null);
+  const relRef = useRef<string | null>(null);
+  relRef.current = selected;
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => setSourceEditing(false), [setSourceEditing]);
+  // The buffer belongs to this mounted view: unmounting it (closing the tab,
+  // switching away) leaves nothing for a discard path to consult.
+  useEffect(() => () => setSourceBuffer(null), [setSourceBuffer]);
   // Every render this effect starts carries a generation. The cleanup bumps
   // it, so an answer that arrives after the author changed file — or
   // started typing — is dropped instead of landing in the editor. Without
@@ -343,6 +371,26 @@ export default function SourceView() {
     rendered,
   ]);
 
+  // Cancel takes the typed text, and there is no undo for it — the render
+  // effect overwrites the buffer 500 ms after the mode closes. The prompt is
+  // asked HERE because it is the one discard the author triggers from inside
+  // this view; the ones triggered from outside (tab close, File → New, the
+  // watcher's reload, the assistant's reload-after-write) consult
+  // `hasUnsavedWork()` before they move the store.
+  const handleCancel = useCallback(async () => {
+    if (source !== baseRef.current) {
+      const go = await confirm({
+        title: "Discard this text?",
+        message:
+          "What you typed here has not been applied. Closing the editor replaces it with the file as it is now.",
+        confirmLabel: "Discard",
+        confirmVariant: "danger",
+      });
+      if (!go) return;
+    }
+    setEditing(false);
+  }, [source, confirm, setEditing]);
+
   // Editable when the view is ABOUT a file a save could land on: a bot in
   // one file — salvaged or not, since repairing it here is the way out —
   // or one file of a unit whose main parses. Not the merged program, which
@@ -423,7 +471,7 @@ export default function SourceView() {
               <Button variant="primary" size="sm" onClick={handleApply}>
                 Apply
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => setEditing(false)}>
+              <Button variant="secondary" size="sm" onClick={() => void handleCancel()}>
                 Cancel
               </Button>
             </>
@@ -449,7 +497,15 @@ export default function SourceView() {
           beforeMount={registerIterLanguage}
           value={source}
           onChange={(v) => {
-            if (editing) setSource(v ?? "");
+            if (!editing) return;
+            const text = v ?? "";
+            setSource(text);
+            setSourceBuffer({
+              path: pathRef.current,
+              rel: relRef.current,
+              text,
+              base: baseRef.current,
+            });
           }}
           options={{
             readOnly: !editing,

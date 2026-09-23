@@ -62,7 +62,10 @@ export default function Toolbar() {
   const redo = useDocumentStore((s) => s.redo);
   const canUndo = useDocumentStore((s) => s.canUndo);
   const canRedo = useDocumentStore((s) => s.canRedo);
-  const isDirty = useDocumentStore((s) => s.isDirty);
+  // A VALUE, not the function: the badge has to re-render when the Source
+  // view's buffer moves, and a selector returning `s.hasUnsavedWork` would
+  // hand back the same stable function reference every time.
+  const hasUnsavedWork = useDocumentStore((s) => s.isDirty() || s.isSourceDirty());
   const addToast = useUIStore((s) => s.addToast);
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
   const toggleSourceView = useUIStore((s) => s.toggleSourceView);
@@ -453,7 +456,7 @@ export default function Toolbar() {
           <FileStatusBadge
             currentFilePath={currentFilePath}
             hasDocument={!!document}
-            isDirty={isDirty()}
+            isDirty={hasUnsavedWork}
           />
           <RunButton />
         </div>

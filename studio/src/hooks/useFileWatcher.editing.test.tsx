@@ -79,7 +79,7 @@ describe("the watcher against an open Source-view edit", () => {
 
   it("does not reload when an edit is already open", async () => {
     const store = boundStore();
-    store.getState().setSourceEditing(true);
+    store.getState().setSourceBuffer({ path: "bots/demo/main.bot", rel: null, text: "x", base: "x" });
     mount(store);
     ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
     await new Promise((r) => setTimeout(r, 900));
@@ -93,7 +93,7 @@ describe("the watcher against an open Source-view edit", () => {
     mount(store);
     ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
     await new Promise((r) => setTimeout(r, 100));
-    store.getState().setSourceEditing(true);
+    store.getState().setSourceBuffer({ path: "bots/demo/main.bot", rel: null, text: "x", base: "x" });
     await new Promise((r) => setTimeout(r, 900));
     expect(api.openFile).not.toHaveBeenCalled();
   });

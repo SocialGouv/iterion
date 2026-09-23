@@ -57,6 +57,19 @@ function normalize(doc: IterDocument): IterDocument {
 
 const MAX_HISTORY = 50;
 
+/** The Source view's open text edit, as the rest of the studio sees it.
+ *  `base` is the text the render produced; `text` is what the author has
+ *  since typed. They part exactly when there is work a discard would take. */
+export interface SourceBuffer {
+  /** The tab's file the buffer belongs to, and — for a bot in several files
+   *  — which file of its unit. Carried so a reader can say WHICH text is at
+   *  stake rather than only that some is. */
+  path: string | null;
+  rel: string | null;
+  text: string;
+  base: string;
+}
+
 interface DocumentState {
   document: IterDocument | null;
   diagnostics: string[];
@@ -87,13 +100,15 @@ interface DocumentState {
   // (its files and the revision a save must present); null otherwise.
   // Dropped whenever the current file changes: a unit belongs to a file.
   unit: UnitInfo | null;
-  // The Source view holds an open, un-applied text edit. Its buffer is
-  // local to that component, so `_generation` does not move and isDirty()
-  // cannot see it — and the file watcher reads isDirty() to decide whether
-  // to reload a file changed on disk. Without this the reload swaps the
-  // document AND the revision under the buffer, and the Apply that follows
-  // lands on top of whoever wrote the file.
-  sourceEditing: boolean;
+  // The Source view's open, un-applied text edit — the buffer itself, not a
+  // flag about it. It used to be component-local `useState`, so nothing
+  // outside could see it: `_generation` does not move while an author types
+  // there, `isDirty()` reported false, and every discard path — closing the
+  // tab, opening another file, the watcher's reload, the assistant's
+  // reload-after-write — took the text with no prompt and no undo (#1662).
+  // One value rather than a flag beside a buffer: "is an edit open" and "is
+  // it dirty" are read by different surfaces, and two fields would drift.
+  sourceBuffer: SourceBuffer | null;
   _generation: number;
   _savedGeneration: number;
 
@@ -108,9 +123,14 @@ interface DocumentState {
   setSalvaged: (salvaged: boolean) => void;
   setCurrentSource: (source: string | null) => void;
   setUnit: (unit: UnitInfo | null) => void;
-  setSourceEditing: (editing: boolean) => void;
+  setSourceBuffer: (buffer: SourceBuffer | null) => void;
   markSaved: () => void;
   isDirty: () => boolean;
+  /** The Source view's buffer holds text its render did not produce. */
+  isSourceDirty: () => boolean;
+  /** Unsaved work of ANY kind in this tab — the document, or the Source
+   *  view's un-applied text. What a discard path consults. */
+  hasUnsavedWork: () => boolean;
 
 
   // Undo/redo
@@ -268,7 +288,7 @@ export function createDocumentStore() {
   detached: false,
   currentSource: null,
   unit: null,
-  sourceEditing: false,
+  sourceBuffer: null,
   _generation: 0,
   _savedGeneration: 0,
   _history: [],
@@ -288,16 +308,31 @@ export function createDocumentStore() {
   // about this one, so the flag is dropped with the unit. A null path here is
   // a detachment — told apart from a fresh store's null by `detached`.
   setCurrentFilePath: (currentFilePath) =>
-    set({ currentFilePath, unit: null, salvaged: false, sourceEditing: false, detached: currentFilePath === null }),
+    set({ currentFilePath, unit: null, salvaged: false, sourceBuffer: null, detached: currentFilePath === null }),
   setSalvaged: (salvaged) => set({ salvaged }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
-  setSourceEditing: (sourceEditing) => set({ sourceEditing }),
+  setSourceBuffer: (sourceBuffer) => set({ sourceBuffer }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
   isDirty: () => {
     const s = get();
     if (!s.document) return false;
     return s._generation !== s._savedGeneration;
+  },
+  isSourceDirty: () => {
+    const b = get().sourceBuffer;
+    return !!b && b.text !== b.base;
+  },
+  // What every path that would DESTROY the author's work has to ask. Not
+  // `isDirty()` on its own: the document and the Source view's buffer hold
+  // unsaved work independently, and a reload, a tab close or a File → New
+  // takes both. The Source view's own prompts deliberately keep asking
+  // `isDirty()` instead — they ask whether the DOCUMENT holds something
+  // their text does not carry, and a buffer that saw itself would prompt on
+  // every Apply.
+  hasUnsavedWork: () => {
+    const s = get();
+    return s.isDirty() || s.isSourceDirty();
   },
 
   // Undo/redo
