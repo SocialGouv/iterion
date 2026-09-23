@@ -65,6 +65,23 @@ export const HUMAN_INTERACTION_OPTIONS: SelectOption[] = [
 export const HUMAN_INTERACTION_HELP =
   "human = always wait for input; llm = LLM generates answer (requires model); llm_or_human = LLM tries first, escalates to human if undecided.";
 
+// Node-level tool-permission gate (docs/permissions.md). The empty value is
+// "inherit the workflow's mode", which is why the forms pass allowEmpty
+// rather than listing a fourth option.
+export const PERMISSION_OPTIONS: SelectOption[] = [
+  { value: "off", label: "off (no gate)" },
+  { value: "ask", label: "ask (pause for approval)" },
+  { value: "deny", label: "deny (block)" },
+];
+
+export const PERMISSION_HELP =
+  "Tool-permission gate for this node. Empty inherits the workflow's mode. off = no gate; ask = pause for approval on a matching rule; deny = block it.";
+
+// The one thing the feature is easy to get backwards, so every rule-list
+// control repeats it: a node list REPLACES, it never adds.
+export const PERMISSION_RULES_HELP =
+  "A non-empty list REPLACES the workflow's list of this kind — never a union, and independently per kind. Restate anything from the workflow's list of this kind you still want. Empty inherits it. Tool(pattern) syntax, e.g. Bash(git diff:*).";
+
 export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "", label: "(default)" },
   { value: "low", label: "low" },
