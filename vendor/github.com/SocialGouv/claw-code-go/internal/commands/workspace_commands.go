@@ -3,6 +3,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +16,13 @@ import (
 // produce more than the caller's ceiling. It is raised DURING production,
 // so the caller pays the bound rather than the expansion.
 var ErrExpansionTooLarge = errors.New("commands: expansion exceeds the byte ceiling")
+
+// ErrBodyTooLarge is returned by LookupWorkspace when the command file is
+// larger than the caller's ceiling. Like ErrExpansionTooLarge it is raised
+// WITHOUT materialising what it refuses: the read stops one byte past the
+// bound. A command file is the cheapest half of this class — it needs no
+// amplification at all, just a large file in a checkout under review.
+var ErrBodyTooLarge = errors.New("commands: command file exceeds the byte ceiling")
 
 // WorkspaceCommand is one markdown slash command discovered under a
 // workspace's `.claude/commands/` directory — the project-commands
@@ -143,7 +151,7 @@ func validCommandName(token string) bool {
 // A body may legitimately be empty (an empty file, or one that is only
 // frontmatter). The caller decides what that means; substituting it blindly
 // would send an empty prompt.
-func LookupWorkspace(workDir, name string) (WorkspaceCommand, bool, error) {
+func LookupWorkspace(workDir, name string, maxBytes int) (WorkspaceCommand, bool, error) {
 	if workDir == "" {
 		return WorkspaceCommand{}, false, nil
 	}
@@ -176,12 +184,34 @@ func LookupWorkspace(workDir, name string) (WorkspaceCommand, bool, error) {
 		return WorkspaceCommand{}, false, fmt.Errorf("commands: open %s: %w", workDir, err)
 	}
 	defer root.Close()
-	data, err := root.ReadFile(filepath.Join(".claude", "commands", rel))
+	f, err := root.Open(filepath.Join(".claude", "commands", rel))
 	if err != nil {
 		if notACommandFile(err) {
 			return WorkspaceCommand{}, false, nil
 		}
 		return WorkspaceCommand{}, false, fmt.Errorf("commands: read %s: %w", path, err)
+	}
+	defer f.Close()
+	// Read at most one byte past the ceiling: enough to KNOW the file is
+	// over it, never enough to hold it. Reading the file whole and checking
+	// its length afterwards is the defect this bound exists to remove, and
+	// it is the same one measured inside Expand — a 256 MiB command file in
+	// a checkout under review costs the server 512 MB before any ceiling is
+	// consulted, with no amplification required.
+	var data []byte
+	if maxBytes > 0 {
+		data, err = io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	} else {
+		data, err = io.ReadAll(f)
+	}
+	if err != nil {
+		if notACommandFile(err) {
+			return WorkspaceCommand{}, false, nil
+		}
+		return WorkspaceCommand{}, false, fmt.Errorf("commands: read %s: %w", path, err)
+	}
+	if maxBytes > 0 && len(data) > maxBytes {
+		return WorkspaceCommand{}, false, ErrBodyTooLarge
 	}
 	body, desc := stripFrontmatter(string(data))
 	return WorkspaceCommand{
@@ -224,7 +254,9 @@ func LookupWorkspace(workDir, name string) (WorkspaceCommand, bool, error) {
 // run — a body of 24 000 `$ARGUMENTS` sits under any sane file ceiling and
 // still reaches gigabytes once the arguments carry a pasted diff, which in
 // a multi-replica server takes co-tenant runs down before anyone is billed.
-// A non-positive maxBytes means unbounded.
+// A non-positive maxBytes means unbounded. A body that is ITSELF over the
+// ceiling is refused whatever it would expand to, including one that would
+// shrink: holding it was already the cost this bound exists to avoid.
 func Expand(cmd WorkspaceCommand, args string, maxBytes int) (expanded string, consumed bool, err error) {
 	body := cmd.Body
 	if maxBytes > 0 && len(body) > maxBytes {
@@ -234,7 +266,23 @@ func Expand(cmd WorkspaceCommand, args string, maxBytes int) (expanded string, c
 	if !strings.ContainsRune(body, '$') {
 		return body, false, nil
 	}
-	fields := strings.Fields(args)
+	// Split lazily. strings.Fields allocates a 16-byte header per field —
+	// a fixed 8x amplification of the ARGUMENT bytes that maxBytes does not
+	// see, paid even on the refusal path and even by the overwhelmingly
+	// common `$ARGUMENTS`-only body that never looks at a positional.
+	// Measured before this: a 10-byte body refused against a 12-byte ceiling
+	// still cost 268 MB on a 32 MiB argument.
+	var fields []string
+	fieldsSplit := false
+	positional := func(n int) (string, bool) {
+		if !fieldsSplit {
+			fields, fieldsSplit = strings.Fields(args), true
+		}
+		if n >= 1 && n <= len(fields) {
+			return fields[n-1], true
+		}
+		return "", false
+	}
 	var b strings.Builder
 	b.Grow(growHint(len(body)+len(args), maxBytes))
 	// write appends s unless it would cross the bound.
@@ -261,13 +309,15 @@ func Expand(cmd WorkspaceCommand, args string, maxBytes int) (expanded string, c
 			i = len(body) - len(rest)
 			continue
 		}
-		if n, width, ok := positionalAt(body, i); ok && n >= 1 && n <= len(fields) {
-			if !write(fields[n-1]) {
-				return "", false, ErrExpansionTooLarge
+		if n, width, ok := positionalAt(body, i); ok {
+			if field, inRange := positional(n); inRange {
+				if !write(field) {
+					return "", false, ErrExpansionTooLarge
+				}
+				consumed = true
+				i += width
+				continue
 			}
-			consumed = true
-			i += width
-			continue
 		}
 		if !write(body[i : i+1]) {
 			return "", false, ErrExpansionTooLarge

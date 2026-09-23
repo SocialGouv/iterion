@@ -31,11 +31,21 @@ func ParseInvocation(prompt string) (name, args string, ok bool) {
 	return intl.ParseInvocation(prompt)
 }
 
+// ErrBodyTooLarge is returned by LookupWorkspace when the command file is
+// larger than the caller's ceiling. The read stops one byte past the bound,
+// so the refusal never holds what it refuses.
+var ErrBodyTooLarge = intl.ErrBodyTooLarge
+
 // LookupWorkspace resolves a command name against workDir's
 // `.claude/commands/`, mapping a `:` namespace onto directories. It is
 // scoped to workDir — it never walks up into the ancestors.
-func LookupWorkspace(workDir, name string) (WorkspaceCommand, bool, error) {
-	return intl.LookupWorkspace(workDir, name)
+//
+// maxBytes bounds the FILE: the read stops one byte past the ceiling and
+// returns ErrBodyTooLarge, so a large command file in a checkout the caller
+// does not control costs the bound rather than its own size. Non-positive
+// means unbounded.
+func LookupWorkspace(workDir, name string, maxBytes int) (WorkspaceCommand, bool, error) {
+	return intl.LookupWorkspace(workDir, name, maxBytes)
 }
 
 // ErrExpansionTooLarge is returned by Expand when the substitution would

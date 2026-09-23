@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -77,23 +78,24 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	if !ok {
 		return userText, false
 	}
-	cmd, found, err := clawcmds.LookupWorkspace(workDir, name)
-	if err != nil {
+	// The ceiling reaches the READ, not just the write: a large command file
+	// needs no amplification at all, so measuring it after loading it would
+	// be the same defect one call earlier.
+	max := slashCommandMaxBytes()
+	cmd, found, err := clawcmds.LookupWorkspace(workDir, name, max)
+	switch {
+	case errors.Is(err, clawcmds.ErrBodyTooLarge):
+		warnSlashCommand(logger, nodeID, iteration,
+			"/%s is larger than the %d-byte ceiling (%s) — sending the prompt unchanged rather than loading it",
+			name, max, SlashCommandMaxBytesEnv)
+		return userText, false
+	case err != nil:
 		warnSlashCommand(logger, nodeID, iteration, "/%s could not be read (%v) — sending the prompt unchanged", name, err)
 		return userText, false
 	}
 	if !found {
 		warnSlashCommand(logger, nodeID, iteration, "prompt opens with /%s, which %s does not define — sending the text unchanged",
 			name, clawcmds.CommandsDir(workDir))
-		return userText, false
-	}
-	// The cheap end of the bound: refuse an oversized file before paying to
-	// expand it. It is NOT the whole bound — see below.
-	max := slashCommandMaxBytes()
-	if max > 0 && len(cmd.Body) > max {
-		warnSlashCommand(logger, nodeID, iteration,
-			"/%s (%s) has a %d-byte body, over the %d-byte ceiling (%s) — sending the prompt unchanged rather than billing it",
-			name, cmd.Path, len(cmd.Body), max, SlashCommandMaxBytesEnv)
 		return userText, false
 	}
 	// The bound travels INTO the expander, which aborts as it produces. A

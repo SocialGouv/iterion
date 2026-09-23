@@ -652,7 +652,7 @@ func TestExpandWorkspaceSlashCommandRefusesAnOversizedBody(t *testing.T) {
 		t.Errorf("= (%d bytes, %v), want the prompt left unchanged", len(got), hit)
 	}
 	out := buf.String()
-	for _, want := range []string{"/huge", "over the", SlashCommandMaxBytesEnv} {
+	for _, want := range []string{"/huge", "larger than the", SlashCommandMaxBytesEnv} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the refusal does not name %q:\n%s", want, out)
 		}
@@ -757,7 +757,9 @@ func TestLLMRouterRecordsThePromptItActuallySent(t *testing.T) {
 // measured, a 256 KiB body of `$ARGUMENTS` with a 4 KiB argument reaches
 // 536 MB, which dies in the builder before anything is billed.
 //
-// Mutation: drop the post-expansion check and this body sails through.
+// Mutation: ignore the expander's typed error and this body sails through
+// (dropping the post-APPEND check does NOT redden it — that guard has its
+// own witness below, which is the point of having both).
 func TestExpandWorkspaceSlashCommandRefusesABodyThatAMPLIFIESPastTheCeiling(t *testing.T) {
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &buf)
@@ -786,6 +788,11 @@ func TestExpandWorkspaceSlashCommandRefusesABodyThatAMPLIFIESPastTheCeiling(t *t
 		if !strings.Contains(out, want) {
 			t.Errorf("the refusal does not name %q:\n%s", want, out)
 		}
+	}
+	// It must NOT report how big the expansion got: knowing that would mean
+	// having materialised it, which is the defect this bound removes.
+	if strings.Contains(out, "expands to ") || strings.Contains(out, "reached ") {
+		t.Errorf("the refusal reports a size it could not have measured:\n%s", out)
 	}
 }
 
@@ -838,5 +845,34 @@ func TestBuildUserPromptPartsCarriesThePriorAnswerIntoTheBlocks(t *testing.T) {
 	}
 	if !strings.Contains(blockText, "Describe the screenshot.") {
 		t.Errorf("the blocks lost the command body: %q", blockText)
+	}
+}
+
+// The third quantity: the arguments appended to a body that consumes none.
+// They cannot amplify — they are the prompt's own bytes, appended once — so
+// a length check is the right instrument here, unlike the expansion. Without
+// its own witness the guard was dead weight nobody would have missed.
+//
+// Mutation: delete the post-append ceiling block and this reddens; nothing
+// else in the package does.
+func TestExpandWorkspaceSlashCommandRefusesWhenTheArgumentsPushItOver(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+
+	// A body with no placeholder at all, just under the ceiling, so the
+	// arguments are APPENDED rather than substituted.
+	body := strings.Repeat("c", defaultSlashCommandMaxBytes-64)
+	ws := commandWorkspace(t, "tail.md", body)
+	args := strings.Repeat("d", 256) // pushes the total over
+
+	got, hit := expandWorkspaceSlashCommand("/tail "+args, ws, delegate.BackendClaw, "n", 0, logger)
+	if hit {
+		t.Errorf("the appended arguments pushed it to %d bytes and it was accepted", len(got))
+	}
+	if !strings.HasPrefix(got, "/tail ") {
+		t.Errorf("prompt = %.30q…, want it unchanged", got)
+	}
+	if out := buf.String(); !strings.Contains(out, "with its arguments") {
+		t.Errorf("the refusal does not name the arguments as the cause:\n%s", out)
 	}
 }
