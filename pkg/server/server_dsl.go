@@ -125,11 +125,18 @@ type unparseResponse struct {
 	Revision string            `json:"revision,omitempty"`
 	// Refused is set when the writer cannot reproduce this file: a value
 	// its author wrote over several lines has no multi-line form and would
-	// come back as one line (#1612, pkg/dsl/canon). Source is then the
-	// file's own text, never the writer's — showing the author a text
-	// their file does not contain is the one thing worse than refusing —
-	// and every path that WRITES refuses outright.
+	// come back as one line (#1612, pkg/dsl/canon). Every path that WRITES
+	// refuses outright; this is what the ones that DISPLAY get instead.
 	Refused string `json:"refused,omitempty"`
+	// Stored says Source is the bytes the server READ — the file as it is
+	// kept — and not a render of the document. It travels because a caller
+	// cannot tell the two apart and the difference decides whether the
+	// answer may be handed to the author as their file: three of the four
+	// answers that carry Refused read a file, and the flatten one renders
+	// the merged program, which is no file at all. Without it a client
+	// reading "refused, so Source is the file" is right three times and
+	// hands over a collapsed render the fourth.
+	Stored bool `json:"stored,omitempty"`
 }
 
 type validateRequest struct {
@@ -252,7 +259,7 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 			// The file's OWN text, never the writer's: a render that folds
 			// a value is exactly the text the author's file does not
 			// contain, and the view says "this is your file" above it.
-			writeJSON(w, unparseResponse{Source: string(before), Refused: canonReason(err)})
+			writeJSON(w, unparseResponse{Source: string(before), Refused: canonReason(err), Stored: true})
 			return
 		}
 		httpError(w, http.StatusUnprocessableEntity, "the document cannot be rendered as .bot source without changing it: %v", err)

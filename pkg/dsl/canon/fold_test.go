@@ -2,9 +2,13 @@ package canon
 
 import (
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/internal/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
@@ -246,4 +250,124 @@ func TestDeletingTheDeclarationThatHeldASpreadValueIsNotAFold(t *testing.T) {
 	if want := lineOf(t, stored, "one\ntwo"); line != want {
 		t.Fatalf("named line %d, want the first spread value's %d", line, want)
 	}
+}
+
+// TestTheWriterNeverMixesItsTwoFormsInOneRender is the invariant every
+// fold refusal rests on, asserted rather than argued.
+//
+// `Folds` decides from the render alone: a text that writes ANY value
+// holding a newline on one line is a text written without the multi-line
+// form, so EVERY value its author spread over lines came back folded.
+// That is exact only because the writer is all-or-nothing — it has one
+// multi-line form (the backtick raw string) and abandons it for the WHOLE
+// file the moment a single value needs the strict escape (unparse.str).
+//
+// If that ever stopped holding — a render folding one value while keeping
+// another spread — `Folds` would fall silent and all five guarded write
+// sites would stop refusing, without a line of their own changing. So it
+// is checked here against every shipped bot, not left to a comment.
+func TestTheWriterNeverMixesItsTwoFormsInOneRender(t *testing.T) {
+	var scanned, withFolded, withSpread int
+	for _, dir := range []string{"bots", "examples"} {
+		root := filepath.Join("..", "..", "..", dir)
+		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err // a vanished root says so by name, not by a count
+			}
+			if d.IsDir() || !strings.HasSuffix(p, ".bot") {
+				return nil
+			}
+			raw, readErr := os.ReadFile(p)
+			if readErr != nil {
+				return nil
+			}
+			norm := rewrite.Normalize(raw)
+			pr := parser.Parse(p, norm.Text)
+			if pr.File == nil || parseErrs(pr) != "" {
+				return nil
+			}
+			// Deliberately NOT gated on unparse.Verify: Verify would reject
+			// most ways of mixing the two forms, so skipping what it
+			// rejects would make this check unfalsifiable — it would pass
+			// by excluding exactly the renders it exists to catch. The
+			// forms are read off the raw render.
+			text := unparse.Unparse(pr.File)
+			scanned++
+			folded, spread := 0, 0
+			for _, tok := range parser.NewLexer(p, text).All() {
+				if tok.Type != parser.TokenString || !strings.Contains(tok.Value, "\n") {
+					continue
+				}
+				if tok.EndLine > tok.Line {
+					spread++
+				} else {
+					folded++
+				}
+			}
+			if folded > 0 {
+				withFolded++
+			}
+			if spread > 0 {
+				withSpread++
+			}
+			// The forbidden alternative, named: a render carrying BOTH
+			// forms, in which a spread value proves nothing about the rest.
+			if folded > 0 && spread > 0 {
+				t.Errorf("%s renders %d folded value(s) beside %d spread one(s): the writer mixed its forms, and Folds reads a spread value as proof that nothing folded", p, folded, spread)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The shipped corpus is 81 `.bot` files under bots/ + examples/ that
+	// parse. A floor just below it catches a walk that stopped reaching
+	// them — an inert check is the failure mode here — while leaving room
+	// for a file or two to be added or retired.
+	if scanned < 78 {
+		t.Fatalf("only %d files scanned: the walk is not reaching the shipped bots, so this asserts nothing", scanned)
+	}
+	if withFolded == 0 {
+		t.Fatalf("no shipped file renders a folded value (%d scanned): this cannot witness the invariant", scanned)
+	}
+	// The shipped corpus is entirely profile 2, where the writer always
+	// escapes — measured: %d files fold, none spread. So it witnesses one
+	// side only, and the other is asserted on fixtures the corpus cannot
+	// supply. Without this the check would be vacuously true on the half
+	// that matters most: a SPREAD render is what tells Folds nothing was
+	// lost.
+	for name, src := range map[string]string{
+		"profile 1, one value over its lines":         "tool t:\n  command: `one\ntwo`\n\nworkflow w:\n  entry: t\n  t -> done\n",
+		"profile 1, two values over their lines":      "tool a:\n  command: `one\ntwo`\n\ntool b:\n  command: `three\nfour`\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
+		"profile 1, a spread value beside a flat one": "tool a:\n  command: `one\ntwo`\n\ntool b:\n  command: \"flat\"\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
+	} {
+		pr := parser.Parse(name, src)
+		if pr.File == nil || parseErrs(pr) != "" {
+			t.Fatalf("%s: fixture does not parse: %s", name, parseErrs(pr))
+		}
+		text := unparse.Unparse(pr.File)
+		if err := unparse.Verify(pr.File, text); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		folded, spread := 0, 0
+		for _, tok := range parser.NewLexer(name, text).All() {
+			if tok.Type != parser.TokenString || !strings.Contains(tok.Value, "\n") {
+				continue
+			}
+			if tok.EndLine > tok.Line {
+				spread++
+			} else {
+				folded++
+			}
+		}
+		if spread == 0 {
+			t.Fatalf("%s: the writer folded everything, so this fixture cannot witness the spread side", name)
+		}
+		if folded > 0 {
+			t.Errorf("%s: the writer mixed its forms — %d folded beside %d spread", name, folded, spread)
+		}
+		withSpread++
+	}
+	t.Logf("%d shipped files rendered: %d carry a folded value, none carry both; %d fixtures carry a spread value, none carry both", scanned, withFolded, withSpread)
 }

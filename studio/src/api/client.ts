@@ -276,6 +276,14 @@ export interface UnparsedSource {
    *  this is what the ones that DISPLAY get instead, so the author reads
    *  their file rather than nothing. */
   refused?: string;
+  /** True when `source` is the bytes the server READ — the file as it is
+   *  kept — and not a render of the document. It decides whether the
+   *  answer may be handed to the author AS their file: the per-file and
+   *  single-file refusals read a file, the merged (`flatten`) one renders
+   *  a program that is no file at all. Reading `refused` as "so source is
+   *  the file" is right three times out of four and hands over a
+   *  collapsed render the fourth. */
+  stored?: boolean;
 }
 
 /** unparse renders a document as .bot source. `flatten` renders the merged
@@ -321,7 +329,7 @@ export async function unparse(
       ...(options?.path ? { path: options.path } : {}),
     }),
   });
-  return { source: res.source, refused: res.refused };
+  return { source: res.source, refused: res.refused, stored: res.stored };
 }
 
 /** unparseUnitFile renders ONE file of a bot in several files: what the

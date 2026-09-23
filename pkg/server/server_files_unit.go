@@ -961,6 +961,7 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 		writeJSON(w, unparseResponse{
 			Source:  string(f.Source),
 			Refused: fmt.Sprintf("iterion could not read all of %s (%s), so the document holds only what could be read of it — repair it where this bot's files live", f.Rel, firstParseError(spr.Diagnostics)),
+			Stored:  true,
 		})
 		return
 	}
@@ -972,7 +973,7 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 			// the lie the salvage path already refuses to tell — so the
 			// file's own text comes back, with the reason it is the only
 			// thing that can.
-			writeJSON(w, unparseResponse{Source: string(f.Source), Refused: canonReason(err)})
+			writeJSON(w, unparseResponse{Source: string(f.Source), Refused: canonReason(err), Stored: true})
 			return
 		}
 		httpError(w, http.StatusUnprocessableEntity, "%s cannot be rendered as .bot source without changing it: %v", f.Rel, err)
