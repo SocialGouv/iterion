@@ -30,7 +30,7 @@ import (
 func TestCorpusRoundTripsThroughTheAuthorDocument(t *testing.T) {
 	rel := filepath.Join("..", "..", "..")
 	files := dsltest.CorpusFiles(t, rel)
-	converted, skipped := 0, 0
+	converted, skipped, withCatalog := 0, 0, 0
 	for _, path := range files {
 		src, err := os.ReadFile(path)
 		if err != nil {
@@ -42,6 +42,9 @@ func TestCorpusRoundTripsThroughTheAuthorDocument(t *testing.T) {
 			continue
 		}
 		converted++
+		if bundle.ParseFrontmatter(src) != nil {
+			withCatalog++
+		}
 		name := filepath.ToSlash(strings.TrimPrefix(path, rel+string(filepath.Separator)))
 		t.Run(name, func(t *testing.T) {
 			out, err := Write(pr.File)
@@ -87,9 +90,12 @@ func TestCorpusRoundTripsThroughTheAuthorDocument(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("%d .bot files round-tripped, %d skipped for parse errors", converted, skipped)
+	t.Logf("%d .bot files round-tripped (%d with a catalog frontmatter), %d skipped for parse errors", converted, withCatalog, skipped)
 	if converted < 50 {
 		t.Fatalf("only %d files round-tripped — the bench is not exercising the corpus", converted)
+	}
+	if withCatalog == 0 {
+		t.Fatalf("no corpus file carries a catalog frontmatter — the identity comparison was exercised by none")
 	}
 }
 

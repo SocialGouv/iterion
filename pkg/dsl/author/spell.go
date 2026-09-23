@@ -671,9 +671,6 @@ func (s *speller) document(root *yaml.Node) {
 // (the `catalog:` key), the escape directive of a profile-1 text, the
 // `dsl:` header, the imports.
 func (s *speller) head(pairs []pair) {
-	if cat := find(pairs, "catalog"); cat != nil {
-		s.frontmatter(cat)
-	}
 	dsl := find(pairs, "dsl")
 	headerText := ""
 	switch {
@@ -698,8 +695,17 @@ func (s *speller) head(pairs []pair) {
 	}
 	if s.profile < 2 {
 		// The text is spelled with the standard escapes whatever the
-		// profile; profile 1 reads them by its directive (parser.Preamble).
+		// profile; profile 1 reads them by its directive (parser.Preamble),
+		// among the first lines of the file only — a frozen rule — so the
+		// directive is the first line, above the frontmatter, whose comment
+		// lines are of any length. The parser skips comments before the
+		// fence, and the directive is dropped from the AST (dropDirective):
+		// the frontmatter stays the first comment of the .bot the unparser
+		// writes, where the catalog reader wants it.
 		s.comment("strict-escape: on", nil)
+	}
+	if cat := find(pairs, "catalog"); cat != nil {
+		s.frontmatter(cat)
 	}
 	if headerText != "" {
 		s.emit(0, headerText, dsl)

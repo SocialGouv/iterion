@@ -1,0 +1,32 @@
+## ---
+## name: catalog-card
+## description: |
+##   A bot in one file with a catalog identity: the fenced comment block
+##   above the program — YAML inside `## ---` lines — is what `iterion bots
+##   list` and the whats-next catalog read; the program below it is read as
+##   any other.
+## triggers:
+##   - catalog-card
+##   - card
+## capabilities: [board.read]
+## ---
+## catalog-card.bot — a single-file bot carrying its catalog identity.
+##
+## Deterministic (compute-only). Run it:
+##   iterion run examples/catalog-card.bot
+
+dsl: 2
+
+schema card:
+  name: string
+
+compute card:
+  output: card
+  expr:
+    name: "'catalog-card'"
+
+workflow catalog_card:
+
+  entry: card
+
+  card -> done
