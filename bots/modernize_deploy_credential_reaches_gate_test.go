@@ -19,6 +19,18 @@ import (
 // existed instead of reporting a missing credential.
 func TestLotVerifyPutsTheDeployCredentialWithinTheGatesReach(t *testing.T) {
 	requireModernizeTools(t)
+
+	// Both cases measure what lot_verify EXPORTED, and the python child
+	// inherits this process's environment. DEPLOY_CREDENTIAL is a generic
+	// enough name for a CI runner — or a sandboxed dogfood run that bound the
+	// file secret into the container spec — to already carry one, and the host
+	// carrying one corrupts both readings in opposite directions: the "no
+	// credential" case reads it back and reports a regression that never
+	// happened, and the "credential mounted" case goes green off the host's
+	// file even when lot_verify exported nothing. Neutralise it once, here, so
+	// each case measures the bot rather than the machine.
+	t.Setenv("DEPLOY_CREDENTIAL", "")
+
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1
 oracle:
