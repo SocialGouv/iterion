@@ -251,6 +251,20 @@ const (
 	//     cause and no head (an integrity refusal that lost its
 	//     FinalBranchError write) — head-vs-cause is the discriminant
 	EventRunBankRefused EventType = "run_bank_refused"
+	// EventRunFallbackRefused records a stage of the OPERATOR's launch-time
+	// fallback chain that the safety screen declined to materialise onto a
+	// node. The screen itself is right — an empty tools: list crossing to a
+	// CLI backend, a codex route under an active sandbox, a stage naming a
+	// backend with no model — but its verdict used to reach the runner log
+	// and nothing else, so the operator who asked for the route learned
+	// nothing: the run proceeded on the primary and died of exactly the
+	// failure the route existed to survive. A refusal the decider cannot
+	// read is a silent fallback, which this engine does not do anywhere
+	// else. Data:
+	//   - node: the agent node the stage was refused on
+	//   - stage: the stage's 1-based position in the operator's chain
+	//   - reason: the screen's own sentence, verbatim and actionable
+	EventRunFallbackRefused EventType = "run_fallback_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the
 	// finished chain does NOT contain. The takeover itself is correct —
