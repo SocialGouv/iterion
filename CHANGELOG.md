@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.191.0](https://github.com/SocialGouv/iterion/compare/v3.190.0...v3.191.0) (2026-09-23)
+
+### Features
+
+* **studio:** a per-file Source view for a bot in several files, and the fold refusal at the chokepoint ([#1665](https://github.com/SocialGouv/iterion/issues/1665)) ([5b35906](https://github.com/SocialGouv/iterion/commit/5b359061d4cb7b12d4422471ffdd46b6111a7df6)), references [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1659](https://github.com/SocialGouv/iterion/issues/1659) [#1227](https://github.com/SocialGouv/iterion/issues/1227) [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1649](https://github.com/SocialGouv/iterion/issues/1649) [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1674](https://github.com/SocialGouv/iterion/issues/1674)
+
+    <details><summary>why</summary>
+
+    The Source view showed a bot in several files as its merged program, read-only, and told the author to "open each file from the files drawer" — a control that renders only for a cloud `botsource://` path, so every local author was sent to something that was not on their screen. It is now a picker over `unit.files`: one file's text at a time, rendered from the open document by provenance, with the merged program as a read-only entry; an edit is re-parsed with that one file replaced, and the save…
+
+    </details>
+
 ## [3.190.0](https://github.com/SocialGouv/iterion/compare/v3.189.0...v3.190.0) (2026-09-23)
 
 ### Features
