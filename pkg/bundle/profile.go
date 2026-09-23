@@ -67,6 +67,18 @@ func MaxSyntaxRequirements(files map[string]string) SyntaxRequirements {
 // there; a source that resolves beyond the collection, through `..` or a
 // symlink, is not read and is reported as unread.
 func MaxSyntaxRequirementsDir(dir string) SyntaxRequirements {
+	return maxSyntaxRequirementsDir(dir, nil)
+}
+
+// MaxSyntaxRequirementsDirWithMain is MaxSyntaxRequirementsDir for a bundle
+// whose main is handed over as text rather than read from disk — an author
+// document validated in its bundle: the document's own profile, imports and
+// contract count, and a stale main.bot beside it is not read in its place.
+func MaxSyntaxRequirementsDirWithMain(dir, mainRel, mainText string) SyntaxRequirements {
+	return maxSyntaxRequirementsDir(dir, map[string]string{mainRel: mainText})
+}
+
+func maxSyntaxRequirementsDir(dir string, staged map[string]string) SyntaxRequirements {
 	root, collection, ok := collectionOf(dir)
 	if !ok {
 		root = filepath.Clean(dir) // not there: every source of it is missing
@@ -80,7 +92,15 @@ func MaxSyntaxRequirementsDir(dir string) SyntaxRequirements {
 			}
 		}
 	}
+	for rel := range staged {
+		if isRootEntry(rel) && !slices.Contains(entries, rel) {
+			entries = append(entries, rel)
+		}
+	}
 	return walkSyntax(entries, func(rel string) (string, sourceState) {
+		if src, ok := staged[rel]; ok {
+			return src, sourceRead // the text handed over, whatever the disk holds under that name
+		}
 		if strings.HasPrefix(rel, "../../") || rel == "../.." {
 			return "", sourceOutside // two levels up leaves the collection by construction
 		}
