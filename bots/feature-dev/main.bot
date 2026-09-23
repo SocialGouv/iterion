@@ -268,13 +268,13 @@ contract featurly:
       description: "The campaign's account of its last pass"
       from: campaign.summary
     build_passed: bool
-      description: "The deterministic verify gate's verdict on the committed tree — a real exit code, unless build_skipped"
+      description: "The deterministic verify gate's verdict on the committed tree — a real exit code, or a REFUSAL when build_skipped"
       from: verify_run.passed
     build_skipped: bool
-      description: "No verify script existed for this pass: build_passed is then a default, not a verdict"
+      description: "No verify script existed for this pass, so the gate never ran: build_passed is then false as a REFUSAL, not as a verdict on the tree"
       from: verify_run.skipped
     review_clean: bool
-      description: "The in-loop adversarial review found no high-confidence defect in the diff, or skipped itself because the build was red — read with build_passed"
+      description: "The in-loop adversarial review found no high-confidence defect in the diff, or skipped itself because the build was red — read with build_passed and build_skipped"
       from: review.clean
     converged: bool
       description: "Build passed, review clean and feature complete; false when the loop was exhausted and the run shipped what it banked anyway"
@@ -466,6 +466,7 @@ workflow feature_dev:
   verify_run -> review with {
     base_ref: "{{vars.mr_base}}",
     build_passed: "{{outputs.verify_run.passed}}",
+    build_skipped: "{{outputs.verify_run.skipped}}",
     prior_findings: "{{outputs.gate.fail_log}}",
   }
 

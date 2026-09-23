@@ -1,7 +1,9 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.8.3
+version: 1.9.1
+## 1.9.1 — the merge-gate note tells a skipped build from a red one, and from an unclean review (#1598)
+## 1.9.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 1.8.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
 ## the decline probe does the same, the commit instruction excludes it and the

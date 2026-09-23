@@ -482,9 +482,12 @@ prompt review_system:
   authority gates on background mutators, provable claims, loud failure).
 
   Procedure:
-    1. If `build_passed` is false, the tree is mid-implementation — return
-       `clean: true` with empty findings immediately (the build failure is
-       handled by the deterministic gate; do not review a broken tree).
+    1. If `build_passed` is false AND `build_skipped` is false, the tree is
+       mid-implementation — return `clean: true` with empty findings
+       immediately (the build failure is handled by the deterministic gate;
+       do not review a broken tree). When `build_skipped` is true nothing was
+       built and nothing is mid-implementation: REVIEW NORMALLY, and say in
+       the findings that the build gate never ran.
     2. Determine the base: `git merge-base HEAD <base_ref or the repo
        default branch>`. Review the run's own work: `git diff <base>..HEAD`
        and `git diff --stat <base>..HEAD` for the whole footprint.
@@ -515,7 +518,7 @@ prompt review_system:
 
 prompt review_user:
   Review the working tree at {{vars.workspace_dir}}.
-  Base hint: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+  Base hint: {{input.base_ref}}   ·   build passed: {{input.build_passed}}   ·   build skipped: {{input.build_skipped}}
 
   Findings you raised last pass (do not re-raise unless still unaddressed):
   {{input.prior_findings}}
@@ -610,8 +613,10 @@ schema verify_plan:
 
 ## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
 ## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
-## LLM judgment. `skipped` is true only when no verify script was produced
-## (treated as pass but surfaced loudly, never a silent façade).
+## LLM judgment. `skipped` is true only when no verify script was produced,
+## which is a REFUSAL (`passed` false): a gate that did not run cannot
+## certify. A repo with genuinely nothing to build writes a verify.sh that
+## exits 0 — an explicit empty gate leaves an artefact, a missing one does not.
 schema verify_result:
   passed: bool
   skipped: bool
@@ -647,6 +652,9 @@ schema gate_state:
 schema review_input:
   base_ref: string
   build_passed: bool
+  ## No verify script existed for this pass, so `build_passed` is a REFUSAL
+  ## and not a verdict on the tree — the review must still run.
+  build_skipped: bool
   prior_findings: string
 
 schema review_output:
@@ -769,7 +777,7 @@ except OSError:
     pass
 script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
-    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
+    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 6, 'log_tail': 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build/test gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing. Write it DELIBERATELY -- verify_probe reuses an existing script for the rest of the run, so an empty gate written just to get past this refusal keeps reporting green after a build system appears.'}))
     raise SystemExit(0)
 def sh_uncommented(text):
     # The script and the CI config, read with comments removed -- shared by
@@ -1049,7 +1057,7 @@ compute gate:
   output: gate_state
   expr:
     converged: "outputs.verify_run.passed && outputs.campaign.instrumentation_complete && outputs.review.clean"
-    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), if(outputs.verify_run.skipped, outputs.verify_run.log_tail + '\\n\\n' + outputs.review.findings, outputs.verify_run.log_tail))"
 
 ## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
 ## edges use the C012-exhaustive simple form. No LLM, no shell.
@@ -1173,6 +1181,7 @@ workflow instrument:
   verify_run -> review with {
     base_ref:       "{{vars.mr_base}}",
     build_passed:   "{{outputs.verify_run.passed}}",
+    build_skipped:  "{{outputs.verify_run.skipped}}",
     prior_findings: "{{outputs.gate.fail_log}}"
   }
   review -> gate

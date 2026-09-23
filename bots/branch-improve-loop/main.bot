@@ -796,9 +796,12 @@ prompt review_system:
   a campaign pass on invented work.
 
   Procedure:
-    1. If `build_passed` is false, the tree is mid-implementation — return
-       `clean: true` with empty findings immediately (the build failure is
-       handled by the deterministic gate; do not review a broken tree).
+    1. If `build_passed` is false AND `build_skipped` is false, the tree is
+       mid-implementation — return `clean: true` with empty findings
+       immediately (the build failure is handled by the deterministic gate;
+       do not review a broken tree). When `build_skipped` is true nothing was
+       built and nothing is mid-implementation: REVIEW NORMALLY, and say in
+       the findings that the build gate never ran.
     2. Review the branch's own work: `git diff $(git merge-base <base_ref or
        the repo default branch> HEAD)` and the matching `--stat` for the
        whole footprint.
@@ -824,7 +827,7 @@ prompt review_system:
 
 prompt review_user:
   Review the working tree at {{vars.workspace_dir}}.
-  Base: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+  Base: {{input.base_ref}}   ·   build passed: {{input.build_passed}}   ·   build skipped: {{input.build_skipped}}
 
   Findings you raised last pass (do not re-raise unless still unaddressed):
   {{input.prior_findings}}
@@ -987,8 +990,10 @@ schema verify_plan:
 
 ## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
 ## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
-## LLM judgment. `skipped` is true only when no verify script was produced
-## (treated as pass but surfaced loudly, never a silent façade).
+## LLM judgment. `skipped` is true only when no verify script was produced,
+## which is a REFUSAL (`passed` false): a gate that did not run cannot
+## certify. A repo with genuinely nothing to build writes a verify.sh that
+## exits 0 — an explicit empty gate leaves an artefact, a missing one does not.
 schema verify_result:
   passed: bool
   skipped: bool
@@ -1029,6 +1034,9 @@ schema gate_state:
 schema review_input:
   base_ref: string
   build_passed: bool
+  ## No verify script existed for this pass, so `build_passed` is a REFUSAL
+  ## and not a verdict on the tree — the review must still run.
+  build_skipped: bool
   prior_findings: string
 
 schema review_output:
@@ -1077,6 +1085,10 @@ schema post_feedback_input:
   ## whatever the findings, and a build that was skipped proves nothing at all.
   verify_ok: bool
   verify_skipped: bool
+  ## The BUILD verdict alone. verify_ok is the whole convergence (build AND
+  ## clean tree AND clean review), so it goes false when only the review did
+  ## -- and a note derived from it would accuse a build that passed.
+  verify_passed: bool
   ## The prior review's findings and what became of each — rendered verbatim as
   ## a table so the author sees, per finding they were shown, whether it was
   ## fixed, refused (with the argument) or deferred.
@@ -2011,7 +2023,7 @@ except OSError:
     pass
 script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
-    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
+    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 6, 'log_tail': 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build/test gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing. Write it DELIBERATELY -- verify_probe reuses an existing script for the rest of the run, so an empty gate written just to get past this refusal keeps reporting green after a build system appears.'}))
     raise SystemExit(0)
 def sh_uncommented(text):
     # The script and the CI config, read with comments removed -- shared by
@@ -2289,7 +2301,7 @@ compute gate:
     ## Repeated rather than referenced: a compute's fields are evaluated
     ## against the node's input and the run, never against its own siblings.
     ship_now: "(outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean) || outputs.campaign.stopped_on_reserve"
-    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), if(outputs.verify_run.skipped, outputs.verify_run.log_tail + '\\n\\n' + outputs.review.findings, outputs.verify_run.log_tail))"
 
 ## mr_gate routes the post-convergence tail into at most ONE of two
 ## mutually-exclusive booleans (the unconditional edge to done is the C012
@@ -2552,7 +2564,7 @@ if u:
 ## Keep this python body free of the double-quote character: the whole body is
 ## wrapped by the shell in a double-quoted argument.
 tool publish_verdict:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} VERIFY_PASSED={{input.verify_passed}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
 import os, json, urllib.request, urllib.error
 
 def flag(name):
@@ -2588,10 +2600,19 @@ ledger = [e for e in ledger if isinstance(e, dict)]
 pushed = flag('PUSHED')
 clean = flag('CLEAN')
 verify_ok = flag('VERIFY_OK')
-# verify_run reports passed=true when it SKIPPED (no verify.sh was produced).
-# Tolerable as a loop signal; on a required check, claiming a green build that
-# never ran is a false statement, so a skip blocks like a red one.
+# A skip (no verify.sh was produced) already arrives as passed=false, and
+# verify_ok is gate.converged, which reads passed -- so a skip makes verify_ok
+# false too. This term is therefore redundant for the VERDICT and load-bearing
+# for the DIAGNOSIS, which is why the note below tests it FIRST: 'the build
+# never ran' and 'the build went red' call for different moves from whoever
+# reads the required check, and the second would be a false statement here.
 verify_skipped = flag('VERIFY_SKIPPED')
+# The build verdict on its own. verify_ok above is gate.converged -- build AND
+# clean tree AND clean review -- so it is the right term for the BLOCKING count
+# and the wrong one for the note: on a green build whose review found issues it
+# is false, and 'build/tests red' would then be a false statement on a status a
+# human reads to decide what to do next.
+verify_passed = flag('VERIFY_PASSED')
 
 banked = str(os.environ.get('BANKED_BRANCH') or '').strip()
 take = str(os.environ.get('HOW_TO_TAKE') or '').strip()
@@ -2671,10 +2692,10 @@ if gate_enabled and gate_ctx:
             bits.append(str(len(fixed)) + ' fix(es) never reached this head')
         if not clean:
             bits.append('issues remain in the diff')
-        if not verify_ok:
-            bits.append('build/tests red')
-        elif verify_skipped:
+        if verify_skipped:
             bits.append('build/tests never ran')
+        elif not verify_passed:
+            bits.append('build/tests red')
         note = ', '.join(bits) + ' - not mergeable yet'
     payload['gate'] = {'enabled': True, 'context': gate_ctx, 'blocking_count': blocking,
                        'threshold': 'ledger', 'total_findings': len(ledger), 'note': note}
@@ -2893,6 +2914,7 @@ workflow branch_improve_loop:
   verify_run -> review with {
     base_ref:       "{{vars.base_ref}}",
     build_passed:   "{{outputs.verify_run.passed}}",
+    build_skipped:  "{{outputs.verify_run.skipped}}",
     prior_findings: "{{outputs.gate.fail_log}}"
   }
   review -> gate
@@ -2953,6 +2975,7 @@ workflow branch_improve_loop:
     superseded:     "{{outputs.push_back_tool.superseded}}",
     finding_ledger: "{{outputs.campaign.finding_ledger}}",
     verify_ok:      "{{outputs.gate.converged}}",
+    verify_passed:  "{{outputs.verify_run.passed}}",
     verify_skipped: "{{outputs.verify_run.skipped}}"
   }
   ## The pull request merged (or closed) while the campaign ran. The comment
