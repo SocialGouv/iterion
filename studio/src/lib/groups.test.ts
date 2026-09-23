@@ -1,0 +1,185 @@
+import { describe, expect, it } from "vitest";
+
+import type { Comment, IterDocument } from "@/api/types";
+import {
+  documentComments,
+  documentGroups,
+  mapDocumentComments,
+  parseGroups,
+} from "@/lib/groups";
+
+// Comment provenance (#1282) made `document.comments` the file's head and
+// tail ONLY: a comment written around a declaration is carried by that
+// declaration, one written on an edge by that edge. Everything below holds
+// the group grammar to the whole document rather than to that one list —
+// mutate `documentComments` back to `doc.comments` and every case here
+// reddens (#1576).
+
+function doc(over: Partial<IterDocument> = {}): IterDocument {
+  return {
+    prompts: [],
+    schemas: [],
+    agents: [],
+    judges: [],
+    routers: [],
+    humans: [],
+    tools: [],
+    computes: [],
+    workflows: [],
+    comments: [],
+    ...over,
+  };
+}
+
+const group = (text: string): Comment => ({ text });
+
+describe("parseGroups", () => {
+  it("reads name and members, and skips a comment that is not a group", () => {
+    expect(
+      parseGroups([group("@group review: a, b"), group("just a note"), group("@group  ")]),
+    ).toEqual([{ name: "review", nodeIds: ["a", "b"] }]);
+  });
+});
+
+describe("documentGroups over every comment provenance", () => {
+  it("sees a group annotation the file's head carries", () => {
+    expect(documentGroups(doc({ comments: [group("@group head: a, b")] }))).toEqual([
+      { name: "head", nodeIds: ["a", "b"] },
+    ]);
+  });
+
+  it("sees a group annotation attached to a node declaration", () => {
+    const d = doc({
+      agents: [
+        {
+          name: "a",
+          model: "m",
+          input: "in",
+          output: "out",
+          system: "s",
+          user: "u",
+          session: "fresh",
+          comments: [group("@group attached: a, b")],
+        },
+      ],
+    });
+    expect(documentGroups(d)).toEqual([{ name: "attached", nodeIds: ["a", "b"] }]);
+  });
+
+  it("sees a group annotation attached to an edge", () => {
+    const d = doc({
+      workflows: [
+        {
+          name: "w",
+          entry: "a",
+          edges: [{ from: "a", to: "b", comments: [group("@group edged: a, b")] }],
+        },
+      ],
+    });
+    expect(documentGroups(d)).toEqual([{ name: "edged", nodeIds: ["a", "b"] }]);
+  });
+
+  // The carriers are not a list to keep in step: the walk keys on the
+  // `comments` array itself, so a declaration kind added later is covered
+  // the day its JSON arrives. This asserts that over every array the
+  // document type declares today — drop one from the walk and it reddens.
+  it("sees one on every declaration array of the document", () => {
+    const named = (kind: string) => ({
+      name: kind,
+      comments: [group(`@group ${kind}: a, b`)],
+    });
+    const d = doc({
+      mcp_servers: [named("mcp_servers")] as IterDocument["mcp_servers"],
+      prompts: [named("prompts")] as unknown as IterDocument["prompts"],
+      schemas: [named("schemas")] as unknown as IterDocument["schemas"],
+      cursors: [named("cursors")] as unknown as IterDocument["cursors"],
+      agents: [named("agents")] as unknown as IterDocument["agents"],
+      judges: [named("judges")] as unknown as IterDocument["judges"],
+      routers: [named("routers")] as unknown as IterDocument["routers"],
+      humans: [named("humans")] as unknown as IterDocument["humans"],
+      tools: [named("tools")] as unknown as IterDocument["tools"],
+      computes: [named("computes")] as unknown as IterDocument["computes"],
+      subbots: [named("subbots")] as unknown as IterDocument["subbots"],
+      fails: [named("fails")] as unknown as IterDocument["fails"],
+      contracts: [named("contracts")] as unknown as IterDocument["contracts"],
+      workflows: [named("workflows")] as unknown as IterDocument["workflows"],
+      comments: [group("@group comments: a, b")],
+    });
+    expect(documentGroups(d).map((g) => g.name).sort()).toEqual(
+      [
+        "agents",
+        "comments",
+        "computes",
+        "contracts",
+        "cursors",
+        "fails",
+        "humans",
+        "judges",
+        "mcp_servers",
+        "prompts",
+        "routers",
+        "schemas",
+        "subbots",
+        "tools",
+        "workflows",
+      ].sort(),
+    );
+  });
+
+  it("returns nothing for an absent document rather than throwing", () => {
+    expect(documentGroups(null)).toEqual([]);
+    expect(documentComments(undefined)).toEqual([]);
+  });
+});
+
+describe("mapDocumentComments", () => {
+  it("rewrites a comment the declaration carries, in place", () => {
+    const d = doc({
+      agents: [
+        {
+          name: "a",
+          model: "m",
+          input: "in",
+          output: "out",
+          system: "s",
+          user: "u",
+          session: "fresh",
+          comments: [group("@group attached: a, b"), group("keep me")],
+        },
+      ],
+    });
+    const next = mapDocumentComments(d, (c) =>
+      c.text.startsWith("@group ") ? { ...c, text: "@group attached: a, b, c" } : c,
+    );
+    expect(next.agents[0]!.comments).toEqual([
+      { text: "@group attached: a, b, c" },
+      { text: "keep me" },
+    ]);
+    // …and the source document is untouched: the store keeps it for undo.
+    expect(d.agents[0]!.comments![0]!.text).toBe("@group attached: a, b");
+  });
+
+  it("drops a comment the rewrite returns null for, wherever it lives", () => {
+    const d = doc({
+      comments: [group("@group head: a, b")],
+      workflows: [
+        {
+          name: "w",
+          entry: "a",
+          edges: [{ from: "a", to: "b", comments: [group("@group edged: a, b")] }],
+        },
+      ],
+    });
+    const next = mapDocumentComments(d, (c) => (c.text.startsWith("@group ") ? null : c));
+    expect(next.comments).toEqual([]);
+    expect(next.workflows[0]!.edges[0]!.comments).toEqual([]);
+  });
+
+  // A rewrite that changes nothing has to hand the SAME object back: the
+  // canvas re-renders on document identity, so a fresh object per keystroke
+  // would relayout the graph for a rename that touched no group.
+  it("returns the same document when no comment changed", () => {
+    const d = doc({ comments: [group("a note")] });
+    expect(mapDocumentComments(d, (c) => c)).toBe(d);
+  });
+});

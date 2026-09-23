@@ -12,7 +12,7 @@ import { useDocumentStore } from "@/store/document";
 import { IconButton, Popover, PopoverClose } from "@/components/ui";
 import { LAYER_ICONS, LAYER_LABELS } from "@/lib/constants";
 import type { LayerKind } from "@/lib/constants";
-import { parseGroups } from "@/lib/groups";
+import { documentGroups } from "@/lib/groups";
 
 const LAYER_KINDS: LayerKind[] = ["schemas", "prompts", "vars"];
 
@@ -56,7 +56,7 @@ export default function CanvasToolbar({
   const macroView = useUIStore((s) => s.macroView);
   const toggleMacroView = useUIStore((s) => s.toggleMacroView);
   const document = useDocumentStore((s) => s.document);
-  const hasGroups = document ? parseGroups(document.comments ?? []).length > 0 : false;
+  const hasGroups = documentGroups(document).length > 0;
 
   const expandLabel = expanded ? "Collapse canvas" : "Expand canvas (hide chrome)";
   const fullscreenLabel = browserFullscreen ? "Exit fullscreen" : "Enter fullscreen";
