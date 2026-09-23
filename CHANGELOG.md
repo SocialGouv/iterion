@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.196.2](https://github.com/SocialGouv/iterion/compare/v3.196.1...v3.196.2) (2026-09-23)
+
+### Bug Fixes
+
+* **runtime:** the zero value of the tool-surface seam is the refusal — pinned at compile time, read at the worst case, named in the refusal ([#1748](https://github.com/SocialGouv/iterion/issues/1748)) ([#1766](https://github.com/SocialGouv/iterion/issues/1766)) ([8094583](https://github.com/SocialGouv/iterion/commit/809458315438d478308eb9bdfaf0e3e6387ed9b2)), references [#1652](https://github.com/SocialGouv/iterion/issues/1652) [#1694](https://github.com/SocialGouv/iterion/issues/1694) [#1652](https://github.com/SocialGouv/iterion/issues/1652)
+
+    <details><summary>why</summary>
+
+    ## What
+
+    </details>
+
 ## [3.196.1](https://github.com/SocialGouv/iterion/compare/v3.196.0...v3.196.1) (2026-09-23)
 
 ### Bug Fixes
