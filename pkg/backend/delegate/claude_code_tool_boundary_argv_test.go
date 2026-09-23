@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -43,8 +44,24 @@ func spawnArgv(t *testing.T, task Task) []string {
 	if task.UserPrompt == "" {
 		task.UserPrompt = "x"
 	}
-	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, io.Discard)}
-	_, _ = b.Execute(context.Background(), task)
+	// Execute's verdict is not asserted — the stand-in answers an empty
+	// result, which no schema accepts — but it is what explains a spawn count:
+	// the formatting pass is a fallback Execute decides on, and a failed first
+	// pass returns before it. Logged here, the error and the backend's own
+	// lines reach the output of any assertion below that fails.
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
+	var mu sync.Mutex
+	var lines []string
+	b.Logger.SetHook(func(level iterlog.Level, msg string, _ map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, level.String()+": "+msg)
+	})
+	res, execErr := b.Execute(context.Background(), task)
+	mu.Lock()
+	t.Logf("Execute: err=%v, formatting pass used=%v; backend log:\n%s",
+		execErr, res.FormattingPassUsed, strings.Join(lines, "\n"))
+	mu.Unlock()
 
 	raw, err := os.ReadFile(log)
 	if err != nil {
