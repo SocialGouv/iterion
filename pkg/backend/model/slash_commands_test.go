@@ -778,8 +778,14 @@ func TestExpandWorkspaceSlashCommandRefusesABodyThatAMPLIFIESPastTheCeiling(t *t
 	if !strings.HasPrefix(got, "/amp ") {
 		t.Errorf("prompt = %.40q…, want it left unchanged", got)
 	}
-	if out := buf.String(); !strings.Contains(out, "expands to") {
-		t.Errorf("the refusal does not name the expansion:\n%s", out)
+	out := buf.String()
+	// The refusal comes from the EXPANDER (it aborted as it produced), so it
+	// says "expands past" and cannot report a size — reporting one would
+	// mean having materialised the thing.
+	for _, want := range []string{"expands past", "/amp", SlashCommandMaxBytesEnv} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal does not name %q:\n%s", want, out)
+		}
 	}
 }
 

@@ -96,7 +96,18 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 			name, cmd.Path, len(cmd.Body), max, SlashCommandMaxBytesEnv)
 		return userText, false
 	}
-	expanded, consumed := clawcmds.Expand(cmd, args)
+	// The bound travels INTO the expander, which aborts as it produces. A
+	// length check on the finished string would bound the bill and not the
+	// memory: a body under the pre-check still amplifies (`$ARGUMENTS`
+	// repeated N times × the arguments), and the allocation lands before
+	// anything is billed — on a multi-replica server, on the co-tenants.
+	expanded, consumed, err := clawcmds.Expand(cmd, args, max)
+	if err != nil {
+		warnSlashCommand(logger, nodeID, iteration,
+			"/%s (%s) expands past the %d-byte ceiling (%s) — sending the prompt unchanged rather than materialising it",
+			name, cmd.Path, max, SlashCommandMaxBytesEnv)
+		return userText, false
+	}
 	// Judged on the EXPANDED text and before the arguments are appended:
 	// otherwise `/empty some question` reaches the model as a bare
 	// "ARGUMENTS: some question" with no instruction at all — a command that
@@ -117,16 +128,13 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	if a := strings.TrimSpace(args); a != "" && !consumed {
 		expanded += slashCommandArgsPrefix + a
 	}
-	// The end that decides the bill. The body is the untrusted half AND it
-	// sets the multiplier: `$ARGUMENTS` repeated N times turns a body under
-	// the ceiling into N times the arguments, so a file the pre-check
-	// accepts can still expand past it — measured, a 256 KiB body of
-	// `$ARGUMENTS` with a 4 KiB argument reaches 536 MB, which dies in the
-	// builder before anything is billed. An elargissement is bounded at
-	// both ends or it is not bounded.
+	// The third end: the appended arguments. They cannot amplify (they are
+	// the prompt's own bytes, appended once), so a length check is the right
+	// instrument here — unlike the expansion, where it would have been a
+	// measurement after the damage.
 	if max > 0 && len(expanded) > max {
 		warnSlashCommand(logger, nodeID, iteration,
-			"/%s (%s) expands to %d bytes, over the %d-byte ceiling (%s) — sending the prompt unchanged rather than billing it",
+			"/%s (%s) reaches %d bytes with its arguments, over the %d-byte ceiling (%s) — sending the prompt unchanged rather than billing it",
 			name, cmd.Path, len(expanded), max, SlashCommandMaxBytesEnv)
 		return userText, false
 	}
