@@ -311,6 +311,13 @@ func TestAFenceShownInsideAFenceDoesNotEndIt(t *testing.T) {
 		{"a deeper blockquote, bare", "> ```"},
 		{"further indented", "    ```"},
 		{"a shorter run", "``"},
+		// A list marker starts a new item, which is content inside the block.
+		// Reading one as a closer ends the block on a line CommonMark keeps
+		// inside it — the shape a ```markdown block showing a ```diff block
+		// writes, which this org's own vendored tree carries.
+		{"a bullet marker", "- ```"},
+		{"a plus marker, as a diff example writes", "+ ```"},
+		{"a numbered marker", "1. ```"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -450,5 +457,44 @@ func TestAFenceAContainerIndentsIsStillAFence(t *testing.T) {
 				t.Errorf("the summary is not the page's prose:\n%s", out)
 			}
 		})
+	}
+}
+
+// The front-matter scanner is fed the RAW line, and only a column-0 `---`
+// opens or closes front matter. Fed the trimmed line, an indented `---`
+// would close it and publish the YAML below as the page's sentence.
+func TestOnlyAColumnZeroDelimiterClosesFrontMatter(t *testing.T) {
+	root := t.TempDir()
+	for rel, text := range map[string]string{
+		// The closer is indented, so the front matter never closes and the
+		// page has no prose — rather than the keys below becoming one.
+		"docs/indented.md": "---\ntitle: x\n  ---\nlayout: home\nhero: still front matter\n",
+		"docs/ok.md":       "---\ntitle: y\n---\n\n# Ok\n\nReal prose here.\n",
+	} {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var docs Extractor
+	for _, e := range Extractors() {
+		if e.Stem() == "docs" {
+			docs = e
+		}
+	}
+	out, err := docs.Extract(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"layout: home", "hero: still front matter"} {
+		if strings.Contains(out, key) {
+			t.Errorf("an indented `---` closed the front matter and %q became prose:\n%s", key, out)
+		}
+	}
+	if !strings.Contains(out, "Real prose here.") {
+		t.Errorf("a well-formed page lost its summary:\n%s", out)
 	}
 }

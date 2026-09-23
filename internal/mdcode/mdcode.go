@@ -33,15 +33,27 @@ var (
 	// language — so Mask uses the scanner below and this stays for the line
 	// scanners that TRANSFORM a span's text rather than mask it.
 	spanRe = regexp.MustCompile("`+[^`]*`+")
-	// fenceRe matches the delimiter line of a fenced code block, including
-	// one a container has pushed off column 0: a blockquote, a list item, or
-	// a blockquote carrying a list. Both halves of the rule have to see the
-	// same lines — a scanner whose CLOSE rule understands containers while
-	// its DELIMITER rule stops at column 0 cannot see the opener at all, and
-	// then everything below a `>   ```md` or a `- ``` ` line reads as prose.
+	// fenceRe matches a line that OPENS a fenced code block, including one a
+	// container has pushed off column 0: a blockquote, a list item, or a
+	// blockquote carrying a list. A delimiter rule that stopped at column 0
+	// could not see such an opener at all, and everything below a `>   ```md`
+	// or a `- ``` ` line read as prose.
+	//
 	// Indentation is not bounded here: `mdcode` does not model the indented
 	// code block that four columns would otherwise mean.
+	//
+	// STATED LIMIT: accepting a list marker with no block parser behind it
+	// means a fence can be opened where CommonMark starts no container at all
+	// — `2) ``` ` interrupting a paragraph, where only `1.` may — and kept
+	// open past the container's end. Greppable here rather than silent.
 	fenceRe = regexp.MustCompile("^\\s*(?:>\\s?)*\\s*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \\t]+)?(`{3,}|~{3,})")
+	// fenceCloseRe is the same rule WITHOUT the list marker. A marker opens a
+	// new list item whose first block is the fence, so it can only introduce
+	// an OPENER; a closing fence takes nothing but spaces and quote markers
+	// before it. Reading `+ ``` ` inside an open block as its closer ends the
+	// block on a line CommonMark keeps inside it — and that shape is written
+	// in this org's own tree, a ```markdown block showing a ```diff block.
+	fenceCloseRe = regexp.MustCompile("^\\s*(?:>\\s?)*\\s*(`{3,}|~{3,})")
 )
 
 // SpanPattern returns the one-regexp approximation of a code span. Prefer
@@ -96,8 +108,10 @@ func Spans(line string) [][2]int {
 // A backtick fence's info string may not itself contain a backtick: "```go
 // `x`" is a PARAGRAPH, not a fence. Reading one as an opener costs the whole
 // rest of the page, because no later line closes it.
-func FenceMarker(line string) string {
-	m := fenceRe.FindStringSubmatch(line)
+func FenceMarker(line string) string { return fenceMarker(line, fenceRe) }
+
+func fenceMarker(line string, re *regexp.Regexp) string {
+	m := re.FindStringSubmatch(line)
 	if m == nil {
 		return ""
 	}
@@ -176,7 +190,13 @@ func (f *FenceScanner) Open() bool { return f.open }
 // a fenced block — and advances the scanner. A delimiter is code too: it is
 // not prose, and no user of this type has ever wanted it.
 func (f *FenceScanner) Code(line string) bool {
-	marker := FenceMarker(line)
+	// An open block is closed by a bare delimiter only: a list marker starts
+	// a new item, which is content inside the block, never its closer.
+	re := fenceRe
+	if f.open {
+		re = fenceCloseRe
+	}
+	marker := fenceMarker(line, re)
 	if marker == "" {
 		return f.open
 	}
@@ -198,9 +218,11 @@ func (f *FenceScanner) Code(line string) bool {
 	// indentations inside the same container — `   ```` opened at three columns
 	// and closed at six, which CommonMark keeps open and this closes.
 	// Modelling it properly means tracking list-item content columns, i.e. a
-	// block parser; measuring from the container instead breaks the ordinary
-	// case of a fence indented four columns inside a list item, which the
-	// corpus really writes. Greppable here rather than silent.
+	// block parser; measuring from the container instead breaks a fence
+	// indented four columns inside a list item, which internal/docsguard's
+	// own fixture writes — no page of the documentation tree indents a fence
+	// past three columns. Kept lax for the fixture, said so here rather than
+	// left silent.
 	rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
 	if quote == f.quote && indent <= f.indent+3 &&
 		marker[0] == f.char && len(marker) >= f.n && rest == "" {
