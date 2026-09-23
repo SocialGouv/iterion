@@ -89,6 +89,10 @@ type ClawExecutor struct {
 	// workspace this run (SetMirroredSkills), as opposed to whatever the
 	// target repo ships at the same path.
 	mirroredSkills []string
+
+	// slashWarnedOnce keeps a workspace-command divergence notice to one
+	// line per command file per run, across nodes and parallel branches.
+	slashWarnedOnce slashWarnOnce
 	// sharedStateDir is a directory reachable at the same absolute path from
 	// the host and the sandbox that is NOT in the target repo's checkout
 	// (SetSharedStateDir); empty when there is none.

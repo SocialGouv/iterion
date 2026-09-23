@@ -393,6 +393,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_Worktree$' -timeout 5m ./e2e/...
 
+  test:live:feat:workspace-commands:
+    desc: 'Live e2e for workspace .claude/commands/ parity on claude_code and claw (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_WorkspaceCommands$' -timeout 15m ./e2e/...
+
   test:live:feat:board-caps:
     desc: 'Live e2e for the agent board.* capabilities feature (real cost).'
     cmds:

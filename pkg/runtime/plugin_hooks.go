@@ -20,7 +20,8 @@ const pluginHooksSidecar = "plugin-hooks.json"
 
 // mergePluginHooks idempotently merges the `hooks` settings fragments
 // contributed by every enabled plugin into <workDir>/.claude/settings.json,
-// where claude_code discovers them via --setting-sources project. User hooks
+// where claude_code discovers them via --setting-sources project and claw
+// bridges the command-type subset (see settings_hooks.go). User hooks
 // already in settings.json are preserved (only iterion's own prior injection,
 // tracked in a sidecar, is removed before re-injecting). A broken plugin is
 // logged and skipped; an existing settings.json that cannot be parsed returns

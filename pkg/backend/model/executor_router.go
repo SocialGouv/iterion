@@ -169,11 +169,6 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	// User message.
 	userText := e.buildUserMessage(node.UserPrompt, cleanInput, td)
 
-	// Emit prompt content for observability.
-	if e.hooks.OnLLMPrompt != nil {
-		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
-	}
-
 	// Auto-generate schema from candidates.
 	schema := buildRouterSchema(node, candidates)
 	jsonSchema, err := SchemaToJSON(schema)
@@ -198,13 +193,38 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	// route with NO operating posture at all (claw has no native system
 	// prompt to append to). A wrong route is a silently wrong RUN, not a
 	// failed node.
+	// The same build session the agent path uses: it claims the one prompt
+	// event, remembers the text that event recorded, and lets
+	// describeDivergence report when the element that SERVED received
+	// something else. A router's chain comes from resolveProviderChain,
+	// which never sets chainElement.Backend, so it cannot cross backends
+	// today and its elements produce identical text — one shape on both
+	// paths is what keeps that from being a silent assumption the day it
+	// can.
+	sess := &nodeBuildSession{}
 	assemble := func(ctx context.Context, bn string) (*delegate.Task, error) {
+		// A router prompt may invoke a workspace `.claude/commands/`
+		// command too. Resolved per backend, inside assemble, because the
+		// substitution is claw's alone — claude_code expands it natively.
+		routerText, _ := expandWorkspaceSlashCommand(userText, e.workDir, bn, node.ID, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+		// ONE prompt event, emitted here rather than before the chain, and
+		// carrying the text this backend actually receives. Before the
+		// chain it could only carry the invocation; emitting a second,
+		// corrected event instead would make every reader that starts a
+		// step per `llm_prompt` (iterion inspect --node, iterion report,
+		// the studio's LLM Trace) render two LLM steps for one call, the
+		// first stuck pending forever. That is the same invariant
+		// nodeBuildSession.claimPrompt keeps on the agent path, for the
+		// same reason.
+		if sess.claimPrompt(routerText, bn) && e.hooks.OnLLMPrompt != nil {
+			e.hooks.OnLLMPrompt(node.ID, systemText, routerText)
+		}
 		return &delegate.Task{
 			NodeID:           node.ID,
 			Iteration:        LoopIterationFromContext(ctx),
 			SystemPrompt:     systemText,
 			SystemPromptMode: delegate.SystemPromptModeForBackend(bn),
-			UserPrompt:       userText,
+			UserPrompt:       routerText,
 			OutputSchema:     jsonSchema,
 			Model:            expanded,
 			WorkDir:          e.workDir,
@@ -220,7 +240,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
-		e.newElementBuilder(node.ID, backendName, backend, assemble))
+		e.newElementBuilder(node.ID, backendName, backend, assemble), sess)
 	if err != nil {
 		// The other seam that spends: an LLM router is a model call, and a
 		// router that burned a fallback chain's worth of routes before

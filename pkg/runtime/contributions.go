@@ -194,8 +194,9 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 			logger.Warn("runtime/contrib: duplicate %s contribution %q in the queue payload — one destination at %s; the publisher's step-0/step-1 dedup should have removed this",
 				f.Kind, f.Name, destPath)
 		}
-		// Skills only — commands and agents are mirrored for claude_code's
-		// discovery, and are not skills a backend may pass as one.
+		// Skills only — commands and agents are mirrored too (claude_code
+		// reads all three, claw the commands as well), but they are not
+		// skills a backend may pass as one.
 		if f.Kind == "skills" && outcome != skillOutcomeShadowed && tracker.report(destPath) {
 			owned = append(owned, destPath)
 		}
