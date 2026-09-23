@@ -2,6 +2,7 @@ package model
 
 import (
 	"os"
+	"strconv"
 	"strings"
 
 	clawcmds "github.com/SocialGouv/claw-code-go/pkg/api/commands"
@@ -15,6 +16,21 @@ import (
 // capability existed. "off", "0" and "false" disable it; anything else
 // (including unset) leaves it on.
 const SlashCommandsEnv = "ITERION_CLAW_SLASH_COMMANDS"
+
+// SlashCommandMaxBytesEnv overrides the ceiling on a workspace command's
+// body, in bytes. "0" removes the ceiling.
+const SlashCommandMaxBytesEnv = "ITERION_CLAW_SLASH_COMMAND_MAX_BYTES"
+
+// defaultSlashCommandMaxBytes bounds the body a workspace command may
+// substitute into a prompt. On a review run the workspace is a checkout the
+// run does not control, so this file is untrusted input that turns straight
+// into a BILLED request: a repository could otherwise make one node send a
+// multi-megabyte prompt by committing one markdown file. 256 KiB is two
+// orders of magnitude above any real command body (the largest in this
+// repo's own catalog is a few KB), so it bounds the abuse without bounding
+// the use — and it is an abstention, never a truncation, because half a
+// command body is an instruction nobody wrote.
+const defaultSlashCommandMaxBytes = 256 << 10
 
 // slashCommandArgsPrefix introduces the arguments appended to a command
 // body that consumes none. Claude Code 2.1.220 does this rather than drop
@@ -71,6 +87,15 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 			name, clawcmds.CommandsDir(workDir))
 		return userText, false
 	}
+	// The cheap end of the bound: refuse an oversized file before paying to
+	// expand it. It is NOT the whole bound — see below.
+	max := slashCommandMaxBytes()
+	if max > 0 && len(cmd.Body) > max {
+		warnSlashCommand(logger, nodeID, iteration,
+			"/%s (%s) has a %d-byte body, over the %d-byte ceiling (%s) — sending the prompt unchanged rather than billing it",
+			name, cmd.Path, len(cmd.Body), max, SlashCommandMaxBytesEnv)
+		return userText, false
+	}
 	expanded, consumed := clawcmds.Expand(cmd, args)
 	// Judged on the EXPANDED text and before the arguments are appended:
 	// otherwise `/empty some question` reaches the model as a bare
@@ -81,7 +106,7 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	// message has to say which of the two happened or the trail goes cold.
 	if strings.TrimSpace(expanded) == "" {
 		warnSlashCommand(logger, nodeID, iteration, "/%s (%s) expands to nothing (body %q) — sending the prompt unchanged rather than an empty one",
-			name, cmd.Path, cmd.Body)
+			name, cmd.Path, iterlog.Truncate(cmd.Body, 200))
 		return userText, false
 	}
 	// A body that took none of the arguments still has to carry them, or the
@@ -92,6 +117,19 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	if a := strings.TrimSpace(args); a != "" && !consumed {
 		expanded += slashCommandArgsPrefix + a
 	}
+	// The end that decides the bill. The body is the untrusted half AND it
+	// sets the multiplier: `$ARGUMENTS` repeated N times turns a body under
+	// the ceiling into N times the arguments, so a file the pre-check
+	// accepts can still expand past it — measured, a 256 KiB body of
+	// `$ARGUMENTS` with a 4 KiB argument reaches 536 MB, which dies in the
+	// builder before anything is billed. An elargissement is bounded at
+	// both ends or it is not bounded.
+	if max > 0 && len(expanded) > max {
+		warnSlashCommand(logger, nodeID, iteration,
+			"/%s (%s) expands to %d bytes, over the %d-byte ceiling (%s) — sending the prompt unchanged rather than billing it",
+			name, cmd.Path, len(expanded), max, SlashCommandMaxBytesEnv)
+		return userText, false
+	}
 	if logger != nil {
 		logger.Info("[%s#%d/claw] 📎 workspace command /%s from %s", nodeID, iteration, name, cmd.Path)
 	}
@@ -100,6 +138,44 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 			name, strings.Join(forms, ", "))
 	}
 	return expanded, true
+}
+
+// slashCommandUserContent rebuilds the multimodal blocks of a prompt whose
+// invocation was substituted: the command body replaces every TEXT block —
+// they carried the invocation, not the instruction — and every image block
+// travels untouched, in order, so the model still receives the bytes.
+//
+// Returns nil when the prompt carried no block at all, which is what
+// buildUserContent returns for a prompt with no inlined image: the plain
+// path then keeps using UserPrompt alone, as before.
+func slashCommandUserContent(blocks []delegate.ContentBlock, expanded string) []delegate.ContentBlock {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]delegate.ContentBlock, 0, len(blocks)+1)
+	out = append(out, delegate.ContentBlock{Type: "text", Text: expanded})
+	for _, b := range blocks {
+		if b.Type == "text" {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// slashCommandMaxBytes resolves the body ceiling: the operator's override
+// when it parses, the built-in default otherwise. A non-numeric value is
+// ignored rather than obeyed — a typo must not silently remove a bound.
+func slashCommandMaxBytes() int {
+	raw := strings.TrimSpace(os.Getenv(SlashCommandMaxBytesEnv))
+	if raw == "" {
+		return defaultSlashCommandMaxBytes
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultSlashCommandMaxBytes
+	}
+	return n
 }
 
 // warnSlashCommand emits one abstention or divergence notice, tagged the way

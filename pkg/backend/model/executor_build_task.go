@@ -1326,18 +1326,32 @@ func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields
 	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger)
 	if hit {
 		userText = expanded
-		// A command file is a prompt body, not a bot prompt: it cannot
-		// carry `{{attachments.*}}`, and the blocks above were split from
-		// the INVOCATION. Keeping them would send the raw `/name`, since
-		// the multimodal path ignores the text prompt entirely.
-		userContent = nil
+		// The blocks above were split around the INVOCATION, so their TEXT
+		// is the thing that was just replaced — but their image bytes are
+		// the operator's attachment, and claude_code keeps those when a
+		// prompt both invokes a command and references one. Substituting
+		// the text and keeping the images is what parity means here;
+		// dropping the blocks wholesale sent a `tools: []` node an image
+		// path it could not read.
+		userContent = slashCommandUserContent(userContent, expanded)
 	}
 
 	// On re-invocation after an ask_user pause, prepend the prior
 	// question and the user's answer so the (stateless) LLM doesn't
 	// lose the thread. Without this, claw would re-ask the same
 	// question because its conversation history isn't persisted.
-	userText = prependPriorAskUser(userText, input)
+	//
+	// It has to reach the BLOCKS too. A backend holding multimodal content
+	// builds its wire message from the blocks alone, so a prefix added only
+	// to the text is a prefix the model never sees — and the prompt event
+	// records it as sent. That loses the operator's answer and the node
+	// re-asks the same question, which is the one thing this prepend
+	// exists to stop.
+	prior := prependPriorAskUser(userText, input)
+	if prefix, ok := strings.CutSuffix(prior, userText); ok && prefix != "" && len(userContent) > 0 {
+		userContent = append([]delegate.ContentBlock{{Type: "text", Text: prefix}}, userContent...)
+	}
+	userText = prior
 	return userText, userContent
 }
 

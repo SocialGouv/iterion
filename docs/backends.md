@@ -135,6 +135,20 @@ The citations, per cell that is not self-evident from the table:
     bodies, and a warning that is always wrong teaches an author to ignore
     the ones that are not.
 
+  A prompt may both invoke a command and reference an image attachment
+  (`/analyze {{attachments.shot}}`): the command body replaces the
+  invocation TEXT and the image blocks travel untouched, so the model
+  receives the bytes on `claw` exactly as it does on `claude_code`. The
+  attachment's path also survives as an argument.
+
+  A command whose body — **or whose expanded text** — exceeds
+  `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` (256 KiB by default) is refused
+  rather than substituted: on a review run that file belongs to a checkout
+  the run does not control, and it turns straight into a billed request.
+  Both ends are checked because the body sets the multiplier: `$ARGUMENTS`
+  repeated N times turns a body under the ceiling into N times the
+  arguments.
+
   Arguments a body does **not** consume are appended as
   `ARGUMENTS: <args>`, which is what the CLI does; dropping them would
   delete the operator's message rather than merely leave it unexpanded.

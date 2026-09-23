@@ -105,20 +105,23 @@ func TestBuildUserPromptPartsExpandsBeforeThePriorAskUserPrepend(t *testing.T) {
 	}
 }
 
-// On the multimodal path the wire message is built from UserContent alone,
-// so blocks split from the INVOCATION would send "/probe-secret" while the
-// log claimed an expansion.
+// A prompt can both invoke a workspace command and reference an image
+// attachment (`/analyze {{attachments.shot}}`). The blocks were split around
+// the INVOCATION, so their text is what the substitution replaces — but the
+// image bytes are the operator's attachment, and claude_code keeps those.
+// Dropping the blocks wholesale sent a `tools: []` node an image PATH it
+// could not read, and said nothing.
 //
-// Mutation: keep userContent on a hit — the blocks survive and the backend
-// sends the raw invocation.
-func TestBuildUserPromptPartsDropsMultimodalBlocksOnACommandHit(t *testing.T) {
+// Mutation: go back to `userContent = nil` on a hit — the image block
+// disappears and this reddens on its own assertion.
+func TestBuildUserPromptPartsKeepsTheInlinedImageOnACommandHit(t *testing.T) {
 	ws := commandWorkspace(t, "probe-secret.md", probeBody+"\n")
 	e := commandExecutor(ws, "/probe-secret {{attachments.shot}}")
 	e.imageAttachs = map[string]bool{"shot": true}
 
 	// A 1x1 PNG, so imageContentBlock really inlines bytes and the
 	// multimodal branch really fires — a fixture whose blocks came back
-	// empty would prove nothing about what a command hit drops.
+	// empty would prove nothing about what a command hit keeps.
 	png, err := base64.StdEncoding.DecodeString(
 		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 	if err != nil {
@@ -132,26 +135,55 @@ func TestBuildUserPromptPartsDropsMultimodalBlocksOnACommandHit(t *testing.T) {
 		"shot": {Name: "shot", Path: shot, HostPath: shot, MIME: "image/png"},
 	}}
 
-	// The control: without the expansion this prompt DOES produce blocks,
-	// so the assertion below is about the command hit and not about an
-	// inert fixture.
-	if _, blocks := e.buildUserContent("u", map[string]any{}, td, e.imageAttachs); len(blocks) == 0 {
-		t.Fatal("fixture is inert: buildUserContent produced no multimodal block")
+	// The control: this prompt DOES produce an image block, so the
+	// assertions below are about the command hit and not an inert fixture.
+	_, before := e.buildUserContent("u", map[string]any{}, td, e.imageAttachs)
+	if countBlocks(before, "image") == 0 {
+		t.Fatal("fixture is inert: buildUserContent produced no image block")
 	}
 
-	got, content := e.buildUserPromptParts(context.Background(), backendFields{id: "n", userPrompt: "u"}, map[string]any{}, td, delegate.BackendClaw)
-	if len(content) != 0 {
-		t.Errorf("UserContent = %v, want none on a command hit", content)
+	got, content := e.buildUserPromptParts(context.Background(),
+		backendFields{id: "n", userPrompt: "u"}, map[string]any{}, td, delegate.BackendClaw)
+
+	if n := countBlocks(content, "image"); n != countBlocks(before, "image") {
+		t.Errorf("image blocks after the substitution = %d, want %d — the attachment was dropped",
+			n, countBlocks(before, "image"))
+	}
+	if n := countBlocks(content, "text"); n != 1 {
+		t.Errorf("text blocks = %d, want exactly the substituted body", n)
+	}
+	// The instruction leads: the body first, then the bytes it talks about.
+	// Mutation: append the text block last and this reddens.
+	if len(content) == 0 || content[0].Type != "text" {
+		t.Errorf("blocks = %v, want the substituted body first", content)
+	}
+	for _, b := range content {
+		if b.Type == "text" && b.Text != got {
+			t.Errorf("text block = %q, want the expanded prompt %q", b.Text, got)
+		}
+		if b.Type == "image" && b.Data == "" && b.URL == "" {
+			t.Error("the image block lost its bytes")
+		}
 	}
 	if !strings.HasPrefix(got, probeBody) {
 		t.Errorf("user prompt = %q, want it to open with the command body", got)
 	}
-	// The attachment reference was the command's ARGUMENT. Dropping the
-	// blocks must not drop the reference too: the path survives as text, so
-	// the agent can still reach the file.
+	// The attachment reference was the command's ARGUMENT, so its path
+	// survives as text too — the agent can still name the file.
 	if !strings.Contains(got, shot) {
 		t.Errorf("user prompt = %q, want the attachment path kept as an argument", got)
 	}
+}
+
+// countBlocks counts the content blocks of a given type.
+func countBlocks(blocks []delegate.ContentBlock, typ string) int {
+	n := 0
+	for _, b := range blocks {
+		if b.Type == typ {
+			n++
+		}
+	}
+	return n
 }
 
 // An unresolved name is not refused: claude_code answers an unknown command
@@ -599,5 +631,206 @@ func assertTaggedWithIteration(t *testing.T, out, nodeID string, iter int) {
 	}
 	if seen == 0 {
 		t.Errorf("no slash-command diagnostic was emitted at all:\n%s", out)
+	}
+}
+
+// On a review run the workspace is a checkout the run does not control, so a
+// command body is untrusted input that turns straight into a BILLED request.
+// The ceiling abstains rather than truncates: half a command body is an
+// instruction nobody wrote.
+//
+// Mutation: drop the ceiling and a one-megabyte file committed by the
+// repository under review becomes the node's prompt.
+func TestExpandWorkspaceSlashCommandRefusesAnOversizedBody(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+	big := strings.Repeat("A", defaultSlashCommandMaxBytes+1)
+	ws := commandWorkspace(t, "huge.md", big)
+
+	got, hit := expandWorkspaceSlashCommand("/huge", ws, delegate.BackendClaw, "n", 0, logger)
+	if hit || got != "/huge" {
+		t.Errorf("= (%d bytes, %v), want the prompt left unchanged", len(got), hit)
+	}
+	out := buf.String()
+	for _, want := range []string{"/huge", "over the", SlashCommandMaxBytesEnv} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal does not name %q:\n%s", want, out)
+		}
+	}
+	// Never a truncation: nothing of the body may reach the prompt.
+	if strings.Contains(got, "AAAA") {
+		t.Error("the oversized body leaked into the prompt")
+	}
+
+	// The control: one byte under the ceiling still expands, so the bound
+	// bounds the abuse and not the use.
+	okWS := commandWorkspace(t, "fits.md", strings.Repeat("B", defaultSlashCommandMaxBytes-1))
+	if _, hit := expandWorkspaceSlashCommand("/fits", okWS, delegate.BackendClaw, "n", 0, iterlog.Nop()); !hit {
+		t.Error("a body one byte under the ceiling was refused")
+	}
+}
+
+// The operator can move the ceiling; a typo must not silently remove it.
+func TestSlashCommandMaxBytesHonoursTheOverride(t *testing.T) {
+	t.Setenv(SlashCommandMaxBytesEnv, "10")
+	if got := slashCommandMaxBytes(); got != 10 {
+		t.Errorf("slashCommandMaxBytes() = %d, want the override", got)
+	}
+	t.Setenv(SlashCommandMaxBytesEnv, "0")
+	if got := slashCommandMaxBytes(); got != 0 {
+		t.Errorf("slashCommandMaxBytes() = %d, want the ceiling removed", got)
+	}
+	for _, bad := range []string{"lots", "-5", "1e6"} {
+		t.Setenv(SlashCommandMaxBytesEnv, bad)
+		if got := slashCommandMaxBytes(); got != defaultSlashCommandMaxBytes {
+			t.Errorf("%s=%q gave %d, want the default kept — a typo must not remove the bound",
+				SlashCommandMaxBytesEnv, bad, got)
+		}
+	}
+}
+
+// The audit trail must carry what was SENT. On the router path the prompt
+// event fires before any backend is chosen, so it carries the invocation;
+// when claw substitutes a command, the event has to be re-emitted with the
+// body claw actually received. A log line is not an audit trail —
+// `events.jsonl`, `iterion report` and the studio all read this event.
+//
+// Mutation: drop the re-emission in the router's assemble — the recorded
+// prompt stays `/route` while claw receives the body, and this reddens.
+func TestLLMRouterRecordsThePromptItActuallySent(t *testing.T) {
+	ws := commandWorkspace(t, "route.md", "Pick the route that fits the change.\n")
+
+	for _, tc := range []struct{ backend, wantLast string }{
+		{delegate.BackendClaw, "Pick the route that fits the change."},
+		{delegate.BackendClaudeCode, "/route"},
+	} {
+		t.Run(tc.backend, func(t *testing.T) {
+			captured := &capturingBackend{results: []delegate.Result{
+				{Output: map[string]any{"selected_route": "a", "reasoning": "r"}},
+			}}
+			reg := delegate.NewRegistry()
+			reg.Register(tc.backend, captured)
+			wf := &ir.Workflow{
+				Prompts: map[string]*ir.Prompt{"usr": {Body: "/route"}},
+				Schemas: map[string]*ir.Schema{},
+			}
+			var prompts []string
+			e := NewClawExecutor(NewRegistry(), wf,
+				WithBackendRegistry(reg), WithWorkDir(ws), WithLogger(iterlog.Nop()),
+				WithEventHooks(EventHooks{
+					OnLLMPrompt: func(_, _, userMessage string) { prompts = append(prompts, userMessage) },
+				}))
+			node := &ir.RouterNode{
+				BaseNode:   ir.BaseNode{ID: "r"},
+				LLMFields:  ir.LLMFields{Backend: tc.backend, UserPrompt: "usr", Model: "anthropic/claude-sonnet-4-6"},
+				RouterMode: ir.RouterLLM,
+			}
+			if _, err := e.executeLLMRouterUnified(context.Background(),
+				node, map[string]any{"_route_candidates": []string{"a", "b"}}); err != nil {
+				t.Fatalf("router: %v", err)
+			}
+			if len(prompts) == 0 {
+				t.Fatal("no prompt event emitted")
+			}
+			// The LAST event is the one that describes what was sent.
+			if got := prompts[len(prompts)-1]; got != tc.wantLast {
+				t.Errorf("recorded prompt = %q, want %q (what the backend received)", got, tc.wantLast)
+			}
+			if got := captured.tasks[0].UserPrompt; got != prompts[len(prompts)-1] {
+				t.Errorf("recorded %q but sent %q — the audit trail does not match the request",
+					prompts[len(prompts)-1], got)
+			}
+			// ONE event per node, substitution or not: every reader that
+			// starts an LLM step per `llm_prompt` (iterion inspect --node,
+			// iterion report, the studio's LLM Trace) would otherwise render
+			// a phantom step that never resolves.
+			if len(prompts) != 1 {
+				t.Errorf("%d prompt events for one call, want exactly 1: %q", len(prompts), prompts)
+			}
+		})
+	}
+}
+
+// The body is the untrusted half AND it sets the multiplier: `$ARGUMENTS`
+// repeated N times turns a body UNDER the ceiling into N times the
+// arguments. A bound applied only before expansion is not a bound —
+// measured, a 256 KiB body of `$ARGUMENTS` with a 4 KiB argument reaches
+// 536 MB, which dies in the builder before anything is billed.
+//
+// Mutation: drop the post-expansion check and this body sails through.
+func TestExpandWorkspaceSlashCommandRefusesABodyThatAMPLIFIESPastTheCeiling(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+
+	// Under the ceiling on its own, far over it once expanded.
+	repeats := 2000
+	body := strings.Repeat("$ARGUMENTS ", repeats)
+	if len(body) > defaultSlashCommandMaxBytes {
+		t.Fatalf("fixture is inert: the body is %d bytes, already over the ceiling", len(body))
+	}
+	ws := commandWorkspace(t, "amp.md", body)
+	args := strings.Repeat("x", 1024)
+
+	got, hit := expandWorkspaceSlashCommand("/amp "+args, ws, delegate.BackendClaw, "n", 0, logger)
+	if hit {
+		t.Errorf("an amplifying body expanded to %d bytes and was accepted", len(got))
+	}
+	if !strings.HasPrefix(got, "/amp ") {
+		t.Errorf("prompt = %.40q…, want it left unchanged", got)
+	}
+	if out := buf.String(); !strings.Contains(out, "expands to") {
+		t.Errorf("the refusal does not name the expansion:\n%s", out)
+	}
+}
+
+// A backend holding multimodal content builds its wire message from the
+// BLOCKS alone, so the ask_user prefix has to reach them: added only to the
+// text, the operator's answer never reaches the model and the node re-asks
+// the same question — while the prompt event records it as sent.
+//
+// Mutation: prepend only to userText (the shape before this fix) and the
+// blocks lose the answer.
+func TestBuildUserPromptPartsCarriesThePriorAnswerIntoTheBlocks(t *testing.T) {
+	ws := commandWorkspace(t, "analyze.md", "Describe the screenshot.\n")
+	e := commandExecutor(ws, "/analyze {{attachments.shot}}")
+	e.imageAttachs = map[string]bool{"shot": true}
+
+	png, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shot := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(shot, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	td := &TemplateData{Attachments: map[string]AttachmentInfo{
+		"shot": {Name: "shot", Path: shot, HostPath: shot, MIME: "image/png"},
+	}}
+	input := map[string]any{
+		delegate.PriorAskUserQuestionKey: "which branch?",
+		delegate.PriorAskUserAnswerKey:   "release/4.2 — and keep the tag",
+	}
+
+	got, content := e.buildUserPromptParts(context.Background(),
+		backendFields{id: "n", userPrompt: "u"}, input, td, delegate.BackendClaw)
+
+	if !strings.Contains(got, "release/4.2") {
+		t.Fatalf("the text lost the prior answer: %q", got)
+	}
+	if countBlocks(content, "image") == 0 {
+		t.Fatal("fixture is inert: no image block to carry anything alongside")
+	}
+	var blockText string
+	for _, b := range content {
+		if b.Type == "text" {
+			blockText += b.Text
+		}
+	}
+	if !strings.Contains(blockText, "release/4.2") {
+		t.Errorf("the blocks lost the operator's answer — the model would re-ask.\nblocks: %q", blockText)
+	}
+	if !strings.Contains(blockText, "Describe the screenshot.") {
+		t.Errorf("the blocks lost the command body: %q", blockText)
 	}
 }
