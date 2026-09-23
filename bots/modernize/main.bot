@@ -48,10 +48,10 @@ secrets:
   forge_token:
     as: file
     optional: true
-  ## Platform credential — a single READ-ONLY file used BY REFERENCE (env
-  ## $DEPLOY_CREDENTIAL = its PATH), never opened or printed. Same store name
-  ## and same shape as the review-env, app-dev and product-docs bots', so one
-  ## installed credential serves them all.
+  ## Platform credential — a single READ-ONLY file used BY REFERENCE, never
+  ## opened or printed. Same store name and same shape as the review-env,
+  ## app-dev and product-docs bots', so one installed credential serves them
+  ## all.
   ##
   ## This bot deploys nothing of its own. It needs the credential because a
   ## LOT's exit gate is declared in the target repository's contract, and a
@@ -60,6 +60,14 @@ secrets:
   ## contract can require proof on a real deployment. With no platform
   ## identity reachable, such a gate can only refuse, whatever the lot did,
   ## and its refusal says nothing about the work.
+  ##
+  ## `env:` is a SANDBOX convenience, not the contract: the engine writes it
+  ## into the container spec, so on a HOST run $DEPLOY_CREDENTIAL is unset —
+  ## the runner materialises the file and records its path, exporting nothing.
+  ## The reliable reference is the path `{{secrets.deploy_credential}}`
+  ## renders, which is why lot_verify exports the variable itself from that
+  ## path before running a single gate command: a contract author writes one
+  ## name and it holds on both paths.
   ##
   ## optional:true, so every contract that does not ask for one is untouched
   ## and dry runs keep working; a gate that needs the credential and finds
@@ -1023,6 +1031,22 @@ tool lot_verify:
             # a log line. Without the report itself there is no verdict.
             return None
         return best[2]
+
+    # The platform credential, under the name a contract can write. A file
+    # secret's `env:` is written into the SANDBOX container spec only; on a
+    # host run the runner materialises the file and exports nothing, so a gate
+    # written against $DEPLOY_CREDENTIAL would read it empty and refuse — for
+    # want of an identity that is actually mounted. The rendered path is the
+    # reliable handle, so the name is set here from it.
+    #
+    # Only an existing FILE is exported: an unresolved optional secret renders
+    # a placeholder, and exporting that would hand the gate a path to nothing
+    # — worse than empty, because the gate would fail on a ghost instead of
+    # reporting a missing credential. setdefault, so a sandbox that already
+    # bound the variable keeps its own value.
+    _deploy_credential = {{secrets.deploy_credential}}
+    if isinstance(_deploy_credential, str) and os.path.isfile(_deploy_credential):
+        os.environ.setdefault("DEPLOY_CREDENTIAL", _deploy_credential)
 
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True
