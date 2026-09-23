@@ -50,7 +50,7 @@ func LoadDirCommands(r *Registry, startDir string) error {
 			if derr != nil {
 				continue
 			}
-			body, desc := stripFrontmatter(string(data))
+			body, desc, _ := stripFrontmatter(string(data))
 			source := filepath.Join(dir, e.Name())
 			captured := strings.TrimSpace(body)
 			cmdName := name
@@ -100,22 +100,33 @@ func findAncestorCommandDirs(startDir string) ([]string, error) {
 // stripFrontmatter splits an optional leading YAML frontmatter block
 // (--- … ---) from the body and returns (body, description). The description
 // is the frontmatter `description:` when present, else the first non-empty
-// body line, capped for help display.
+// body line, capped for help display. The third return names every
+// `key:` the block declared, in source order, so a caller can report what
+// this parser understood and DISCARDED rather than let it vanish.
 //
 // The opening `---` must be closed by a line that is exactly `---`, and the
 // block between must carry at least one `key:` line. Without both checks a
 // Markdown horizontal rule reads as frontmatter and the text under it is
 // silently dropped — harmless when the body is help text, not harmless when
 // it is a prompt sent to a model.
-func stripFrontmatter(content string) (body, description string) {
+func stripFrontmatter(content string) (body, description string, keys []string) {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	body = content
 	if fm, rest, ok := splitFrontmatter(content); ok {
 		body = rest
 		for _, line := range strings.Split(fm, "\n") {
-			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "description:"); ok {
-				description = strings.Trim(strings.TrimSpace(v), `"'`)
-				break
+			line = strings.TrimSpace(line)
+			i := strings.IndexByte(line, ':')
+			if i <= 0 {
+				continue
+			}
+			key := line[:i]
+			if strings.ContainsAny(key, " \t") {
+				continue
+			}
+			keys = append(keys, key)
+			if key == "description" {
+				description = strings.Trim(strings.TrimSpace(line[i+1:]), `"'`)
 			}
 		}
 	}
@@ -127,7 +138,7 @@ func stripFrontmatter(content string) (body, description string) {
 			}
 		}
 	}
-	return body, capRunes(description, 117)
+	return body, capRunes(description, 117), keys
 }
 
 // splitFrontmatter returns the frontmatter block and the body that follows

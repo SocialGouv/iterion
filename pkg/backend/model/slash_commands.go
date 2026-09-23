@@ -147,6 +147,19 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 		warnSlashCommand(logger, nodeID, iteration, "/%s uses %s — those mean something else here than in claude_code; see docs/backends.md#workspace-slash-commands",
 			name, strings.Join(forms, ", "))
 	}
+	// The frontmatter is the divergence that carries a SECURITY consequence
+	// and it was the only one that expanded in silence: a command narrowing
+	// itself with `allowed-tools:` is bounded on claude_code and keeps the
+	// node's whole tool set here, so the operator reads a restriction that
+	// nothing enforces. Same channel as the body divergences — documenting
+	// it in bold and saying nothing at runtime is the "one file means two
+	// things silently" outcome this warning exists to prevent. Enforcement
+	// is #1717; this is the diagnostic that stops it being invisible.
+	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 {
+		warnSlashCommand(logger, nodeID, iteration,
+			"/%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them, so a command that narrows itself keeps this node's full tool set (#1717)",
+			name, cmd.Path, strings.Join(keys, ", "))
+	}
 	return expanded, true
 }
 

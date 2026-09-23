@@ -42,6 +42,15 @@ type WorkspaceCommand struct {
 	Body string
 	// Path is the file the body was read from.
 	Path string
+	// DiscardedFrontmatter names the frontmatter keys this parser read and
+	// then THREW AWAY — everything but `description:`. Claude Code honours
+	// several of them (`allowed-tools:`, `model:`, `argument-hint:`,
+	// `disable-model-invocation:`), so a command that narrows itself means
+	// one thing there and another here. Surfacing the keys is what lets an
+	// embedder say so instead of expanding in silence; it is the divergence
+	// with a security consequence, and it was the only one a caller could
+	// not see.
+	DiscardedFrontmatter []string
 }
 
 // CommandsDir returns the `.claude/commands` directory of a workspace.
@@ -65,8 +74,9 @@ func HasWorkspaceCommands(workDir string) bool {
 // invocation, and splits it into the command name (without the slash) and
 // the raw argument string that follows it.
 //
-// A name accepts letters, digits, `_`, `-` and `:` namespace separators
-// and nothing else. That charset is CLAW'S OWN conservative rule, not the
+// A name accepts letters, digits, `_`, `-`, `.` and `:` namespace
+// separators, and nothing else; a component that is nothing but dots (`.`,
+// `..`) is refused. That charset is CLAW'S OWN conservative rule, not the
 // reference's: Claude Code applies none — its name is the whole
 // whitespace-delimited token, and `/usr/bin/foo is broken` stays prose
 // there only because no command named `usr/bin/foo` is registered. Keeping
@@ -97,6 +107,22 @@ func ParseInvocation(prompt string) (name, args string, ok bool) {
 	return token, args, true
 }
 
+// discarded returns the frontmatter keys this package does not act on,
+// sorted and deduplicated. `description:` is the one it consumes.
+func discarded(keys []string) []string {
+	var out []string
+	for _, k := range keys {
+		if k != "description" {
+			out = append(out, k)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // notACommandFile reports whether err says the name cannot designate a
 // command file at all — it does not exist, it is too long for the
 // filesystem, it is a directory, or a path segment is not one. Those are
@@ -117,7 +143,7 @@ func validCommandName(token string) bool {
 	for i := 0; i < len(token); i++ {
 		c := token[i]
 		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-', c == '.':
 			segment = true
 		case c == ':':
 			if !segment {
@@ -128,7 +154,20 @@ func validCommandName(token string) bool {
 			return false
 		}
 	}
-	return segment
+	if !segment {
+		return false
+	}
+	// A dot INSIDE a component is an ordinary file name (`db.migrate.md`
+	// resolves on Claude Code, which applies no charset at all). A component
+	// that IS a dot run is the traversal spelling, and it is refused here so
+	// the name cannot express it — os.Root is what makes that a guarantee
+	// rather than a convention, but a name has no business saying it.
+	for _, seg := range strings.Split(token, ":") {
+		if strings.Trim(seg, ".") == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // LookupWorkspace resolves a command name against workDir's
@@ -213,12 +252,13 @@ func LookupWorkspace(workDir, name string, maxBytes int) (WorkspaceCommand, bool
 	if maxBytes > 0 && len(data) > maxBytes {
 		return WorkspaceCommand{}, false, ErrBodyTooLarge
 	}
-	body, desc := stripFrontmatter(string(data))
+	body, desc, keys := stripFrontmatter(string(data))
 	return WorkspaceCommand{
-		Name:        name,
-		Description: desc,
-		Body:        strings.TrimSpace(body),
-		Path:        path,
+		Name:                 name,
+		Description:          desc,
+		Body:                 strings.TrimSpace(body),
+		Path:                 path,
+		DiscardedFrontmatter: discarded(keys),
 	}, true, nil
 }
 

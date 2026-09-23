@@ -104,6 +104,11 @@ The citations, per cell that is not self-evident from the table:
   `tools: []`, so resolving the command is the only path to the token its
   file carries. Four differences from `claude_code`, deliberate and
   measured on CLI 2.1.220:
+  - a command **name** may carry dots (`db.migrate`), as on `claude_code`,
+    which applies no charset at all. What a name cannot spell is traversal:
+    a separator is refused, and so is a component that is nothing but dots.
+    `os.Root` is what makes containment a guarantee — the charset only keeps
+    the name from expressing what the root would refuse anyway.
   - `claw` reads the **workspace only** — no walk up the ancestors, and no
     user-level `~/.claude/commands/`: a workspace is a checkout of a
     repository the run does not control, and host state does not belong in
@@ -119,7 +124,10 @@ The citations, per cell that is not self-evident from the table:
     honoured by `claude_code` and **ignored** by `claw`, which keeps only
     the body. A command that narrows itself with `allowed-tools:` therefore
     keeps the node's full tool set on `claw` — bound it with the node's own
-    `tools:` instead.
+    `tools:` instead. This is the divergence with a security consequence, so
+    it is the one the runtime says out loud: a command declaring any of
+    those keys logs a warning naming them and #1717, where the enforcement
+    is tracked. Documenting it was never enough.
   - `$1` … `$9` are **one-based** on `claw` (`$1` is the first argument),
     which is Claude Code's documented contract; the CLI itself resolves
     them off by one (`/x alpha beta gamma` on `[$1][$2][$3]` expands to

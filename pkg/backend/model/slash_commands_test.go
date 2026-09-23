@@ -876,3 +876,44 @@ func TestExpandWorkspaceSlashCommandRefusesWhenTheArgumentsPushItOver(t *testing
 		t.Errorf("the refusal does not name the arguments as the cause:\n%s", out)
 	}
 }
+
+// The frontmatter divergence is the one with a security consequence — a
+// command that narrows itself to `allowed-tools: Read, Grep` runs here with
+// the node's full set — and it was the only divergence with no runtime
+// signal at all. Documenting it in bold is not a diagnostic.
+//
+// Mutation: drop the DiscardedFrontmatter warn block (or have claw surface
+// an empty list) and the operator gets nothing.
+func TestExpandWorkspaceSlashCommandWarnsAboutDiscardedFrontmatter(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+	ws := commandWorkspace(t, "narrow.md",
+		"---\ndescription: narrowed\nallowed-tools: Read, Grep\nmodel: claude-3-5-haiku\n---\nAudit the diff.\n")
+
+	got, hit := expandWorkspaceSlashCommand("/narrow", ws, delegate.BackendClaw, "n", 0, logger)
+	if !hit || got != "Audit the diff." {
+		t.Fatalf("= (%q, %v), want the command body", got, hit)
+	}
+	out := buf.String()
+	for _, want := range []string{"allowed-tools", "model", "#1717", "narrow"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the frontmatter warning does not name %q:\n%s", want, out)
+		}
+	}
+	// It has to be visible at production level, like every other abstention.
+	if !strings.Contains(out, "[n#0/claw]") {
+		t.Errorf("the warning is invisible in the studio's per-node filter:\n%s", out)
+	}
+
+	// A description-only command owes no warning — a diagnostic that always
+	// fires is one an author learns to ignore.
+	var quiet bytes.Buffer
+	plainWS := commandWorkspace(t, "plain.md", "---\ndescription: plain\n---\nJust do it.\n")
+	if _, hit := expandWorkspaceSlashCommand("/plain", plainWS, delegate.BackendClaw, "n", 0,
+		iterlog.New(iterlog.LevelInfo, &quiet)); !hit {
+		t.Fatal("the plain command did not resolve")
+	}
+	if strings.Contains(quiet.String(), "frontmatter") {
+		t.Errorf("a description-only command warned anyway:\n%s", quiet.String())
+	}
+}

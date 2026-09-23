@@ -13,7 +13,11 @@ import (
 )
 
 // WorkspaceCommand is one markdown slash command read from a workspace's
-// `.claude/commands/` directory.
+// `.claude/commands/` directory. Its DiscardedFrontmatter field names the
+// header keys this package parsed and did not act on — Claude Code honours
+// several of them (`allowed-tools:`, `model:`), so an embedder that ignores
+// the field lets a command that narrows itself expand unrestricted and in
+// silence.
 type WorkspaceCommand = intl.WorkspaceCommand
 
 // CommandsDir returns the `.claude/commands` directory of a workspace.
