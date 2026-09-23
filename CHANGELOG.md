@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.192.0](https://github.com/SocialGouv/iterion/compare/v3.191.2...v3.192.0) (2026-09-23)
+
+### Features
+
+* **dsl:** the author YAML twin — converter, proof and measure (lot 5, PR B) ([#1664](https://github.com/SocialGouv/iterion/issues/1664)) ([83bc0f8](https://github.com/SocialGouv/iterion/commit/83bc0f884bff9bd0cbb6d3710f1864e22330ace9)), references [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1094](https://github.com/SocialGouv/iterion/issues/1094) [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1094](https://github.com/SocialGouv/iterion/issues/1094) [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1624](https://github.com/SocialGouv/iterion/issues/1624) [#1627](https://github.com/SocialGouv/iterion/issues/1627) [#1628](https://github.com/SocialGouv/iterion/issues/1628) [#1628](https://github.com/SocialGouv/iterion/issues/1628) [#1110](https://github.com/SocialGouv/iterion/issues/1110) [#1110](https://github.com/SocialGouv/iterion/issues/1110) [#1631](https://github.com/SocialGouv/iterion/issues/1631) [#1656](https://github.com/SocialGouv/iterion/issues/1656) [#1671](https://github.com/SocialGouv/iterion/issues/1671) [#1671](https://github.com/SocialGouv/iterion/issues/1671)
+
+    <details><summary>why</summary>
+
+    `servers: ["forge"]`, `on: ["auth"]`, `watches: ["a"]`, `needs: ["gpu"]` read as EMPTY lists, `tools: [1, bash]` as `[bash]`: parseIdentList and parseToolRef consumed a token that could not open a name and reported nothing, so the server was never wired and no diagnostic said so. Both chokepoints now refuse the element where it stands — one E002 naming it, a hint that says "without quotes" for a quoted element — and the rest of the list is read. No shipped bot writes such an element (grep over…
+
+    </details>
+
+### Bug Fixes
+
+* **runview:** a refused run-level fallback reaches the run's timeline ([#1583](https://github.com/SocialGouv/iterion/issues/1583)) ([7d88d51](https://github.com/SocialGouv/iterion/commit/7d88d5161bdc219f9c3545c344fee56d7dea196d))
+
+    <details><summary>why</summary>
+
+    The launch-time fallback chain is screened before it is materialised onto a node, and the screen is right to refuse: an empty tools: list crossing to a CLI backend would silently hand that node the full unrestricted toolset, a codex route cannot run inside an active sandbox, a stage naming a backend with no model resolves to nothing. Each refusal already carries a precise, actionable sentence.
+
+    </details>
+* **server,docs:** revoking a team credential takes the same right as creating one ([#1689](https://github.com/SocialGouv/iterion/issues/1689)) ([01119d2](https://github.com/SocialGouv/iterion/commit/01119d24187f4b501b04f8ed85bcfcfbb142fe4c)), references [#1687](https://github.com/SocialGouv/iterion/issues/1687)
+
+    <details><summary>why</summary>
+
+    Creating a team BYOK key or generic secret gates on `canManageTeam`, which carries the org arm; revoking one gated on `canMutateScopedRecord`, which did not. An org admin could install a credential in any team of their org and never take it back — strictly worse than not being able to install it, since the key funds runs and its plaintext is write-only from that point on.
+
+    </details>
+
 ## [3.191.2](https://github.com/SocialGouv/iterion/compare/v3.191.1...v3.191.2) (2026-09-23)
 
 ### Bug Fixes
