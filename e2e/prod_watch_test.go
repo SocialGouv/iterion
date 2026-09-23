@@ -965,7 +965,8 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	// Every cursor field is parsed under one named refusal: a foreign value
 	// names the query and the field, and a falsy foreign value is never
 	// swapped for a default.
-	for field, value := range map[string]string{"frontier_ns": "{}", "band_base_ns": `"x"`, "covered_to_ns": `[1]`} {
+	for _, fv := range [][2]string{{"frontier_ns", "{}"}, {"band_base_ns", `"x"`}, {"covered_to_ns", `[1]`}, {"covered_to_ns", "true"}, {"overlap_from_ns", "[]"}, {"history_to_ns", `"soon"`}} {
+		field, value := fv[0], fv[1]
 		_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(fmt.Sprintf(
 			`{"version":1,"generation":1,"cursors":{"loki":{"errors":{"covered_to_ns":"5","frontier_ns":"5","band":[],"band_base_ns":"0","overlap_from_ns":"0","%s":%s}}},"incidents":{},"health":{}}`,
 			field, value)), 0o644)
@@ -973,6 +974,15 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 		if err == nil || !strings.Contains(stderr, field) || !strings.Contains(stderr, "errors") || strings.Contains(stderr, "Traceback") {
 			t.Fatalf("a foreign %s must refuse by name: %v %s", field, err, stderr)
 		}
+	}
+	// An ABSENT frontier defaults to the mark (the window opens at the
+	// overlap below it), never to zero (the floor).
+	mark := nsAgo(30 * time.Second)
+	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(fmt.Sprintf(
+		`{"version":1,"generation":1,"cursors":{"loki":{"errors":{"covered_to_ns":"%d","band":[],"band_base_ns":"0","overlap_from_ns":"0"}}},"incidents":{},"health":{}}`, mark)), 0o644)
+	out, _, err = plan(h.tokenFile)
+	if err != nil || out["loki"].(map[string]any)["windows"].(map[string]any)["errors"].(map[string]any)["from_ns"] != strconv.FormatInt(mark-60*int64(time.Second), 10) {
+		t.Fatalf("an absent frontier defaults to the mark: %v %v", err, out["loki"])
 	}
 	_ = os.Remove(filepath.Join(h.ws, ".prod-watch", "state.json"))
 	// The typed refusal renders the REASON, not the summary — pinned on
@@ -1708,8 +1718,8 @@ func TestProdWatch_BootstrapGateFollowsTheLinesNotTheQueryOrder(t *testing.T) {
 				t.Fatalf("exactly one alert, for the live line: %v (summary: %v)", alerts, outs["decide"]["summary"])
 			}
 			a := alerts[0].(map[string]any)
-			if a["state"] != "new" || a["severity"] != "medium" || a["count"].(float64) != 1 {
-				t.Fatalf("the live line is news once, at its own count; history is observed, not counted: %v", a)
+			if a["state"] != "new" || a["severity"] != "medium" || a["count"].(float64) != 1 || a["fields"].(map[string]any)["count"].(float64) != 1 {
+				t.Fatalf("the live line is news once, at its own count (rendered too); history is observed, not counted: %v", a)
 			}
 		})
 	}
@@ -1738,8 +1748,8 @@ func TestProdWatch_LokiFailedBootstrapWindowIsRetriedWhereItOpened(t *testing.T)
 	time.Sleep(3 * time.Second) // the clock moves; a window computed from `now` would leave the line behind
 	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
 	pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
-	if pq["error"] != "" || pq["lines"].(float64) != 1 {
-		t.Fatalf("tick 2 retries the window where it opened and reads the line: %v", pq)
+	if pq["error"] != "" || pq["lines"].(float64) != 1 || pq["gap"] == true {
+		t.Fatalf("tick 2 retries the window where it opened and reads the line, with no false gap: %v", pq)
 	}
 }
 
@@ -1793,6 +1803,16 @@ func TestProdWatch_LokiCursorOutOfTheWindowIsAGap(t *testing.T) {
 	pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
 	if pq["gap"] != true || outs["leak_scan"]["coverage"] != "partial" {
 		t.Fatalf("a cursor out of the max window is a gap and partial coverage: %v coverage=%v", pq, outs["leak_scan"]["coverage"])
+	}
+	// A failed first walk that opened outside the max window by now: a gap
+	// as well (the bootstrap branch declares it from the bound it retries).
+	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(fmt.Sprintf(
+		`{"version":1,"generation":2,"cursors":{"loki":{"errors":{"covered_to_ns":"0","frontier_ns":"0","band":[],"band_base_ns":"0","overlap_from_ns":"%d","history_to_ns":"%d"}}},"incidents":{},"health":{}}`,
+		old, old+int64(time.Minute))), 0o644)
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	pq = outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+	if pq["gap"] != true || pq["bootstrap"] != true || outs["leak_scan"]["coverage"] != "partial" {
+		t.Fatalf("a failed first walk's bound out of the max window is a gap: %v coverage=%v", pq, outs["leak_scan"]["coverage"])
 	}
 }
 
@@ -1899,8 +1919,11 @@ func TestProdWatch_DecideDarkQueryDoesNotWashTheLifecycle(t *testing.T) {
 		t.Fatalf("a lane with a failed query concludes nothing about what it did not observe: %v", got)
 	}
 	inc := pwStateNext(t, out)["incidents"].(map[string]any)
-	if _, kept := inc["loki:old"]; !kept || inc["loki:dark"].(map[string]any)["quiet_noted"] == true {
-		t.Fatalf("no incident is forgotten or quieted on a partially observed lane: %v", inc)
+	// Retention is not a conclusion: the incident unseen for longer than
+	// forget_after_days goes whatever the lane observed; the other one is
+	// neither quieted nor touched.
+	if _, kept := inc["loki:old"]; kept || inc["loki:dark"].(map[string]any)["quiet_noted"] == true {
+		t.Fatalf("nothing is quieted on a partially observed lane, and retention still applies: %v", inc)
 	}
 }
 
@@ -1938,8 +1961,9 @@ func TestProdWatch_DecidePartialObservationConcludesNothing(t *testing.T) {
 				t.Fatalf("%s: a lane that did not observe everything concludes nothing: %v", name, got)
 			}
 			inc := pwStateNext(t, out)["incidents"].(map[string]any)
-			if len(inc) != 3 || inc["loki:quiet"].(map[string]any)["quiet_noted"] == true {
-				t.Fatalf("%s: no incident forgotten or quieted: %v", name, inc)
+			// retention (forget_after_days) still applies to loki:old; nothing else moves
+			if _, old := inc["loki:old"]; old || len(inc) != 2 || inc["loki:quiet"].(map[string]any)["quiet_noted"] == true {
+				t.Fatalf("%s: nothing quieted, retention applied, the rest untouched: %v", name, inc)
 			}
 		})
 	}
@@ -1956,8 +1980,8 @@ func TestProdWatch_DecidePartialObservationConcludesNothing(t *testing.T) {
 		if got := alertsOf(t, map[string]map[string]any{"decide": out}); len(got) != 0 {
 			t.Fatalf("a lane no longer configured concludes nothing: %v", got)
 		}
-		if inc := pwStateNext(t, out)["incidents"].(map[string]any); len(inc) != 3 {
-			t.Fatalf("no incident forgotten on an unconfigured lane: %v", inc)
+		if inc := pwStateNext(t, out)["incidents"].(map[string]any); len(inc) != 2 || inc["loki:quiet"].(map[string]any)["quiet_noted"] == true {
+			t.Fatalf("nothing quieted on an unconfigured lane; retention still applies: %v", inc)
 		}
 	})
 }
@@ -1985,8 +2009,9 @@ func TestProdWatch_DecideDroppedQueryKeepsItsMark(t *testing.T) {
 	}
 	cursors := pwStateNext(t, out)["cursors"].(map[string]any)["loki"].(map[string]any)
 	kept, ok := cursors["errors"].(map[string]any)
-	if !ok || kept["covered_to_ns"] != "555" || len(kept["band"].([]any)) != 0 || kept["overlap_from_ns"] != "555" {
-		t.Fatalf("a dropped query keeps its mark and loses its band: %v", cursors["errors"])
+	// the band is trimmed to what a re-add re-reads: the entry AT the mark stays
+	if !ok || kept["covered_to_ns"] != "555" || len(kept["band"].([]any)) != 1 || kept["overlap_from_ns"] != "555" {
+		t.Fatalf("a dropped query keeps its mark and the band above min(frontier, mark): %v", cursors["errors"])
 	}
 	if _, still := cursors["stale"]; still {
 		t.Fatalf("a cursor older than forget_after_days is pruned: %v", cursors)

@@ -41,14 +41,22 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   are scanned this tick and its band knows them (bounded like any other:
   the cut applies up to where the walk reached), so the retry does not
   write them again; a query whose first window was never read (a failed
-  first tick) retries that window where it opened — it does not slide
-  with the clock — and its lines are still history, not news (a template
-  counts its live lines apart from the lines read in a first window, so
-  the gate follows the lines, never the order of the queries); a lane that
-  did not observe everything this tick — a failed query, a truncated walk,
-  a declared gap, an empty window — concludes nothing about incidents it
-  did not see (no "not observed any more", no forgetting); the run goes on
-  with its other
+  first tick), or only partly (a truncated one), retries that window from
+  its bound — it does not slide with the clock — and the end of the first
+  window is the query's HISTORY boundary, carried in its cursor until the
+  walk passes it: a line below it is history, not news, whichever tick
+  reads it and whichever query returned it (a line the sweep and a
+  template query both return is one record; a template counts its live
+  lines apart, ranks by them, and renders their own first-seen, sample and
+  streams — never the order of the queries decides); a lane that did not
+  observe everything this tick — a failed query, a truncated walk, a
+  declared gap, an empty window — concludes nothing about incidents it
+  did not see (no "not observed any more"): template incidents are judged
+  by the template queries and a full template list (a sweep running
+  behind yields no template and blocks nothing), leak incidents by every
+  query; an incident unseen for `forget_after_days` is forgotten whatever
+  the lane observed (retention, not a conclusion); the run goes on with
+  its other
   lanes (decide refuses a tick only when EVERY configured lane failed) and
   the lane's health is not refreshed while a query fails, so a query dark
   for good surfaces as a silent source after `source_stale_hours`, with
@@ -62,8 +70,10 @@ truncated walk), `band` (the lines of the overlap as `offset:hash` strings
 from `band_base_ns`, about 4000 at most, cut only on a timestamp boundary)
 and `overlap_from_ns` (the band's lower bound, which never descends: a cut
 or a raised overlap must not reopen the window over lines the band no
-longer knows). A query absent from the config keeps its mark for
-`forget_after_days` and loses its band.
+longer knows), and `history_to_ns` while the first window is not passed.
+A query absent from the config keeps its mark for `forget_after_days`
+and the part of its band at or above min(frontier, mark) — exactly what a
+re-added query re-reads.
 
 ## The redaction scan (`leak_scan`)
 
@@ -104,7 +114,11 @@ What leaves the node (`signals.json`, scratch; counts on stdout):
   with UUIDs → `<uuid>`, hex runs → `<hex>`, quoted strings → `"..."`,
   numbers → `#`, whitespace collapsed; fingerprint = sha1 of that
   template (12 chars); `count`, `first_ts`/`last_ts`, one redacted
-  `sample` (≤ 300 chars), the `container=`/`pod=` streams (≤ 6).
+  `sample` (≤ 300 chars), the `container=`/`pod=` streams (≤ 6), and the
+  same for the LIVE lines alone (`count_live`, `first_ts_live`,
+  `sample_live`, `streams_live`, `query_live`) — what decide posts on.
+  The list keeps the 200 templates with the most live lines;
+  `templates_cut` says when it was cut (coverage is partial then).
 - **leak** — per class: `count`, `distinct` (hashes of the values, never
   the values), `sources` (query + container/pod + first/last), one
   `sample_masked` (`jo***@***` style, or `nir:***12`).

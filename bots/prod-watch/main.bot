@@ -526,7 +526,10 @@ tool plan:
     if boot_min < 0:
         print('prod-watch: loki.bootstrap_window_minutes ' + str(boot_min) + ' is negative -- using 0 (a first window may not start after its own end)', file=sys.stderr)
         boot_min = 0
-    cursors = (state.get('cursors') or {}).get('loki') or {}
+    all_cursors = state.get('cursors') or {}
+    if not isinstance(all_cursors, dict) or not isinstance(all_cursors.get('loki') or {}, dict):
+        raise SystemExit('prod-watch: state.cursors.loki is not an object -- delete the state file and let the queries bootstrap')
+    cursors = all_cursors.get('loki') or {}
     windows = {}
 
     def cursor_int(c, name, field, default=0):
@@ -546,12 +549,20 @@ tool plan:
                              ') -- delete that cursor (or the state file) and let the query bootstrap')
 
     for name in queries:
-        c = cursors.get(name) or {}
+        c = cursors.get(name)
+        if c is None:
+            c = {}
+        if not isinstance(c, dict):
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ' is not an object (' + repr(c)[:60] +
+                             ') -- delete that cursor (or the state file) and let the query bootstrap')
         prev = cursor_int(c, name, 'covered_to_ns')
         prev_bound = cursor_int(c, name, 'overlap_from_ns')
         frontier = cursor_int(c, name, 'frontier_ns', prev)
         band_base = cursor_int(c, name, 'band_base_ns')
-        band = c.get('band') or []
+        history_to = cursor_int(c, name, 'history_to_ns')
+        band = c.get('band')
+        if band is None:
+            band = []
         if not isinstance(band, list) or any(not isinstance(e, str) or ':' not in e for e in band):
             raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': band is not a list of offset:hash strings -- '
                              'delete that cursor (or the state file) and let the query bootstrap')
@@ -576,16 +587,23 @@ tool plan:
             ## replay an hour of history as if it were news. A first walk
             ## that failed left where it opened (the band's bound): the
             ## retry reopens THERE, not at a window that slid with the clock.
+            ## The end of the first window is the query's HISTORY boundary:
+            ## a line below it is history whichever tick reads it (a
+            ## truncated or failed first walk reads the rest later), and it
+            ## travels in the cursor until the walk passes it.
             boot_from = to_ns - min(max_window_min, boot_min) * 60 * 10 ** 9
-            frm = max(floor_ns, min(boot_from, prev_bound) if prev_bound else boot_from)
+            history_to = history_to or to_ns
+            frm = max(floor_ns, prev_bound) if prev_bound else boot_from
             gap = bool(prev_bound) and prev_bound < floor_ns
+            if frm > to_ns:
+                frm = to_ns
         ## The overlap re-reads the tail of the previous window on purpose
         ## (late ingestion); the lines already seen there travel as
         ## (timestamp, hash) pairs so they are not counted twice.
         windows[name] = {'from_ns': str(frm), 'to_ns': str(to_ns), 'gap': gap, 'bootstrap': prev == 0,
                          'prev_covered_to_ns': str(prev), 'frontier_ns': str(frontier),
                          'band': list(band), 'band_base_ns': str(band_base),
-                         'overlap_from_ns': str(prev_bound),
+                         'overlap_from_ns': str(prev_bound), 'history_to_ns': str(history_to),
                          'overlap_ns': str(overlap_s * 10 ** 9)}
     loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
                  'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
@@ -845,7 +863,8 @@ tool poll_loki:
             overlap_ns = int(w.get('overlap_ns') or 0)
             band_prev = decode(w, name)
             inherited_from = int(w.get('overlap_from_ns') or 0)
-            meta = {'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap'))}
+            meta = {'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
+                    'history_to_ns': str(int(w.get('history_to_ns') or 0))}
             if not frm or not to or frm > to:
                 ## A window that does not exist, or that starts after its own
                 ## end (the cursor ahead of `now - ingest_lag`: a lag raised
@@ -983,6 +1002,12 @@ tool poll_loki:
             total += n
             truncated_any = truncated_any or truncated
             ok_count += 1
+    ## The history boundary is handed on while the walk is still below it
+    ## (a truncated or failed first walk reads the rest of the first window
+    ## later — still as history); once the frontier passed it, it is over.
+    for info in per_query.values():
+        boundary = int(info.get('history_to_ns') or 0)
+        info['history_next_ns'] = str(boundary if int(info.get('frontier_ns') or 0) < boundary else 0)
     ## Per-query failures degrade the lane; the run itself is refused only
     ## by decide, when EVERY configured lane failed (a Loki outage must not
     ## silence a probe that sees production down).
@@ -1401,6 +1426,11 @@ tool leak_scan:
             raise SystemExit('prod-watch: the raw file ' + repr(raw_path) + ' is missing although the lanes reported ' +
                              str(expected) + ' line(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
     records = 0
+    ## One record per (timestamp, line) whatever the queries that returned
+    ## it: the sweep returns every line, and the first record must not
+    ## decide whether a line makes a template or is live — the fact travels
+    ## with the line, not with the order of the queries.
+    by_pair, pair_order = {}, []
     if os.path.exists(raw_path):
         with open(raw_path, encoding='utf-8') as fh:
             for ln in fh:
@@ -1414,40 +1444,65 @@ tool leak_scan:
                 records += 1
                 q, ts, line, stream = rec.get('q') or '', str(rec.get('ts') or ''), rec.get('line') or '', rec.get('stream') or {}
                 pair = hashlib.sha1((ts + chr(0) + line).encode('utf-8', 'replace')).hexdigest()
-                if pair in seen_pairs:
+                if pair in by_pair:
+                    by_pair[pair][3].add(q)
                     continue
-                seen_pairs.add(pair)
-                scanned += 1
-                scrubbed = scrub(line, q, stream, ts)
-                if q == 'leak_sweep':
-                    continue
-                tpl = template(scrubbed)
-                tid = hashlib.sha1(tpl.encode('utf-8')).hexdigest()[:12]
-                ## The sample is the scrubbed line: every class ran on it,
-                ## the belt included.
-                sample = scrubbed[:300]
-                t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0, 'count_live': 0,
-                                               'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set()})
-                t['count'] += 1
-                ## A line read inside a query's FIRST window is history, not
-                ## news; the template counts its live lines apart, so decide
-                ## judges by the lines, never by which query happened to
-                ## create the template first.
-                if not (per_query.get(q) or {}).get('bootstrap'):
-                    t['count_live'] += 1
-                t['first_ts'] = min(t['first_ts'], ts)
-                t['last_ts'] = max(t['last_ts'], ts)
-                for k in ('container', 'pod'):
-                    if stream.get(k):
-                        t['streams'].add(k + '=' + str(stream[k]))
+                by_pair[pair] = [ts, line, stream, {q}]
+                pair_order.append(pair)
+    def history_to(q):
+        return int((per_query.get(q) or {}).get('history_to_ns') or 0)
+    for pair in pair_order:
+        ts, line, stream, qs = by_pair[pair]
+        ## The template queries of the line, on a stable key (sorted names)
+        ## — never the arrival order; a line only the sweep returned is
+        ## scanned for leaks and makes no template.
+        tqs = sorted(x for x in qs if x != 'leak_sweep')
+        q = tqs[0] if tqs else 'leak_sweep'
+        scanned += 1
+        scrubbed = scrub(line, q, stream, ts)
+        if not tqs:
+            continue
+        tpl = template(scrubbed)
+        tid = hashlib.sha1(tpl.encode('utf-8')).hexdigest()[:12]
+        ## The sample is the scrubbed line: every class ran on it, the belt
+        ## included.
+        sample = scrubbed[:300]
+        t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0, 'count_live': 0,
+                                       'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set(),
+                                       'first_ts_live': '', 'sample_live': '', 'streams_live': set(), 'query_live': ''})
+        t['count'] += 1
+        ## A line below the end of its query's first window is history,
+        ## not news, whichever tick reads it and whichever query read it;
+        ## the template counts its LIVE lines apart and keeps their own
+        ## first-seen, sample and streams, so a live alert never shows
+        ## history.
+        live_qs = [x for x in tqs if int(ts) >= history_to(x)]
+        if live_qs:
+            t['count_live'] += 1
+            if not t['first_ts_live'] or ts < t['first_ts_live']:
+                t['first_ts_live'] = ts
+            if not t['sample_live']:
+                t['sample_live'] = sample
+                t['query_live'] = live_qs[0]
+        t['first_ts'] = min(t['first_ts'], ts)
+        t['last_ts'] = max(t['last_ts'], ts)
+        for k in ('container', 'pod'):
+            if stream.get(k):
+                t['streams'].add(k + '=' + str(stream[k]))
+                if live_qs:
+                    t['streams_live'].add(k + '=' + str(stream[k]))
     if counted and records != expected:
         raise SystemExit('prod-watch: the raw file holds ' + str(records) + ' record(s) but the lanes reported ' + str(expected) +
                          ' -- the handoff is inconsistent; refusing to score a partial read as an observation')
     tpl_list = []
     for t in templates.values():
         t['streams'] = sorted(t['streams'])[:6]
+        t['streams_live'] = sorted(t['streams_live'])[:6]
         tpl_list.append(t)
-    tpl_list.sort(key=lambda t: t['count'], reverse=True)
+    ## The live templates first: history must never crowd a live alert out
+    ## of the list, and a cut list is partial coverage — decide learns it.
+    tpl_list.sort(key=lambda t: (t['count_live'], t['count']), reverse=True)
+    templates_cut = len(tpl_list) > 200
     leak_list = []
     for f in findings.values():
         leak_list.append({'class': f['class'], 'severity': f['severity'], 'count': f['count'],
@@ -1458,8 +1513,10 @@ tool leak_scan:
     for q, info in per_query.items():
         if info.get('truncated') or info.get('error') or info.get('gap'):
             coverage = 'partial'
+    if templates_cut:
+        coverage = 'partial'
     signals = {'app': app.get('name') or '', 'coverage': coverage, 'lines_scanned': scanned,
-               'templates': tpl_list[:200], 'leak': leak_list, 'per_query': per_query}
+               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'leak': leak_list, 'per_query': per_query}
     with open(signals_path, 'w', encoding='utf-8') as fh:
         json.dump(signals, fh, ensure_ascii=False, indent=1)
     summary = ('scanned ' + str(scanned) + ' line(s), ' + str(len(tpl_list)) + ' error template(s), ' +
@@ -1564,11 +1621,16 @@ tool decide:
     ## count and post; the history lines are observed. The scan counted
     ## them apart, per line — whichever query created the template.
     for t in (signals.get('templates') or []):
+        if 'count_live' not in t:
+            raise SystemExit('prod-watch: a template without count_live in the signals -- a scan from another version of the bot; relaunch the tick')
         cnt = int(t.get('count_live') or 0)
+        live = cnt > 0
         cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'severity': 'high' if cnt >= 50 else 'medium',
                       'title_key': 'loki_template', 'title_arg': (t.get('template') or '')[:120], 'detail_key': 'loki_detail',
-                      'fields': {'count': cnt, 'first': ns_to_iso(t.get('first_ts') or 0), 'streams': ', '.join(t.get('streams') or []) or '-'},
-                      'evidence': {'sample': t.get('sample'), 'template': t.get('template'), 'query': t.get('query')},
+                      'fields': {'count': cnt, 'first': ns_to_iso((t.get('first_ts_live') if live else t.get('first_ts')) or 0),
+                                 'streams': ', '.join((t.get('streams_live') if live else t.get('streams')) or []) or '-'},
+                      'evidence': {'sample': (t.get('sample_live') if live else t.get('sample')), 'template': t.get('template'),
+                                   'query': (t.get('query_live') if live else t.get('query'))},
                       'lane': 'loki', 'tick_count': cnt})
     for f in (signals.get('leak') or []):
         cands.append({'fp': 'leak:' + f['class'], 'kind': 'leak', 'severity': f.get('severity') or 'high',
@@ -1583,8 +1645,14 @@ tool decide:
     alerts, observed_new = [], 0
     for c in cands:
         fp = c['fp']
-        seen_fps.add(fp)
         prev = incidents.get(fp)
+        if c['kind'] == 'loki' and int(c['tick_count'] or 0) == 0 and prev is not None:
+            ## A known template seen only as history (the rest of a first
+            ## window) is not a recurrence: the incident keeps its clocks,
+            ## its fields and its quiet note as they are.
+            observed_new += 1
+            continue
+        seen_fps.add(fp)
         rec = dict(prev or {})
         rec.update({'fp': fp, 'kind': c['kind'], 'severity': c['severity'], 'title_key': c['title_key'],
                     'title_arg': c['title_arg'], 'detail_key': c['detail_key'], 'fields': c['fields'],
@@ -1625,21 +1693,31 @@ tool decide:
     ## observed less than the window: nothing is concluded about what was
     ## not seen — the bot's own coverage note says so.
     loki_healthy = bool(loki_ok and not loki_errors)
-    loki_complete = loki_healthy and not any(
-        i.get('truncated') or i.get('gap') or int(i.get('to_ns') or 0) <= int(i.get('from_ns') or 0)
-        for i in loki_per_query.values())
+    def partial(i):
+        return bool(i.get('error') or i.get('truncated') or i.get('gap') or int(i.get('to_ns') or 0) <= int(i.get('from_ns') or 0))
+    loki_complete = loki_healthy and not any(partial(i) for i in loki_per_query.values())
+    ## Template incidents are observed by the template queries alone: the
+    ## sweep query yields no template, and a sweep running behind must not
+    ## freeze every template incident's lifecycle; a cut template list is
+    ## not complete either.
+    tpl_complete = bool(loki_ok) and not signals.get('templates_cut') and not any(
+        partial(i) for q, i in loki_per_query.items() if q != 'leak_sweep')
     observe_ok = dict(lane_ok, loki=loki_complete)
     for fp, rec in list(incidents.items()):
         if fp in seen_fps:
             continue
-        lane = {'probe': 'probes', 'prom': 'prometheus', 'prom_no_data': 'prometheus', 'loki': 'loki', 'leak': 'loki'}.get(rec.get('kind'), 'loki')
-        if not observe_ok.get(lane, True) or not lanes.get(lane, False):
-            ## The lane that would observe it was down (or is no longer
-            ## configured): no clock advances, nothing is concluded.
-            continue
         gone_h = age_h(rec.get('last_seen') or rec.get('first_seen') or now_iso)
         if gone_h >= forget_d * 24:
+            ## Retention, not a conclusion: an incident unseen for
+            ## forget_after_days goes whatever the lane observed, or the
+            ## state grows for ever behind a lane that never completes.
             del incidents[fp]
+            continue
+        lane = {'probe': 'probes', 'prom': 'prometheus', 'prom_no_data': 'prometheus', 'loki': 'loki', 'leak': 'loki'}.get(rec.get('kind'), 'loki')
+        observed = tpl_complete if rec.get('kind') == 'loki' else observe_ok.get(lane, True)
+        if not observed or not lanes.get(lane, False):
+            ## The lane that would observe it did not observe everything
+            ## (or is no longer configured): nothing is concluded.
             continue
         if rec.get('alerted') and gone_h >= quiet_h and not rec.get('quiet_noted'):
             ## The note is STAGED here and stamped only once it is posted
@@ -1723,11 +1801,35 @@ tool decide:
             ## window) and loses its band (the bulk of the state); a cursor
             ## untouched for longer than forget_after_days goes.
             c = cursors[q]
+            if not isinstance(c, dict):
+                raise SystemExit('prod-watch: cursor of loki query ' + repr(q) + ' is not an object -- delete that cursor (or the state file)')
+            def cint(field, default=0):
+                v = c.get(field)
+                if v is None:
+                    return default
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    raise SystemExit('prod-watch: cursor of loki query ' + repr(q) + ': ' + field + ' is not a number -- delete that cursor (or the state file)')
             if c.get('at') and age_h(c['at']) >= forget_d * 24:
                 del cursors[q]
                 continue
-            cursors[q] = {'covered_to_ns': str(c.get('covered_to_ns') or 0), 'frontier_ns': str(c.get('frontier_ns') or c.get('covered_to_ns') or 0),
-                          'at': c.get('at') or now_iso, 'band': [], 'band_base_ns': '0', 'overlap_from_ns': str(c.get('covered_to_ns') or 0)}
+            ## The band is trimmed, not dropped: what lies at or above
+            ## min(frontier, mark) is exactly what a re-added query re-reads
+            ## (the frontier group of a truncated or failed walk, the mark
+            ## line of a truncated one); after a complete walk nothing stays.
+            cov, fr = cint('covered_to_ns'), cint('frontier_ns', cint('covered_to_ns'))
+            lo = min(fr, cov) if cov else fr
+            bb = cint('band_base_ns')
+            kept = []
+            for e in (c.get('band') or []):
+                try:
+                    if bb + int(str(e).split(':', 1)[0]) >= lo:
+                        kept.append(e)
+                except ValueError:
+                    raise SystemExit('prod-watch: cursor of loki query ' + repr(q) + ': band is not offset:hash strings -- delete that cursor (or the state file)')
+            cursors[q] = {'covered_to_ns': str(cov), 'frontier_ns': str(fr), 'at': c.get('at') or now_iso, 'band': kept, 'band_base_ns': str(bb),
+                          'overlap_from_ns': str(max(cint('overlap_from_ns'), lo)), 'history_to_ns': str(cint('history_to_ns'))}
     for q, info in loki_per_query.items():
         ## Persisted on a failed walk too: poll_loki hands back the previous
         ## marks untouched and a band that knows the lines written before
@@ -1735,7 +1837,7 @@ tool decide:
         if info.get('covered_to_ns') is not None:
             cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'frontier_ns': str(info.get('frontier_ns') or info['covered_to_ns']),
                           'at': now_iso, 'band': list(info.get('band') or []), 'band_base_ns': str(info.get('band_base_ns') or 0),
-                          'overlap_from_ns': str(info.get('overlap_from_ns') or 0)}
+                          'overlap_from_ns': str(info.get('overlap_from_ns') or 0), 'history_to_ns': str(info.get('history_next_ns') or 0)}
     needs_analysis = any(a['state'] in ('new', 'escalated') and a['kind'] in ('probe', 'prom', 'loki') for a in posted)
 
     ## Zero-façade guard: if EVERY configured lane errored this tick there

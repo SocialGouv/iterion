@@ -59,8 +59,13 @@ overrides).
 - `loki.queries` — a map name → LogQL. Every query feeds the redaction
   scan; every query EXCEPT the one named **`leak_sweep`** also produces
   error templates. Keep `leak_sweep` broad (all lines of the namespace):
-  a leak in an `INFO` line is invisible to an error-only query. See
-  `skills/signals-and-queries.md` for the window contract.
+  a leak in an `INFO` line is invisible to an error-only query. Size it
+  to the namespace's rate: `max_lines` new lines a tick (5000 by default)
+  at the schedule's cadence is the sweep's throughput (about 2.8 lines/s
+  at `*/30`); above it the sweep runs behind, every tick is partial
+  coverage and the cursor eventually declares a gap — raise `max_lines`
+  or the cadence. See `skills/signals-and-queries.md` for the window
+  contract.
 - `prometheus.probes` — instant queries; `op` ∈ `> >= < <= == !=`;
   `agg` (`max` default, `min`, `sum`, `first`) folds a multi-series
   answer into one value; `severity` ∈ `critical|high|medium|low`. The
