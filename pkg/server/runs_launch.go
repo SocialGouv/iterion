@@ -658,17 +658,27 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		spec.BundleDir = dir
 	}
-	// Past this statement the slot is SPENT, whatever the call returns. An
-	// error out of Launch does NOT mean no run started: spawnRun persists the
-	// run document and can still fail afterwards (the budget-override write),
-	// and a cloud publish reports failure after the message landed — the
-	// publisher's own rollback exists for that case and says so. Releasing
-	// there would under-count, letting the org exceed its paid quota, which is
-	// worse than the leak this defer closes. The launch-error arm therefore
-	// keeps its unit deliberately.
+	// Past this statement the slot is spent unless the run service says
+	// otherwise. It is the callee that knows: an error out of Launch does NOT
+	// by itself mean no run started — spawnRun persists the run document and
+	// can still fail afterwards, and a cloud publish reports failure after the
+	// message landed — so the fact travels on the error (RunPersistedError)
+	// and the arm below reads it. Inferring it here, either way, is what the
+	// two failure modes are made of: keep every error and a repeatable launch
+	// failure charges per attempt; release every error and a run that started
+	// gets refunded.
 	runMayExist = true
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
+		// The callee reports whether anything durable happened; the caller no
+		// longer infers it. Absent that marker nothing was persisted and no
+		// message was handed to a runner, so the metered slot goes back — that
+		// is the ticket's headline case, a repeatable launch failure charging
+		// per attempt. Present, it stays: releasing a slot for a run that DID
+		// start is an under-count, and lets an org exceed its paid quota.
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
 			span.SetStatus(codes.Error, "server draining")
@@ -888,20 +898,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if resumeLB != nil {
 		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
 	}
-	// Past this statement the slot is spent — see handleLaunchRun: a resume
-	// publish can report an error after the runner already claimed the
-	// revision it published.
+	// Past this statement the slot is spent unless the run service says
+	// otherwise — see handleLaunchRun. A resume publish can report an error
+	// after the runner already claimed the revision it published, and that is
+	// one of the cases the callee reports.
 	runMayExist = true
 	res, err := s.runs.Resume(ctx, resumeSpec)
 	if err != nil {
-		// One error value proves the opposite, and it travels WITH the result
-		// rather than being reconstructed here: ErrRunNotResumable comes only
-		// from validateResumable, which Resume calls before it compiles,
-		// spawns or publishes anything. A parked gate has two legitimate
-		// resumers (the operator and the assistant-watch coordinator), so the
-		// loser of that race is routine — and charging it a monthly unit each
-		// time is the leak this handler is closing, one layer down.
-		if errors.Is(err, runview.ErrRunNotResumable) {
+		// Same rule as the launch arm, and it subsumes the lost-resume race:
+		// ErrRunNotResumable comes only from validateResumable, ahead of any
+		// compile, spawn or publish, so it carries no marker and the unit goes
+		// back. A parked gate has two legitimate resumers, so that race is
+		// routine and must not meter the studio's own chat.
+		if !runview.RunMayHaveStarted(err) {
 			runMayExist = false
 		}
 		if errors.Is(err, runtime.ErrServerDraining) {

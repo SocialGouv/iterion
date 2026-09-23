@@ -61,7 +61,8 @@ func (s *Service) gateForkInputs(parent *store.Run, newInputs map[string]any) er
 	}
 	wf, err := recordedWorkflow(parent)
 	if err != nil {
-		return fmt.Errorf("runview: fork: %w (%v) — fork without --new-inputs, or relaunch the workflow with the values you want", ErrForkInputsUnverifiable, err)
+		return fmt.Errorf("runview: fork: %w (%v). Runs record the source they executed since 2026-08-04; a run older than that, one whose source was dropped (over the 1 MiB record cap, or cleared by a forced cloud resume), or one whose recorded source no longer compiles, cannot be checked. Two ways on: fork without --new-inputs — a plain recovery fork is never refused — or launch the workflow afresh with the values you want. Admitting the change unchecked is not one: the child is executed by resume, which never re-judges stored values",
+			ErrForkInputsUnverifiable, err)
 	}
 	var violations []string
 	literal := map[string]any{}

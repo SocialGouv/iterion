@@ -51,6 +51,15 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	if d := e.resolveRoutingField(e.defaultBackend); d != "" {
 		return d
 	}
+	// A PROGRAM-ONLY executor stops here. Past this point the answer comes
+	// from the host — an env var, then a probe of the machine's credentials —
+	// and a static analysis that read either would give one file two verdicts
+	// on two machines. Its caller reads the empty answer as "the IR is all
+	// there is", which is what every other pre-run analysis does with an
+	// unnamed backend.
+	if e.staticProgramOnly {
+		return ""
+	}
 	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
 		return env
 	}

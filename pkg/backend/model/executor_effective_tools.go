@@ -94,3 +94,31 @@ func (e *ClawExecutor) routeBackends(node ir.Node) []string {
 	}
 	return out
 }
+
+// NewProgramExecutor builds an executor that answers questions about a PROGRAM
+// and never about the host it is asked on.
+//
+// The engine's pre-run analyses need one seam — "which tools will this node
+// hold" — and a dry run needs the same answer as a real run, or `iterion
+// validate --exec --strict` and `iterion run` disagree about one file. But a
+// real executor resolves its opt-ins through the host as well as the program:
+// ITERION_AUTO_MEMORY, ITERION_DEFAULT_BACKEND, a credential probe. Reading
+// those in a static check makes the verdict depend on the machine that runs
+// it, and refuses a file a run with `--auto-memory off` would admit.
+//
+// So this one reads the program alone: the node's and the workflow's own
+// `auto_memory:`, `capabilities:` and `default_backend:`, and nothing else. A
+// node that names no backend resolves to none, which every pre-run analysis
+// already reads as "the IR is all there is". A run that carries an override is
+// judged again, by the engine, against what that run actually holds.
+func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
+	if wf == nil {
+		return &ClawExecutor{staticProgramOnly: true}
+	}
+	return &ClawExecutor{
+		staticProgramOnly: true,
+		defaultBackend:    wf.DefaultBackend,
+		wfAutoMemory:      wf.AutoMemory,
+		wfCapabilities:    wf.Capabilities,
+	}
+}

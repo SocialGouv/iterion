@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,9 +55,39 @@ func meteredRuns(t *testing.T, c *orgusage.MemoryCounter) int {
 }
 
 // notAWorkflow compiles nowhere, so a launch/resume carrying it as inline
-// source reaches the run service and fails INSIDE it — which is what makes it
-// a witness for the "keeps its slot" direction rather than for the other one.
+// source reaches the run service and fails INSIDE it, before anything durable
+// happens. That is the ticket's headline case — a repeatable launch failure
+// charging one monthly unit per attempt.
 const notAWorkflow = "this is not a workflow\n"
+
+// aWorkflow compiles, so a launch carrying it gets past the compile and reaches
+// the writes that persist a run document.
+const aWorkflow = "tool noop:\n  command: `printf '{}'`\n\nworkflow probe:\n  worktree: none\n  entry: noop\n  noop -> done\n"
+
+// failAfterCreate creates a run and then refuses to save it — the shape
+// spawnRun meets when its budget-override write fails, which leaves the
+// document behind. It deliberately does NOT implement the
+// RunBudgetOverridesPatcher capability, so the persist path takes its
+// LoadRun + SaveRun arm and meets the refusal.
+type failAfterCreate struct {
+	store.RunStore
+	created atomic.Bool
+}
+
+func (f *failAfterCreate) CreateRun(ctx context.Context, id, wf string, inputs map[string]any) (*store.Run, error) {
+	run, err := f.RunStore.CreateRun(ctx, id, wf, inputs)
+	if err == nil {
+		f.created.Store(true)
+	}
+	return run, err
+}
+
+func (f *failAfterCreate) SaveRun(ctx context.Context, run *store.Run) error {
+	if f.created.Load() {
+		return errors.New("PROBE: injected store failure after the run document was persisted")
+	}
+	return f.RunStore.SaveRun(ctx, run)
+}
 
 func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *testing.T) {
 	t.Run("launch: a malformed body releases the slot", func(t *testing.T) {
@@ -84,23 +116,69 @@ func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *te
 		}
 	})
 
-	t.Run("launch: a failure OUT OF the run service keeps the slot", func(t *testing.T) {
+	// The ticket's headline: a launch the run service refuses BEFORE anything
+	// durable exists must give its unit back, or a client looping a bad source
+	// burns the org's month one attempt at a time. The callee reports the fact
+	// (RunPersistedError); the handler no longer infers it from `err != nil`.
+	t.Run("launch: a failure before anything is persisted releases the slot", func(t *testing.T) {
 		s, counter, ctx, _ := newQuotaReleaseServer(t)
 		body, _ := json.Marshal(map[string]any{"source": notAWorkflow})
 		r := httptest.NewRequest("POST", "/api/runs", strings.NewReader(string(body))).WithContext(ctx)
 		w := httptest.NewRecorder()
 		s.handleLaunchRun(w, r)
-		// The message proves WHICH stage refused. The `launch: ` PREFIX of the
-		// error field is written only after s.runs.Launch returned — a bare
-		// Contains would also match the pre-call "delegated launch: …" arm,
-		// and a guard that cannot fail is worse than none. Without this the
-		// sub-test could silently become a second pre-call witness and stop
-		// separating the marker's position from its presence.
 		if !errorFieldHasPrefix(t, w.Body.Bytes(), "launch: ") {
-			t.Fatalf("the request did not reach the run service (status %d, body %s) — this row cannot witness the under-count direction", w.Code, w.Body.String())
+			t.Fatalf("the request did not reach the run service (status %d, body %s)", w.Code, w.Body.String())
+		}
+		if got := meteredRuns(t, counter); got != 0 {
+			t.Fatalf("monthly runs = %d after a launch that persisted nothing, want 0 — a repeatable launch failure would otherwise charge per attempt, which is the symptom #1638 names", got)
+		}
+	})
+
+	// …and the other direction, which is the one the ticket calls worse: a
+	// failure AFTER the run document exists keeps its unit. The orphan
+	// reconciler moves such a run to failed_resumable and it resumes, so
+	// refunding it lets the org exceed its paid quota.
+	t.Run("launch: a failure after the run document exists keeps the slot", func(t *testing.T) {
+		s, counter, ctx, rs := newQuotaReleaseServer(t)
+		s.runs = newTestRunviewService(t, "", runview.WithStore(&failAfterCreate{RunStore: rs}))
+		body, _ := json.Marshal(map[string]any{
+			"source": aWorkflow,
+			"budget": map[string]any{"max_cost_usd": 1.5},
+		})
+		r := httptest.NewRequest("POST", "/api/runs", strings.NewReader(string(body))).WithContext(ctx)
+		w := httptest.NewRecorder()
+		s.handleLaunchRun(w, r)
+		if !strings.Contains(w.Body.String(), "PROBE: injected store failure") {
+			t.Fatalf("the launch did not reach the write that follows persistence (status %d, body %s)", w.Code, w.Body.String())
 		}
 		if got := meteredRuns(t, counter); got != 1 {
-			t.Fatalf("monthly runs = %d after a launch that reached the run service, want 1 — an error out of Launch does NOT prove no run started (spawnRun persists the doc and can fail after it; a cloud publish reports failure after the message landed), and refunding there lets the org exceed its paid quota", got)
+			t.Fatalf("monthly runs = %d after a launch that left a run document behind, want 1 — that run reconciles to failed_resumable and resumes, so refunding its slot is an under-count", got)
+		}
+	})
+
+	// The boundary, not just its two sides: a launch whose client-supplied
+	// run_id already exists persists NOTHING — CreateRun is an exclusive
+	// create — so its unit goes back. Asking the store "does a document
+	// exist?" instead of the call "did I make one?" finds someone else's run
+	// and charges for it, once per attempt, which is the very symptom the rows
+	// above exist to remove.
+	t.Run("launch: a run_id that already exists persists nothing and releases the slot", func(t *testing.T) {
+		s, counter, ctx, rs := newQuotaReleaseServer(t)
+		const taken = "run-already-there"
+		if _, err := rs.CreateRun(context.Background(), taken, "probe", map[string]any{}); err != nil {
+			t.Fatal(err)
+		}
+		for attempt := 1; attempt <= 3; attempt++ {
+			body, _ := json.Marshal(map[string]any{"source": aWorkflow, "run_id": taken})
+			r := httptest.NewRequest("POST", "/api/runs", strings.NewReader(string(body))).WithContext(ctx)
+			w := httptest.NewRecorder()
+			s.handleLaunchRun(w, r)
+			if !strings.Contains(w.Body.String(), "already exists") {
+				t.Fatalf("attempt %d did not reach the exclusive create (status %d, body %s)", attempt, w.Code, w.Body.String())
+			}
+		}
+		if got := meteredRuns(t, counter); got != 0 {
+			t.Fatalf("monthly runs = %d after 3 launches that created nothing, want 0 — a client retrying a colliding run_id would burn the org's month one attempt at a time", got)
 		}
 	})
 
@@ -202,7 +280,7 @@ func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *te
 		}
 	})
 
-	t.Run("resume: a failure OUT OF the run service keeps the slot", func(t *testing.T) {
+	t.Run("resume: a failure before anything is persisted releases the slot", func(t *testing.T) {
 		s, counter, ctx, rs := newQuotaReleaseServer(t)
 		seedUnresumableRun(t, rs, "run-keep")
 		body, _ := json.Marshal(map[string]any{"source": notAWorkflow})
@@ -213,8 +291,8 @@ func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *te
 		if w.Code == 404 || w.Code == 400 && strings.Contains(w.Body.String(), "missing run id") {
 			t.Fatalf("the request did not reach the run service (status %d, body %s)", w.Code, w.Body.String())
 		}
-		if got := meteredRuns(t, counter); got != 1 {
-			t.Fatalf("monthly runs = %d after a resume that reached the run service, want 1 — a resume publish can report an error after the runner claimed the revision it published", got)
+		if got := meteredRuns(t, counter); got != 0 {
+			t.Fatalf("monthly runs = %d after a resume the run service refused before publishing anything, want 0", got)
 		}
 	})
 
@@ -232,7 +310,7 @@ func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *te
 		}
 	})
 
-	t.Run("ws answer: a failure OUT OF the run service keeps the slot", func(t *testing.T) {
+	t.Run("ws answer: a failure before anything is persisted releases the slot", func(t *testing.T) {
 		s, counter, ctx, rs := newQuotaReleaseServer(t)
 		seedUnresumableRun(t, rs, "run-ws")
 		id, _ := auth.FromContext(ctx)
@@ -243,8 +321,8 @@ func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *te
 		if got := firstWSError(t, c).Code; got == "no_answers" || got == "run_not_found" {
 			t.Fatalf("the WS answer did not reach the run service (code %q)", got)
 		}
-		if got := meteredRuns(t, counter); got != 1 {
-			t.Fatalf("monthly runs = %d after a WS answer that reached the run service, want 1", got)
+		if got := meteredRuns(t, counter); got != 0 {
+			t.Fatalf("monthly runs = %d after a WS answer the run service refused before publishing anything, want 0", got)
 		}
 	})
 }

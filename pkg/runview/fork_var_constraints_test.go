@@ -237,8 +237,13 @@ func TestForkNewInputsCrossTheSameVarConstraintGateALaunchCrosses(t *testing.T) 
 		if !errors.Is(err, ErrForkInputsUnverifiable) {
 			t.Fatalf("err = %v, want the typed unverifiable refusal naming the escape", err)
 		}
-		if !strings.Contains(err.Error(), "--new-inputs") {
-			t.Errorf("refusal = %q, want it to name the way out", err)
+		// A refusal an operator cannot act on is a dead end. It has to say
+		// since WHEN sources are recorded — so the reader can tell an old run
+		// from a broken one — and name both ways on.
+		for _, want := range []string{"2026-08-04", "fork without --new-inputs", "launch the workflow afresh"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal does not carry %q: %v", want, err)
+			}
 		}
 	})
 }

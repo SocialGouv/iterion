@@ -598,9 +598,10 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// The gate's run-quota increment IS the metering, so the returns between
 	// here and the resume below abandon an admitted launch and hand the unit
 	// back (a bad payload, an empty answer set, a run this connection cannot
-	// load). Past the resume the slot is spent whatever it returns — a publish
-	// can report failure after the runner claimed the message — and releasing
-	// there would under-count. Same rule as handleLaunchRun / handleResumeRun.
+	// load). Past the resume the slot is spent unless the run service reports
+	// that nothing started — a publish can report failure after the runner
+	// claimed the message, and that case keeps its unit. Same rule as
+	// handleLaunchRun / handleResumeRun.
 	runMayExist := false
 	defer func() {
 		if !runMayExist {
@@ -650,16 +651,17 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		Answers:    req.Answers,
 		HostInputs: hostInputs,
 	}); err != nil {
+		// The callee reports whether anything durable happened — see
+		// handleLaunchRun. ErrRunNotResumable carries no marker, so the
+		// routine lost race below gives its unit back.
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		// A parked gate has two legitimate resumers — the operator and the
 		// assistant-watch coordinator delivering an event. The loser of that
 		// race did nothing wrong, so name the case instead of surfacing a
 		// generic failure the client can only display.
 		if errors.Is(err, runview.ErrRunNotResumable) {
-			// Proven not to have started: ErrRunNotResumable comes only from
-			// validateResumable, ahead of any compile, spawn or publish. The
-			// comment above names this race as routine, so charging the loser
-			// a monthly run unit would meter the studio's own chat.
-			runMayExist = false
 			c.sendError(runNotResumableErrorCode, err.Error(), env.AckID)
 			return
 		}
