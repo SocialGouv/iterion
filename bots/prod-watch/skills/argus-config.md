@@ -107,8 +107,8 @@ Each Loki cursor carries a high-water mark (`covered_to_ns`, never moving
 backwards), the frontier where the last walk stopped (`frontier_ns`), the
 overlap band of the lines seen there (`band`: `offset:hash` strings from
 `band_base_ns`, sha1 prefixes of `timestamp + line`, about 4000 entries at
-most — ~100 KiB per query, rewritten every tick as stable lines git packs
-well — cut only on a timestamp boundary) and the band's lower bound
+most — ~150 KiB per query on disk, rewritten every tick as stable lines git
+packs well — cut only on a timestamp boundary) and the band's lower bound
 (`overlap_from_ns`, which never descends): the next window opens at the
 frontier or at the overlap below the mark, never before the band's bound,
 so a line is written exactly once across ticks. The hashes are not

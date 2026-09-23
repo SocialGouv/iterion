@@ -19,7 +19,9 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   `bootstrap_window_minutes` (default 10) instead; `0` is a valid window
   that reads nothing and sets the cursor at `to`. A cursor ahead of `to`
   (an ingest lag raised between two ticks) is an empty window this tick,
-  not an error; more than a full window ahead is reported as one.
+  not an error — the frontier stays where the last walk stopped, so an
+  unread tail is not lost to a narrower overlap afterwards; more than a
+  full window ahead is reported as an error.
 - The walk is `direction=forward`, `page_size` lines per page (default
   1000), the next page resuming AT the last timestamp (inclusive, the
   re-read deduplicated), until the window is exhausted or `max_lines`
@@ -35,8 +37,12 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   pairs; the scan additionally deduplicates by `(timestamp, line)`.
 - A query that failed keeps its previous cursor (the window is retried
   next tick) and is listed in `errors`; the lines it wrote before failing
-  are scanned this tick and its band knows them, so the retry does not
-  write them again; the lane is degraded, the run goes on with its other
+  are scanned this tick and its band knows them (bounded like any other:
+  the cut applies up to where the walk reached), so the retry does not
+  write them again; a query whose first window was never read (a failed
+  first tick) is still history, not news, when it finally reads it; the
+  lane is degraded — no "not observed any more" is concluded about
+  incidents it could have seen — and the run goes on with its other
   lanes (decide refuses a tick only when EVERY configured lane failed) and
   the lane's health is not refreshed while a query fails, so a query dark
   for good surfaces as a silent source after `source_stale_hours`, with

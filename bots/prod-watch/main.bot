@@ -763,12 +763,16 @@ tool poll_loki:
         base = pairs[0][0] if pairs else 0
         return [str(ts - base) + ':' + h for ts, h in pairs], str(base)
 
-    def decode(w):
+    def decode(w, name):
         base = int(w.get('band_base_ns') or 0)
         out = []
-        for e in (w.get('band') or []):
-            off, h = str(e).split(':', 1)
-            out.append((base + int(off), h))
+        try:
+            for e in (w.get('band') or []):
+                off, h = str(e).split(':', 1)
+                out.append((base + int(off), h))
+        except (ValueError, TypeError, AttributeError):
+            raise SystemExit('prod-watch: the cursor band of query ' + repr(name) + ' is not in the offset:hash format -- '
+                             'delete that cursor (or the state file) and let the query bootstrap')
         return out
 
     def hand_over(band_prev, seen, covered, frontier, overlap_ns, known_from):
@@ -813,7 +817,7 @@ tool poll_loki:
             prev_to = int(w.get('prev_covered_to_ns') or 0)
             frontier_prev = int(w.get('frontier_ns') or prev_to)
             overlap_ns = int(w.get('overlap_ns') or 0)
-            band_prev = decode(w)
+            band_prev = decode(w, name)
             inherited_from = int(w.get('overlap_from_ns') or 0)
             meta = {'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap'))}
             if not frm or not to or frm > to:
@@ -833,9 +837,13 @@ tool poll_loki:
                 ## floor at `to`) is fully covered: nothing to read, the
                 ## high-water mark moves to `to`, the band is kept.
                 covered = max(to, prev_to)
-                band, bbase, overlap_from = hand_over(band_prev, [], covered, covered, overlap_ns, inherited_from or to)
+                ## Nothing was walked: the frontier stays where the last walk
+                ## stopped (below the mark after a truncated walk — the
+                ## unread region reopens there, whatever the overlap becomes).
+                frontier = max(frontier_prev, to)
+                band, bbase, overlap_from = hand_over(band_prev, [], covered, frontier, overlap_ns, inherited_from or to)
                 per_query[name] = dict(meta, lines=0, truncated=False, error='', covered_to_ns=str(covered),
-                                       frontier_ns=str(covered), band=band, band_base_ns=bbase,
+                                       frontier_ns=str(frontier), band=band, band_base_ns=bbase,
                                        overlap_from_ns=str(overlap_from), skipped_overlap=0)
                 ok_count += 1
                 continue
@@ -920,7 +928,11 @@ tool poll_loki:
                 ## the previous one); the lines written before the failure
                 ## are scanned this tick, and the band knows them, so the
                 ## retried window does not write them again.
-                band, bbase, overlap_from = hand_over(band_prev, seen, prev_to, frontier_prev, overlap_ns, frm)
+                ## The cut is clamped at what THIS walk reached (everything
+                ## below was read), never at the stale frontier: a query that
+                ## fails past a page depth every tick would otherwise grow
+                ## the band by max_lines a tick, without bound.
+                band, bbase, overlap_from = hand_over(band_prev, seen, prev_to, max(frontier_prev, last_ts), overlap_ns, frm)
                 per_query[name] = dict(meta, lines=n, truncated=truncated, error=err, covered_to_ns=str(prev_to),
                                        frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
                                        overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
@@ -1513,9 +1525,12 @@ tool decide:
                           'title_key': 'prom_no_data', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
                           'fields': {'title': r.get('title') or r['id'], 'value': 'no data', 'op': r.get('op'), 'threshold': r.get('threshold')},
                           'evidence': {'warnings': r.get('warnings') or []}, 'lane': 'prometheus', 'tick_count': 1})
+    ## A query still bootstrapping (its first window: a failed first tick
+    ## wrote the state before it read anything) is history, not news.
+    loki_bootstrap = set(q for q, i in loki_per_query.items() if i.get('bootstrap'))
     for t in (signals.get('templates') or []):
         cnt = int(t.get('count') or 0)
-        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'severity': 'high' if cnt >= 50 else 'medium',
+        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'query': t.get('query'), 'severity': 'high' if cnt >= 50 else 'medium',
                       'title_key': 'loki_template', 'title_arg': (t.get('template') or '')[:120], 'detail_key': 'loki_detail',
                       'fields': {'count': cnt, 'first': ns_to_iso(t.get('first_ts') or 0), 'streams': ', '.join(t.get('streams') or []) or '-'},
                       'evidence': {'sample': t.get('sample'), 'template': t.get('template'), 'query': t.get('query')},
@@ -1549,7 +1564,7 @@ tool decide:
             ## to high keeps its rank until the incident is forgotten.
             rec['severity'] = prev_sev
         state_word = None
-        if bootstrap and c['kind'] == 'loki':
+        if c['kind'] == 'loki' and (bootstrap or c.get('query') in loki_bootstrap):
             ## The first window is history, not news: observe, do not post.
             ## The template re-fires as NEW the first time it recurs.
             observed_new += 1
@@ -1567,11 +1582,15 @@ tool decide:
         incidents[fp] = rec
 
     ## ── incidents NOT seen this tick ───────────────────────────────
+    ## `lane_ok` answers "may this tick be reported" (one Loki query covered
+    ## is enough); concluding that an incident was NOT observed needs the
+    ## whole lane: a query dark this tick observed nothing.
+    observe_ok = dict(lane_ok, loki=bool(loki_ok and not loki_errors))
     for fp, rec in list(incidents.items()):
         if fp in seen_fps:
             continue
         lane = {'probe': 'probes', 'prom': 'prometheus', 'prom_no_data': 'prometheus', 'loki': 'loki', 'leak': 'loki'}.get(rec.get('kind'), 'loki')
-        if not lane_ok.get(lane, True) or not lanes.get(lane, False):
+        if not observe_ok.get(lane, True) or not lanes.get(lane, False):
             ## The lane that would observe it was down (or is no longer
             ## configured): no clock advances, nothing is concluded.
             continue

@@ -1443,6 +1443,37 @@ func TestProdWatch_LokiFailureMidWalkKeepsItsLinesOnce(t *testing.T) {
 	}
 }
 
+// TestProdWatch_LokiFailedWalksKeepTheBandBounded: a query whose walk fails
+// past a page depth, tick after tick, must not grow the band without
+// bound (every failing walk reads further and adds up to max_lines lines
+// the retry will know): the cut applies up to where THIS walk reached.
+func TestProdWatch_LokiFailedWalksKeepTheBandBounded(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiTwoQueries(1000, 300))
+	base := nsAgo(250 * time.Second)
+	var lines []pwLine
+	for tick := 1; tick <= 3; tick++ {
+		for i := 0; i < 3000; i++ {
+			n := len(lines)
+			lines = append(lines, pwLine{TS: base + int64(n)*int64(20*time.Millisecond), Line: fmt.Sprintf("ERROR flood %d", n), Container: "api", Q: "errors-q"})
+		}
+		h.lines.Store(append([]pwLine(nil), lines...))
+		// the page after the known band and the new lines fails, with its retry
+		h.failLokiFrom.Store(int64(len(h.calls()) + 2 + 2*tick))
+		h.failLokiCount.Store(2)
+		outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 6000))
+		pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+		if !strings.Contains(fmt.Sprint(pq["error"]), "500") {
+			t.Fatalf("tick %d: the walk must fail past its page depth: %v", tick, pq["error"])
+		}
+		if n := len(pq["band"].([]any)); n > 4001 {
+			t.Fatalf("tick %d: the band of a failed walk is bounded like any other: %d entries", tick, n)
+		}
+	}
+}
+
 // TestProdWatch_LokiBurstPastTheBandCapIsCountedOnce: more lines inside
 // the overlap than the band carries, under a constant config. The cut
 // raises the band's lower bound and the next ticks must keep it there — a
@@ -1492,6 +1523,147 @@ func TestProdWatch_LokiOverlapRaisedNeverReopensBelowTheBand(t *testing.T) {
 		if n := outs["poll_loki"]["lines"].(float64); (tick == 0 && n != 2) || (tick > 0 && n != 0) {
 			t.Fatalf("tick %d (overlap %d s) wrote %v lines: %v", tick+1, overlap, n, outs["poll_loki"]["per_query"])
 		}
+	}
+}
+
+// TestProdWatch_LokiZeroWidthTickKeepsTheFrontier: a zero-width tick (the
+// cursor clamped ahead of `to`) reads nothing and must not claim the walk
+// reached the high-water mark: after a truncated walk the region between
+// the frontier and the mark is unread, and a narrower overlap afterwards
+// would lose it silently.
+func TestProdWatch_LokiZeroWidthTickKeepsTheFrontier(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiOnly(1000, 300))
+	lines := []pwLine{{TS: nsAgo(250 * time.Second), Line: "ERROR anchor", Container: "api", Q: "errors-q"}}
+	h.lines.Store(lines)
+	written := map[string]int{}
+	outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	countRawLines(t, written, outs["poll_loki"]["raw_file"].(string))
+	for i := 1; i <= 5; i++ { // late lines, older than the mark, inside the overlap
+		lines = append(lines, pwLine{TS: nsAgo(240*time.Second) + int64(i)*int64(10*time.Second), Line: fmt.Sprintf("ERROR late %d", i), Container: "api", Q: "errors-q"})
+	}
+	h.lines.Store(lines)
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 2))
+	countRawLines(t, written, outs["poll_loki"]["raw_file"].(string))
+	if pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any); pq["truncated"] != true {
+		t.Fatalf("tick 2 is truncated inside the late lines: %v", pq)
+	}
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 400, 5000)) // the lag puts `to` below the cursor: a zero-width tick
+	if pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any); pq["from_ns"] != pq["to_ns"] || pq["error"] != "" {
+		t.Fatalf("tick 3 must be a zero-width tick: %v", pq)
+	}
+	h.writeConfig(t, lokiOnly(1000, 0)) // the overlap narrowed afterwards
+	for tick := 4; tick <= 5; tick++ {
+		outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+		countRawLines(t, written, outs["poll_loki"]["raw_file"].(string))
+	}
+	if len(written) != 6 {
+		t.Fatalf("the unread late lines must be written after the zero-width tick: %d of 6 (%v)", len(written), written)
+	}
+	for l, n := range written {
+		if n != 1 {
+			t.Fatalf("%q written %d times", l, n)
+		}
+	}
+}
+
+// TestProdWatch_LokiCutThenFailureOrZeroWidthRewritesNothing: after a band
+// cut, a failed walk or a zero-width tick must carry the raised bound on
+// (each branch has its own way of forgetting it): the next full ticks
+// write nothing again.
+func TestProdWatch_LokiCutThenFailureOrZeroWidthRewritesNothing(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for _, mode := range []string{"failure", "zero-width"} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, lokiTwoQueries(1000, 300))
+			h.cursorTick(t, wf, cursorVars(h, 60, 900, 6000)) // the mark 900 s back
+			base := nsAgo(290 * time.Second)
+			var lines []pwLine
+			for i := 0; i < 5200; i++ {
+				lines = append(lines, pwLine{TS: base + int64(i)*int64(40*time.Millisecond), Line: fmt.Sprintf("ERROR burst %d", i), Container: "api", Q: "errors-q"})
+			}
+			h.lines.Store(lines)
+			outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 6000))
+			pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+			if outs["poll_loki"]["lines"].(float64) != 5200 || len(pq["band"].([]any)) != 4000 {
+				t.Fatalf("tick 2 reads the burst and cuts the band: %v", pq)
+			}
+			raised := pq["overlap_from_ns"]
+			if mode == "failure" {
+				h.failLokiFrom.Store(int64(len(h.calls()) + 1))
+				h.failLokiCount.Store(2)
+				outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 6000))
+				h.failLokiFrom.Store(0)
+			} else {
+				outs = h.cursorTick(t, wf, cursorVars(h, 60, 400, 6000))
+			}
+			pq = outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+			if pq["overlap_from_ns"] != raised {
+				t.Fatalf("tick 3 (%s) must carry the raised bound on: %v vs %v", mode, pq["overlap_from_ns"], raised)
+			}
+			for tick := 4; tick <= 5; tick++ {
+				outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 6000))
+				if n := outs["poll_loki"]["lines"].(float64); n != 0 {
+					t.Fatalf("tick %d rewrote %v lines after the cut (%s)", tick, n, mode)
+				}
+			}
+		})
+	}
+}
+
+// TestProdWatch_LokiForeignBandFormatIsRefusedByName: a cursor band that is
+// not in the offset:hash format is a named refusal, never a traceback.
+func TestProdWatch_LokiForeignBandFormatIsRefusedByName(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiOnly(1000, 60))
+	_ = os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755)
+	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(fmt.Sprintf(
+		`{"version":1,"generation":1,"cursors":{"loki":{"errors":{"covered_to_ns":"%d","frontier_ns":"%d","band":[["1","abcdabcdabcdabcd"]],"overlap_from_ns":"0"}}},"incidents":{},"health":{}}`,
+		nsAgo(20*time.Second), nsAgo(20*time.Second))), 0o644)
+	vars := cursorVars(h, 60, 0, 5000)
+	secrets := map[string]string{"grafana_token": h.tokenFile}
+	plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+		"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+	if err == nil || !strings.Contains(stderr, "offset:hash") || strings.Contains(stderr, "Traceback") {
+		t.Fatalf("a foreign band format must refuse by name: %v %s", err, stderr)
+	}
+}
+
+// TestProdWatch_BootstrapAfterAFailedFirstTickIsStillHistory: a first tick
+// whose Loki walk fails still writes the state; the query's first real
+// window comes on the next tick and is still history, not news.
+func TestProdWatch_BootstrapAfterAFailedFirstTickIsStillHistory(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiTwoQueries(1000, 60))
+	var lines []pwLine
+	for i := 0; i < 6; i++ {
+		lines = append(lines, pwLine{TS: nsAgo(5*time.Minute) + int64(i)*int64(time.Second), Line: fmt.Sprintf("ERROR ancient history %d", i), Container: "api", Q: "errors-q"})
+	}
+	h.lines.Store(lines)
+	h.failLokiFrom.Store(int64(len(h.calls()) + 1)) // the query's first page, and its retry
+	h.failLokiCount.Store(2)
+	outs := h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	if outs["decide"]["bootstrap"] != true || len(outs["decide"]["alerts"].([]any)) != 0 {
+		t.Fatalf("tick 1 is a bootstrap with a failed query and posts nothing: %v", outs["decide"]["summary"])
+	}
+	h.failLokiFrom.Store(0)
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	if outs["poll_loki"]["lines"].(float64) != 6 || len(outs["decide"]["alerts"].([]any)) != 0 {
+		t.Fatalf("tick 2 reads the query's first window and observes it, it does not post history as news: lines=%v alerts=%v", outs["poll_loki"]["lines"], outs["decide"]["alerts"])
 	}
 }
 
@@ -1572,6 +1744,34 @@ func TestProdWatch_DecideDarkQueryDoesNotHealTheLane(t *testing.T) {
 	}
 	if staleLoki == nil || !strings.Contains(fmt.Sprint(staleLoki["error"]), "500") {
 		t.Fatalf("the staleness note names the lane and carries its error: %v", out["stale_sources"])
+	}
+}
+
+// TestProdWatch_DecideDarkQueryDoesNotWashTheLifecycle: on a tick where one
+// Loki query failed, decide must not conclude about incidents only that
+// query could have observed — no "not observed any more" note, no
+// forgetting — even though the tick itself is reported (another query was
+// covered).
+func TestProdWatch_DecideDarkQueryDoesNotWashTheLifecycle(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "health": map[string]any{},
+		"incidents": map[string]any{"loki:dark": incident("loki", "medium", true, 100, 100), "loki:old": incident("loki", "medium", true, 400, 400)}}
+	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "partial", "lines_scanned": 0}
+	out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
+		"loki_ok": true, "loki_errors": []any{map[string]any{"query": "errors", "error": "HTTPError: 500"}},
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "HTTPError: 500"}, "other": map[string]any{"lines": 0, "error": "", "covered_to_ns": "999"}},
+		"lanes":          map[string]any{"loki": true, "prometheus": false, "probes": false}})
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, stderr)
+	}
+	if got := alertsOf(t, map[string]map[string]any{"decide": out}); len(got) != 0 {
+		t.Fatalf("a lane with a failed query concludes nothing about what it did not observe: %v", got)
+	}
+	inc := pwStateNext(t, out)["incidents"].(map[string]any)
+	if _, kept := inc["loki:old"]; !kept || inc["loki:dark"].(map[string]any)["quiet_noted"] == true {
+		t.Fatalf("no incident is forgotten or quieted on a partially observed lane: %v", inc)
 	}
 }
 
@@ -1810,7 +2010,8 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 		{"lag-flips", []int{5000}, []int{0, 1, 2}, false, false, false},
 		{"truncation-and-lag", []int{5, 20}, []int{0, 1}, false, false, false},
 		{"config-churn", []int{3, 7, 20, 5000}, []int{0}, true, false, false},
-		{"loki-failures", []int{7, 5000}, []int{0}, false, true, false},
+		{"churn-and-lag", []int{5, 20}, []int{0, 1, 2}, true, false, false},
+		{"loki-failures", []int{7, 5000}, []int{0}, false, true, true},
 		{"burst-past-band-cap", []int{6000}, []int{0}, false, false, true},
 	}
 	for _, rg := range regimes {
@@ -1861,9 +2062,9 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 				}
 				tick := func(k, maxLines, lag int) {
 					t.Helper()
-					failing := rg.failures && k < 8
+					failing := rg.failures && k < 10
 					if failing {
-						h.failLokiFrom.Store(int64(len(h.calls()) + 1 + rnd.Intn(3)))
+						h.failLokiFrom.Store(int64(len(h.calls()) + 1 + rnd.Intn(8))) // anywhere in the walk, deep pages included
 						h.failLokiCount.Store(2)
 					} else {
 						h.failLokiFrom.Store(0)
@@ -1888,7 +2089,7 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 					}
 					hwm = c
 				}
-				for k := 0; k < 8; k++ {
+				for k := 0; k < 10; k++ {
 					if rg.churn {
 						overlap = []int{0, 1, 5, 60, 300}[rnd.Intn(5)]
 						page = []int{1, 2, 3, 7, 1000}[rnd.Intn(5)]
@@ -1904,7 +2105,7 @@ func TestProdWatch_LokiExactlyOnceUnderRandomizedIngestion(t *testing.T) {
 					inject(rnd.Intn(9), k)
 					tick(k, rg.maxLines[rnd.Intn(len(rg.maxLines))], rg.lags[rnd.Intn(len(rg.lags))])
 				}
-				for k := 8; k < 11; k++ { // drain: no cap, no failure, constant lag and config
+				for k := 10; k < 13; k++ { // drain: no cap, no failure, constant lag and config
 					tick(k, 6000, rg.lags[0])
 				}
 				for l, n := range written {
