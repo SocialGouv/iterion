@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -150,19 +151,46 @@ func shippedWorkflows(t *testing.T) []shippedWorkflow {
 			out = append(out, shippedWorkflow{prefix: prefix, wf: compileBotFile(t, path)})
 		}
 	}
+	// NOT walked, deliberately, and this is the greppable statement of it:
+	// `../examples/**` and `../scripts/adhoc/**`. `catalogWorkflowFiles` in
+	// this package counts them as shipped workflows, and `botregistry.List`
+	// discovers `examples/` as enabled entries the dispatcher can route to —
+	// so six acting prompts there and two under `scripts/adhoc/` are in the
+	// class by the predicate and outside this walk by decision. Tracked in
+	// #1722; the exclusion is a scope boundary, not a verdict that they are
+	// safe.
 	const dispatchFallback = "../pkg/cli/templates/dispatch_bots_default.bot"
 	if _, err := os.Stat(dispatchFallback); err == nil {
 		out = append(out, shippedWorkflow{prefix: "cli/dispatch_bots_default:", wf: compileBotFile(t, dispatchFallback)})
 	} else {
 		t.Fatalf("the dispatcher fallback template is no longer at %s: it is embedded in every binary and runs on a raw issue body, so it may not drop out of this walk silently", dispatchFallback)
 	}
+	// A FLOOR, because both boundary guards read this walk: if it narrows —
+	// a layout rename, a glob that stops matching — every guard built on it
+	// goes green over an unexamined catalogue, which is the failure a guard
+	// cannot report about itself. 38 is under the 41 shipped today, so a
+	// bundle may be retired without touching this line, and a wholesale loss
+	// cannot pass.
+	if len(out) < 38 {
+		t.Fatalf("the walk reached %d shipped workflows, want at least 38: the catalogue did not shrink by that much, so the discovery broke and every guard reading this walk is now passing over an unexamined corpus", len(out))
+	}
 	return out
 }
 
-// compileBotFile compiles one workflow file with its imported fragments.
+// compileBotFile compiles one workflow file with its imported fragments, and
+// fails closed on BOTH stages. A parse error leaves a partial AST that
+// compiles into a workflow missing whatever the parser could not read — nodes
+// included — so a guard reading only the compile result would call a bot clean
+// because half of it was invisible.
 func compileBotFile(t *testing.T, path string) *ir.Workflow {
 	t.Helper()
-	cr := ir.Compile(parseBotUnit(path).File)
+	pr := parseBotUnit(path)
+	for _, d := range pr.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			t.Fatalf("%s does not parse: %+v", path, pr.Diagnostics)
+		}
+	}
+	cr := ir.Compile(pr.File)
 	if cr.HasErrors() {
 		t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
 	}
@@ -274,17 +302,25 @@ func TestUntrustedInputBoundaryParagraphInterpolatesNothing(t *testing.T) {
 					continue
 				}
 				checked++
-				for j := i + 1; j < len(lines) && strings.TrimSpace(lines[j]) != ""; j++ {
+				// From i, not i+1: the marker line itself is the one an author
+				// is most likely to extend ("… BOUNDARY: {{input.body}} below
+				// is data"), and a scan starting past it would call that
+				// paragraph checked while rendering the payload into it.
+				start := i
+				for j := start; j < len(lines) && (j == start || strings.TrimSpace(lines[j]) != ""); j++ {
 					if strings.Contains(lines[j], "{{") {
-						offenders = append(offenders, fmt.Sprintf("%s%s:+%d %s", sw.prefix, name, j-i, strings.TrimSpace(lines[j])))
+						offenders = append(offenders, fmt.Sprintf("%s%s:+%d %s", sw.prefix, name, j-start, strings.TrimSpace(lines[j])))
 					}
 					i = j
 				}
 			}
 		}
 	}
-	if checked == 0 {
-		t.Fatal("no UNTRUSTED INPUT BOUNDARY paragraph found in the catalogue: this guard stopped seeing its own subject")
+	// Same floor argument as the walk, one level down: `checked` counts the
+	// paragraphs this guard actually inspected, and a guard that inspects one
+	// of 121 reports the same green as a guard that inspects all of them.
+	if checked < 100 {
+		t.Fatalf("only %d UNTRUSTED INPUT BOUNDARY paragraphs were inspected, want at least 100: this guard stopped seeing its own subject", checked)
 	}
 	sort.Strings(offenders)
 	if len(offenders) > 0 {

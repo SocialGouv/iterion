@@ -43,7 +43,9 @@ func runScanHealth(t *testing.T, scanDir, minGeneric, langs, workspaceDir string
 		t.Fatalf("scan_health is not a ToolNode (got %T)", node)
 	}
 	cmd := tool.Command
-	cmd = strings.ReplaceAll(cmd, "{{vars.scan_dir}}", scanDir)
+	// scan_dir arrives on the incoming edge, not from the workflow var: every
+	// pass writes its scanner output under its own `pass-<run.id>/` (#1475).
+	cmd = strings.ReplaceAll(cmd, "{{input.scan_dir}}", scanDir)
 	cmd = strings.ReplaceAll(cmd, "{{vars.min_generic_scanners}}", minGeneric)
 	// Per-language expected outputs are no longer hardcoded: scan_health
 	// derives them from the detected langs ({{input.langs}}) crossed with the
@@ -52,6 +54,14 @@ func runScanHealth(t *testing.T, scanDir, minGeneric, langs, workspaceDir string
 	// runtime.
 	cmd = strings.ReplaceAll(cmd, "{{input.langs}}", langs)
 	cmd = strings.ReplaceAll(cmd, "{{vars.workspace_dir}}", workspaceDir)
+	// The deepsec trio at its authored default: the deep scan is off by
+	// default, so this gate measures the generic + language layers, which is
+	// what every sub-case here asserts on.
+	cmd = strings.ReplaceAll(cmd, "{{vars.enable_deepsec}}", "false")
+	cmd = strings.ReplaceAll(cmd, "{{vars.deepsec_out}}", "")
+	cmd = strings.ReplaceAll(cmd, "{{input.deepsec_paths}}", "{}")
+
+	requireNoUnsubstitutedRef(t, cmd)
 
 	c := exec.Command("sh", "-c", cmd)
 	var stdout, stderr bytes.Buffer

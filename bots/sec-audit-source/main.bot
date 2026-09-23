@@ -2722,7 +2722,37 @@ compute scan_dir_resolve:
 ## (node_modules, vendor, .git, .iterion, build artefacts, …) so
 ## the shard count tracks meaningful workload.
 tool plan_shards:
-  command: `mkdir -p {{input.scan_dir}} && WS={{vars.workspace_dir}} SHARD_SIZE={{vars.shard_size}} OUT={{input.scan_dir}}/shard-files.json python3 -c "
+  command: `# Retention for pass-<run.id>/, swept at its WRITER.
+# scan_dir_resolve keys one pass directory per audit under vars.scan_dir,
+# and this node is the one that creates it -- on every pass, before any
+# scanner runs. The engine scratch sweep cannot reclaim it (it stales
+# top-level entries of PROJECT_SCRATCH_DIR by whole-subtree mtime, and a
+# workspace audited regularly never ages out), and the deep scanner is
+# off by default, so its own sweep is unreachable on a default run.
+# POSITIVELY scoped to the one shape this node writes; the current pass
+# always stays. 0 disables it, matching scan_dir_ttl_days.
+#
+# The run id is checked before it becomes a path segment, the same two
+# refusals the deep scanner makes: a charset that is not usable as a
+# segment, and the navigation segments . and .. -- which the pass- prefix
+# already renders literal, the guard being defence in depth for a future
+# refactor that drops the prefix. An unusable id disables the sweep
+# rather than failing the pass: reclaiming disk is not worth refusing an
+# audit, and every writer below still works under the prefixed name.
+SWEEP_ROOT={{vars.scan_dir}}
+SWEEP_RUN_ID={{run.id}}
+SWEEP_TTL={{vars.scan_dir_ttl_days}}
+case "$SWEEP_RUN_ID" in
+  ""|*[!A-Za-z0-9._-]*|.|..) SWEEP_TTL=0 ;;
+esac
+if [ "$SWEEP_TTL" -gt 0 ] 2>/dev/null; then
+  find "$SWEEP_ROOT" -mindepth 1 -maxdepth 1 -type d \
+    -name "pass-*" \
+    ! -name "pass-$SWEEP_RUN_ID" \
+    -mtime "+$SWEEP_TTL" \
+    -exec rm -rf {} + 2>/dev/null
+fi
+mkdir -p {{input.scan_dir}} && WS={{vars.workspace_dir}} SHARD_SIZE={{vars.shard_size}} OUT={{input.scan_dir}}/shard-files.json python3 -c "
 import os, sys, json
 ws = os.environ['WS']
 shard_size = int(os.environ.get('SHARD_SIZE','0'))
@@ -3153,23 +3183,22 @@ case "$RUN_ID" in
 esac
 
 # ── retention ─────────────────────────────────────────────────────
-# Per-run keying leaves THREE directories at the top of $SCAN_DIR per
-# pass: deepsec-out-<run.id>/ and deepsec-logs-<run.id>/ from this node,
-# and pass-<run.id>/ -- the scanner scratch scan_dir_resolve keys, which
-# accumulates on every pass whether or not the deep scan runs (#1475).
-# The engine scratch sweep does not reclaim any of them because a
-# workspace used regularly keeps writing under scan_dir (see
-# runtime/scratch_sweep.go: sweep is by whole-workspace mtime). Prune
-# older entries by mtime, POSITIVELY scoped to the three shapes the bot
-# owns -- deepsec-out-*, deepsec-logs-* and pass-*, all prefixed for
-# exactly this reason (Re56aa9). deepsec-workspace is the shared data
+# Per-run keying leaves two directories at the top of $SCAN_DIR per pass
+# of THIS node: deepsec-out-<run.id>/ and deepsec-logs-<run.id>/.
+# The engine scratch sweep does not reclaim them because a workspace used
+# regularly keeps writing under scan_dir (see runtime/scratch_sweep.go:
+# sweep is by whole-workspace mtime). Prune older entries by mtime,
+# POSITIVELY scoped to the two shapes this node writes -- both prefixed
+# for exactly this reason (Re56aa9). deepsec-workspace is the shared data
 # root, not per-run, and stays. Every other directory under scan_dir
 # stays whatever its mtime -- an operator setting or a future node
 # writing there is not enrolled in this sweep by default. 0 disables the
 # sweep entirely.
-# The sweep lives in THIS node rather than beside the writer because it
-# is the one node that has already proven $RUN_ID usable as a path
-# segment, and the exclusions below embed it.
+# ONE SWEEP PER SHAPE, AT ITS WRITER. pass-<run.id>/ is not swept here:
+# this node runs only when enable_deepsec is true, which is not the
+# default, so a sweep placed here would never reclaim a shape every pass
+# creates. plan_shards writes pass-<run.id>/ on every pass and sweeps it
+# there.
 # Placement: BELOW the RUN_ID guards -- the predicates embed $RUN_ID and a
 # charset-safe segment cannot widen them -- and ABOVE the node / deepsec
 # preflight, so the sweep runs on EVERY entry with a usable run id,
@@ -3178,10 +3207,9 @@ esac
 # passes of this node left behind (revi R58b272).
 if [ "$SCAN_DIR_TTL_DAYS" -gt 0 ] 2>/dev/null; then
   find "$SCAN_DIR" -mindepth 1 -maxdepth 1 -type d \
-    \( -name "deepsec-out-*" -o -name "deepsec-logs-*" -o -name "pass-*" \) \
+    \( -name "deepsec-out-*" -o -name "deepsec-logs-*" \) \
     ! -name "deepsec-out-$RUN_ID" \
     ! -name "deepsec-logs-$RUN_ID" \
-    ! -name "pass-$RUN_ID" \
     -mtime "+$SCAN_DIR_TTL_DAYS" \
     -exec rm -rf {} + 2>/dev/null
 fi

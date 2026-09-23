@@ -56,8 +56,8 @@ func TestRenovacyAttemptedLedgerSeedIsNotSpreadAsAString(t *testing.T) {
 	// prints attempted_after_batch, and with no patches it is {}. Anything
 	// else is text, and the script receives the text.
 	seed := "{}"
-	if raw := strings.TrimSpace(mapping.Raw); !isSingleRef(raw) {
-		seed = string(mustJSON(t, raw))
+	if !isSingleRef(mapping.Raw) {
+		seed = string(mustJSON(t, mapping.Raw))
 	}
 
 	script := toolScript(t, rel, "select_candidate")
@@ -113,7 +113,15 @@ func TestRenovacyAttemptedLedgerSeedIsNotSpreadAsAString(t *testing.T) {
 }
 
 // isSingleRef reports whether a mapping value is exactly one reference — the
-// only shape the runtime passes through with its type (pkg/dsl/ir, C152).
+// only shape the runtime passes through with its type.
+//
+// It does NOT trim. pkg/runtime.resolveMapping requires the single reference
+// span to cover the WHOLE raw value (span.start == 0 && span.end == len(Raw)),
+// and the compiler's C152 mirror uses the identical untrimmed test: one
+// leading space and the value is interpolated to text. A trimmed oracle here
+// was more lenient than the producer, so a space-padded reference — which
+// `iterion validate` refuses — read as a typed passthrough and this witness
+// stayed green on a mapping the engine had already broken.
 func isSingleRef(raw string) bool {
 	return strings.HasPrefix(raw, "{{") && strings.HasSuffix(raw, "}}") &&
 		strings.Count(raw, "{{") == 1 && strings.Count(raw, "}}") == 1

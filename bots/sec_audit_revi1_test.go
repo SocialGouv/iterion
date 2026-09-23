@@ -332,13 +332,17 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 		filepath.Join(scanDir, "deepsec-out-run-OLD-A"),
 		filepath.Join(scanDir, "deepsec-out-run-OLD-B"),
 		filepath.Join(scanDir, "deepsec-logs-run-OLD-A"),
-		filepath.Join(scanDir, "pass-run-OLD-A"),
-		filepath.Join(scanDir, "pass-run-OLD-B"),
 	}
 	agedAlien := []string{
 		filepath.Join(scanDir, "run-OLD-A"),         // bare run id -- not owned
 		filepath.Join(scanDir, "operator-cache"),    // arbitrary operator dir
 		filepath.Join(scanDir, "unrelated-scratch"), // another node might drop this
+		// pass-* belongs to plan_shards, which writes it on EVERY pass and
+		// sweeps it there. This node runs only when enable_deepsec is true —
+		// not the default — so a sweep of pass-* placed here would never
+		// reclaim it on a default run. One sweep per shape, at its writer.
+		filepath.Join(scanDir, "pass-run-OLD-A"),
+		filepath.Join(scanDir, "pass-run-OLD-B"),
 	}
 	fresh := []string{
 		filepath.Join(scanDir, "deepsec-out-run-FRESH"),

@@ -49,8 +49,16 @@ func TestSecAuditSource_CapFindings_BoundsScannerOutput(t *testing.T) {
 	before := capDirSize(t, scanDir)
 
 	cmd := tool.Command
-	cmd = strings.ReplaceAll(cmd, "{{vars.scan_dir}}", scanDir)
+	// scan_dir arrives on the incoming edge, not from the workflow var: every
+	// pass writes its scanner output under its own `pass-<run.id>/` (#1475).
+	cmd = strings.ReplaceAll(cmd, "{{input.scan_dir}}", scanDir)
 	cmd = strings.ReplaceAll(cmd, "{{vars.findings_cap_per_file}}", "50")
+	// The remaining refs at their authored defaults (main.bot vars block), so
+	// the node reads what the runtime would hand it rather than literal text.
+	cmd = strings.ReplaceAll(cmd, "{{vars.triage_inline_max_bytes}}", "0")
+	cmd = strings.ReplaceAll(cmd, "{{input.deepsec_paths}}", "{}")
+	cmd = strings.ReplaceAll(cmd, "{{vars.deepsec_out}}", "")
+	requireNoUnsubstitutedRef(t, cmd)
 	out, err := exec.Command("sh", "-c", cmd).Output()
 	if err != nil {
 		t.Fatalf("cap_findings command failed: %v", err)
@@ -160,4 +168,23 @@ func capDirSize(t *testing.T, dir string) int64 {
 		}
 	}
 	return total
+}
+
+// requireNoUnsubstitutedRef fails when a template reference survived the
+// harness's substitutions. Without it, a ref this harness no longer knows
+// reaches the shell as literal text: `SCAN_DIR={{input.scan_dir}}` assigns a
+// path that exists nowhere, every glob under it resolves to nothing, and the
+// node reports "all missing" — a green harness measuring an empty directory.
+// Measured: #1475 moved scan_dir onto the incoming edge and these two
+// harnesses kept substituting the var, so both tests asserted on a node that
+// had never seen their fixture.
+func requireNoUnsubstitutedRef(t *testing.T, cmd string) {
+	t.Helper()
+	if i := strings.Index(cmd, "{{"); i >= 0 {
+		end := i + 60
+		if end > len(cmd) {
+			end = len(cmd)
+		}
+		t.Fatalf("a template reference survived substitution — the node runs against a path this harness never created: %q", cmd[i:end])
+	}
 }

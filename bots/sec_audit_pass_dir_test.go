@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -171,6 +172,12 @@ func TestTwoPassesInOneScanDirDoNotOverwriteEachOther(t *testing.T) {
 			"{{vars.workspace_dir}}": ws,
 			"{{vars.shard_size}}":    "1",
 			"{{vars.matchers_dir}}":  matchers,
+			// plan_shards sweeps stale pass-* directories at the writer; its
+			// body reads the run id and the TTL for that. 0 disables the
+			// sweep, which is what these two passes want — they must both
+			// still be on disk when the readers run.
+			"{{run.id}}":                 p.runID,
+			"{{vars.scan_dir_ttl_days}}": "0",
 		}
 		subsFor := func(from, to string) map[string]string {
 			out := map[string]string{"{{input.scan_dir}}": secEdgeScanDir(t, wf, from, to, edgeSubs)}
@@ -396,5 +403,89 @@ func TestDeepsecStateStaysUnderTheSharedScanDir(t *testing.T) {
 	}
 	if !strings.Contains(body, `DSW="$SCAN_DIR/deepsec-workspace"`) {
 		t.Error("the deepsec data root moved off $SCAN_DIR: a second pass can no longer skip what a first analysed")
+	}
+}
+
+// #1475 keys one pass directory per audit under vars.scan_dir. Nothing else
+// reclaims it: the engine scratch sweep stales top-level entries of
+// PROJECT_SCRATCH_DIR by whole-subtree mtime (pkg/memory/scratch_sweep.go) and
+// vars.scan_dir sits two levels below, so a workspace audited regularly never
+// ages out. Before #1475 those scanner outputs were rewritten in ONE shared
+// slot, constant size; after it, a directory per pass.
+//
+// The sweep therefore lives at the WRITER. plan_shards creates the directory
+// and runs on every pass; run_deepsec_scanner runs only when enable_deepsec is
+// true, which is NOT the default (main.bot: `enable_deepsec: bool = false`), so
+// a sweep placed there alone would never reclaim pass-* on a default run.
+//
+// The mutation this reddens on is the forbidden alternative — the sweep back in
+// the deep scanner only, i.e. removed from this node.
+func TestPassDirIsSweptByTheNodeThatWritesIt(t *testing.T) {
+	body := secToolCommand(t, "plan_shards")
+	dir := t.TempDir()
+	scanDir := filepath.Join(dir, "scan")
+	ws := filepath.Join(dir, "ws")
+	for _, d := range []string{scanDir, ws} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "run-CURRENT"
+	// Aged past the TTL. Only the pass-* pair is this node's shape.
+	agedMine := []string{filepath.Join(scanDir, "pass-run-OLD-A"), filepath.Join(scanDir, "pass-run-OLD-B")}
+	// Aged, and NOT this node's shape: another node owns them, or nobody does.
+	agedOthers := []string{
+		filepath.Join(scanDir, "deepsec-out-run-OLD"),
+		filepath.Join(scanDir, "deepsec-logs-run-OLD"),
+		filepath.Join(scanDir, "operator-cache"),
+	}
+	// Must stay whatever happens: this pass, and one inside the window.
+	keep := []string{filepath.Join(scanDir, "pass-"+runID), filepath.Join(scanDir, "pass-run-FRESH")}
+
+	all := append(append(append([]string{}, agedMine...), agedOthers...), keep...)
+	for _, d := range all {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "sentinel"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	for _, d := range append(append([]string{}, agedMine...), agedOthers...) {
+		if err := os.Chtimes(d, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rendered := expandEngineBracedEnv(body)
+	for ref, val := range map[string]string{
+		"{{input.scan_dir}}":         filepath.Join(scanDir, "pass-"+runID),
+		"{{vars.scan_dir}}":          scanDir,
+		"{{vars.workspace_dir}}":     ws,
+		"{{vars.shard_size}}":        "1",
+		"{{run.id}}":                 runID,
+		"{{vars.scan_dir_ttl_days}}": "30",
+	} {
+		rendered = strings.ReplaceAll(rendered, ref, val)
+	}
+	if i := strings.Index(rendered, "{{"); i >= 0 {
+		t.Fatalf("unsubstituted ref left in the command near %q", rendered[i:min(i+60, len(rendered))])
+	}
+	runShell(t, rendered, filepath.Join(dir, "bin"))
+
+	for _, d := range agedMine {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("%s survived: a pass directory older than scan_dir_ttl_days is not reclaimed by the node that writes it, so every default audit leaves one behind for ever", filepath.Base(d))
+		}
+	}
+	for _, d := range append(append([]string{}, agedOthers...), keep...) {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("%s was pruned and must not be: this sweep is scoped POSITIVELY to pass-*, excludes the current run, and leaves every other shape — including the deep scanner's own and an operator directory — to their owners", filepath.Base(d))
+		}
 	}
 }

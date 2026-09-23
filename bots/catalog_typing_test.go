@@ -17,11 +17,17 @@ var phase2TypingCodes = map[ir.DiagCode]bool{
 	ir.DiagExprOperandTypeMismatch: true, // C107 (warning)
 	ir.DiagWhenExprNotBoolish:      true, // C108 (warning)
 	ir.DiagVarDefaultTypeMismatch:  true, // C109 (error)
+	ir.DiagWithLiteralTypeMismatch: true, // C152 (warning)
 }
 
 // typingAllowlist records (bot dir, code) warnings accepted as debt. Keep it
-// SHRINKING. Errors (C121) must never be allowlisted. Currently empty.
-var typingAllowlist = map[string]map[ir.DiagCode]bool{}
+// SHRINKING. Errors (C121) must never be allowlisted.
+var typingAllowlist = map[string]map[ir.DiagCode]bool{
+	// #1524 drained the 14 C152 sites of sec-audit-source and
+	// secured-renovacy; copilot's are written-down debt, owned by another
+	// worker in flight on that bundle. Draining them empties this entry.
+	"copilot": {ir.DiagWithLiteralTypeMismatch: true},
+}
 
 // TestCatalogBotsNoTypingRegressions compiles every catalog workflow (bundles
 // under bots/ + loose .bot files under examples/) and asserts none trips a
