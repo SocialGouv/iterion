@@ -481,7 +481,7 @@
       },
       "type": "array"
     },
-    "group": {
+    "header.group": {
       "additionalProperties": false,
       "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
       "properties": {
@@ -535,6 +535,44 @@
       },
       "required": [
         "group"
+      ],
+      "type": "object"
+    },
+    "header.use": {
+      "additionalProperties": false,
+      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
+      "properties": {
+        "as": {
+          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "description": "The group instantiated",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "The parameter bindings; a number or a bool is the string it spells",
+          "type": "object"
+        }
+      },
+      "required": [
+        "as",
+        "use"
       ],
       "type": "object"
     },
@@ -2139,44 +2177,6 @@
       },
       "type": "object"
     },
-    "use": {
-      "additionalProperties": false,
-      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
-      "properties": {
-        "as": {
-          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
-        },
-        "use": {
-          "description": "The group instantiated",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
-        },
-        "with": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              }
-            ]
-          },
-          "description": "The parameter bindings; a number or a bool is the string it spells",
-          "type": "object"
-        }
-      },
-      "required": [
-        "as",
-        "use"
-      ],
-      "type": "object"
-    },
     "vars": {
       "additionalProperties": {
         "anyOf": [
@@ -2448,7 +2448,7 @@
     "groups": {
       "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
       "items": {
-        "$ref": "#/$defs/group"
+        "$ref": "#/$defs/header.group"
       },
       "type": "array"
     },
@@ -2550,7 +2550,7 @@
     "uses": {
       "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
       "items": {
-        "$ref": "#/$defs/use"
+        "$ref": "#/$defs/header.use"
       },
       "type": "array"
     },

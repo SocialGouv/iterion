@@ -397,7 +397,18 @@ func (s *speller) str(what string, n *yaml.Node) (string, bool) {
 		s.refuse(n, what+" takes a string; `"+n.Value+"` reads as "+tagWord(n.ShortTag())+" — quote it")
 		return "", false
 	}
-	return q(n.Value), true
+	v := n.Value
+	switch n.Style {
+	case yaml.LiteralStyle, yaml.FoldedStyle:
+		// A block scalar is read as the scanner read it: a line separator
+		// it left in the value is the line break it meant (blockBreaks) —
+		// the rule a prompt body has, for every text of the document.
+		var ok bool
+		if v, ok = s.blockBreaks(what, n, v); !ok {
+			return "", false
+		}
+	}
+	return q(v), true
 }
 
 func (s *speller) ident(what string, n *yaml.Node, dotted bool) (string, bool) {
@@ -937,11 +948,11 @@ func (s *speller) blockBreaks(what string, v *yaml.Node, body string) (string, b
 		sep = strconv.Itoa(count) + " line separators"
 	}
 	if v.Style == yaml.FoldedStyle {
-		s.refuseHint(v, parser.DiagAuthorPromptBody, what+"'s body holds "+sep+" (U+2028/U+2029) in a folded block: the document ends a line there but keeps the character, and a fold has no reading for it — write the body as a literal block (`|`), or remove the invisible character", "")
+		s.refuseHint(v, parser.DiagAuthorPromptBody, what+"'s text holds "+sep+" (U+2028/U+2029) in a folded block: the document ends a line there but keeps the character, and a fold has no reading for it — write the body as a literal block (`|`), or remove the invisible character", "")
 		return body, false
 	}
 	n := &yaml.Node{Line: v.Line + 1 + first, Column: v.Column}
-	s.warn(n, parser.DiagAuthorPromptBody, what+"'s body holds "+sep+" (U+2028/U+2029), the first on line "+strconv.Itoa(n.Line)+": the document reads it as a line break, and so does the .bot written from it — write a newline, or remove the invisible character")
+	s.warn(n, parser.DiagAuthorPromptBody, what+"'s text holds "+sep+" (U+2028/U+2029), the first on line "+strconv.Itoa(n.Line)+": the document reads it as a line break, and so does the .bot written from it — write a newline, or remove the invisible character")
 	return blockSeparators.Replace(body), true
 }
 

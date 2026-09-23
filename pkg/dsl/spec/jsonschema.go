@@ -531,8 +531,12 @@ func (b *schemaBuilder) entryObject(e *Entries, extra obj, requiredKeys []string
 
 // headerKind is a declaration written on a header line (group, use): the
 // kind's key carries the name, the header parts follow, then the body.
+// headerKind is the shape of a declaration written with its header — a
+// group, a use — under its own definition name: the kind's BODY keeps the
+// bare name, so a block property whose Body names the same kind gets the
+// body's shape, never the header's.
 func (b *schemaBuilder) headerKind(k Kind) obj {
-	return b.def(k.Name, func() obj {
+	return b.def("header."+k.Name, func() obj {
 		nameDoc := "The declaration's name"
 		if k.Name == "use" {
 			nameDoc = "The group instantiated"
