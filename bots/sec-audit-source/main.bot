@@ -3355,10 +3355,15 @@ _dsproc() {
 # _dsproc above), so the risk it once carried -- laundering a closed run --
 # is gone; a coverage-only misread degrades to source=unavailable, never to
 # a clean bill.
-_dsrid() {
-  grep -a "$2" "$1" 2>/dev/null | grep -a "$3" | tail -1 \
+# Emits EVERY id the log announced, one per line, in the order printed. One
+# invocation of deepsec prints one; an attempt that errors batches and the fresh
+# retry that follows it print two, and both describe work this pass did.
+_dsrids() {
+  grep -a "$2" "$1" 2>/dev/null | grep -a "$3" \
     | tr -d "\033" | sed -e "s/.*$3//" -e "s/\[[0-9;]*m//g" -e "s/[^A-Za-z0-9_.-].*//"
 }
+
+_dsrid() { _dsrids "$1" "$2" "$3" | tail -1; }
 
 # deepsec prints "Processing complete. Run: <id>" on the success path
 # (packages/deepsec/src/commands/process.ts) and also BEFORE it exits 1 on
@@ -3377,6 +3382,17 @@ _dsrid() {
 # "Stopped: ... exhausted" grep below is a SECOND door, deciding whether to
 # retry -- not the one that decides whether coverage is claimed.
 _dsrunid() { _dsrid "$LOG_DIR/process.log" "Processing complete" "Run: "; }
+
+# Every process run this pass owns. deepsec calls completeRun BEFORE the
+# errored-batches exit 1 (packages/processor/src/index.ts, then
+# commands/process.ts), so a first attempt that errors some batches writes a
+# meta for the files it DID analyse, and the fresh retry writes a second one
+# for the slice it recovered. Reading the last id alone reports the retry
+# slice as the whole pass. The ids come from the process.log THIS pass owns --
+# LOG_DIR is keyed on RUN_ID -- so this stays identity-based: a neighbour
+# sharing the deepsec data root never enters the sum, which a window scan
+# over the shared root would not guarantee.
+_dsrunids() { _dsrids "$LOG_DIR/process.log" "Processing complete" "Run: " | sort -u; }
 
 # A quota wall does not heal in twenty seconds. Retrying one buys a second
 # full pass that cannot succeed and spends the remaining wall-clock proving
@@ -3502,7 +3518,8 @@ case "$ERRS" in *process*) PROC_FAILED=1 ;; *) PROC_FAILED=0 ;; esac
 # it. The scan log is still on disk, so nothing is lost by reading it late.
 SCAN_RID=$(_dsrid "$LOG_DIR/scan.log" "Run ID: " "Run ID: ")
 PROC_RID=$(_dsrunid)
-COVERAGE=$(DSW="$DSW" PROC_LIMIT="$PROC_LIMIT" START_EPOCH="$START_EPOCH" PROC_FAILED="$PROC_FAILED" STEPS_FAILED="$ERRS" SCAN_RID="$SCAN_RID" PROC_RID="$PROC_RID" python3 -c "
+PROC_RIDS=$(_dsrunids | tr "\n" " ")
+COVERAGE=$(DSW="$DSW" PROC_LIMIT="$PROC_LIMIT" START_EPOCH="$START_EPOCH" PROC_FAILED="$PROC_FAILED" STEPS_FAILED="$ERRS" SCAN_RID="$SCAN_RID" PROC_RID="$PROC_RID" PROC_RIDS="$PROC_RIDS" python3 -c "
 import datetime, glob, json, math, os, time
 root = os.environ.get(\"DEEPSEC_DATA_ROOT\") or \"data\"
 if not os.path.isabs(root):
@@ -3591,7 +3608,35 @@ scan = load(os.environ.get(\"SCAN_RID\"), \"scan\")
 proc = load(os.environ.get(\"PROC_RID\"), \"process\")
 sstats = stats(scan)
 pstats = stats(proc)
-processed = count(pstats.get(\"filesProcessed\"))
+
+# filesProcessed is summed over EVERY process meta this pass wrote, not read
+# off the last one. deepsec completes its run meta before the errored-batches
+# exit, so an attempt that recovers 15 files on retry after analysing 485
+# leaves two metas; the last alone says 15 and the report understates coverage
+# by the whole first attempt.
+#
+# PROC_RIDS carries every id this pass owns, PROC_RID the last of them. The
+# shell derives BOTH from the lines deepsec printed into the per-run scratch
+# this pass owns, so the sum stays identity-based: a neighbour sharing the
+# deepsec data root never enters it, which a scan of that root over a time
+# window would not guarantee. Each id still goes through load() -- same
+# identity pin, same window floor, same type check.
+#
+# A caller that sets only PROC_RID describes a one-attempt pass, and the set
+# of ids it owns is exactly that one: not an error state, and not a guess.
+# None when no meta of this pass carried a countable filesProcessed: absence,
+# not zero, is what UNKNOWN is spelled with everywhere else in this reader.
+_counts = [
+    c for c in (
+        count(stats(load(rid, \"process\")).get(\"filesProcessed\"))
+        for rid in (os.environ.get(\"PROC_RIDS\") or os.environ.get(\"PROC_RID\") or \"\").split()
+    ) if c is not None
+]
+processed = sum(_counts) if _counts else None
+
+# The PHASE stays that of the last run. A pass is complete when the run that
+# decided its outcome says done; summing counts across attempts does not let
+# an earlier attempt speak for the phase of the pass.
 pphase = phase(proc)
 
 truncated = False if limit <= 0 else None
