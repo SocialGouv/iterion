@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/api/client";
@@ -56,6 +56,48 @@ vi.mock("@/lib/monaco", () => ({
   },
 }));
 
+// Every render of the drawer's title and of its banners, in order. A final
+// query cannot see a banner that was rendered and replaced inside one
+// `render` (it flushes the effects), and a danger banner is `role="alert"`:
+// committed, it is announced whether or not a frame was ever painted. A
+// parent renders before its children, so each banner follows the title it
+// was rendered under.
+const renders = vi.hoisted(() => [] as Array<["drawer" | "banner" | "row", unknown]>);
+vi.mock("@/components/ui", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/components/ui")>();
+  const Real = mod.Drawer;
+  return {
+    ...mod,
+    Drawer: (props: Parameters<typeof Real>[0]) => {
+      renders.push(["drawer", props.title]);
+      return <Real {...props} />;
+    },
+  };
+});
+// One per file row: the list itself, rendered or not.
+vi.mock("@radix-ui/react-icons", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@radix-ui/react-icons")>();
+  const Real = mod.FileIcon;
+  return {
+    ...mod,
+    FileIcon: (props: Parameters<typeof Real>[0]) => {
+      renders.push(["row", null]);
+      return <Real {...props} />;
+    },
+  };
+});
+vi.mock("@/components/ui/InlineBanner", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/components/ui/InlineBanner")>();
+  const Real = mod.InlineBanner;
+  return {
+    ...mod,
+    InlineBanner: (props: Parameters<typeof Real>[0]) => {
+      renders.push(["banner", props.title]);
+      return <Real {...props} />;
+    },
+  };
+});
+
 import BundleFilesDrawer from "./BundleFilesDrawer";
 import { useUIStore } from "@/store/ui";
 
@@ -65,7 +107,12 @@ afterEach(() => {
   vi.clearAllMocks();
   keybinding.run = null;
   keybinding.mounted = false;
+  renders.length = 0;
 });
+
+const UNREADABLE = "This bot could not be read";
+const bannersRendered = () =>
+  renders.filter(([kind, title]) => kind === "banner" && title === UNREADABLE).length;
 
 const BUNDLE = {
   id: "b1",
@@ -77,6 +124,27 @@ const BUNDLE = {
     "skills/notes.md": "# notes\n",
   },
 };
+
+const OTHER = {
+  id: "b2",
+  slug: "other",
+  version: 3,
+  files: {
+    "main.bot": "workflow o:\n",
+    "skills/notes.md": "# OTHER notes\n",
+    "skills/o.md": "# o\n",
+  },
+};
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 function open() {
   botSources.getBotSource.mockResolvedValue(BUNDLE);
@@ -289,6 +357,66 @@ describe("BundleFilesDrawer when the bundle could not be read", () => {
     await screen.findByText(/could not be read/i);
     expect(screen.queryByRole("button", { name: "New file" })).toBeNull();
     expect(botSources.putBotSourceFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("BundleFilesDrawer's failure banner is keyed on a read that FAILED", () => {
+  it("never renders it while the first read is in flight", () => {
+    botSources.getBotSource.mockReturnValue(new Promise(() => {}));
+    render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    // The read started, so every render before it is in the log.
+    expect(botSources.getBotSource).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status", { name: "Loading bundle" })).toBeTruthy();
+    expect(bannersRendered()).toBe(0);
+  });
+
+  it("does not bring a bot's failed read back after another bot loaded in between", async () => {
+    botSources.getBotSource.mockRejectedValueOnce(new ApiError(503, "API error 503: down"));
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    await screen.findByText(/could not be read/i);
+    botSources.getBotSource.mockResolvedValueOnce(OTHER);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("button", { name: "skills/o.md" });
+
+    botSources.getBotSource.mockReturnValue(new Promise(() => {}));
+    renders.length = 0;
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("status", { name: "Loading bundle" });
+    expect(renders).toContainEqual(["drawer", "Bundle files — demo"]);
+    expect(bannersRendered()).toBe(0);
+  });
+
+  it("does not carry one bot's failed read onto the next one", async () => {
+    botSources.getBotSource.mockRejectedValue(new ApiError(503, "API error 503: down"));
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    await screen.findByText(/could not be read/i);
+
+    botSources.getBotSource.mockReturnValue(new Promise(() => {}));
+    renders.length = 0;
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("status", { name: "Loading bundle" });
+    expect(renders).toContainEqual(["drawer", "Bundle files — other"]);
+    // Until the drawer follows, it is still on `demo`, whose read did fail;
+    // once its title names `other`, nothing may say `other` failed.
+    let title: unknown = null;
+    const underOther: unknown[] = [];
+    for (const [kind, value] of renders) {
+      if (kind === "drawer") title = value;
+      else if (value === UNREADABLE && title === "Bundle files — other") underOther.push(value);
+    }
+    expect(underOther).toEqual([]);
   });
 });
 
@@ -554,6 +682,230 @@ describe("BundleFilesDrawer's bundle identity", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(botSources.deleteBotSourceFile).toHaveBeenCalledTimes(1));
     expect(botSources.deleteBotSourceFile.mock.calls[0]![3]).toBe(42);
+  });
+});
+
+describe("BundleFilesDrawer's list belongs to the bot on screen", () => {
+  it("renders no row under another bot's title while that bot's read is in flight", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("button", { name: "skills/notes.md" });
+
+    botSources.getBotSource.mockReturnValue(new Promise(() => {}));
+    renders.length = 0;
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("status", { name: "Loading bundle" });
+    expect(renders).toContainEqual(["drawer", "Bundle files — other"]);
+    let title: unknown = null;
+    let rowsUnderOther = 0;
+    for (const [kind, value] of renders) {
+      if (kind === "drawer") title = value;
+      else if (kind === "row" && title === "Bundle files — other") rowsUnderOther += 1;
+    }
+    expect(rowsUnderOther).toBe(0);
+  });
+});
+
+describe("BundleFilesDrawer's answers that land after it moved", () => {
+  // Each needs a request slow enough to outlast the author's next actions.
+  // What lands is about the bot it was asked for; the drawer has moved on,
+  // and the buffer and the banner on screen belong to the bot it moved to.
+  it("raises no conflict on the bot it moved to when a delete answers 409 late", async () => {
+    botSources.getBotSource.mockResolvedValueOnce(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("button", { name: "skills/notes.md" });
+    const del = deferred<typeof BUNDLE>();
+    botSources.deleteBotSourceFile.mockReturnValueOnce(del.promise);
+    fireEvent.click(screen.getByTitle("Delete skills/notes.md"));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(botSources.deleteBotSourceFile).toHaveBeenCalledTimes(1));
+
+    botSources.getBotSource.mockResolvedValueOnce(OTHER);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    await screen.findByRole("button", { name: "skills/o.md" });
+    await act(async () => del.reject(new ApiError(409, "API error 409: version conflict")));
+
+    expect(screen.queryByText(/This bot changed in the store/)).toBeNull();
+  });
+
+  it("leaves the new bot's buffer and conflict alone when a save on the old one answers late", async () => {
+    botSources.getBotSource.mockResolvedValueOnce(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "saved to demo\n" } });
+    const put = deferred<typeof BUNDLE>();
+    botSources.putBotSourceFile.mockReturnValueOnce(put.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(1));
+
+    botSources.getBotSource.mockResolvedValueOnce(OTHER);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "skills/o.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "typed in other\n" } });
+    // Ctrl+S is not held back by the save still in flight: a conflict on the
+    // bot moved to.
+    botSources.putBotSourceFile.mockRejectedValueOnce(
+      new ApiError(409, "API error 409: version conflict"),
+    );
+    await act(async () => keybinding.run?.());
+    await screen.findByText(/This bot changed in the store/);
+
+    await act(async () => put.resolve({ ...BUNDLE, version: 8 }));
+    expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("typed in other\n");
+    expect(screen.getByText(/This bot changed in the store/)).toBeTruthy();
+  });
+
+  it("leaves the new bot's buffer alone when a conflict reload on the old one answers late", async () => {
+    botSources.getBotSource.mockResolvedValueOnce(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "mine\n" } });
+    botSources.putBotSourceFile.mockRejectedValueOnce(
+      new ApiError(409, "API error 409: version conflict"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/This bot changed in the store/);
+
+    const reload = deferred<typeof BUNDLE>();
+    botSources.getBotSource.mockReturnValueOnce(reload.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reload and discard" }));
+    await waitFor(() => expect(botSources.getBotSource).toHaveBeenCalledTimes(2));
+
+    botSources.getBotSource.mockResolvedValueOnce(OTHER);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="other" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), {
+      target: { value: "typed in other's notes\n" },
+    });
+
+    await act(async () => reload.resolve({ ...BUNDLE, version: 9 }));
+    expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe(
+      "typed in other's notes\n",
+    );
+
+    // What the next save writes, where, and under which token.
+    botSources.putBotSourceFile.mockResolvedValueOnce({ ...OTHER, version: 4 });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(2));
+    expect(botSources.putBotSourceFile.mock.calls[1]).toEqual([
+      "team-1",
+      "other",
+      "skills/notes.md",
+      "typed in other's notes\n",
+      3,
+    ]);
+  });
+
+  it("reloads only the file it was asked for, not one opened while it was in flight", async () => {
+    botSources.getBotSource.mockResolvedValueOnce(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "mine\n" } });
+    botSources.putBotSourceFile.mockRejectedValueOnce(
+      new ApiError(409, "API error 409: version conflict"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/This bot changed in the store/);
+
+    const reload = deferred<typeof BUNDLE>();
+    botSources.getBotSource.mockReturnValueOnce(reload.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reload and discard" }));
+    await waitFor(() => expect(botSources.getBotSource).toHaveBeenCalledTimes(2));
+
+    // Closed and reopened on the same bot while the reload is in flight (the
+    // list stays behind the spinner until it lands, so this is the way to
+    // another file), then another file opened and typed in.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open={false} onOpenChange={() => {}} />,
+    );
+    botSources.getBotSource.mockResolvedValueOnce(BUNDLE);
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "lib/nodes.bot" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "typed in nodes\n" } });
+
+    await act(async () =>
+      reload.resolve({ ...BUNDLE, version: 9, files: { ...BUNDLE.files, "lib/nodes.bot": "# theirs\n" } }),
+    );
+    expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe("typed in nodes\n");
+  });
+
+  it("settles only the file it saved, not one opened after the drawer was reopened", async () => {
+    botSources.getBotSource.mockResolvedValue(BUNDLE);
+    const view = render(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "saved slowly\n" } });
+    const put = deferred<typeof BUNDLE>();
+    botSources.putBotSourceFile.mockReturnValueOnce(put.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(1));
+
+    // Closed and reopened on the same bot while the save is in flight, and
+    // another file opened — nothing typed in it.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open={false} onOpenChange={() => {}} />,
+    );
+    view.rerender(
+      <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "lib/nodes.bot" }));
+
+    await act(async () => put.resolve({ ...BUNDLE, version: 8 }));
+    // Untouched, so leaving it asks nothing.
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByRole("button", { name: "skills/notes.md" });
+    expect(screen.queryByText("Discard this text?")).toBeNull();
+  });
+
+  it("keeps text typed while its own save is in flight, dirty against what landed", async () => {
+    botSources.getBotSource.mockResolvedValueOnce(BUNDLE);
+    render(<BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "skills/notes.md" }));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "first\n" } });
+    const put = deferred<typeof BUNDLE>();
+    botSources.putBotSourceFile.mockReturnValueOnce(put.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText("file"), { target: { value: "first\nand more\n" } });
+
+    await act(async () =>
+      put.resolve({ ...BUNDLE, version: 8, files: { ...BUNDLE.files, "skills/notes.md": "first\n" } }),
+    );
+    expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe(
+      "first\nand more\n",
+    );
+    // Dirty against what landed: leaving asks before taking it.
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("Discard this text?")).toBeTruthy();
   });
 });
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@/lib/monaco";
-import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
+import { unreachableSourceBuffer, useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
 import { useUIStore } from "@/store/ui";
 import * as api from "@/api/client";
@@ -208,23 +208,20 @@ export default function SourceView() {
     setEditingState(true);
   }, [editing, currentFilePath, selected, unit, bufferKey, documentStore]);
 
-  // A held buffer whose file the unit no longer has cannot be selected, so
-  // it can never be adopted — and holding it keeps the watcher from ever
-  // auto-reloading this tab and lights `beforeunload` for text no surface
-  // can show. The file went while the author was editing it; say so and let
-  // go, rather than keep work nobody can reach.
+  // A held buffer typed for a file this tab no longer has — its file left the
+  // unit, or the unit came or went under it — can never be adopted, and
+  // holding it keeps the watcher from ever auto-reloading this tab and lights
+  // `beforeunload` for text no surface can show. Say so and let go, rather
+  // than keep work nobody can reach. Save As asks the same question, so the
+  // two cannot disagree about which text is kept.
   useEffect(() => {
-    if (editing || !unit) return;
+    if (editing) return;
     const held = documentStore.getState().sourceBuffer;
     if (!held || held.text === held.base) return;
-    if (held.path !== currentFilePath) return;
-    if (!held.rel || unit.files.some((f) => f.rel === held.rel)) return;
+    const unreachable = unreachableSourceBuffer(held, currentFilePath, unit);
+    if (!unreachable) return;
     setSourceBuffer(null);
-    addToast(
-      `${held.rel} is no longer one of this bot's files — the text you had not applied for it was discarded.`,
-      "warning",
-      { persistent: true },
-    );
+    addToast(unreachable, "warning", { persistent: true });
   }, [editing, unit, currentFilePath, documentStore, setSourceBuffer, addToast]);
 
   // Sync document → source (when not in editing mode)
@@ -499,10 +496,19 @@ export default function SourceView() {
   // does. Going through `setEditing(false)` dropped the buffer, which made
   // the author watch a repair vanish under a read-only editor with no Apply,
   // no Cancel and no undo.
+  //
+  // When the view is still editable — it only moved to another key, as Save
+  // As moves it to a new path — the kept text must be adopted again, so the
+  // once-per-mount latch is released. Left set, a second Save As (or one
+  // after the pane was hidden and shown) showed the rendered file under an
+  // Edit button while the text stayed held, and that Edit replaced it. Not
+  // when read-only: adoption would re-enter edit mode, and this effect would
+  // leave it again, for ever.
   useEffect(() => {
     if (!editing || (editable && !stale)) return;
     setEditingState(false);
     if (!documentStore.getState().isSourceDirty()) setSourceBuffer(null);
+    else if (editable) adopted.current = false;
   }, [editing, editable, stale, documentStore, setSourceBuffer]);
 
   return (

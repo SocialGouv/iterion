@@ -8,7 +8,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ parseSource: vi.fn(), unparse: vi.fn(), unparseUnitFile: vi.fn() }));
+const api = vi.hoisted(() => ({
+  parseSource: vi.fn(),
+  unparse: vi.fn(),
+  unparseUnitFile: vi.fn(),
+  saveFile: vi.fn(),
+}));
 vi.mock("@/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/client")>()),
   ...api,
@@ -34,6 +39,8 @@ import {
 
 import SourceView from "./SourceView";
 import { useDropEditorTab } from "@/hooks/useDropEditorTab";
+import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
+import { useDocumentSaveAs } from "@/components/DocumentSaveAs/useDocumentSaveAs";
 import { useUIStore } from "@/store/ui";
 
 
@@ -287,13 +294,20 @@ describe("the buffer across an unmount of the pane", () => {
     await waitFor(() => expect(store.getState().isSourceDirty()).toBe(true));
     cleanup();
 
-    // A buffer whose path is not this tab's file is another tab's.
+    // Each tab has its own store, and every path change drops the buffer
+    // in the same `set`, so a buffer naming another file is built by hand:
+    // it is text this tab has moved away from. It is not adopted over the
+    // file on screen — and not held either, where nothing could show it.
     store.setState({
       sourceBuffer: { ...store.getState().sourceBuffer!, path: "bots/other/main.bot" },
     });
     mount(store);
     await waitFor(() =>
       expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(RENDERED),
+    );
+    await waitFor(() => expect(store.getState().sourceBuffer).toBeNull());
+    expect(useUIStore.getState().toasts.map((t) => t.message).join(" ")).toContain(
+      "The text you had not applied for bots/other/main.bot was discarded",
     );
   });
 });
@@ -302,15 +316,18 @@ describe("the buffer across an unmount of the pane", () => {
 // second class — a buffer that survives but is never reached, and an exit
 // from edit mode that deleted it under the author's eyes.
 describe("the buffer when the view turns read-only under it", () => {
-  it("survives being forced out of edit mode", async () => {
+  it("is not deleted in silence when a unit arrives under a whole-file edit", async () => {
     const store = openStore();
     const buffer = await startEditing(store);
     fireEvent.change(buffer, { target: { value: "a repair the author typed" } });
     await waitFor(() => expect(store.getState().isSourceDirty()).toBe(true));
 
-    // A unit arrives under the open edit — the watcher's reload discovering
-    // the bot is in several files, which is the documented way out of a
-    // salvage. The view turns read-only; the work must not go with it.
+    // Built by hand: a real reload replaces the file through
+    // `setCurrentFilePath`, which drops the buffer — and only after the
+    // author chose "Reload and discard". A unit's view offers one file at a
+    // time and never the whole, so this text can no longer be shown: the
+    // view leaves edit mode, and the text goes with a named warning rather
+    // than vanishing, or staying where nothing can show it.
     store.getState().setUnit({
       root: "bots/demo",
       main: "main.bot",
@@ -319,8 +336,11 @@ describe("the buffer when the view turns read-only under it", () => {
     });
 
     await waitFor(() => expect(screen.queryByRole("button", { name: "Apply" })).toBeNull());
-    expect(store.getState().isSourceDirty()).toBe(true);
-    expect(store.getState().hasUnsavedWork()).toBe(true);
+    await waitFor(() => expect(store.getState().sourceBuffer).toBeNull());
+    const warning = useUIStore
+      .getState()
+      .toasts.find((t) => t.message.includes("This bot is in several files now"));
+    expect(warning).toMatchObject({ type: "warning", persistent: true });
   });
 
   it("lets go of work no picker can reach again, and says so", async () => {
@@ -353,6 +373,29 @@ describe("the buffer when the view turns read-only under it", () => {
     expect(useUIStore.getState().toasts.map((t) => t.message).join(" ")).toContain(
       "lib/nodes.bot is no longer one of this bot's files",
     );
+  });
+
+  it("lets go of a FRAGMENT's text once the tab has no unit, and says so", async () => {
+    // With no unit the view shows the whole file only, so a buffer typed for
+    // one file of a unit can never be adopted; the release used to skip every
+    // tab without a unit, and the text then kept the tab "unsaved" for good.
+    const store = openStore();
+    store.getState().setSourceBuffer({
+      path: "bots/demo/main.bot",
+      rel: "lib/nodes.bot",
+      text: "typed for the fragment",
+      base: "the fragment as rendered",
+      doc: null,
+    });
+    expect(store.getState().hasUnsavedWork()).toBe(true);
+    mount(store);
+
+    await waitFor(() => expect(store.getState().sourceBuffer).toBeNull());
+    expect(store.getState().hasUnsavedWork()).toBe(false);
+    const warning = useUIStore
+      .getState()
+      .toasts.find((t) => t.message.includes("lib/nodes.bot is no longer one of this tab's files"));
+    expect(warning).toMatchObject({ type: "warning", persistent: true });
   });
 
   it("comes back on the FRAGMENT it was typed for, not on the main", async () => {
@@ -391,6 +434,157 @@ describe("the buffer when the view turns read-only under it", () => {
 // tab disposes its store, taking the document and the Source buffer alike —
 // and `hasUnsavedWork`'s own comment says "a reload, a tab close or a File →
 // New takes both", which was not true of the tab close.
+describe("a salvage appearing under an edit of the MAIN", () => {
+  it("settles read-only and keeps the text, rather than adopting it back into a view that cannot edit", async () => {
+    const store = openStore();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    store.getState().setCurrentSource("the main as stored");
+    mount(store);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Edit" })).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), { target: { value: "a repair of the main" } });
+    await waitFor(() => expect(store.getState().isSourceDirty()).toBe(true));
+
+    store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "moved" }] });
+    store.getState().setSalvaged(true);
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+        "the main as stored",
+      ),
+    );
+    // Still settled once another render debounce has passed.
+    await new Promise((r) => setTimeout(r, 700));
+    expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
+    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+      "the main as stored",
+    );
+    expect(store.getState().sourceBuffer?.text).toBe("a repair of the main");
+  });
+});
+
+describe("the buffer across Save As", () => {
+  function SaveAs({ store }: { store: ReturnType<typeof openStore> }) {
+    const controller = useDocumentSaveAs();
+    return (
+      <>
+        <button onClick={() => controller.requestSaveAs({ store })}>Open Save As</button>
+        <DocumentSaveAsDialog controller={controller} />
+      </>
+    );
+  }
+
+  async function saveAsTo(store: ReturnType<typeof openStore>, path: string) {
+    api.saveFile.mockResolvedValueOnce({ path, source: RENDERED });
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() => expect(store.getState().currentFilePath).toBe(path));
+    // Past the view's 500 ms render debounce: a text that was NOT adopted
+    // back is replaced on screen by the rendered file only once it fires.
+    await new Promise((r) => setTimeout(r, 700));
+  }
+
+  it("comes back after a SECOND Save As, once the view has already adopted", async () => {
+    const store = openStore();
+    render(
+      <DocumentStoreProvider store={store}>
+        <SourceView />
+        <SaveAs store={store} />
+      </DocumentStoreProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), {
+      target: { value: "typed before Save As" },
+    });
+    await waitFor(() => expect(store.getState().isSourceDirty()).toBe(true));
+
+    await saveAsTo(store, "bots/copy.bot");
+    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+      "typed before Save As",
+    );
+    await saveAsTo(store, "bots/copy2.bot");
+
+    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+      "typed before Save As",
+    );
+    expect(screen.getByRole("button", { name: "Apply" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(store.getState().sourceBuffer).toMatchObject({
+      path: "bots/copy2.bot",
+      text: "typed before Save As",
+    });
+  });
+
+  it("comes back after Save As when the pane was hidden and shown first", async () => {
+    const store = openStore();
+    const app = (pane: boolean) => (
+      <DocumentStoreProvider store={store}>
+        {pane ? <SourceView /> : null}
+        <SaveAs store={store} />
+      </DocumentStoreProvider>
+    );
+    const view = render(app(true));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), {
+      target: { value: "typed, pane hidden once" },
+    });
+    await waitFor(() => expect(store.getState().isSourceDirty()).toBe(true));
+    view.rerender(app(false));
+    view.rerender(app(true));
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+        "typed, pane hidden once",
+      ),
+    );
+
+    await saveAsTo(store, "bots/copy.bot");
+
+    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+      "typed, pane hidden once",
+    );
+    expect(screen.getByRole("button", { name: "Apply" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  it("comes back under the new name, still dirty, still in edit mode", async () => {
+    api.saveFile.mockResolvedValue({ path: "bots/copy.bot", source: RENDERED });
+    const store = openStore();
+    render(
+      <DocumentStoreProvider store={store}>
+        <SourceView />
+        <SaveAs store={store} />
+      </DocumentStoreProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), {
+      target: { value: "typed before Save As" },
+    });
+    await waitFor(() => expect(store.getState().isSourceDirty()).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() => expect(store.getState().currentFilePath).toBe("bots/copy.bot"));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+        "typed before Save As",
+      ),
+    );
+    expect(store.getState().sourceBuffer).toMatchObject({
+      path: "bots/copy.bot",
+      rel: null,
+      text: "typed before Save As",
+    });
+    expect(store.getState().isSourceDirty()).toBe(true);
+    expect(screen.getByRole("button", { name: "Apply" })).toBeTruthy();
+  });
+});
+
 describe("closing a tab that holds unsaved CANVAS work", () => {
   it("asks, though the Source pane holds nothing", async () => {
     const tabStore = getOrCreateDocumentStore("tab-canvas");
@@ -444,6 +638,7 @@ describe("a salvage appearing under an open per-file edit", () => {
       revision: "r1",
       files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
     });
+    store.getState().setCurrentSource("the main as stored");
     mount(store);
     await screen.findByTestId("source-view-file-picker");
     fireEvent.change(screen.getByTestId("source-view-file-picker"), {
@@ -461,11 +656,18 @@ describe("a salvage appearing under an open per-file edit", () => {
     store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "moved" }] });
     store.getState().setSalvaged(true);
 
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Apply" })).toBeNull());
+    // Read-only now, showing the main as stored — which the view renders only
+    // after leaving edit mode, once the effect that could release the text
+    // has already run. Asserting sooner passes before that pass, whatever it
+    // would do.
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+        "the main as stored",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
     expect(store.getState().isSourceDirty()).toBe(true);
     expect(store.getState().hasUnsavedWork()).toBe(true);
-    expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
-      "a repair the author typed",
-    );
+    expect(store.getState().sourceBuffer?.text).toBe("a repair the author typed");
   });
 });

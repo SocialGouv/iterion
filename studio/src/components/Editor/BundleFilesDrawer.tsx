@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@/lib/monaco";
 import { FileIcon, PlusIcon, TrashIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
@@ -33,6 +33,9 @@ interface Props {
 }
 
 const MAIN_BOT = "main.bot";
+
+const samePair = (a: { teamID: string; slug: string }, b: { teamID: string; slug: string }) =>
+  a.teamID === b.teamID && a.slug === b.slug;
 
 // BundleFilesDrawer is the multi-file editor for a team-authored bot bundle.
 // The bundle's main.bot is the DSL workflow — clicking it focuses/opens the
@@ -86,6 +89,10 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     data: BotSourceFull;
   } | null>(null);
   const [loading, setLoading] = useState(false);
+  // The pair whose read FAILED, stamped like `loaded`. The danger banner says
+  // a read failed, so it is keyed on one that did: "no bundle" alone is also
+  // every render before a read has even started.
+  const [failed, setFailed] = useState<{ teamID: string; slug: string } | null>(null);
   const [editing, setEditing] = useState<{
     rel: string;
     value: string;
@@ -118,21 +125,33 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   // two part, and a delete aimed at the props would hit the wrong bot.
   const shown = bound ?? { teamID, slug };
 
-  // The guard is on the WRITE, not the read: an answer that names a pair the
-  // drawer has left is DROPPED, so it can never replace the bundle actually
-  // on screen. Nulling the read instead would have thrown away a good bundle
-  // during an ordinary rebind and rendered the "could not be read" refusal
-  // over a read that succeeded.
-  const bundle = loaded?.data ?? null;
+  // Guarded at both ends. An answer naming a pair the drawer has left is
+  // DROPPED at the write (`setBundle`), so it never replaces the bundle on
+  // screen; and a bundle is read only for the pair on screen, so between a
+  // rebind and the load it starts the list is not the previous bot's under
+  // this one's title. A null bundle shows the spinner, never the danger
+  // banner, which only a failed read raises.
+  const isShown = (at: { teamID: string; slug: string } | null) => !!at && samePair(at, shown);
+  const bundle = loaded && isShown(loaded.at) ? loaded.data : null;
+  const readFailed = isShown(failed);
   const shownRef = useRef(shown);
   useEffect(() => {
     shownRef.current = shown;
   });
-  const setBundle = (data: BotSourceFull, at: { teamID: string; slug: string }) => {
-    const now = shownRef.current;
-    if (at.teamID !== now.teamID || at.slug !== now.slug) return;
-    setLoaded({ at, data });
-  };
+  // Whether the drawer is still on the pair an answer was asked about. One
+  // that lands after a rebind belongs to the bundle it was read or written
+  // for: it must not replace the bundle on screen, nor touch the buffer or
+  // the conflict state of the bot the drawer has moved to.
+  const stillOn = useCallback(
+    (at: { teamID: string; slug: string }) => samePair(at, shownRef.current),
+    [],
+  );
+  const setBundle = useCallback(
+    (data: BotSourceFull, at: { teamID: string; slug: string }) => {
+      if (stillOn(at)) setLoaded({ at, data });
+    },
+    [stillOn],
+  );
 
   const bufferIsDirty = () => !!editing && editing.value !== editing.original;
   // A VALUE in the follow effect's deps, not just the ref: the latch below is
@@ -241,6 +260,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     // refuse. The gate above is what makes this reset safe to do silently —
     // by the time it runs, the buffer holds nothing the author wants.
     setLoaded(null);
+    setFailed(null);
     setEditing(null);
     setConflict(false);
     setLoading(true);
@@ -249,7 +269,9 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
         if (!cancelled) setBundle(b, bound);
       })
       .catch((err) => {
-        if (!cancelled) toastError(addToast, err, "Load bundle failed");
+        if (cancelled) return;
+        setFailed(bound);
+        toastError(addToast, err, "Load bundle failed");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -257,7 +279,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     return () => {
       cancelled = true;
     };
-  }, [open, bound, addToast]);
+  }, [open, bound, addToast, setBundle]);
 
   // A closed drawer forgets where it was, so reopening follows the props.
   useEffect(() => {
@@ -315,10 +337,9 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
       },
     });
     if (!rel) return;
-    const now = shownRef.current;
-    if (at.teamID !== now.teamID || at.slug !== now.slug) {
+    if (!stillOn(at)) {
       addToast(
-        `This panel moved to ${now.slug} while the dialog was open — "${rel}" was not created.`,
+        `This panel moved to ${shownRef.current.slug} while the dialog was open — "${rel}" was not created.`,
         "error",
         { persistent: true },
       );
@@ -338,8 +359,16 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   // The if-match token for every write this drawer makes: the version of the
   // bundle it LOADED. Not a fresh read at write time — that would only cover
   // the milliseconds between the read and the PUT, and the window that loses
-  // an author's work is the whole time the drawer has been open.
-  const ifMatch = (): number | "unchecked" => bundle?.version ?? "unchecked";
+  // an author's work is the whole time the drawer has been open. With no
+  // bundle loaded for the pair on screen there is no version to present, and
+  // the write is refused: "unchecked" is last-write-wins, the very overwrite
+  // the token is there to prevent.
+  const ifMatch = (): number => {
+    if (!bundle) {
+      throw new Error(`The files of ${shown.slug} are not loaded here, so nothing was written.`);
+    }
+    return bundle.version;
+  };
 
   /** A write the store refused because the bundle moved under this drawer. */
   const isStale = (err: unknown) => err instanceof ApiError && err.status === 409;
@@ -354,22 +383,29 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
 
   const onSave = async () => {
     if (!editing) return;
+    const at = shown;
+    const saved = editing;
     setSaving(true);
     try {
-      const updated = await putBotSourceFile(
-        shown.teamID,
-        shown.slug,
-        editing.rel,
-        editing.value,
-        ifMatch(),
-      );
-      setBundle(updated, shown);
-      setEditing(null);
-      setConflict(false);
+      const updated = await putBotSourceFile(at.teamID, at.slug, saved.rel, saved.value, ifMatch());
+      setBundle(updated, at);
+      if (stillOn(at)) {
+        // Closed only if the buffer still holds what was written. Text typed
+        // while the write was in flight stays open, dirty against what
+        // landed; another file opened meanwhile is not this answer's.
+        setEditing((e) =>
+          !e || e.rel !== saved.rel
+            ? e
+            : e.value === saved.value
+              ? null
+              : { ...e, original: saved.value, created: false },
+        );
+        setConflict(false);
+      }
     } catch (err) {
       // The typed text stays in the buffer either way: the author's only
       // copy of it is on screen.
-      if (isStale(err)) setConflict(true);
+      if (isStale(err) && stillOn(at)) setConflict(true);
       toastError(addToast, err, "Save file failed");
     } finally {
       setSaving(false);
@@ -379,6 +415,8 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   /** Re-read the bundle, discarding what is in the buffer. The one way out
    *  of a conflict, and it says so before it takes the text. */
   const onReloadAfterConflict = async () => {
+    const at = shown;
+    const rel = editing?.rel ?? null;
     const dirty = !!editing && editing.value !== editing.original;
     if (dirty) {
       const go = await confirm({
@@ -392,17 +430,20 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     }
     setLoading(true);
     try {
-      const fresh = await getBotSource(shown.teamID, shown.slug);
-      setBundle(fresh, shown);
-      setConflict(false);
-      // Spread, not rebuild: `created` is part of the buffer's identity and
-      // rebuilding dropped it, leaving Save disabled for ever on a file that
-      // does not exist yet.
-      setEditing((e) =>
-        e
-          ? { ...e, value: fresh.files?.[e.rel] ?? "", original: fresh.files?.[e.rel] ?? "" }
-          : e,
-      );
+      const fresh = await getBotSource(at.teamID, at.slug);
+      setBundle(fresh, at);
+      if (stillOn(at)) {
+        setConflict(false);
+        // Only the file the reload was asked for. Spread, not rebuild:
+        // `created` is part of the buffer's identity and rebuilding dropped
+        // it, leaving Save disabled for ever on a file that does not exist
+        // yet.
+        setEditing((e) =>
+          e && e.rel === rel
+            ? { ...e, value: fresh.files?.[e.rel] ?? "", original: fresh.files?.[e.rel] ?? "" }
+            : e,
+        );
+      }
     } catch (err) {
       toastError(addToast, err, "Reload bundle failed");
     } finally {
@@ -422,13 +463,14 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     ) {
       return;
     }
+    const at = shown;
     setBusyRel(rel);
     try {
-      const updated = await deleteBotSourceFile(shown.teamID, shown.slug, rel, ifMatch());
-      setBundle(updated, shown);
-      setConflict(false);
+      const updated = await deleteBotSourceFile(at.teamID, at.slug, rel, ifMatch());
+      setBundle(updated, at);
+      if (stillOn(at)) setConflict(false);
     } catch (err) {
-      if (isStale(err)) setConflict(true);
+      if (isStale(err) && stillOn(at)) setConflict(true);
       toastError(addToast, err, "Delete file failed");
     } finally {
       setBusyRel(null);
@@ -529,16 +571,15 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
               }}
             />
           </div>
-        ) : loading ? (
+        ) : loading || (!bundle && !readFailed) ? (
           <div className="flex flex-1 items-center justify-center py-8">
             <Spinner size="sm" label="Loading bundle" />
           </div>
         ) : !bundle ? (
-          // No bundle means the read FAILED. The list then renders empty and
-          // fully functional: every write goes out with no if-match token at
-          // all, and "New file" typed with an existing path opens an empty
-          // buffer that replaces a real file. Nothing here can be checked
-          // against what is stored, so nothing here may write.
+          // The read FAILED for the bot on screen: nothing a write could be
+          // checked against, so no list is offered. An empty one would let
+          // "New file" typed with an existing path open an empty buffer over
+          // a real file.
           <InlineBanner tone="danger" layout="inline" title="This bot could not be read">
             Its files are unavailable, so nothing written here could be checked against
             what is stored. Close and reopen this panel to try again.

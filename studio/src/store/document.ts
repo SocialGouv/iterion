@@ -76,6 +76,34 @@ export interface SourceBuffer {
   doc: IterDocument | null;
 }
 
+/** Why the Source view of a tab on `path`, with `unit`, can no longer show
+ *  a held buffer — or null when it can. The view shows ONE file of a unit at
+ *  a time, or the whole file when there is no unit, so a buffer typed for
+ *  anything else can be neither adopted nor applied, and holding it keeps
+ *  the tab "unsaved" over text no surface can reach. The view's release and
+ *  Save As's carry both ask it, so they agree on which text is kept;
+ *  adoption asks the narrower question of which file the view is on now. */
+export function unreachableSourceBuffer(
+  buffer: SourceBuffer,
+  path: string | null,
+  unit: UnitInfo | null,
+): string | null {
+  if (buffer.path !== path) {
+    return `The text you had not applied for ${buffer.path ?? "a file this tab has left"} was discarded — this tab is on another file now.`;
+  }
+  if (!unit) {
+    return buffer.rel === null
+      ? null
+      : `${buffer.rel} is no longer one of this tab's files — the tab is a single file now, and the text you had not applied for it was discarded.`;
+  }
+  if (buffer.rel === null) {
+    return "This bot is in several files now, edited one file at a time — the text you had not applied to it as a single file was discarded.";
+  }
+  return unit.files.some((f) => f.rel === buffer.rel)
+    ? null
+    : `${buffer.rel} is no longer one of this bot's files — the text you had not applied for it was discarded.`;
+}
+
 interface DocumentState {
   document: IterDocument | null;
   diagnostics: string[];
