@@ -654,23 +654,25 @@ func TestProdWatch_PromResultTyping(t *testing.T) {
 	if strings.Join(got, ",") != "prom:new:critical,prom_no_data:new:medium" {
 		t.Fatalf("alerts = %v, want the breach (critical) and the no_data incident (medium)", got)
 	}
-	// Every probe erroring is a façade, not a quiet tick.
-	h.prom.Store(map[string]pwProm{"restarts-q": {Status: 500}, "ratio-q": {Status: 500}, "ghost-q": {Status: 500}, "broken-q": {Status: 500}})
+	// Every probe erroring, or the token refused, is the lane's failure —
+	// reported, never the run's death: the other lanes still report, and
+	// decide refuses a tick only when every configured lane failed.
 	plan := outs["plan"]
-	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_prom").Script, map[string]any{
-		"grafana": plan["grafana"], "prometheus": plan["prometheus"], "timeout_secs": 5, "allow_private": true}, nil,
-		map[string]string{"grafana_token": h.tokenFile}))
-	if err == nil || !strings.Contains(stderr, "every Prometheus probe failed") {
-		t.Fatalf("all-probes-failed must hard-fail naming the cause, got err=%v stderr=%s", err, stderr)
+	pollProm := func(token string) (map[string]any, string, error) {
+		return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_prom").Script, map[string]any{
+			"grafana": plan["grafana"], "prometheus": plan["prometheus"], "timeout_secs": 5, "allow_private": true}, nil,
+			map[string]string{"grafana_token": token}))
 	}
-	// A refused token is a credential problem, actionable now: hard failure.
+	h.prom.Store(map[string]pwProm{"restarts-q": {Status: 500}, "ratio-q": {Status: 500}, "ghost-q": {Status: 500}, "broken-q": {Status: 500}})
+	out, stderr, err := pollProm(h.tokenFile)
+	if err != nil || out["ok"] != false || len(out["errors"].([]any)) != 4 {
+		t.Fatalf("every probe failing is reported probe by probe, not fatal: err=%v out=%v stderr=%s", err, out, stderr)
+	}
 	bad := filepath.Join(h.scratch, "bad_token")
 	_ = os.WriteFile(bad, []byte("glsa_wrong"), 0o600)
-	_, stderr, err = runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_prom").Script, map[string]any{
-		"grafana": plan["grafana"], "prometheus": plan["prometheus"], "timeout_secs": 5, "allow_private": true}, nil,
-		map[string]string{"grafana_token": bad}))
-	if err == nil || !strings.Contains(stderr, "refused the token") {
-		t.Fatalf("401 must hard-fail naming the token, got err=%v stderr=%s", err, stderr)
+	out, stderr, err = pollProm(bad)
+	if err != nil || !strings.Contains(fmt.Sprint(out["errors"]), "Grafana refused the token (HTTP 401)") {
+		t.Fatalf("a refused token is reported on each probe, naming the token: err=%v out=%v stderr=%s", err, out, stderr)
 	}
 }
 

@@ -1223,7 +1223,6 @@ func TestProdWatch_ForeignStateContainersAreRefusedByName(t *testing.T) {
 		{"a dropped cursor's band is a number", cursor(`{"covered_to_ns":"5","frontier_ns":"5","band":5,"band_base_ns":"0","overlap_from_ns":"0"}`), "'gone'"},
 		{"a dropped cursor's mark is not a number", cursor(`{"covered_to_ns":"x"}`), "'gone'"},
 		{"a dropped cursor's band entry has no numeric offset", cursor(`{"covered_to_ns":"5","band":["x:abcdabcdabcdabcd"]}`), "'gone'"},
-		{"a dropped cursor's clock is a number", cursor(`{"covered_to_ns":"5","band":[],"at":123}`), "'gone'"},
 		{"incidents is null", `{"version":1,"generation":1,"cursors":{},"incidents":null,"health":{}}`, "incidents"},
 		{"health is null", `{"version":1,"generation":1,"cursors":{},"incidents":{},"health":null}`, "health"},
 		{"cursors is null", `{"version":1,"generation":1,"cursors":null,"incidents":{},"health":{}}`, "cursors"},
@@ -1234,6 +1233,11 @@ func TestProdWatch_ForeignStateContainersAreRefusedByName(t *testing.T) {
 		{"an incident's severity is a list", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"severity":["high"]}},"health":{}}`, ".severity"},
 		{"an incident's last sighting is not a date", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"last_seen":"yesterday"}},"health":{}}`, ".last_seen"},
 		{"a health record is a number", `{"version":1,"generation":1,"cursors":{},"incidents":{},"health":{"loki":5}}`, "health["},
+		{"an incident's fields are a list", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"fields":[1]}},"health":{}}`, ".fields"},
+		{"an incident's kind is a list", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"kind":["x"]}},"health":{}}`, ".kind"},
+		{"an incident's title key is a list", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"title_key":["x"]}},"health":{}}`, ".title_key"},
+		{"an incident's detail key is a number", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"detail_key":5}},"health":{}}`, ".detail_key"},
+		{"an incident's first sighting is a number", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"first_seen":5}},"health":{}}`, ".first_seen"},
 	}
 	for _, c := range cases {
 		c := c
@@ -1383,14 +1387,21 @@ func TestProdWatch_CoverageNoteKeysOnTheKindOfPartiality(t *testing.T) {
 		}
 		return ""
 	}
+	cut := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial", "templates_cut": true, "templates_total": 230}
 	var notes []string
-	for _, pq := range []map[string]any{
-		{"errors": window(true, false), "other": window(false, false)},
-		{"errors": window(false, false), "other": window(true, false)},
-		{"errors": window(true, false), "other": window(false, false)},
-		{"errors": window(true, true), "other": window(false, false)},
+	for _, tick := range []struct {
+		pq  map[string]any
+		sig map[string]any
+	}{
+		{map[string]any{"errors": window(true, false), "other": window(false, false)}, signals},
+		{map[string]any{"errors": window(false, false), "other": window(true, false)}, signals},
+		{map[string]any{"errors": window(true, false), "other": window(false, false)}, signals},
+		{map[string]any{"errors": window(true, true), "other": window(false, false)}, signals},
+		{map[string]any{"errors": window(false, true), "other": window(false, false)}, signals}, // the truncation ends, the gap stays
+		{map[string]any{"errors": window(false, true), "other": window(false, false)}, cut},     // a cut appears under the gap
+		{map[string]any{"errors": window(false, true), "other": window(true, false)}, cut},      // a truncation appears under the gap and the cut
 	} {
-		out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{"loki_per_query": pq, "lanes": lanes})
+		out, stderr, err := pwDecide(t, wf, h, tick.sig, state, map[string]any{"loki_per_query": tick.pq, "lanes": lanes})
 		if err != nil {
 			t.Fatalf("decide: %v %s", err, stderr)
 		}
@@ -1399,6 +1410,9 @@ func TestProdWatch_CoverageNoteKeysOnTheKindOfPartiality(t *testing.T) {
 	}
 	if notes[0] == "" || notes[1] != "" || notes[2] != "" || !strings.Contains(notes[3], "errors: gap") {
 		t.Fatalf("a note for the first truncation, none while queries take turns, one for the gap: %q", notes)
+	}
+	if notes[4] == "" || !strings.Contains(notes[5], "template list cut") || !strings.Contains(notes[6], "other: truncated") {
+		t.Fatalf("under a standing gap, a truncation ending, a cut appearing and a truncation appearing each re-post: %q", notes[4:])
 	}
 }
 
@@ -1478,5 +1492,527 @@ func TestProdWatch_HistoryClockNeverMovesBack(t *testing.T) {
 	}
 	if got := pwStateNext(t, out)["incidents"].(map[string]any)["loki:t1"].(map[string]any)["last_seen"]; got != last {
 		t.Fatalf("an older history line must not move the clock back: %v -> %v", last, got)
+	}
+}
+
+// pwCoverageReasons returns the reasons of the coverage note decide staged
+// this tick ("" when there is none).
+func pwCoverageReasons(decide map[string]any) string {
+	for _, s := range decide["stale_sources"].([]any) {
+		if m := s.(map[string]any); m["source"] == "coverage" {
+			return fmt.Sprint(m["reasons"])
+		}
+	}
+	return ""
+}
+
+// TestProdWatch_ConfigTitleIsTextOrRefusedByName: a Prometheus probe title
+// written as a number is text — breached tick after breached tick, each
+// tick's plan accepts the state the previous one wrote; a list, an object
+// or a boolean is refused by name at the config.
+func TestProdWatch_ConfigTitleIsTextOrRefusedByName(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	probe := func(title any) func(cfg map[string]any) {
+		return func(cfg map[string]any) {
+			cfg["prometheus"] = map[string]any{"probes": []map[string]any{
+				{"id": "restarts", "title": title, "query": "restarts-q", "op": ">", "threshold": 0, "severity": "high"}}}
+		}
+	}
+	for _, title := range []any{5, 99.9} {
+		h := newPWHarness(t)
+		h.writeConfig(t, probe(title))
+		h.prom.Store(map[string]pwProm{"restarts-q": {Value: "3"}})
+		var posted []string
+		for k := 0; k < 3; k++ {
+			posted = append(posted, alertsOf(t, h.tick(t, wf, false))...) // a node failure (plan's refusal) fails the test
+		}
+		if strings.Join(posted, ",") != "prom:new:high" {
+			t.Fatalf("title %v: the breach posts once over three breached ticks: %v", title, posted)
+		}
+		if got := h.state(t)["incidents"].(map[string]any)["prom:restarts"].(map[string]any)["title_arg"]; got != fmt.Sprint(title) {
+			t.Fatalf("title %v is carried as text: %#v", title, got)
+		}
+	}
+	for _, title := range []any{[]any{"p99"}, map[string]any{"text": "p99"}, true} {
+		h := newPWHarness(t)
+		h.writeConfig(t, probe(title))
+		_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, cursorVars(h, 60, 0, 5000), map[string]string{"grafana_token": h.tokenFile}))
+		if err == nil || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, "title") {
+			t.Fatalf("title %v: plan refuses it by name: %v %s", title, err, stderr)
+		}
+	}
+}
+
+// TestProdWatch_EveryStateTheBotWritesIsAccepted: the whole chain over
+// random configs (probe lists or maps, numeric ids and titles, severities
+// in any case, a sink channel written as text, a number or not at all) and
+// random production conditions — Prometheus failing in part or entirely,
+// the health URL down, the Grafana token refused, lines with and without
+// personal data — fourteen ticks per seed (PW_CHAIN_SEEDS, default 4): no
+// node fails, so each tick's plan accepted the state the previous tick
+// wrote, no lane's failure killed the tick and every delivery was consumed.
+func TestProdWatch_EveryStateTheBotWritesIsAccepted(t *testing.T) {
+	wf := compileFixture(t, "prod-watch/main.bot")
+	seeds := 4
+	if v, err := strconv.Atoi(os.Getenv("PW_CHAIN_SEEDS")); err == nil && v > 0 {
+		seeds = v
+	}
+	for seed := 0; seed < seeds; seed++ {
+		seed := seed
+		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
+			t.Parallel()
+			rnd := rand.New(rand.NewSource(int64(seed)*7919 + 3))
+			h := newPWHarness(t)
+			titles := []any{"Pod restarts", 5, 99.9, nil}
+			sevs := []string{"high", "MEDIUM", "Critical", "low"}
+			h.writeConfig(t, func(cfg map[string]any) {
+				restarts := map[string]any{"query": "restarts-q", "op": ">", "threshold": 0, "severity": sevs[rnd.Intn(4)]}
+				if title := titles[rnd.Intn(4)]; title != nil {
+					restarts["title"] = title
+				}
+				latency := map[string]any{"query": "lat-q", "op": ">=", "threshold": 1.5, "severity": sevs[rnd.Intn(4)], "title": titles[rnd.Intn(3)]}
+				if rnd.Intn(2) == 0 {
+					cfg["prometheus"] = map[string]any{"probes": map[string]any{"restarts": restarts, "latency": latency}}
+				} else {
+					restarts["id"], latency["id"] = "restarts", 7
+					cfg["prometheus"] = map[string]any{"probes": []any{restarts, latency}}
+				}
+				cfg["probes"] = []map[string]any{{"id": 42, "url": h.srv.URL + "/health", "expect_status": 200, "severity": sevs[rnd.Intn(4)]}}
+				sink := map[string]any{"webhook": "w1", "min_severity": sevs[rnd.Intn(4)]}
+				if channel := []any{"ops", 2024, nil}[rnd.Intn(3)]; channel != nil {
+					sink["channel"] = channel
+				}
+				cfg["sinks"] = []map[string]any{sink}
+			})
+			words := []string{"alpha", "beta", "gamma", "delta", "omega", "kappa", "sigma", "tau"}
+			var lines []pwLine
+			for k := 0; k < 14; k++ {
+				pm := map[string]pwProm{}
+				for _, q := range []string{"restarts-q", "lat-q"} {
+					switch rnd.Intn(4) {
+					case 0:
+						pm[q] = pwProm{Value: strconv.Itoa(rnd.Intn(5))}
+					case 1:
+						pm[q] = pwProm{NoData: true}
+					case 2:
+						pm[q] = pwProm{Status: 500}
+					default:
+						pm[q] = pwProm{Value: "2.5", Warnings: []string{"w" + words[rnd.Intn(len(words))]}}
+					}
+				}
+				h.prom.Store(pm)
+				h.healthStatus.Store([]int64{200, 200, 503}[rnd.Intn(3)])
+				token := pwToken
+				if rnd.Intn(5) == 0 {
+					token = "glsa_refused"
+				}
+				if err := os.WriteFile(h.tokenFile, []byte(token+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				for i, n := 0, rnd.Intn(30); i < n; i++ {
+					w := words[rnd.Intn(len(words))]
+					line := "ERROR " + w + " failed for job " + strconv.Itoa(rnd.Intn(1000))
+					if rnd.Intn(6) == 0 {
+						line += " user " + w + "@example.org"
+					}
+					lines = append(lines, pwLine{TS: time.Now().UnixNano() - int64(rnd.Intn(200))*int64(time.Second), Line: line, Container: "api",
+						Q: []string{"errors-q", "sweep-q"}[rnd.Intn(2)]})
+				}
+				h.lines.Store(append([]pwLine(nil), lines...))
+				if outs := h.tick(t, wf, false); outs["notify"]["consume"] != true {
+					t.Fatalf("tick %d: a delivered tick is consumed: %v", k, outs["notify"])
+				}
+			}
+		})
+	}
+}
+
+// TestProdWatch_CutLiveTemplateStillAdvancesTheClock: a template with LIVE
+// lines cut from the list (one line, it ranks below 205 templates with two)
+// moves its incident's clock like a cut history-only one: the next complete
+// tick concludes no "not observed any more" against it, and a one-day
+// retention does not forget it — its next sighting is a reminder, not NEW.
+func TestProdWatch_CutLiveTemplateStillAdvancesTheClock(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for _, c := range []struct {
+		name       string
+		forgetDays int
+		lastSeenH  float64
+	}{{"quiet after 48 h", 14, 49}, {"forgotten after a day", 1, 25}} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, lokiOnly(1000, 60))
+			lines := []pwLine{{TS: nsAgo(100 * time.Second), Line: "ERROR warmup", Container: "api", Q: "errors-q"}}
+			h.lines.Store(lines)
+			h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+			const known = "ERROR payment gateway refused the card"
+			fp := pwTemplateFP(known)
+			st := h.state(t)
+			inc := incident("loki", "medium", true, c.lastSeenH, c.lastSeenH)
+			inc["title_arg"] = known
+			st["incidents"] = map[string]any{fp: inc}
+			h.setState(t, st)
+			word := func(i int) string {
+				w := ""
+				for j := 0; j < 4; j++ {
+					w += string(rune('a' + i%26))
+					i /= 26
+				}
+				return w
+			}
+			base := nsAgo(20 * time.Second)
+			for i := 0; i < 205; i++ {
+				for r := 0; r < 2; r++ {
+					lines = append(lines, pwLine{TS: base + int64(i*2+r)*int64(time.Millisecond), Line: "ERROR worker " + word(i) + " crashed", Container: "api", Q: "errors-q"})
+				}
+			}
+			lines = append(lines, pwLine{TS: nsAgo(5 * time.Second), Line: known, Container: "api", Q: "errors-q"})
+			h.lines.Store(lines)
+			outs := h.cursorTickWith(t, wf, cursorVars(h, 60, 0, 5000), map[string]any{"max_alerts": 1000, "forget_after_days": c.forgetDays})
+			if outs["leak_scan"]["coverage"] != "partial" {
+				t.Fatalf("the list is cut: %v", outs["leak_scan"])
+			}
+			rec, ok := h.state(t)["incidents"].(map[string]any)[fp].(map[string]any)
+			if !ok {
+				t.Fatalf("a pattern seen live this tick is not forgotten")
+			}
+			if at, err := time.Parse(time.RFC3339, fmt.Sprint(rec["last_seen"])); err != nil || time.Since(at) > 10*time.Minute {
+				t.Fatalf("the cut live sighting moves the clock: last_seen=%v (%v)", rec["last_seen"], err)
+			}
+			if c.forgetDays == 1 {
+				lines = append(lines, pwLine{TS: nsAgo(time.Second), Line: known, Container: "api", Q: "errors-q"})
+				h.lines.Store(lines)
+			}
+			outs = h.cursorTickWith(t, wf, cursorVars(h, 60, 0, 5000), map[string]any{"forget_after_days": c.forgetDays})
+			for _, q := range pwQuietFPs(outs) {
+				if q == fp {
+					t.Fatalf("no \"not observed any more\" against a pattern seen live one tick ago: %v", pwQuietFPs(outs))
+				}
+			}
+			for _, a := range outs["decide"]["alerts"].([]any) {
+				if m := a.(map[string]any); m["fingerprint"] == fp && m["state"] == "new" {
+					t.Fatalf("a known pattern is never re-posted as NEW: %v", m)
+				}
+			}
+		})
+	}
+}
+
+// TestProdWatch_CutClockIsScopedAndNeverMovesBack: a cut template's newest
+// line moves ITS incident's clock only, and never back.
+func TestProdWatch_CutClockIsScopedAndNeverMovesBack(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	fresh := incident("loki", "medium", true, 0.05, 0.05)
+	stale := incident("loki", "medium", true, 49, 49)
+	other := incident("loki", "medium", true, 49, 49)
+	state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "health": map[string]any{},
+		"incidents": map[string]any{"loki:t1": fresh, "loki:t2": stale, "loki:t3": other}}
+	sig := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial", "templates_cut": true, "templates_total": 202,
+		"cut_last_ts": map[string]any{"t1": strconv.FormatInt(nsAgo(10*time.Minute), 10), "t2": strconv.FormatInt(nsAgo(5*time.Minute), 10)}}
+	out, stderr, err := pwDecide(t, wf, h, sig, state, nil)
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, stderr)
+	}
+	inc := pwStateNext(t, out)["incidents"].(map[string]any)
+	if got := inc["loki:t1"].(map[string]any)["last_seen"]; got != fresh["last_seen"] {
+		t.Fatalf("a cut line older than the last sighting leaves the clock where it is: %v -> %v", fresh["last_seen"], got)
+	}
+	if at, err := time.Parse(time.RFC3339, fmt.Sprint(inc["loki:t2"].(map[string]any)["last_seen"])); err != nil ||
+		time.Since(at) > 6*time.Minute || time.Since(at) < 4*time.Minute {
+		t.Fatalf("the cut line moves its incident's clock to it: %v (%v)", inc["loki:t2"].(map[string]any)["last_seen"], err)
+	}
+	if got := inc["loki:t3"].(map[string]any)["last_seen"]; got != other["last_seen"] {
+		t.Fatalf("a cut line moves no other incident's clock: %v -> %v", other["last_seen"], got)
+	}
+}
+
+// TestProdWatch_PrometheusOutageStillDeliversTheHealthProbe: production is
+// down (the health URL answers 503) while every Prometheus probe fails: the
+// tick goes on, posts the probe's critical alert, and its coverage note
+// names the probe that failed.
+func TestProdWatch_PrometheusOutageStillDeliversTheHealthProbe(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.healthStatus.Store(503)
+	h.prom.Store(map[string]pwProm{"restarts-q": {Status: 500}})
+	outs := h.tick(t, wf, false)
+	if got := strings.Join(alertsOf(t, outs), ","); !strings.Contains(got, "probe:new:critical") {
+		t.Fatalf("the health probe's alert is posted: %v", got)
+	}
+	if r := pwCoverageReasons(outs["decide"]); !strings.Contains(r, "restarts: ") {
+		t.Fatalf("the coverage note names the failed probe: %q", r)
+	}
+}
+
+// TestProdWatch_PrometheusLaneReportsWhatAnswered: on a Prometheus-only
+// config, one probe failing does not refuse the tick — the probe that
+// answered posts its breach; every probe failing does, naming why.
+func TestProdWatch_PrometheusLaneReportsWhatAnswered(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["loki"].(map[string]any)["queries"] = map[string]any{}
+		cfg["probes"] = []map[string]any{}
+		cfg["prometheus"] = map[string]any{"probes": []map[string]any{
+			{"id": "restarts", "title": "restarts", "query": "restarts-q", "op": ">", "threshold": 0, "severity": "high"},
+			{"id": "latency", "title": "latency", "query": "lat-q", "op": ">", "threshold": 1, "severity": "medium"}}}
+	})
+	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "3"}, "lat-q": {Status: 500}})
+	if got := strings.Join(alertsOf(t, h.tick(t, wf, false)), ","); got != "prom:new:high" {
+		t.Fatalf("the probe that answered posts its breach: %v", got)
+	}
+	failed := func(id string) map[string]any {
+		return map[string]any{"id": id, "title": id, "state": "error", "value": nil, "error": "HTTPError: HTTP Error 500: Internal Server Error"}
+	}
+	fresh := newPWHarness(t)
+	_, stderr, err := pwDecide(t, wf, fresh, map[string]any{"templates": []any{}, "leak": []any{}}, nil, map[string]any{
+		"prom_results": []any{failed("restarts"), failed("latency")}, "prom_ok": false,
+		"prom_errors": []any{map[string]any{"probe": "restarts", "error": "HTTPError: HTTP Error 500: Internal Server Error"},
+			map[string]any{"probe": "latency", "error": "HTTPError: HTTP Error 500: Internal Server Error"}},
+		"loki_per_query": map[string]any{}, "lanes": map[string]any{"loki": false, "prometheus": true, "probes": false}})
+	if err == nil || !strings.Contains(stderr, "every configured lane failed") || !strings.Contains(stderr, "HTTP Error 500") {
+		t.Fatalf("every probe failing refuses the tick, naming why: %v %s", err, stderr)
+	}
+}
+
+// TestProdWatch_FailedProbeConcludesNothingAboutItsIncident: a probe that
+// errors while another answers keeps the tick reported — and concludes
+// nothing about the incidents of its lane: no "not observed any more" for
+// a breach the lane could not look at; the lane's health is not refreshed
+// and carries the error.
+func TestProdWatch_FailedProbeConcludesNothingAboutItsIncident(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	lastOK := hoursAgo(1)
+	state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}},
+		"health":    map[string]any{"prometheus": map[string]any{"last_ok": lastOK}},
+		"incidents": map[string]any{"prom:restarts": incident("prom", "high", true, 49, 49)}}
+	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, state, map[string]any{
+		"prom_results": []any{map[string]any{"id": "restarts", "title": "restarts", "state": "error", "error": "HTTPError: HTTP Error 500"},
+			map[string]any{"id": "latency", "title": "latency", "state": "healthy", "value": 0.2, "op": ">", "threshold": 1.0}},
+		"prom_ok": false, "prom_errors": []any{map[string]any{"probe": "restarts", "error": "HTTPError: HTTP Error 500"}},
+		"loki_per_query": map[string]any{}, "lanes": map[string]any{"loki": false, "prometheus": true, "probes": false}})
+	if err != nil {
+		t.Fatalf("a probe that answered keeps the tick reported: %v %s", err, stderr)
+	}
+	for _, a := range out["alerts"].([]any) {
+		if m := a.(map[string]any); m["fingerprint"] == "prom:restarts" {
+			t.Fatalf("nothing is concluded about a probe that did not answer: %v", m)
+		}
+	}
+	hp := pwStateNext(t, out)["health"].(map[string]any)["prometheus"].(map[string]any)
+	if hp["last_ok"] != lastOK || !strings.Contains(fmt.Sprint(hp["last_error"]), "restarts") {
+		t.Fatalf("a lane with a failing probe keeps its last OK and records the error: %v", hp)
+	}
+}
+
+// TestProdWatch_RefusedTokenIsALaneErrorNotADeadTick: Grafana refusing the
+// token (an expired service account) fails the Loki and Prometheus lanes
+// but not the tick: the health probe still posts and the coverage note
+// names the refusal; with no other lane, the refusal of the tick names it.
+func TestProdWatch_RefusedTokenIsALaneErrorNotADeadTick(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.healthStatus.Store(503)
+	const rawEmail = "marie.curie@example.org"
+	h.lines.Store([]pwLine{{TS: nsAgo(90 * time.Second), Line: "ERROR login failed for " + rawEmail, Container: "api", Q: "errors-q"}})
+	if err := os.WriteFile(h.tokenFile, []byte("glsa_refused\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outs := h.tick(t, wf, false)
+	if got := strings.Join(alertsOf(t, outs), ","); !strings.Contains(got, "probe:new:critical") {
+		t.Fatalf("the health probe's alert is posted: %v", got)
+	}
+	if r := pwCoverageReasons(outs["decide"]); !strings.Contains(r, "errors: CredentialRefused: Grafana refused the token (HTTP 401)") ||
+		!strings.Contains(r, "restarts: CredentialRefused") || !strings.Contains(r, "token expired") {
+		t.Fatalf("the coverage note names the refusal on each lane, with its remedy: %q", r)
+	}
+	// The cursors did not move: once the token is fixed, the line written
+	// during the refusal is read.
+	if err := os.WriteFile(h.tokenFile, []byte(pwToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(alertsOf(t, h.tick(t, wf, false)), ","); !strings.Contains(got, "leak:new") {
+		t.Fatalf("the line written while the token was refused is read once it is fixed: %v", got)
+	}
+	refused := "CredentialRefused: Grafana refused the token (HTTP 401) -- the grafana_token service account lacks datasource query rights, or the token expired"
+	fresh := newPWHarness(t)
+	_, stderr, err := pwDecide(t, wf, fresh, map[string]any{"templates": []any{}, "leak": []any{}}, nil, map[string]any{
+		"loki_ok": false, "loki_errors": []any{map[string]any{"query": "errors", "error": refused}},
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": refused, "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}},
+		"prom_results":   []any{map[string]any{"id": "restarts", "state": "error", "error": refused}}, "prom_ok": false,
+		"prom_errors": []any{map[string]any{"probe": "restarts", "error": refused}},
+		"lanes":       map[string]any{"loki": true, "prometheus": true, "probes": false}})
+	if err == nil || !strings.Contains(stderr, "every configured lane failed") || !strings.Contains(stderr, "refused the token") {
+		t.Fatalf("with no lane left the tick is refused, naming the token: %v %s", err, stderr)
+	}
+}
+
+// TestProdWatch_CoverageNoteIgnoresNumbersInLongErrors: lane errors long
+// enough to be cut — five whose join passes the note's budget, or one past
+// the per-error cut — differing tick to tick only in a number's digit
+// count, are one kind: the note posts once.
+func TestProdWatch_CoverageNoteIgnoresNumbersInLongErrors(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for _, c := range []struct {
+		name   string
+		probes int
+		tail   string
+	}{{"five errors past the join budget", 5, ""}, {"one error past the per-error cut", 1, strings.Repeat(" (upstream reset)", 8)}} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			state := map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{"loki": map[string]any{}}, "incidents": map[string]any{}, "health": map[string]any{}}
+			var notes []bool
+			for _, n := range []int{987, 1234, 987, 56789} {
+				var perr []any
+				for i := 0; i < c.probes; i++ {
+					read := 4000
+					if i == 0 {
+						read = n
+					}
+					perr = append(perr, map[string]any{"probe": fmt.Sprintf("p%d", i), "error": fmt.Sprintf("IncompleteRead: IncompleteRead(%d bytes read, 5 more expected) "+
+						"while reading the Prometheus answer for the dashboard panel latency_p99 of service api", read) + c.tail})
+				}
+				out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "full"}, state, map[string]any{
+					"prom_ok": false, "prom_errors": perr, "loki_per_query": map[string]any{}, "lanes": map[string]any{"loki": false, "prometheus": true, "probes": true}})
+				if err != nil {
+					t.Fatalf("decide: %v %s", err, stderr)
+				}
+				notes = append(notes, pwCoverageReasons(out) != "")
+				state = pwStateNext(t, out)
+			}
+			if fmt.Sprint(notes) != "[true false false false]" {
+				t.Fatalf("one note for one kind of error, whatever its numbers: %v", notes)
+			}
+		})
+	}
+}
+
+// TestProdWatch_NotifyRendersAnyFieldName: an incident's fields are data —
+// fields named like the renderer's own parameters render as text.
+func TestProdWatch_NotifyRendersAnyFieldName(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	alerts := []map[string]any{{"fingerprint": "loki:t", "kind": "loki", "severity": "low", "state": "quiet", "title_key": "loki_template",
+		"title_arg": "ERROR x", "detail_key": "loki_detail", "fields": map[string]any{"key": "k", "label": "l", "count": 2, "first": "2026-09-23T10:00", "streams": "api"},
+		"evidence": map[string]any{}, "count": 2, "first_seen": "2026-09-23T10:00:00+00:00"}}
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
+		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
+		"labels": map[string]any{"loki_template": "pattern", "loki_detail": "{count} line(s) since {first}, containers: {streams}"},
+		"app":    map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000},
+		nil, map[string]string{"webhooks": h.webhooksFile}))
+	if err != nil {
+		t.Fatalf("notify: %v %s", err, stderr)
+	}
+	if text := fmt.Sprint(out["messages"]); !strings.Contains(text, "2 line(s) since") {
+		t.Fatalf("the detail renders: %s", text)
+	}
+}
+
+// TestProdWatch_ForeignValuesNoConsumerReadsRunATick: values plan does not
+// type — no node needs their type — run a whole tick: a number where the
+// bot writes text, strings where it writes booleans, dates that are not
+// dates on the health records and a cursor's clock, unknown kinds of
+// coverage keys.
+func TestProdWatch_ForeignValuesNoConsumerReadsRunATick(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiTwoQueries(1000, 60))
+	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	st := h.state(t)
+	inc := incident("loki", "medium", true, 1, 1)
+	for k, v := range map[string]any{"title_arg": 5, "alerted": "yes", "quiet_noted": "no", "last_notified": "", "fp": 7, "prev_severity": []any{1}} {
+		inc[k] = v
+	}
+	st["incidents"] = map[string]any{"loki:foreign": inc}
+	st["health"] = map[string]any{"loki": map[string]any{"last_ok": "x", "last_warned": 3, "last_error": map[string]any{}}}
+	st["last_coverage"], st["last_coverage_key"] = 5, []any{}
+	cur := st["cursors"].(map[string]any)["loki"].(map[string]any)
+	for q := range cur {
+		cur[q].(map[string]any)["at"] = 123
+	}
+	h.setState(t, st)
+	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+}
+
+// TestProdWatch_FarAheadCursorIsReportedNotClamped: a cursor more than a
+// full window ahead of the window's end (a clock or an edited state) is an
+// inverted window poll_loki reports — never clamped into an empty window
+// that would park the query for good behind a full coverage.
+func TestProdWatch_FarAheadCursorIsReportedNotClamped(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiOnly(1000, 60))
+	ahead := strconv.FormatInt(time.Now().Add(2*time.Hour).UnixNano(), 10)
+	h.setState(t, map[string]any{"version": 1, "generation": 1, "incidents": map[string]any{}, "health": map[string]any{},
+		"cursors": map[string]any{"loki": map[string]any{"errors": map[string]any{"covered_to_ns": ahead, "frontier_ns": ahead, "band": []any{},
+			"band_base_ns": ahead, "overlap_from_ns": ahead}}}})
+	secrets := map[string]string{"grafana_token": h.tokenFile}
+	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, cursorVars(h, 60, 0, 5000), secrets))
+	if err != nil {
+		t.Fatalf("plan: %v %s", err, stderr)
+	}
+	loki, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{"grafana": plan["grafana"], "loki": plan["loki"],
+		"timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+	if err != nil {
+		t.Fatalf("poll_loki: %v %s", err, stderr)
+	}
+	if e := fmt.Sprint(loki["per_query"].(map[string]any)["errors"].(map[string]any)["error"]); !strings.HasPrefix(e, "inverted window") {
+		t.Fatalf("a cursor two hours ahead is reported as an inverted window: %q", e)
+	}
+}
+
+// TestProdWatch_SinkNamesAreText: a sink's channel written as a number is
+// its name — the alert is delivered and the tick consumed once, never
+// re-posted every tick; a webhook name or a channel of another type is
+// refused by name at the config.
+func TestProdWatch_SinkNamesAreText(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["sinks"] = []map[string]any{{"webhook": "w1", "channel": 2024, "min_severity": "low"}}
+	})
+	h.healthStatus.Store(503)
+	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "0"}})
+	var posted []string
+	for k := 0; k < 3; k++ {
+		outs := h.tick(t, wf, false)
+		if outs["notify"]["consume"] != true {
+			t.Fatalf("tick %d: a delivered tick is consumed: %v", k, outs["notify"])
+		}
+		if k == 0 {
+			if m := outs["notify"]["messages"].([]any); len(m) == 0 || m[0].(map[string]any)["channel"] != "2024" {
+				t.Fatalf("the channel travels as its name: %v", m)
+			}
+		}
+		posted = append(posted, alertsOf(t, outs)...)
+	}
+	if strings.Join(posted, ",") != "probe:new:critical" {
+		t.Fatalf("the alert posts once over three ticks: %v", posted)
+	}
+	for _, sink := range []map[string]any{{"webhook": []any{"w1"}}, {"webhook": "w1", "channel": map[string]any{"name": "ops"}}, {"webhook": "w1", "channel": true}} {
+		bad := newPWHarness(t)
+		bad.writeConfig(t, func(cfg map[string]any) { cfg["sinks"] = []map[string]any{sink} })
+		_, stderr, err := runPyWhole(t, bad.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, cursorVars(bad, 60, 0, 5000), map[string]string{"grafana_token": bad.tokenFile}))
+		if err == nil || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, "sink") {
+			t.Fatalf("sink %v: plan refuses it by name: %v %s", sink, err, stderr)
+		}
 	}
 }

@@ -169,24 +169,28 @@ managed secret under the name `forge_token` (see vuln-watch's
 - **Run failed at `plan`: "config names a Grafana instance but the
   grafana_token secret is not bound"** — bind the secret (cloud: team
   secret named `grafana_token`; local: `iterion secret set grafana_token`).
-- **"Grafana refused the token (HTTP 401/403)"** — the service account
-  lacks datasource query rights, or the token expired. Nothing was
-  consumed; the tick replays.
+- **"CredentialRefused: Grafana refused the token (HTTP 401/403)"** in a
+  coverage note — the service account lacks datasource query rights, or
+  the token expired. The Loki and Prometheus lanes fail, the health
+  probes still report. The Loki cursors do not move meanwhile: fix the
+  token within `max_window_minutes` and nothing is skipped (later, the
+  lines in between are a declared gap). With no health probe configured,
+  the run fails instead ("every configured lane failed"), naming it.
 - **A `no_data` incident on a metric probe** — the query matched no
   series on this cluster: the metric name or labels are wrong for this
   deployment (the ingress/kube-state presets are examples). Fix the
   query; the incident quiets down once the probe answers.
-- **`:warning: coverage this tick was PARTIAL (reasons below)`** — a Loki
-  query was truncated at `max_lines`, fell out of the max window (a gap)
-  or failed, or the template list was cut at 200; the reasons are quoted
-  under the note, a gap first. A truncated or failed walk skips nothing
-  (the frontier stopped at the last line read, the next tick reads on),
-  but absence of a finding proves nothing for that tick. A **gap does
-  skip lines**: the cursor fell out of the max window and the lines in
-  between are never read — raise `max_lines` or the cadence (or
-  `max_window_minutes`). The note repeats when the kind of partiality
-  changes (a query entering a gap, a different error, a truncation or a
-  cut appearing), not every tick.
+- **`:warning: coverage this tick was PARTIAL (reasons below)`** — a
+  Loki query was truncated at `max_lines`, fell out of the max window (a
+  gap) or failed, a Prometheus probe failed, or the template list was
+  cut at 200; the reasons are quoted under the note, a gap first. A
+  truncated or failed walk skips nothing (the frontier stopped at the
+  last line read, the next tick reads on), but absence of a finding
+  proves nothing for that tick. A **gap does skip lines**: the cursor
+  fell out of the max window and the lines in between are never read —
+  raise `max_lines` or the cadence (or `max_window_minutes`). The note
+  repeats when the kind of partiality changes (a query entering a gap, a
+  different error, a truncation or a cut appearing), not every tick.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

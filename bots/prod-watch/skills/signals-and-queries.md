@@ -72,8 +72,9 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   lanes (decide refuses a tick only when EVERY configured lane failed) and
   the lane's health is not refreshed while a query fails, so a query dark
   for good surfaces as a silent source after `source_stale_hours`, with
-  its error; a 401/403 hard-fails immediately (a credential problem is
-  actionable now).
+  its error. A refused token (401/403) is such a failure — on every query
+  and probe of both Grafana lanes, named in the coverage note — never the
+  run's death: the health probes still report.
 
 The persisted cursor is `cursors.loki.<query>` in `state.json`:
 `covered_to_ns` (the high-water mark, never moving backwards),
@@ -131,9 +132,11 @@ What leaves the node (`signals.json`, scratch; counts on stdout):
   `sample_live`, `streams_live`, `query_live`) — what decide posts on.
   The list keeps the 200 templates with the most live lines;
   `templates_cut` says when it was cut (coverage is partial then),
-  `templates_total` how many there were, and `history_cut` the newest
-  line of each cut template that had history lines only (a cut drops
-  those first; they still move a known incident's clock).
+  `templates_total` how many there were, and `cut_last_ts` the newest
+  line of each cut template (a cut drops the templates with the fewest
+  live lines, history-only ones first; each still moves a known
+  incident's clock, so a cut concludes nothing against it — its count,
+  reminders and quiet note wait for a tick where it is kept).
 - **leak** — per class: `count`, `distinct` (hashes of the values, never
   the values), `sources` (query + container/pod + first/last), one
   `sample_masked` (`jo***@***` style, or `nir:***12`).
@@ -152,8 +155,12 @@ scalar) are folded by `agg` (default `max`) and compared with `op` to
 - `no_data` — the query matched no series or only NaN: **not** healthy —
   the metric may not exist on this cluster (posted as a `medium`
   incident so a mis-wired preset is noticed);
-- `error` — the API failed (counted as a lane error; the lane's incidents
-  keep their clocks).
+- `error` — the API failed (a lane error, in the coverage note). The tick
+  is still reported when another probe answered; while any probe errors,
+  nothing is concluded about the lane's incidents (no "not observed any
+  more") and its health is not refreshed. Every probe failing is the lane
+  failing: decide refuses the tick only when every configured lane
+  failed, naming the errors.
 
 API warnings ride along in the result. Use `increase()`/`rate()` with an
 explicit range for counters; the examples in `argus-config.md` assume

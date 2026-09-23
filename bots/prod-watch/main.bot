@@ -207,8 +207,8 @@ schema loki_output:
   truncated: bool
   ## {query: {lines, truncated, covered_to_ns, error}}
   per_query: json
-  ## [{query, error}] — a failed query is reported, not fatal; the node
-  ## hard-fails on 401/403 only; a failed query degrades the lane.
+  ## [{query, error}] — a failed query, a refused token (401/403)
+  ## included, is reported, not fatal: it degrades the lane.
   errors: json
   ok: bool
 
@@ -416,15 +416,20 @@ tool plan:
         op = p.get('op') or '>'
         if op not in ('>', '>=', '<', '<=', '==', '!='):
             raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' has an unknown op ' + repr(op))
-        sev = (p.get('severity') or 'high').lower()
+        sev = str(p.get('severity') or 'high').lower()
         if sev not in ('critical', 'high', 'medium', 'low'):
             raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' has an unknown severity ' + repr(sev))
+        ## The title is text wherever it lands (the state, the messages): a
+        ## number written in the config is its text, anything else a mistake.
+        title = p.get('title')
+        if isinstance(title, bool) or not isinstance(title, (str, int, float, type(None))):
+            raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' title must be text, got ' + repr(title)[:60])
         try:
             thr = float(p.get('threshold') if p.get('threshold') is not None else 0)
         except (TypeError, ValueError):
             raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' threshold must be a number')
         norm_probes.append({'id': str(p['id']), 'query': p['query'], 'op': op, 'threshold': thr,
-                            'severity': sev, 'title': p.get('title') or str(p['id']),
+                            'severity': sev, 'title': str(title) if title not in (None, '') else str(p['id']),
                             'agg': p.get('agg') or 'max'})
     uses_grafana = bool(queries) or bool(norm_probes)
     if uses_grafana:
@@ -445,9 +450,9 @@ tool plan:
     ## ── http probes ────────────────────────────────────────────────
     http_probes = []
     for p in section('probes', []):
-        if not isinstance(p, dict) or not p.get('id') or not p.get('url'):
-            raise SystemExit('prod-watch: each http probe needs an id and a url')
-        sev = (p.get('severity') or 'critical').lower()
+        if not isinstance(p, dict) or not p.get('id') or not isinstance(p.get('url'), str) or not p['url']:
+            raise SystemExit('prod-watch: each http probe needs an id and a url (text)')
+        sev = str(p.get('severity') or 'critical').lower()
         if sev not in ('critical', 'high', 'medium', 'low'):
             raise SystemExit('prod-watch: http probe ' + repr(p['id']) + ' has an unknown severity ' + repr(sev))
         http_probes.append({'id': str(p['id']), 'url': p['url'],
@@ -456,13 +461,19 @@ tool plan:
 
     sinks = section('sinks', [])
     for s in sinks:
-        if not isinstance(s, dict) or not s.get('webhook'):
-            raise SystemExit('prod-watch: each sink needs a `webhook` NAME (looked up in the webhooks secret)')
+        if not isinstance(s, dict) or not isinstance(s.get('webhook'), str) or not s['webhook']:
+            raise SystemExit('prod-watch: each sink needs a `webhook` NAME (text, looked up in the webhooks secret)')
+        ## The channel is text in the payload and in the delivery report: a
+        ## number written in the config is its name, anything else a mistake.
+        channel = s.get('channel')
+        if isinstance(channel, bool) or not isinstance(channel, (str, int, type(None))):
+            raise SystemExit('prod-watch: sink ' + repr(s['webhook']) + ' channel must be text, got ' + repr(channel)[:60])
+        s['channel'] = '' if channel is None else str(channel)
         kind = s.get('kind') or 'mattermost'
         if kind != 'mattermost':
             raise SystemExit('prod-watch: sink kind ' + repr(kind) + ' is not supported in this slice (mattermost only)')
         s['kind'] = kind
-        ms = (s.get('min_severity') or 'low').lower()
+        ms = str(s.get('min_severity') or 'low').lower()
         if ms not in ('critical', 'high', 'medium', 'low'):
             raise SystemExit('prod-watch: sink min_severity must be critical|high|medium|low, got ' + repr(ms))
         s['min_severity'] = ms
@@ -508,12 +519,17 @@ tool plan:
                 state = json.load(fh)
         except ValueError:
             raise SystemExit('prod-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
-    ## The whole state is validated here, before any lane runs — decide
-    ## reads it after every lane ran, and a foreign value must be a named
-    ## refusal, never a traceback. An ABSENT key reads as empty; a PRESENT
-    ## one has its shape, null included (the bot writes null for `halt`
-    ## only). Every cursor of the Loki map — configured or not: decide trims
-    ## the dropped ones — parses below.
+    ## The state is validated here, before any lane runs — decide reads it
+    ## after every lane ran, and a foreign value must be a named refusal,
+    ## never a traceback. An ABSENT key reads as empty; a PRESENT one has
+    ## its shape, null included (the bot writes null for `halt` only). What
+    ## a node needs is typed — the containers, what decide computes with
+    ## (generation, count, kind, severity, the dates retention reads) and
+    ## what notify renders through a lookup (title_key, detail_key, fields,
+    ## first_seen); a value no node breaks on is left alone, since a check
+    ## stricter than its writer bricks the watchdog on a state it wrote.
+    ## Every cursor of the Loki map — configured or not: decide trims the
+    ## dropped ones — parses below.
     def refuse_state(where, value, what):
         raise SystemExit('prod-watch: state.' + where + ' is not ' + what + ' (' + repr(value)[:60] +
                          ') -- repair it or remove the state file')
@@ -534,35 +550,23 @@ tool plan:
         refuse_state('halt', state['halt'], 'an object')
     if 'generation' in state and not is_int(state['generation']):
         refuse_state('generation', state['generation'], 'an integer')
-    for key in ('last_coverage', 'last_coverage_key'):
-        if state.get(key) is not None and not isinstance(state[key], str):
-            refuse_state(key, state[key], 'a string')
     for ifp, rec in (state.get('incidents') or {}).items():
         where = 'incidents[' + repr(ifp)[:40] + ']'
         if not isinstance(rec, dict):
             refuse_state(where, rec, 'an object')
-        for f in ('fp', 'kind', 'severity', 'prev_severity', 'title_key', 'title_arg', 'detail_key'):
+        for f in ('kind', 'severity', 'title_key', 'detail_key'):
             if rec.get(f) is not None and not isinstance(rec[f], str):
                 refuse_state(where + '.' + f, rec[f], 'a string')
-        for f in ('first_seen', 'last_seen', 'last_notified'):
+        for f in ('first_seen', 'last_seen'):
             if rec.get(f) is not None and not is_iso(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
         if rec.get('count') is not None and not is_int(rec['count']):
             refuse_state(where + '.count', rec['count'], 'an integer')
-        for f in ('alerted', 'quiet_noted'):
-            if rec.get(f) is not None and not isinstance(rec[f], bool):
-                refuse_state(where + '.' + f, rec[f], 'a boolean')
         if rec.get('fields') is not None and not isinstance(rec['fields'], dict):
             refuse_state(where + '.fields', rec['fields'], 'an object')
     for src, hrec in (state.get('health') or {}).items():
-        where = 'health[' + repr(src)[:40] + ']'
         if not isinstance(hrec, dict):
-            refuse_state(where, hrec, 'an object')
-        for f in ('last_ok', 'last_warned'):
-            if hrec.get(f) is not None and not is_iso(hrec[f]):
-                refuse_state(where + '.' + f, hrec[f], 'an ISO timestamp')
-        if hrec.get('last_error') is not None and not isinstance(hrec['last_error'], str):
-            refuse_state(where + '.last_error', hrec['last_error'], 'a string')
+            refuse_state('health[' + repr(src)[:40] + ']', hrec, 'an object')
     halt = state.get('halt') or None
     halted = bool(halt)
     halt_reason = ''
@@ -608,9 +612,6 @@ tool plan:
             raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ' is not an object (' + repr(c)[:60] +
                              ') -- delete that cursor (or the state file) and let the query bootstrap')
         prev = cursor_int(c, name, 'covered_to_ns')
-        if c.get('at') is not None and not is_iso(c['at']):
-            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': at is not an ISO timestamp (' + repr(c['at'])[:60] +
-                             ') -- delete that cursor (or the state file) and let the query bootstrap')
         band = c.get('band')
         if band is None:
             band = []
@@ -766,9 +767,9 @@ tool resolve_release:
 ## max_lines (then the window is TRUNCATED: the cursor's frontier stays at
 ## the last line fetched and the tick says so). The lines go to a scratch
 ## file and nowhere else — this node's stdout carries counts and paths.
-## Per-query failures degrade the lane (decide refuses the tick only when
-## every configured lane failed); the node hard-fails on a credential
-## refusal (401/403) only.
+## Per-query failures — a refused token (401/403) included — degrade the
+## lane: decide refuses the tick only when every configured lane failed,
+## so a Grafana credential gone stale never silences the health probes.
 tool poll_loki:
   input: loki_input
   output: loki_output
@@ -840,6 +841,9 @@ tool poll_loki:
             return None
     _opener = urllib.request.build_opener(_NoRedirect())
 
+    class CredentialRefused(Exception):
+        pass
+
     def get(path, params):
         url = base + path + '?' + urlencode(params)
         req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
@@ -853,8 +857,8 @@ tool poll_loki:
                     return json.loads(r.read(32 * 1024 * 1024).decode('utf-8'))
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
-                    raise SystemExit('prod-watch: Grafana refused the token (HTTP ' + str(e.code) + ') on ' + path +
-                                     ' -- the grafana_token service account lacks datasource query rights, or the token expired')
+                    raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
+                                            'lacks datasource query rights, or the token expired (' + path + ')')
                 last = e
                 if e.code < 500 and e.code != 429:
                     raise
@@ -1090,8 +1094,8 @@ tool poll_loki:
 ## compared to its threshold — and the RESULT IS TYPED: healthy,
 ## breached, no_data (an empty vector is not "healthy": the metric may
 ## simply not exist on this cluster) or error. Warnings the API returns
-## ride along. A credential refusal hard-fails the run; a single probe
-## failing is reported, not fatal.
+## ride along. A failing probe — a refused token (401/403) included, every
+## probe at once included — is reported, not fatal: it degrades the lane.
 tool poll_prom:
   input: prom_input
   output: prom_output
@@ -1150,6 +1154,9 @@ tool poll_prom:
             return None
     _opener = urllib.request.build_opener(_NoRedirect())
 
+    class CredentialRefused(Exception):
+        pass
+
     def get(path, params):
         url = base + path + '?' + urlencode(params)
         req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
@@ -1163,8 +1170,8 @@ tool poll_prom:
                     return json.loads(r.read(8 * 1024 * 1024).decode('utf-8'))
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
-                    raise SystemExit('prod-watch: Grafana refused the token (HTTP ' + str(e.code) + ') on ' + path +
-                                     ' -- the grafana_token service account lacks datasource query rights, or the token expired')
+                    raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
+                                            'lacks datasource query rights, or the token expired (' + path + ')')
                 last = e
                 if e.code < 500 and e.code != 429:
                     raise
@@ -1212,8 +1219,8 @@ tool poll_prom:
             res['error'] = type(e).__name__ + ': ' + str(e)[:200]
             errors.append({'probe': p['id'], 'error': res['error']})
         results.append(res)
-    if probes and len(errors) == len(probes):
-        raise SystemExit('prod-watch: every Prometheus probe failed this tick: ' + json.dumps(errors)[:1500])
+    ## Every probe failing is the LANE failing — reported like one probe:
+    ## decide refuses the tick only when every configured lane failed.
     print(json.dumps({'results': results, 'ok': not errors, 'errors': errors}, ensure_ascii=False))
 
 ## The application's own health URLs — the one signal that needs no
@@ -1576,9 +1583,10 @@ tool leak_scan:
     ## of the list, and a cut list is partial coverage — decide learns it.
     tpl_list.sort(key=lambda t: (t['count_live'], t['count']), reverse=True)
     templates_cut = len(tpl_list) > 200
-    ## A cut drops the history-only templates first (they rank last); the
-    ## newest line of each still moves a known incident's clock.
-    history_cut = {t['template_id']: t['last_ts'] for t in tpl_list[200:] if t['count_live'] == 0}
+    ## A cut drops the templates with the fewest live lines (history-only
+    ## ones first); the newest line of each still moves a known incident's
+    ## clock, live or not.
+    cut_last_ts = {t['template_id']: t['last_ts'] for t in tpl_list[200:]}
     leak_list = []
     for f in findings.values():
         leak_list.append({'class': f['class'], 'severity': f['severity'], 'count': f['count'],
@@ -1592,7 +1600,7 @@ tool leak_scan:
     if templates_cut:
         coverage = 'partial'
     signals = {'app': app.get('name') or '', 'coverage': coverage, 'lines_scanned': scanned,
-               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list), 'history_cut': history_cut,
+               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list), 'cut_last_ts': cut_last_ts,
                'leak': leak_list, 'per_query': per_query}
     with open(signals_path, 'w', encoding='utf-8') as fh:
         json.dump(signals, fh, ensure_ascii=False, indent=1)
@@ -1661,10 +1669,12 @@ tool decide:
         except (TypeError, ValueError, OverflowError, OSError):
             return ''
 
-    def follow_history(rec, last_ts):
-        ## A pattern seen in history lines moves its incident's clock to the
-        ## newest of them when that is later than the incident knew — never
-        ## back — so no "not observed any more" is concluded against it.
+    def follow_clock(rec, last_ts):
+        ## A pattern seen this tick without a counted sighting — history
+        ## lines, or a template cut from the list — moves its incident's
+        ## clock to its newest line when that is later than the incident
+        ## knew, never back: no "not observed any more" is concluded against
+        ## it, and retention does not forget it.
         last = iso_of_ns(last_ts)
         if last and age_h(last) < age_h(rec.get('last_seen') or ''):
             rec['last_seen'] = last
@@ -1731,7 +1741,11 @@ tool decide:
                       'evidence': {'sample_masked': f.get('sample_masked'), 'sources': f.get('sources')}, 'lane': 'loki',
                       'tick_count': int(f.get('count') or 0)})
 
-    lane_ok = {'loki': loki_ok, 'prometheus': prom_ok, 'probes': True}
+    ## `prom_ok` is the Prometheus lane's health (every probe answered);
+    ## the tick may be reported when one probe answered, like one Loki
+    ## query covered.
+    prom_answered = any(r.get('state') != 'error' for r in prom_results)
+    lane_ok = {'loki': loki_ok, 'prometheus': prom_answered, 'probes': True}
     seen_fps = set()
     alerts, observed_new = [], 0
     for c in cands:
@@ -1741,7 +1755,7 @@ tool decide:
             ## A known template seen only in history lines (a first window)
             ## is not a recurrence: its count, fields and quiet note stay as
             ## they are; only its clock follows those lines.
-            follow_history(prev, c.get('last_ts'))
+            follow_clock(prev, c.get('last_ts'))
             observed_new += 1
             continue
         seen_fps.add(fp)
@@ -1776,15 +1790,16 @@ tool decide:
                            'first_seen': rec['first_seen'], 'prev_severity': prev_sev})
         incidents[fp] = rec
 
-    for tid, last_ts in (signals.get('history_cut') or {}).items():
+    for tid, last_ts in (signals.get('cut_last_ts') or {}).items():
         if incidents.get('loki:' + tid) is not None:
-            follow_history(incidents['loki:' + tid], last_ts)
+            follow_clock(incidents['loki:' + tid], last_ts)
 
     ## ── incidents NOT seen this tick ───────────────────────────────
     ## Three questions, three predicates: `lane_ok` — may this tick be
-    ## reported (one Loki query covered is enough); `loki_healthy` — did
-    ## every query answer (the lane's health record); `loki_complete` —
-    ## did the lane read EVERYTHING it could have seen this tick. A
+    ## reported (one Loki query covered, one probe answered is enough);
+    ## `loki_healthy` / `prom_ok` — did every query or probe answer (the
+    ## lane's health record); `loki_complete` / `prom_ok` — did the lane
+    ## read EVERYTHING it could have seen this tick. A
     ## truncated walk, an empty window, a declared gap or a failed query
     ## observed less than the window: nothing is concluded about what was
     ## not seen. (A truncated walk, a gap or a failed query also make the
@@ -1802,7 +1817,7 @@ tool decide:
     tpl_complete = (bool(loki_ok) and not signals.get('templates_cut')
                     and any(q != 'leak_sweep' for q in loki_per_query)
                     and not any(partial(i) for q, i in loki_per_query.items() if q != 'leak_sweep'))
-    observe_ok = dict(lane_ok, loki=loki_complete)
+    observe_ok = dict(lane_ok, loki=loki_complete, prometheus=prom_ok)
     for fp, rec in list(incidents.items()):
         if fp in seen_fps:
             continue
@@ -1863,8 +1878,9 @@ tool decide:
     ## ── coverage note, once per change ────────────────────────────
     ## A change is the coverage flipping OR the KIND of partiality changing:
     ## a query entering a gap (lines skipped — named, it is a loss), the
-    ## lane errors (digits folded: an inverted window carries fresh
-    ## timestamps every tick), a truncation or a cut appearing. Queries
+    ## lane errors (digits folded before any cut: an inverted window
+    ## carries fresh timestamps every tick, and a number gaining a digit
+    ## must not move what a cut keeps), a truncation or a cut appearing. Queries
     ## truncated in turn keep one kind — truncation loses nothing, the
     ## next tick reads on — so a note says each change once, with its
     ## reasons, instead of every tick or never again.
@@ -1883,7 +1899,9 @@ tool decide:
         reasons.append('template list cut: ' + str(signals.get('templates_total') or '?') +
                        ' templates, the 200 with the most live lines kept')
     coverage_reasons = '; '.join(reasons)[:600]
-    coverage_key = '|'.join([re.sub(r'\d+', '#', lane_errors), ','.join(gapped),
+    error_kinds = '; '.join(sorted(re.sub(r'\d+', '#', str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or ''))[:160]
+                                   for e in (loki_errors + prom_errors)))[:600]
+    coverage_key = '|'.join([error_kinds, ','.join(gapped),
                              'truncated' if truncated_qs else '', 'cut' if signals.get('templates_cut') else ''])
     coverage_changed = coverage != (state.get('last_coverage') or 'full') or coverage_key != (state.get('last_coverage_key') or '|||')
     state['last_coverage'] = coverage
@@ -1961,7 +1979,8 @@ tool decide:
     cfg_lanes = [k for k, v in lanes.items() if v]
     dead = [k for k in cfg_lanes if not lane_ok.get(k, True)]
     if cfg_lanes and len(dead) == len(cfg_lanes):
-        raise SystemExit('prod-watch: every configured lane failed this tick (' + ', '.join(dead) + ') -- refusing to report a quiet tick')
+        raise SystemExit('prod-watch: every configured lane failed this tick (' + ', '.join(dead) + ') -- refusing to report a quiet tick' +
+                         (': ' + lane_errors if lane_errors else ''))
 
     state_next = os.path.join(scratch, 'state_next.json')
     with open(state_next, 'w', encoding='utf-8') as fh:
@@ -2033,8 +2052,8 @@ tool notify:
         ## nothing a reader copies out of the span is a live link either.
         t = flat(s, cap).replace('`', "'")
         return '`' + re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
-    def fmt(key, **kw):
-        t = labels.get(key) or key
+    def fmt(label, /, **kw):
+        t = labels.get(label) or label
         for k, v in kw.items():
             t = t.replace('{' + k + '}', inert(v, 200))
         return t
@@ -2125,7 +2144,7 @@ tool notify:
             with urllib.request.urlopen(req, timeout=20):
                 delivered += 1
                 msgs_ok.add(idx)
-                targets.append(str(s['webhook']) + '->' + (p['channel'] or 'default'))
+                targets.append(str(s['webhook']) + '->' + str(p['channel'] or 'default'))
         except Exception as e:
             failures.append(str(s['webhook']) + ': ' + type(e).__name__ + ': ' + str(e)[:200])
             if s.get('required', True):
