@@ -35,8 +35,62 @@ The window discipline this separation demands — never act while a worker
 is writing — is structural: a subbot node returns only when the child run
 is over.
 
+## Phase 0 — the campaign produces its own prerequisites
+
+`preflight` refuses a campaign with no contract and no net. It still does,
+and it is **unchanged**. What used to satisfy it was two manual gestures
+before anyone could launch — somebody wrote the plan, somebody built the
+net. Phase 0 is those gestures, run as child bots:
+
+```
+phase_zero ─▶ assessment ─▶ golden_master ─▶ product_docs ─▶ preflight ─▶ run_lot ⟲ …
+     │            │               │               │              ▲
+     │       plan_landed     net_landed      docs_landed         │
+     └──────────────────── phase_zero: false ────────────────────┘
+```
+
+The order is not a preference: the docs child's own gate reads the net's
+feature inventory and corpus to decide whether the documentation covers
+the product, so it cannot prove exhaustiveness before the net exists, and
+neither child has anything to work from until the contract is written.
+
+| child | source | skipped when | landed when |
+|---|---|---|---|
+| `assessment` | `../assessment/main.bot` | `plan_path` exists **and parses** | `plan_path` committed, HEAD moved |
+| `golden_master` | `../golden-master/main.bot` | `<oracle_dir>/verify-oracle.sh` exists | `verify-oracle.sh`, `corpus.json`, `feature-coverage.json` committed, HEAD moved |
+| `product_docs` | `../product-docs/main.bot` | never — always launched, `full` or `incremental` | at least one `*.md` committed under `docs_dir` |
+
+Three properties hold the phase to the rest of the bot's doctrine:
+
+- **every decision is a tool node reading a FILE.** There is still not one
+  LLM node in this graph. A skip names the artefact that caused it; a
+  launch names what was missing. Both go in the node's notice.
+- **a child is judged in git, never on its word.** After each one, a
+  deterministic node re-reads the tree: the artefact must be *committed*
+  and free of uncommitted changes, and — for the two children that run
+  only when their artefact is absent — HEAD must have moved. A run that
+  did not move HEAD landed nothing, which is the rule this bot already
+  applies to its lots. Anything else REFUSES, naming the child.
+- **`preflight` still has the last word.** Phase 0 produces; preflight
+  judges. It re-reads the contract, re-derives the net's location **from
+  that contract**, and refuses on a dirty tree. A contract pointing the
+  oracle somewhere other than `oracle_dir` fails there, loudly, rather
+  than being silently overridden.
+
+`product_docs` never gets the HEAD-moved test: it runs on every campaign,
+and an incremental pass over documentation nothing changed is entitled to
+commit nothing. Its artefact — pages committed under `docs_dir` — is still
+required. Its catalog is generated **out of tree**, in the run's scratch,
+naming this checkout as its one local source: a catalog written into the
+workspace would be the uncommitted change preflight then refuses.
+
+`phase_zero: false` cuts the whole phase: the campaign enters at
+`preflight`, exactly as it did before.
+
 ## What a campaign iteration does
 
+0. **phase 0** *(once, before the loop)* — the three prerequisite children,
+   each skipped on its artefact and verified in git. See above.
 1. **run_lot** — one `modernize` child run (one lot, or a clean no-op).
 2. **observe** — everything re-read from git and files, never from the
    child's self-report: did HEAD move, how many consecutive still runs,
@@ -71,6 +125,12 @@ is over.
 | `stagnation_stop` | `2` | Consecutive child runs without a new commit that end the campaign. |
 | `lot_max_passes` | `4` | Forwarded to the child: repair passes per lot. |
 | `workspace_dir`, `plan_path` | `${PROJECT_DIR}`, `.modernize/plan.yaml` | Where the programme lives. |
+| `phase_zero` | `true` | **The phase-0 switch.** `false` enters at `preflight`, which refuses whichever prerequisite is missing — the campaign exactly as it ran before. |
+| `brief_path` | `.modernize/brief.yaml` | The written brief the assessment child turns into the contract. Missing it, when the contract has to be written, is a **refusal**: a plan is never guessed. |
+| `oracle_dir` | `.golden-master` | Where phase 0 **builds** the net. Once the contract exists, `preflight` reads the net's location from the **contract**. |
+| `docs_dir` | `docs/client` | Where the docs child writes the product documentation, in the target repo. |
+| `docs_product_id` | `product` | The id the generated catalog gives the product and its single repo. Any stable slug does — the catalog is this bot's own. |
+| `scratch_dir` | `${PROJECT_SCRATCH_DIR}/campaign` | Out-of-tree home of that generated catalog. |
 
 ```sh
 cd <target-repo>
@@ -114,6 +174,10 @@ request is a `iterion:rebaseline-request` block whose `id` has no matching
 - Ledger act/verdict blocks and re-recorded references — steward commits,
   clearly labelled `gm(rebaseline): …`.
 
+Phase 0's artefacts — `plan_path`, the net under `oracle_dir`, the pages
+under `docs_dir` — are written and committed by the **children**, not by
+this bot. It only checks they are there, in git.
+
 ## What it refuses at preflight
 
 No plan → refuse (a campaign supervises a *written* programme). No
@@ -122,3 +186,22 @@ tree → refuse (a supervisor acts between runs on committed trees, and
 must not adopt work in flight). A supervisor that finishes green having
 supervised nothing is the blind judge this family of bots exists to
 refuse.
+
+With phase 0 on, those three are normally *produced* rather than
+demanded — but preflight is the node that still decides, on the tree
+phase 0 committed.
+
+## What phase 0 refuses, before anything is launched
+
+- **no contract and no brief** → refuse. The assessment child derives the
+  contract from a brief; with neither, there is nothing to derive it
+  from, and inventing lots is the one thing no bot here may do. Write the
+  brief, write the contract, or launch with `phase_zero: false`.
+- **`yq` unavailable while a contract file exists** → refuse. Whether the
+  contract *reads* cannot be decided without it, and a guess would either
+  skip the child that repairs an unparseable plan or overwrite a good one.
+- **a child that committed nothing**, or whose artefact is not in the
+  commit, or which left it uncommitted → refuse, naming the child. The
+  supervisor reads what a run landed from git; a page or a contract that
+  is not committed does not exist. (If a child finalises its series onto a
+  *branch* instead of this checkout, that is what this refusal catches.)

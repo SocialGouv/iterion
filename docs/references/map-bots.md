@@ -16,7 +16,7 @@
 | `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 1 · 8 | 0.1.1 |
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 1 · 6 | 0.1.3 |
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.9.1 |
-| `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 1 · 0 | 0.1.2 |
+| `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 1 · 0 | 0.2.0 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 1 · 5 | 0.2.9 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 1 · 3 | 2.9.3 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 1 · 1 | 0.1.3 |

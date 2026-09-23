@@ -68,6 +68,40 @@ vars:
   ## Forwarded to the child: bounded repair loop per lot.
   lot_max_passes: int = 4
 
+  ## ── Phase 0: the campaign's own bootstrap ────────────────────────
+  ## `preflight` refuses a campaign with no contract and no net — rightly,
+  ## and it is UNCHANGED. What used to satisfy it was two manual gestures
+  ## before anyone could launch: somebody wrote the plan, somebody built the
+  ## net. Phase 0 is those gestures, run as three child bots BEFORE
+  ## preflight, which still has the last word on what they produced.
+  ##
+  ## The supervisor stays deterministic through it: every phase-0 decision
+  ## is a tool node reading FILES, and every child is judged in GIT — an
+  ## artefact is landed when it is committed, never when a run says so.
+  ##
+  ## false starts the campaign exactly where it started before, at
+  ## preflight, which refuses whatever prerequisite is missing.
+  phase_zero: bool = true
+  ## The programme BRIEF the assessment child turns into `plan_path`. Its
+  ## absence, when the contract has to be written, is a REFUSAL — the same
+  ## refusal preflight makes and for the same reason: a campaign supervises
+  ## a written programme, and a plan is never guessed.
+  brief_path: string = ".modernize/brief.yaml"
+  ## Where phase 0 BUILDS the net. Once the contract exists, `preflight`
+  ## reads the net's location from the CONTRACT (`oracle.dir`,
+  ## `oracle.verify`); a contract naming somewhere else refuses there,
+  ## loudly, rather than being silently overridden here.
+  oracle_dir: string = ".golden-master"
+  ## The product documentation the docs child writes, in the target repo.
+  docs_dir: string = "docs/client"
+  ## The id the generated catalog gives the product and its single repo. It
+  ## names an entry in a catalog THIS bot writes, so any stable slug does.
+  docs_product_id: string = "product"
+  ## Out-of-tree scratch holding that generated catalog. Keeping it out of
+  ## the workspace is what stops phase 0 from dirtying the very tree
+  ## preflight then refuses to supervise.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/campaign"
+
 ## ─── Prompts (for the two HUMAN nodes — no LLM reads these) ─────────
 
 prompt escalate_instructions:
@@ -93,6 +127,32 @@ prompt review_instructions:
   Acknowledge to close the run.
 
 ## ─── Schemas ───────────────────────────────────────────────────────
+
+## Phase 0. Each decision carries the NOTICE that names the artefact which
+## caused it — a skip nobody can attribute is a skip nobody can audit.
+schema phase_zero_state:
+  disabled: bool
+  run_assessment: bool
+  head_before: string
+  notice: string
+
+schema net_state:
+  run_net: bool
+  head_before: string
+  notice: string
+
+schema docs_state:
+  mode: string
+  catalog_path: string
+  notice: string
+
+## The commit a child started from, so "did it land anything" is measured
+## against a sha this graph captured, not against the child's word.
+schema landed_input:
+  before: string
+
+schema landed_state:
+  notice: string
 
 schema preflight_state:
   campaign_base: string
@@ -164,6 +224,441 @@ schema review_ack:
   ack: string
 
 ## ─── Nodes ─────────────────────────────────────────────────────────
+
+## ─── Phase 0 — produce what preflight requires, then let it judge ──
+##
+##   phase_zero → assessment → golden_master → product_docs → preflight
+##
+## The order is not a preference. The docs child's own gate reads the net's
+## inventory and corpus to decide whether the documentation covers the
+## product, so it cannot prove exhaustiveness before the net exists; and
+## neither child has anything to work from until the contract is written.
+##
+## Nothing here weakens preflight. Phase 0 produces artefacts; preflight
+## still refuses the campaign if what came out is not what a supervisor can
+## supervise — and a phase-0 child that commits nothing is refused HERE,
+## by the same rule this bot applies to its lots: a run that did not move
+## HEAD landed nothing, whatever it says of itself.
+
+## phase_zero — the switch, and the first of three skip decisions.
+##
+## Reading files is the whole method: the contract either exists and parses,
+## or it does not. `assessment` is skipped on the artefact, never on a
+## remembered state. The one refusal is the one preflight already makes: no
+## contract AND no brief to derive it from is a programme nobody wrote.
+tool phase_zero:
+  output: phase_zero_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import sys
+
+    # A bool var renders as a JSON literal (true/false/null), so the three
+    # JSON atoms need their Python names before interpolation.
+    true, false, null = True, False, None
+
+    ws = {{vars.workspace_dir}}
+    enabled = {{vars.phase_zero}}
+    plan_rel = {{vars.plan_path}}
+    brief_rel = {{vars.brief_path}}
+
+    out = {"disabled": False, "run_assessment": False, "head_before": "",
+           "notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    # Same lookup as preflight: the bundle's devbox.json says which yq should
+    # serve, not that the environment was realised for this node.
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    if not enabled:
+        out["disabled"] = True
+        out["notice"] = ("phase 0 OFF (phase_zero: false): no child bot is "
+                         "launched and the campaign starts at preflight, which "
+                         "refuses whichever prerequisite is missing.")
+    else:
+        rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=30)
+        if rev.returncode != 0:
+            refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+        out["head_before"] = rev.stdout.strip()
+
+        # "The contract is there" means it reads, not that a file of that
+        # name exists: an unparseable plan is not a programme, and the child
+        # that writes plans is exactly who repairs it.
+        plan_abs = os.path.join(ws, plan_rel)
+        reason = ""
+        if not os.path.isfile(plan_abs):
+            reason = "no programme contract at %s" % plan_rel
+        else:
+            yq = find_yq()
+            if not yq:
+                refuse("yq is not on PATH and not in the workspace devbox "
+                       "profile, so the contract at %s cannot be read — and "
+                       "whether the assessment child is needed cannot be "
+                       "decided." % plan_rel)
+            raw = subprocess.run([yq, "-o=json", plan_abs], capture_output=True,
+                                 text=True, timeout=60)
+            if raw.returncode != 0:
+                reason = ("the contract at %s does not parse (%s)"
+                          % (plan_rel, " ".join(raw.stderr.split())[-200:]))
+
+        if not reason:
+            out["notice"] = ("assessment SKIPPED: the programme contract at %s "
+                             "exists and parses." % plan_rel)
+        elif not os.path.isfile(os.path.join(ws, brief_rel)):
+            refuse("%s, and no brief at %s to derive one from. A campaign "
+                   "supervises a WRITTEN programme: the assessment child turns "
+                   "a brief into the contract, and a plan is never guessed. "
+                   "Write %s, or write the contract yourself, or launch with "
+                   "phase_zero: false." % (reason, brief_rel, brief_rel))
+        else:
+            out["run_assessment"] = True
+            out["notice"] = ("assessment RUN: %s; the brief at %s is its input."
+                             % (reason, brief_rel))
+
+    print(json.dumps(out))
+
+## assessment — the child that writes the programme contract.
+##
+## No `output:` is read from it, like every other child here: what it
+## produced is measured in git by the next node. No `isolated:` either — it
+## writes the contract into THIS checkout, which is the point.
+subbot assessment:
+  source: "../assessment/main.bot"
+  with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    brief_path:    "{{vars.brief_path}}",
+    plan_path:     "{{vars.plan_path}}"
+  }
+
+## plan_landed — the contract, verified where the supervisor reads it: git.
+tool plan_landed:
+  input: landed_input
+  output: landed_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_rel = {{vars.plan_path}}
+    before = {{input.before}}
+
+    out = {"notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    def git(*args, timeout=60):
+        return subprocess.run(["git", "-C", ws] + list(args),
+                              capture_output=True, text=True, timeout=timeout)
+
+    rev = git("rev-parse", "HEAD", timeout=30)
+    if rev.returncode != 0:
+        refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+    head = rev.stdout.strip()
+
+    if head == before:
+        refuse("the assessment child left HEAD at %s: it committed nothing. A "
+               "run that did not move HEAD landed nothing, whatever it says of "
+               "itself — there is no contract to supervise."
+               % (before[:12] or "(unknown)"))
+
+    if git("cat-file", "-e", "HEAD:%s" % plan_rel).returncode != 0:
+        refuse("the assessment child moved HEAD to %s, but the contract at %s "
+               "is not in that commit. The supervisor reads the programme from "
+               "git: a contract that is not committed does not exist."
+               % (head[:12], plan_rel))
+
+    st = git("status", "--porcelain", "--", plan_rel)
+    if st.returncode != 0:
+        refuse("cannot read git status for %s: %s" % (plan_rel, st.stderr[-400:]))
+    if st.stdout.strip():
+        refuse("the contract at %s carries uncommitted changes after the "
+               "assessment child (%s). Phase 0 hands preflight a committed "
+               "tree, because that is the only tree anything here judges."
+               % (plan_rel, " ".join(st.stdout.split())[:200]))
+
+    out["notice"] = ("assessment landed: %s is committed at %s."
+                     % (plan_rel, head[:12]))
+    print(json.dumps(out))
+
+## net_gate — the second skip decision, on the net's own entry point.
+##
+## `verify-oracle.sh` is the artefact preflight looks for, so it is the
+## artefact this decision reads. Nothing else would be the same question.
+tool net_gate:
+  output: net_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    oracle_rel = {{vars.oracle_dir}}
+
+    out = {"run_net": False, "head_before": "", "notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
+                         capture_output=True, text=True, timeout=30)
+    if rev.returncode != 0:
+        refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+    out["head_before"] = rev.stdout.strip()
+
+    verify_rel = os.path.join(oracle_rel, "verify-oracle.sh")
+    if os.path.isfile(os.path.join(ws, verify_rel)):
+        out["notice"] = ("golden-master SKIPPED: the net's entry point already "
+                         "exists at %s." % verify_rel)
+    else:
+        out["run_net"] = True
+        out["notice"] = ("golden-master RUN: no behavioural net at %s."
+                         % verify_rel)
+
+    print(json.dumps(out))
+
+## golden_master — the child that builds the behavioural net.
+subbot golden_master:
+  source: "../golden-master/main.bot"
+  with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    oracle_dir:    "{{vars.oracle_dir}}"
+  }
+
+## net_landed — the net, verified in git, by the three files that make it
+## one: the entry point CI runs, the corpus it compares, and the feature
+## inventory the docs child's gate reads next.
+tool net_landed:
+  input: landed_input
+  output: landed_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    oracle_rel = {{vars.oracle_dir}}
+    before = {{input.before}}
+
+    out = {"notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    def git(*args, timeout=60):
+        return subprocess.run(["git", "-C", ws] + list(args),
+                              capture_output=True, text=True, timeout=timeout)
+
+    required = [os.path.join(oracle_rel, name) for name in
+                ("verify-oracle.sh", "corpus.json", "feature-coverage.json")]
+
+    rev = git("rev-parse", "HEAD", timeout=30)
+    if rev.returncode != 0:
+        refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+    head = rev.stdout.strip()
+
+    if head == before:
+        refuse("the golden-master child left HEAD at %s: it committed nothing. "
+               "A run that did not move HEAD landed nothing — there is no net "
+               "to supervise lots against." % (before[:12] or "(unknown)"))
+
+    missing = [rel for rel in required
+               if git("cat-file", "-e", "HEAD:%s" % rel).returncode != 0]
+    if missing:
+        refuse("the golden-master child moved HEAD to %s, but the net is "
+               "incomplete in that commit: %s not committed. Supervising lots "
+               "against a partial net would report them done against nothing."
+               % (head[:12], ", ".join(missing)))
+
+    st = git("status", "--porcelain", "--", oracle_rel)
+    if st.returncode != 0:
+        refuse("cannot read git status for %s: %s" % (oracle_rel, st.stderr[-400:]))
+    if st.stdout.strip():
+        refuse("the net at %s carries uncommitted changes after the "
+               "golden-master child (%s). Phase 0 hands preflight a committed "
+               "tree." % (oracle_rel, " ".join(st.stdout.split())[:200]))
+
+    out["notice"] = ("golden-master landed: %s is committed at %s."
+                     % (", ".join(required), head[:12]))
+    print(json.dumps(out))
+
+## docs_gate — the docs child is ALWAYS launched; what this node decides is
+## how much of the product it re-reads, and it writes the catalog naming
+## what to read.
+##
+## The catalog is generated OUT OF TREE, in the run's scratch: a file
+## written into the workspace would be an uncommitted change preflight then
+## refuses. It names one local source — this very checkout — so the child
+## reads the product from disk and reaches no network.
+tool docs_gate:
+  output: docs_state
+  language: py
+  script: |
+    import json
+    import os
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    docs_rel = {{vars.docs_dir}}
+    product_id = {{vars.docs_product_id}}
+    scratch = {{vars.scratch_dir}}
+
+    out = {"mode": "full", "catalog_path": "", "notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    if not str(product_id).strip():
+        refuse("docs_product_id is empty: the generated catalog would name no "
+               "product, and the docs child selects its entry by that id.")
+
+    pages = []
+    docs_abs = os.path.join(ws, docs_rel)
+    for root, _dirs, files in os.walk(docs_abs):
+        for name in files:
+            if name.endswith(".md"):
+                pages.append(os.path.join(root, name))
+    out["mode"] = "incremental" if pages else "full"
+
+    # JSON scalars are valid YAML double-quoted scalars, so every value is
+    # emitted through json.dumps rather than pasted: a product id or a path
+    # carrying a colon cannot reshape the document.
+    catalog = "\n".join([
+        "## Generated by the campaign supervisor — do not edit.",
+        "## One product, one local source: the campaign's own checkout.",
+        "id: %s" % json.dumps(product_id),
+        "docs:",
+        "  product_dir: %s" % json.dumps(docs_rel),
+        "repos:",
+        "  - id: %s" % json.dumps(product_id),
+        "    path: %s" % json.dumps("."),
+        "",
+    ])
+    scratch_abs = os.path.abspath(scratch)
+    try:
+        os.makedirs(scratch_abs, exist_ok=True)
+        catalog_abs = os.path.join(scratch_abs, "product-catalog.yml")
+        with open(catalog_abs, "w", encoding="utf-8") as f:
+            f.write(catalog)
+    except OSError as e:
+        refuse("cannot write the generated product catalog under %s: %s"
+               % (scratch_abs, e))
+    out["catalog_path"] = catalog_abs
+
+    out["notice"] = ("product-docs RUN in %s mode: %s holds %d committed-or-"
+                     "working page(s); catalog written to %s."
+                     % (out["mode"], docs_rel, len(pages), catalog_abs))
+    print(json.dumps(out))
+
+## product_docs — the child that writes the product's functional
+## documentation, reading the net's inventory to prove it covers the
+## product. Its own gate decides convergence; this graph only checks that
+## what it claims to have written is in git.
+subbot product_docs:
+  source: "../product-docs/main.bot"
+  with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    catalog_path:  "{{outputs.docs_gate.catalog_path}}",
+    product_id:    "{{vars.docs_product_id}}",
+    oracle_dir:    "{{vars.oracle_dir}}",
+    mode:          "{{outputs.docs_gate.mode}}"
+  }
+
+## docs_landed — pages, verified in git.
+##
+## HEAD is deliberately NOT required to move here: this child runs on every
+## campaign, and an incremental pass over documentation nothing changed is
+## entitled to commit nothing. What is required is the artefact — at least
+## one page committed under the documentation directory — because that is
+## what "the documentation exists" means to everything downstream.
+tool docs_landed:
+  output: landed_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    docs_rel = {{vars.docs_dir}}
+
+    out = {"notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    def git(*args, timeout=60):
+        return subprocess.run(["git", "-C", ws] + list(args),
+                              capture_output=True, text=True, timeout=timeout)
+
+    rev = git("rev-parse", "HEAD", timeout=30)
+    if rev.returncode != 0:
+        refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+    head = rev.stdout.strip()
+
+    tree = git("ls-tree", "-r", "--name-only", "HEAD", "--", docs_rel)
+    if tree.returncode != 0:
+        refuse("cannot list %s at HEAD: %s" % (docs_rel, tree.stderr[-400:]))
+    pages = [p for p in tree.stdout.splitlines() if p.strip().endswith(".md")]
+
+    if not pages:
+        refuse("the product-docs child committed no page under %s at %s. The "
+               "supervisor reads what a child landed from git: if the child "
+               "finalised its series onto a branch instead of this checkout, "
+               "the campaign never sees it." % (docs_rel, head[:12]))
+
+    st = git("status", "--porcelain", "--", docs_rel)
+    if st.returncode != 0:
+        refuse("cannot read git status for %s: %s" % (docs_rel, st.stderr[-400:]))
+    if st.stdout.strip():
+        refuse("%s carries uncommitted changes after the product-docs child "
+               "(%s). Phase 0 hands preflight a committed tree."
+               % (docs_rel, " ".join(st.stdout.split())[:200]))
+
+    out["notice"] = ("product-docs landed: %d page(s) committed under %s at %s."
+                     % (len(pages), docs_rel, head[:12]))
+    print(json.dumps(out))
+
+## ─── The supervisor proper ─────────────────────────────────────────
 
 ## preflight — refuse early what would make every later verdict a lie.
 ##
@@ -1036,7 +1531,7 @@ human handoff_review:
 ## ─── Workflow ──────────────────────────────────────────────────────
 
 workflow campaign:
-  entry: preflight
+  entry: phase_zero
 
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default, and
   ## the target's toolchain comes from ITS OWN devbox/devcontainer. This
@@ -1047,10 +1542,52 @@ workflow campaign:
   ## parent's): this budget bounds the SUPERVISOR — its records, gates and
   ## bookkeeping — plus the campaign's wall clock, which is the one axis
   ## that does contain the children.
+  ##
+  ## The wall clock has to hold phase 0 AND the lot loop. The children's
+  ## own ceilings bound phase 0 at roughly fourteen hours (the net's four,
+  ## the docs child's six, the assessment child's own), and a lot runs
+  ## three to four; 48h held about twelve lots and would have spent a
+  ## quarter of a first campaign on its bootstrap. 72h keeps the bootstrap
+  ## from being paid out of the programme. Exceeding it is not a crash —
+  ## the budget guard declines the loop's back-edge and the campaign leaves
+  ## through its own handoff — but it is lots not landed.
   budget:
     max_parallel_branches: 1
-    max_duration: "48h"
+    max_duration: "72h"
     max_cost_usd: 25
+
+  ## ── Phase 0 ───────────────────────────────────────────────────────
+  ## One switch, two skips, three children. Each `when` reads a bool a tool
+  ## node computed from a FILE, and each fall-through is the "already
+  ## there" case — so every pair is exhaustive on a fact, not on a default.
+  ## The docs child has no skip: its own gate owns that decision.
+
+  ## The switch, first: phase 0 off is the campaign as it was, entering at
+  ## preflight.
+  phase_zero -> preflight when disabled
+  phase_zero -> assessment when run_assessment
+  phase_zero -> net_gate
+
+  assessment -> plan_landed with {
+    before: "{{outputs.phase_zero.head_before}}"
+  }
+  plan_landed -> net_gate
+
+  net_gate -> golden_master when run_net
+  net_gate -> docs_gate
+
+  golden_master -> net_landed with {
+    before: "{{outputs.net_gate.head_before}}"
+  }
+  net_landed -> docs_gate
+
+  ## Always launched: what the docs child does with an already-documented
+  ## product is its own gate's decision, not this graph's.
+  docs_gate -> product_docs
+  product_docs -> docs_landed
+  docs_landed -> preflight
+
+  ## ── The supervisor proper, unchanged ──────────────────────────────
 
   preflight -> run_lot
 

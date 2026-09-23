@@ -612,19 +612,30 @@ the run (interactive) or accumulate into the handoff (default) — and the
 campaign always ends on a committed handoff plus a human review node,
 with blocked lots requalified against the final tree.
 
+It also produces its own prerequisites. Phase 0 runs three child bots
+before preflight — assessment writes the contract from a brief,
+golden-master builds the behavioural net, product-docs writes the
+product documentation — each SKIPPED when the artefact that makes it
+unnecessary is already there, each verified in git afterwards, and the
+whole phase cut by one switch. Preflight is unchanged and still has the
+last word on what came out.
+
 - **Use when**:
-  Use to carry a WHOLE programme unattended once its two prerequisites
-  exist: a `.modernize/plan.yaml` contract and a behavioural net under
-  `.golden-master/` (verify-oracle.sh). One `iterion run` then plays lot
-  after lot where a human would have relaunched modernize by hand, judged
-  progress in git, executed announced re-records between runs, and kept the
-  journal.
+  Use to carry a WHOLE programme unattended, from a written brief. Phase 0
+  produces what the supervisor needs — the `.modernize/plan.yaml` contract
+  (from `.modernize/brief.yaml`), the behavioural net under
+  `.golden-master/`, the product documentation — skipping whichever already
+  exists; then one `iterion run` plays lot after lot where a human would
+  have relaunched modernize by hand, judged progress in git, executed
+  announced re-records between runs, and kept the journal. On a repository
+  that already has a contract and a net, phase 0 skips itself entirely, and
+  `phase_zero: false` turns it off.
   
-  Do NOT use it to run a single lot (run modernize directly), to build the
-  net (golden-master's job), or to decide WHAT to modernise — the programme
-  is a human decision recorded in the contract, and this bot's whole
-  authority over it is measuring whether it advances.
-- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
+  Do NOT use it to run a single lot (run modernize directly), to build ONLY
+  the net (run golden-master directly), or to decide WHAT to modernise
+  without writing it down — the programme starts as a human brief, and this
+  bot's whole authority over it is measuring whether it advances.
+- **Vars**: `brief_path` (string), `docs_dir` (string), `docs_product_id` (string), `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `oracle_dir` (string), `phase_zero` (bool), `plan_path` (string), `scratch_dir` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
 
 ### `copilot` — Copi
