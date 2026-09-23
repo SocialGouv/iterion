@@ -128,12 +128,31 @@ const (
 	// Kept as a distinct Provider so per-tenant BYOK can pick "z.ai"
 	// vs "anthropic" explicitly.
 	ProviderZAI Provider = "zai"
+	// ProviderMoonshot is Moonshot's account key, which reaches the Kimi
+	// family. Like z.ai the provider exposes an Anthropic-compatible HTTP
+	// surface, so credentials flow through the existing Anthropic codepath
+	// with the base URL pointed at Moonshot's endpoint and the token used
+	// as ANTHROPIC_AUTH_TOKEN. Distinct from ProviderZAI because the
+	// account, the endpoint and the bill are all different: a campaign
+	// whose only Anthropic-wire providers are anthropic and zai freezes
+	// the moment both are walled at once.
+	//
+	// NOT the same thing as `backend: "kimi"` (ADR-065), which drives
+	// Moonshot's own CLI and resolves its credentials from the host
+	// environment, outside this store entirely.
+	ProviderMoonshot Provider = "moonshot"
 )
 
 // ZAIDefaultBaseURL is the Anthropic-compatible endpoint z.ai's Coding
 // Plan publishes. Centralised here so the delegate and the model
 // registry agree without re-deriving the URL.
 const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
+
+// MoonshotDefaultBaseURL is the Anthropic-compatible endpoint Moonshot
+// publishes for the Kimi family. The api.moonshot.cn gateway answers on the
+// same wire; MOONSHOT_BASE_URL overrides. Centralised here so the delegate
+// and the model registry agree without re-deriving the URL.
+const MoonshotDefaultBaseURL = "https://api.moonshot.ai/anthropic"
 
 // XAIDefaultBaseURL is the host claw's OpenAI-compatible client targets
 // for xAI Grok. The openai provider appends `/v1/chat/completions`, so
@@ -147,7 +166,7 @@ func (p Provider) Valid() bool {
 	switch p {
 	case ProviderAnthropic, ProviderOpenAI, ProviderBedrock,
 		ProviderVertex, ProviderAzure, ProviderOpenRouter, ProviderXAI,
-		ProviderZAI:
+		ProviderZAI, ProviderMoonshot:
 		return true
 	}
 	return false

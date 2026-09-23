@@ -218,6 +218,14 @@ var ForeignProviderEnvVars = []ForeignProviderEnvVar{
 		ProviderName: "z.ai (GLM, Anthropic-compatible)",
 		Hint:         "z.ai's API is reached through the Anthropic wire format — set `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` and `ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY`, then leave `ANTHROPIC_API_KEY` UNSET so Claude Code routes to z.ai instead of Anthropic",
 	},
+	{
+		// Moonshot exposes an Anthropic-compatible endpoint for Kimi, the
+		// same shape as z.ai's above, so the hint steers users to the same
+		// env-passthrough pattern rather than to a prefix router.
+		EnvVar:       "MOONSHOT_API_KEY",
+		ProviderName: "Moonshot (Kimi, Anthropic-compatible)",
+		Hint:         "Moonshot's API is reached through the Anthropic wire format — set `ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic` and `ANTHROPIC_AUTH_TOKEN=$MOONSHOT_API_KEY`, then leave `ANTHROPIC_API_KEY` UNSET so Claude Code routes to Moonshot instead of Anthropic",
+	},
 }
 
 // SuggestForeignProvider checks whether a foreign provider's API key is set

@@ -650,6 +650,18 @@ func detectProviders() []ProviderStatus {
 			Source:         envSource("ZAI_API_KEY", "ANTHROPIC_BASE_URL"),
 			SuggestedModel: "anthropic/glm-5.2",
 		},
+		{
+			// Moonshot — the Kimi family through its own
+			// Anthropic-compatible endpoint (registry providers["moonshot"]).
+			// A pure env probe on MOONSHOT_API_KEY: unlike z.ai above there
+			// is no ANTHROPIC_BASE_URL form to recognise, because a Moonshot
+			// key is routed with MOONSHOT_BASE_URL and the delegate never
+			// reads the Anthropic one for it.
+			Name:           "moonshot",
+			Available:      os.Getenv("MOONSHOT_API_KEY") != "",
+			Source:         envSource("MOONSHOT_API_KEY"),
+			SuggestedModel: "moonshot/kimi-k2",
+		},
 		detectOpenAIProvider(),
 		{
 			// xAI Grok — claw drives it through the OpenAI-compatible

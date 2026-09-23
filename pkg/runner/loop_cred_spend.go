@@ -184,20 +184,16 @@ func credentialTier(creds secrets.Credentials, slot string) credusage.Tier {
 // credentials from its own config (kimi, grok) names nothing, because
 // iterion did not supply what they spent.
 //
-// Within a wire the slot follows the delegates' own precedence
-// (anthropicCredEnvForCLI's contract): the z.ai facade token, then an
-// Anthropic API key, then the OAuth forfait; on the openai wire, the API key
-// then the codex forfait. Reading it differently here would credit a
+// Within a wire the slot follows the delegates' own precedence: on the
+// anthropic wire secrets.AnthropicWireSlotOrder, the list
+// anthropicCredEnvForCLI is itself written against; on the openai wire, the
+// API key then the codex forfait. Reading it differently here would credit a
 // credential the delegate did not use.
 func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string) string {
 	wire := wireForRoute(backend, modelName)
 	switch wire {
 	case anthropicWire:
-		return firstHeldSlot(creds,
-			string(secrets.ProviderZAI),
-			string(secrets.ProviderAnthropic),
-			delegate.BackendClaudeCode,
-		)
+		return firstHeldSlot(creds, secrets.AnthropicWireSlotOrder...)
 	case openaiWire:
 		return firstHeldSlot(creds,
 			string(secrets.ProviderOpenAI),

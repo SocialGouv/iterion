@@ -1243,6 +1243,7 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderAnthropic: "ANTHROPIC_API_KEY",
 	secrets.ProviderAzure:     "AZURE_OPENAI_API_KEY",
 	secrets.ProviderZAI:       "ZAI_API_KEY",
+	secrets.ProviderMoonshot:  "MOONSHOT_API_KEY",
 	secrets.ProviderXAI:       "XAI_API_KEY",
 }
 
@@ -1355,14 +1356,16 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 	// against the platform account, and does so invisibly, because the ambient
 	// key works.
 	//
-	// Two limits, both deliberate: a BYOK anthropic or z.ai key is the tenant's
-	// own explicit instrument and keeps precedence (otherwise the same run
-	// would spend a different one depending on whether it happened to be
-	// sandboxed); and a redirected wire is a destination the operator chose, so
-	// a bearer carrying the whole Claude account does not travel there.
+	// Two limits, both deliberate: a BYOK key on this wire — the Anthropic one
+	// or either facade — is the tenant's own explicit instrument and keeps
+	// precedence (otherwise the same run would spend a different one depending
+	// on whether it happened to be sandboxed); and a redirected wire is a
+	// destination the operator chose, so a bearer carrying the whole Claude
+	// account does not travel there. The BYOK slots are walked from
+	// secrets.AnthropicWireSlotOrder so a provider added to the wire cannot be
+	// displaced here while keeping precedence everywhere else.
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-		creds.APIKeys[secrets.ProviderAnthropic] == "" &&
-		creds.APIKeys[secrets.ProviderZAI] == "" &&
+		!heldAnthropicWireAPIKey(creds) &&
 		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
 		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
 		// Validate BEFORE clearing. Once the shadows are gone the forfait is
@@ -1376,11 +1379,40 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
 		}
 		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
-		for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+		for _, shadow := range anthropicWireShadowEnv() {
 			delete(env, shadow)
 		}
 	}
 	return nil
+}
+
+// heldAnthropicWireAPIKey reports whether the run carries a BYOK API key on
+// the anthropic wire — the Anthropic one or any facade.
+func heldAnthropicWireAPIKey(creds secrets.Credentials) bool {
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if secrets.OAuthKind(slot).Valid() {
+			continue
+		}
+		if creds.APIKeys[secrets.Provider(slot)] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// anthropicWireShadowEnv names the ambient variables that would outrank the
+// forfait inside the container: the two Anthropic-flavoured ones the CLI
+// reads directly, plus every facade key byokEnvVar forwards. Derived from
+// the slot order rather than listed, so a facade added to the wire cannot
+// keep shadowing the forfait from a list nobody updated.
+func anthropicWireShadowEnv() []string {
+	shadows := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if name := byokEnvVar[secrets.Provider(slot)]; name != "" && name != "ANTHROPIC_API_KEY" {
+			shadows = append(shadows, name)
+		}
+	}
+	return shadows
 }
 
 // canonicalMCPToolName maps an MCP tool name the model emitted in the

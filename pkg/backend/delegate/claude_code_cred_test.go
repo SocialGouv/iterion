@@ -22,6 +22,8 @@ func resetClaudeCredEnv(t *testing.T) {
 		"ANTHROPIC_AUTH_TOKEN",
 		"ANTHROPIC_BASE_URL",
 		"ZAI_API_KEY",
+		"MOONSHOT_API_KEY",
+		"MOONSHOT_BASE_URL",
 		"CLAUDE_CONFIG_DIR",
 		"CLAUDE_CODE_OAUTH_TOKEN",
 	} {

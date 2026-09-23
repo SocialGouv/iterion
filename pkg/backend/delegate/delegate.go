@@ -792,10 +792,10 @@ type Task struct {
 	// from the DSL `provider:` field (post env-expansion). When
 	// non-empty, backends honour it to override the default process-env
 	// precedence. Known values: "anthropic" (force Anthropic-direct,
-	// skip z.ai even when ZAI_API_KEY is set), "zai" (force z.ai
-	// facade), "openai" (force OpenAI-direct, skip OPENAI_BASE_URL
-	// overrides). Empty string means "auto" — current
-	// environment-driven precedence.
+	// skip the facades even when their keys are set), "zai" (force the
+	// z.ai facade), "moonshot" (force the Moonshot facade), "openai"
+	// (force OpenAI-direct, skip OPENAI_BASE_URL overrides). Empty
+	// string means "auto" — current environment-driven precedence.
 	//
 	// This carries a SINGLE hint per Execute call. When the DSL declares
 	// an ordered fallback chain (`provider: "anthropic,zai,openai"`), the

@@ -340,6 +340,7 @@ var allKnownProviders = []secrets.Provider{
 	secrets.ProviderOpenRouter,
 	secrets.ProviderXAI,
 	secrets.ProviderZAI,
+	secrets.ProviderMoonshot,
 }
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
@@ -1659,16 +1660,12 @@ func usageBackendForKind(kind secrets.OAuthKind) string {
 }
 
 // usageBackendForProvider maps a BYOK api-key provider to the meter backend
-// its refusals are recorded under. Anthropic-shaped keys (the real one and
-// the z.ai facade) are spent by claude_code sessions, so that is where the
-// runner meters them. "" for a provider with no metered evidence — those
-// keys are never skipped.
+// its refusals are recorded under, "" for a provider with no metered
+// evidence — those keys are never skipped. Deferred to the delegate that
+// does the metering, so this walk and the credential view cannot classify a
+// new provider differently.
 func usageBackendForProvider(prov secrets.Provider) string {
-	switch prov {
-	case secrets.ProviderAnthropic, secrets.ProviderZAI:
-		return delegate.BackendClaudeCode
-	}
-	return ""
+	return delegate.UsageMeterBackendForProvider(prov)
 }
 
 // apiKeyUsable builds the Resolve predicate for one resolution: a key with

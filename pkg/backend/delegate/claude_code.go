@@ -620,7 +620,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// Inject Anthropic-flavoured credentials and resolve session resume/fork
 	// (see helper). The returned fingerprint is recorded on the Result so a
 	// later resume can detect a credential change.
-	opts, currentFingerprint := b.setupCredsAndSession(ctx, task, opts)
+	opts, currentFingerprint, credErr := b.setupCredsAndSession(ctx, task, opts)
+	if credErr != nil {
+		return Result{BackendName: BackendClaudeCode, ExitCode: -1}, credErr
+	}
 
 	// Stamp every usage reading with the provider-routing label of THIS
 	// session. One wrap here covers all three detection sites (the
@@ -1277,8 +1280,17 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 // the task carries a SessionID, decides whether to resume/fork that session
 // or drop it on a provider-fingerprint mismatch. Returns the extended opts
 // and the current provider fingerprint.
-func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string) {
+//
+// A node pinned to a facade provider with no key reachable is REFUSED here,
+// by name. The env it would otherwise spawn with has every Anthropic-flavoured
+// channel suppressed on purpose, so the CLI can only die on "Not logged in" —
+// a message naming neither the provider the operator pinned nor the credential
+// that was missing, and only after paying for the spawn.
+func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, error) {
 	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
+	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+		return opts, "", err
+	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
 	currentFingerprint := providerFingerprint(credEnv)
 
@@ -1294,7 +1306,7 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 			}
 		}
 	}
-	return opts, currentFingerprint
+	return opts, currentFingerprint, nil
 }
 
 // runRecoveryFormatterPass is the single-pass safety net: when a schema is
