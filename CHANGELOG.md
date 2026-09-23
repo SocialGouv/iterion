@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.197.0](https://github.com/SocialGouv/iterion/compare/v3.196.2...v3.197.0) (2026-09-23)
+
+### Features
+
+* **studio:** per-file Source view hardened — groups from every comment, node permission controls, if-match writes and cloud repair, a store-held buffer, browser coverage ([#1576](https://github.com/SocialGouv/iterion/issues/1576) [#1580](https://github.com/SocialGouv/iterion/issues/1580) [#1650](https://github.com/SocialGouv/iterion/issues/1650) [#1659](https://github.com/SocialGouv/iterion/issues/1659) [#1662](https://github.com/SocialGouv/iterion/issues/1662) [#1649](https://github.com/SocialGouv/iterion/issues/1649)) ([#1738](https://github.com/SocialGouv/iterion/issues/1738)) ([6528250](https://github.com/SocialGouv/iterion/commit/652825080e2b4a12e77f65b58da3a01482318f1c)), references [1227/#1665](https://github.com/SocialGouv/iterion/issues/1665) [#1679](https://github.com/SocialGouv/iterion/issues/1679) [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1222](https://github.com/SocialGouv/iterion/issues/1222) [#1227](https://github.com/SocialGouv/iterion/issues/1227) [#1227](https://github.com/SocialGouv/iterion/issues/1227) [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1749](https://github.com/SocialGouv/iterion/issues/1749) [#1749](https://github.com/SocialGouv/iterion/issues/1749) [#1755](https://github.com/SocialGouv/iterion/issues/1755) [#1749](https://github.com/SocialGouv/iterion/issues/1749) [#1755](https://github.com/SocialGouv/iterion/issues/1755)
+
+    <details><summary>why</summary>
+
+    Six tickets on one surface: the studio's per-file **Source view** (#1227/#1665), the bot-sources write paths, the canvas groups, and the agent inspector.
+
+    </details>
+
 ## [3.196.2](https://github.com/SocialGouv/iterion/compare/v3.196.1...v3.196.2) (2026-09-23)
 
 ### Bug Fixes
