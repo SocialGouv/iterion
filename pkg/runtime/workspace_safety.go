@@ -91,6 +91,20 @@ type effectiveToolSurfaceResolver = EffectiveToolSurfaceResolver
 // edge into this node may carry `_reasoning_effort: "ultracode"`; the answer
 // must then be taken over both values.
 //
+// An executor that does not implement the interface is not read as answering
+// nil. Admission takes the worst case instead: every agent and judge it would
+// run that is not `readonly:` counts as possibly writing to the run's shared
+// workspace, exactly as a node declaring a write tool does, and its fan-outs
+// are refused with WORKSPACE_SAFETY wherever such a node's would be — where
+// nothing but the executor's silence made a branch count, the refusal says so
+// and names the executor's type.
+//
+// Admission reads a second optional method beside this one,
+// `EffectiveBackendName(ir.Node) string`. An executor that routes a node
+// elsewhere than its IR backend — a launch-time `--backend`, a wrapper around
+// the production executor — must implement or forward it too, or admission
+// reads the IR's backend and may admit a route no `tools:` list bounds.
+//
 // A node's `tools:` list is not that list: the runtime folds its own opt-ins
 // over it at build time, from state that is not in the IR (a launch-time
 // --auto-memory, a per-node model override raising the node to ultracode). So
@@ -116,41 +130,29 @@ type EffectiveToolSurfaceResolver interface {
 
 // toolSurfaceResolver is the ONE place the engine asks what a node will really
 // hold. The production executor answers from the run — it alone sees the
-// launch-time overrides — and it is reached through an OPTIONAL type assertion,
-// so an executor that does not implement the seam sends admission back to the
-// node's DECLARED list, which is the reading #1652 removed.
+// launch-time overrides — and it is reached through an OPTIONAL type assertion.
 //
-// Two answers to that were measured and both refused:
+// An executor that does not implement the seam gets the WORST-CASE reading, not
+// the declaration: the zero value of a guarantee is the refusal, never the
+// passthrough. Falling back to the node's declared `tools:` list is precisely
+// the reading #1652 removed, and a wrapper that forgets to forward the method
+// would reopen it with every gate green.
 //
-//   - falling back to a PROGRAM-only executor is wrong in BOTH directions. It
-//     reads the declared list verbatim whenever NO backend resolves at all —
-//     neither the node's `backend:` nor the workflow's `default_backend:` —
-//     because the appends that widen the WORKSPACE surface (auto_memory's file
-//     trio, ultracode's `agent`) are claw-gated, and a program-only resolver
-//     stops before the host and answers "" there. No count is quoted here on
-//     purpose: a corpus figure in a godoc is a fact nobody re-measures, and the
-//     shape is what decides.
-//     And it refuses what a run admits: `--auto-memory off` narrows a surface
-//     the program still reads as `on`, so a working fan-out becomes a
-//     WORKSPACE_SAFETY refusal naming a tool the node will never hold. That
-//     second half alone settles it.
-//   - refusing outright at the zero value closes the hole and costs, measured
-//     with `if surfaces == nil { return sharedWorkspace }` in
-//     llmToolSurfaceCanWrite, 88 top-level tests of this package (113 counting
-//     subtests): every engine built with a stub executor loses parallel
-//     fan-out, as would any embedder using pkg/benchmark's exported
-//     `ExecutorFactory func() runtime.NodeExecutor`.
+// The seam is read by parallel-branch admission alone, so that is all the
+// worst case costs: a node the executor cannot vouch for counts as possibly
+// writing, exactly as a node declaring a write tool does, and gets the same
+// typed WORKSPACE_SAFETY refusal wherever that node would — its reason naming
+// the executor wherever nothing else made the branch count. Sequential nodes, agents and judges marked `readonly:`, tool
+// and subbot nodes, and every executor that answers are untouched. Both
+// executors this module builds answer it; an embedder's own — pkg/benchmark
+// exports `ExecutorFactory` — or a wrapper around one of ours pays one method.
 //
-// So the guarantee is made at COMPILE time instead, where it costs nothing —
-// but only as far as a compile-time pin reaches. The two LEAF implementors are
-// pinned below and in pkg/dryrun, against the exported seam, so dropping or
-// renaming the method on either breaks the build. A WRAPPER around one is a
-// different type and satisfies NodeExecutor on its own: no pin sees it, and
-// `go build`, `go vet`, the linter and the whole suite stay green with a
-// decorator inserted at any of the engine's construction sites — measured. A
-// compile-time guarantee for wrappers would have to sit where the engine
-// RECEIVES its executor, which is a larger change than this one. What this
-// ships for that case is the warning below, by name.
+// Reading the program alone (`model.NewProgramExecutor`) is no substitute, in
+// either direction: it stops before the host, so where neither the node nor
+// the workflow names a backend it adds none of the claw-gated appends that
+// widen the workspace surface (auto_memory's file trio, ultracode's `agent`)
+// though the run may land on claw; and it cannot see launch-time overrides,
+// so it refuses what `--auto-memory off` admits.
 func (e *Engine) toolSurfaceResolver() effectiveToolSurfaceResolver {
 	if e == nil {
 		return nil
@@ -159,22 +161,40 @@ func (e *Engine) toolSurfaceResolver() effectiveToolSurfaceResolver {
 		return r
 	}
 	e.warnExecutorLacksToolSurface()
-	return nil
+	return unansweredSurface{executorType: fmt.Sprintf("%T", e.executor)}
+}
+
+// unansweredSurface stands in for an executor that cannot say what its nodes
+// will hold. Its answer is one name no reader can call workspace-safe, so the
+// stand-in refuses on its own: whoever asks it reads "this node may write",
+// never the "nothing to add" a nil answer means. The refusal's reason
+// recognises it by type, to name the executor and the method it lacks.
+type unansweredSurface struct{ executorType string }
+
+func (u unansweredSurface) EffectiveToolNames(ir.Node, bool) []string {
+	return []string{"<unknown: " + u.executorType + " does not report the tools it grants>"}
+}
+
+// cause is the refusal's reason for a branch that counts as writing only
+// because its executor cannot answer, naming the first node it counts.
+func (u unansweredSurface) cause(nodeID string) string {
+	return fmt.Sprintf("node %q counts as writing because executor %s does not implement runtime.EffectiveToolSurfaceResolver, so the tools it will hold cannot be read — implement or forward EffectiveToolNames and EffectiveBackendName on the executor, or mark the node `readonly:`", nodeID, u.executorType)
 }
 
 // warnExecutorLacksToolSurface says WHICH executor cannot answer, once per
-// engine. It is the only signal this case produces — and only on an engine
-// given a logger (`WithLogger`; `runtime.New` sets no default), so one built
-// without degrades in silence. Admission then reads the declared list, which is
-// the reading #1652 removed, and an operator has no other way to learn that the
-// stronger one was unavailable. Named by concrete type, because the point is to
-// identify the executor that does not answer.
+// engine, during admission — so it is logged by the time any refusal it causes
+// is returned: a run whose fan-outs are refused should not have to be read
+// backwards from the refusal to learn why.
+// It needs an engine given a logger (`WithLogger`; `runtime.New` sets no
+// default) — the refusal's own reason names the executor too, so a logger-less
+// engine still says it where it matters. Named by concrete type, because the
+// point is to identify the executor that does not answer.
 func (e *Engine) warnExecutorLacksToolSurface() {
 	if e.logger == nil {
 		return
 	}
 	e.toolSurfaceWarnOnce.Do(func() {
-		e.logger.Warn("runtime: executor %T does not implement the effective-tool-surface seam — parallel-branch admission reads this run's nodes by their DECLARED `tools:` list, so the runtime's own appends are invisible to it (auto_memory's file trio, ultracode's `agent`): two branches declaring only readers may be admitted onto one worktree while holding a writer. The two executors this module builds implement the seam; a wrapper around one, or an executor of your own, does not inherit it", e.executor)
+		e.logger.Warn("runtime: executor %T does not implement runtime.EffectiveToolSurfaceResolver — parallel-branch admission cannot tell what the nodes it runs will hold, so it takes the worst case: every agent and judge not marked `readonly:` counts as possibly writing to the shared workspace, and its fan-outs are refused wherever a node declaring a write tool would be. Implement or forward EffectiveToolNames and EffectiveBackendName on the executor (a nil answer from EffectiveToolNames means \"the declaration is all there is\"), or mark the branch nodes `readonly:`. The two executors this module builds implement it; a wrapper that embeds the NodeExecutor interface does not inherit it", e.executor)
 	})
 }
 
@@ -346,11 +366,13 @@ func llmToolSurfaceCanWrite(
 }
 
 // The engine's LEAF executors answer the tool-surface seam. Asserted at compile
-// time so dropping or renaming the method breaks the build: the arm above would
-// otherwise admit such a node OPTIMISTICALLY — reading the declared list, which
-// is the reading #1652 removed. The pin does not reach a wrapper around this
-// type, which is a different type entirely; that case is warned about at run
-// time, not caught here.
+// time so dropping or renaming the method breaks the build, not the fan-outs:
+// an executor that stops answering is read at the worst case (see
+// toolSurfaceResolver), where every agent and judge it runs that is not
+// `readonly:` counts as writing.
+// The pin does not reach a wrapper around this type, which is a different type
+// entirely; a wrapper that does not forward the method gets the same worst
+// case, and the refusal names it.
 // dryrun's executor asserts the same thing in its own package — pkg/runtime
 // cannot import it, since dryrun imports pkg/runtime.
 var _ effectiveToolSurfaceResolver = (*model.ClawExecutor)(nil)
@@ -665,7 +687,7 @@ func (e *Engine) validateWorkspaceSafety(routerNodeID string, fanEdges []*ir.Edg
 		return &RuntimeError{
 			Code: ErrCodeWorkspaceSafety,
 			Message: fmt.Sprintf("workspace safety violation: %d branches contain mutating nodes %v%s",
-				mutatingCount, mutatingBranches, e.mutationCauses(mutatingBranches, globalConvergence)),
+				mutatingCount, mutatingBranches, e.mutationCauses(mutatingBranches, globalConvergence, false)),
 			Hint: "at most 1 mutating branch is allowed in parallel on the same workspace; move the mutating work to sequential steps, or assert the branch is safe where the node kind allows it — `readonly:` on an agent/judge, `isolated:` on a subbot, `parallel_safe:` on a fan_out_each tool",
 		}
 	}
@@ -677,11 +699,12 @@ func (e *Engine) validateWorkspaceSafety(routerNodeID string, fanEdges []*ir.Edg
 // never wrote — `auto_memory:` grants write_file, ultracode grants the subagent
 // tool, a route that ignores the list grants everything — so a message naming
 // only the branch sends the reader looking for a tool node that is not there.
-// Recomputed on the error path alone.
-func (e *Engine) mutationCauses(branches []string, convergence string) string {
+// Recomputed on the error path alone, in the context the verdict was reached
+// in: a fan_out_each template exempts its `parallel_safe:` tools.
+func (e *Engine) mutationCauses(branches []string, convergence string, fanOutEachTemplate bool) string {
 	var parts []string
 	for _, b := range branches {
-		if cause := e.branchMutationCause(b, convergence); cause != "" {
+		if cause := e.branchMutationCause(b, convergence, fanOutEachTemplate); cause != "" {
 			parts = append(parts, cause)
 		}
 	}
@@ -691,10 +714,24 @@ func (e *Engine) mutationCauses(branches []string, convergence string) string {
 	return " — " + strings.Join(parts, "; ")
 }
 
-func (e *Engine) branchMutationCause(startNodeID, globalConvergence string) string {
+func (e *Engine) branchMutationCause(startNodeID, globalConvergence string, fanOutEachTemplate bool) string {
+	surfaces := e.toolSurfaceResolver()
+	if _, unanswered := surfaces.(unansweredSurface); unanswered {
+		// Blame the executor only when its silence is what made the BRANCH
+		// count. A branch that writes on its own account anywhere along it —
+		// a declared writer, `full_access:`, a route no list bounds, a tool or
+		// subbot node — is reported for that, since implementing the method
+		// would not change its verdict.
+		if own := e.branchMutationCauseFrom(nil, startNodeID, globalConvergence, fanOutEachTemplate); own != "" {
+			return own
+		}
+	}
+	return e.branchMutationCauseFrom(surfaces, startNodeID, globalConvergence, fanOutEachTemplate)
+}
+
+func (e *Engine) branchMutationCauseFrom(surfaces effectiveToolSurfaceResolver, startNodeID, globalConvergence string, fanOutEachTemplate bool) string {
 	visited := map[string]bool{}
 	queue := []string{startNodeID}
-	surfaces := e.toolSurfaceResolver()
 	for len(queue) > 0 {
 		nodeID := queue[0]
 		queue = queue[1:]
@@ -709,13 +746,18 @@ func (e *Engine) branchMutationCause(startNodeID, globalConvergence string) stri
 		if !ok || isTerminalNode(node) {
 			continue
 		}
-		if !isMutatingNodeIn(e.workflow, node, e.workflow.DefaultBackend, e.backendResolver(), surfaces, false) {
+		if !isMutatingNodeIn(e.workflow, node, e.workflow.DefaultBackend, e.backendResolver(), surfaces, fanOutEachTemplate) {
 			for _, edge := range e.workflow.Edges {
 				if edge.From == nodeID {
 					queue = append(queue, edge.To)
 				}
 			}
 			continue
+		}
+		if u, unanswered := surfaces.(unansweredSurface); unanswered {
+			// Reached only once the branch writes on no account of its own:
+			// the executor's silence is the whole reason this node counts.
+			return u.cause(nodeID)
 		}
 		if surfaces != nil {
 			// Declared names are compared through the shared spelling table,
@@ -783,7 +825,7 @@ func (e *Engine) validateFanOutEachWorkspaceSafety(routerNodeID string, tmplEdge
 	}
 	return &RuntimeError{
 		Code:    ErrCodeWorkspaceSafety,
-		Message: fmt.Sprintf("workspace safety violation: fan_out_each router %q would run mutating template branch %q concurrently for %d items", routerNodeID, tmplEdge.To, itemCount),
+		Message: fmt.Sprintf("workspace safety violation: fan_out_each router %q would run mutating template branch %q concurrently for %d items%s", routerNodeID, tmplEdge.To, itemCount, e.mutationCauses([]string{tmplEdge.To}, convergence, true)),
 		Hint:    "mutating fan_out_each templates must run with max_parallel_branches=1 or be moved to sequential steps/read-only nodes",
 	}
 }

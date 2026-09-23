@@ -48,6 +48,10 @@ func (c *countingExecutor) Execute(_ context.Context, node ir.Node, input map[st
 	return map[string]any{"from": id}, nil
 }
 
+// EffectiveToolNames answers the engine's tool-surface seam: this double runs
+// no backend, so it grants nothing beyond a node's declaration.
+func (c *countingExecutor) EffectiveToolNames(ir.Node, bool) []string { return nil }
+
 func (c *countingExecutor) count(nodeID string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

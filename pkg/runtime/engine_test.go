@@ -75,6 +75,10 @@ func (s *stubExecutor) HasSession(_ context.Context, backend, sessionID string) 
 
 func (s *stubExecutor) EvictRun(string) {}
 
+// EffectiveToolNames answers the engine's tool-surface seam: a stub runs no
+// backend, so it grants nothing beyond a node's declaration.
+func (s *stubExecutor) EffectiveToolNames(ir.Node, bool) []string { return nil }
+
 func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	if fn, ok := s.handlers[node.NodeID()]; ok {
 		return fn(input)

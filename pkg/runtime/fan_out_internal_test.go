@@ -416,7 +416,7 @@ func TestBranchContainsMutation_DetectsMutationBetweenIntermediateJoinAndGlobalC
 			{From: "global_join", To: "done"},
 		},
 	}
-	e := &Engine{workflow: wf}
+	e := &Engine{workflow: wf, executor: newStubExecutor()}
 	// Branch A reaches mut_a (mutating) before global_join.
 	if !e.branchContainsMutation("a", "global_join", false) {
 		t.Error("BFS must catch mutation after an intermediate join, before the global convergence")
@@ -438,7 +438,7 @@ func TestBranchContainsMutation_StopsAtTerminalNode(t *testing.T) {
 		},
 		Edges: []*ir.Edge{{From: "a", To: "done"}},
 	}
-	e := &Engine{workflow: wf}
+	e := &Engine{workflow: wf, executor: newStubExecutor()}
 	if e.branchContainsMutation("a", "", false) {
 		t.Error("branch ending in done before global convergence should not report mutation")
 	}

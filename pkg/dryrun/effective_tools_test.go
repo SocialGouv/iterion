@@ -9,7 +9,7 @@ import (
 
 // The engine's parallel-branch guard asks its executor which tools a node will
 // actually HOLD, because the runtime folds its own opt-ins over the author's
-// `tools:` list at build time. An executor that cannot answer leaves the guard
+// `tools:` list at build time. An executor that answers short leaves the guard
 // reading the declaration — and a dry run is an executor.
 //
 // Measured before this seam was wired, on #1652's own headline example: a claw

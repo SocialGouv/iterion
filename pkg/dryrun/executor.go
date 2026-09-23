@@ -764,10 +764,12 @@ func sortFindings(fs []Finding) {
 // The engine's parallel-branch guard asks its executor which tools a node will
 // actually hold, because the runtime folds its own opt-ins over the author's
 // `tools:` list at build time (`auto_memory:` grants a file writer on claw,
-// ultracode grants the subagent tool). An executor that cannot answer leaves
-// the guard reading the declaration — and then `iterion validate --exec
-// --strict` calls clean a fan-out `iterion run` refuses at the router, which
-// is two products of one tree disagreeing about one file.
+// ultracode grants the subagent tool). An executor that answers short leaves
+// the guard reading the declaration, so `iterion validate --exec --strict`
+// would call clean a fan-out `iterion run` refuses at the router; one that
+// cannot answer is read at the worst case — every agent and judge not marked
+// `readonly:` counts as writing — so the dry run would refuse fan-outs a run
+// admits. Either way two products of one tree would disagree about one file.
 //
 // The answer is not re-derived here — a second copy of the append rules is the
 // thing this seam exists to remove — but it is asked of a PROGRAM-ONLY
@@ -785,11 +787,12 @@ func (x *Executor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool)
 }
 
 // The engine reaches the tool surface through an OPTIONAL type assertion, so an
-// executor that forgets the method stays a legal executor and silently sends
-// admission back to the node's declared list. Asserted here, beside the
-// implementation, so a rename breaks the build rather than a verdict — and
-// against the EXPORTED seam, not a structural copy of it: a copy catches a
-// rename and misses the seam gaining a term, which is the change that would
-// really produce the silent revert. pkg/runtime cannot assert it for us:
-// dryrun imports it, not the other way round.
+// executor that forgets the method still compiles as one — and the engine then
+// reads it at the worst case: every agent and judge it runs that is not
+// `readonly:` counts as writing, and the simulation's parallel fan-outs of them
+// are refused. Asserted here, beside the implementation, so a rename breaks the
+// build rather than a verdict — and against the EXPORTED seam, not a structural
+// copy of it: a copy catches a rename and misses the seam gaining a term.
+// pkg/runtime cannot assert it for us: dryrun imports it, not the other way
+// round.
 var _ runtime.EffectiveToolSurfaceResolver = (*Executor)(nil)
