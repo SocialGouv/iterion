@@ -235,13 +235,30 @@ every catalog bot, classifies every agent and judge with the rule above,
 and fails on any member whose system prompt lacks the phrase. The only
 exemption is a per-agent `deferred` entry naming the session that owns the
 bot, and a stale entry (the paragraph landed, or the node stopped acting)
-fails the test too. When you add a node that writes, files, patches or
-shells out, write the paragraph in the same change — the reference
-wordings are `report_card_system` and `triage_system` in
+fails the test too. There is no allowlist of members still to do: #1494
+drained the last 104, so every acting prompt the walk reaches carries the
+paragraph today except the `deferred` ones, and a new one reddens the guard
+until it does. The walk is every `*.bot` of every bundle — not just each
+`main.bot`, because a bundle may ship sibling entrypoints (golden-master) or
+none at all (smoke) — plus the dispatcher's zero-config fallback
+(`pkg/cli/templates/dispatch_bots_default.bot`), which is compiled into every
+binary and runs against a raw issue body.
+
+A second guard keeps the paragraph a LITERAL region: no template reference of
+any namespace between the marker and the blank line that closes it. Naming a
+field with `{{input.x}}` instead of `` `x` `` renders the VALUE there, and a
+system prompt goes through the same resolver as a user prompt — so the
+paragraph would deliver the untrusted text into the authoritative half of the
+prompt it exists to protect. Write the field NAME; put anything that must
+render outside the paragraph.
+
+When you add a node that writes, files, patches or shells out, write the
+paragraph in the same change — the reference wordings are
+`report_card_system` and `triage_system` in
 `bots/sec-audit-source/main.bot`, `campaign_system` in
 `bots/feature-dev/lib/prompts.bot` for an implementer, and
-`verify_build_system` there for a node that runs the repository's own
-commands.
+`verify_system` there (the prompt of the `verify_build` node) for a node
+that runs the repository's own commands.
 
 ## Catalog bots are repo-agnostic
 

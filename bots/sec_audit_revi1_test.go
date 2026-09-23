@@ -52,8 +52,9 @@ func TestCapFindingsHarvestsThePerRunDeepsecExport(t *testing.T) {
 
 	// The command reads DEEPSEC_PATHS from its env, sourced from
 	// {{input.deepsec_paths}} rather than {{vars.deepsec_out}} (the base
-	// template) or {{outputs.<compute>.deepsec_paths}} (which is not
-	// substituted inside a command body, cf. main.bot:425).
+	// template) or {{outputs.<node>.deepsec_paths}} — an outputs ref in a
+	// command body is refused catalogue-wide by
+	// TestCatalogToolCommandsResolveTheirRefs, so the edge is the transport.
 	tool, ok := wf.Nodes["cap_findings"].(*ir.ToolNode)
 	if !ok {
 		t.Fatalf("cap_findings is %T, want *ir.ToolNode", wf.Nodes["cap_findings"])
@@ -66,13 +67,17 @@ func TestCapFindingsHarvestsThePerRunDeepsecExport(t *testing.T) {
 	}
 
 	// The edge scan_health -> cap_findings maps deepsec_paths from scan_join.
-	src, err := os.ReadFile("sec-audit-source/main.bot")
-	if err != nil {
-		t.Fatalf("read: %v", err)
+	// Read off the COMPILED edge, not off the source text: the same edge also
+	// carries the pass's scan_dir (#1475), and an assertion on the whole line
+	// would pin the spelling of its neighbours rather than this mapping.
+	var capDeepsec *ir.DataMapping
+	for _, e := range wf.Edges {
+		if e.From == "scan_health" && e.To == "cap_findings" {
+			capDeepsec = mappingOf(e, "deepsec_paths")
+		}
 	}
-	if !strings.Contains(string(src),
-		`scan_health -> cap_findings with {deepsec_paths: "{{outputs.scan_join.deepsec_paths}}"}`) {
-		t.Error("the scan_health -> cap_findings edge does not map deepsec_paths from scan_join -- the input arrives empty and the harvest is a no-op")
+	if capDeepsec == nil || capDeepsec.Raw != `{{outputs.scan_join.deepsec_paths}}` {
+		t.Errorf("the scan_health -> cap_findings edge does not map deepsec_paths from scan_join (%v) -- the input arrives empty and the harvest is a no-op", capDeepsec)
 	}
 
 	// The glob remains NON-recursive. A recursive glob would sweep other
@@ -316,7 +321,10 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 	}
 
 	// Aged directories: mtime 40 days ago. Fresh: mtime now.
-	// - deepsec-out-* and deepsec-logs-* aged must GO (owned shapes, past TTL).
+	// - deepsec-out-* and deepsec-logs-* aged must GO: the two shapes THIS
+	//   node writes, past TTL. pass-<run.id> is not one of them — it is
+	//   written by plan_shards on every pass and swept there, because this
+	//   node runs only when enable_deepsec is on. See agedAlien below.
 	// - alien aged (unprefixed) must STAY (Re56aa9 positive-scope fix): a
 	//   directory the operator or another node dropped is not enrolled in
 	//   this sweep by default.
@@ -329,9 +337,16 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 		filepath.Join(scanDir, "run-OLD-A"),         // bare run id -- not owned
 		filepath.Join(scanDir, "operator-cache"),    // arbitrary operator dir
 		filepath.Join(scanDir, "unrelated-scratch"), // another node might drop this
+		// pass-* belongs to plan_shards, which writes it on EVERY pass and
+		// sweeps it there. This node runs only when enable_deepsec is true —
+		// not the default — so a sweep of pass-* placed here would never
+		// reclaim it on a default run. One sweep per shape, at its writer.
+		filepath.Join(scanDir, "pass-run-OLD-A"),
+		filepath.Join(scanDir, "pass-run-OLD-B"),
 	}
 	fresh := []string{
 		filepath.Join(scanDir, "deepsec-out-run-FRESH"),
+		filepath.Join(scanDir, "pass-run-FRESH"),
 		filepath.Join(scanDir, "deepsec-workspace"), // the shared data root
 	}
 	aged := append([]string{}, agedOwned...)
@@ -355,16 +370,14 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 	const runID = "run-CURRENT"
 	currentDir := filepath.Join(scanDir, "deepsec-out-"+runID)
 	currentLogsDir := filepath.Join(scanDir, "deepsec-logs-"+runID)
-	for _, d := range []string{currentDir, currentLogsDir} {
+	currentPassDir := filepath.Join(scanDir, "pass-"+runID)
+	for _, d := range []string{currentDir, currentLogsDir, currentPassDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.Chtimes(currentDir, old, old); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(currentLogsDir, old, old); err != nil {
-		t.Fatal(err)
+		if err := os.Chtimes(d, old, old); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// The scanner body has this order: RUN_ID guards → retention sweep →
@@ -420,12 +433,14 @@ func TestDeepsecPrunesStalePerRunSubdirs(t *testing.T) {
 	// The fresh dirs, current-run dirs, and deepsec-workspace must stay.
 	for _, d := range []string{
 		filepath.Join(scanDir, "deepsec-out-run-FRESH"),
+		filepath.Join(scanDir, "pass-run-FRESH"),
 		filepath.Join(scanDir, "deepsec-workspace"),
 		currentDir,
 		currentLogsDir,
+		currentPassDir,
 	} {
 		if _, err := os.Stat(d); err != nil {
-			t.Errorf("dir %s was pruned but must stay: %v -- either the current-run guard is missing (%s) or deepsec-workspace is not excluded", d, err, fmt.Sprintf("SCAN_DIR/deepsec-out-%s and SCAN_DIR/deepsec-logs-%s must never be pruned", runID, runID))
+			t.Errorf("dir %s was pruned but must stay: %v -- either the current-run guard is missing (%s) or deepsec-workspace is not excluded", d, err, fmt.Sprintf("SCAN_DIR/deepsec-out-%s, SCAN_DIR/deepsec-logs-%s and SCAN_DIR/pass-%s must never be pruned", runID, runID, runID))
 		}
 	}
 }

@@ -1,7 +1,7 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.6.0
+version: 2.6.1
 ## 2.6.0 — the bot keeps a PUBLIC CONTRACT (`contract featurly:` in main.bot,
 ## ADR-099): its inputs mirror the launch vars, its outputs name the nodes
 ## that produce them (campaign, verify_run, review, gate, finalize_mr — the

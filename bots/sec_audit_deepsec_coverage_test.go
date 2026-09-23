@@ -1727,3 +1727,92 @@ func TestExpandEngineBracedEnvMatchesTheEngine(t *testing.T) {
 		}
 	}
 }
+
+// deepsec calls completeRun BEFORE the errored-batches exit 1
+// (packages/processor/src/index.ts, then commands/process.ts), so an attempt
+// that errors some batches still writes a run meta for the files it DID
+// analyse. #1323 made the retry a FRESH invocation, which writes a second
+// meta for the slice it recovered. The pass therefore owns two process metas,
+// and the reader used to load only the last: a pass that analysed 485 files
+// and recovered 15 on retry reported 15 — a worse understatement than the 485
+// the pre-#1323 resume laundering produced.
+//
+// The fixture separates the sum from BOTH single metas (500 is neither 485 nor
+// 15), so the mutation that matters — reading one meta instead of every meta
+// this pass wrote — cannot stay green whichever one it picks.
+func TestDeepsecCoverageSumsEveryProcessMetaOfThePass(t *testing.T) {
+	cov := runDeepsecNode(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":1194,"candidatesFound":2000}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
+  process)
+    if [ -f data/.attempted ]; then
+      printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":15}}' "$NOW" > data/p/runs/ridB.json
+      echo "Processing complete. Run: ridB"
+      exit 0
+    fi
+    : > data/.attempted
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":485}}' "$NOW" > data/p/runs/ridA.json
+    echo "Processing complete. Run: ridA"
+    echo "40 batch(es) errored — exiting 1 (agent failure, not a clean review)."
+    exit 1 ;;
+  export)
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+    exit 0 ;;
+  *) exit 0 ;;
+esac`)
+
+	if cov["files_processed"] != float64(500) {
+		t.Errorf("files_processed = %v, want 500 (485 analysed before the errored-batches exit + 15 recovered by the fresh retry); "+
+			"reading one meta reports %v of the tree as the whole pass (coverage %v)",
+			cov["files_processed"], cov["files_processed"], cov)
+	}
+	// The phase stays the LAST run's: summing counts across attempts must not
+	// let an earlier attempt's phase speak for the pass.
+	if cov["process_phase"] != "done" {
+		t.Errorf("process_phase = %v, want the phase of the run that decided the outcome", cov["process_phase"])
+	}
+}
+
+// The sum is identity-based, not a window scan. #1475 leaves deepsec's data
+// root deliberately shared between passes (the file-record cache lives there),
+// so summing every process meta whose createdAt falls in this pass's window
+// would adopt a concurrent neighbour's files and report a coverage this pass
+// never reached — the same class the per-run LOG_DIR closed on the log side.
+// The ids come from THIS pass's own process.log, so a foreign meta sitting in
+// the window is invisible to the sum.
+//
+// The neighbour is written INSIDE the window and with a countable
+// filesProcessed, so a window-based sum is what this reddens; a fixture whose
+// neighbour fell outside the window would stay green under either reader.
+func TestDeepsecCoverageSumIgnoresANeighbourSharingTheDataRoot(t *testing.T) {
+	cov := runDeepsecNode(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":1194,"candidatesFound":2000}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
+  process)
+    # A concurrent pass's meta, in this pass's window, never announced in this
+    # pass's log.
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":9000}}' "$NOW" > data/p/runs/ridNEIGHBOUR.json
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":42}}' "$NOW" > data/p/runs/ridMINE.json
+    echo "Processing complete. Run: ridMINE"
+    exit 0 ;;
+  export)
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+    exit 0 ;;
+  *) exit 0 ;;
+esac`)
+
+	if cov["files_processed"] != float64(42) {
+		t.Errorf("files_processed = %v, want 42 (this pass's own meta only); a neighbour sharing the deepsec data root authored this pass's coverage (coverage %v)",
+			cov["files_processed"], cov)
+	}
+}

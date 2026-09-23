@@ -1,7 +1,7 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 2.0.1
+version: 2.0.2
 ## 2.0.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside four prompts (14 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.

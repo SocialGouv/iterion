@@ -262,7 +262,7 @@ func TestScanHealthMinGenericIgnoresDeepsec(t *testing.T) {
 
 		rendered := body
 		for ref, val := range map[string]string{
-			"{{vars.scan_dir}}":             scanDir,
+			"{{input.scan_dir}}":            scanDir,
 			"{{vars.min_generic_scanners}}": "2",
 			"{{input.langs}}":               "[]",
 			"{{vars.workspace_dir}}":        dir,
