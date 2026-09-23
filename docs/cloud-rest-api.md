@@ -49,6 +49,9 @@ Authentication. Most routes accept any of:
 
 Where a route says "team member", "team admin" or "super-admin", the
 guard maps to `canViewTeam` / `canManageTeam` / `requireSuperAdmin`.
+**"team admin" therefore means admin/owner of that team OR an admin/owner
+of its ORG** — `canManageTeam` carries that third arm everywhere, reads
+included.
 Webhook delivery URLs (`POST /api/webhooks/<provider>/<id>`) use their
 own auth (token bearer or HMAC body signature) and are public to the
 JWT layer.
@@ -132,6 +135,18 @@ need org **admin/owner** (`canManageOrg`). Sources:
 User-scoped + team-scoped flavours share the same payload shape. Both
 return metadata only — the plaintext is **write-only**.
 
+Revoking takes the same right as creating (`canManageTeam` on both), so an
+org admin cannot be left holding a credential they installed in a team of
+their org and cannot pull back. A **user-scoped** record is exempt: it is
+personal, and only its owner or a super-admin may touch it.
+
+⚠️ **`PATCH`/`DELETE` on `/api/me/...` is the same handler as the team
+route, with no `{id}` to re-scope from** — so the store tenant stays the
+caller's ACTIVE team, a TEAM-scoped record of that team is reachable there,
+and the rule follows the **record's** scope rather than the path. The
+sibling `GET /api/me/api-keys` lists user-scoped rows only, which hides the
+asymmetry: not listable there, still mutable there.
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
@@ -140,16 +155,16 @@ return metadata only — the plaintext is **write-only**.
 | `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete |
 | `GET` | `/api/me/api-keys` | member | List own user-scoped keys |
 | `POST` | `/api/me/api-keys` | member | Create personal key |
-| `PATCH` | `/api/me/api-keys/{key_id}` | member | Update |
-| `DELETE` | `/api/me/api-keys/{key_id}` | member | Delete |
+| `PATCH` | `/api/me/api-keys/{key_id}` | per record scope | Update |
+| `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete |
 | `GET` | `/api/teams/{id}/secrets` | team member | List team's generic secrets |
 | `POST` | `/api/teams/{id}/secrets` | team admin | Create |
 | `PATCH` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Update |
 | `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Delete |
 | `GET` | `/api/me/secrets` | member | Personal secrets |
 | `POST` | `/api/me/secrets` | member | Create |
-| `PATCH` | `/api/me/secrets/{secret_id}` | member | Update |
-| `DELETE` | `/api/me/secrets/{secret_id}` | member | Delete |
+| `PATCH` | `/api/me/secrets/{secret_id}` | per record scope | Update |
+| `DELETE` | `/api/me/secrets/{secret_id}` | per record scope | Delete |
 | `GET` | `/api/teams/{id}/bots/{bot_id}/bindings` | team member | List bot bindings |
 | `POST` | `/api/teams/{id}/bots/{bot_id}/bindings` | team admin | Create binding |
 | `PATCH` | `/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}` | team admin | Update |

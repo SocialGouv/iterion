@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -229,27 +228,30 @@ func (s *Server) canMutateGenericSecret(ctx context.Context, id auth.Identity, r
 
 // canMutateScopedRecord authorizes a mutation on a user/team-scoped record:
 // super-admins always may; a user-scoped record requires ownership; a
-// team-scoped record requires at least admin role on that team. Shared by
+// team-scoped record takes the same right as CREATING one there. Shared by
 // canMutateApiKey and canMutateGenericSecret.
 func (s *Server) canMutateScopedRecord(ctx context.Context, id auth.Identity, scopeUserID, scopeTeamID string) bool {
 	if id.IsSuperAdmin {
 		return true
 	}
+	// A user-scoped record is personal: it is its owner's, and no one
+	// administers it on their behalf.
 	if scopeUserID != "" {
 		return scopeUserID == id.UserID
 	}
 	// An ORG-tier record is scoped to a reserved literal, not a team id, so
-	// the membership read below can only ever miss — and a miss reads as
+	// a membership read can only ever miss — and a miss reads as
 	// "forbidden", which would leave the org's own shared credentials
 	// mutable by super-admins alone. Its owner is the ORG's admins.
 	if orgID, ok := secrets.OrgIDFromTierScope(scopeTeamID); ok {
 		return s.canManageOrg(ctx, id, orgID)
 	}
-	mb, err := s.authStore().GetMembership(ctx, id.UserID, scopeTeamID)
-	if err != nil {
-		return false
-	}
-	return mb.Role.AtLeast(identity.RoleAdmin)
+	// canManageTeam, not a membership read: the create routes for both of
+	// these records gate on it, and revoking a credential cannot take a
+	// NARROWER right than installing one — an org admin who could plant a
+	// key in a team of their org but not pull it back would be left with a
+	// live credential and no way to revoke it.
+	return s.canManageTeam(ctx, id, scopeTeamID)
 }
 
 func validGenericSecretName(name string) bool {
