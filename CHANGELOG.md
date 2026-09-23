@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.195.0](https://github.com/SocialGouv/iterion/compare/v3.194.1...v3.195.0) (2026-09-23)
+
+### Features
+
+* **auto-maintenance:** the recipe, and a preflight that reddens on a broken agreement ([#1752](https://github.com/SocialGouv/iterion/issues/1752)) ([906e477](https://github.com/SocialGouv/iterion/commit/906e477b3f804582d89da1d68af4f3f3b59e622f)), references [#1589](https://github.com/SocialGouv/iterion/issues/1589) [#1595](https://github.com/SocialGouv/iterion/issues/1595) [#1597](https://github.com/SocialGouv/iterion/issues/1597) [#1596](https://github.com/SocialGouv/iterion/issues/1596) [#1585](https://github.com/SocialGouv/iterion/issues/1585) [#1591](https://github.com/SocialGouv/iterion/issues/1591) [#1589](https://github.com/SocialGouv/iterion/issues/1589) [#1595](https://github.com/SocialGouv/iterion/issues/1595)
+
+    <details><summary>why</summary>
+
+    An unattended dependency loop rests on settings in three systems — the repository ruleset, the iterion integration, the App installations — and nothing type-checks the agreement between them. That is how the headline friction of this epic was born: a gate context renamed on one of two sites, with no repository able to see the disagreement.
+
+    </details>
+
 ## [3.194.1](https://github.com/SocialGouv/iterion/compare/v3.194.0...v3.194.1) (2026-09-23)
 
 ### Bug Fixes
