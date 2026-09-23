@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.196.1](https://github.com/SocialGouv/iterion/compare/v3.196.0...v3.196.1) (2026-09-23)
+
+### Bug Fixes
+
+* **bots:** a missing verify.sh is a refusal, at all eleven gate carriers ([#1711](https://github.com/SocialGouv/iterion/issues/1711)) ([fff7be0](https://github.com/SocialGouv/iterion/commit/fff7be0514e5e2a42f88c2c2a6c0fe0a5a8db5c5)), closes [#1707](https://github.com/SocialGouv/iterion/issues/1707), references [#1585](https://github.com/SocialGouv/iterion/issues/1585) [#1598](https://github.com/SocialGouv/iterion/issues/1598) [#1707](https://github.com/SocialGouv/iterion/issues/1707) [#1707](https://github.com/SocialGouv/iterion/issues/1707)
+
+    <details><summary>why</summary>
+
+    The deterministic half of every campaign gate re-runs an agent-written <scratch_dir>/verify.sh and reports the REAL exit code — the whole point being that the verdict is not an LLM judgment. When no script was produced, ten carriers answered `passed: true, skipped: true`; the comment they shipped said it aloud, "counted as pass, but surfaced". Nothing read `skipped`: e2e-coverage declares it in verify_result and its convergence expression never mentions it, so "the gate was skipped" reached the…
+
+    </details>
+
 ## [3.196.0](https://github.com/SocialGouv/iterion/compare/v3.195.0...v3.196.0) (2026-09-23)
 
 ### Features
