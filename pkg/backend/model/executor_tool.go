@@ -183,17 +183,20 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 	start := time.Now()
 	outputStr, err := resolved.Execute(ctx, inputJSON)
 	duration := time.Since(start)
+	// Redacted before either hook, not between them: both feed the
+	// persisted event log, so the output travels in one shape only.
+	outputForEvent := outputStr
+	if toolName == privacy.UnfilterToolName {
+		outputForEvent = string(redactJSONTextField([]byte(outputStr)))
+	}
 	if e.hooks.OnToolCall != nil {
 		e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
 			ToolName:  toolName,
 			InputSize: len(inputJSON),
 			Duration:  duration,
+			Output:    outputForEvent,
 			Error:     err,
 		})
-	}
-	outputForEvent := outputStr
-	if toolName == privacy.UnfilterToolName {
-		outputForEvent = string(redactJSONTextField([]byte(outputStr)))
 	}
 	// Emit detailed tool I/O via the prompt hook (reused for tool node logging).
 	if e.hooks.OnToolNodeResult != nil {
@@ -230,19 +233,27 @@ func (e *ClawExecutor) emitToolNodeStarted(nodeID, toolName string, inputSize in
 // path uses a different payload shape (single combined output stream,
 // privacy-redacted variants) and intentionally does not use this helper.
 func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, stderr string, dur time.Duration, runErr error) {
+	// Both streams concatenated, stdout first so the structured payload is
+	// visible at the top of long stderr dumps from yarn/npm/git.
+	logged := combineStreamsForLog(stdout, stderr)
 	if e.hooks.OnToolCall != nil {
 		e.hooks.OnToolCall(nodeID, LLMToolCallInfo{
 			ToolName: toolName,
 			Duration: dur,
-			Error:    runErr,
+			// The same output the run log gets, on the event the
+			// failure is audited from. Tool nodes are where the
+			// deterministic gates live, and a gate whose event says
+			// only "exit status 1" is a verdict nobody can read —
+			// measured on a gate killed at a 4-hour wall that then had
+			// to be resized without ever knowing what had spent it.
+			// Same reason the LLM tool path keeps its output. Bounded
+			// by the hooks layer: inline when small, sidecar blob or
+			// capped preview when not.
+			Output: logged,
+			Error:  runErr,
 		})
 	}
 	if e.hooks.OnToolNodeResult != nil {
-		// Log both streams concatenated so run.log still surfaces what
-		// the operator would see in an interactive shell. Stdout first
-		// so the structured payload is visible at the top of long
-		// stderr dumps from yarn/npm/git.
-		logged := combineStreamsForLog(stdout, stderr)
 		e.hooks.OnToolNodeResult(nodeID, toolName, []byte(resolved), logged, dur, runErr)
 	}
 }
