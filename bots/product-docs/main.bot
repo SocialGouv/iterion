@@ -2402,6 +2402,7 @@ headings = []
 marked = []
 anchors_by_line = {}
 under_exclusions = {}
+has_anchor = {}
 exc_level = None
 in_exc = False
 in_fence = False
@@ -2468,6 +2469,7 @@ for where, no, text in lines:
             (ents if kind == 'entry' else ids).append(tok)
     anchors_by_line[(where, no)] = (ents, ids, paths, unknown, text)
     under_exclusions[(where, no)] = in_exc
+    has_anchor[(where, no)] = anchored
 ## STRUCTURAL RULE -- every chapter carries an anchor, or DECLARES that it
 ## carries none. A chapter that can name no reference it restitutes describes
 ## a screen nobody captured: the general clause of the phantom refusal. The
@@ -2479,9 +2481,10 @@ for where, no, level, title in headings:
         continue
     ## A chapter is anchored by a reference that EXISTS (or by a path,
     ## which is a citation by syntax) -- never by a token that merely
-    ## resembles one, which would let a chapter fake its own anchor.
-    toks = [t.strip() for t in CODE_SPAN_RE.findall(title)]
-    if not any(t.startswith('/') or t in corpus_ids or t in inventory_names for t in toks if t):
+    ## resembles one, which would let a chapter fake its own anchor. The
+    ## answer is the one the single pass already computed for this line:
+    ## a second copy of the test is how the two come to disagree.
+    if not has_anchor.get((where, no), False):
         refuse('UNANCHORED_CHAPTER', where + ':' + str(no), 'the chapter ' + title + ' names NO reference it restitutes -- anchor it on a corpus entry, an inventory id or a path, or declare it observes nothing with ' + (no_anchor or '<coverage_no_anchor_marker>'))
 ## PHANTOM_DOC -- every cited anchor must exist, in the corpus, in the
 ## inventory or in the declarations; never in the writer's memory.
