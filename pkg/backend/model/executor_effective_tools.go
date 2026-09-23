@@ -106,11 +106,14 @@ func (e *ClawExecutor) routeBackends(node ir.Node) []string {
 // those in a static check makes the verdict depend on the machine that runs
 // it, and refuses a file a run with `--auto-memory off` would admit.
 //
-// So this one reads the program alone: the node's and the workflow's own
-// `auto_memory:`, `capabilities:` and `default_backend:`, and nothing else. A
-// node that names no backend resolves to none, which every pre-run analysis
-// already reads as "the IR is all there is". A run that carries an override is
-// judged again, by the engine, against what that run actually holds.
+// So this one reads the program: the node's and the workflow's own
+// `auto_memory:`, `capabilities:` and `default_backend:`, and the vars a caller
+// hands it through SetVars — never ITERION_AUTO_MEMORY, ITERION_DEFAULT_BACKEND
+// or the credential probe (a `${VAR:-x}` backend is expanded from the
+// environment, as every reading of the IR expands it). A node that names no
+// backend resolves to none, which every pre-run analysis already reads as "the
+// IR is all there is". A run that carries an override is judged again, by the
+// engine, against what that run actually holds.
 func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
 	if wf == nil {
 		return &ClawExecutor{staticProgramOnly: true}

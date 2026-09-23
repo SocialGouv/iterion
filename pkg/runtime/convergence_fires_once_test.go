@@ -52,6 +52,10 @@ func (c *countingExecutor) Execute(_ context.Context, node ir.Node, input map[st
 // no backend, so it grants nothing beyond a node's declaration.
 func (c *countingExecutor) EffectiveToolNames(ir.Node, bool) []string { return nil }
 
+// EffectiveBackendName answers the engine's backend seam: this double routes no
+// node anywhere, so the IR's backend is all there is.
+func (c *countingExecutor) EffectiveBackendName(ir.Node) string { return "" }
+
 func (c *countingExecutor) count(nodeID string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -108,7 +108,7 @@
 | `pkg/dispatcher/native` | implements iterion's first-class issue/kanban tracker. | `BoardAdmin`, `BoardStore`, `IssueGetter`, `LaunchClaimer`, `StateReasoner`, `UniqueTitleCreator` | 22 · 226 |
 | `pkg/dispatcher/native/boardops` | contains the capability-gated operations that the __mcp-board MCP server and the /api/v1/mcp/board HTTP handler share. | — | 1 · 17 |
 | `pkg/dispatcher/tracker` | defines the issue-tracker abstraction used by the dispatcher (`iterion dispatch`). | `ClaimLeaser`, `ClaimReaper`, `LaunchStateLister`, `Tracker` | 13 · 63 |
-| `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 6 · 43 |
+| `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 6 · 44 |
 | `pkg/dsl/ast` | MarshalFile / UnmarshalFile provide JSON serialization and deserialization for File types, converting Go iota-based enums to human-readable string… | — | 8 · 137 |
 | `pkg/dsl/author` | reads and writes the YAML twin of a `.bot` file — the author document of lot 5 of #1010: the same declarations as the `.bot`, in the `.bot`'s… | — | 7 · 5 |
 | `pkg/dsl/author/internal/probecheck` | Command probecheck is the harness of the F20 authoring probe for the YAML twin (docs/references/dsl-authoring-probe.md): it reads author documents… | — | 1 · 0 |
@@ -170,7 +170,7 @@
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — | 30 · 32 |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — | 1 · 8 |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
-| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 248 |
+| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveBackendResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 252 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
 | `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 53 · 355 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |
