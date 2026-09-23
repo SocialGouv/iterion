@@ -104,18 +104,30 @@ type foreignHost struct {
 // A guard whose verdict moves with the directory it runs in certifies nothing.
 func catalogFiles(t *testing.T) []string {
 	t.Helper()
-	out, err := gittest.Cmd("..", "ls-files", "-z", "--", "bots", "examples").Output()
+	return trackedFilesIn(t, "..", "bots", "examples")
+}
+
+// trackedFilesIn lists the files git TRACKS under the named subdirectories of
+// root, as paths relative to the caller. Taking root as a parameter is what
+// lets the property below be proven on a throwaway repository: a test that
+// wrote an untracked file into THIS checkout to prove it would race every
+// other package's test that reads the tree — pkg/repomap's freshness gate
+// among them, which is how CI found this the first time.
+func trackedFilesIn(t *testing.T, root string, subdirs ...string) []string {
+	t.Helper()
+	args := append([]string{"ls-files", "-z", "--"}, subdirs...)
+	out, err := gittest.Cmd(root, args...).Output()
 	if err != nil {
-		t.Fatalf("git ls-files: %v", err)
+		t.Fatalf("git ls-files in %s: %v", root, err)
 	}
 	var files []string
 	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
 		if rel != "" {
-			files = append(files, filepath.Join("..", filepath.FromSlash(rel)))
+			files = append(files, filepath.Join(root, filepath.FromSlash(rel)))
 		}
 	}
 	if len(files) == 0 {
-		t.Fatal("git lists no file under bots/ or examples/ — the guard would pass by scanning nothing")
+		t.Fatalf("git lists no file under %v in %s — the guard would pass by scanning nothing", subdirs, root)
 	}
 	return files
 }
@@ -249,33 +261,61 @@ func TestCatalogHostAllowlistCarriesNoDeadEntry(t *testing.T) {
 	}
 }
 
-// The regression CI caught, pinned. The first form of this guard walked the
-// working DIRECTORY, so its verdict moved with whatever was lying in the
-// checkout: a `.devbox/` profile and a `__pycache__/` artefact justified two
-// allowlist entries that the commit does not need, and CI — which checks out
-// clean — named both. The set judged is now the COMMIT's, so an untracked file
-// can neither excuse an entry nor hide a leak.
+// The regression CI caught, pinned — on a throwaway repository, because the
+// first attempt to pin it wrote an untracked file into THIS checkout and
+// pkg/repomap's freshness gate, running in parallel, counted it as a ninth
+// skill. A guard proven by dirtying the tree it guards is a flake with a
+// motive.
+//
+// The defect itself: the guard walked the working DIRECTORY, so its verdict
+// moved with whatever was lying around. A `.devbox/` profile and a
+// `__pycache__/` artefact — in no commit — justified two allowlist entries,
+// and a clean checkout found both dead.
 func TestCatalogIdentityGuardJudgesTheCommitNotTheCheckout(t *testing.T) {
-	listed := catalogFiles(t)
-	untracked := filepath.Join("assessment", "skills", "untracked-scratch.md")
-	if err := os.WriteFile(untracked, []byte("see https://forge.internal.acme-industries.fr/x\n"), 0o644); err != nil {
+	requireAssessmentTools(t)
+	root := t.TempDir()
+	gittest.Run(t, root, "init", "-q", "-b", "main")
+	gittest.Run(t, root, "config", "user.email", "t@example.com")
+	gittest.Run(t, root, "config", "user.name", "t")
+	gittest.Run(t, root, "config", "commit.gpgsign", "false")
+	if err := os.MkdirAll(filepath.Join(root, "bots", "sample", "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Remove(untracked) }()
-
-	after := catalogFiles(t)
-	if len(after) != len(listed) {
-		t.Fatalf("an untracked file changed the judged set (%d -> %d): the guard is reading the checkout, not the commit",
-			len(listed), len(after))
+	committed := filepath.Join("bots", "sample", "skills", "tracked.md")
+	if err := os.WriteFile(filepath.Join(root, committed), []byte("public: https://github.com/x\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, path := range after {
-		if path == filepath.Join("..", "bots", "assessment", "skills", "untracked-scratch.md") {
-			t.Fatal("the judged set carries an untracked file")
+	gittest.Run(t, root, "add", committed)
+	gittest.Run(t, root, "commit", "-qm", "one tracked file")
+
+	// The artefacts a working directory accumulates, none of them in the commit.
+	for rel, body := range map[string]string{
+		filepath.Join("bots", "sample", ".devbox", "gen", "flake.nix"): "https://cache.nixos.example/x\n",
+		filepath.Join("bots", "sample", "__pycache__", "x.pyc"):        "git@forge.internal.acme-industries.fr:team/app.git\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	// And the allowlist's dead-entry check must be blind to it too — that is
-	// the half that grew the two bogus entries.
-	if found := scanForeignHosts(t, after, skipTheGuardItself); len(found) > 0 {
-		t.Fatalf("the committed catalog names %d foreign host(s) — unrelated to this fixture: %v", len(found), found)
+
+	files := trackedFilesIn(t, root, "bots")
+	if len(files) != 1 || !strings.HasSuffix(files[0], "tracked.md") {
+		t.Fatalf("the judged set is %v — it is reading the checkout, not the commit", files)
+	}
+
+	// And the consequence, both ways round: an untracked file can neither
+	// excuse an allowlist entry nor hide a leak.
+	if found := scanForeignHosts(t, files, nil); len(found) != 0 {
+		t.Fatalf("the committed file names a foreign host it should not: %v", found)
+	}
+	walked := []string{
+		filepath.Join(root, "bots", "sample", "__pycache__", "x.pyc"),
+	}
+	if found := scanForeignHosts(t, walked, nil); len(found) == 0 {
+		t.Fatal("the scanner does not see the private forge in the untracked artefact — " +
+			"then the guard is blind, not merely scoped")
 	}
 }
