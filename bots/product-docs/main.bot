@@ -20,7 +20,7 @@
 ## TRUTH gates only; the scan is advisory, never an obligation):
 ##
 ##   catalog_ingest -> scan_hints -> campaign -> scope_check
-##     -> page_lint -> gate
+##     -> page_lint -> coverage_check -> gate
 ##   gate --(converged)--> mr_gate -> forge_auth_probe -> finalize_mr
 ##   gate --> scan_hints            (continuation_loop, max_passes)
 ##   …every tail outcome -> publish_gate --(publish)--> publish
@@ -56,7 +56,19 @@
 ##                    section, no "Correspondance technique" annex.
 ##                    A lint failure is NOT converged and feeds the
 ##                    next pass.
-##   gate           — converged = scope_ok ∧ lint_ok ∧
+##   coverage_check — DETERMINISTIC EXHAUSTIVENESS gate, armed if and
+##                    only if the product carries a golden-master net
+##                    (`<oracle_dir>/feature-coverage.json` +
+##                    `corpus.json`, in the workspace or in a source
+##                    clone). It answers, from the net and not from the
+##                    agent, the one question a documentation bot
+##                    cannot ask itself: is everything documented, and
+##                    does everything documented exist? Five named
+##                    refusals — PHANTOM_DOC, GAP,
+##                    CONCEALED_EXCLUSION, UNANCHORED_CHAPTER,
+##                    NET_UNREADABLE. WITHOUT a net it is inert and
+##                    Prody is exactly the bot it was.
+##   gate           — converged = scope_ok ∧ lint_ok ∧ coverage_ok ∧
 ##                    campaign.docs_aligned. NOTHING ELSE.
 ##
 ## EDITORIAL SOVEREIGNTY — the core design constraint. The editorial
@@ -86,7 +98,8 @@
 ## stack is the agent's own judgment, guided by the skills.
 ##
 ## CONTINUATION IS BOUNDED. The single declared loop
-## (scan_hints→campaign→scope_check→page_lint→gate→scan_hints) is
+## (scan_hints→campaign→scope_check→page_lint→coverage_check→gate
+## →scan_hints) is
 ## capped by `max_passes`; on exhaustion the run ships what is banked
 ## (every committed page is real, landed work). `iterion validate`
 ## reports NO undeclared cycle — this is the only declared loop.
@@ -191,6 +204,49 @@ vars:
   ## bound — telemetry counts are computed BEFORE truncation, so the
   ## report stays honest about what was cut).
   max_hints: int = 120
+
+  ## ─── Exhaustiveness gate (automatic when a net is present) ────
+  ## Directory holding the golden-master non-regression net, looked up
+  ## in the docs workspace FIRST and then in each source clone.
+  ## coverage_check is armed if and only if BOTH
+  ## `<oracle_dir>/feature-coverage.json` (the inventory: covered
+  ## features with the corpus entries that exercise them, exclusions
+  ## with their written reason) and `<oracle_dir>/corpus.json` (the
+  ## catalogue of captured entries) are found there. No net, no gate:
+  ## the bot behaves exactly as it did before this node existed.
+  ## Empty disables the lookup outright.
+  oracle_dir: string = ".golden-master"
+
+  ## DECLARED IDENTIFIERS the exhaustiveness gate matches on. They are
+  ## vars and not literals because the gate is language-neutral while
+  ## the pages are not: a docs repo writing in French sets
+  ## `coverage_no_anchor_marker=<!--sans-ancre-->` without touching the
+  ## bot. The bundle's own editorial defaults stay French.
+  ##   coverage_exclusions_heading — token a heading must carry to open
+  ##     the chapter under which an exclusion counts as NAMED (matched
+  ##     case- and accent-insensitively, as a substring)
+  ##   coverage_no_anchor_marker — what a chapter carries to declare it
+  ##     restitutes no reference at all. page_lint exempts exactly this
+  ##     token from its html_comments rule, so the two gates cannot
+  ##     contradict each other; empty disables the escape hatch.
+  coverage_exclusions_heading: string = "exclusions"
+  coverage_no_anchor_marker: string = "<!--no-anchor-->"
+
+  ## The DECLARED route table, read from the net (relative to
+  ## `oracle_dir`, or an absolute path). One route per line in the
+  ## golden-master `routes_probe` grammar — `METHOD /path/{id}` or a
+  ## bare `/path`, `#` comments allowed. golden-master today RUNS that
+  ## probe at every gate and commits no artifact, so the file is
+  ## usually absent: the gate then DEGRADES the path check to the
+  ## corpus alone and says so, in its log and in `routes_degraded`.
+  ## Degraded is loud and still refuses; it is never silently green.
+  coverage_routes_file: string = "routes.txt"
+
+  ## Substitutes that do not count as writing when a page names an
+  ## exclusion, and the minimum number of prose characters that does.
+  ## A bare identifier under a heading is silence wearing a label.
+  coverage_placeholders: string = "TODO,FIXME,TBD,XXX,WIP,lorem ipsum"
+  coverage_min_prose: int = 60
 
   ## Hard cap on continuation PASSES — the convergence backstop.
   ## NOTE loop semantics: `as continuation_loop(N)` bounds the loop
@@ -615,10 +671,36 @@ prompt campaign_user:
   what the product does:
   {{input.hints}}
 
+  ## Non-regression net (golden-master), or empty
+  {{input.oracle_path}}
+
+  When that path is NOT empty, an EXHAUSTIVENESS gate reads your pages
+  against the two files it holds — `feature-coverage.json` (the covered
+  features, each with the corpus entries that exercise it, and the
+  exclusions with their written reason) and `corpus.json` (the captured
+  entries, each with its id and its path). READ THEM BOTH before you
+  plan. The contract that gate enforces, and which you write to:
+  - every COVERED feature needs ONE line carrying its identifier AND at
+    least one of its own corpus entries, both as code spans;
+  - every EXCLUSION must be named as such, under a chapter whose title
+    carries the declared exclusions token, with real prose saying why —
+    a bare identifier or a "TODO" is a hole, not a sentence;
+  - every reference you cite must EXIST: a corpus entry id, an
+    inventory identifier, a path the net observes or a declared route
+    serves. Never cite a reference you did not read in those files;
+  - every chapter (heading level 2 and below) carries at least one such
+    reference, or declares it restitutes none with the declared
+    anchorless marker. That marker is the only HTML comment the
+    editorial lint tolerates.
+  When the path IS empty there is no net, and none of the above
+  applies.
+
   Deterministic gate feedback from the PREVIOUS pass (empty on the
   first pass; when present it is a SCOPE violation — files outside
-  `<product_dir>/**/*.md` changed, revert those commits — or a LINT
-  violation — a published page carries working notes, remove them):
+  `<product_dir>/**/*.md` changed, revert those commits — a LINT
+  violation — a published page carries working notes, remove them — or
+  a COVERAGE violation, each cause named with what is missing and
+  where):
   {{input.fail_log}}
 
   Plan your pass, then write — for each page: read the sources that
@@ -863,6 +945,10 @@ schema ingest_output:
   redacted_count: int
   previous_stamp: string
   delta_unavailable: bool
+  ## Absolute path of the golden-master net (the directory holding BOTH
+  ## `feature-coverage.json` and `corpus.json`), or empty when there is
+  ## none. Empty is what keeps coverage_check inert.
+  oracle_path: string
   log: string
 
 ## scan_hints input — the product tree to scan and the surfaces to
@@ -907,6 +993,10 @@ schema campaign_input:
   mode: string
   incremental_base: string
   recently_changed_pages: string[]
+  ## The golden-master net, or empty. Non-empty means an EXHAUSTIVENESS
+  ## gate will read these pages against that inventory, and the campaign
+  ## is told on pass ONE rather than discovering it from a red gate.
+  oracle_path: string
   fail_log: string
 
 ## campaign's TERMINATION CONTRACT: a machine-checkable output the
@@ -950,10 +1040,41 @@ schema lint_output:
   pages_linted: int
   log: string
 
+## coverage_check input — the published tree to read and the net to
+## read it against. An empty `oracle_path` is the inert case.
+schema coverage_input:
+  product_dir: string
+  oracle_path: string
+
+## coverage_check is the DETERMINISTIC EXHAUSTIVENESS gate, armed only
+## when a golden-master net is present. Every refusal is NAMED in
+## `causes` ({cause, where, detail}) and repeated in `log`; the counts
+## are recalculable telemetry, never the verdict. `net_present` false
+## means the gate did not run at all and `coverage_ok` is true by
+## construction — the non-regression contract.
+schema coverage_output:
+  coverage_ok: bool
+  net_present: bool
+  causes: json
+  cause_count: int
+  features_total: int
+  features_documented: int
+  exclusions_total: int
+  exclusions_named: int
+  entries_cited: int
+  paths_cited: int
+  chapters: int
+  chapters_unanchored_declared: int
+  routes_declared: int
+  routes_degraded: bool
+  oracle_dir_used: string
+  log: string
+
 ## gate is the deterministic continuation decision. converged = the
 ## writeable set is clean AND the published pages carry no working
-## notes AND the campaign reports the documentation aligned — nothing
-## else. fail_log relays both gates' complaints to the next pass.
+## notes AND the documentation is exhaustive against the net (vacuously
+## true without one) AND the campaign reports the documentation aligned
+## — nothing else. fail_log relays the three gates' complaints.
 schema gate_state:
   converged: bool
   fail_log: string
@@ -1072,7 +1193,7 @@ schema surface_site_link_input:
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks; values flow via shell env vars.
 tool catalog_ingest:
-  command: `WS={{vars.workspace_dir}} CATALOG={{vars.catalog_path}} PRODUCT={{vars.product_id}} SCRATCH={{vars.scratch_dir}} DEPTH={{vars.clone_depth}} SECRET_GLOBS={{vars.secret_globs}} python3 -c "
+  command: `WS={{vars.workspace_dir}} CATALOG={{vars.catalog_path}} PRODUCT={{vars.product_id}} SCRATCH={{vars.scratch_dir}} DEPTH={{vars.clone_depth}} SECRET_GLOBS={{vars.secret_globs}} ORACLE_DIR={{vars.oracle_dir}} python3 -c "
 import os, json, re, subprocess, shutil, fnmatch
 ws = os.environ['WS']
 catalog = (os.environ.get('CATALOG') or '').strip()
@@ -1083,6 +1204,7 @@ try:
 except ValueError:
     depth = 1
 secret_globs = [g.strip() for g in (os.environ.get('SECRET_GLOBS') or '').split(',') if g.strip()]
+oracle_dir = (os.environ.get('ORACLE_DIR') or '').strip().strip('/')
 if not catalog:
     raise SystemExit('product-docs: catalog_path is required -- pass --var catalog_path=<catalog dir or yaml file>')
 if not product:
@@ -1234,12 +1356,20 @@ if token and forge_host:
     git_env['GIT_ASKPASS'] = helper
     git_env['PRODUCT_DOCS_GIT_TOKEN'] = token
 
-def run_git(args, cwd=None, timeout=900):
+## An environment carrying NO credential, for the sources that are
+## already on disk: a local clone never prompts, so handing it the
+## askpass helper would only widen where the token can travel.
+plain_env = dict(os.environ)
+plain_env['GIT_TERMINAL_PROMPT'] = '0'
+for _v in ('GIT_ASKPASS', 'PRODUCT_DOCS_GIT_TOKEN'):
+    plain_env.pop(_v, None)
+
+def run_git(args, cwd=None, timeout=900, env=None):
     try:
         ## quotePath=false at the ONE choke point every call crosses:
         ## the per-repo changed_files lists carry source paths, and the
         ## sources of a French product name files with accents.
-        p = subprocess.run(['git', '-c', 'core.quotePath=false'] + args, cwd=cwd, env=git_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        p = subprocess.run(['git', '-c', 'core.quotePath=false'] + args, cwd=cwd, env=(env if env is not None else git_env), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
         return p.returncode, (p.stdout or ''), (p.stderr or '')
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, '', str(exc)
@@ -1306,9 +1436,10 @@ for raw in repos:
     github_repo = str(raw.get('github_repo') or '').strip().strip('/')
     gitlab_path = str(raw.get('gitlab_path') or '').strip().strip('/')
     explicit = str(raw.get('url') or '').strip()
+    local = str(raw.get('path') or '').strip()
     rid = str(raw.get('id') or '').strip()
     if not rid:
-        rid = (explicit or github_repo or gitlab_path).rstrip('/').split('/')[-1].replace('.git', '')
+        rid = (explicit or local or github_repo or gitlab_path).rstrip('/').split('/')[-1].replace('.git', '')
     ## The id becomes a filesystem destination that is rmtree'd and
     ## cloned into. The catalog is operator input, so it is sanitised
     ## on EVERY path -- an explicit id is not more trustworthy than a
@@ -1329,6 +1460,7 @@ for raw in repos:
     if ref.startswith('-'):
         inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'ref refused: an option-shaped ref is a git argument, not a branch'})
         continue
+    is_local = False
     if explicit:
         ## Same for the url, plus the remote-HELPER form (ext::<cmd>),
         ## which git executes outright. Ordinary local paths stay
@@ -1337,6 +1469,35 @@ for raw in repos:
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'url refused: an option-shaped or remote-helper (ext::) url is an execution primitive, not a repository'})
             continue
         url = explicit
+    elif local:
+        ## A repository ALREADY ON DISK, named by a path RELATIVE to the
+        ## workspace -- a lone dot being the workspace itself. This is how a
+        ## campaign documents its OWN repository: no forge, no network,
+        ## no credential, and the clone is still redacted and read
+        ## read-only like any other source. The path is confined to the
+        ## workspace because the catalog is repo content (hostile-grade):
+        ## an absolute path or a dot-dot escape would read a tree nobody
+        ## chose to expose.
+        if os.path.isabs(local):
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path refused: a source path is RELATIVE to the docs workspace, never absolute'})
+            continue
+        ws_n = os.path.normpath(ws)
+        cand = os.path.normpath(os.path.join(ws_n, local))
+        if cand != ws_n and not cand.startswith(ws_n.rstrip('/') + '/'):
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path refused: ' + local + ' escapes the docs workspace'})
+            continue
+        ## --show-toplevel and not --git-dir: git walks UP to the nearest
+        ## enclosing repository, so ANY subdirectory of the workspace
+        ## answers and the guard would pass a path git clone then refuses.
+        ## A named refusal here beats a clone error two steps later.
+        rc, top, _ = run_git(['-C', cand, 'rev-parse', '--show-toplevel'], timeout=60, env=plain_env)
+        rcb, bare, _ = run_git(['-C', cand, 'rev-parse', '--is-bare-repository'], timeout=60, env=plain_env)
+        is_root = (rc == 0 and os.path.realpath(top.strip()) == os.path.realpath(cand)) or (rcb == 0 and bare.strip() == 'true')
+        if not is_root:
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path ' + local + ' is not a git repository -- a local source is cloned, so it must be the ROOT of one'})
+            continue
+        url = cand
+        is_local = True
     elif github_repo:
         url = 'https://github.com/' + github_repo + '.git'
     elif gitlab_path:
@@ -1348,9 +1509,12 @@ for raw in repos:
         inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'catalog entry names no github_repo, gitlab_path or url'})
         continue
     dest = os.path.join(sources_root, rid)
+    ## A source already on disk is reached without a credential: the
+    ## token belongs to the forge, and nothing local can ask for it.
+    repo_env = plain_env if is_local else git_env
     note = ''
     if os.path.isdir(os.path.join(dest, '.git')):
-        rc, _, err = run_git(['fetch', '--prune', 'origin'], cwd=dest)
+        rc, _, err = run_git(['fetch', '--prune', 'origin'], cwd=dest, env=repo_env)
         if rc != 0:
             shutil.rmtree(dest, ignore_errors=True)
         else:
@@ -1362,12 +1526,21 @@ for raw in repos:
     if not os.path.isdir(os.path.join(dest, '.git')):
         shutil.rmtree(dest, ignore_errors=True)
         args = ['clone']
-        if depth > 0:
+        ## --no-hardlinks on a LOCAL source: git hardlinks the object
+        ## store of a same-filesystem clone, and the redaction pass
+        ## below deletes files. The worktree copies are fresh either
+        ## way, but a clone that shares storage with the tree it was
+        ## taken from is one refactor away from writing into it.
+        ## --depth is meaningless on a local path (git says so and
+        ## ignores it), so it is not passed rather than warned about.
+        if is_local:
+            args += ['--no-hardlinks']
+        elif depth > 0:
             args += ['--depth', str(depth)]
         if ref:
             args += ['--branch', ref]
         args += [url, dest]
-        rc, _, err = run_git(args)
+        rc, _, err = run_git(args, env=repo_env)
         if rc != 0:
             shutil.rmtree(dest, ignore_errors=True)
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': strip_creds(url), 'changed_files': [], 'note': 'clone failed: ' + (redact(err) or 'unknown error') + (' (no push/read credential was available)' if not token else '')})
@@ -1396,7 +1569,7 @@ for raw in repos:
     if prev and head and prev != head:
         rc, _, _ = run_git(['cat-file', '-e', prev + '^{commit}'], cwd=dest, timeout=60)
         if rc != 0:
-            run_git(['fetch', '--depth', '1', 'origin', prev], cwd=dest, timeout=300)
+            run_git(['fetch', '--depth', '1', 'origin', prev], cwd=dest, timeout=300, env=repo_env)
             rc, _, _ = run_git(['cat-file', '-e', prev + '^{commit}'], cwd=dest, timeout=60)
         if rc == 0:
             rc, out, _ = run_git(['diff', '--name-only', prev, head], cwd=dest, timeout=300)
@@ -1421,6 +1594,18 @@ for raw in repos:
 
 ok = [e for e in inventory if e['status'] == 'ok']
 degraded = [e for e in inventory if e['status'] != 'ok']
+## THE NON-REGRESSION NET, resolved ONCE and in ONE place. coverage_check
+## is armed by the PRESENCE of the two artifacts, nowhere else -- and the
+## campaign is told about them on its very first pass, which it could not
+## be if the gate discovered them after the pass. The docs workspace wins
+## over a clone: a docs repo carrying its own net describes itself.
+oracle_path = ''
+if oracle_dir and not os.path.isabs(oracle_dir) and '..' not in oracle_dir.split('/'):
+    for root in [ws] + [e['path'] for e in ok if e.get('path')]:
+        cand = os.path.join(root, oracle_dir)
+        if os.path.isfile(os.path.join(cand, 'feature-coverage.json')) and os.path.isfile(os.path.join(cand, 'corpus.json')):
+            oracle_path = cand
+            break
 ## FULL sha: the next run's shallow-clone delta repair does
 ## run_git(['fetch', '--depth', '1', 'origin', prev]) -- git can only
 ## fetch a full object name, so an abbreviated stamp made the repair
@@ -1435,13 +1620,17 @@ if degraded:
     parts.append('unreadable: ' + ', '.join(e['id'] for e in degraded))
 if not repos:
     parts.append('the catalog entry declares no repos[] -- nothing to ground the documentation in')
+if oracle_path:
+    parts.append('golden-master net found at ' + oracle_path + ' -- the exhaustiveness gate is ARMED')
+else:
+    parts.append('no golden-master net (' + (oracle_dir or '<oracle_dir>') + '/feature-coverage.json + corpus.json) in the workspace or the clones -- the exhaustiveness gate stays inert')
 ## The RUN BASE, recorded before the campaign has written anything.
 ## scope_check diffs against THIS -- never against a base re-derived
 ## from the campaign's own commit messages, which would let an
 ## un-trailered commit choose the window it is audited on.
 rc, out, _ = run_git(['rev-parse', 'HEAD'], cwd=ws, timeout=60)
 base_sha = out.strip() if rc == 0 else ''
-print(json.dumps({'product_id': product, 'product_dir': product_dir, 'base_sha': base_sha, 'surfaces': surfaces, 'inventory': inventory, 'sources_stamp': stamp, 'repo_count': len(inventory), 'ok_count': len(ok), 'degraded_count': len(degraded), 'redacted_count': redacted_total, 'previous_stamp': previous_stamp, 'delta_unavailable': delta_unavailable, 'log': '; '.join(parts)}, ensure_ascii=False))
+print(json.dumps({'product_id': product, 'product_dir': product_dir, 'base_sha': base_sha, 'surfaces': surfaces, 'inventory': inventory, 'sources_stamp': stamp, 'repo_count': len(inventory), 'ok_count': len(ok), 'degraded_count': len(degraded), 'redacted_count': redacted_total, 'previous_stamp': previous_stamp, 'delta_unavailable': delta_unavailable, 'oracle_path': oracle_path, 'log': '; '.join(parts)}, ensure_ascii=False))
 "`
   output: ingest_output
 
@@ -1773,13 +1962,22 @@ except Exception as exc:
 ## campaign removes exactly the reported lines.
 tool page_lint:
   input: product_dir_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} LINT_RULES={{vars.lint_rules}} EXTRA_HEADINGS={{vars.extra_forbidden_headings}} python3 -c "
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} LINT_RULES={{vars.lint_rules}} EXTRA_HEADINGS={{vars.extra_forbidden_headings}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} python3 -c "
 import os, json, glob, re
 ws = os.environ['WS']
 os.chdir(ws)
 product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
 rules = {r.strip() for r in (os.environ.get('LINT_RULES') or '').split(',') if r.strip()}
 extra = [h.strip() for h in (os.environ.get('EXTRA_HEADINGS') or '').split(',') if h.strip()]
+## ONE declared token, honoured by every site that reads a heading.
+## coverage_check reads vars.coverage_no_anchor_marker as the written
+## exception to its anchor rule; if this gate also read it as a working
+## note, the two would order the campaign to add and to remove the same
+## characters, and the run could never converge. The exemption is the
+## EXACT token and nothing else: any other comment on the same line is
+## still a violation, and the marker itself is still chrome-free by
+## construction (an HTML comment renders as nothing).
+no_anchor = (os.environ.get('NO_ANCHOR') or '').strip()
 if not product_dir:
     ## Fail CLOSED, like scope_check: an empty product directory lints
     ## zero pages, and reporting that as clean would certify an
@@ -1830,7 +2028,11 @@ for page in pages:
     in_hint = 0
     hint_start = 0
     hint_body = []
-    for lineno, line in enumerate(lines, start=1):
+    for lineno, raw_line in enumerate(lines, start=1):
+        ## The declared anchorless marker is removed before any rule
+        ## looks at the line, so it is invisible to html_comments AND
+        ## does not pad a heading title the other rules match on.
+        line = raw_line.replace(no_anchor, '') if no_anchor else raw_line
         ## Credential material is scanned EVERYWHERE, fenced code
         ## included: a pasted secret is worse inside a block, not
         ## exempt from the gate.
@@ -1918,18 +2120,420 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 "`
   output: lint_output
 
+## coverage_check — the DETERMINISTIC EXHAUSTIVENESS gate, and the
+## answer to the one question a documentation bot cannot ask itself:
+## did I document EVERYTHING? Until now the answer was the agent's own
+## `docs_aligned`, and the surface coverage was an advisory hint. Here
+## it is read off the golden-master net the target already commits.
+##
+## ARMED IF AND ONLY IF a net is present — catalog_ingest resolves
+## `<oracle_dir>/{feature-coverage.json, corpus.json}` in the docs
+## workspace, then in each source clone, and passes the directory (or
+## nothing) down this edge. WITHOUT a net this node reports
+## `coverage_ok: true, net_present: false`, contributes nothing to
+## fail_log, and Prody is exactly the bot it was.
+##
+## WITH a net it refuses five ways, each cause NAMED, never counted in
+## silence:
+##   PHANTOM_DOC         — a documented screen the net never saw: a
+##                         cited corpus entry that does not exist, an
+##                         inventory id nobody inventoried, a path that
+##                         is neither a declared route nor a corpus
+##                         entry path, a query parameter the corpus
+##                         never observes on that path. A framework
+##                         catch-all route (`/{slug}`, `/**`) declares
+##                         every path and proves none: for a path only
+##                         such a route covers, the corpus is the only
+##                         evidence.
+##   GAP                 — a covered feature no line documents. One
+##                         line must carry its id AND one of its
+##                         inventory entries: the screen is anchored on
+##                         the reference that exercises it, not on a
+##                         memory.
+##   CONCEALED_EXCLUSION — an exclusion the pages do not name AS one,
+##                         under the declared exclusions chapter, with
+##                         prose. A documentation that hides a hole
+##                         lies about the application.
+##   UNANCHORED_CHAPTER  — a chapter (heading level >= 2) naming no
+##                         reference it restitutes and not declaring it
+##                         observes none. The general clause of
+##                         PHANTOM_DOC; the gate PRINTS the chapters
+##                         that carry the declared marker, so hiding
+##                         one behind it only denounces itself.
+##   NET_UNREADABLE      — the material cannot be judged: absent or
+##                         unparsable artifacts, an inventory that
+##                         contradicts itself, and EVERY emptiness —
+##                         no page, no feature, no corpus entry, no
+##                         `exclusions` key, an empty route table. A
+##                         guard that reads `if collection and …` is
+##                         DISABLED on an empty collection; here each
+##                         emptiness is a decision, said out loud.
+##
+## LANGUAGE-NEUTRAL BY CONSTRUCTION: the exclusions chapter and the
+## anchorless marker are DECLARED identifiers (`coverage_*` vars), the
+## anchor vocabulary is read off the net (inventory prefixes, corpus id
+## shapes) and not assumed — `001` is one campaign's convention, not a
+## rule. What it does NOT judge is the prose: that stays with its
+## reader.
+##
+## Raw-string command, like its siblings: the python body carries no
+## double quote, no literal backtick and no dollar sign.
+tool coverage_check:
+  input: coverage_input
+  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES_FILE={{vars.coverage_routes_file}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} python3 -c "
+import os, json, glob, re, unicodedata
+from urllib.parse import urlsplit, parse_qsl
+ws = os.environ['WS']
+os.chdir(ws)
+oracle = (os.environ.get('ORACLE_PATH') or '').strip()
+product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
+excl_token = (os.environ.get('EXCL_HEADING') or '').strip()
+no_anchor = (os.environ.get('NO_ANCHOR') or '').strip()
+routes_file = (os.environ.get('ROUTES_FILE') or '').strip()
+placeholders = [p.strip() for p in (os.environ.get('PLACEHOLDERS') or '').split(',') if p.strip()]
+try:
+    min_prose = int((os.environ.get('MIN_PROSE') or '60').strip() or '60')
+except ValueError:
+    min_prose = 60
+BT = chr(96)
+## NO NET, NO GATE. Prody without a golden-master net is Prody as it was:
+## this node reports coverage_ok and adds NOTHING to the gate expression or
+## to fail_log. The activation is the PRESENCE of the two artifacts, resolved
+## once by catalog_ingest -- never a var an operator could forget to unset.
+if not oracle:
+    print(json.dumps({'coverage_ok': True, 'net_present': False, 'causes': [], 'cause_count': 0, 'features_total': 0, 'features_documented': 0, 'exclusions_total': 0, 'exclusions_named': 0, 'entries_cited': 0, 'paths_cited': 0, 'chapters': 0, 'chapters_unanchored_declared': 0, 'routes_declared': 0, 'routes_degraded': False, 'oracle_dir_used': '', 'log': ''}, ensure_ascii=False))
+    raise SystemExit(0)
+causes = []
+def refuse(cause, where, detail):
+    causes.append({'cause': cause, 'where': where, 'detail': detail})
+def load(path, what):
+    if not os.path.isfile(path):
+        refuse('NET_UNREADABLE', path, what + ': file absent')
+        return None
+    try:
+        with open(path, encoding='utf-8') as fh:
+            return json.load(fh)
+    except (OSError, ValueError) as exc:
+        refuse('NET_UNREADABLE', path, what + ': unreadable JSON -- ' + ' '.join(str(exc).split())[:200])
+        return None
+cov = load(os.path.join(oracle, 'feature-coverage.json'), 'the inventory feature-coverage.json')
+corpus = load(os.path.join(oracle, 'corpus.json'), 'the corpus corpus.json')
+features, exclusions, entries = None, None, None
+if cov is not None:
+    features = cov.get('features')
+    exclusions = cov.get('exclusions')
+if corpus is not None:
+    entries = corpus.get('entries')
+## THE EMPTY IS A NAMED REFUSAL, never a guard that switches itself off.
+## An if-collection-and-... guard is DISABLED on an empty collection: every loop
+## below runs unguarded, and each emptiness is decided here, out loud.
+if not isinstance(features, list) or not features:
+    refuse('NET_UNREADABLE', 'feature-coverage.json', 'features is absent, empty or not a list -- with no inventory, completeness cannot be falsified: a refusal, not a vacuous pass')
+    features = []
+if not isinstance(exclusions, list):
+    refuse('NET_UNREADABLE', 'feature-coverage.json', 'exclusions is absent or not a list -- the net no longer declares its holes, and a documentation with no declared hole lies by omission')
+    exclusions = []
+if not isinstance(entries, list) or not entries:
+    refuse('NET_UNREADABLE', 'corpus.json', 'entries is absent, empty or not a list -- with no corpus no anchor exists: a refusal, not a vacuous pass')
+    entries = []
+feature_names, entry_lists = [], {}
+for i, f in enumerate(features):
+    name = f.get('feature') if isinstance(f, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        refuse('NET_UNREADABLE', 'features[' + str(i) + ']', 'inventory entry with no readable feature id')
+        continue
+    name = name.strip()
+    if name in entry_lists:
+        refuse('NET_UNREADABLE', name, 'listed twice among the COVERED features -- the count would grow without inventorying anything')
+        continue
+    ents = f.get('entries')
+    if not isinstance(ents, list) or not ents:
+        refuse('NET_UNREADABLE', name, 'COVERED with no corpus entry -- a feature without a reference cannot be anchored')
+        entry_lists[name] = set()
+        continue
+    feature_names.append(name)
+    entry_lists[name] = set(e.strip() for e in ents if isinstance(e, str) and e.strip())
+exclusion_names, exclusion_reasons = [], {}
+for i, x in enumerate(exclusions):
+    name = x.get('feature') if isinstance(x, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        refuse('NET_UNREADABLE', 'exclusions[' + str(i) + ']', 'exclusion with no readable feature id')
+        continue
+    name = name.strip()
+    if name in exclusion_reasons:
+        refuse('NET_UNREADABLE', name, 'excluded twice in the inventory -- its hole would be counted twice')
+        continue
+    exclusion_names.append(name)
+    reason = x.get('reason') if isinstance(x.get('reason'), str) else ''
+    exclusion_reasons[name] = reason
+    if not reason.strip():
+        refuse('NET_UNREADABLE', name, 'EMPTY reason in the inventory -- the net no longer declares why this hole exists')
+for name in sorted(set(feature_names) & set(exclusion_reasons)):
+    refuse('NET_UNREADABLE', name, 'BOTH covered and excluded -- the inventory contradicts itself')
+corpus_ids = set()
+entry_paths = {}
+for e in entries:
+    if not isinstance(e, dict):
+        continue
+    eid = e.get('id')
+    if isinstance(eid, str) and eid.strip():
+        corpus_ids.add(eid.strip())
+    p = e.get('path')
+    if isinstance(p, str) and p.startswith('/'):
+        parts = urlsplit(p)
+        entry_paths.setdefault(parts.path, set()).update(k for k, _v in parse_qsl(parts.query, keep_blank_values=True))
+## The DECLARED route table. Goldy runs its own routes_probe at every gate
+## and commits no artifact, so this file is OPTIONAL: absent, the path check
+## DEGRADES to the corpus alone and says so in the log and in
+## routes_degraded. Degraded is visible; it is never silently green.
+declared = []
+routes_path = ''
+if routes_file:
+    routes_path = routes_file if os.path.isabs(routes_file) else os.path.join(oracle, routes_file)
+    if os.path.isfile(routes_path):
+        try:
+            with open(routes_path, encoding='utf-8') as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    head, _sep, tail = line.partition(' ')
+                    pat = tail.strip() if (tail.strip() and head.isalpha() and head.isupper()) else line
+                    if pat.startswith('/'):
+                        declared.append(pat)
+        except OSError as exc:
+            refuse('NET_UNREADABLE', routes_path, 'the declared route table is unreadable -- ' + ' '.join(str(exc).split())[:200])
+        if not declared:
+            refuse('NET_UNREADABLE', routes_path, 'the declared route table is EMPTY -- a table that declares nothing is not a degraded check, it is a broken one: a refusal, not a vacuous pass')
+routes_degraded = not declared
+def segments(path):
+    return [s for s in path.split('/') if s != '']
+def pattern_matches(pattern, target):
+    ## The net's own route grammar (golden-master route_regex): {x}, :x and *
+    ## match ONE segment, ** matches the tail and only as the last segment.
+    ## A trailing slash is NEVER folded -- with and without are two routes.
+    ps, ts = segments(pattern), segments(target)
+    if (pattern.endswith('/') and pattern != '/') != (target.endswith('/') and target != '/'):
+        return False
+    i = 0
+    while i < len(ps):
+        seg = ps[i]
+        if seg == '**':
+            return i == len(ps) - 1
+        if i >= len(ts):
+            return False
+        if not (seg == '*' or seg.startswith(':') or (seg.startswith('{') and seg.endswith('}')) or seg == ts[i]):
+            return False
+        i += 1
+    return i == len(ts)
+def route_proves(pattern):
+    ## A framework catch-all (/{slug}, /**) declares every path and proves
+    ## none. For a path only such a route covers, the corpus reference is the
+    ## only evidence -- written as a CHECK, not as a comment.
+    ps = segments(pattern)
+    if not ps:
+        return True
+    return any(not (s == '*' or s == '**' or s.startswith(':') or (s.startswith('{') and s.endswith('}'))) for s in ps)
+def corpus_matches(cited):
+    return [c for c in entry_paths if pattern_matches(cited, c)]
+## The anchor vocabulary is READ FROM THE NET, never assumed. Inventory ids
+## are recognised by the prefixes the inventory itself uses; corpus ids by the
+## SHAPE the corpus itself uses (length + character classes) -- so a net
+## numbering its entries 001..180 and a net naming them checkout-pay are both
+## read, and neither convention is written into this gate.
+prefixes = set(n.split('.')[0] for n in (feature_names + exclusion_names) if '.' in n)
+def shape(s):
+    kinds = set()
+    for c in s:
+        kinds.add('d' if c.isdigit() else ('a' if c.isalpha() else 'x'))
+    return (len(s), frozenset(kinds))
+entry_shapes = set(shape(i) for i in corpus_ids)
+inventory_names = set(entry_lists) | set(exclusion_reasons)
+CODE_SPAN_RE = re.compile(BT + '([^' + BT + chr(10) + ']+)' + BT)
+HEADING_RE = re.compile(r'^(#{1,6})\s+(.*\S)\s*' + chr(36))
+FENCE_RE = re.compile(r'^\s{0,3}(' + BT * 3 + '+|~{3,})')
+PLACEHOLDER_RE = re.compile('|'.join(re.escape(p) for p in placeholders), re.I) if placeholders else None
+def fold(s):
+    return ''.join(c for c in unicodedata.normalize('NFD', s) if not unicodedata.combining(c)).lower()
+## The documentation. Absent or empty: a NAMED refusal, never a vacuous green.
+files = sorted(p for p in glob.glob(os.path.join(product_dir, '**', '*.md'), recursive=True) if os.path.isfile(p)) if product_dir else []
+if not product_dir:
+    refuse('NET_UNREADABLE', '<product_dir>', 'no product directory was resolved, so no published page could be read -- refusing to certify coverage')
+elif not files:
+    refuse('NET_UNREADABLE', product_dir, 'NO markdown file -- the functional documentation does not exist: a refusal, not a vacuous pass')
+lines = []
+for path in files:
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            for no, text in enumerate(fh.read().splitlines(), 1):
+                lines.append((path, no, text))
+    except OSError as exc:
+        refuse('NET_UNREADABLE', path, 'page unreadable -- ' + ' '.join(str(exc).split())[:200])
+## ONE pass in file order, so the chapter a citation sits under is a fact of
+## structure and not an opinion. Headings of EVERY level open the exclusions
+## chapter (a one-chapter-per-file model puts it at level 1); the anchor rule
+## below judges levels >= 2 only -- a file's title is judged by its body.
+headings = []
+marked = []
+anchors_by_line = {}
+under_exclusions = {}
+exc_level = None
+in_exc = False
+in_fence = False
+current = ''
+for where, no, text in lines:
+    ## Fence state is PER FILE: an unclosed fence at the end of one page
+    ## would otherwise blind the gate to every page after it.
+    if where != current:
+        current, in_fence = where, False
+    if FENCE_RE.match(text):
+        in_fence = not in_fence
+        continue
+    if in_fence:
+        ## A fenced sample teaches its reader to paste something; it makes
+        ## no claim about the product. A shell comment in it is not a
+        ## chapter, and a path in it is not a citation -- the same reason
+        ## page_lint exempts fenced blocks from its chrome rules.
+        continue
+    m = HEADING_RE.match(text)
+    if m:
+        level, title = len(m.group(1)), m.group(2)
+        if level > 1:
+            headings.append((where, no, level, title))
+        if excl_token and excl_token in fold(title):
+            in_exc, exc_level = True, level
+        elif exc_level is not None and level <= exc_level:
+            in_exc, exc_level = False, None
+    ents, ids, paths, unknown = [], [], [], []
+    for tok in CODE_SPAN_RE.findall(text):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.startswith('/'):
+            paths.append(tok)
+        elif tok in corpus_ids:
+            ents.append(tok)
+        elif tok in inventory_names:
+            ids.append(tok)
+        elif '.' in tok and tok.split('.')[0] in prefixes:
+            unknown.append(('inventory', tok))
+            ids.append(tok)
+        elif shape(tok) in entry_shapes:
+            unknown.append(('entry', tok))
+            ents.append(tok)
+    anchors_by_line[(where, no)] = (ents, ids, paths, unknown, text)
+    under_exclusions[(where, no)] = in_exc
+## STRUCTURAL RULE -- every chapter carries an anchor, or DECLARES that it
+## carries none. A chapter that can name no reference it restitutes describes
+## a screen nobody captured: the general clause of the phantom refusal. The
+## declared marker is the written exception, and the gate PRINTS the chapters
+## that carry it -- hiding a whole chapter behind it only denounces itself.
+for where, no, level, title in headings:
+    if no_anchor and no_anchor in title:
+        marked.append({'page': where, 'line': no, 'title': title.replace(no_anchor, '').strip()})
+        continue
+    toks = [t.strip() for t in CODE_SPAN_RE.findall(title)]
+    if not any(t.startswith('/') or t in corpus_ids or t in inventory_names or ('.' in t and t.split('.')[0] in prefixes) or shape(t) in entry_shapes for t in toks if t):
+        refuse('UNANCHORED_CHAPTER', where + ':' + str(no), 'the chapter ' + title + ' names NO reference it restitutes -- anchor it on a corpus entry, an inventory id or a path, or declare it observes nothing with ' + (no_anchor or '<coverage_no_anchor_marker>'))
+## PHANTOM_DOC -- every cited anchor must exist, in the corpus, in the
+## inventory or in the declarations; never in the writer's memory.
+cited_entries, cited_paths = set(), set()
+for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.items()):
+    cited_entries.update(ents)
+    for kind, tok in unknown:
+        if kind == 'entry':
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the entry ' + tok + ' is cited and DOES NOT EXIST in the corpus (' + str(len(corpus_ids)) + ' entries) -- a documented screen without a reference is an invented screen')
+        else:
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the id ' + tok + ' is cited and IS NOT in the inventory (neither features nor exclusions) -- a documented feature nobody inventoried')
+    for path in paths:
+        cited_paths.add(path)
+        parts = urlsplit(path)
+        hits = corpus_matches(parts.path)
+        if any(route_proves(r) and pattern_matches(r, parts.path) for r in declared):
+            pass
+        elif hits:
+            pass
+        elif routes_degraded:
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the path ' + path + ' matches NO corpus entry path, and no declared route table was available to widen the check (degraded) -- a documented screen the net never observed')
+        else:
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the path ' + path + ' is NEITHER a declared route NOR a corpus entry path -- a documented screen the application does not serve')
+        observed = set()
+        for c in hits:
+            observed |= entry_paths.get(c, set())
+        for k, _v in parse_qsl(parts.query, keep_blank_values=True):
+            if k not in observed:
+                refuse('PHANTOM_DOC', where + ':' + str(no), 'the parameter ' + k + ' of ' + path + ' is observed on NO corpus entry of that path -- a documented filter the net does not exercise')
+## GAP -- every covered feature carries ONE line citing its id AND at least
+## one of its inventory entries: the documented screen is anchored on the
+## reference that exercises it. The loop runs over EVERY feature, unguarded:
+## emptying the documentation of one feature or of all reddens the same way.
+undocumented = []
+for name in feature_names:
+    own = entry_lists.get(name, set())
+    ok = False
+    for (_e, _i, _p, _u, text) in anchors_by_line.values():
+        if BT + name + BT in text and any(BT + e + BT in text for e in own):
+            ok = True
+            break
+    if not ok:
+        undocumented.append(name)
+        refuse('GAP', name, 'the covered feature is ABSENT from the documentation: no line carries its id together with one of its entries ' + ', '.join(sorted(own)) + ' -- a served, inventoried screen the functional reader will not find')
+## CONCEALED_EXCLUSION -- every exclusion is cited UNDER a chapter that says
+## exclusions, with PROSE: a bare id is not writing, and a placeholder is not
+## either. The full reason stays in the net; the page carries it for its
+## reader, and the gate refuses silence and substitutes alike.
+hidden = []
+for name in exclusion_reasons:
+    ok = False
+    for (where, no), (_e, ids, _p, _u, text) in sorted(anchors_by_line.items()):
+        if name not in ids or not under_exclusions.get((where, no), False):
+            continue
+        prose = text.replace(BT + name + BT, '').strip()
+        if len(prose) < min_prose:
+            continue
+        if PLACEHOLDER_RE is not None and PLACEHOLDER_RE.search(prose):
+            continue
+        ok = True
+        break
+    if not ok:
+        hidden.append(name)
+        refuse('CONCEALED_EXCLUSION', name, 'the exclusion is nowhere named AS an exclusion in the documentation (its id cited under a chapter matching ' + (excl_token or '<coverage_exclusions_heading>') + ', with its prose) -- a documentation that hides a hole lies about the application; the net records the reason: ' + (exclusion_reasons.get(name) or '')[:120])
+documented = len(feature_names) - len(undocumented)
+named = len(exclusion_reasons) - len(hidden)
+count_line = ('COVERAGE GATE: ' + str(documented) + '/' + str(len(feature_names)) + ' features documented, ' + str(named) + '/' + str(len(exclusion_reasons)) + ' exclusions named, ' + str(len(cited_entries)) + ' corpus entries cited, ' + str(len(cited_paths)) + ' paths cited, ' + str(len(headings)) + ' chapters of which ' + str(len(marked)) + ' declared anchorless; net at ' + oracle + ' holds ' + str(len(feature_names)) + ' features + ' + str(len(exclusion_reasons)) + ' exclusions, ' + str(len(corpus_ids)) + ' corpus entries, ' + str(len(declared)) + ' declared routes')
+notes = [count_line]
+if routes_degraded:
+    notes.append('COVERAGE GATE: DEGRADED -- no declared route table at ' + (routes_path or '<coverage_routes_file>') + '. golden-master runs its route table through config.json routes_probe and commits no artifact, so a cited path is checked against the CORPUS ONLY: a route the corpus never touches cannot be recognised and is refused. Commit the routes_probe output there to lift the degradation.')
+for m in marked:
+    notes.append('COVERAGE GATE: chapter declared anchorless -- ' + m['page'] + ':' + str(m['line']) + ' ' + m['title'])
+for c in causes[:60]:
+    notes.append('COVERAGE GATE: ' + c['cause'] + ' -- ' + c['where'] + ': ' + c['detail'])
+if len(causes) > 60:
+    notes.append('COVERAGE GATE: ... and ' + str(len(causes) - 60) + ' more')
+if causes:
+    notes.append('COVERAGE GATE: RED -- ' + str(len(causes)) + ' named cause(s); each one above says what is missing and where. Fix exactly those, then re-check.')
+else:
+    notes.append('COVERAGE GATE: GREEN -- every documented screen rests on a reference that exists, every inventoried feature is documented, every exclusion is named.')
+print(json.dumps({'coverage_ok': not causes, 'net_present': True, 'causes': causes[:200], 'cause_count': len(causes), 'features_total': len(feature_names), 'features_documented': documented, 'exclusions_total': len(exclusion_reasons), 'exclusions_named': named, 'entries_cited': len(cited_entries), 'paths_cited': len(cited_paths), 'chapters': len(headings), 'chapters_unanchored_declared': len(marked), 'routes_declared': len(declared), 'routes_degraded': routes_degraded, 'oracle_dir_used': oracle, 'log': chr(10).join(notes)}, ensure_ascii=False))
+"`
+  output: coverage_output
+
 ## gate — the deterministic continuation decision. converged = the
 ## writeable set is clean AND the published pages carry no working
-## notes AND the campaign reports the documentation aligned. NOTHING
-## ELSE: the advisory hint counts are telemetry in the run events,
-## never conditions. fail_log relays both gates' complaints to the next
-## pass; a green-but-more-work pass rides an empty log. No LLM, no
-## shell.
+## notes AND the documentation is EXHAUSTIVE against the net AND the
+## campaign reports the documentation aligned. NOTHING ELSE: the
+## advisory hint counts are telemetry in the run events, never
+## conditions. Without a net `coverage_ok` is true by construction, so
+## this is the expression it always was. fail_log relays the three
+## gates' complaints to the next pass — and carries the coverage term
+## only when it is red, so a run with no net produces byte-for-byte the
+## log it produced before. A green-but-more-work pass rides an empty
+## log. No LLM, no shell.
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.scope_check.scope_ok && outputs.page_lint.lint_ok && outputs.campaign.docs_aligned"
-    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log + ' | ', '') + if(!outputs.page_lint.lint_ok, outputs.page_lint.log, '')"
+    converged: "outputs.scope_check.scope_ok && outputs.page_lint.lint_ok && outputs.coverage_check.coverage_ok && outputs.campaign.docs_aligned"
+    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log + ' | ', '') + if(!outputs.page_lint.lint_ok, outputs.page_lint.log, '') + if(!outputs.coverage_check.coverage_ok, if(!outputs.page_lint.lint_ok, ' | ', '') + outputs.coverage_check.log, '')"
 
 ## ─── Nodes : PR finalization tail (opt-in) ─────────────────────────
 
@@ -2217,6 +2821,7 @@ workflow product_docs:
     mode: "{{outputs.scan_hints.mode}}",
     incremental_base: "{{outputs.scan_hints.incremental_base}}",
     recently_changed_pages: "{{outputs.scan_hints.recently_changed_pages}}",
+    oracle_path: "{{outputs.catalog_ingest.oracle_path}}",
     fail_log: "{{outputs.gate.fail_log}}"
   }
 
@@ -2233,7 +2838,14 @@ workflow product_docs:
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
     base_sha: "{{outputs.catalog_ingest.base_sha}}"
   }
-  page_lint -> gate
+  ## The exhaustiveness gate. `oracle_path` is empty whenever the
+  ## product carries no golden-master net, and the node is then a
+  ## no-op that certifies nothing and refuses nothing.
+  page_lint -> coverage_check with {
+    product_dir: "{{outputs.catalog_ingest.product_dir}}",
+    oracle_path: "{{outputs.catalog_ingest.oracle_path}}"
+  }
+  coverage_check -> gate
 
   ## Converged → straight to the PR tail.
   gate -> mr_gate when converged

@@ -29,7 +29,7 @@
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 1 · 8 | 0.2.0 |
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 1 · 3 | 0.2.2 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 1 · 3 | 0.5.0 |
-| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1 · 7 | 1.1.2 |
+| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1 · 7 | 1.2.0 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 1 · 1 | 0.1.3 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 1 · 0 | 0.1.3 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.10 |

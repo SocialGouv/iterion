@@ -66,7 +66,8 @@ authorise the bot to invent. See
 ## Shape
 
 ```
-catalog_ingest ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint ─▶ gate
+catalog_ingest ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint
+               ─▶ coverage_check ─▶ gate
 gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr
                                           ─▶ surface_pr_link ─▶ done
 gate ─────────────────▶ scan_hints          (continuation_loop, max_passes)
@@ -96,12 +97,75 @@ gate ─────────────────▶ scan_hints          
   "Points à clarifier" section, no "Correspondance technique" annex. A
   violation is **not converged** and the located failures feed the next
   pass.
-- **`gate`** — `converged = scope_ok ∧ lint_ok ∧ docs_aligned`. Nothing
-  else; the hint counts are telemetry, never conditions.
+- **`coverage_check`** (deterministic truth gate, armed only with a net)
+  — the exhaustiveness gate. See below.
+- **`gate`** — `converged = scope_ok ∧ lint_ok ∧ coverage_ok ∧
+  docs_aligned`. Nothing else; the hint counts are telemetry, never
+  conditions.
 
 A documentation-only change cannot break a build, so there is no build
 gate — `page_lint` is this bot's equivalent truth oracle on the artifact
 it actually ships.
+
+## The exhaustiveness gate
+
+*Did I document everything?* is the one claim an agent cannot honestly
+make about itself, and until now it rode on `docs_aligned`. When the
+product carries a **golden-master net**, `coverage_check` reads it and
+decides instead.
+
+It arms **if and only if** `catalog_ingest` finds BOTH
+`<oracle_dir>/feature-coverage.json` (the inventory: covered features
+with the corpus entries that exercise them, exclusions with their
+written reason) and `<oracle_dir>/corpus.json` (the captured entries),
+in the docs workspace **or** in a source clone. Half a net is no net.
+**Without one the node is inert** — `coverage_ok` true, empty log,
+nothing added to the gate or to the next pass's feedback: the bot is
+exactly the one it was.
+
+With one, it refuses five ways, each cause **named**, never counted in
+silence:
+
+| cause | what it catches |
+|---|---|
+| `PHANTOM_DOC` | a documented screen the net never saw: a cited corpus entry that does not exist, an inventory id nobody inventoried, a path that is neither a declared route nor a corpus entry path, a query parameter the corpus never observes on that path |
+| `GAP` | a covered feature no line documents — **one** line must carry its identifier **and** one of its own entries |
+| `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, with prose (a bare identifier or a `TODO` is silence under a label) |
+| `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) naming no reference it restitutes and not declaring that it restitutes none |
+| `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, no `exclusions` key, an empty route table |
+
+That last row is the point of the design, not a detail: a guard written
+`if collection and …` is *disabled* exactly when the collection is
+empty, so each emptiness is decided out loud instead.
+
+Three things the gate deliberately does not assume:
+
+- **Language.** The exclusions chapter token and the anchorless marker
+  are declared identifiers (`coverage_exclusions_heading`,
+  `coverage_no_anchor_marker`), not French literals. `page_lint` exempts
+  exactly the declared marker from its `html_comments` rule, so the two
+  gates can never order the campaign to add and to remove the same
+  characters.
+- **The anchor vocabulary.** Inventory identifiers are recognised by the
+  prefixes the inventory itself uses and corpus ids by the shape the
+  corpus itself uses. `001` is one campaign's convention, not a rule.
+- **A catch-all route.** A route made only of placeholders (`/{slug}`,
+  `/**`) matches every path and proves none: for a path only such a
+  route covers, the corpus reference is the only evidence.
+
+**The route table is a degradation, and a loud one.** golden-master
+states its routes through `config.json`'s `routes_probe` — a command it
+replays at every gate — and commits **no artifact** for them; its
+`route-coverage.json` carries only the justified exclusions. So
+`coverage_routes_file` usually names a file that is not there, the path
+check falls back to the corpus alone, and the gate says so in its log
+and in `routes_degraded`. Degraded still **refuses**: a cited path that
+matches no corpus entry path is named a `PHANTOM_DOC` with the
+degradation attached. Lifting it takes one artifact on the
+golden-master side — the `routes_probe` stdout committed as
+`<oracle_dir>/routes.txt`.
+
+What it does **not** judge is the prose. That stays with its reader.
 
 ## The product catalog
 
@@ -125,9 +189,21 @@ repos:
   - id: demo-front
     gitlab_path: group/demo/front             # → https://<gitlab.host>/group/demo/front.git
   - id: demo-batch
-    url: https://forge.example.org/x/y.git    # explicit url wins over both
+    url: https://forge.example.org/x/y.git    # explicit url wins over all
     ref: main                                 # optional branch/tag
+  - id: demo-self
+    path: .                                   # a repo already on disk, RELATIVE
+                                              # to the workspace; `.` = the
+                                              # workspace itself
 ```
+
+`path` is the form a **campaign** generates to document **its own**
+repository: the source is cloned over the filesystem — no forge, no
+network, no credential — and then redacted and read exactly like any
+other source. It is confined to the workspace and must be the root of a
+repository; an absolute path, a `..` escape or a plain directory is a
+named `degraded` entry, never a tree nobody chose to expose. Precedence
+is `url` > `path` > `github_repo` > `gitlab_path`.
 
 A `.json` catalog needs no dependency at all. A YAML catalog is parsed
 with PyYAML when the interpreter has it, otherwise with `yq` (declared
@@ -165,6 +241,12 @@ computed is **never** reported as an empty one.
 | `lint_rules` | all four | Editorial rules `page_lint` enforces — drop a name to disable that rule |
 | `extra_forbidden_headings` | `""` | Extra heading titles a published page must never carry |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
+| `oracle_dir` | `.golden-master` | Where the golden-master net lives, looked up in the workspace then in each source clone. Both `feature-coverage.json` and `corpus.json` present ⇒ `coverage_check` is armed; empty disables the lookup |
+| `coverage_exclusions_heading` | `exclusions` | Token a heading must carry to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive substring) |
+| `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token; empty disables the escape hatch |
+| `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir`, in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
+| `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page names an exclusion |
+| `coverage_min_prose` | `60` | Minimum prose characters on the line that names an exclusion |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/product-docs` | Out-of-tree scratch: the source clones + the promises ledger |
 | `max_passes` | `4` | Continuation-loop cap: the loop back to `scan_hints` is taken at most this many times, so a run makes up to `max_passes + 1` campaign passes |
