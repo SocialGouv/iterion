@@ -35,6 +35,16 @@ var botFileNames = []string{MainBotFile}
 // Detect classifies path as a plain `.bot` file, a `.botz` archive, or a
 // directory bundle.
 func Detect(path string) (Kind, error) {
+	// An author document is refused by its NAME, before the disk is looked
+	// at — one rule on every door: the launchers that cannot stat (the HTTP
+	// resolver before an inline source is materialised, Launch before the
+	// queue persists a run) refuse by name, so a path ending in .bot.yaml
+	// names a draft here too, directory or not. The caller that reads one
+	// (validate) tells the refusal with errors.Is and routes it; every
+	// launcher shows it as written.
+	if workflowfile.IsAuthorDocument(path) {
+		return KindBot, AuthorDocumentError(path)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return KindBot, fmt.Errorf("bundle: stat %s: %w", path, err)
@@ -54,12 +64,6 @@ func Detect(path string) (Kind, error) {
 	}
 	if workflowfile.IsWorkflowFile(lower) {
 		return KindBot, nil
-	}
-	// An author document is refused by name, apart from the unsupported
-	// extensions: the caller that reads one (validate) tells the refusal
-	// with errors.Is and routes it; every launcher shows it as written.
-	if workflowfile.IsAuthorDocument(path) {
-		return KindBot, AuthorDocumentError(path)
 	}
 	return KindBot, fmt.Errorf("bundle: unsupported workflow extension for %s (expected .bot or .botz)", path)
 }
