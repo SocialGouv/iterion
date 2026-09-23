@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.193.0](https://github.com/SocialGouv/iterion/compare/v3.192.2...v3.193.0) (2026-09-23)
+
+### Features
+
+* **modernize:** a lot's gate can reach a deployed application ([#1693](https://github.com/SocialGouv/iterion/issues/1693)) ([c31be5c](https://github.com/SocialGouv/iterion/commit/c31be5c01fc87a4ea2e393cb6b84352cfb68139f))
+
+    <details><summary>why</summary>
+
+    The modernize bot declared no platform credential, so a contract could not declare an exit gate that judges a DEPLOYED application — only a locally started one. Such a gate refuses for want of an identity it has no way to be given, whatever the lot did, and that refusal says nothing about the work.
+
+    </details>
+
 ## [3.192.2](https://github.com/SocialGouv/iterion/compare/v3.192.1...v3.192.2) (2026-09-23)
 
 ### Bug Fixes
