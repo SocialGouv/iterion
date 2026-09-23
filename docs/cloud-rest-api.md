@@ -195,6 +195,13 @@ not enabled on this server`.
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Delete the bot |
 | `POST` | `/api/teams/{id}/bot-sources/{slug}/fork` | bot editor | Fork a baked catalog bot (`{from}`) into an editable copy |
 
+Every write validates the whole file map. A key ending in `.bot.yaml` — an
+author document, a draft of a `.bot`, never what launches — is refused with
+`400` and `error_code: author_document`; the store never holds one. A bot that
+holds such a key from before this rule is written again by deleting that file
+(the per-file `DELETE` validates the map after the removal) or by a whole-bundle
+`PUT` without it. A fork reads the catalog bundle without its drafts.
+
 Every write **compiles the bundle before it persists** — a bot that fails to
 parse/compile is rejected `400 bot does not compile: <diagnostics>`, never
 left to fail at launch. A non-zero `version` is an optimistic if-match token

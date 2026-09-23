@@ -111,6 +111,9 @@ iterion bundle pack my-bot --output dist/my-bot.botz --force
 ```
 
 `bundle` only packages. Create the source directory with `iterion bots create`.
+An author document beside the sources (`*.bot.yaml`, the YAML twin of a
+`.bot`) is a draft, never a member of the bundle: `pack` leaves it out and
+says how many under `Drafts left out` (`drafts_left_out` with `--json`).
 See [bundles](bundles.md) for the archive contract.
 
 ### `iterion import`

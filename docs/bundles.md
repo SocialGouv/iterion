@@ -326,6 +326,15 @@ that would defeat determinism:
   executing a materialized bundle tool.
 - `*.botz` — prior builds (avoids accidental nested packaging).
 - `.DS_Store`, `*.swp`, `*~` — OS/editor scratch.
+- `*.bot.yaml` files — an author document, the YAML twin a `.bot` can be
+  written as ([dsl.md](dsl.md)): a draft of the bot, never a member of the
+  bundle. It is left out of the archive and of the content hash on both sides
+  (pack and extraction), and is never extracted from an archive that carries
+  one (packed before this rule, or by hand): a bundle hashes the same with or
+  without its drafts, and two archives that differ only by a draft land the
+  same files in the content-addressed cache. A directory named like one is a
+  directory. `iterion bundle pack` says how many drafts it left out. A
+  plugin's source tree is not a bundle: its files travel whatever their name.
 
 Symlinks, devices, sockets, and other non-regular entries are
 **rejected** at pack time with a clear error.

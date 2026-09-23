@@ -18,6 +18,10 @@ type BundlePackResult struct {
 	Entries  int    `json:"entries"`
 	BytesIn  int64  `json:"bytes_in"`
 	BytesOut int64  `json:"bytes_out"`
+	// DraftsLeftOut counts the author documents (`.bot.yaml`) the source
+	// tree held and the archive does not carry: a draft is never a member
+	// of the bundle.
+	DraftsLeftOut int `json:"drafts_left_out,omitempty"`
 }
 
 // RunBundlePack writes a deterministic `.botz` archive from srcDir.
@@ -48,11 +52,12 @@ func RunBundlePack(srcDir, outPath string, force bool, p *Printer) error {
 	}
 	if p.Format == OutputJSON {
 		p.JSON(BundlePackResult{
-			Output:   res.OutputPath,
-			Hash:     res.Hash,
-			Entries:  res.Entries,
-			BytesIn:  res.BytesIn,
-			BytesOut: res.BytesOut,
+			Output:        res.OutputPath,
+			Hash:          res.Hash,
+			Entries:       res.Entries,
+			BytesIn:       res.BytesIn,
+			BytesOut:      res.BytesOut,
+			DraftsLeftOut: res.Drafts,
 		})
 		return nil
 	}
@@ -61,6 +66,9 @@ func RunBundlePack(srcDir, outPath string, force bool, p *Printer) error {
 	p.KV("Compressed", formatBytes(res.BytesOut))
 	p.KV("Uncompressed", formatBytes(res.BytesIn))
 	p.KV("SHA-256", res.Hash)
+	if res.Drafts > 0 {
+		p.KV("Drafts left out", fmt.Sprintf("%d author document(s) (.bot.yaml): a draft is never a member of the bundle", res.Drafts))
+	}
 	p.Blank()
 	p.Line("  result: OK")
 	return nil

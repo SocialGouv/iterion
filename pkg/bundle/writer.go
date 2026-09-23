@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // zipEpoch is the fixed modification time stamped on every ZIP entry so
@@ -41,11 +43,27 @@ var skipSuffixes = []string{
 	"~",
 }
 
-// IsPackSkipped reports whether a bundle-relative path would be excluded
-// from a .botz by [PackDir]. Exported so a scaffolder can prove the
-// `.gitignore` it writes only lists things the packer already drops,
-// instead of asserting that in a comment.
+// IsPackSkipped reports whether a bundle-relative path is excluded from a
+// .botz by the pack-time ignore rules — generated trees, scratch, prior
+// builds — whether it names a file or a directory. Exported so a
+// scaffolder can prove the `.gitignore` it writes only lists things the
+// packer already drops, instead of asserting that in a comment. An author
+// document is left out of a bundle by another rule, [IsDraftEntry], which
+// has to know whether the entry is a file.
 func IsPackSkipped(rel string) bool { return shouldSkip(rel) }
+
+// IsDraftEntry reports whether a bundle entry is an author document — a
+// `.bot.yaml` (workflowfile.IsAuthorDocument), the YAML twin a `.bot` can
+// be written as: a draft of the bot, never a member of the bundle. It is a
+// rule about FILES: a directory named like one is a directory, and what it
+// holds are members. Every carrier of a bundle's content and identity asks
+// this one predicate — the packer, the two content-hash walkers, the
+// archive extraction, the snapshot and the store's reader — so a draft is
+// left out everywhere or nowhere, and a bundle's identity is the .bot's
+// alone.
+func IsDraftEntry(rel string, isDir bool) bool {
+	return !isDir && workflowfile.IsAuthorDocument(rel)
+}
 
 // PackResult summarises a successful PackDir invocation.
 type PackResult struct {
@@ -54,6 +72,11 @@ type PackResult struct {
 	Entries    int    // number of archive entries written (files + directories)
 	BytesIn    int64  // sum of uncompressed file bytes
 	BytesOut   int64  // size of the .botz on disk
+	// Drafts counts the author documents (`.bot.yaml`, IsDraftEntry) the
+	// source tree held and PackDir left out: a draft is never a member of
+	// the bundle, and the packer says how many it left behind. PackTree
+	// leaves none out — a plugin's source tree is not a bundle.
+	Drafts int
 }
 
 // PackDir creates a .botz ZIP archive at outPath from the contents of
@@ -101,15 +124,23 @@ func PackDir(srcDir, outPath string) (*PackResult, error) {
 		return nil, fmt.Errorf("bundle/pack: %s contains no main.bot at root", absSrc)
 	}
 
-	return PackTree(absSrc, outPath)
+	return packTree(absSrc, outPath, true)
 }
 
 // PackTree is PackDir without the bot-bundle layout requirement: it packs
 // ANY directory tree into the same deterministic ZIP (sorted entries,
 // pinned timestamps, symlinks refused, same skip rules and content hash).
 // Used for non-bot archives — e.g. the marketplace serving a plugin's
-// source tree as a downloadable ZIP.
+// source tree as a downloadable ZIP. Such a tree is not a bundle: an author
+// document in it is a file like any other here, and the rule that leaves a
+// draft out of a bundle (IsDraftEntry) is PackDir's.
 func PackTree(srcDir, outPath string) (*PackResult, error) {
+	return packTree(srcDir, outPath, false)
+}
+
+// packTree is the body of PackDir and PackTree; dropDrafts is what tells
+// them apart.
+func packTree(srcDir, outPath string, dropDrafts bool) (*PackResult, error) {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
 		return nil, fmt.Errorf("bundle/pack: resolve src %s: %w", srcDir, err)
@@ -134,7 +165,7 @@ func PackTree(srcDir, outPath string) (*PackResult, error) {
 	}
 
 	// Collect entries deterministically: walk, filter, sort.
-	entries, totalBytes, err := collectEntries(absSrc)
+	entries, totalBytes, drafts, err := collectEntries(absSrc, dropDrafts)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +207,7 @@ func PackTree(srcDir, outPath string) (*PackResult, error) {
 		Entries:    len(entries),
 		BytesIn:    totalBytes,
 		BytesOut:   outInfo.Size(),
+		Drafts:     drafts,
 	}, nil
 }
 
@@ -187,9 +219,7 @@ type packEntry struct {
 	absPath string
 }
 
-func collectEntries(srcDir string) ([]packEntry, int64, error) {
-	var entries []packEntry
-	var totalBytes int64
+func collectEntries(srcDir string, dropDrafts bool) (entries []packEntry, totalBytes int64, drafts int, err error) {
 	walkErr := filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -222,6 +252,14 @@ func collectEntries(srcDir string) ([]packEntry, int64, error) {
 		if !mode.IsRegular() && !d.IsDir() {
 			return fmt.Errorf("bundle/pack: unsupported entry type for %s (only regular files and directories allowed)", rel)
 		}
+		if dropDrafts && IsDraftEntry(rel, d.IsDir()) {
+			// Counted, never an entry: a bundle leaves its drafts behind and
+			// the packer says how many. Asked once the entry is known to be
+			// a regular file or a directory, so a symlink or a device named
+			// like a draft is refused above as any other is.
+			drafts++
+			return nil
+		}
 		entries = append(entries, packEntry{
 			rel:     rel,
 			isDir:   d.IsDir(),
@@ -234,10 +272,10 @@ func collectEntries(srcDir string) ([]packEntry, int64, error) {
 		return nil
 	})
 	if walkErr != nil {
-		return nil, 0, fmt.Errorf("bundle/pack: walk %s: %w", srcDir, walkErr)
+		return nil, 0, 0, fmt.Errorf("bundle/pack: walk %s: %w", srcDir, walkErr)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
-	return entries, totalBytes, nil
+	return entries, totalBytes, drafts, nil
 }
 
 // writeZipEntry writes one packEntry into the ZIP and feeds its file

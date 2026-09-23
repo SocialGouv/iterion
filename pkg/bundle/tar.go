@@ -87,6 +87,9 @@ func extractTarGz(r io.Reader, dest string) (int, error) {
 				return lim.written, err
 			}
 		case tar.TypeReg, tar.TypeRegA: //nolint:staticcheck // TypeRegA marks regular files in legacy tar archives we must still read
+			if IsDraftEntry(hdr.Name, false) {
+				continue // an author document never leaves an archive (see extractZip)
+			}
 			if err := lim.writeFile(hdr.Name, fileMode(hdr.Mode), hdr.Size, tr); err != nil {
 				return lim.written, err
 			}
@@ -127,6 +130,14 @@ func extractZip(zr *zip.Reader, dest string) (int, error) {
 		}
 		if !mode.IsRegular() {
 			return lim.written, fmt.Errorf("bundle: unsupported entry type for %s (only regular files and directories allowed)", name)
+		}
+		if IsDraftEntry(name, false) {
+			// An author document never leaves an archive: one packed before
+			// the rule, or by hand, may carry a draft, and the extracted tree
+			// has to be a function of the content hash — which does not see
+			// drafts — because Open shares one cache slot between every
+			// archive that hashes alike. Not written, not counted as written.
+			continue
 		}
 		rc, err := zf.Open()
 		if err != nil {
@@ -244,6 +255,13 @@ func collectContentHash(dir string) (string, error) {
 		rel, relErr := filepath.Rel(dir, path)
 		if relErr != nil {
 			return relErr
+		}
+		// The extraction-side walker applies the packer's draft rule too,
+		// so the two hash walkers agree on any tree: an extracted tree —
+		// where no draft was written — hashes as the packer hashed its
+		// source, and a tree with a draft on disk hashes as one without.
+		if IsDraftEntry(rel, false) {
+			return nil
 		}
 		files = append(files, filepath.ToSlash(rel))
 		return nil
