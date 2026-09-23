@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -132,6 +133,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 	if spec.FilePath == "" && spec.Source == "" {
 		return nil, errors.New("runview: file_path or source is required")
+	}
+	if workflowfile.IsAuthorDocument(spec.FilePath) {
+		// A draft is refused before anything is reserved, admitted or
+		// queued: the pipeline queue persists a run before compiling it,
+		// so the compile floor alone would leave a queued run behind.
+		return nil, bundle.AuthorDocumentError(spec.FilePath)
 	}
 	// Only the cloud publisher persists Trust and RepoSHAExpected onto the run
 	// document. The in-process path builds its run from its own field list, so

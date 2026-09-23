@@ -21,6 +21,24 @@ func IsWorkflowFile(path string) bool {
 	return false
 }
 
+// AuthorExtension is the suffix of an author document — the YAML twin a
+// `.bot` can be written as (pkg/dsl/author) — a way of WRITING a workflow
+// file, never one. It is deliberately not an entry of Extensions:
+// IsWorkflowFile stays false for it, so no surface that launches, lists,
+// packs or stores a workflow takes a draft for the truth; the readers that
+// accept one (validate, fmt, diagram, the MCP validate tool) ask
+// IsAuthorDocument by name, and every launcher refuses it by name.
+const AuthorExtension = ".bot.yaml"
+
+// IsAuthorDocument reports whether path names an author document. The
+// suffix is matched case-folded, as bundle.Detect folds `.BOT` and
+// `.BOTZ`: every door asks this one predicate on the path as written,
+// so a `DRAFT.BOT.YAML` is refused at the first door rather than read as
+// a parse error at the last.
+func IsAuthorDocument(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), AuthorExtension)
+}
+
 // CommentText reports whether line is a comment line of a workflow source —
 // a `#` or `##` after optional indentation — and returns its text with the
 // hashes and one following space removed (`## note` and `# note` both yield

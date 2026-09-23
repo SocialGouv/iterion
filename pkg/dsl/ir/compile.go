@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -1537,6 +1538,11 @@ func (c *compiler) compileSubbots() {
 		}
 		if sd.Source == "" {
 			c.errorfAt(DiagSubbotNoSource, sd.Name, "", "subbot %q has no `source:` — a child .bot path is required", sd.Name)
+		} else if workflowfile.IsAuthorDocument(sd.Source) {
+			// Refused where the parent is compiled — validate and launch
+			// alike — not in the runtime resolver, which runs after the
+			// parent has launched and which a snapshot bypasses.
+			c.errorfAt(DiagSubbotAuthorSource, sd.Name, "", "subbot %q names an author document as its source (%s): a child is a .bot; write the .bot it stands for and name that", sd.Name, sd.Source)
 		}
 		if sd.Output != "" {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)

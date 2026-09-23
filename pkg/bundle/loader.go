@@ -55,6 +55,12 @@ func Detect(path string) (Kind, error) {
 	if workflowfile.IsWorkflowFile(lower) {
 		return KindBot, nil
 	}
+	// An author document is refused by name, apart from the unsupported
+	// extensions: the caller that reads one (validate) tells the refusal
+	// with errors.Is and routes it; every launcher shows it as written.
+	if workflowfile.IsAuthorDocument(path) {
+		return KindBot, AuthorDocumentError(path)
+	}
 	return KindBot, fmt.Errorf("bundle: unsupported workflow extension for %s (expected .bot or .botz)", path)
 }
 

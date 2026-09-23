@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
@@ -618,7 +619,11 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	}
 	absPath, err := c.server.resolveWorkflowPath(filePath, req.Source)
 	if err != nil {
-		c.sendError("invalid_file_path", err.Error(), env.AckID)
+		code := "invalid_file_path"
+		if errors.Is(err, bundle.ErrAuthorDocument) {
+			code = "author_document"
+		}
+		c.sendError(code, err.Error(), env.AckID)
 		return
 	}
 	hostInputs, err := c.server.assistantChatHostInputs(c.authCtx(), runMeta)

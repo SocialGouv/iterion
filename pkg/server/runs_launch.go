@@ -16,7 +16,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -339,6 +341,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
 	}
+	// The identity the caller asked for is checked BEFORE bot resolution
+	// rewrites it and before any source is materialised: an author
+	// document is a draft, refused with a stable code, nothing written.
+	if workflowfile.IsAuthorDocument(req.FilePath) {
+		s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", bundle.AuthorDocumentError(req.FilePath))
+		span.SetStatus(codes.Error, "author document")
+		return
+	}
 	if req.RoutingPolicy != nil {
 		// Refuse a malformed contract BEFORE any work happens — a bad
 		// expression discovered at the terminal would strand a finished
@@ -396,7 +406,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		var pathErr error
 		absPath, pathErr = s.resolveWorkflowPath(req.FilePath, req.Source)
 		if pathErr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+			s.httpSourcePathError(w, r, pathErr, "invalid file_path: %v")
 			span.SetStatus(codes.Error, "invalid file_path")
 			return
 		}
@@ -654,6 +664,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "usage cap reached")
 			return
 		}
+		if errors.Is(err, bundle.ErrAuthorDocument) {
+			s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
+			span.SetStatus(codes.Error, "author document")
+			return
+		}
 		if s.writeQueueOutageError(w, r, "launch", err) {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "queue unavailable")
@@ -757,7 +772,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		runMeta,
 	)
 	if pathErr != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", pathErr)
+		s.httpSourcePathError(w, r, pathErr, "%v")
 		span.SetStatus(codes.Error, "resume source unresolvable")
 		return
 	}
@@ -859,6 +874,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "server draining")
 			return
 		}
+		if errors.Is(err, bundle.ErrAuthorDocument) {
+			s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
+			span.SetStatus(codes.Error, "author document")
+			return
+		}
 		s.writeResumeError(w, r, err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "resume failed")
@@ -957,4 +977,17 @@ func parseTimeout(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("timeout must not be negative")
 	}
 	return d, nil
+}
+
+// httpSourcePathError answers a workflow source the resolver refused. An
+// author document named as the source carries its stable error_code, so a
+// client tells that refusal from a bad path; anything else is the message
+// under the caller's format. Launch and resume answer through this one
+// function so the two doors cannot drift.
+func (s *Server) httpSourcePathError(w http.ResponseWriter, r *http.Request, pathErr error, format string) {
+	if errors.Is(pathErr, bundle.ErrAuthorDocument) {
+		s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", pathErr)
+		return
+	}
+	s.httpErrorFor(w, r, http.StatusBadRequest, format, pathErr)
 }

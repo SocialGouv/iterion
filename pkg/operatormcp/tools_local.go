@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -639,6 +641,11 @@ func handleLocalRun(ctx context.Context, s *Server, raw json.RawMessage) (string
 		return "", false, fmt.Errorf("file_path is required")
 	}
 	filePath := s.resolvePath(args.FilePath)
+	// A draft is refused before the pre-flight, on its own: validate reads
+	// an author document, and a run must never follow from one.
+	if workflowfile.IsAuthorDocument(filePath) {
+		return "", false, bundle.AuthorDocumentError(filePath)
+	}
 
 	// Synchronous pre-flight: reject an invalid workflow here with the
 	// full diagnostics instead of letting the detached runner die out of
@@ -756,6 +763,9 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 	}
 	if filePath == "" {
 		return "", false, fmt.Errorf("run %s recorded no workflow file path — pass file_path explicitly", r.ID)
+	}
+	if workflowfile.IsAuthorDocument(filePath) {
+		return "", false, bundle.AuthorDocumentError(filePath)
 	}
 
 	// The live-runner check and the spawn must be one atomic section:

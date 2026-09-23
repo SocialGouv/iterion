@@ -295,6 +295,16 @@ func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, 
 	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
 }
 
+// httpErrorCode is httpErrorFor with a stable machine-readable `error_code`
+// beside the message — the key the studio client and the other coded
+// refusals of these endpoints use — for a refusal a client acts on rather
+// than displays (an author document named where a workflow was expected:
+// `author_document`).
+func (s *Server) httpErrorCode(w http.ResponseWriter, r *http.Request, status int, code, format string, args ...any) {
+	s.reflectAllowedOrigin(w, r)
+	httpx.WriteJSON(w, status, map[string]string{"error": fmt.Sprintf(format, args...), "error_code": code})
+}
+
 // requireSafeOrigin gates state-changing endpoints. Any request whose Origin
 // header is set and not in the allowlist is rejected with 403 BEFORE the
 // handler runs — preventing a malicious page in another tab from POSTing

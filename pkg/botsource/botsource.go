@@ -25,6 +25,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // MainBotFile is the required workflow entry of every bundle — mirrors
@@ -151,6 +152,13 @@ func (s *BotSource) Validate() error {
 	for key, content := range s.Files {
 		if err := safeBundlePath(key); err != nil {
 			return err
+		}
+		// An author document is a draft of a .bot, never one: the store
+		// holds what launches, so a `.bot.yaml` pushed by name — whole
+		// bundle or one file — is refused HERE, the chokepoint every write
+		// path crosses, with the typed refusal every launcher shares.
+		if workflowfile.IsAuthorDocument(key) {
+			return bundle.AuthorDocumentError(key)
 		}
 		// The store carries JSON/BSON text: a non-UTF-8 file would be
 		// corrupted on the encoding round trip. Enforced HERE (the one
