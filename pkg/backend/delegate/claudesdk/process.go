@@ -110,11 +110,18 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 		args = append(args, "--thinking-display", cfg.ThinkingDisplay)
 	}
 
-	if len(cfg.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
+	// Both flags are SETS, and both options APPEND (WithAllowedTools /
+	// WithDisallowedTools), so a caller composing several bounds onto one
+	// spawn legitimately produces the same name twice — the gated
+	// structured-output pass withholds a roster that already contains `Task`
+	// plus the orchestration list that also names it. Deduplicating here, at
+	// the one place the slice becomes argv, keeps every composition honest
+	// instead of asking each caller to know what the others added.
+	if names := dedupeNames(cfg.AllowedTools); len(names) > 0 {
+		args = append(args, "--allowedTools", strings.Join(names, ","))
 	}
-	if len(cfg.DisallowedTools) > 0 {
-		args = append(args, "--disallowedTools", strings.Join(cfg.DisallowedTools, ","))
+	if names := dedupeNames(cfg.DisallowedTools); len(names) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(names, ","))
 	}
 	if cfg.PermissionMode != "" {
 		args = append(args, "--permission-mode", cfg.PermissionMode)
@@ -557,6 +564,25 @@ func mergeCmdEnv(base []string, override map[string]string) []string {
 		if v := override[k]; v != "" {
 			out = append(out, k+"="+v)
 		}
+	}
+	return out
+}
+
+// dedupeNames returns names with duplicates removed, first occurrence kept.
+// Order is preserved because the lists are read by humans in logs and pinned
+// by tests; a sorted result would churn both.
+func dedupeNames(names []string) []string {
+	if len(names) < 2 {
+		return names
+	}
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
 	}
 	return out
 }

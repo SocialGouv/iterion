@@ -143,7 +143,10 @@ var claudeNativeForCanonical = map[string][]string{
 //     (Agent/Task/TaskOutput/Monitor) stays by default — that adaptivity is
 //     the point of the backend — and goes with the opt-in knob for a
 //     deployment whose served model family hallucinates task ids and
-//     deadlocks on TaskOutput. Ultracode nodes keep everything.
+//     deadlocks on TaskOutput. An ultracode node keeps the whole
+//     orchestration surface on the spawn that can be gated; the
+//     structured-output spawn of a GATED node keeps none of it, because
+//     nothing there can run the policy (see formatOutput).
 func claudeSpawnBounds(task Task) []claudesdk.Option {
 	var opts []claudesdk.Option
 	if strictMCPFromEnv() {
@@ -245,6 +248,80 @@ func claudeNativeDisallowedTools(allowed []string, declared, diagnosticShell boo
 		}
 	}
 	return disallowed
+}
+
+// gatedFormattingWithheld is everything the structured-output spawn of a
+// GATED task withholds: the whole native roster and the whole orchestration
+// surface this package enumerates.
+//
+// The roster half is the declaration's stand-in — a declaration has no role on
+// a spawn where nothing may run, and emitting it would name a tool on
+// --allowedTools and on --disallowedTools at once. The orchestration half is
+// the part the roster misses: `claudeNativeTools` happens to carry `Task`, so
+// `Task` was withheld by accident while `Agent` — the spelling the current CLI
+// uses — `TaskOutput` and `Monitor` were not, and `Workflow` survived on an
+// ultracode node. claudeSpawnBounds removes those only for a non-ultracode
+// node, or under an opt-in knob that is off by default; neither condition has
+// anything to do with the gate, and this spawn has no gate at all.
+//
+// It is NOT in claudeSpawnBounds: that helper runs on both spawns, and a
+// withholding that belongs to one of them deleted a gated node's own declared
+// tools when it was put there.
+//
+// What this costs, named rather than assumed: a node whose first pass was cut
+// off mid-orchestration (the `--max-turns` case this pass exists for) can no
+// longer collect its background work here. `bots/whats-next` is the shipped
+// example — ultracode, `permission: deny`, an output schema. The exchange is
+// deliberate: collecting it meant running tools the operator asked to approve,
+// on the one spawn where no approval can be asked.
+//
+// This withholding is the ENFORCED half, and it is incomplete: it names a
+// roster this project does not own, so the tools outside all three lists
+// survive it — #1651 tracks the roster itself. The sentence the gated pass
+// also carries ("call no tool other than StructuredOutput") covers those names
+// whatever they are spelled, but only while the model cooperates, and the
+// threat here is data in the resumed transcript. It is defence in depth beside
+// the flag, never in place of it.
+func gatedFormattingWithheld() []string {
+	withheld := claudeNativeDisallowedTools(nil, true, false)
+	withheld = append(withheld, orchestrationTools...)
+	withheld = append(withheld, workflowOrchestrationTools...)
+	// What the live CLI STILL registered once the three lists above were
+	// withheld, read from its own `system/init` roster on 2.1.220 rather than
+	// guessed: CronCreate, CronDelete, CronList, EnterWorktree, ExitWorktree,
+	// ReportFindings, ScheduleWakeup, SendMessage, StructuredOutput, TaskStop.
+	// All but StructuredOutput schedule future work, reach another session, or
+	// MOVE THE WORKTREE the session acts in — which is the very thing the
+	// engine's parallel-branch guard protects. StructuredOutput is the one
+	// tool this pass needs and is deliberately kept.
+	//
+	// BashOutput, KillShell and RemoteTrigger are withheld too: they register
+	// in other configurations of the same CLI, and withholding a name this
+	// pass has no use for costs nothing.
+	//
+	// Listed here, in the gated arm alone, so neither `orchestrationTools` nor
+	// the env knob that reads it changes meaning. And the list remains an
+	// enumeration of a roster this project does not own (#1651) — it is read
+	// from one CLI version and will go stale; the pass's own instruction is
+	// what covers whatever the next version adds.
+	withheld = append(withheld,
+		"EnterWorktree", "ExitWorktree",
+		"CronCreate", "CronDelete", "CronList",
+		"ScheduleWakeup", "SendMessage", "RemoteTrigger", "ReportFindings",
+		"BashOutput", "KillShell", "TaskStop")
+	// `Task` is on the native roster AND in orchestrationTools, so the union
+	// repeats it. The argv join dedupes for every caller, but a list that
+	// names a tool twice is a poor witness for the tests that read it.
+	seen := make(map[string]bool, len(withheld))
+	out := withheld[:0]
+	for _, name := range withheld {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
@@ -1425,8 +1502,13 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// Nothing is lost: a declaration has no role on a spawn where nothing may
 	// run, and its own disallow half is a subset of the whole roster.
 	// StructuredOutput, the only tool this pass needs, is not on the roster.
+	// Permission.Enabled() is the predicate on purpose, and it is the same
+	// expression wirePermissionHook gates on: spawn #1 carries the hook
+	// exactly when this arm withholds, so the two cannot disagree about which
+	// nodes are gated. A narrower neighbour (CanAsk) would leave a
+	// `permission: deny` node here and a mode-only one would leave `ask`.
 	if task.Permission.Enabled() {
-		opts = append(opts, claudesdk.WithDisallowedTools(claudeNativeDisallowedTools(nil, true, false)...))
+		opts = append(opts, claudesdk.WithDisallowedTools(gatedFormattingWithheld()...))
 	} else {
 		opts = append(opts, claudeToolOptions(task, nil)...)
 	}
@@ -1535,7 +1617,19 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint, taskSandboxed(task))...)
 	opts = append(opts, perTaskSpawnOpts(task)...)
 
+	// A GATED node gets one extra sentence — advisory defence in depth beside
+	// the withholding, for the names the roster misses. It is scoped to the
+	// gated arm because an UNGATED structured-output pass legitimately does
+	// tool work: it is the `--max-turns` fallback for a first pass cut off
+	// mid-run, and 54 of the catalog's 57 two-pass nodes are ungated. And it
+	// exempts StructuredOutput by name: that tool is how the agent RETURNS
+	// its result (the permission gate exempts it for the same reason), so a
+	// blanket "call no tools" would push every gated schema'd node onto the
+	// text-parsing fallback.
 	prompt := "Format your complete findings as JSON matching the required output schema."
+	if task.Permission.Enabled() {
+		prompt += " Do not call any tool other than StructuredOutput; just return the JSON."
+	}
 
 	return promptWithTimeout(fmtCtx, prompt, killAll, opts...)
 }
