@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.194.0](https://github.com/SocialGouv/iterion/compare/v3.193.0...v3.194.0) (2026-09-23)
+
+### Features
+
+* **backends:** a workspace .claude/commands/ command reaches a claw node ([#1418](https://github.com/SocialGouv/iterion/issues/1418) lot 1) ([#1712](https://github.com/SocialGouv/iterion/issues/1712)) ([aac4480](https://github.com/SocialGouv/iterion/commit/aac448056800fcbd977eed30b150586126a4d08b))
+
+    <details><summary>why</summary>
+
+    ## What
+
+    </details>
+
 ## [3.193.0](https://github.com/SocialGouv/iterion/compare/v3.192.2...v3.193.0) (2026-09-23)
 
 ### Features
