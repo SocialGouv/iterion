@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -1055,7 +1056,7 @@ func TestProdWatch_ProxyEnvDoesNotDisarmTheGuard(t *testing.T) {
 		}
 		_, stderr, err := runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, node).Script, inputs, nil, map[string]string{"grafana_token": h.tokenFile}),
 			[]string{"HTTPS_PROXY=http://127.0.0.1:9", "https_proxy=http://127.0.0.1:9"})
-		if err == nil || !(strings.Contains(stderr, "SSRF-unsafe") || strings.Contains(stderr, "must be https")) {
+		if err == nil || (!strings.Contains(stderr, "SSRF-unsafe") && !strings.Contains(stderr, "must be https")) {
 			t.Fatalf("%s: strict posture must refuse the loopback target even with a proxy env naming it: err=%v stderr=%s", node, err, stderr)
 		}
 	}
@@ -1257,7 +1258,7 @@ func TestProdWatch_DecideLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		al, _ := os.ReadFile(out["alertlog_file"].(string))
-		if !(strings.Contains(string(al), `"fp": "probe:api"`) || strings.Contains(string(al), `"fp":"probe:api"`)) {
+		if !strings.Contains(string(al), `"fp": "probe:api"`) && !strings.Contains(string(al), `"fp":"probe:api"`) {
 			t.Fatalf("the alert ledger must carry the posted alert: %s", al)
 		}
 		tk, _ := os.ReadFile(out["tick_file"].(string))
@@ -1333,24 +1334,15 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	}
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
+	// Every git the test itself runs goes through gittest: auto-maintenance
+	// refused, the operator's global config cut off, a fixed identity.
 	git := func(args ...string) string {
 		t.Helper()
-		c := exec.Command("git", args...)
-		c.Dir = h.ws
-		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
-		out, err := c.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return string(out)
+		return gittest.Run(t, h.ws, args...)
 	}
 	bare := filepath.Join(t.TempDir(), "remote.git")
-	if out, err := exec.Command("git", "init", "--bare", "-q", bare).CombinedOutput(); err != nil {
-		t.Fatalf("bare: %v %s", err, out)
-	}
+	gittest.Run(t, filepath.Dir(bare), "init", "--bare", "-q", bare)
 	git("init", "-q", "-b", "main")
-	git("config", "user.email", "t@x")
-	git("config", "user.name", "t")
 	_ = os.WriteFile(filepath.Join(h.ws, "README.md"), []byte("ops\n"), 0o644)
 	git("add", "README.md")
 	git("commit", "-q", "-m", "init")
@@ -1367,8 +1359,9 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 		return map[string]any{"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": gen - 1, "state_commit": true, "workspace": h.ws, "state_dir": ".prod-watch"}
 	}
 	run := func(in map[string]any) (map[string]any, string, error) {
-		return runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, "commit_state").Script, in, nil, nil),
-			[]string{"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x"})
+		// The node's own git subprocesses inherit the same scrubbed
+		// environment (last duplicate key wins in exec.Cmd.Env).
+		return runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, "commit_state").Script, in, nil, nil), gittest.Env())
 	}
 	// happy path: committed, pushed, the lock file NOT in git
 	out, stderr, err := run(stage(1))
