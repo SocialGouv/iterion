@@ -1,4 +1,4 @@
-# lax: `max_tokens: 1.0` passes the schema (a zero-fraction float types as an integer) — the .bot refuses a Float where an integer is wanted (E002); the converter checks the YAML tag
+# lax: `max_tokens: 1.0` passes the schema (a zero-fraction float types as an integer) — the .bot refuses a Float where an integer is wanted (E002); the converter checks the YAML tag and refuses it (E051)
 dsl: 2
 nodes:
   - agent: a

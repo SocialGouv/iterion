@@ -217,8 +217,15 @@ func (b *schemaBuilder) def(name string, build func() obj) obj {
 const (
 	identPattern       = `^[A-Za-z_][A-Za-z0-9_]*$`
 	dottedIdentPattern = `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`
-	envPattern         = `^\$\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\}$`
 )
+
+// EnvFormPattern is the environment form a quoted EnumOrEnv value takes,
+// `${VAR}` or `${VAR:-default}`, substituted at run time. The default may
+// be anything, another environment form included (`${A:-${B:-high}}`, a
+// spelling the shipped bots use); the pattern is the one the author schema
+// renders and the one the converter (pkg/dsl/author) holds a value to, so
+// the two cannot disagree on what an environment form is.
+const EnvFormPattern = `^\$\{[A-Za-z_][A-Za-z0-9_]*(:-.*)?\}$`
 
 // accepts reports whether the property is in the profile's window.
 func (b *schemaBuilder) accepts(p Property) bool {
@@ -369,10 +376,12 @@ func (b *schemaBuilder) form(f Form, values []string, body string) obj {
 	case Enum:
 		return obj{"enum": stringsToAny(values)}
 	case EnumOrEnv:
-		return obj{"anyOf": []any{
-			obj{"enum": stringsToAny(values)},
-			obj{"type": "string", "pattern": envPattern, "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then"},
-		}}
+		// The .bot takes the words bare or quoted and ANY other value quoted,
+		// kept as written for a run-time substitution; the document says
+		// quoted with a quoted scalar, which a schema cannot see.
+		// `examples` carries the words for completion (an annotation: it
+		// validates nothing), where an `enum` would refuse the run-time value.
+		return obj{"type": "string", "examples": stringsToAny(values), "description": "One of " + strings.Join(values, ", ") + " — or any other string, kept as written for a run-time substitution ('$EFFORT', '${EFFORT:-high}', a template). The .bot takes the words bare or quoted and anything else quoted; the document says quoted with a quoted scalar, which this schema cannot see: a plain word outside the list passes here and is refused by the converter (E051)."}
 	case IdentList:
 		return obj{"type": "array", "items": obj{"type": "string", "pattern": identPattern}}
 	case StringList, ToolList, SkillList, MixedList:
@@ -524,8 +533,12 @@ func (b *schemaBuilder) entryObject(e *Entries, extra obj, requiredKeys []string
 
 // headerKind is a declaration written on a header line (group, use): the
 // kind's key carries the name, the header parts follow, then the body.
+// headerKind is the shape of a declaration written with its header — a
+// group, a use — under its own definition name: the kind's BODY keeps the
+// bare name, so a block property whose Body names the same kind gets the
+// body's shape, never the header's.
 func (b *schemaBuilder) headerKind(k Kind) obj {
-	return b.def(k.Name, func() obj {
+	return b.def("header."+k.Name, func() obj {
 		nameDoc := "The declaration's name"
 		if k.Name == "use" {
 			nameDoc = "The group instantiated"

@@ -11,7 +11,21 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
+
+// directiveLine is the 1-based line of the first strict-escape directive
+// written as a comment of text, 0 when there is none.
+func directiveLine(text string) int {
+	line := 0
+	for l := range strings.Lines(text) {
+		line++
+		if c, ok := workflowfile.CommentText(l); ok && parser.IsStrictEscapeDirective(c) {
+			return line
+		}
+	}
+	return 0
+}
 
 // Verify reports whether text — the output of Unparse(f) — reads back as the
 // program f: it parses without an error and compiles to the same workflow
@@ -75,6 +89,38 @@ func Verify(f *ast.File, text string) error {
 		}
 	}
 	f = canonicalPrompts(f)
+	if err := reread(f, text); err != nil {
+		return explainWindow(f, text, err)
+	}
+	return nil
+}
+
+// explainWindow appends to a failure of the re-read the one cause the text
+// itself shows: the strict-escape directive written where profile 1 does not
+// read it — among the first lines of the file and before its first
+// non-comment line, a frozen rule (parser.Preamble.StrictEscape). The
+// frontmatter is comments and goes above the directive, where the catalog
+// reader wants it, so a long one pushes the directive out of that window:
+// it is in the text and not in effect, and every escape of the text reads
+// as its two characters. A text that reads the same all the same — no value
+// needed the strict form — is not refused for it: the note explains a
+// failure, it never makes one.
+func explainWindow(f *ast.File, text string, err error) error {
+	if f.EffectiveProfile() > ast.DefaultProfile {
+		return err
+	}
+	line := directiveLine(text)
+	if line == 0 || parser.ReadPreamble(text).StrictEscape {
+		return err
+	}
+	return fmt.Errorf("%w; the strict-escape directive is written at line %d, where profile 1 does not read it (the directive is read among the first lines of the file only, and %d lines of comments — the frontmatter — stand above it): shorten the frontmatter, or write the file in profile 2, which reads standard escapes without a directive", err, line, line-1)
+}
+
+// reread parses text again and reports the first way it fails to be the
+// program f: it does not parse, reads as another profile, compiles to
+// another workflow, carries other contracts or comments, or — when there is
+// no compiled program to compare — mirrors as another document.
+func reread(f *ast.File, text string) error {
 	// The round-trip is parsed under the document's own source file, so an
 	// {{include}} resolves — or is refused — on both sides alike. A document
 	// from the JSON transport has no source file: naming one here made the
@@ -130,11 +176,19 @@ func Verify(f *ast.File, text string) error {
 		// declarations rather than in them, the writer may add the
 		// strict-escape directive, and sameComments above is what holds
 		// them — by the line each names, not by its rank in a list.
-		a, err := ast.MarshalFileWithoutComments(f)
+		// The header is not program either: `dsl: 1` and no header read
+		// alike (EffectiveProfile, compared above) and the writer omits
+		// profile 1's header, so the mirror carries the profile as the text
+		// reads it, not as the header spelled it — or every profile-1 file
+		// written with its header was refused here the moment it did not
+		// compile.
+		fa, fb := *f, *pr.File
+		fa.Profile, fb.Profile = fa.EffectiveProfile(), fb.EffectiveProfile()
+		a, err := ast.MarshalFileWithoutComments(&fa)
 		if err != nil {
 			return fmt.Errorf("cannot compare the document: %w", err)
 		}
-		b, err := ast.MarshalFileWithoutComments(pr.File)
+		b, err := ast.MarshalFileWithoutComments(&fb)
 		if err != nil {
 			return fmt.Errorf("cannot compare the serialised source: %w", err)
 		}

@@ -1,0 +1,13 @@
+# lax: a prompt body is any string to the schema; a body whose first line is indented deeper than a later one has no .bot written form — the lexer would end the body at the shallower line — and the converter refuses it (E053)
+dsl: 2
+prompts:
+  p: |2
+      Indented first line.
+    Shallower second line.
+nodes:
+  - agent: a
+    model: m
+    system: p
+workflow:
+  name: w
+  entry: a

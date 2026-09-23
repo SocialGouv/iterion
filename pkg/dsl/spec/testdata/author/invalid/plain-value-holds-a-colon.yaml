@@ -1,0 +1,8 @@
+# refused: a plain value holding `: ` reads as a nested mapping (YAML refuses the document); the whole value is quoted
+dsl: 2
+nodes:
+  - tool: run_tests
+    command: go test ./... 2>&1 | tail -n 1 | jq -R '{ok: true, summary: .}'
+workflow:
+  name: w
+  entry: run_tests

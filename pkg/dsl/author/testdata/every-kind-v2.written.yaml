@@ -1,7 +1,3 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/SocialGouv/iterion/main/docs/references/iterion-author.schema.json
-# Every declaration kind, every node kind, every block, every header and
-# entry shape the author schema knows, in one profile-2 document. A
-# fixture of the schema, not a program: nothing here compiles.
 dsl: 2
 catalog:
   name: release-readiness
@@ -11,13 +7,29 @@ catalog:
 imports: [lib/schemas.bot]
 vars:
   goal: string
-  max_fix_passes: {type: int, default: 3}
-  ratio: {type: float, default: 0.5}
-  dry: {type: bool, default: true}
-  labels: {type: "string[]", default: '["a", "b"]'}
-  blob: {type: json, default: '{"k": 1}'}
-  mode: {type: string, enum: [fast, slow], default: fast}
-  agent_bin: {type: string, matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$", default: codex}
+  max_fix_passes:
+    type: int
+    default: 3
+  ratio:
+    type: float
+    default: 0.5
+  dry:
+    type: bool
+    default: true
+  labels:
+    type: string[]
+    default: '["a", "b"]'
+  blob:
+    type: json
+    default: '{"k": 1}'
+  mode:
+    type: string
+    enum: [fast, slow]
+    default: fast
+  agent_bin:
+    type: string
+    matching: ^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$
+    default: codex
 presets:
   dev:
     goal: ship
@@ -32,10 +44,10 @@ attachments:
     accept_mime: [image/png]
     required: false
 secrets:
-  api_token: "${API_TOKEN}"
-  stored_secret:
+  api_token: ${API_TOKEN}
+  stored_secret: null
   deploy_key:
-    value: "${DEPLOY_KEY}"
+    value: ${DEPLOY_KEY}
     as: file
     mount_path: /run/secrets/deploy_key
     env: DEPLOY_KEY_PATH
@@ -43,21 +55,25 @@ secrets:
     hosts: [github.com]
     description: The deploy key
 schemas:
-  verdict: {ok: bool, notes: string}
+  verdict:
+    ok: bool
+    notes: string
   request:
-    kind: {type: string, enum: [bug, feature]}
-    files: "string[]"
+    kind:
+      type: string
+      enum: [bug, feature]
+    files: string[]
     payload: json
     score: float
     count: int
     upload: file
 prompts:
-  reviewer: |
+  reviewer: |-
     Review the diff.
 
     {{"{{"}} literal braces {{"}}"}}
     Read {{input.goal}} first.
-  terse: "One line."
+  terse: One line.
 cursors:
   depth:
     description: How deep to read
@@ -66,8 +82,8 @@ cursors:
       deep: Read every file
   tone:
     bands:
-      "0..0.5": Be terse
-      "0.5..1": Be verbose
+      0..0.5: Be terse
+      0.5..1: Be verbose
 supervisors:
   coach:
     watches: [survey]
@@ -75,7 +91,7 @@ supervisors:
     system: reviewer
     cooldown: 2m
     max_evals: 3
-    monitors: ["tool_call:*"]
+    monitors: ['tool_call:*']
 mcp_servers:
   forge:
     transport: stdio
@@ -99,11 +115,11 @@ contracts:
     inputs:
       goal: string
       files:
-        type: "string[]"
+        type: string[]
         description: Files to read
         required: false
         nullable: true
-        default: ["a", "b"]
+        default: [a, b]
         min_items: 0
         max_items: 10
         file:
@@ -119,30 +135,28 @@ contracts:
         kind: min_length
         port: input.goal
         params: {min: 2}
-      declared_only:
+      declared_only: null
     effects:
       opens_pr:
         description: Opens a pull request
-        paid: false
 groups:
   - group: review
     params: [target]
     nodes:
       - agent: look
         model: anthropic/claude-opus-5
-        user: "Look at {{params.target}}"
+        user: Look at {{params.target}}
       - judge: weigh
         model: anthropic/claude-opus-5
         output: verdict
       - router: split
-        mode: fan_out_all
       - human: ask
         interaction: human
       - tool: run
         command: go test ./...
       - compute: score
         expr:
-          total: "input.a + input.b"
+          total: input.a + input.b
     edges:
       - look -> weigh
       - weigh -> done
@@ -150,7 +164,7 @@ groups:
 uses:
   - use: review
     as: r1
-    with: {target: docs, n: 3, ok: true}
+    with: {target: docs, n: "3", ok: "true"}
   - use: empty
     as: e1
 nodes:
@@ -165,8 +179,7 @@ nodes:
     publish: survey_out
     artifact_labels: [plan, review-ledger]
     system: reviewer
-    user: "Inline text is a prompt too"
-    session: "fresh"
+    user: Inline text is a prompt too
     session_slot: main
     tools: [read_file, bash, mcp.forge.*]
     tool_policy: [read_file]
@@ -177,7 +190,6 @@ nodes:
     reasoning_effort: "${VIBE_EFFORT:-max}"
     timeout: 20m
     readonly: true
-    full_access: false
     images: [diagram.png]
     interaction: async
     interaction_prompt: terse
@@ -186,9 +198,9 @@ nodes:
     compress: on
     auto_memory: off
     permission: ask
-    allow: ["Read(**)"]
-    ask: ["Bash(git *)"]
-    deny: ["Bash(rm *)"]
+    allow: [Read(**)]
+    ask: [Bash(git *)]
+    deny: [Bash(rm *)]
     needs: gpu
     fallbacks:
       - route: spare
@@ -197,10 +209,10 @@ nodes:
         provider: anthropic
         on: [usage_window, unavailable]
         metered: true
-        when: "vars.dry == false"
+        when: vars.dry == false
       - route: give_up
-        action: skip
         on: [any]
+        action: skip
     mcp:
       inherit: true
       servers: [forge]
@@ -217,24 +229,24 @@ nodes:
       pre_compact_inject: true
       visibility: bot
     sandbox:
-      mode: inline
       image: ghcr.io/example/img:1
       user: runner
       workspace_folder: /work
       host_state: none
       post_create: make setup
-      env: {CI: "1", MODE: fast}
-      mounts: ["/cache:/cache", host.sock]
+      env:
+        CI: "1"
+        MODE: fast
+      mounts: ['/cache:/cache', host.sock]
       network:
         mode: allowlist
         preset: iterion-default
         inherit: append
-        rules: ["!**.evil.site", github.com]
+        rules: ['!**.evil.site', github.com]
     cursors:
-      enabled: true
       depth: deep
-      tone: 0.7
-      other: "${TONE}"
+      tone: "0.7"
+      other: ${TONE}
   - judge: verdict
     model: anthropic/claude-opus-5
     output: verdict
@@ -242,7 +254,7 @@ nodes:
     sandbox: none
   - router: split
     mode: fan_out_each
-    over: "input.files"
+    over: input.files
     as: file
     key: file
     depends_on: previous
@@ -263,7 +275,7 @@ nodes:
     output: verdict
     publish: approval
     artifact_labels: [approval]
-    instructions: "Approve the release?"
+    instructions: Approve the release?
     system: reviewer
     model: anthropic/claude-opus-5
     interaction: human_or_host
@@ -271,7 +283,7 @@ nodes:
     interaction_model: anthropic/claude-haiku-4-5-20251001
     min_answers: 1
     await: best_effort
-    review_url: "{{outputs.open.url}}"
+    review_url: '{{outputs.open.url}}'
     posture: agent_verdict_ok
     merge_strategy: squash
     merge_into: current
@@ -298,22 +310,23 @@ nodes:
       model: anthropic/claude-opus-5
       agent_tools: [bash]
   - tool: script_node
-    script: "print('x')"
+    script: print('x')
     language: python3
     sandbox:
       build:
         dockerfile: Dockerfile
         context: .
-        args: {BASE: alpine}
+        args:
+          BASE: alpine
   - tool: comment
     action: forgejo.issue.comment
     connection: forge-main
     params:
       owner: SocialGouv
-      "user-id": 42
-      body: "{{outputs.survey.notes}}"
+      user-id: "42"
+      body: '{{outputs.survey.notes}}'
       wait: 30s
-    retry: 3
+    retry: "3"
     timeout: 30s
   - compute: converge
     description: Converges the verdicts
@@ -323,19 +336,19 @@ nodes:
     artifact_labels: [x]
     await: wait_all
     expr:
-      ok: "input.a && input.b"
-      notes: "concat(input.n1, input.n2)"
+      ok: input.a && input.b
+      notes: concat(input.n1, input.n2)
   - subbot: child
     description: Runs the child
     source: child.bot
-    with: {issue: "{{input.id}}", n: 2}
+    with: {issue: '{{input.id}}', n: "2"}
     output: verdict
     needs: slots
     isolated: true
   - emit: ready
     description: Announces readiness
     event: ready
-    with: {value: "{{outputs.converge.ok}}"}
+    with: {value: '{{outputs.converge.ok}}'}
   - wait: for_ready
     description: Waits for the announcement
     event: ready
@@ -348,14 +361,16 @@ nodes:
   - fail: rejected
     description: The change may not ship
     code: REJECTED
-    message: "No: {{outputs.verdict.notes}}"
+    message: 'No: {{outputs.verdict.notes}}'
     resumable: true
 workflow:
   name: release_readiness
   entry: survey
   contract: public
   vars:
-    wf_only: {type: string, default: x}
+    wf_only:
+      type: string
+      default: x
   attachments:
     extra: file
   budget:
@@ -383,9 +398,9 @@ workflow:
   repo_devbox: off
   workspace_checkpoint: on
   permission: deny
-  allow: ["Read(**)"]
-  ask: ["Edit(**)"]
-  deny: ["Bash(rm *)"]
+  allow: [Read(**)]
+  ask: [Edit(**)]
+  deny: [Bash(rm *)]
   tool_policy: [read_file]
   capabilities: [board.read, board.move]
   skills: [house.style]
@@ -397,4 +412,4 @@ workflow:
     - r1.weigh -> rejected else
     - converge -> approve as fix(3)
     - approve -> run_tests when "input.ok"
-    - "run_tests -> done with { tag: \"v1\" }"
+    - 'run_tests -> done with { tag: "v1" }'

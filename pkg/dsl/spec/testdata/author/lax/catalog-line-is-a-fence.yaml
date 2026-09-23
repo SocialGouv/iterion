@@ -1,0 +1,17 @@
+# lax: a description is any string to the schema; one whose text has a line reading as `---` — the fence that closes the .bot's frontmatter — would be cut there by every frontmatter reader, the keys below it lost in silence: the converter refuses it (E051)
+dsl: 2
+catalog:
+  name: release-notes
+  description: |
+    Drafts release notes from merged PRs.
+
+    ---
+
+    Runs nightly.
+  triggers: [schedule]
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a

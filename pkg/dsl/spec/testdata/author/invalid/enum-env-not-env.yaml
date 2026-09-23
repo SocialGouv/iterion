@@ -1,8 +1,0 @@
-# refused: a quoted reasoning effort outside the list must be an environment form
-dsl: 2
-nodes:
-  - agent: a
-    reasoning_effort: "very high"
-workflow:
-  name: w
-  entry: a

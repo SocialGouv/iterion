@@ -26,15 +26,17 @@ const parserPackagePath = "github.com/SocialGouv/iterion/pkg/dsl/parser"
 // by the spelling of a line.
 func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 	documentSurfaces := map[string]string{
-		"pkg/botimport/validate.go":  "an imported draft is one generated file",
-		"pkg/dsl/canon/canon.go":     "the canonical form rewrites one file on its own text — a unit is formatted file by file, each proven against itself, as the studio's per-file save is",
-		"pkg/dsl/migrate/migrate.go": "the migrator rewrites one file in place; a unit migrates file by file",
-		"pkg/dsl/unit/unit.go":       "the unit loader itself parses each file of the unit",
-		"pkg/dsl/unparse/verify.go":  "Verify re-parses the one file it wrote",
-		"pkg/runview/rewind_auto.go": "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
-		"pkg/server/cost_preview.go": "previews an uploaded document, the flattened unit (lot 3, remote launch)",
-		"pkg/server/server_dsl.go":   "the studio's parse endpoint hands the EDITOR a document from text, and the example loader parses the one program it serves — a bot in several files it reads as its unit (on disk) or serves flat (embedded); it also re-parses the MAIN alone to answer whether that one file was read whole",
-		"pkg/server/server_files.go": "the save guard normalises the document being saved",
+		"pkg/botimport/validate.go":                  "an imported draft is one generated file",
+		"pkg/dsl/author/author.go":                   "the converter reads ONE author document: it hands the parser the .bot text it spelled from the YAML, and returns the AST; the caller compiles it in its unit through LoadDirWithMainAST",
+		"pkg/dsl/author/internal/probecheck/main.go": "the authoring probe's harness: its --write mode reads one .bot to write its author document (no compile); its check mode compiles through LoadDirWithMainAST",
+		"pkg/dsl/canon/canon.go":                     "the canonical form rewrites one file on its own text — a unit is formatted file by file, each proven against itself, as the studio's per-file save is",
+		"pkg/dsl/migrate/migrate.go":                 "the migrator rewrites one file in place; a unit migrates file by file",
+		"pkg/dsl/unit/unit.go":                       "the unit loader itself parses each file of the unit",
+		"pkg/dsl/unparse/verify.go":                  "Verify re-parses the one file it wrote",
+		"pkg/runview/rewind_auto.go":                 "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
+		"pkg/server/cost_preview.go":                 "previews an uploaded document, the flattened unit (lot 3, remote launch)",
+		"pkg/server/server_dsl.go":                   "the studio's parse endpoint hands the EDITOR a document from text, and the example loader parses the one program it serves — a bot in several files it reads as its unit (on disk) or serves flat (embedded); it also re-parses the MAIN alone to answer whether that one file was read whole",
+		"pkg/server/server_files.go":                 "the save guard normalises the document being saved",
 		// Neither of the two below compiles anything: each asks of ONE file
 		// whether the parser read it whole, which is what tells the editor
 		// its document is a salvage. The unit's own diagnostics cannot

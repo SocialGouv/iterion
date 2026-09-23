@@ -38,7 +38,7 @@
         "groups": {
           "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
           "items": {
-            "$ref": "#/$defs/v1.group"
+            "$ref": "#/$defs/v1.header.group"
           },
           "type": "array"
         },
@@ -140,7 +140,7 @@
         "uses": {
           "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
           "items": {
-            "$ref": "#/$defs/v1.use"
+            "$ref": "#/$defs/v1.header.use"
           },
           "type": "array"
         },
@@ -637,7 +637,7 @@
       },
       "type": "array"
     },
-    "v1.group": {
+    "v1.header.group": {
       "additionalProperties": false,
       "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
       "properties": {
@@ -691,6 +691,44 @@
       },
       "required": [
         "group"
+      ],
+      "type": "object"
+    },
+    "v1.header.use": {
+      "additionalProperties": false,
+      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
+      "properties": {
+        "as": {
+          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "description": "The group instantiated",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "The parameter bindings; a number or a bool is the string it spells",
+          "type": "object"
+        }
+      },
+      "required": [
+        "as",
+        "use"
       ],
       "type": "object"
     },
@@ -1011,24 +1049,16 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
-              "type": "string"
-            }
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "examples": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
           ],
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "type": "string"
         },
         "sandbox": {
           "anyOf": [
@@ -1542,24 +1572,16 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
-              "type": "string"
-            }
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "examples": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
           ],
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "type": "string"
         },
         "sandbox": {
           "anyOf": [
@@ -1704,24 +1726,16 @@
           "type": "string"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
-              "type": "string"
-            }
+          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "examples": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
           ],
-          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "type": "string"
         },
         "router": {
           "description": "The node's name",
@@ -2347,44 +2361,6 @@
       },
       "type": "object"
     },
-    "v1.use": {
-      "additionalProperties": false,
-      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
-      "properties": {
-        "as": {
-          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
-        },
-        "use": {
-          "description": "The group instantiated",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
-        },
-        "with": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              }
-            ]
-          },
-          "description": "The parameter bindings; a number or a bool is the string it spells",
-          "type": "object"
-        }
-      },
-      "required": [
-        "as",
-        "use"
-      ],
-      "type": "object"
-    },
     "v1.vars": {
       "additionalProperties": {
         "anyOf": [
@@ -2654,7 +2630,7 @@
         "groups": {
           "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
           "items": {
-            "$ref": "#/$defs/v2.group"
+            "$ref": "#/$defs/v2.header.group"
           },
           "type": "array"
         },
@@ -2756,7 +2732,7 @@
         "uses": {
           "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
           "items": {
-            "$ref": "#/$defs/v2.use"
+            "$ref": "#/$defs/v2.header.use"
           },
           "type": "array"
         },
@@ -3253,7 +3229,7 @@
       },
       "type": "array"
     },
-    "v2.group": {
+    "v2.header.group": {
       "additionalProperties": false,
       "description": "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
       "properties": {
@@ -3307,6 +3283,44 @@
       },
       "required": [
         "group"
+      ],
+      "type": "object"
+    },
+    "v2.header.use": {
+      "additionalProperties": false,
+      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
+      "properties": {
+        "as": {
+          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "description": "The group instantiated",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "The parameter bindings; a number or a bool is the string it spells",
+          "type": "object"
+        }
+      },
+      "required": [
+        "as",
+        "use"
       ],
       "type": "object"
     },
@@ -3623,24 +3637,16 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
-              "type": "string"
-            }
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "examples": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
           ],
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "type": "string"
         },
         "sandbox": {
           "anyOf": [
@@ -4154,24 +4160,16 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
-              "type": "string"
-            }
+          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "examples": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
           ],
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "type": "string"
         },
         "sandbox": {
           "anyOf": [
@@ -4316,24 +4314,16 @@
           "type": "string"
         },
         "reasoning_effort": {
-          "anyOf": [
-            {
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultracode"
-              ]
-            },
-            {
-              "description": "An environment form, substituted at run time; the .bot also takes any quoted string, resolved then",
-              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\\}$",
-              "type": "string"
-            }
+          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "examples": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
           ],
-          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"
+          "type": "string"
         },
         "router": {
           "description": "The node's name",
@@ -4957,44 +4947,6 @@
           "type": "array"
         }
       },
-      "type": "object"
-    },
-    "v2.use": {
-      "additionalProperties": false,
-      "description": "One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters.",
-      "properties": {
-        "as": {
-          "description": "The prefix the instance's nodes are addressed by (<prefix>.<node>)",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
-        },
-        "use": {
-          "description": "The group instantiated",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
-        },
-        "with": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              }
-            ]
-          },
-          "description": "The parameter bindings; a number or a bool is the string it spells",
-          "type": "object"
-        }
-      },
-      "required": [
-        "as",
-        "use"
-      ],
       "type": "object"
     },
     "v2.vars": {
