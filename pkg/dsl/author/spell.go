@@ -310,7 +310,19 @@ func (s *speller) scalar(f spec.Form, values []string, what string, n *yaml.Node
 		if n.Style == 0 && isIdent(n.Value) {
 			return n.Value, true
 		}
-		return q(n.Value), true
+		body := n.Value
+		switch n.Style {
+		case yaml.LiteralStyle, yaml.FoldedStyle:
+			// A prompt written in place is a text of the document like any
+			// other: a block scalar is read as the scanner read it
+			// (blockBreaks) — or two authored lines reach the model joined
+			// by an invisible separator.
+			var ok bool
+			if body, ok = s.blockBreaks(what, n, body); !ok {
+				return "", false
+			}
+		}
+		return q(body), true
 	case spec.Enum:
 		if tag == "!!null" {
 			s.refuse(n, what+" takes one of "+strings.Join(values, ", ")+", got nothing")
