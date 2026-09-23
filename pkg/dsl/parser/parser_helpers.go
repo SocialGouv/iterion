@@ -95,7 +95,13 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 	if lineEnds(p.peek()) {
 		return p.parseDashList(parseElem)
 	}
-	p.expect(TokenLBrack)
+	if _, ok := p.expect(TokenLBrack); !ok {
+		// The value is not a list: the offending token is consumed and
+		// said, and the rest of its line goes with it, so the NEXT property
+		// is never read as the list's elements.
+		p.skipToNewline()
+		return nil
+	}
 	if p.peek().Type == TokenRBrack {
 		p.next()
 		return nil
@@ -104,20 +110,34 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 }
 
 // parseBracketElems reads the elements of an inline list whose `[` is already
-// consumed and which is known not to be empty, through the closing `]`. It is
-// shared with parseDeclaredToolList, the one list whose empty inline form is
-// a value rather than an absence.
+// consumed, through the closing `]`. It is shared with parseDeclaredToolList,
+// the one list whose empty inline form is a value rather than an absence —
+// which also reaches it on a `[` that was NOT read, so the first token may
+// already end the line; appendElem refuses it there rather than hand it to an
+// element reader.
 func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []string {
 	var out []string
-	appendElem := func() {
+	unterminated := func(t Token) bool { return t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t) }
+	// appendElem reads one element and reports whether the list goes on. The
+	// element reader is never handed the token that ends the line: every
+	// element reader consumes at least one token, so it would eat the line
+	// end and the loop would read the next property's tokens as elements.
+	appendElem := func() bool {
 		first := p.peek()
+		if unterminated(first) {
+			p.expectFailed(first, TokenRBrack, "expected ] to close the list, got "+first.Type.String())
+			return false
+		}
 		if v, ok := parseElem(); ok {
 			out = append(out, v)
 		} else {
 			p.resyncListElement(first)
 		}
+		return true
 	}
-	appendElem()
+	if !appendElem() {
+		return out
+	}
 	for {
 		t := p.peek()
 		switch {
@@ -130,11 +150,13 @@ func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []s
 				p.next()
 				return out
 			}
-			appendElem()
+			if !appendElem() {
+				return out
+			}
 		case t.Type == TokenRBrack:
 			p.next()
 			return out
-		case t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t):
+		case unterminated(t):
 			p.expectFailed(t, TokenRBrack, "expected ] to close the list, got "+t.Type.String())
 			return out
 		default:
@@ -144,7 +166,9 @@ func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []s
 			// its shape and nothing runs into the next property. Every
 			// iteration consumes at least one token.
 			p.addErrorHint(DiagExpectedToken, t, "expected `,` or `]` after a list element, got "+t.Type.String(), "Separate the elements with commas: `[a, b]`.")
-			appendElem()
+			if !appendElem() {
+				return out
+			}
 		}
 	}
 }
