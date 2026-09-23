@@ -102,8 +102,32 @@ func str(v string) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v}
 	if strings.Contains(v, "\n") {
 		n.Style = yaml.LiteralStyle
+		// A literal block that opens with an empty line comes back one
+		// line short (yaml.v3's emitter): a spelling that does not read
+		// back as the value is not written — the value goes quoted.
+		if !readsBack(n) {
+			return quoted(v)
+		}
 	}
 	return n
+}
+
+// readsBack reports whether n's spelling, as the document's encoder writes
+// it, reads back as n's value — the writer's round trip at the scale of one
+// scalar, so an emitter quirk is caught at the value it would corrupt.
+func readsBack(n *yaml.Node) bool {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(n); err != nil {
+		return false
+	}
+	_ = enc.Close()
+	var back yaml.Node
+	if err := yaml.Unmarshal(buf.Bytes(), &back); err != nil {
+		return false
+	}
+	return back.Kind == yaml.DocumentNode && len(back.Content) == 1 && back.Content[0].Value == n.Value
 }
 
 // quoted is a string value written in double quotes whatever it holds.
