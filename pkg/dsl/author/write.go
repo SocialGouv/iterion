@@ -152,6 +152,22 @@ func strList(vals []string) *yaml.Node {
 	return flowSeq(items)
 }
 
+// declaredList is strList for the one list whose EMPTY form is a declared
+// value — an agent's or judge's `tools:` (toolcatalog.ToolsDeclared): nil is
+// absent and writes nothing, an empty slice is the author saying "this node
+// has no tools" and writes `[]`, as the .bot writes it back. Dropping the
+// line would turn a closed node into an open one.
+func declaredList(vals []string) *yaml.Node {
+	if vals == nil {
+		return nil
+	}
+	items := make([]*yaml.Node, 0, len(vals))
+	for _, v := range vals {
+		items = append(items, str(v))
+	}
+	return flowSeq(items)
+}
+
 // identOrList is a `needs:` value: the one name bare, several as a list.
 func identOrList(vals []string) *yaml.Node {
 	if len(vals) == 1 {
@@ -949,7 +965,7 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 		p.set("session", str(d.Session.String()))
 	}
 	p.str("session_slot", d.SessionSlot)
-	p.set("tools", strList(d.Tools))
+	p.set("tools", declaredList(d.Tools))
 	p.set("tool_policy", strList(d.ToolPolicy))
 	p.set("capabilities", strList(d.Capabilities))
 	p.set("skills", strList(d.Skills))
