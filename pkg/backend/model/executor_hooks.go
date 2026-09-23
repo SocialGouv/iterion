@@ -99,7 +99,7 @@ type DelegateInfo struct {
 	// suppressed and the event carries skipped:true.
 	Skipped bool
 	// Fingerprint is the provider fingerprint of the session behind this
-	// delegation ("anthropic-oauth", "facade:<base url>", …), as the
+	// delegation ("anthropic-oauth", "facade:<slot>:<base url>", …), as the
 	// backend reported it. It is the ROUTING DECISION, taken before the
 	// call — not proof the call was answered: claude_code stamps it on
 	// the results it returns WITH an error too. Persisted on NodesServed

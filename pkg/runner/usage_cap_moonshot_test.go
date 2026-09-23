@@ -10,8 +10,16 @@ import (
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
+// facadeSource renders the routing label the delegate stamps on a reading
+// served through an anthropic-wire facade. Spelled here rather than imported
+// because it is the WIRE SHAPE this package reads: if the delegate ever
+// renders another, the rows below are what says so.
+func facadeSource(slot secrets.Provider, baseURL string) string {
+	return "facade:" + string(slot) + ":" + baseURL
+}
+
 // Two facades now ride the anthropic wire and BOTH render as
-// "facade:<base-url>", so the prefix alone stopped naming a vendor. A run
+// "facade:…<base-url>", so the URL alone cannot name a vendor. A run
 // holding both keys must charge each refusal to the credential that was
 // actually spent: charging a Moonshot wall to the z.ai fingerprint would
 // park the healthy key and keep handing out the frozen one — the exact
@@ -36,10 +44,14 @@ func TestUsageCapCredKeys_TellsTheTwoFacadesApart(t *testing.T) {
 	scope := usagecap.TenantScope("team-7")
 
 	for _, c := range []struct{ source, wantFP string }{
-		// The labels come from the delegate's own env builders, so an
-		// operator's base-URL override travels with them.
-		{"facade:" + secrets.ZAIDefaultBaseURL, "fp-zai"},
-		{"facade:" + secrets.MoonshotDefaultBaseURL, "fp-moonshot"},
+		// The label names the SLOT that paid, stamped by the delegate that
+		// built the env (delegate.FacadeSlotEnvKey): the base URL rides along
+		// for the operator to read, and two facades may legitimately share it.
+		{facadeSource(secrets.ProviderZAI, secrets.ZAIDefaultBaseURL), "fp-zai"},
+		{facadeSource(secrets.ProviderMoonshot, secrets.MoonshotDefaultBaseURL), "fp-moonshot"},
+		// Both vendors behind one gateway: same URL, still two credentials.
+		{facadeSource(secrets.ProviderZAI, "https://gateway.internal/anthropic"), "fp-zai"},
+		{facadeSource(secrets.ProviderMoonshot, "https://gateway.internal/anthropic"), "fp-moonshot"},
 		{delegate.PiUsageSourceZAI, "fp-zai"},
 		{delegate.PiUsageSourceMoonshot, "fp-moonshot"},
 		{"anthropic-direct", "fp-ant"},

@@ -313,16 +313,62 @@ func TestAnthropicWireFacadeSlot(t *testing.T) {
 			t.Errorf("AnthropicWireFacadeSlot(%q) = %q, want %q", tc.source, got, tc.want)
 		}
 	}
-	// The two default labels must not collide — a collision would make the
-	// mapping above a coin toss.
-	if providerFingerprint(zaiEnv("k")) == providerFingerprint(moonshotEnv("k")) {
-		t.Error("the z.ai and Moonshot facade labels are identical — the meter cannot tell the two credentials apart")
-	}
 	// An operator's own MOONSHOT_BASE_URL travels into the label, so the
 	// mapping still resolves rather than falling back to a guess.
 	t.Setenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/anthropic")
 	if got := AnthropicWireFacadeSlot(providerFingerprint(moonshotEnv("k"))); got != string(secrets.ProviderMoonshot) {
 		t.Errorf("with MOONSHOT_BASE_URL overridden, AnthropicWireFacadeSlot = %q, want moonshot", got)
+	}
+}
+
+// The two facades must stay apart under the base URLs that make them EQUAL —
+// asserting it under a cleared env is asserting it in the one configuration
+// where no code can get it wrong.
+//
+// The colliding configuration is not exotic: claw-code-go's own operator hint
+// tells a Kimi user to `export ANTHROPIC_BASE_URL=<moonshot endpoint>`, and
+// that variable is exactly what zaiEnv reads; one internal gateway (LiteLLM,
+// a corporate proxy) in front of both vendors does the same. When both
+// rendered one label the meter charged a Moonshot wall to the z.ai
+// fingerprint, parking the healthy key and continuing to hand out the walled
+// one — the inversion runCredKeys exists to prevent.
+func TestAnthropicWireFacadeSlot_ApartUnderCollidingBaseURLs(t *testing.T) {
+	for _, tc := range []struct{ name, anthropicBase, moonshotBase string }{
+		{"claw_hint_points_anthropic_base_url_at_moonshot", secrets.MoonshotDefaultBaseURL, ""},
+		{"moonshot_override_points_at_zai", secrets.ZAIDefaultBaseURL, secrets.ZAIDefaultBaseURL},
+		{"one_gateway_in_front_of_both", "https://gateway.internal/anthropic", "https://gateway.internal/anthropic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetClaudeCredEnv(t)
+			t.Setenv("ANTHROPIC_BASE_URL", tc.anthropicBase)
+			t.Setenv("MOONSHOT_BASE_URL", tc.moonshotBase)
+
+			zai, moonshot := zaiEnv("zai-key"), moonshotEnv("moonshot-key")
+			// The bench must BITE: if the two routes do not actually share a
+			// base URL here, this case proves nothing about collisions.
+			if zai["ANTHROPIC_BASE_URL"] != moonshot["ANTHROPIC_BASE_URL"] {
+				t.Fatalf("inert case: z.ai routes to %q and Moonshot to %q — no collision to tell apart",
+					zai["ANTHROPIC_BASE_URL"], moonshot["ANTHROPIC_BASE_URL"])
+			}
+
+			zaiLabel, moonshotLabel := providerFingerprint(zai), providerFingerprint(moonshot)
+			if zaiLabel == moonshotLabel {
+				t.Fatalf("both facades render %q — the meter cannot tell the two credentials apart", zaiLabel)
+			}
+			if got := AnthropicWireFacadeSlot(zaiLabel); got != string(secrets.ProviderZAI) {
+				t.Errorf("AnthropicWireFacadeSlot(%q) = %q, want zai", zaiLabel, got)
+			}
+			if got := AnthropicWireFacadeSlot(moonshotLabel); got != string(secrets.ProviderMoonshot) {
+				t.Errorf("AnthropicWireFacadeSlot(%q) = %q, want moonshot", moonshotLabel, got)
+			}
+			// The label rides run records and events: it must carry the
+			// routing decision, never the key that paid.
+			for _, label := range []string{zaiLabel, moonshotLabel} {
+				if strings.Contains(label, "zai-key") || strings.Contains(label, "moonshot-key") {
+					t.Errorf("label %q carries the credential", label)
+				}
+			}
+		})
 	}
 }
 

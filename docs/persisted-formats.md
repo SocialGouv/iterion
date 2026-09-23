@@ -127,7 +127,11 @@ answer, and never carries `reask`.
 
 `fingerprint` on each entry is the backend's provider-routing label for that
 session — `anthropic-oauth`, `anthropic-direct`, `anthropic-env`, or
-`facade:<base url>`. An Anthropic-shaped facade answers a `claude-*` id with
+`facade:<slot>:<base url>` — the slot names the credential that paid, because
+two facades can be configured on the same base URL and the URL alone therefore
+names no vendor. A facade reached through an ambient base URL the delegate did
+not build carries no slot and reads `facade:<base url>`, i.e. "a facade,
+credential unknown". An Anthropic-shaped facade answers a `claude-*` id with
 whatever it aliases it to, so the two model fields agree and `model_drift`
 stays silent; the fingerprint is the only evidence, and
 `model_served_via_facade` is the event half of it. It names the route that

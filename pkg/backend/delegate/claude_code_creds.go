@@ -53,6 +53,31 @@ const suppressedForfaitDir = "/nonexistent/iterion-suppress-forfait"
 // finding R0a39d6.
 const ForfaitSuppressedEnvKey = "ITERION_FORFAIT_SUPPRESSED"
 
+// FacadeSlotEnvKey is the iterion-internal marker naming WHICH anthropic-wire
+// facade built an env map, written by facadeEnvFor's builders and read by
+// providerFingerprint so the slot travels with the routing label.
+//
+// Without it the slot has to be re-derived from ANTHROPIC_BASE_URL at read
+// time, and that URL does not identify a vendor: it is operator-controlled,
+// and two facades legitimately hold the same value. claw-code-go's own Kimi
+// hint tells an operator to `export ANTHROPIC_BASE_URL=<moonshot endpoint>` —
+// the variable zaiEnv reads — and one internal gateway in front of both
+// vendors does it too. A reader deciding between equal labels answers with
+// whichever it compared first, so a Moonshot wall lands on the z.ai
+// fingerprint: the meter then parks the healthy key and keeps handing out the
+// walled one.
+//
+// Same shape as ForfaitSuppressedEnvKey above, for the same reason: the fact
+// is written by the code that KNOWS it and travels with the value it
+// qualifies. The CLI subprocess sees an unknown variable and ignores it.
+const FacadeSlotEnvKey = "ITERION_FACADE_SLOT"
+
+// facadeSourcePrefix opens every facade routing label
+// ("facade:<slot>:<base-url>"). One constant, read by the renderer and by the
+// parser: two spellings of a wire shape is how a reading ends up charged to
+// the wrong key.
+const facadeSourcePrefix = "facade:"
+
 // isForfaitSuppressed reports whether the given env map declares the
 // suppression marker. Cheap enough to call from every reader of
 // CLAUDE_CONFIG_DIR.
@@ -318,7 +343,15 @@ func providerFingerprint(env map[string]string) string {
 	// Anthropic" and does not collide with the direct label.
 	suppressed := isForfaitSuppressed(env)
 	if base := env["ANTHROPIC_BASE_URL"]; base != "" {
-		return "facade:" + facadeLabel(base)
+		// The slot the env was built FOR, when one stamped it: the base URL
+		// alone does not name a vendor (FacadeSlotEnvKey says why). An env
+		// whose base URL came from somewhere else — an operator's ambient
+		// value forwarded into a sandboxed spawn — carries no slot and keeps
+		// the bare form, which names no credential and is read as such.
+		if slot := env[FacadeSlotEnvKey]; slot != "" {
+			return facadeSourcePrefix + slot + ":" + facadeLabel(base)
+		}
+		return facadeSourcePrefix + facadeLabel(base)
 	}
 	if env["ANTHROPIC_API_KEY"] != "" {
 		return "anthropic-direct"
@@ -503,6 +536,7 @@ func zaiEnv(key string) map[string]string {
 	return map[string]string{
 		"ANTHROPIC_BASE_URL":   baseURL,
 		"ANTHROPIC_AUTH_TOKEN": key,
+		FacadeSlotEnvKey:       string(secrets.ProviderZAI),
 	}
 }
 
@@ -524,6 +558,7 @@ func moonshotEnv(key string) map[string]string {
 	return map[string]string{
 		"ANTHROPIC_BASE_URL":   baseURL,
 		"ANTHROPIC_AUTH_TOKEN": key,
+		FacadeSlotEnvKey:       string(secrets.ProviderMoonshot),
 	}
 }
 
@@ -692,22 +727,36 @@ func facadeHintRefusal(providerHint string, env map[string]string) error {
 // credential slot that paid for it, or "" when the label names no facade.
 //
 // The runner's meter needs this because every facade renders as
-// "facade:<base-url>": two facades on one run would otherwise be charged to
-// whichever one the reader checked first, so a wall measured on one vendor's
-// key would park the other's. The labels are derived from the SAME functions
-// that build the env, so an operator's base-URL override travels here without
-// being re-derived.
+// "facade:…": a reading charged to the wrong vendor parks the healthy key and
+// keeps handing out the walled one. The slot is READ from the label, not
+// re-derived from its base URL — the URL is operator-controlled and two
+// facades can carry the same one, so re-deriving at read time answers with
+// whichever case was compared first (FacadeSlotEnvKey carries the measurement
+// that made this concrete). The stamp is written by the code that built the
+// env, so an operator's base-URL override travels with it and changes nothing
+// here.
+//
+// A facade label with no slot — an ambient base URL forwarded into a
+// sandboxed spawn, a label written by a binary that predates the stamp — names
+// no credential, and a guess is the mis-charge itself: it answers "".
 func AnthropicWireFacadeSlot(source string) string {
-	if source == "" {
-		return ""
-	}
 	switch source {
-	case providerFingerprint(zaiEnv("")), PiUsageSourceZAI:
+	case PiUsageSourceZAI:
 		return string(secrets.ProviderZAI)
-	case providerFingerprint(moonshotEnv("")), PiUsageSourceMoonshot:
+	case PiUsageSourceMoonshot:
 		return string(secrets.ProviderMoonshot)
 	}
-	return ""
+	rest, ok := strings.CutPrefix(source, facadeSourcePrefix)
+	if !ok {
+		return ""
+	}
+	// facadeEnvFor is the one place that knows which slots are facades:
+	// asking it beats a third list of the same two names.
+	slot, _, ok := strings.Cut(rest, ":")
+	if !ok || facadeEnvFor(slot, "") == nil {
+		return ""
+	}
+	return slot
 }
 
 // UsageMeterBackendForProvider names the meter backend a provider's refusals

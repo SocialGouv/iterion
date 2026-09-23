@@ -712,7 +712,8 @@ type Task struct {
 
 	// SessionFingerprint carries the provider fingerprint that the
 	// parent SessionID was created against (e.g. "anthropic-direct",
-	// "facade:api.z.ai"). The backend uses it to detect a cross-provider
+	// "facade:zai:https://api.z.ai/api/anthropic"). The backend uses it to
+	// detect a cross-provider
 	// fork attempt — resuming or forking a session built by a different
 	// provider triggers HTTP 400 "Invalid signature in thinking block"
 	// because thinking blocks are provider-signed. On mismatch the
