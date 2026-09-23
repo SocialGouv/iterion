@@ -59,7 +59,7 @@ added on its own branch (see *Where this is waiting on a sibling* below).
 | child | source | skipped when | landed when |
 |---|---|---|---|
 | `assessment` | `../assessment/main.bot` | `plan_path` exists **and parses** | `plan_path` committed, HEAD moved |
-| `golden_master` | `../golden-master/main.bot` | `<oracle_dir>/verify-oracle.sh` exists | `verify-oracle.sh`, `corpus.json`, `feature-coverage.json` committed, HEAD moved |
+| `golden_master` | `../golden-master/main.bot` | `verify-oracle.sh`, `corpus.json` **and** `feature-coverage.json` are all under `<oracle_dir>` | the same three committed, HEAD moved |
 | `product_docs` | `../product-docs/main.bot` | never — always launched, `full` or `incremental` | at least one `*.md` committed under `docs_dir` |
 
 Three properties hold the phase to the rest of the bot's doctrine:
@@ -82,7 +82,22 @@ Three properties hold the phase to the rest of the bot's doctrine:
 `product_docs` never gets the HEAD-moved test: it runs on every campaign,
 and an incremental pass over documentation nothing changed is entitled to
 commit nothing. Its artefact — pages committed under `docs_dir` — is still
-required. Its catalog is generated **out of tree**, in the run's scratch,
+required, and `docs_gate`'s page count from **before** the run travels into
+`docs_landed` so its notice says which of the two it is looking at: pages
+landed where the product had none, pages added to what was there, or the
+same set it started from. On an already-documented product that last case
+is the honest limit of what this gate proves — it cannot distinguish a pass
+that changed nothing from a child that committed elsewhere, and it says so
+rather than implying the stronger claim.
+
+`docs_landed` also carries phase 0's **last word on the tree as a whole**.
+The three landed gates scope their dirt check to their own artefact — that
+is what lets their refusals name a child — so a child writing outside its
+own paths would pass all three and have preflight refuse the campaign once
+the whole bootstrap was paid. One unscoped read at the end, with the same
+two exclusions, is the chokepoint for that.
+
+The docs child's catalog is generated **out of tree**, in the run's scratch,
 naming this checkout as its one local source: a catalog written into the
 workspace would be the uncommitted change preflight then refuses.
 
@@ -97,13 +112,15 @@ before the default flips to `true`:
 
 | what | why it blocks | measured |
 |---|---|---|
-| the engine's subbot/worktree condition | `pkg/runtime/engine_run.go` runs a `worktree: auto` child in the parent's tree only when the parent holds a **sandbox**. The docs child declares `worktree: auto`, so a plain local `iterion run` gives it a worktree of its own, it finalises its pages onto a branch, and `docs_landed` refuses — correctly, and every time. | the condition reads `e.sharedSandbox != nil && e.sharedSandbox.Run != nil` while its own comment says "a subbot child in its parent's sandbox" |
+| the engine's subbot/worktree condition | `pkg/runtime/engine_run.go` runs a `worktree: auto` child in the parent's tree only when the parent holds a **sandbox**. The docs child declares `worktree: auto`, so a plain local `iterion run` gives it a worktree of its own, it finalises its pages onto a branch, and `docs_landed` refuses — on a product with no pages yet. On one that arrived documented, that gate sees the pages that were already there and can only SAY so. | the condition reads `e.sharedSandbox != nil && e.sharedSandbox.Run != nil` while its own comment says "a subbot child in its parent's sandbox" |
 | the docs child's local-source key | the generated catalog names its one source with `repos[].path`. Until the child's resolver reads it, the entry is recorded `degraded` and the campaign documents a product from nothing. | `grep -c 'path' …/product-docs` resolver: `url`, `github_repo`, `gitlab_path` only |
 | the docs child's `oracle_dir` var | the coverage half of the ordering rationale. An undeclared key is dropped in silence. | `grep -cE 'oracle_dir\|feature-coverage\|corpus\.json' bots/product-docs/main.bot` → `0` |
 
 Until then, a campaign that turns phase 0 on gets a **named refusal**
-rather than a silent half-run — which is the point of judging children in
-git instead of believing them.
+rather than a silent half-run on a product with no documentation yet — and
+on one that already has some, a notice that says the gate could not tell.
+Judging children in git instead of believing them is the point; saying
+exactly what that proves is the other half of it.
 
 ## What a campaign iteration does
 

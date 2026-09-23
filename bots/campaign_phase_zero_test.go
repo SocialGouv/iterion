@@ -482,27 +482,51 @@ func TestCampaignNetGateDecidesOnTheVerifyScript(t *testing.T) {
 				t.Fatalf("exit = %d, want 0 (stderr %q)", exit, stderr)
 			}
 			if !out.RunNet {
-				t.Errorf("run_net = false with no net at %s/verify-oracle.sh (notice %q)", oracle, out.Notice)
+				t.Errorf("run_net = false with no net at all under %s (notice %q)", oracle, out.Notice)
 			}
-			if !strings.Contains(out.Notice, "golden-master RUN: no behavioural net at "+filepath.Join(oracle, "verify-oracle.sh")) {
+			if !strings.Contains(out.Notice, "golden-master RUN: the net at "+oracle+" is missing") {
 				t.Errorf("notice = %q", out.Notice)
 			}
 			if out.HeadBefore != head {
 				t.Errorf("head_before = %q, want HEAD %q", out.HeadBefore, head)
 			}
 
-			// The one artefact that flips it — nothing else in the directory.
-			writeUnder(t, ws, filepath.Join(oracle, "corpus.json"), "{}\n")
-			if _, out, _ = runPhaseZeroNode(t, "net_gate", subs, ""); !out.RunNet {
-				t.Errorf("a corpus without the entry point must not count as a net (notice %q)", out.Notice)
+			// A net is its three files, the same three net_landed requires.
+			// Each ONE of them missing must still launch the child, and the
+			// notice must name which — a leftover entry point from an
+			// aborted run is exactly what would otherwise skip the child
+			// that repairs it.
+			whole := []string{"verify-oracle.sh", "corpus.json", "feature-coverage.json"}
+			for _, missing := range whole {
+				for _, name := range whole {
+					path := filepath.Join(ws, oracle, name)
+					if name == missing {
+						if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+							t.Fatal(err)
+						}
+						continue
+					}
+					writeUnder(t, ws, filepath.Join(oracle, name), "x\n")
+				}
+				_, out, _ := runPhaseZeroNode(t, "net_gate", subs, "")
+				if !out.RunNet {
+					t.Errorf("a net without %s must not count as a net (notice %q)", missing, out.Notice)
+				}
+				if !strings.Contains(out.Notice, filepath.Join(oracle, missing)) {
+					t.Errorf("notice = %q, want it to name the missing %s", out.Notice, missing)
+				}
 			}
-			writeUnder(t, ws, filepath.Join(oracle, "verify-oracle.sh"), "#!/bin/sh\nexit 0\n")
+
+			for _, name := range whole {
+				writeUnder(t, ws, filepath.Join(oracle, name), "x\n")
+			}
 			exit, out, _ = runPhaseZeroNode(t, "net_gate", subs, "")
 			if exit != 0 || out.RunNet {
-				t.Fatalf("exit = %d, run_net = %v with the net present; want 0/false (notice %q)", exit, out.RunNet, out.Notice)
+				t.Fatalf("exit = %d, run_net = %v with the whole net present; want 0/false (notice %q)", exit, out.RunNet, out.Notice)
 			}
-			if !strings.Contains(out.Notice, "golden-master SKIPPED: the net's entry point already exists at "+filepath.Join(oracle, "verify-oracle.sh")) {
-				t.Errorf("notice = %q, want it to name the artefact that caused the skip", out.Notice)
+			if !strings.Contains(out.Notice, "golden-master SKIPPED: the net at "+oracle+" is complete") ||
+				!strings.Contains(out.Notice, filepath.Join(oracle, "feature-coverage.json")) {
+				t.Errorf("notice = %q, want it to name the artefacts that caused the skip", out.Notice)
 			}
 		})
 	}
@@ -703,31 +727,107 @@ func TestCampaignDocsLandedRequiresCommittedPages(t *testing.T) {
 	requireModernizeTools(t)
 
 	const docsDir = "docs/client"
-	run := func(t *testing.T, ws string) (int, phaseZeroOut, string) {
+	// pagesBefore is docs_gate's count, taken BEFORE the child ran: the one
+	// thing that lets this gate speak about THIS run rather than about a
+	// product that arrived documented.
+	run := func(t *testing.T, ws string, pagesBefore int) (int, phaseZeroOut, string) {
 		t.Helper()
 		return runPhaseZeroNode(t, "docs_landed", map[string]string{
 			"{{vars.workspace_dir}}": strconv.Quote(ws),
 			"{{vars.docs_dir}}":      strconv.Quote(docsDir),
+			"{{input.pages_before}}": strconv.Itoa(pagesBefore),
 		}, "")
 	}
 
-	t.Run("pages committed, HEAD not moved by this child: accepted", func(t *testing.T) {
+	t.Run("pages landed where there were none: accepted, and the notice says so", func(t *testing.T) {
 		ws, git := phaseZeroRepo(t)
 		writeUnder(t, ws, filepath.Join(docsDir, "guide", "start.md"), "# start\n")
 		git("add", filepath.Join(docsDir, "guide", "start.md"))
 		git("commit", "-qm", "pages")
-		exit, out, stderr := run(t, ws)
+		exit, out, stderr := run(t, ws, 0)
 		if exit != 0 {
 			t.Fatalf("exit = %d, want 0 (notice %q, stderr %q)", exit, out.Notice, stderr)
 		}
-		if !strings.Contains(out.Notice, "product-docs landed: 1 page(s) committed under "+docsDir) {
+		if !strings.Contains(out.Notice, "1 page(s), where the product had none") {
 			t.Errorf("notice = %q", out.Notice)
+		}
+	})
+
+	// The honesty half. On a product that arrived documented, "there are
+	// pages at HEAD" was true before the child ran at all — so a child that
+	// finalised its series elsewhere leaves this gate seeing exactly what it
+	// saw before. It may not claim to have caught that; it must say which of
+	// the two it is looking at.
+	t.Run("an already-documented product, nothing new: accepted, and the notice refuses to claim more", func(t *testing.T) {
+		ws, git := phaseZeroRepo(t)
+		writeUnder(t, ws, filepath.Join(docsDir, "guide", "start.md"), "# start\n")
+		writeUnder(t, ws, filepath.Join(docsDir, "guide", "next.md"), "# next\n")
+		git("add", filepath.Join(docsDir, "guide", "start.md"), filepath.Join(docsDir, "guide", "next.md"))
+		git("commit", "-qm", "pages")
+		exit, out, _ := run(t, ws, 2)
+		if exit != 0 {
+			t.Fatalf("exit = %d, want 0 — an incremental pass may land nothing (notice %q)", exit, out.Notice)
+		}
+		if !strings.Contains(out.Notice, "the same 2 page(s) it started from") ||
+			!strings.Contains(out.Notice, "cannot tell") {
+			t.Errorf("notice = %q, want it to say the gate cannot tell a no-op pass from a child that committed elsewhere", out.Notice)
+		}
+	})
+
+	t.Run("an already-documented product, pages added: the notice counts THIS run", func(t *testing.T) {
+		ws, git := phaseZeroRepo(t)
+		writeUnder(t, ws, filepath.Join(docsDir, "a.md"), "# a\n")
+		writeUnder(t, ws, filepath.Join(docsDir, "b.md"), "# b\n")
+		writeUnder(t, ws, filepath.Join(docsDir, "c.md"), "# c\n")
+		git("add", filepath.Join(docsDir, "a.md"), filepath.Join(docsDir, "b.md"), filepath.Join(docsDir, "c.md"))
+		git("commit", "-qm", "pages")
+		exit, out, _ := run(t, ws, 1)
+		if exit != 0 {
+			t.Fatalf("exit = %d, want 0 (notice %q)", exit, out.Notice)
+		}
+		if !strings.Contains(out.Notice, "2 page(s) more than the 1 this run started from") {
+			t.Errorf("notice = %q", out.Notice)
+		}
+	})
+
+	// The three landed gates scope their dirt check to their own artefact,
+	// which is what makes their refusals name a child. A child writing
+	// OUTSIDE its paths passes all three — and preflight then refuses the
+	// campaign once the whole bootstrap has been paid. This is the
+	// chokepoint for that class.
+	t.Run("a stray left outside every checked artefact: refused here, not by preflight hours later", func(t *testing.T) {
+		ws, git := phaseZeroRepo(t)
+		writeUnder(t, ws, filepath.Join(docsDir, "guide", "start.md"), "# start\n")
+		git("add", filepath.Join(docsDir, "guide", "start.md"))
+		git("commit", "-qm", "pages")
+		// Neither under docs_dir, nor the contract, nor the oracle dir.
+		writeUnder(t, ws, "survey.json", "{}\n")
+		exit, out, stderr := run(t, ws, 0)
+		if exit != 1 {
+			t.Fatalf("exit = %d, want 1 (notice %q)", exit, out.Notice)
+		}
+		for _, ch := range []string{out.Notice, stderr} {
+			if !strings.Contains(ch, "outside the artefacts it checks") || !strings.Contains(ch, "survey.json") {
+				t.Errorf("channel = %q, want the refusal to name the class and the file", ch)
+			}
+		}
+	})
+
+	t.Run("iterion's own scaffold and node script alone: not a stray", func(t *testing.T) {
+		ws, git := phaseZeroRepo(t)
+		writeUnder(t, ws, filepath.Join(docsDir, "guide", "start.md"), "# start\n")
+		git("add", filepath.Join(docsDir, "guide", "start.md"))
+		git("commit", "-qm", "pages")
+		writeUnder(t, ws, ".claude/skills/bot.md", "# scaffold\n")
+		writeUnder(t, ws, ".iterion-script-abc123.py", "print('node')\n")
+		if exit, out, stderr := run(t, ws, 0); exit != 0 {
+			t.Fatalf("exit = %d, want 0 — the engine's own files are not a stray (notice %q, stderr %q)", exit, out.Notice, stderr)
 		}
 	})
 
 	t.Run("no page committed: refused, and the refusal names the branch case", func(t *testing.T) {
 		ws, _ := phaseZeroRepo(t)
-		exit, out, stderr := run(t, ws)
+		exit, out, stderr := run(t, ws, 0)
 		if exit != 1 {
 			t.Fatalf("exit = %d, want 1 (notice %q)", exit, out.Notice)
 		}
@@ -741,7 +841,7 @@ func TestCampaignDocsLandedRequiresCommittedPages(t *testing.T) {
 	t.Run("pages written but never committed: refused", func(t *testing.T) {
 		ws, _ := phaseZeroRepo(t)
 		writeUnder(t, ws, filepath.Join(docsDir, "guide", "start.md"), "# start\n")
-		exit, out, _ := run(t, ws)
+		exit, out, _ := run(t, ws, 0)
 		if exit != 1 || !strings.Contains(out.Notice, "committed no page under") {
 			t.Fatalf("exit = %d, notice = %q; want 1 and a named refusal", exit, out.Notice)
 		}
@@ -753,7 +853,7 @@ func TestCampaignDocsLandedRequiresCommittedPages(t *testing.T) {
 		git("add", filepath.Join(docsDir, "guide", "start.md"))
 		git("commit", "-qm", "pages")
 		writeUnder(t, ws, filepath.Join(docsDir, "guide", "next.md"), "# next\n")
-		exit, out, _ := run(t, ws)
+		exit, out, _ := run(t, ws, 1)
 		if exit != 1 || !strings.Contains(out.Notice, "uncommitted changes") {
 			t.Fatalf("exit = %d, notice = %q; want 1 and a dirt refusal", exit, out.Notice)
 		}

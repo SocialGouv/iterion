@@ -84,7 +84,9 @@ vars:
   ## parent's tree only when the parent holds a SANDBOX; the docs child
   ## declares `worktree: auto`, so on a plain local `iterion run` it takes
   ## a worktree of its own, finalises its pages onto a branch, and
-  ## `docs_landed` refuses — correctly, and every time. Defaulting ON would
+  ## `docs_landed` refuses — every time, on a product with no pages yet;
+  ## on one that arrived documented that gate can only SAY it could not
+  ## tell the two apart. Defaulting ON would
   ## break the repositories that already have a contract and a net and used
   ## to run straight through. Turn it on with `--var phase_zero=true`
   ## (sandboxed runs are unaffected); the default flips back the day that
@@ -155,7 +157,13 @@ schema net_state:
 schema docs_state:
   mode: string
   catalog_path: string
+  ## The page inventory BEFORE the child ran, so the gate after it can say
+  ## what this run landed instead of counting what was already there.
+  pages_before: int
   notice: string
+
+schema docs_landed_input:
+  pages_before: int
 
 ## The commit a child started from, so "did it land anything" is measured
 ## against a sha this graph captured, not against the child's word.
@@ -484,14 +492,23 @@ tool net_gate:
         refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
     out["head_before"] = rev.stdout.strip()
 
-    verify_rel = os.path.join(oracle_rel, "verify-oracle.sh")
-    if os.path.isfile(os.path.join(ws, verify_rel)):
-        out["notice"] = ("golden-master SKIPPED: the net's entry point already "
-                         "exists at %s." % verify_rel)
+    # The SAME three files net_landed requires, for the same reason: a net
+    # is its entry point, the corpus it compares, and the feature inventory
+    # the docs gate reads. Skipping on the entry point alone would let an
+    # aborted run's leftover script stand in for a net — skipping the child
+    # that would repair it, and handing the campaign exactly the partial
+    # net net_landed refuses on the other side of the branch.
+    required = [os.path.join(oracle_rel, name) for name in
+                ("verify-oracle.sh", "corpus.json", "feature-coverage.json")]
+    missing = [rel for rel in required
+               if not os.path.isfile(os.path.join(ws, rel))]
+    if not missing:
+        out["notice"] = ("golden-master SKIPPED: the net at %s is complete "
+                         "(%s)." % (oracle_rel, ", ".join(required)))
     else:
         out["run_net"] = True
-        out["notice"] = ("golden-master RUN: no behavioural net at %s."
-                         % verify_rel)
+        out["notice"] = ("golden-master RUN: the net at %s is missing %s."
+                         % (oracle_rel, ", ".join(missing)))
 
     print(json.dumps(out))
 
@@ -591,7 +608,8 @@ tool docs_gate:
     product_id = {{vars.docs_product_id}}
     scratch = {{vars.scratch_dir}}
 
-    out = {"mode": "full", "catalog_path": "", "notice": ""}
+    out = {"mode": "full", "catalog_path": "", "pages_before": 0,
+           "notice": ""}
 
     def refuse(notice):
         out["notice"] = notice
@@ -610,6 +628,10 @@ tool docs_gate:
             if name.endswith(".md"):
                 pages.append(os.path.join(root, name))
     out["mode"] = "incremental" if pages else "full"
+    # Handed to the gate after the child: on an already-documented product
+    # "there are pages at HEAD" is true before the child runs at all, so
+    # the count taken HERE is what lets that gate speak about this run.
+    out["pages_before"] = len(pages)
 
     # JSON scalars are valid YAML double-quoted scalars, so every value is
     # emitted through json.dumps rather than pasted: a product id or a path
@@ -668,7 +690,21 @@ subbot product_docs:
 ## entitled to commit nothing. What is required is the artefact — at least
 ## one page committed under the documentation directory — because that is
 ## what "the documentation exists" means to everything downstream.
+##
+## Say exactly what that proves, and no more. On a product that arrived
+## already documented, pages at HEAD were there before the child ran, so
+## this gate cannot tell a landed pass from a child that finalised
+## elsewhere; the page count from BEFORE the run travels in so the notice
+## states which of the two it is instead of implying the stronger one.
+##
+## It also carries the LAST word of phase 0 on the tree as a whole. The
+## three landed gates each scope their dirt check to their own artefact —
+## that is what makes their refusals name a child — so a child leaving a
+## stray OUTSIDE its own paths passes all three, and preflight refuses the
+## campaign after the whole bootstrap has been paid. One unscoped read
+## here, with phase_zero's two exclusions, is the chokepoint for that.
 tool docs_landed:
+  input: docs_landed_input
   output: landed_state
   language: py
   script: |
@@ -679,6 +715,7 @@ tool docs_landed:
 
     ws = {{vars.workspace_dir}}
     docs_rel = {{vars.docs_dir}}
+    pages_before = {{input.pages_before}}
 
     out = {"notice": ""}
 
@@ -716,8 +753,45 @@ tool docs_landed:
                "(%s). Phase 0 hands preflight a committed tree."
                % (docs_rel, " ".join(st.stdout.split())[:200]))
 
-    out["notice"] = ("product-docs landed: %d page(s) committed under %s at %s."
-                     % (len(pages), docs_rel, head[:12]))
+    # Phase 0's last word on the WHOLE tree — preflight's own refusal, made
+    # before the bootstrap's cost is sunk rather than after. Same two
+    # exclusions as phase_zero: iterion's `.claude/` scaffold and the
+    # engine's materialised node script at the workspace root.
+    def is_scaffold(line):
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path.startswith('.claude/')
+
+    whole = git("status", "--porcelain")
+    if whole.returncode != 0:
+        refuse("cannot read git status in %s: %s" % (ws, whole.stderr[-400:]))
+    dirty = [l for l in whole.stdout.splitlines() if l.strip()
+             and not os.path.basename(
+                 l[3:].strip().strip(chr(34))).startswith(".iterion-script-")
+             and not is_scaffold(l)]
+    if dirty:
+        refuse("phase 0 leaves %d uncommitted change(s) outside the artefacts "
+               "it checks (e.g. %s). A child wrote where no landed gate looks, "
+               "and preflight would refuse the campaign on it — after the whole "
+               "bootstrap had been paid. Phase 0 hands preflight a committed "
+               "tree." % (len(dirty), "; ".join(dirty[:5])))
+
+    # What this proves, stated as what it is.
+    if pages_before == 0:
+        landed = "%d page(s), where the product had none" % len(pages)
+    elif len(pages) > pages_before:
+        landed = ("%d page(s) more than the %d this run started from"
+                  % (len(pages) - pages_before, pages_before))
+    else:
+        landed = ("the same %d page(s) it started from — this gate cannot "
+                  "tell a pass that changed nothing from a child that "
+                  "committed elsewhere" % len(pages))
+    out["notice"] = ("product-docs landed: %s, committed under %s at %s."
+                     % (landed, docs_rel, head[:12]))
     print(json.dumps(out))
 
 ## ─── The supervisor proper ─────────────────────────────────────────
@@ -1646,7 +1720,9 @@ workflow campaign:
   ## Always launched: what the docs child does with an already-documented
   ## product is its own gate's decision, not this graph's.
   docs_gate -> product_docs
-  product_docs -> docs_landed
+  product_docs -> docs_landed with {
+    pages_before: "{{outputs.docs_gate.pages_before}}"
+  }
   docs_landed -> preflight
 
   ## ── The supervisor proper, unchanged ──────────────────────────────

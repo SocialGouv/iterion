@@ -10,9 +10,9 @@ version: 0.2.0
 ## the bootstrap without spending it out of the programme. `phase_zero`
 ## ships OFF: the docs child declares `worktree: auto` and the engine runs
 ## such a child in the parent's tree only under a sandbox, so a local run
-## would land its pages on a branch and `docs_landed` would refuse every
-## time. `--var phase_zero=true` opts in; the default flips when that
-## condition asks whether the child is a subbot instead.
+## would land its pages on a branch and `docs_landed` would refuse.
+## `--var phase_zero=true` opts in; the default flips when that condition
+## asks whether the child is a subbot instead.
 ## 0.1.2 — preflight, the steward's observed writes and finalize no longer count
 ## iterion's `.claude/` scaffold as work in flight, and the steward's revert
 ## leaves that tree alone (#1364).
