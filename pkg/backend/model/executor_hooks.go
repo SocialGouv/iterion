@@ -51,16 +51,24 @@ type DelegateInfo struct {
 	// the text. PromptDivergedOn names the backend that received it.
 	// Without this the divergence is invisible: the run succeeds and every
 	// reader shows the primary's prompt.
-	PromptDiverged     bool
-	PromptDivergedOn   string
-	Duration           time.Duration // subprocess wall-clock time
-	Tokens             int           // estimated total tokens consumed
-	ExitCode           int           // process exit code
-	Stderr             string        // captured stderr output
-	RawOutputLen       int           // byte length of raw stdout
-	ParseFallback      bool          // true if structured output fell back to text wrapper
-	FormattingPassUsed bool          // true if two-pass execution was used (tools + schema)
-	Error              error         // non-nil for OnDelegateError
+	PromptDiverged   bool
+	PromptDivergedOn string
+	// CommandFrontmatterIgnored names the workspace-command frontmatter keys
+	// this backend dropped (`allowed-tools:`, `model:`, …). It rides the
+	// event and not only the log because it is the divergence with a
+	// security consequence — a command that narrows itself keeps the node's
+	// full tool set here — and a deterministic gate has to be able to read
+	// it. Keyed per NODE: a second node invoking the same command with a
+	// broader `tools:` set is a different exposure. Enforcement is #1717.
+	CommandFrontmatterIgnored []string
+	Duration                  time.Duration // subprocess wall-clock time
+	Tokens                    int           // estimated total tokens consumed
+	ExitCode                  int           // process exit code
+	Stderr                    string        // captured stderr output
+	RawOutputLen              int           // byte length of raw stdout
+	ParseFallback             bool          // true if structured output fell back to text wrapper
+	FormattingPassUsed        bool          // true if two-pass execution was used (tools + schema)
+	Error                     error         // non-nil for OnDelegateError
 	// Attempt is the 1-based retry number on OnDelegateRetry. A schema
 	// re-ask also carries it on its own OnDelegateStarted /
 	// OnDelegateFinished / OnDelegateError (always 2: the first answer

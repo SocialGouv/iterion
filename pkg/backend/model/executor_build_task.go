@@ -407,11 +407,23 @@ type nodeBuildSession struct {
 	// one), and the user prompt is now backend-dependent — a workspace
 	// command expands for claw and not for claude_code — so the element
 	// that SERVES may receive text the recorded event does not show.
-	emittedPrompt   string
-	promptDiverged  bool
-	divergedBackend string
-	boardToken      string
-	boardMinted     bool
+	emittedPrompt string
+	// lastPrompt / lastBackend are the text and backend of the element that
+	// built LAST — the one that serves, since the walk only moves forward.
+	// The divergence is recomputed against it rather than latched on the
+	// first element that differed: a claw → claude_code → claw chain ends on
+	// the element that received exactly the recorded prompt, and reporting
+	// it as divergent would be a false alarm in the one record a reader
+	// trusts to say what ran.
+	lastPrompt  string
+	lastBackend string
+	// ignoredFrontmatter names the command frontmatter keys this run
+	// dropped for THIS node. Keyed per node, not per command file: a second
+	// node invoking the same command with a broader `tools:` set is a
+	// different exposure and has to be told.
+	ignoredFrontmatter []string
+	boardToken         string
+	boardMinted        bool
 }
 
 // describeDivergence records on the outgoing delegate event that the
@@ -421,11 +433,19 @@ type nodeBuildSession struct {
 // studio's LLM Trace: the run succeeds and every reader shows the primary's
 // text.
 func (s *nodeBuildSession) describeDivergence(di *DelegateInfo) {
-	if s == nil || !s.promptDiverged {
+	if s == nil {
 		return
 	}
-	di.PromptDiverged = true
-	di.PromptDivergedOn = s.divergedBackend
+	// Against the element that SERVED, not against every element that ever
+	// differed: the flag answers "is the recorded prompt the one that ran".
+	if s.promptEmitted && s.lastPrompt != s.emittedPrompt {
+		di.PromptDiverged = true
+		di.PromptDivergedOn = s.lastBackend
+	}
+	// The security-relevant divergence rides the event too, so a
+	// deterministic gate reading events.jsonl can see it. A log line cannot
+	// be asserted on.
+	di.CommandFrontmatterIgnored = s.ignoredFrontmatter
 }
 
 // claimPrompt reports whether THIS build should emit the node's prompt
@@ -440,15 +460,26 @@ func (s *nodeBuildSession) claimPrompt(userText, backendName string) bool {
 	if s == nil {
 		return true
 	}
+	s.lastPrompt, s.lastBackend = userText, backendName
 	if s.promptEmitted {
-		if userText != s.emittedPrompt && !s.promptDiverged {
-			s.promptDiverged = true
-			s.divergedBackend = backendName
-		}
 		return false
 	}
 	s.promptEmitted = true
 	s.emittedPrompt = userText
+	return true
+}
+
+// noteIgnoredFrontmatter records, once per node, the command frontmatter
+// keys that were dropped. Returns whether this is the first time for this
+// node — the caller uses it to log once without suppressing a second node.
+func (s *nodeBuildSession) noteIgnoredFrontmatter(keys []string) bool {
+	if s == nil {
+		return true
+	}
+	if len(s.ignoredFrontmatter) > 0 {
+		return false
+	}
+	s.ignoredFrontmatter = keys
 	return true
 }
 
@@ -1025,7 +1056,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
-	userText, userContent := e.buildUserPromptParts(ctx, f, input, td, backendName)
+	userText, userContent := e.buildUserPromptParts(ctx, f, input, td, backendName, sess)
 
 	// Emit prompt content for observability — once per node execution,
 	// not once per chain element (see nodeBuildSession).
@@ -1342,7 +1373,7 @@ func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]a
 // the (stateless) LLM doesn't lose the thread — without this, claw
 // would re-ask the same question because its conversation history isn't
 // persisted.
-func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields, input map[string]any, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
+func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields, input map[string]any, td *TemplateData, backendName string, sess *nodeBuildSession) (string, []delegate.ContentBlock) {
 	userText := e.buildUserMessage(f.userPrompt, input, td)
 	// And the multimodal variant when this backend supports it AND the
 	// resolved prompt references at least one image attachment.
@@ -1359,7 +1390,7 @@ func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields
 	// ask_user prepend just below, and the schema re-ask that appends its
 	// feedback to this text. Expanding later would emit one prompt and
 	// send another.
-	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce)
+	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
 	if hit {
 		userText = expanded
 		// The blocks above were split around the INVOCATION, so their TEXT

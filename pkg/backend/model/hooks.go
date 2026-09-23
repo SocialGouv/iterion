@@ -1120,6 +1120,9 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 	if h.logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}
+	if len(info.CommandFrontmatterIgnored) > 0 {
+		data["command_frontmatter_ignored"] = info.CommandFrontmatterIgnored
+	}
 	h.emit(nodeID, store.EventDelegateFinished, data)
 	if info.Skipped {
 		// Nothing served: no served-model record, no drift claim. The

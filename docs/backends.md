@@ -127,9 +127,14 @@ The citations, per cell that is not self-evident from the table:
     the body. A command that narrows itself with `allowed-tools:` therefore
     keeps the node's full tool set on `claw` — bound it with the node's own
     `tools:` instead. This is the divergence with a security consequence, so
-    it is the one the runtime says out loud: a command declaring any of
-    those keys logs a warning naming them and #1717, where the enforcement
-    is tracked. Documenting it was never enough.
+    it is the one the runtime says out loud: a command
+    declaring any of those keys logs a warning naming them and #1717, where
+    the enforcement is tracked, and the keys ride the node's
+    `delegate_finished` event (`command_frontmatter_ignored`) so a
+    deterministic gate can read them out of `events.jsonl` — a log line
+    cannot be asserted on. It is keyed per NODE, not per command file: a
+    second node invoking the same command with a broader `tools:` set is a
+    different exposure. Documenting it was never enough.
   - `$1`, `$2`, … (any index, not just the single digits) are **one-based**
     on `claw` (`$1` is the first argument),
     which is Claude Code's documented contract; the CLI itself resolves

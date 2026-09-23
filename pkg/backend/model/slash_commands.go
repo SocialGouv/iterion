@@ -62,7 +62,7 @@ const slashCommandArgsPrefix = "\n\nARGUMENTS: "
 // full, clean it up"). Every abstention is logged with its reason and the
 // text travels unchanged, which is also what the backend did before this
 // existed: degraded, never silent.
-func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, iteration int, logger *iterlog.Logger, once *slashWarnOnce) (string, bool) {
+func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, iteration int, logger *iterlog.Logger, once *slashWarnOnce, sess *nodeBuildSession) (string, bool) {
 	if backendName != delegate.BackendClaw || workDir == "" || userText == "" {
 		return userText, false
 	}
@@ -165,7 +165,12 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	// it in bold and saying nothing at runtime is the "one file means two
 	// things silently" outcome this warning exists to prevent. Enforcement
 	// is #1717; this is the diagnostic that stops it being invisible.
-	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 && once.first("fm\x00"+cmd.Path) {
+	// Keyed per NODE, through the build session, not per command file: a
+	// second node invoking the same command with a broader `tools:` set is a
+	// different exposure and has to be told. The session also carries the
+	// keys onto delegate_finished, so a deterministic gate reading
+	// events.jsonl sees what a log line cannot be asserted on.
+	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 && sess.noteIgnoredFrontmatter(keys) {
 		warnSlashCommand(logger, nodeID, iteration,
 			"/%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them, so a command that narrows itself keeps this node's full tool set (#1717)",
 			safeDiag(name), cmd.Path, safeDiag(strings.Join(keys, ", ")))
@@ -211,8 +216,10 @@ func slashCommandMaxBytes() int {
 	return n
 }
 
-// slashWarnOnce keeps a divergence notice to one line per command file per
-// run. It is shared across a run's nodes and branches run in parallel, so it
+// slashWarnOnce keeps the `$N` divergence notice to one line per command
+// file per run — noise suppression only. The frontmatter divergence is NOT
+// deduped here: it is keyed per node on the build session, because its
+// consequence depends on the node's own tool set. It is shared across a run's nodes and branches run in parallel, so it
 // locks.
 type slashWarnOnce struct {
 	mu   sync.Mutex
