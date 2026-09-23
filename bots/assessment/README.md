@@ -49,10 +49,10 @@ the page, from an agreed one. The shape is in
 floor cannot see — which subtrees are first-party, what is deployed, which
 systems are talked to. Every declaration is re-verified against the tree at
 the pinned commit, deduplicated by canonical identity, and refused when two
-overlap. That is not ceremony: measured on the generator this bot
-generalises, declaring one deployable four times — evidence unchanged, every
-self-check green — moved the published index by 0.36 and the size letter by a
-whole band.
+overlap. That is not ceremony: measured on this bundle's own fixture,
+declaring ONE deployable four times — tree untouched, every consistency check
+green — moves the published index from 0.658 to 0.931, a third of the way up
+the scale and across a band wherever a repository sits near one.
 
 **A size letter is relative to a profile.** The letter comes out of a
 versioned measurement profile (metrics, canonical exclusions, domain of

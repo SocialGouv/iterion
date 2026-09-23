@@ -228,6 +228,7 @@ func TestPrepareBranchRecordsOnlyItsOwnStash(t *testing.T) {
 func TestPorcelainReadersAreClassified(t *testing.T) {
 	unaffected := map[string]string{
 		"modernize/main.bot:lot_verify:code, log, _ = run(\"git -c core.quotePath=false status --porcelain -- %s\"":                                           "scoped to the lot's own paths by pathspec",
+		"assessment/main.bot:commit:dirty = git(\"status\", \"--porcelain\", \"--\", *present)":                                                               "scoped by pathspec to the assessment's own outputs, which the scaffold never sits under",
 		"golden-master/extend.bot:extend_base:dirty = subprocess.run([\"git\", \"-C\", ws, \"status\", \"--porcelain\", \"-z\"],":                             "filtered where the -z tokens are parsed, below the window",
 		"branch-improve-loop/main.bot:delivery_probe:changed += git('ls-files', '--others', '--exclude-standard', '-z')":                                      "asks only whether a .github/workflows/ path changed",
 		"golden-master/main.bot:oracle_run:code, out = run(\"git --no-optional-locks status --porcelain\", ws, timeout=120)":                                  "a tree fingerprint, only ever compared with itself",

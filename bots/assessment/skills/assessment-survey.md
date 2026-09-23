@@ -20,11 +20,11 @@ Here is the thing to understand before writing a single entry, because it
 decides the shape of every rule below.
 
 **A declaration is not documentation. It is an input to an arithmetic whose
-result is published.** Measured on the generator this bot generalises:
-declaring the same deployable four times — with the repository untouched, the
-evidence unchanged, and every consistency self-check green — moved the size
-index from 3.84 to 4.20 and the published size letter up a whole band. Nothing
-lied. A number was simply counted four times.
+result is published.** Measured on this bundle's own fixture: declaring ONE
+deployable four times — repository untouched, evidence unchanged, every
+consistency check green — moves the size index from 0.658 to 0.931, a third of
+the way up the scale, and across a band wherever the repository sits near one.
+Nothing lied. A number was simply counted four times.
 
 So the lint refuses, rather than warns, on four things: a declaration whose
 evidence it cannot re-verify at the pinned commit, two declarations naming the
@@ -64,9 +64,14 @@ repository.
 | `deployable` | one artefact that is deployed and runs on its own | `path` exists at the pinned commit; `pattern` matches inside it when given |
 | `system` | one distinct system the application talks to — a datastore, a broker, an external service | `path` exists; `pattern` matches |
 | `first_party` | a subtree that IS the product's own source | `path` is a directory in the tree |
-| `excluded` | a subtree that is NOT first-party — vendored, generated, locked, data, fixtures | `path` is a directory in the tree, and `note` says which of those it is |
+| `excluded` | anything that is NOT first-party — vendored, generated, locked, data, fixtures, documentation | `path` is a file OR a directory in the tree, and `note` says which of those it is |
 | `tests` | a subtree that holds tests | `path` is a directory in the tree |
 | `entrypoint` | a declared way in — an HTTP surface, a CLI, a scheduled job, a queue consumer | `path` exists; `pattern` matches when the count comes from a pattern |
+
+**Every top-level entry of the tree must be claimed** by one of `first_party`,
+`excluded` or `tests` — files at the repository root included. The lint refuses
+a survey that leaves one unclaimed, and the reason is in the next section: it
+is the only mechanical handle anybody has on omission.
 
 `id` is lower-case, dash-separated, stable, and unique across the whole list.
 Stable means: the same repository surveyed twice yields the same id for the
@@ -93,23 +98,34 @@ carrying a count, a date or a version is never one.
 
 ## The extractor block a `stack-<id>.md` carries
 
-A stack skill ends with a machine-readable block. The workflow — not you —
-reads it for every stack you named, runs each `cmd` with `$WORKSPACE_DIR`,
-`$SCRATCH_DIR` and `$BASE_SHA` in the environment and cwd at the workspace,
-and then verifies that `output` exists and is non-empty. A command that exits
-0 and writes nothing is a silent coverage gap, which is why the artefact is
-what gets checked rather than the exit code.
+A stack skill ends with a machine-readable block, plus one fenced script per
+extractor. The workflow — not you — reads them for every stack you named, runs
+each script with `$WORKSPACE_DIR`, `$SCRATCH_DIR` and `$BASE_SHA` in the
+environment and cwd at the workspace, captures its standard output into
+`output`, and then verifies that the file exists and parses as JSON. A script
+that exits 0 and writes nothing is a silent coverage gap, which is why the
+artefact is what gets checked rather than the exit code.
 
-```
+````
 <!-- iterion:extractors
 [
   {"id":"<extractor id>",
-   "output":"<file name under $SCRATCH_DIR>",
+   "output":"<file name written under $SCRATCH_DIR>",
    "emits":["<fact key this extractor is responsible for>"],
-   "cmd":"<one shell command writing $SCRATCH_DIR/<file name>>"}
+   "interpreter":"python3"}
 ]
 -->
+
+<!-- iterion:script <extractor id> -->
+
+```python
+# writes one JSON document to standard output
 ```
+````
+
+The script lives in the fenced block that FOLLOWS its anchor. An extractor
+declared in the spec block with no script block after it is an error the
+runner reports by name — never a silently skipped extractor.
 
 The same block is the coverage gate's expectation, which is what keeps the
 per-stack check in lockstep with what actually ran without a list of languages

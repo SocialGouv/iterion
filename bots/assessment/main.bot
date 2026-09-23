@@ -16,11 +16,11 @@
 ##   1. A DECLARATION IS A NUMBER. The survey agent declares what the
 ##      floor cannot see; every declaration is re-verified against the
 ##      tree at the pinned commit, deduplicated by canonical identity,
-##      and refused when two declarations overlap. Measured on the
-##      private generator this one generalises: declaring the same
-##      artefact four times, with the tree unchanged, moved the
-##      published index by 0.36 and the size letter by a whole band —
-##      with the self-check green.
+##      and refused when two declarations overlap. Measured on this
+##      bundle's own fixture: declaring ONE deployable four times, tree
+##      untouched and every consistency check green, moves the published
+##      index from 0.658 to 0.931 — a third of the way up the scale, and
+##      across a band wherever the repository sits near one.
 ##   2. A SIZE LETTER IS RELATIVE TO A PROFILE. The letter is published
 ##      with the identifier and version of the measurement profile it
 ##      came from, and outside that profile's declared domain the bot
@@ -297,6 +297,10 @@ schema probe_state:
 ## place the objectives of a campaign can come from.
 schema brief_state:
   ok: bool
+  ## Whether the file EXISTS, separately from whether it is usable. An absent
+  ## brief and an incomplete one are two different conversations with the
+  ## operator, and one code for both would send them to the wrong one.
+  present: bool
   code: string
   reason: string
   ## The brief as JSON, normalised. Handed to the agents by reference, never
@@ -431,7 +435,108 @@ tool workspace_probe:
   output: probe_state
   language: py
   script: |
-    raise SystemExit("assessment: workspace_probe is not implemented yet")
+    import hashlib
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    skills_dir = os.path.join(ws, ".claude", "skills")
+
+    out = {"ok": False, "code": "", "reason": "", "base_sha": "", "fingerprint": ""}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    # A NEUTRALISED git environment, everywhere this bundle shells git. The
+    # operator's includes, aliases, locale and timezone all change what git
+    # prints; a measurement that moves with the machine that took it is not a
+    # measurement. GIT_DIR and friends are cleared because an ambient one
+    # would silently point the reads at another repository.
+    def git_env():
+        env = dict(os.environ)
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"):
+            env.pop(key, None)
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_SYSTEM"] = os.devnull
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["LC_ALL"] = "C"
+        env["TZ"] = "UTC"
+        return env
+
+    def git(*args, **kw):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
+                              text=True, env=git_env(), timeout=kw.get("timeout", 120))
+
+    if not ws or not os.path.isdir(ws):
+        refuse("WORKSPACE_NOT_A_REPO", "workspace_dir %r does not exist" % ws)
+
+    probe = git("rev-parse", "--git-dir")
+    if probe.returncode != 0:
+        refuse("WORKSPACE_NOT_A_REPO", "workspace_dir %r is not a git repository (%s)"
+               % (ws, (probe.stderr or "").strip()[-300:]))
+
+    # A SHALLOW clone answers every history question with a truncated tree, and
+    # answers it confidently: the sentence that comes out — "the delivered
+    # history is a single squashed commit" — is then a claim about a repository
+    # that may carry thousands. Grafts and replace refs do the same, one object
+    # at a time.
+    shallow = git("rev-parse", "--is-shallow-repository")
+    if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+        refuse("WORKSPACE_SHALLOW",
+               "the clone at %s is SHALLOW. Every history measurement it can answer is "
+               "a property of the clone, not of the repository — fetch the full history "
+               "(git fetch --unshallow) and run again." % ws)
+    git_dir = os.path.join(ws, probe.stdout.strip()) if not os.path.isabs(probe.stdout.strip()) \
+        else probe.stdout.strip()
+    if os.path.isfile(os.path.join(git_dir, "info", "grafts")):
+        refuse("WORKSPACE_GRAFTED",
+               "the clone at %s carries a grafts file: its history is rewritten on read, "
+               "so what this bot would measure is not what the repository holds." % ws)
+    replaced = git("for-each-ref", "--format=%(refname)", "refs/replace/")
+    if replaced.returncode == 0 and replaced.stdout.strip():
+        refuse("WORKSPACE_GRAFTED",
+               "the clone at %s carries replace refs (%s): object reads are rewritten, so a "
+               "measurement taken here describes the rewrite."
+               % (ws, ", ".join(replaced.stdout.split())[:200]))
+
+    head = git("rev-parse", "HEAD")
+    if head.returncode != 0:
+        refuse("WORKSPACE_NOT_A_REPO", "cannot resolve HEAD in %s (%s)"
+               % (ws, (head.stderr or "").strip()[-300:]))
+    base_sha = head.stdout.strip()
+
+    # The INPUT FINGERPRINT: the pinned commit, the object id of every tag, and
+    # the content of every extractor skill. A resume re-takes it; a run that
+    # continues over a tree or a skill that moved says so, rather than mixing
+    # two states into one document that reads as if it had one.
+    parts = ["commit:%s" % base_sha]
+    tags = git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/tags/", timeout=180)
+    if tags.returncode == 0:
+        parts.extend("tag:%s" % line for line in sorted(tags.stdout.splitlines()) if line.strip())
+    if os.path.isdir(skills_dir):
+        for name in sorted(os.listdir(skills_dir)):
+            if not name.endswith(".md"):
+                continue
+            try:
+                with open(os.path.join(skills_dir, name), "rb") as handle:
+                    digest = hashlib.sha256(handle.read()).hexdigest()
+            except OSError as exc:
+                refuse("WORKSPACE_NOT_A_REPO", "cannot read the mirrored skill %s: %s" % (name, exc))
+            parts.append("skill:%s:%s" % (name, digest))
+
+    out["ok"] = True
+    out["base_sha"] = base_sha
+    out["fingerprint"] = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    out["reason"] = "git repository at %s, pinned at %s" % (ws, base_sha[:12])
+    print(json.dumps(out))
 
 fail workspace_not_a_repo:
   description: "the launch has no repository to assess"
@@ -448,11 +553,147 @@ tool brief_read:
   output: brief_state
   language: py
   script: |
-    raise SystemExit("assessment: brief_read is not implemented yet")
+    import json
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    brief_path = os.path.join(ws, {{vars.brief_path}})
+
+    out = {"ok": False, "present": False, "code": "", "reason": "", "brief": {}, "summary": ""}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    if not os.path.isfile(brief_path):
+        refuse("BRIEF_ABSENT",
+               "no declared brief at %s. The objectives of a campaign, its target versions "
+               "and its support policy are decisions somebody took; no evidence in any tree "
+               "certifies a fact that is future or external. Write the brief — its shape is "
+               "in the assessment-brief skill — and run again." % brief_path)
+    out["present"] = True
+
+    # No YAML parser in the standard library. yq ships in this bundle's
+    # devbox.json, which says which version should serve — not that the
+    # environment was realised for this node, so it is SOUGHT and its absence
+    # is a refusal rather than an empty brief.
+    def find_yq():
+        found = shutil.which("yq")
+        if found:
+            return found
+        candidate = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        return ""
+
+    yq = find_yq()
+    if not yq:
+        refuse("BRIEF_UNREADABLE",
+               "yq is not on PATH and was not found in this bundle's devbox profile, so the "
+               "brief at %s cannot be read. Being declared in devbox.json says which version "
+               "should serve, not that the environment was realised for this node." % brief_path)
+    try:
+        raw = subprocess.run([yq, "-o=json", brief_path], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        refuse("BRIEF_UNREADABLE", "cannot run yq to read the brief at %s: %s" % (brief_path, exc))
+    if raw.returncode != 0:
+        refuse("BRIEF_UNREADABLE", "the brief at %s is not parseable: %s"
+               % (brief_path, (raw.stderr or "")[-600:]))
+    try:
+        brief = json.loads(raw.stdout)
+    except ValueError as exc:
+        refuse("BRIEF_UNREADABLE", "the brief at %s did not convert to JSON: %s" % (brief_path, exc))
+    if not isinstance(brief, dict):
+        refuse("BRIEF_UNREADABLE", "the brief at %s is a %s at top level; it must be a mapping"
+               % (brief_path, type(brief).__name__))
+
+    missing = []
+    if brief.get("version") != 1:
+        missing.append("version: 1")
+    if not isinstance(brief.get("objective"), str) or not brief["objective"].strip():
+        missing.append("objective (a non-empty paragraph)")
+    goals = brief.get("goals")
+    if not isinstance(goals, list) or not goals:
+        missing.append("goals (at least one)")
+    else:
+        for index, goal in enumerate(goals):
+            if not isinstance(goal, dict) or not isinstance(goal.get("id"), str) or not goal["id"].strip():
+                missing.append("goals[%d].id" % index)
+            elif not isinstance(goal.get("statement"), str) or not goal["statement"].strip():
+                missing.append("goals[%s].statement" % goal["id"])
+    if not isinstance(brief.get("owner"), str) or not brief["owner"].strip():
+        missing.append("owner (who arbitrates what this assessment cannot decide)")
+    if missing:
+        refuse("BRIEF_INCOMPLETE",
+               "the brief at %s is missing %s. A brief that does not carry these cannot "
+               "distinguish an agreed programme from an invented one — see the "
+               "assessment-brief skill." % (brief_path, "; ".join(missing[:8])))
+
+    goal_ids = [g["id"] for g in goals]
+    duplicates = sorted({i for i in goal_ids if goal_ids.count(i) > 1})
+    if duplicates:
+        refuse("BRIEF_INCOMPLETE",
+               "the brief at %s declares goal id(s) %s twice. A goal id is a KEY: the "
+               "contract's outcomes reference it, and two goals under one id make the "
+               "reference ambiguous." % (brief_path, ", ".join(duplicates)))
+
+    def block(title, rows):
+        if not rows:
+            return ["%s: none declared." % title]
+        return ["%s:" % title] + ["  - %s" % row for row in rows]
+
+    def strings(key):
+        value = brief.get(key)
+        return [str(v) for v in value if isinstance(v, (str, int, float))] if isinstance(value, list) else []
+
+    lines = ["Objective:", brief["objective"].strip(), ""]
+    lines += block("Goals", ["%s — %s" % (g["id"], g["statement"].strip()) for g in goals])
+    targets = brief.get("targets") if isinstance(brief.get("targets"), list) else []
+    lines += [""] + block("Targets (decided)", [
+        "%s: %s -> %s%s" % (t.get("component", "?"), t.get("current", "?"), t.get("target", "?"),
+                            (" via %s" % ", ".join(str(s) for s in t["series"]))
+                            if isinstance(t.get("series"), list) and t["series"] else "")
+        for t in targets if isinstance(t, dict)])
+    policy = brief.get("support_policy") if isinstance(brief.get("support_policy"), list) else []
+    lines += [""] + block("Support policy", [
+        "%s supported until %s" % (p.get("component", "?"), p.get("supported_until", "?"))
+        for p in policy if isinstance(p, dict)])
+    lines += [""] + block("Permitted changes", strings("permitted_changes"))
+    lines += [""] + block("Forbidden changes", strings("forbidden_changes"))
+    decisions = brief.get("decisions") if isinstance(brief.get("decisions"), list) else []
+    lines += [""] + block("Decisions already taken", [
+        "%s: %s" % (d.get("id", "?"), d.get("decision", "?"))
+        for d in decisions if isinstance(d, dict)])
+    lines += ["", "Owner: %s" % brief["owner"].strip(),
+              "",
+              "Anything not stated above is NOT decided. Write it as a proposal with an "
+              "identifier, never as a settled lot."]
+
+    out["ok"] = True
+    out["brief"] = brief
+    out["summary"] = "\n".join(lines)
+    out["reason"] = "brief read at %s: %d goal(s), %d decision(s) already taken" % (
+        brief_path, len(goals), len(decisions))
+    print(json.dumps(out))
 
 fail brief_absent:
   description: "the assessment has no declared brief to work from"
   code: BRIEF_ABSENT
+  message: "{{outputs.brief_read.reason}}"
+  resumable: false
+
+## brief_invalid — the file is THERE and cannot serve. A different conversation
+## from an absent brief, and it gets a different code: one asks for a decision
+## to be written down, the other for a field to be repaired.
+fail brief_invalid:
+  description: "the declared brief is unreadable or incomplete"
+  code: BRIEF_INVALID
   message: "{{outputs.brief_read.reason}}"
   resumable: false
 
@@ -467,7 +708,235 @@ tool inventory_floor:
   output: floor_state
   language: py
   script: |
-    raise SystemExit("assessment: inventory_floor is not implemented yet")
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    scratch = {{vars.scratch_dir}}
+    base_sha = {{input.base_sha}}
+
+    out = {"ok": False, "code": "", "reason": "", "floor_path": "", "listing": "",
+           "files": 0, "commits": 0}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def git_env():
+        env = dict(os.environ)
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"):
+            env.pop(key, None)
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_SYSTEM"] = os.devnull
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["LC_ALL"] = "C"
+        env["TZ"] = "UTC"
+        return env
+
+    ENV = git_env()
+
+    def git(*args, **kw):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
+                              text=True, env=ENV, timeout=kw.get("timeout", 300))
+
+    # ── the tree, at the PINNED commit ──────────────────────────────────
+    #
+    # Read through git objects rather than the working directory: the checkout
+    # carries build output, caches and whatever a previous node left behind,
+    # and none of that is in the commit this assessment claims to describe.
+    listed = git("ls-tree", "-r", "-l", "--full-tree", base_sha, timeout=900)
+    if listed.returncode != 0:
+        refuse("FLOOR_FAILED", "cannot list the tree at %s: %s"
+               % (base_sha[:12], (listed.stderr or "").strip()[-400:]))
+
+    entries = []
+    for line in listed.stdout.splitlines():
+        head, _, path = line.partition("\t")
+        fields = head.split()
+        if len(fields) < 4 or fields[1] != "blob":
+            continue
+        try:
+            size = int(fields[3])
+        except ValueError:
+            size = -1
+        entries.append({"path": path, "oid": fields[2], "size": size})
+    if not entries:
+        # The floor MUST produce a measurement on any repository. An empty one
+        # is a tool failure or a commit that is not what it was taken to be —
+        # never a clean bill of health, which is exactly what a zero would read
+        # as three documents downstream.
+        refuse("FLOOR_FAILED",
+               "the tree at %s holds no file. The agnostic floor must measure something on "
+               "any repository; nothing here means the commit is not what it was taken to "
+               "be, or the read failed." % base_sha[:12])
+
+    # ── lines, per file ────────────────────────────────────────────────
+    #
+    # Through cat-file --batch, one process for the whole tree: a process per
+    # blob turns a large repository into minutes of fork overhead. Binary and
+    # oversized blobs are recorded with a null line count and a reason, never
+    # silently counted as zero lines of source.
+    #
+    # The same pass also counts LITERAL SECRET SHAPES: a key whose value is a
+    # literal in the tree. Agnostic on purpose — the shape
+    # `<something>key|secret|token|password = "<literal>"` exists in every
+    # language — and it is a count of shapes for the report, never a verdict
+    # about any one of them. Counted here because the bodies are already in
+    # hand: a second pass would be a fork per blob over the whole tree.
+    SECRET = re.compile(
+        r"(?i)\b([A-Za-z0-9_.-]*(?:secret|passwd|password|token|api[_-]?key|access[_-]?key|private[_-]?key)"
+        r"[A-Za-z0-9_.-]*)\s*[:=]\s*[\"']([^\"'\s]{8,})[\"']")
+    PLACEHOLDER = re.compile(r"(?i)^(?:\$|\{\{|<|x{4,}|changeme|placeholder|your[_-]|example|dummy|todo)")
+    secret_hits, secret_keys = 0, set()
+
+    MAX_BLOB = 2 * 1024 * 1024
+    readable = [e for e in entries if 0 <= e["size"] <= MAX_BLOB]
+    lines_by_path, binary, oversized = {}, [], [e["path"] for e in entries if e["size"] > MAX_BLOB]
+    if readable:
+        proc = subprocess.Popen(["git", "-C", ws, "cat-file", "--batch"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV)
+        request = "".join("%s\n" % e["oid"] for e in readable).encode("ascii")
+        try:
+            blob_out, blob_err = proc.communicate(request, timeout=1800)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            refuse("FLOOR_FAILED", "reading the blobs of %s timed out" % base_sha[:12])
+        if proc.returncode != 0:
+            refuse("FLOOR_FAILED", "git cat-file --batch exited %d: %s"
+                   % (proc.returncode, blob_err.decode("utf-8", "replace")[-400:]))
+        cursor = 0
+        for entry in readable:
+            newline = blob_out.find(b"\n", cursor)
+            if newline < 0:
+                refuse("FLOOR_FAILED", "git cat-file --batch output ended inside a header")
+            header = blob_out[cursor:newline].split()
+            if len(header) != 3:
+                refuse("FLOOR_FAILED", "git cat-file --batch refused object %s: %s"
+                       % (entry["oid"][:12], blob_out[cursor:newline].decode("utf-8", "replace")))
+            length = int(header[2])
+            body = blob_out[newline + 1:newline + 1 + length]
+            cursor = newline + 1 + length + 1
+            if b"\x00" in body[:8000]:
+                binary.append(entry["path"])
+                continue
+            lines_by_path[entry["path"]] = body.count(b"\n") + (0 if body.endswith(b"\n") or not body else 1)
+            for key, value in SECRET.findall(body.decode("utf-8", "replace")):
+                if PLACEHOLDER.match(value):
+                    continue
+                secret_hits += 1
+                secret_keys.add(key.lower())
+
+    # ── history, at the pinned commit ──────────────────────────────────
+    count = git("rev-list", "--count", base_sha, timeout=900)
+    commits = int(count.stdout.strip()) if count.returncode == 0 and count.stdout.strip().isdigit() else 0
+    stamp = git("log", "-1", "--format=%ct", base_sha)
+    head_ts = int(stamp.stdout.strip()) if stamp.returncode == 0 and stamp.stdout.strip().isdigit() else 0
+    # NEVER hand a DATE to git here: its date filters go through approxidate and
+    # complete a bare date with the CURRENT time of day, so the same pinned tree
+    # answers differently at 10:00 and at 22:00. The window is a property of the
+    # tree, so it is computed on the timestamps.
+    stamps = git("log", "--format=%ct", base_sha, timeout=900)
+    recent = 0
+    if stamps.returncode == 0 and head_ts:
+        floor_ts = head_ts - 180 * 86400
+        recent = sum(1 for raw in stamps.stdout.split() if raw.isdigit() and floor_ts < int(raw) <= head_ts)
+
+    tags_reachable = git("tag", "--merged", base_sha, timeout=300)
+    reachable = sorted(t for t in tags_reachable.stdout.split() if t) if tags_reachable.returncode == 0 else []
+    tags_all = git("tag", "-l", timeout=300)
+    all_tags = sorted(t for t in tags_all.stdout.split() if t) if tags_all.returncode == 0 else []
+    tag_dates = set()
+    for tag in reachable[:2000]:
+        dated = git("log", "-1", "--format=%cs", "refs/tags/%s^{commit}" % tag)
+        if dated.returncode == 0 and dated.stdout.strip():
+            tag_dates.add(dated.stdout.strip())
+
+    # ── continuous integration ─────────────────────────────────────────
+    #
+    # A list of CI SYSTEMS, not of languages: where a pipeline is declared is a
+    # property of the forge, and adding one here says nothing about any stack.
+    CI_PREFIXES = (".github/workflows/", ".circleci/", ".buildkite/", ".woodpecker/",
+                   ".tekton/", ".concourse/")
+    CI_FILES = (".gitlab-ci.yml", ".gitlab-ci.yaml", "Jenkinsfile", "azure-pipelines.yml",
+                "azure-pipelines.yaml", ".drone.yml", "bitbucket-pipelines.yml",
+                ".woodpecker.yml", ".travis.yml", "appveyor.yml", ".teamcity/settings.kts")
+    ci_files = sorted(e["path"] for e in entries
+                      if e["path"] in CI_FILES or e["path"].startswith(CI_PREFIXES))
+
+    # ── the listing handed to the survey ───────────────────────────────
+    top = sorted({(p.split("/", 1)[0] + "/") if "/" in p else p for p in (e["path"] for e in entries)})
+    MANIFEST_DEPTH = 4
+    manifests = sorted(e["path"] for e in entries
+                       if e["path"].count("/") < MANIFEST_DEPTH
+                       and re.search(r"(?i)(^|/)(.*\.(?:mod|toml|gradle|gradle\.kts|cabal|nimble|gemspec|csproj|fsproj|sln|opam)|"
+                                     r"package\.json|composer\.json|pom\.xml|build\.sbt|mix\.exs|Gemfile|Rakefile|Makefile|"
+                                     r"CMakeLists\.txt|Dockerfile[^/]*|docker-compose[^/]*\.ya?ml|Chart\.yaml|Taskfile\.ya?ml|"
+                                     r"devbox\.json|flake\.nix|shell\.nix|\.tool-versions|requirements[^/]*\.txt)$", e["path"]))
+    by_ext = {}
+    for path, count in lines_by_path.items():
+        name = os.path.basename(path)
+        ext = name.rsplit(".", 1)[-1] if "." in name[1:] else "(no extension)"
+        files_count, line_count = by_ext.get(ext, (0, 0))
+        by_ext[ext] = (files_count + 1, line_count + count)
+    ranked = sorted(by_ext.items(), key=lambda kv: (-kv[1][1], kv[0]))
+
+    listing = "\n".join(
+        ["TOP-LEVEL ENTRIES (%d):" % len(top)] + top[:200] +
+        ["", "BUILD / PACKAGING MANIFESTS (depth < %d, %d):" % (MANIFEST_DEPTH, len(manifests))] + manifests[:200] +
+        ["", "LINES BY EXTENSION (whole tree, before any declared exclusion):"] +
+        ["  %-16s %6d file(s) %10d line(s)" % (ext, n, lines) for ext, (n, lines) in ranked[:40]] +
+        ["", "CONTINUOUS INTEGRATION: %s" % (", ".join(ci_files[:20]) if ci_files else "no pipeline file found"),
+         "HISTORY: %d commit(s), %d in the 180 days before the pinned commit" % (commits, recent),
+         "TAGS: %d reachable from the pinned commit (%d in the clone), %d distinct date(s)"
+         % (len(reachable), len(all_tags), len(tag_dates)),
+         "BINARY OR OVERSIZED BLOBS (not line-counted): %d binary, %d over 2 MiB" % (len(binary), len(oversized))])
+
+    floor = {
+        "base_sha": base_sha,
+        "files": len(entries),
+        "blobs_line_counted": len(lines_by_path),
+        "lines_by_path": lines_by_path,
+        "binary": sorted(binary),
+        "oversized": sorted(oversized),
+        "by_extension": {ext: {"files": n, "lines": lines} for ext, (n, lines) in ranked},
+        "top_level": top,
+        "manifests": manifests,
+        "ci_files": ci_files,
+        "ci_present": bool(ci_files),
+        "commits": commits,
+        "commits_recent_180d": recent,
+        "history_can_testify": commits > 1,
+        "tags_reachable": reachable,
+        "tags_in_clone": len(all_tags),
+        "tag_dates": sorted(tag_dates),
+        "secret_literal_hits": secret_hits,
+        "secret_literal_keys": sorted(secret_keys),
+    }
+    try:
+        os.makedirs(scratch, exist_ok=True)
+        floor_path = os.path.join(scratch, "floor.json")
+        tmp = floor_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(floor, handle)
+        os.replace(tmp, floor_path)
+    except OSError as exc:
+        refuse("FLOOR_FAILED", "cannot write the floor measurement under %s: %s" % (scratch, exc))
+
+    out["ok"] = True
+    out["floor_path"] = floor_path
+    out["listing"] = listing
+    out["files"] = len(entries)
+    out["commits"] = commits
+    out["reason"] = "floor measured at %s: %d file(s), %d commit(s)" % (base_sha[:12], len(entries), commits)
+    print(json.dumps(out))
 
 schema floor_input:
   base_sha: string
@@ -515,7 +984,89 @@ tool survey_write:
   output: survey_state
   language: py
   script: |
-    raise SystemExit("assessment: survey_write is not implemented yet")
+    import json
+    import os
+    import sys
+
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+
+    ws = {{vars.workspace_dir}}
+    survey_rel = {{vars.survey_path}}
+    base_sha = {{input.base_sha}}
+    stacks = {{input.stacks}}
+    declarations = {{input.declarations}}
+    notes = {{input.notes}}
+
+    out = {"ok": False, "code": "", "reason": "", "survey_path": "", "stacks": []}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    # The agent's answer is SHAPE-checked here and nowhere else: past this node
+    # every reader may assume a list of mappings, and a reader that has to
+    # re-guess the shape is a reader that will guess differently from its
+    # neighbour.
+    def as_list(value, what):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            refuse("SURVEY_UNREADABLE", "the survey returned %s as a %s; a list was required"
+                   % (what, type(value).__name__))
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                refuse("SURVEY_UNREADABLE", "%s[%d] is a %s; every entry must be a mapping"
+                       % (what, index, type(item).__name__))
+        return value
+
+    stacks = as_list(stacks, "stacks")
+    declarations = as_list(declarations, "declarations")
+    if not stacks:
+        refuse("SURVEY_UNREADABLE",
+               "the survey named no stack at all. A repository with no identifiable stack is "
+               "a finding to write down, not an empty list: name what is there, mark it "
+               "unsupported with the reason, and the coverage gate will report it by name.")
+    for index, stack in enumerate(stacks):
+        if not isinstance(stack.get("id"), str) or not stack["id"].strip():
+            refuse("SURVEY_UNREADABLE", "stacks[%d] has no id" % index)
+        if not isinstance(stack.get("evidence"), str) or not stack["evidence"].strip():
+            refuse("SURVEY_UNREADABLE", "stack %r cites no evidence path" % stack["id"])
+        stack["id"] = stack["id"].strip().lower()
+        stack["supported"] = bool(stack.get("supported", True))
+        stack["reason"] = str(stack.get("reason") or "")
+
+    survey = {
+        "version": 1,
+        "base_sha": base_sha,
+        "stacks": stacks,
+        "declarations": declarations,
+        "notes": notes if isinstance(notes, str) else "",
+    }
+
+    # Atomically, and INTO THE TREE. The perimeter every published number was
+    # computed over travels with the documents: a figure whose perimeter is not
+    # committed beside it cannot be recomputed by anyone, and a number nobody
+    # can recompute is a claim.
+    survey_path = os.path.join(ws, survey_rel)
+    try:
+        os.makedirs(os.path.dirname(survey_path) or ws, exist_ok=True)
+        tmp = survey_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(survey, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp, survey_path)
+    except OSError as exc:
+        refuse("SURVEY_UNREADABLE", "cannot write the survey at %s: %s" % (survey_path, exc))
+
+    out["ok"] = True
+    out["survey_path"] = survey_path
+    out["stacks"] = stacks
+    out["reason"] = "survey written at %s: %d stack(s), %d declaration(s)" % (
+        survey_path, len(stacks), len(declarations))
+    print(json.dumps(out))
 
 ## What the extractor runner did. `unsupported` is a RESULT — a stack nobody
 ## shipped a skill for — and it is distinct from zero: a stack measured at
@@ -547,7 +1098,161 @@ tool run_extractors:
   output: extract_state
   language: py
   script: |
-    raise SystemExit("assessment: run_extractors is not implemented yet")
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+
+    ws = {{vars.workspace_dir}}
+    scratch = {{vars.scratch_dir}}
+    stacks = {{input.stacks}}
+    skills_dir = os.path.join(ws, ".claude", "skills")
+
+    out = {"ok": False, "code": "", "reason": "", "ran": [], "outputs": {},
+           "unsupported": [], "errors": []}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    # The same two readers the coverage gate uses, on the same file. They are
+    # written twice on purpose: a gate that took its expectations from the
+    # runner's own report would agree with a runner that parsed nothing, which
+    # is the one failure the gate exists to catch. A test pins the two readers
+    # to the same answer on the same fixtures.
+    BLOCK = re.compile(r"<!--\s*iterion:extractors(.*?)-->", re.S)
+    SCRIPT = re.compile(r"<!--\s*iterion:script\s+([A-Za-z0-9_.-]+)\s*-->", re.S)
+    FENCE = re.compile(r"```[A-Za-z0-9_+-]*\n(.*?)\n```", re.S)
+    SUFFIX = {"python3": "py", "python": "py", "bash": "sh", "sh": "sh", "node": "js"}
+
+    def extractor_specs(text):
+        found = BLOCK.search(text)
+        if not found:
+            return None
+        specs = json.loads(found.group(1))
+        if not isinstance(specs, list):
+            raise ValueError("the extractors block is a %s; a list was required" % type(specs).__name__)
+        return specs
+
+    def script_of(text, extractor_id):
+        anchor = SCRIPT.search(text, 0)
+        while anchor:
+            if anchor.group(1) == extractor_id:
+                fence = FENCE.search(text, anchor.end())
+                return fence.group(1) if fence else None
+            anchor = SCRIPT.search(text, anchor.end())
+        return None
+
+    try:
+        os.makedirs(scratch, exist_ok=True)
+    except OSError as exc:
+        refuse("EXTRACTORS_FAILED", "cannot create the scratch directory %s: %s" % (scratch, exc))
+
+    env = dict(os.environ)
+    env["WORKSPACE_DIR"] = ws
+    env["SCRATCH_DIR"] = scratch
+    env["BASE_SHA"] = ""
+    env["LC_ALL"] = "C"
+    env["TZ"] = "UTC"
+
+    covered = 0
+    for stack in stacks if isinstance(stacks, list) else []:
+        stack_id = (stack.get("id") or "").strip().lower() if isinstance(stack, dict) else ""
+        if not stack_id:
+            continue
+        skill_path = os.path.join(skills_dir, "stack-%s.md" % stack_id)
+        if not os.path.isfile(skill_path):
+            # UNSUPPORTED is a result, and it is not zero. A stack measured at
+            # zero and a stack never measured read identically in a table, and
+            # only one of them is a fact about the repository.
+            out["unsupported"].append({"stack": stack_id,
+                                       "reason": "no stack-%s.md in this bundle" % stack_id})
+            continue
+        try:
+            text = open(skill_path, encoding="utf-8").read()
+            specs = extractor_specs(text)
+        except (OSError, ValueError) as exc:
+            out["errors"].append({"stack": stack_id, "error": "unreadable extractor block: %s" % exc})
+            out["unsupported"].append({"stack": stack_id, "reason": "extractor block unreadable"})
+            continue
+        if specs is None:
+            out["unsupported"].append({"stack": stack_id,
+                                       "reason": "stack-%s.md declares no iterion:extractors block" % stack_id})
+            continue
+        covered += 1
+        produced = []
+        for spec in specs:
+            if not isinstance(spec, dict):
+                out["errors"].append({"stack": stack_id, "error": "an extractor spec is not a mapping"})
+                continue
+            extractor_id = str(spec.get("id") or "").strip()
+            output_name = str(spec.get("output") or "").strip()
+            interpreter = str(spec.get("interpreter") or "python3").strip()
+            if not extractor_id or not output_name:
+                out["errors"].append({"stack": stack_id, "error": "an extractor declares no id or no output"})
+                continue
+            body = script_of(text, extractor_id)
+            if body is None:
+                out["errors"].append({"stack": stack_id, "extractor": extractor_id,
+                                      "error": "declared in the extractors block, but no "
+                                               "`iterion:script %s` fenced block follows it" % extractor_id})
+                continue
+            script_path = os.path.join(scratch, "%s-%s.%s" % (stack_id, extractor_id,
+                                                              SUFFIX.get(interpreter, "txt")))
+            output_path = os.path.join(scratch, output_name)
+            try:
+                with open(script_path, "w", encoding="utf-8") as handle:
+                    handle.write(body)
+            except OSError as exc:
+                out["errors"].append({"stack": stack_id, "extractor": extractor_id,
+                                      "error": "cannot write the extractor script: %s" % exc})
+                continue
+            try:
+                run = subprocess.run([interpreter, script_path], cwd=ws, env=env,
+                                     capture_output=True, timeout=900)
+            except (OSError, subprocess.SubprocessError) as exc:
+                out["errors"].append({"stack": stack_id, "extractor": extractor_id,
+                                      "error": "did not run: %s" % exc})
+                continue
+            stderr_tail = run.stderr.decode("utf-8", "replace").strip()[-400:]
+            if run.returncode != 0:
+                out["errors"].append({"stack": stack_id, "extractor": extractor_id,
+                                      "error": "exited %d%s" % (run.returncode,
+                                                                (" :: " + stderr_tail) if stderr_tail else "")})
+            # THE ARTEFACT IS WHAT IS VERIFIED, never the exit code. An
+            # extractor that exits 0 and writes nothing is a silent coverage
+            # gap, and a gap that reports as success is worse than a failure.
+            try:
+                with open(output_path, "wb") as handle:
+                    handle.write(run.stdout)
+                json.loads(run.stdout.decode("utf-8"))
+            except (OSError, ValueError, UnicodeDecodeError) as exc:
+                out["errors"].append({"stack": stack_id, "extractor": extractor_id,
+                                      "error": "produced no readable JSON at %s: %s%s"
+                                               % (output_name, exc,
+                                                  (" :: " + stderr_tail) if stderr_tail else "")})
+                continue
+            out["ran"].append({"stack": stack_id, "extractor": extractor_id, "output": output_name,
+                               "path": output_path})
+            produced.append(output_name)
+        out["outputs"][stack_id] = produced
+
+    if not covered and not out["unsupported"]:
+        refuse("EXTRACTORS_FAILED",
+               "no stack was resolved at all: the survey named %d stack(s) and none of them "
+               "reached either a skill or the unsupported list. The mirrored skills directory "
+               "(%s) is the first thing to look at." % (len(stacks or []), skills_dir))
+
+    out["ok"] = True
+    out["reason"] = "%d extractor(s) ran over %d covered stack(s); %d unsupported; %d error(s)" % (
+        len(out["ran"]), covered, len(out["unsupported"]), len(out["errors"]))
+    print(json.dumps(out))
 
 schema health_input:
   survey_path: string
@@ -565,7 +1270,98 @@ tool inventory_health:
   output: health_state
   language: py
   script: |
-    raise SystemExit("assessment: inventory_health is not implemented yet")
+    import json
+    import os
+    import re
+    import sys
+
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+
+    ws = {{vars.workspace_dir}}
+    scratch = {{vars.scratch_dir}}
+    survey_path = {{input.survey_path}}
+    produced = {{input.outputs}}
+    unsupported = {{input.unsupported}}
+    skills_dir = os.path.join(ws, ".claude", "skills")
+
+    out = {"ok": False, "code": "", "reason": "", "healthy": False, "degraded": False,
+           "stacks_detected": [], "stacks_covered": [], "stacks_unsupported": [], "missing": []}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    # The expectations are read from the SKILLS, not from the runner's report.
+    # A gate that believed the runner would agree with a runner that parsed
+    # nothing and ran nothing — the exact façade this gate exists to refuse.
+    BLOCK = re.compile(r"<!--\s*iterion:extractors(.*?)-->", re.S)
+
+    def declared_outputs(stack_id):
+        path = os.path.join(skills_dir, "stack-%s.md" % stack_id)
+        if not os.path.isfile(path):
+            return None
+        found = BLOCK.search(open(path, encoding="utf-8").read())
+        if not found:
+            return None
+        try:
+            specs = json.loads(found.group(1))
+        except ValueError:
+            return None
+        if not isinstance(specs, list):
+            return None
+        return [str(s.get("output")) for s in specs
+                if isinstance(s, dict) and s.get("output")]
+
+    try:
+        survey = json.load(open(survey_path, encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        refuse("COVERAGE_VOID", "cannot read the survey at %s: %s" % (survey_path, exc))
+
+    detected = [str(s.get("id")) for s in survey.get("stacks") or [] if isinstance(s, dict) and s.get("id")]
+    out["stacks_detected"] = detected
+    out["stacks_unsupported"] = unsupported if isinstance(unsupported, list) else []
+    produced = produced if isinstance(produced, dict) else {}
+
+    void, covered = [], []
+    for stack_id in detected:
+        expected = declared_outputs(stack_id)
+        if expected is None:
+            continue  # unsupported: reported by the runner, by name, not as a zero
+        covered.append(stack_id)
+        landed = []
+        for name in expected:
+            path = os.path.join(scratch, name)
+            if os.path.isfile(path) and os.path.getsize(path) > 0 and name in (produced.get(stack_id) or []):
+                landed.append(name)
+            else:
+                out["missing"].append({"stack": stack_id, "output": name,
+                                       "status": "absent" if not os.path.isfile(path) else "not produced by this pass"})
+        # A stack we SHIP a skill for is a stack we claim to measure. One that
+        # produced none of its declared outputs is a coverage VOID, not a clean
+        # repository — and the difference is invisible in every table
+        # downstream, which is why it is refused here rather than noted.
+        if expected and not landed:
+            void.append(stack_id)
+    out["stacks_covered"] = covered
+
+    if void:
+        refuse("COVERAGE_VOID",
+               "stack(s) %s are covered by a skill in this bundle and produced NONE of their "
+               "declared extractor outputs. This bot claims to measure them, so a zero here "
+               "would read as a fact about the repository; it is a fact about the run. "
+               "Missing: %s." % (", ".join(void),
+                                 "; ".join("%s/%s (%s)" % (m["stack"], m["output"], m["status"])
+                                           for m in out["missing"][:8])))
+
+    out["ok"] = True
+    out["degraded"] = bool(out["missing"]) or bool(out["stacks_unsupported"])
+    out["healthy"] = not out["degraded"]
+    out["reason"] = "%d stack(s) detected, %d covered, %d unsupported, %d output(s) missing" % (
+        len(detected), len(covered), len(out["stacks_unsupported"]), len(out["missing"]))
+    print(json.dumps(out))
 
 fail coverage_void:
   description: "a detected stack produced none of its declared extractor outputs"
@@ -587,7 +1383,201 @@ tool declaration_lint:
   output: lint_state
   language: py
   script: |
-    raise SystemExit("assessment: declaration_lint is not implemented yet")
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    base_sha = {{input.base_sha}}
+    survey_path = {{input.survey_path}}
+
+    out = {"ok": False, "code": "", "reason": "", "verified": 0, "refusals": []}
+
+    KINDS = ("deployable", "system", "first_party", "excluded", "tests", "entrypoint")
+    # `excluded` takes a file as well as a directory: the partition below
+    # demands that every top-level entry be claimed, and a repository's root
+    # carries files (a licence, a readme) that are entries like any other.
+    DIRECTORY_KINDS = ("first_party", "tests")
+    PARTITION_KINDS = ("first_party", "excluded", "tests")
+    ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+    def emit():
+        out["reason"] = "%d declaration(s) refused: %s" % (
+            len(out["refusals"]),
+            "; ".join("%s — %s" % (r["id"], r["why"]) for r in out["refusals"][:6]))
+        out["code"] = "DECLARATIONS_REFUSED"
+        sys.stderr.write("assessment: DECLARATIONS_REFUSED: %s\n" % out["reason"])
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def reject(declaration_id, why):
+        out["refusals"].append({"id": declaration_id, "why": why})
+
+    def git_env():
+        env = dict(os.environ)
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"):
+            env.pop(key, None)
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_SYSTEM"] = os.devnull
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["LC_ALL"] = "C"
+        env["TZ"] = "UTC"
+        return env
+
+    ENV = git_env()
+
+    try:
+        survey = json.load(open(survey_path, encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        refuse("SURVEY_UNREADABLE", "cannot read the survey at %s: %s" % (survey_path, exc))
+    declarations = survey.get("declarations") or []
+
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--name-only", "--full-tree", base_sha],
+                            capture_output=True, text=True, env=ENV, timeout=900)
+    if listed.returncode != 0:
+        refuse("SURVEY_UNREADABLE", "cannot list the tree at %s: %s"
+               % (base_sha[:12], (listed.stderr or "").strip()[-400:]))
+    files = [line for line in listed.stdout.splitlines() if line]
+    file_set = set(files)
+    directories = {""}
+    for path in files:
+        parts = path.split("/")
+        for depth in range(1, len(parts)):
+            directories.add("/".join(parts[:depth]))
+
+    def blob(path):
+        shown = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (base_sha, path)],
+                               capture_output=True, env=ENV, timeout=120)
+        return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else None
+
+    # ── every declaration, re-verified at the pinned commit ────────────
+    seen_ids, by_identity = {}, {}
+    for index, declaration in enumerate(declarations):
+        if not isinstance(declaration, dict):
+            reject("declarations[%d]" % index, "not a mapping")
+            continue
+        declaration_id = str(declaration.get("id") or "").strip()
+        kind = str(declaration.get("kind") or "").strip()
+        path = str(declaration.get("path") or "").strip().strip("/")
+        pattern = declaration.get("pattern")
+        if not declaration_id:
+            reject("declarations[%d]" % index, "no id; an id is how a declaration is spoken about")
+            continue
+        if not ID_RE.match(declaration_id):
+            reject(declaration_id, "id must be lower-case words joined by dashes")
+            continue
+        # An id is a KEY. Declared twice, a reader takes the first and a
+        # verifier the last — and the artefact is counted twice either way.
+        if declaration_id in seen_ids:
+            reject(declaration_id, "declared twice (first at index %d)" % seen_ids[declaration_id])
+            continue
+        seen_ids[declaration_id] = index
+        if kind not in KINDS:
+            reject(declaration_id, "kind %r is not one of %s" % (kind, ", ".join(KINDS)))
+            continue
+        if not path:
+            reject(declaration_id, "no path; a declaration with no evidence cannot be re-verified")
+            continue
+        if kind in DIRECTORY_KINDS:
+            if path not in directories:
+                reject(declaration_id, "path %r is not a directory in the tree at %s"
+                       % (path, base_sha[:12]))
+                continue
+        elif path not in file_set and path not in directories:
+            reject(declaration_id, "path %r is neither a file nor a directory in the tree at %s"
+                   % (path, base_sha[:12]))
+            continue
+        if pattern:
+            if path not in file_set:
+                reject(declaration_id, "declares a pattern but its path %r is not a file" % path)
+                continue
+            try:
+                compiled = re.compile(str(pattern), re.M)
+            except re.error as exc:
+                reject(declaration_id, "pattern does not compile: %s" % exc)
+                continue
+            body = blob(path)
+            if body is None:
+                reject(declaration_id, "cannot read %r at %s" % (path, base_sha[:12]))
+                continue
+            if not compiled.search(body):
+                reject(declaration_id, "pattern matches nothing in %r at %s — a declaration whose "
+                                       "evidence is not there is a claim" % (path, base_sha[:12]))
+                continue
+        # Two declarations of the same KIND over the same PATH are one artefact
+        # counted twice. Measured on this bundle's own fixture: four such
+        # declarations of one deployable, tree untouched, move the published
+        # index from 0.658 to 0.931 — a third of the way up the scale.
+        identity = (kind, path)
+        if identity in by_identity:
+            reject(declaration_id, "declares the same %s at %r as %r; one artefact, one declaration"
+                   % (kind, path, by_identity[identity]))
+            continue
+        by_identity[identity] = declaration_id
+        out["verified"] += 1
+
+    # ── the partition: no subtree claimed twice ────────────────────────
+    subtrees = [(d.get("id"), d.get("kind"), str(d.get("path") or "").strip().strip("/"))
+                for d in declarations
+                if isinstance(d, dict) and d.get("kind") in PARTITION_KINDS
+                and str(d.get("path") or "").strip().strip("/") in directories
+                and d.get("id") in seen_ids]
+    for outer_id, outer_kind, outer in subtrees:
+        for inner_id, inner_kind, inner in subtrees:
+            if outer_id == inner_id or not outer:
+                continue
+            if inner == outer or inner.startswith(outer + "/"):
+                # Nesting is legitimate in exactly one direction: a tests or
+                # excluded subtree inside a first_party one is how a perimeter
+                # is carved. Two claims of the SAME kind, or a first_party
+                # inside an excluded one, leave the lines counted twice or not
+                # at all, and nothing downstream can tell which happened.
+                if outer_kind == inner_kind or (outer_kind != "first_party" and inner_kind == "first_party"):
+                    reject(inner_id, "its subtree %r sits inside %r (%s), declared %s: the files "
+                                     "under it are claimed twice" % (inner, outer, outer_id, inner_kind))
+
+    # ── omission: the failure no declaration can be refused for ────────
+    #
+    # A deployable never declared has no declaration to reject. Nothing goes
+    # red; the document simply describes a smaller project. The only mechanical
+    # handle on it is completeness of the PARTITION: every top-level entry of
+    # the tree must be accounted for by some declaration, so the survey has to
+    # have looked at the whole tree once.
+    claimed = set()
+    for _, _, path in subtrees:
+        claimed.add(path.split("/", 1)[0] if path else "")
+    for declaration in declarations:
+        if isinstance(declaration, dict) and declaration.get("id") in seen_ids:
+            path = str(declaration.get("path") or "").strip().strip("/")
+            if path:
+                claimed.add(path.split("/", 1)[0])
+    top_level = sorted({path.split("/", 1)[0] for path in files})
+    residue = [entry for entry in top_level if entry not in claimed]
+    if residue:
+        reject("partition", "%d top-level entr%s accounted for by no declaration: %s. Declare each "
+                            "one first_party, tests or excluded — an entry nobody claimed is the "
+                            "omission no lint can catch once the document is written."
+               % (len(residue), "y is" if len(residue) == 1 else "ies are",
+                  ", ".join(repr(entry) for entry in residue[:10])))
+
+    if out["refusals"]:
+        emit()
+
+    out["ok"] = True
+    out["reason"] = "%d declaration(s) verified at %s over %d file(s)" % (
+        out["verified"], base_sha[:12], len(files))
+    print(json.dumps(out))
 
 fail declarations_refused:
   description: "a declaration could not be verified, or was made twice"
@@ -610,7 +1600,307 @@ tool measure:
   output: measure_state
   language: py
   script: |
-    raise SystemExit("assessment: measure is not implemented yet")
+    import json
+    import os
+    import re
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    scratch = {{vars.scratch_dir}}
+    base_sha = {{input.base_sha}}
+    survey_path = {{input.survey_path}}
+    floor_path = {{input.floor_path}}
+    profile_rel = {{vars.profile_path}}
+    skills_dir = os.path.join(ws, ".claude", "skills")
+
+    out = {"ok": False, "code": "", "reason": "", "profile_id": "", "profile_version": "",
+           "in_domain": False, "size": "", "index": 0.0, "facts": "", "facts_path": ""}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def load(path, what):
+        try:
+            return json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            refuse("MEASUREMENT_REFUSED", "cannot read the %s at %s: %s" % (what, path, exc))
+
+    floor = load(floor_path, "floor measurement")
+    survey = load(survey_path, "survey")
+
+    # ── the measurement profile ────────────────────────────────────────
+    #
+    # Metrics, canonical exclusions, domain, anchor and thresholds travel as ONE
+    # versioned object. Changing any of them changes the letter, so a profile
+    # whose anchor could move under an unchanged version would publish two
+    # incomparable letters under one name.
+    PROFILE_BLOCK = re.compile(r"<!--\s*iterion:profile(.*?)-->", re.S)
+    profile_path = os.path.join(ws, profile_rel) if profile_rel else \
+        os.path.join(skills_dir, "measurement-profile.md")
+    try:
+        found = PROFILE_BLOCK.search(open(profile_path, encoding="utf-8").read())
+    except OSError as exc:
+        refuse("MEASUREMENT_REFUSED", "cannot read the measurement profile at %s: %s" % (profile_path, exc))
+    if not found:
+        refuse("MEASUREMENT_REFUSED",
+               "%s carries no `iterion:profile` block. A size letter is a ratio to an anchor; "
+               "without a declared profile there is no scale, and a letter with no scale is a "
+               "number with a shape." % profile_path)
+    try:
+        profile = json.loads(found.group(1))
+    except ValueError as exc:
+        refuse("MEASUREMENT_REFUSED", "the profile block in %s is not JSON: %s" % (profile_path, exc))
+    for key in ("id", "version", "metrics", "domain", "anchor", "bands", "thresholds"):
+        if key not in profile:
+            refuse("MEASUREMENT_REFUSED", "the profile in %s declares no %r" % (profile_path, key))
+    out["profile_id"] = str(profile["id"])
+    out["profile_version"] = str(profile["version"])
+    metric_keys = [m["key"] for m in profile["metrics"] if isinstance(m, dict) and m.get("key")]
+    discrete = [m["key"] for m in profile["metrics"] if isinstance(m, dict) and m.get("discrete")]
+    labels = {m["key"]: m.get("label", m["key"]) for m in profile["metrics"] if isinstance(m, dict)}
+
+    # ── the declared perimeter ─────────────────────────────────────────
+    declarations = survey.get("declarations") or []
+
+    def paths_of(kind):
+        return sorted({str(d.get("path") or "").strip().strip("/")
+                       for d in declarations if isinstance(d, dict) and d.get("kind") == kind})
+
+    first_party, excluded, tests = paths_of("first_party"), paths_of("excluded"), paths_of("tests")
+
+    def under(path, roots):
+        return any(root and (path == root or path.startswith(root + "/")) for root in roots)
+
+    # A file declaring itself GENERATED in its own header is not first-party,
+    # whatever subtree it sits in: counting generated code as written here
+    # inflates the lines and therefore the published size. A canonical
+    # exclusion of the profile, applied by the tool rather than left to a
+    # survey that would have to enumerate them.
+    GENERATED = re.compile(r"(?i)(?:^|\n).{0,40}(?:code generated .{0,40}do not edit|@generated|"
+                           r"generated by .{0,60}do not edit|this file is auto-?generated)")
+    lines_by_path = floor.get("lines_by_path") or {}
+    counted, generated_skipped = {}, []
+    for path, count in lines_by_path.items():
+        if not under(path, first_party):
+            continue
+        if under(path, excluded) or under(path, tests):
+            continue
+        counted[path] = count
+    first_party_lines = sum(counted.values())
+
+    # ── the per-stack facts ────────────────────────────────────────────
+    #
+    # An extractor's count is used where one ran; a DECLARATION overrides it,
+    # because the operator correcting a heuristic is the whole point of the
+    # declaration. They are never summed: an artefact counted by both would be
+    # counted twice, and that is the failure this whole bundle is shaped
+    # against.
+    extracted = {"entrypoints": 0, "deployables": 0, "declared_versions": []}
+    extractor_files = []
+    if os.path.isdir(scratch):
+        for name in sorted(os.listdir(scratch)):
+            if not name.endswith(".json") or name == "floor.json" or name == "facts.json":
+                continue
+            try:
+                document = json.load(open(os.path.join(scratch, name), encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            facts_block = document.get("facts") if isinstance(document, dict) else None
+            if not isinstance(facts_block, dict):
+                continue
+            extractor_files.append(name)
+            for key in ("entrypoints", "deployables"):
+                if isinstance(facts_block.get(key), int):
+                    extracted[key] += facts_block[key]
+            if isinstance(facts_block.get("declared_versions"), list):
+                extracted["declared_versions"].extend(facts_block["declared_versions"])
+
+    declared_deployables = [d for d in declarations if isinstance(d, dict) and d.get("kind") == "deployable"]
+    declared_entrypoints = [d for d in declarations if isinstance(d, dict) and d.get("kind") == "entrypoint"]
+    systems = [d for d in declarations if isinstance(d, dict) and d.get("kind") == "system"]
+
+    sources = {}
+    deployables = len(declared_deployables)
+    sources["deployables"] = "declared"
+    if not deployables:
+        deployables = extracted["deployables"]
+        sources["deployables"] = "extracted"
+    entrypoints = len(declared_entrypoints)
+    sources["entrypoints"] = "declared"
+    if not entrypoints:
+        entrypoints = extracted["entrypoints"]
+        sources["entrypoints"] = "extracted"
+    sources["systems"] = "declared"
+    sources["first_party_lines"] = "declared perimeter over the floor"
+
+    measured = {
+        "first_party_lines": first_party_lines,
+        "entrypoints": entrypoints,
+        "deployables": deployables,
+        "systems": len(systems),
+    }
+    missing_metric = [key for key in metric_keys if key not in measured]
+    if missing_metric:
+        refuse("MEASUREMENT_REFUSED",
+               "the profile %s declares metric(s) %s that this bot does not measure. A profile "
+               "whose metrics the tool cannot produce would publish an index over values nobody "
+               "computed." % (out["profile_id"], ", ".join(missing_metric)))
+
+    # ── domain, index, band ────────────────────────────────────────────
+    domain = profile["domain"]
+    anchor = profile["anchor"]
+    out_of_domain = []
+    if domain.get("all_metrics_positive"):
+        out_of_domain += ["%s is zero" % labels.get(k, k) for k in metric_keys if not measured[k]]
+    floor_lines = domain.get("min_first_party_lines") or 0
+    if floor_lines and measured.get("first_party_lines", 0) < floor_lines:
+        out_of_domain.append("first-party source is below the profile's floor of %d lines" % floor_lines)
+    for key in metric_keys:
+        if not anchor.get(key):
+            refuse("MEASUREMENT_REFUSED",
+                   "the anchor of profile %s is zero on %r: no ratio is possible, so the scale "
+                   "has no meaning on that axis." % (out["profile_id"], key))
+
+    def geometric_index(values):
+        product = 1.0
+        for key in metric_keys:
+            product *= float(values[key]) / float(anchor[key])
+        return product ** (1.0 / len(metric_keys))
+
+    def band_of(index):
+        for name, threshold in zip(profile["bands"], profile["thresholds"]):
+            if index < threshold:
+                return name
+        return profile["bands"][-1]
+
+    facts = {}
+    if out_of_domain:
+        out["in_domain"] = False
+        out["size"] = "not-applicable"
+        out["index"] = 0.0
+        bands = []
+    else:
+        out["in_domain"] = True
+        index = geometric_index(measured)
+        # Two of the metrics are small discrete counts, where one declaration
+        # either way is a plausible disagreement between two careful surveys.
+        # Publishing the point without the spread would hide a repository
+        # sitting on a boundary, which is exactly where the letter matters.
+        variants = [index]
+        for key in discrete:
+            for delta_mine, delta_anchor in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                mine = dict(measured)
+                mine[key] = max(1, measured[key] + delta_mine)
+                shifted = dict(anchor)
+                shifted[key] = max(1, anchor[key] + delta_anchor)
+                product = 1.0
+                for metric in metric_keys:
+                    product *= float(mine[metric]) / float(shifted[metric])
+                variants.append(product ** (1.0 / len(metric_keys)))
+        bands = sorted({band_of(v) for v in variants}, key=profile["bands"].index)
+        out["index"] = round(index, 3)
+        out["size"] = band_of(index)
+
+    # ── the facts, by identifier ───────────────────────────────────────
+    #
+    # Everything a document may ASSERT lives here, keyed. The renderer
+    # substitutes by identifier and refuses one it does not know, which is what
+    # keeps an invented figure out of a signed document without a filter that
+    # would have to enumerate the spellings of a number.
+    def plural(n, one, many=None):
+        return "%d %s" % (n, one if n == 1 else (many or one + "s"))
+
+    facts["repo.commit"] = base_sha[:12]
+    facts["floor.files"] = plural(floor.get("files", 0), "file")
+    facts["floor.commits"] = plural(floor.get("commits", 0), "commit")
+    facts["floor.commits_recent"] = plural(floor.get("commits_recent_180d", 0),
+                                           "commit in the 180 days before the pinned commit",
+                                           "commits in the 180 days before the pinned commit")
+    facts["floor.history_can_testify"] = ("the delivered history carries more than one commit"
+                                          if floor.get("history_can_testify")
+                                          else "the delivered history is a single squashed commit, so it "
+                                               "cannot testify about what came before it")
+    facts["floor.tags"] = "%s reachable from the pinned commit, over %s" % (
+        plural(len(floor.get("tags_reachable") or []), "tag"),
+        plural(len(floor.get("tag_dates") or []), "distinct date"))
+    facts["floor.ci"] = (("continuous integration is declared in " +
+                          ", ".join("`%s`" % f for f in (floor.get("ci_files") or [])[:4]))
+                         if floor.get("ci_present") else "no continuous-integration pipeline is declared")
+    facts["floor.secret_shapes"] = "%s of a key holding a literal value, over %s" % (
+        plural(floor.get("secret_literal_hits", 0), "occurrence"),
+        plural(len(floor.get("secret_literal_keys") or []), "distinct key name"))
+    facts["floor.binary"] = plural(len(floor.get("binary") or []), "binary blob")
+    facts["metric.first_party_lines"] = plural(measured["first_party_lines"], "line of first-party source")
+    facts["metric.entrypoints"] = "%s (%s)" % (plural(measured["entrypoints"], "entrypoint"),
+                                               sources["entrypoints"])
+    facts["metric.deployables"] = "%s (%s)" % (plural(measured["deployables"], "deployed artefact"),
+                                               sources["deployables"])
+    facts["metric.systems"] = plural(measured["systems"], "distinct system the application talks to")
+    facts["survey.declarations"] = plural(len(declarations), "declaration")
+    facts["survey.first_party_subtrees"] = plural(len(first_party), "first-party subtree")
+    facts["survey.excluded_subtrees"] = plural(len(excluded), "excluded subtree")
+    facts["survey.tests_subtrees"] = plural(len(tests), "test subtree")
+    facts["stack.detected"] = ", ".join(sorted({str(s.get("id")) for s in survey.get("stacks") or []
+                                                if isinstance(s, dict) and s.get("id")})) or "none"
+    facts["stack.unsupported"] = ", ".join(sorted({str(s.get("id")) for s in survey.get("stacks") or []
+                                                   if isinstance(s, dict) and not s.get("supported", True)})) \
+        or "none"
+    facts["stack.extractor_outputs"] = plural(len(extractor_files), "extractor output")
+    versions = ["%s %s" % (v.get("component"), v.get("version"))
+                for v in extracted["declared_versions"] if isinstance(v, dict) and v.get("version")]
+    facts["stack.declared_versions"] = ", ".join(sorted(set(versions))) or "none declared in the tree"
+    facts["profile.id"] = "%s v%s" % (out["profile_id"], out["profile_version"])
+    facts["profile.anchor"] = ", ".join("%s %s" % (labels.get(k, k), anchor[k]) for k in metric_keys)
+    facts["profile.domain"] = str(domain.get("statement") or "")
+    if out["in_domain"]:
+        facts["size.index"] = "%.2f" % out["index"]
+        facts["size.band"] = "%s, relative to profile %s v%s" % (out["size"], out["profile_id"],
+                                                                 out["profile_version"])
+        facts["size.uncertainty"] = ("the band is stable under a one-unit disagreement on either "
+                                     "discrete count" if len(bands) == 1 else
+                                     "a one-unit disagreement on either discrete count moves the band "
+                                     "across %s" % ", ".join(bands))
+    else:
+        facts["size.index"] = "not applicable"
+        facts["size.band"] = "not applicable — %s" % "; ".join(out_of_domain)
+        facts["size.uncertainty"] = ("no band is published, so there is nothing for an uncertainty "
+                                     "to widen")
+
+    facts_document = {
+        "base_sha": base_sha,
+        "profile": {"id": out["profile_id"], "version": out["profile_version"],
+                    "path": profile_path, "anchor": anchor, "thresholds": profile["thresholds"],
+                    "bands": profile["bands"]},
+        "in_domain": out["in_domain"],
+        "out_of_domain": out_of_domain,
+        "measured": measured,
+        "sources": sources,
+        "index": out["index"],
+        "size": out["size"],
+        "bands": bands,
+        "facts": facts,
+    }
+    try:
+        os.makedirs(scratch, exist_ok=True)
+        facts_path = os.path.join(scratch, "facts.json")
+        tmp = facts_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(facts_document, handle, indent=2, sort_keys=True)
+        os.replace(tmp, facts_path)
+    except OSError as exc:
+        refuse("MEASUREMENT_REFUSED", "cannot write the facts under %s: %s" % (scratch, exc))
+
+    out["ok"] = True
+    out["facts_path"] = facts_path
+    out["facts"] = "\n".join("%s — %s" % (key, facts[key]) for key in sorted(facts))
+    out["reason"] = "measured against profile %s v%s: size %s%s" % (
+        out["profile_id"], out["profile_version"], out["size"],
+        "" if out["in_domain"] else " (%s)" % "; ".join(out_of_domain))
+    print(json.dumps(out))
 
 fail measurement_refused:
   description: "the measurement could not be taken"
@@ -651,12 +1941,269 @@ schema render_input:
 ## a REFUSAL, so a figure an agent invented stops the run instead of reaching a
 ## reader over a signature that is not its own.
 tool render:
-  description: "Render the assessment documents, facts substituted by identifier"
+  description: "Render the state document, facts substituted by identifier"
   input: render_input
   output: render_state
   language: py
   script: |
-    raise SystemExit("assessment: render is not implemented yet")
+    import json
+    import os
+    import re
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    out_rel = {{vars.out_dir}}
+    facts_path = {{input.facts_path}}
+    state_judgement = {{input.state_judgement}}
+    plan_judgement = {{input.plan_judgement}}
+    open_questions = {{input.open_questions}}
+
+    out = {"ok": False, "code": "", "reason": "", "documents": []}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    try:
+        document = json.load(open(facts_path, encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        refuse("RENDER_REFUSED", "cannot read the facts at %s: %s" % (facts_path, exc))
+    facts = document.get("facts") or {}
+
+    # Double SQUARE brackets, and not the engine's own double-brace form: an
+    # agent's output travels through the same resolver as a prompt, so a brace
+    # placeholder would be read as a template reference long before this node
+    # saw it. (Writing the brace form even inside this comment is a C004 — the
+    # resolver reads the script body whole.)
+    PLACEHOLDER = re.compile(r"\[\[fact:([A-Za-z0-9_.-]+)\]\]")
+
+    unknown, used = [], set()
+
+    def substitute(text, where):
+        if not isinstance(text, str):
+            return ""
+        def replace(match):
+            key = match.group(1)
+            if key not in facts:
+                unknown.append({"where": where, "id": key})
+                return match.group(0)
+            used.add(key)
+            return facts[key]
+        return PLACEHOLDER.sub(replace, text)
+
+    state_text = substitute(state_judgement, "state_judgement")
+    plan_text = substitute(plan_judgement, "plan_judgement")
+    questions_text = substitute(open_questions, "open_questions")
+
+    if unknown:
+        # THIS is the mechanism, and it is the whole of it. A figure an agent
+        # remembered, approximated or invented cites an identifier nobody
+        # measured, so the run stops here instead of publishing it under a
+        # signature that is not the agent's. A digit detector was the earlier
+        # form and it does not work: "two majors behind" carries no digit, and
+        # a lexical filter rejects a legitimate cross-reference.
+        refuse("RENDER_REFUSED",
+               "the prose cites %d fact identifier(s) the measurement never produced: %s. Every "
+               "factual assertion is substituted from the facts file by identifier; one that is "
+               "not there is a figure nobody measured."
+               % (len(unknown), "; ".join("%s in %s" % (u["id"], u["where"]) for u in unknown[:8])))
+
+    measured = document.get("measured") or {}
+    sources = document.get("sources") or {}
+    profile = document.get("profile") or {}
+
+    def row(key, value, source):
+        return "| %s | %s | %s |" % (key.replace("_", " "), value, source)
+
+    lines = [
+        "# State of the repository",
+        "",
+        "> Measured at commit `%s`. Every figure below is recomputable from the committed "
+        "perimeter (`survey.json`) by the same arithmetic; nothing here is an estimate."
+        % document.get("base_sha", "")[:12],
+        "",
+        "## What was measured",
+        "",
+        "| metric | value | where it comes from |",
+        "|---|---|---|",
+    ]
+    for key in ("first_party_lines", "entrypoints", "deployables", "systems"):
+        if key in measured:
+            lines.append(row(key, measured[key], sources.get(key, "measured")))
+    lines += [
+        "",
+        "| observation | value |",
+        "|---|---|",
+        "| files in the tree | %s |" % facts.get("floor.files", ""),
+        "| history | %s |" % facts.get("floor.commits", ""),
+        "| recent activity | %s |" % facts.get("floor.commits_recent", ""),
+        "| published versions | %s |" % facts.get("floor.tags", ""),
+        "| continuous integration | %s |" % facts.get("floor.ci", ""),
+        "| declared toolchain versions | %s |" % facts.get("stack.declared_versions", ""),
+        "| literal secret shapes | %s |" % facts.get("floor.secret_shapes", ""),
+        "| stacks detected | %s |" % facts.get("stack.detected", ""),
+        "| stacks NOT covered by an extractor | %s |" % facts.get("stack.unsupported", ""),
+        "",
+        "## Size",
+        "",
+        "**%s**" % facts.get("size.band", ""),
+        "",
+        "Index %s. %s" % (facts.get("size.index", ""), facts.get("size.uncertainty", "")),
+        "",
+        "The size is a **convention attached to a measurement profile**, not a property of this "
+        "repository. It is published as `%s v%s`, whose anchor is SYNTHETIC — %s — and whose "
+        "domain is: %s" % (profile.get("id", ""), profile.get("version", ""),
+                           facts.get("profile.anchor", ""), facts.get("profile.domain", "")),
+        "",
+        "A letter quoted without its profile is a false quotation: two repositories sized under "
+        "different profiles are not comparable.",
+        "",
+    ]
+    if not document.get("in_domain"):
+        lines += [
+            "> **No letter is published for this repository.** It falls outside the profile's "
+            "domain (%s), and the scale would produce a letter that does not mean anything. The "
+            "raw measurements above stand." % "; ".join(document.get("out_of_domain") or []),
+            "",
+        ]
+    lines += [
+        "## Reading (judgement)",
+        "",
+        "> The section below is an INTERPRETATION. Its factual assertions are substituted from "
+        "the measurements above; everything else is an opinion, and may be argued with.",
+        "",
+        state_text.strip(),
+        "",
+        "## Open questions",
+        "",
+        "> Decisions this assessment cannot take. Each is addressed to a role, not to a process.",
+        "",
+        questions_text.strip(),
+        "",
+        "## What this document does not say",
+        "",
+        "- **No effort projection.** Hours per class of lot are calibrated on a MEASURED campaign; "
+        "at a first assessment there is none, and a projection would invent its own input.",
+        "- **Omission is not detectable here.** Every declaration was re-verified in the tree and "
+        "the partition is complete over the top-level entries, but an artefact nobody declared has "
+        "no declaration to refuse. %s carried this measurement." % facts.get("survey.declarations", ""),
+        "",
+    ]
+
+    out_dir = os.path.join(ws, out_rel)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        state_path = os.path.join(out_dir, "00-state-of-the-repository.md")
+        with open(state_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+        # The plan document's judgement is written here and rendered after the
+        # contract exists: the prose is the agent's, the contract is the lint's,
+        # and neither waits on the other.
+        held = os.path.join(out_dir, ".plan-judgement.md")
+        with open(held, "w", encoding="utf-8") as handle:
+            handle.write(plan_text)
+    except OSError as exc:
+        refuse("RENDER_REFUSED", "cannot write the documents under %s: %s" % (out_dir, exc))
+
+    out["ok"] = True
+    out["documents"] = [state_path]
+    out["reason"] = "state document rendered at %s; %d fact identifier(s) substituted" % (
+        state_path, len(used))
+    print(json.dumps(out))
+
+## render_plan — the programme document, written AFTER the contract has been
+## validated. Rendering it earlier would describe a programme no lint had seen.
+tool render_plan:
+  description: "Render the programme document from the validated contract"
+  input: render_plan_input
+  output: render_state
+  language: py
+  script: |
+    import json
+    import os
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    out_rel = {{vars.out_dir}}
+    plan_rel = {{vars.plan_path}}
+    facts_path = {{input.facts_path}}
+    lots = {{input.lots}}
+    proposals = {{input.proposals}}
+
+    out = {"ok": False, "code": "", "reason": "", "documents": []}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    try:
+        document = json.load(open(facts_path, encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        refuse("RENDER_REFUSED", "cannot read the facts at %s: %s" % (facts_path, exc))
+    facts = document.get("facts") or {}
+
+    out_dir = os.path.join(ws, out_rel)
+    held = os.path.join(out_dir, ".plan-judgement.md")
+    try:
+        plan_text = open(held, encoding="utf-8").read()
+    except OSError as exc:
+        refuse("RENDER_REFUSED", "the plan judgement written by the render step is missing: %s" % exc)
+
+    lines = [
+        "# Proposed modernisation programme",
+        "",
+        "> The executable form of this programme is `%s`, validated lot by lot. This document "
+        "is the reading of it; the contract is the contract." % plan_rel,
+        "",
+        "| | |",
+        "|---|---|",
+        "| lots declared | %d |" % (lots if isinstance(lots, int) else 0),
+        "| decisions left OPEN as proposals | %d |" % (proposals if isinstance(proposals, int) else 0),
+        "| measured size | %s |" % facts.get("size.band", ""),
+        "| stacks NOT covered by an extractor | %s |" % facts.get("stack.unsupported", ""),
+        "",
+        "## Reading (judgement)",
+        "",
+        "> The section below is an INTERPRETATION. Its factual assertions are substituted from the "
+        "measurements; the ordering it argues for is an opinion, and the contract's `depends_on` "
+        "is where that opinion becomes binding.",
+        "",
+        plan_text.strip(),
+        "",
+        "## What is decided, and what is not",
+        "",
+        "A **lot** is work the declared brief authorised. A **proposal** is a decision waiting for "
+        "the brief's owner: it carries an identifier, it is not a lot, and no review step promotes "
+        "it — a step that can be skipped must not be what makes a business decision binding.",
+        "",
+        "%d proposal(s) are open in `%s`. A programme executed while they stand executes the part "
+        "that was agreed." % (proposals if isinstance(proposals, int) else 0, plan_rel),
+        "",
+    ]
+
+    try:
+        plan_doc = os.path.join(out_dir, "01-modernisation-programme.md")
+        with open(plan_doc, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+        os.remove(held)
+    except OSError as exc:
+        refuse("RENDER_REFUSED", "cannot write the programme document under %s: %s" % (out_dir, exc))
+
+    out["ok"] = True
+    out["documents"] = [plan_doc]
+    out["reason"] = "programme document rendered at %s" % plan_doc
+    print(json.dumps(out))
+
+schema render_plan_input:
+  facts_path: string
+  lots: int
+  proposals: int
 
 fail render_refused:
   description: "the prose cited a fact the measurement never produced"
@@ -693,7 +2240,298 @@ tool contract_lint:
   output: contract_state
   language: py
   script: |
-    raise SystemExit("assessment: contract_lint is not implemented yet")
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_rel = {{vars.plan_path}}
+    plan_path = os.path.join(ws, plan_rel)
+
+    out = {"ok": False, "code": "", "reason": "", "lots": 0, "refusals": []}
+
+    STATUSES = ("todo", "blocked", "done")
+    MAX_TIMEOUT = 86400
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def reject(where, why):
+        out["refusals"].append({"where": where, "why": why})
+
+    if not os.path.isfile(plan_path):
+        refuse("CONTRACT_REFUSED",
+               "no contract at %s. The drafting step reported writing one; a report is a pointer "
+               "to a file, and this is the file." % plan_path)
+
+    def find_yq():
+        found = shutil.which("yq")
+        if found:
+            return found
+        candidate = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        return ""
+
+    yq = find_yq()
+    if not yq:
+        refuse("CONTRACT_REFUSED",
+               "yq is not on PATH and was not found in this bundle's devbox profile, so the "
+               "contract at %s cannot be read. A contract this bot cannot read is one it cannot "
+               "certify, and certifying it unread is the failure this node exists for." % plan_path)
+    try:
+        raw = subprocess.run([yq, "-o=json", plan_path], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        refuse("CONTRACT_REFUSED", "cannot run yq on %s: %s" % (plan_path, exc))
+    if raw.returncode != 0:
+        refuse("CONTRACT_REFUSED", "the contract at %s is not parseable: %s"
+               % (plan_path, (raw.stderr or "")[-600:]))
+    try:
+        contract = json.loads(raw.stdout)
+    except ValueError as exc:
+        refuse("CONTRACT_REFUSED", "the contract at %s did not convert to JSON: %s" % (plan_path, exc))
+    if not isinstance(contract, dict):
+        refuse("CONTRACT_REFUSED", "the contract at %s is a %s at top level; a mapping was required"
+               % (plan_path, type(contract).__name__))
+
+    try:
+        text = open(plan_path, encoding="utf-8").read()
+    except OSError as exc:
+        refuse("CONTRACT_REFUSED", "cannot read %s: %s" % (plan_path, exc))
+
+    # ── the contract's own head ────────────────────────────────────────
+    if contract.get("version") != 1:
+        reject("version", "must be 1; got %r" % contract.get("version"))
+    oracle = contract.get("oracle")
+    if not isinstance(oracle, dict) or not str(oracle.get("refs_dir") or "").strip():
+        reject("oracle.refs_dir",
+               "the contract must declare where the behavioural net's references live. The "
+               "execution bot compares that directory before and after every lot; with nothing "
+               "declared it has nothing to protect, and a net that cannot be protected is a net "
+               "that will be re-baselined.")
+
+    def check_timeout(where, value):
+        if value is None:
+            return
+        if not isinstance(value, int) or isinstance(value, bool) or not (1 <= value <= MAX_TIMEOUT):
+            reject(where, "gate_timeout_s must be an integer of seconds between 1 and %d; got %r"
+                   % (MAX_TIMEOUT, value))
+
+    check_timeout("gate_timeout_s", contract.get("gate_timeout_s"))
+
+    # ── proposals ──────────────────────────────────────────────────────
+    proposals = contract.get("proposals") or []
+    proposal_ids = set()
+    if not isinstance(proposals, list):
+        reject("proposals", "must be a list; got %s" % type(proposals).__name__)
+        proposals = []
+    for index, proposal in enumerate(proposals):
+        if not isinstance(proposal, dict):
+            reject("proposals[%d]" % index, "not a mapping")
+            continue
+        proposal_id = str(proposal.get("id") or "").strip()
+        if not proposal_id:
+            reject("proposals[%d]" % index, "no id; a proposal is referenced by id or it cannot be answered")
+            continue
+        if proposal_id in proposal_ids:
+            reject("proposals[%s]" % proposal_id, "declared twice")
+            continue
+        proposal_ids.add(proposal_id)
+        if not str(proposal.get("question") or "").strip():
+            reject("proposals[%s]" % proposal_id, "no question; a proposal with no question cannot be arbitrated")
+
+    # ── every lot, and it IS every lot ─────────────────────────────────
+    #
+    # The execution bot's own reader validates the ONE lot it selected. A cycle,
+    # an unknown dependency or an uneditable lot four positions down is
+    # discovered by the run that trips over it, hours in and with a repair loop
+    # already spent. The contract is written here, so it is checked whole here.
+    lots = contract.get("lots")
+    if not isinstance(lots, list) or not lots:
+        reject("lots", "the contract declares no lot; a programme with no lot is a document")
+        lots = []
+    out["lots"] = len(lots)
+
+    ids, by_id = [], {}
+    for index, lot in enumerate(lots):
+        if not isinstance(lot, dict):
+            reject("lots[%d]" % index, "not a mapping")
+            continue
+        lot_id = lot.get("id")
+        if not isinstance(lot_id, str) or not lot_id.strip():
+            reject("lots[%d]" % index, "every lot needs a non-empty string id")
+            continue
+        ids.append(lot_id)
+        by_id[lot_id] = lot
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        reject("lots", "duplicate lot id(s) %s — an id is a key, and the reader would take the "
+                       "first while the verifier takes the last" % ", ".join(duplicates))
+
+    # Same regexes as the execution gate's editor, on purpose: a lot whose
+    # `status` line that editor cannot locate would be refused AFTER
+    # convergence, when the work is done and there is no way to mark it.
+    def block_shape(lot_id):
+        lines = text.splitlines()
+        id_re = re.compile(r"^(\s*)-(\s+)id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
+        start = opener = None
+        for position, line in enumerate(lines):
+            opener = id_re.match(line)
+            if opener:
+                start = position
+                break
+        if start is None:
+            return "its `- id:` line was not found (only `- id: <id>` opening a block item is edited)"
+        dash_indent = len(opener.group(1))
+        key_col = dash_indent + 1 + len(opener.group(2))
+        same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
+        end = next((p for p in range(start + 1, len(lines)) if same_level.match(lines[p])), len(lines))
+        status_re = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % key_col)
+        if not any(status_re.match(lines[p]) for p in range(start, end)):
+            return "no `status:` line at its key column inside its block"
+        return ""
+
+    for lot_id, lot in by_id.items():
+        where = "lots[%s]" % lot_id
+        status = lot.get("status")
+        if status not in STATUSES:
+            reject(where, "status %r is not one of %s" % (status, ", ".join(STATUSES)))
+        elif status == "done":
+            reject(where, "status is `done`. That word belongs to the execution gate, which writes "
+                          "it after a verdict went green; a contract drafted with a lot already "
+                          "done declares work nobody proved.")
+        if not str(lot.get("title") or "").strip():
+            reject(where, "no title")
+        if not str(lot.get("intent") or "").strip():
+            reject(where, "no intent; the agent working the lot reads it to know what may change")
+        for flag in ("rebaseline_allowed", "crosses_major"):
+            if flag in lot and not isinstance(lot[flag], bool):
+                reject(where, "%s must be a boolean; got %r" % (flag, lot[flag]))
+        check_timeout("%s.gate_timeout_s" % where, lot.get("gate_timeout_s"))
+
+        gate = lot.get("exit_gate")
+        if isinstance(gate, str):
+            gate = [gate]
+        if gate is None:
+            reject(where, "declares no exit_gate. An unverifiable lot is indistinguishable from one "
+                          "that was never done, and the programme cannot advance past it.")
+        elif not isinstance(gate, list) or not all(isinstance(c, str) for c in gate):
+            reject(where, "exit_gate is in an unreadable shape (%s): write one command as a string, "
+                          "or a list of command strings" % type(lot.get("exit_gate")).__name__)
+        else:
+            commands = [c.strip() for c in gate if c.strip()]
+            if not commands:
+                reject(where, "exit_gate is empty")
+            if any("\n" in c for c in commands):
+                reject(where, "declares a multi-line exit_gate command. Each command must be a "
+                              "single line; put multi-line logic in a script file and invoke it.")
+            if lot.get("crosses_major") and not any(".modernize/sweeps/" in c for c in commands):
+                reject(where, "crosses a major but its gate does not require the sweep record "
+                              "(`test -s .modernize/sweeps/%s.md`). The mechanical layer proves the "
+                              "record was produced; without it the due diligence is optional." % lot_id)
+
+        depends = lot.get("depends_on")
+        if depends is None:
+            depends = []
+        if not isinstance(depends, list) or not all(isinstance(d, str) for d in depends):
+            reject(where, "depends_on must be a list of lot ids; got %r" % depends)
+        else:
+            for dependency in depends:
+                if dependency not in by_id:
+                    reject(where, "depends on %r, which no lot declares. The execution bot skips a "
+                                  "lot whose dependencies are unmet — an unknown id is a lot that "
+                                  "can never become ready." % dependency)
+                if dependency == lot_id:
+                    reject(where, "depends on itself")
+
+        shape = block_shape(lot_id)
+        if shape:
+            reject(where, "%s; the execution gate could never write its `done`" % shape)
+
+        intent_text = str(lot.get("intent") or "")
+        for referenced in re.findall(r"proposal:([A-Za-z0-9_.-]+)", intent_text):
+            if referenced not in proposal_ids:
+                reject(where, "its intent names proposal %r, which the contract does not declare"
+                       % referenced)
+
+    # A CYCLE is invisible to a reader that only resolves the selected lot: every
+    # lot in it stays "waiting on a dependency" forever, and the programme reads
+    # as merely not ready.
+    colour = {}
+    def visit(node, path):
+        state = colour.get(node)
+        if state == "done":
+            return
+        if state == "open":
+            cycle = path[path.index(node):] + [node]
+            reject("lots", "dependency cycle %s: every lot in it waits on another that waits on it, "
+                           "and the programme would read as not ready rather than as broken"
+                   % " -> ".join(cycle))
+            return
+        colour[node] = "open"
+        for dependency in by_id.get(node, {}).get("depends_on") or []:
+            if isinstance(dependency, str) and dependency in by_id:
+                visit(dependency, path + [node])
+        colour[node] = "done"
+    for lot_id in list(by_id):
+        visit(lot_id, [])
+
+    # ── the outcomes, beside the contract ──────────────────────────────
+    outcomes_path = os.path.join(os.path.dirname(plan_path), "outcomes.json")
+    if not os.path.isfile(outcomes_path):
+        reject("outcomes", "no outcomes file at %s. A programme can process every lot and still "
+                           "miss what it was for; the outcomes are the conjunction that says "
+                           "otherwise." % outcomes_path)
+    else:
+        try:
+            outcomes_document = json.load(open(outcomes_path, encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            reject("outcomes", "%s is not readable JSON: %s" % (outcomes_path, exc))
+            outcomes_document = {}
+        outcomes = outcomes_document.get("outcomes") if isinstance(outcomes_document, dict) else None
+        if not isinstance(outcomes, list) or not outcomes:
+            reject("outcomes", "%s declares no outcome" % outcomes_path)
+        else:
+            outcome_ids = set()
+            for index, outcome in enumerate(outcomes):
+                if not isinstance(outcome, dict):
+                    reject("outcomes[%d]" % index, "not a mapping")
+                    continue
+                outcome_id = str(outcome.get("id") or "").strip()
+                if not outcome_id:
+                    reject("outcomes[%d]" % index, "no id")
+                    continue
+                if outcome_id in outcome_ids:
+                    reject("outcomes[%s]" % outcome_id, "declared twice")
+                    continue
+                outcome_ids.add(outcome_id)
+                if not str(outcome.get("states") or "").strip():
+                    reject("outcomes[%s]" % outcome_id, "no `states`: what being met MEANS is the "
+                                                        "half a command cannot carry")
+                if not str(outcome.get("check") or "").strip():
+                    reject("outcomes[%s]" % outcome_id,
+                           "no `check`. An outcome closes by a command that exits 0, or by a "
+                           "written arbitration — never by a claim, and never by silence.")
+
+    if out["refusals"]:
+        out["code"] = "CONTRACT_REFUSED"
+        out["reason"] = "%d refusal(s) over %d lot(s): %s" % (
+            len(out["refusals"]), out["lots"],
+            "; ".join("%s — %s" % (r["where"], r["why"]) for r in out["refusals"][:6]))
+        sys.stderr.write("assessment: CONTRACT_REFUSED: %s\n" % out["reason"])
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    out["ok"] = True
+    out["reason"] = "%d lot(s) and their outcomes validated in %s" % (out["lots"], plan_rel)
+    print(json.dumps(out))
 
 fail contract_refused:
   description: "the drafted contract would be refused by the execution bot"
@@ -708,7 +2546,101 @@ tool commit:
   output: commit_state
   language: py
   script: |
-    raise SystemExit("assessment: commit is not implemented yet")
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_rel = {{vars.plan_path}}
+    survey_rel = {{vars.survey_path}}
+    out_rel = {{vars.out_dir}}
+
+    out = {"ok": False, "code": "", "reason": "", "commit": "", "files": 0}
+
+    def refuse(code, reason):
+        out["code"] = code
+        out["reason"] = reason
+        sys.stderr.write("assessment: %s: %s\n" % (code, reason))
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def git_env():
+        env = dict(os.environ)
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"):
+            env.pop(key, None)
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["LC_ALL"] = "C"
+        env["TZ"] = "UTC"
+        return env
+
+    ENV = git_env()
+
+    def git(*args, **kw):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
+                              text=True, env=ENV, timeout=kw.get("timeout", 300))
+
+    outcomes_rel = os.path.join(os.path.dirname(plan_rel), "outcomes.json")
+    # EXPLICIT PATHS, never `git add -A`. The workspace may carry anything a
+    # previous node or the operator left in it; a commit that swept it up would
+    # publish work this run neither produced nor reviewed, under a message that
+    # does not describe it.
+    wanted = [plan_rel, outcomes_rel, survey_rel, out_rel]
+    present = [path for path in wanted if os.path.exists(os.path.join(ws, path))]
+    if plan_rel not in present:
+        refuse("COMMIT_FAILED", "the contract at %s is not on disk; there is nothing to land" % plan_rel)
+
+    added = git("add", "--", *present)
+    if added.returncode != 0:
+        refuse("COMMIT_FAILED", "git add refused %s: %s"
+               % (", ".join(present), (added.stderr or "").strip()[-400:]))
+
+    staged = git("diff", "--cached", "--name-only")
+    names = [line for line in staged.stdout.splitlines() if line.strip()]
+    if not names:
+        refuse("COMMIT_FAILED",
+               "nothing was staged from %s. An assessment whose documents never landed produced a "
+               "log line: the tree is the deliverable, and a run that finishes with an unchanged "
+               "tree has written nothing anyone can read." % ", ".join(present))
+
+    message = ("chore(assessment): the programme contract and its assessment\n\n"
+               "Written by the assessment bot from the declared brief and a survey re-verified "
+               "against the tree. The contract's lots, their dependency graph and their outcomes "
+               "were validated whole before this commit; the perimeter every published figure was "
+               "computed over is committed beside them.\n")
+    committed = git("-c", "user.name=iterion", "-c", "user.email=iterion@localhost",
+                    "-c", "commit.gpgsign=false", "commit", "-m", message)
+    if committed.returncode != 0:
+        refuse("COMMIT_FAILED", "git commit refused: %s"
+               % ((committed.stderr or committed.stdout or "").strip()[-400:]))
+
+    head = git("rev-parse", "HEAD")
+    if head.returncode != 0:
+        refuse("COMMIT_FAILED", "cannot read HEAD after committing: %s" % (head.stderr or "").strip()[-200:])
+
+    # What was ASKED to land, verified as having landed. A report that the
+    # commit succeeded is a claim about a command; this is a read of the tree.
+    landed = git("show", "--stat", "--name-only", "--format=", "HEAD")
+    landed_names = {line for line in landed.stdout.splitlines() if line.strip()}
+    if plan_rel not in landed_names:
+        refuse("COMMIT_FAILED",
+               "the commit %s does not carry %s. The contract is the deliverable; a commit without "
+               "it is a commit of everything else." % (head.stdout.strip()[:12], plan_rel))
+    dirty = git("status", "--porcelain", "--", *present)
+    residue = [line for line in dirty.stdout.splitlines() if line.strip()]
+    if residue:
+        refuse("COMMIT_FAILED",
+               "%d path(s) under the assessment's own output are still uncommitted after the "
+               "commit: %s. A written-but-uncommitted artefact reads as landed in every report "
+               "downstream." % (len(residue), "; ".join(residue[:6])))
+
+    out["ok"] = True
+    out["commit"] = head.stdout.strip()
+    out["files"] = len(landed_names)
+    out["reason"] = "assessment committed at %s: %d file(s)" % (out["commit"][:12], len(landed_names))
+    print(json.dumps(out))
 
 fail commit_failed:
   description: "the assessment was not committed"
@@ -735,7 +2667,12 @@ workflow assessment:
   workspace_probe -> workspace_not_a_repo when not ok
   workspace_probe -> brief_read when ok
 
-  brief_read -> brief_absent when not ok
+  ## Absence is checked FIRST and is never true alongside a parse failure:
+  ## brief_read sets present the moment the file is there, so an unreadable or
+  ## incomplete brief falls through to its own code instead of telling the
+  ## operator to write a file that already exists.
+  brief_read -> brief_absent when not present
+  brief_read -> brief_invalid when not ok
   brief_read -> inventory_floor when ok with {
     base_sha: "{{outputs.workspace_probe.base_sha}}"
   }
@@ -803,7 +2740,14 @@ workflow assessment:
   plan_draft -> contract_lint
 
   contract_lint -> contract_refused when not ok
-  contract_lint -> commit when ok
+  contract_lint -> render_plan when ok with {
+    facts_path: "{{outputs.measure.facts_path}}",
+    lots:       "{{outputs.plan_draft.lots}}",
+    proposals:  "{{outputs.plan_draft.proposals}}"
+  }
+
+  render_plan -> render_refused when not ok
+  render_plan -> commit when ok
 
   commit -> commit_failed when not ok
   commit -> done when ok

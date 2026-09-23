@@ -25,8 +25,9 @@ description: |
   Two properties are load-bearing and both are gates, never prose. Every
   declaration the survey agent writes is re-verified against the tree at a
   pinned commit: an unverifiable, duplicated or overlapping declaration is
-  refused, because a declaration IS a number — declaring the same artefact
-  four times moves the published size by a whole band. And the size letter
+  refused, because a declaration IS a number — declaring one artefact four
+  times moves the published index a third of the way up the scale, and the
+  band with it wherever a repository sits near one. And the size letter
   is published WITH the identifier and version of the measurement profile
   it is relative to; outside that profile's declared domain the bot
   publishes the raw measurements and "not applicable" rather than a letter
