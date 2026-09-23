@@ -385,3 +385,44 @@ describe("the buffer when the view turns read-only under it", () => {
     );
   });
 });
+
+// The predicate cannot depend on WHICH kind of unsaved work it is. Closing a
+// tab disposes its store, taking the document and the Source buffer alike —
+// and `hasUnsavedWork`'s own comment says "a reload, a tab close or a File →
+// New takes both", which was not true of the tab close.
+describe("closing a tab that holds unsaved CANVAS work", () => {
+  it("asks, though the Source pane holds nothing", async () => {
+    const tabStore = getOrCreateDocumentStore("tab-canvas");
+    tabStore.getState().setDocument(createEmptyDocument());
+    tabStore.getState().setCurrentFilePath("bots/demo/main.bot");
+    tabStore.getState().markSaved();
+    tabStore.getState().addAgent({
+      name: "a",
+      model: "m",
+      input: "in",
+      output: "out",
+      system: "s",
+      user: "u",
+      session: "fresh",
+    });
+    expect(tabStore.getState().isSourceDirty()).toBe(false);
+    expect(tabStore.getState().hasUnsavedWork()).toBe(true);
+
+    let dropped = false;
+    function Probe() {
+      const { guardDroppingEditorTab, dialog } = useDropEditorTab();
+      return (
+        <>
+          <button onClick={() => void guardDroppingEditorTab(() => { dropped = true; }, "tab-canvas")}>
+            drop
+          </button>
+          {dialog}
+        </>
+      );
+    }
+    render(<Probe />);
+    fireEvent.click(screen.getByRole("button", { name: "drop" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(dropped).toBe(false);
+  });
+});

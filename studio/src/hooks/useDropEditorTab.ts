@@ -4,10 +4,10 @@ import { useConfirm } from "@/hooks/useConfirm";
 import { getOrCreateDocumentStore } from "@/store/document";
 import { useTabsStore } from "@/store/tabs";
 
-const DISCARD_SOURCE_PROMPT = {
-  title: "Discard this text?",
+const DISCARD_TAB_PROMPT = {
+  title: "Discard unsaved changes?",
   message:
-    "The .bot source pane holds text you have not applied. Closing it replaces that text with the file as it is now.",
+    "This tab has changes that have not been saved — in the canvas, in the .bot source pane, or both. Closing it loses them.",
   confirmLabel: "Discard",
   confirmVariant: "danger",
 } as const;
@@ -21,7 +21,13 @@ const DISCARD_SOURCE_PROMPT = {
  *
  *  The two close controls sit OUTSIDE the tab's `DocumentStoreProvider`, so
  *  the tab's store comes from the registry; reading the contextual one would
- *  silently guard the default store and never fire. */
+ *  silently guard the default store and never fire.
+ *
+ *  `hasUnsavedWork`, not `isSourceDirty`: the question a discard path asks
+ *  cannot depend on WHICH kind of unsaved work is at stake. Disposing the
+ *  store takes the document and the Source buffer alike, and asking about
+ *  only one of them made `hasUnsavedWork`'s own promise — "a reload, a tab
+ *  close or a File → New takes both" — untrue of the tab close. */
 export function useDropEditorTab() {
   const { confirm, dialog } = useConfirm();
 
@@ -30,8 +36,8 @@ export function useDropEditorTab() {
   const guardDroppingEditorTab = useCallback(
     async (drop: () => void, tabId?: string | null) => {
       const id = tabId === undefined ? useTabsStore.getState().activeEditorTabId : tabId;
-      if (id && getOrCreateDocumentStore(id).getState().isSourceDirty()) {
-        if (!(await confirm(DISCARD_SOURCE_PROMPT))) return;
+      if (id && getOrCreateDocumentStore(id).getState().hasUnsavedWork()) {
+        if (!(await confirm(DISCARD_TAB_PROMPT))) return;
       }
       drop();
     },

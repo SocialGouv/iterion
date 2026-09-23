@@ -162,3 +162,31 @@ describe("duplicating a node that carries a group annotation", () => {
     expect(cloned?.comments).toEqual([{ text: "why this node exists" }]);
   });
 });
+
+// The orphan re-declaration filters on `!present.has(name)`, so it must not
+// be able to add a second annotation of a name the document already carries.
+describe("re-declaring an orphaned group when the name is already taken", () => {
+  it("adds no second annotation of that name", () => {
+    const s = createDocumentStore();
+    s.getState().setDocument({
+      prompts: [],
+      schemas: [],
+      agents: [
+        agent("plan", { comments: [{ text: "@group review: plan, write, ship" }] }),
+        agent("write", { comments: [{ text: "@group review: write, ship" }] }),
+        agent("ship"),
+      ],
+      judges: [],
+      routers: [],
+      humans: [],
+      tools: [],
+      computes: [],
+      workflows: [{ name: "w", entry: "plan", edges: [] }],
+      comments: [],
+    });
+    s.getState().removeNode("plan");
+    expect(documentGroups(s.getState().document)).toEqual([
+      { name: "review", nodeIds: ["write", "ship"] },
+    ]);
+  });
+});

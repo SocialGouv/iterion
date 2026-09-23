@@ -220,3 +220,39 @@ describe("mapDocumentComments", () => {
     expect(mapDocumentComments(d, (c) => c)).toBe(d);
   });
 });
+
+// `parseGroups` does not dedupe, and `documentComments` now surfaces every
+// carrier instead of the head list alone — so a hand-written `.bot` that
+// declares the same group twice yields two annotations of one name.
+// `documentToGraph` keys its group node `makeGroupNodeId(g.name)`, so React
+// Flow gets two nodes sharing one id and one box becomes unrenderable.
+// `addGroup`'s duplicate check cannot prevent it: the second declaration was
+// typed by hand, not drawn.
+describe("two declarations of one group name", () => {
+  it("reads as ONE group — the file's own list wins over a declaration's", () => {
+    const d = doc({
+      comments: [group("@group deploy: build, ship")],
+      agents: [
+        {
+          name: "build",
+          model: "m",
+          input: "in",
+          output: "out",
+          system: "s",
+          user: "u",
+          session: "fresh",
+          comments: [group("@group deploy: build, verify")],
+        },
+      ],
+    });
+    expect(documentGroups(d)).toEqual([{ name: "deploy", nodeIds: ["build", "ship"] }]);
+  });
+
+  it("leaves parseGroups itself alone — it reports what the text says", () => {
+    // The dedupe belongs to the single reader every call site goes through,
+    // not to the grammar: a caller parsing ONE comment must still get it.
+    expect(
+      parseGroups([group("@group deploy: a, b"), group("@group deploy: a, c")]),
+    ).toHaveLength(2);
+  });
+});

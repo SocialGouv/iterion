@@ -94,8 +94,16 @@ function rewriteCommentLists(value: unknown, rewrite: (list: Comment[]) => Comme
  *  author wrote it above the first declaration or above the `dsl:` header. */
 export function documentComments(doc: IterDocument | null | undefined): Comment[] {
   if (!doc) return [];
-  const all: Comment[] = [];
-  walkCommentLists(doc, (list) => all.push(...list));
+  // The file's own list first, then every carrier in document order. A
+  // stated rule, not the accident of a key order: `documentGroups` breaks a
+  // duplicate name on the FIRST seen, and `document.comments` is where the
+  // studio writes the groups it creates, so a hand-written duplicate loses
+  // to the one the canvas drew.
+  const all: Comment[] = [...(doc.comments ?? [])];
+  walkCommentLists(doc, (list) => {
+    if (list === doc.comments) return;
+    all.push(...list);
+  });
   return all;
 }
 
@@ -119,9 +127,31 @@ export function mapDocumentComments(
   }) as IterDocument;
 }
 
-/** The document's group annotations, from every comment it carries. */
+/** The document's group annotations, from every comment it carries — one per
+ *  NAME, the first seen winning.
+ *
+ *  The dedupe belongs here and not in `parseGroups`, which reports what the
+ *  text says: this is the single reader every call site goes through, and a
+ *  group's name is its identity downstream — `documentToGraph` keys its node
+ *  `makeGroupNodeId(g.name)`, so two annotations of one name hand React Flow
+ *  two nodes sharing an id and one box stops rendering. `addGroup`'s own
+ *  duplicate check cannot cover it: the second declaration is hand-written,
+ *  and reading every carrier is what made the two meet.
+ *
+ *  What this does NOT close, stated so the next reader does not assume it
+ *  does: `removeGroup` and `updateGroup` key on the NAME through
+ *  `mapDocumentComments`, so they still reach the annotation this reader
+ *  dropped — one canvas drag rewrites a line the author wrote on a
+ *  declaration the canvas never drew, and nothing names the duplicate to
+ *  them. That is older than this reader and orthogonal to the render bug it
+ *  fixes; it needs a surface, not a wider predicate. */
 export function documentGroups(doc: IterDocument | null | undefined): GroupAnnotation[] {
-  return parseGroups(documentComments(doc));
+  const seen = new Set<string>();
+  return parseGroups(documentComments(doc)).filter((g) => {
+    if (seen.has(g.name)) return false;
+    seen.add(g.name);
+    return true;
+  });
 }
 
 /** Parse @group annotations from document comments.

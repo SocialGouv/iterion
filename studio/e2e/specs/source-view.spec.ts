@@ -14,6 +14,17 @@ import { studio } from "../lib/paths";
 
 const MULTI = "bots/multi-bot/main.bot";
 
+// The fixture's main carries `dsl: 2` on purpose. Profile 2 escapes every
+// string, so the writer has no multi-line form left and merging
+// `lib/refused.bot`'s two-line value FOLDS it — which is what makes the
+// merged render refusable. Under profile 1 the merge keeps the backtick
+// form, nothing is refused, and #1649's fifth assertion has nothing to
+// assert: measured, `/api/unparse` with `flatten` answered `refused: null`.
+//
+// Keep the fixture's comment block SHORT. Monaco virtualises: only the
+// visible lines are in the DOM, and seven extra header lines pushed the
+// oracle below the fold and reddened a healthy render.
+
 /** Open the bot's editor and reveal the Source view. It is a half-pane
  *  toggled from the toolbar, not a tab, and the toggle does not persist
  *  across navigations. */
@@ -61,12 +72,15 @@ test("each file renders its own text, and the merged program is read-only", asyn
   // The merged program, asserted by its CONTENT. Without this the half
   // passes when the merged render FAILS: the editor stays on the previously
   // selected file under a picker that says "Merged program of 4 files", and
-  // the note plus the absent Edit are both still true. `tool collect_facts`
-  // lives in lib/refused.bot, which this test never selected — so it can
-  // only be on screen if the merge really happened.
-  await expect(page.locator(".view-lines")).toContainText("tool collect_facts", {
-    timeout: 15_000,
-  });
+  // the note plus the absent Edit are both still true.
+  //
+  // Two texts no single file carries together — the MAIN's header comment
+  // and a schema from lib/schemas.bot — so only a merge shows both. Both sit
+  // near the top: Monaco virtualises, and an oracle deeper in the program
+  // reddens on a healthy render as soon as the file grows a few lines.
+  const merged = page.locator(".view-lines");
+  await expect(merged).toContainText("the main imports three fragments", { timeout: 15_000 });
+  await expect(merged).toContainText("schema note");
   // One text cannot be split back into the files it came from, so there is
   // no Edit on the merged entry.
   await expect(page.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
@@ -219,4 +233,39 @@ test("editing one file and saving rewrites that file alone", async ({ page }) =>
   await expect(async () => {
     expect(fs.readFileSync(nodes, "utf8")).toBe(before.nodes);
   }).toPass();
+});
+
+// #1649's fifth acceptance assertion. Download on a bot in several files
+// flattens to the MERGED program, and the merged text cannot carry a value
+// its author wrote over several lines (#1612) — so the download is refused
+// rather than handing over a `.bot` that is the same program and not the
+// same file. The toast has to NAME the file, or the author is told "cannot
+// be downloaded" about a bot of four files with no way to tell which one.
+// `useDocumentFileOps.handleDownload` is otherwise unexercised in a browser.
+test("Download over the merged program is refused, and the toast names the file", async ({
+  page,
+}) => {
+  await page.goto(studio(`/editor?file=${MULTI}`));
+  // Wait for the file to be OPEN before touching the menu. The File button
+  // is in the toolbar and renders before `openFile` resolves; clicking
+  // Download first finds `unit` still null, which downloads the empty
+  // document with no toast at all — a red test for a reason that is not the
+  // one under test. The entry node is the cheapest proof the unit landed.
+  await expect(page.getByTestId("rf__node-collect_facts")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "File menu" }).click();
+  await page.getByRole("menuitem", { name: "Download as .bot" }).click();
+
+  const toast = page.getByRole("status").filter({ hasText: /cannot be downloaded as \.bot source/i });
+  await expect(toast).toBeVisible({ timeout: 15_000 });
+  // The file whose lines the merged text no longer carries…
+  await expect(toast).toContainText("lib/refused.bot");
+  await expect(toast).toContainText("#1612");
+  // …and why there is no file to hand over instead, which is what makes this
+  // different from the single-file case that downloads the stored text.
+  await expect(toast).toContainText("no single file to hand over");
+
+  // Persistent: it carries the only explanation the author gets, so it must
+  // not disappear on a timer while they are reading it.
+  await page.waitForTimeout(6_000);
+  await expect(toast).toBeVisible();
 });

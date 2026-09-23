@@ -258,6 +258,18 @@ func (s *Server) platformPushWarnings(tenantID string, bs botsource.BotSource) [
 		bs.Slug)}
 }
 
+// botSourceFilePutReq is the per-file write's body. A named type so the
+// OpenAPI generator can declare it: the if-match token a client must present
+// is part of the route's contract, and a spec that hides it hands a generated
+// client last-write-wins without saying so.
+type botSourceFilePutReq struct {
+	Content string `json:"content"`
+	// Version, when non-zero, is an if-match token: the write is rejected
+	// with 409 if the stored version advanced (a concurrent editor wrote in
+	// between). Omitted = last-write-wins.
+	Version int `json:"version,omitempty"`
+}
+
 // handlePutBotSourceFile writes one file into an existing bundle — the editor's
 // per-file save. The whole bundle is re-validated so a bad edit to any file is
 // caught, not just main.bot.
@@ -279,10 +291,7 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		s.botSourceError(w, r, err)
 		return
 	}
-	var body struct {
-		Content string `json:"content"`
-		Version int    `json:"version,omitempty"`
-	}
+	var body botSourceFilePutReq
 	r.Body = http.MaxBytesReader(w, r.Body, maxBotSourceBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
