@@ -4,6 +4,7 @@ import { defineConfig } from 'vitepress'
 import { withMermaid } from 'vitepress-plugin-mermaid'
 import type MarkdownIt from 'markdown-it'
 import { githubSlug } from './github-slug.mjs'
+import { publicSitePath } from './public-links.mjs'
 
 const REPO = 'https://github.com/SocialGouv/iterion'
 const BLOB = `${REPO}/blob/main`
@@ -139,6 +140,16 @@ function rewriteHref(href: string, relativePath: string | undefined): Rewrite | 
   if (resolved === 'docs/README.md') {
     // Internal link: VitePress prepends `base` itself, so omit it here.
     return { href: '/' + suffix, external: false }
+  }
+
+  // docs/public/ is served from the site ROOT, so the path the reader gets is
+  // not the path the source writes. This is decided before the rules below:
+  // where the file is served from is a stronger fact than what its extension
+  // is, and routing a `.csv` the site itself ships to github.com would make
+  // the site link away from an asset it serves.
+  const fromPublic = publicSitePath(resolved)
+  if (fromPublic) {
+    return { href: `${fromPublic}${suffix}`, external: false }
   }
 
   const escapesDocs = !resolved.startsWith('docs/') && resolved !== 'docs'
