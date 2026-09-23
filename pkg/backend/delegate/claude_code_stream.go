@@ -1133,14 +1133,26 @@ func isRateLimitMessage(text string) bool {
 }
 
 // usageWindowSignals are the subset of rate-limit shapes that mean a
-// subscription/quota WINDOW is exhausted (the ZAI 5h facade) — waiting
+// subscription/quota WINDOW is exhausted (the ZAI facade) — waiting
 // for the reset is the only cure, so retries inside the window just burn
 // attempts. The Anthropic forfait 5h / session / weekly caps ("hit your
 // … limit") are all windows too and are matched by hitYourLimitRe in
 // classifyRateLimit. Plain throttles ("rate limit exceeded") stay transient.
+//
+// The facade words its multi-day wall differently from its 5h one, and
+// the difference is only in the noun: "Usage limit reached for 5 hour.
+// Your limit will reset at …" against "[1310][Weekly/Monthly Limit
+// Exhausted. Your limit will reset at …]". Both are the same condition —
+// a dated wall no retry reopens — so both belong here. Missing the second
+// costs twice over: the refusal keeps Kind transient, so no meter reading
+// is recorded (both recording sites are gated on a named window) and the
+// credential is re-granted on every retry; and its FallbackCategory
+// becomes transient_exhausted, which defaultFallbackTriggers refuses, so
+// a declared fallback route is screened out and never tried.
 var usageWindowSignals = []string{
 	"out of usage credits",
 	"usage limit reached",
+	"limit exhausted",
 }
 
 // accountRefusalSignals mean the ACCOUNT's request rate is refused (a
