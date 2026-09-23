@@ -169,7 +169,7 @@ pi, kimi and grok are driven through the CLI-agent seam, which never passes
 the list to the agent: there the bound is dropped and **C270** says so at
 compile time. Because an older engine reads `tools: []` as an absent list —
 the opposite bound — a bundle that spells it asks for
-`requires.iterion >= 3.187.0`, and an older runner refuses the bundle rather
+`requires.iterion >= 3.190.0`, and an older runner refuses the bundle rather
 than inverting it.
 
 **What `tools: []` is not.** It is a narrowing, not a proof that the node

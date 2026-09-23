@@ -16,4 +16,4 @@ package bundle
 // while the release is uncut it must be exactly the next minor above the
 // changelog's newest release, and once cut, the release's notes must carry
 // the syntax's word.
-const DeclaredEmptyToolsSince = "3.187.0"
+const DeclaredEmptyToolsSince = "3.190.0"
