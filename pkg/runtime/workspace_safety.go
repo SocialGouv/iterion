@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -73,13 +74,28 @@ func toolIsWorkspaceSafe(name string) bool {
 	return readOnlyTools[name] || nonWorkspaceTools[name] || delegate.IsIterionMCPTool(name)
 }
 
-// effectiveToolSurfaceResolver is implemented by the production model
-// executor. A node's `tools:` list is not the list it holds: the runtime folds
-// its own opt-ins over it at build time, from state that is not in the IR (a
-// launch-time --auto-memory, a per-node model override raising the node to
-// ultracode). So the guard asks the executor for the effective surface instead
-// of re-deriving the append rules — the same seam, and the same reason, as
-// effectiveBackendResolver.
+// effectiveToolSurfaceResolver is the package-internal spelling of the seam.
+type effectiveToolSurfaceResolver = EffectiveToolSurfaceResolver
+
+// EffectiveToolSurfaceResolver reports which names a node's `tools:`
+// DECLARATION cannot bound: the declared list after the runtime's own
+// build-time appends, unioned over every route the node may take.
+//
+// It is NOT the node's whole tool surface, and an implementor must not report
+// one — ambient `mcp:` servers and the ask_user/board/runs wiring are spliced
+// in after this answer, and reporting them refuses branches for tools the
+// author never declared. A nil or empty answer means "nothing to add", and
+// every caller reads it as "the declaration is all there is": an implementor
+// that UNDER-reports silently widens parallel-branch admission, which is the
+// reading #1652 removed. `mayEscalateToUltracode` is the caller saying some
+// edge into this node may carry `_reasoning_effort: "ultracode"`; the answer
+// must then be taken over both values.
+//
+// A node's `tools:` list is not that list: the runtime folds its own opt-ins
+// over it at build time, from state that is not in the IR (a launch-time
+// --auto-memory, a per-node model override raising the node to ultracode). So
+// the parallel-branch guard asks its executor instead of re-deriving the append
+// rules — the same seam, and the same reason, as the backend resolver beside it.
 //
 // Admission runs when a fan-out router DISPATCHES, once per invocation, not
 // before the run: the router's own output is already resolved by then, but the
@@ -87,19 +103,79 @@ func toolIsWorkspaceSafe(name string) bool {
 // taken pessimistically rather than resolved. That is a deliberate
 // simplification of a guard that must answer for a whole branch, not a claim
 // that the value is unknowable.
-type effectiveToolSurfaceResolver interface {
+//
+// It is exported so an implementor in another package can pin itself against
+// THE interface rather than against a structural copy of it. A copy catches a
+// rename and misses the failure that actually produces a silent revert: the
+// seam itself gaining a term. Measured — adding one method to the interface
+// left `go build ./...` and `go vet ./pkg/dryrun/` green while dryrun's
+// executor had stopped satisfying it.
+type EffectiveToolSurfaceResolver interface {
 	EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string
 }
 
-// toolSurfaceResolver is the ONE place the engine asks its executor what a
-// node will really hold. Returns nil for an executor that cannot answer (a
-// stub), which every caller reads as "the declaration is all there is".
+// toolSurfaceResolver is the ONE place the engine asks what a node will really
+// hold. The production executor answers from the run — it alone sees the
+// launch-time overrides — and it is reached through an OPTIONAL type assertion,
+// so an executor that does not implement the seam sends admission back to the
+// node's DECLARED list, which is the reading #1652 removed.
+//
+// Two answers to that were measured and both refused:
+//
+//   - falling back to a PROGRAM-only executor is wrong in BOTH directions. It
+//     reads the declared list verbatim whenever NO backend resolves at all —
+//     neither the node's `backend:` nor the workflow's `default_backend:` —
+//     because the appends that widen the WORKSPACE surface (auto_memory's file
+//     trio, ultracode's `agent`) are claw-gated, and a program-only resolver
+//     stops before the host and answers "" there. No count is quoted here on
+//     purpose: a corpus figure in a godoc is a fact nobody re-measures, and the
+//     shape is what decides.
+//     And it refuses what a run admits: `--auto-memory off` narrows a surface
+//     the program still reads as `on`, so a working fan-out becomes a
+//     WORKSPACE_SAFETY refusal naming a tool the node will never hold. That
+//     second half alone settles it.
+//   - refusing outright at the zero value closes the hole and costs, measured
+//     with `if surfaces == nil { return sharedWorkspace }` in
+//     llmToolSurfaceCanWrite, 88 top-level tests of this package (113 counting
+//     subtests): every engine built with a stub executor loses parallel
+//     fan-out, as would any embedder using pkg/benchmark's exported
+//     `ExecutorFactory func() runtime.NodeExecutor`.
+//
+// So the guarantee is made at COMPILE time instead, where it costs nothing —
+// but only as far as a compile-time pin reaches. The two LEAF implementors are
+// pinned below and in pkg/dryrun, against the exported seam, so dropping or
+// renaming the method on either breaks the build. A WRAPPER around one is a
+// different type and satisfies NodeExecutor on its own: no pin sees it, and
+// `go build`, `go vet`, the linter and the whole suite stay green with a
+// decorator inserted at any of the engine's construction sites — measured. A
+// compile-time guarantee for wrappers would have to sit where the engine
+// RECEIVES its executor, which is a larger change than this one. What this
+// ships for that case is the warning below, by name.
 func (e *Engine) toolSurfaceResolver() effectiveToolSurfaceResolver {
 	if e == nil {
 		return nil
 	}
-	r, _ := e.executor.(effectiveToolSurfaceResolver)
-	return r
+	if r, ok := e.executor.(effectiveToolSurfaceResolver); ok {
+		return r
+	}
+	e.warnExecutorLacksToolSurface()
+	return nil
+}
+
+// warnExecutorLacksToolSurface says WHICH executor cannot answer, once per
+// engine. It is the only signal this case produces — and only on an engine
+// given a logger (`WithLogger`; `runtime.New` sets no default), so one built
+// without degrades in silence. Admission then reads the declared list, which is
+// the reading #1652 removed, and an operator has no other way to learn that the
+// stronger one was unavailable. Named by concrete type, because the point is to
+// identify the executor that does not answer.
+func (e *Engine) warnExecutorLacksToolSurface() {
+	if e.logger == nil {
+		return
+	}
+	e.toolSurfaceWarnOnce.Do(func() {
+		e.logger.Warn("runtime: executor %T does not implement the effective-tool-surface seam — parallel-branch admission reads this run's nodes by their DECLARED `tools:` list, so the runtime's own appends are invisible to it (auto_memory's file trio, ultracode's `agent`): two branches declaring only readers may be admitted onto one worktree while holding a writer. The two executors this module builds implement the seam; a wrapper around one, or an executor of your own, does not inherit it", e.executor)
+	})
 }
 
 // isMutatingNode returns true if the node may modify the workspace.
@@ -258,15 +334,26 @@ func llmToolSurfaceCanWrite(
 	// then shares one worktree with N siblings while holding a writer.
 	//
 	// Asked, never re-derived: both opt-ins resolve outside the IR.
-	if surfaces != nil {
-		for _, t := range surfaces.EffectiveToolNames(node, escalatesToUltracode) {
-			if !toolIsWorkspaceSafe(t) {
-				return true
-			}
+	if surfaces == nil {
+		return false
+	}
+	for _, t := range surfaces.EffectiveToolNames(node, escalatesToUltracode) {
+		if !toolIsWorkspaceSafe(t) {
+			return true
 		}
 	}
 	return false
 }
+
+// The engine's LEAF executors answer the tool-surface seam. Asserted at compile
+// time so dropping or renaming the method breaks the build: the arm above would
+// otherwise admit such a node OPTIMISTICALLY — reading the declared list, which
+// is the reading #1652 removed. The pin does not reach a wrapper around this
+// type, which is a different type entirely; that case is warned about at run
+// time, not caught here.
+// dryrun's executor asserts the same thing in its own package — pkg/runtime
+// cannot import it, since dryrun imports pkg/runtime.
+var _ effectiveToolSurfaceResolver = (*model.ClawExecutor)(nil)
 
 func unrestrictedCLIBackendCanWrite(
 	node ir.Node,
@@ -411,7 +498,7 @@ func routeDeclarationIsNoBound(node ir.Node, backend string, lookup func(string)
 // `sharedWorkspace` is therefore a parameter of the QUESTION, passed by each
 // entry point, and never derived from what the engine's executor happens to
 // implement: keyed on the resolver, `iterion validate --exec --strict` — whose
-// dry-run executor implements no tool surface — answered OK on a workflow the
+// dry-run executor answers the seam from the PROGRAM alone — answered OK on a workflow the
 // same tree kills at the router.
 func declarationIsNoBound(backend string, sharedWorkspace bool) bool {
 	b := strings.TrimSpace(backend)

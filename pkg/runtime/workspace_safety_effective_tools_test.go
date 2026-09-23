@@ -1,10 +1,13 @@
 package runtime
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // The parallel-branch guard exists to stop N branches racing one git index. It
@@ -265,9 +268,40 @@ func TestFanOutRefusesTwoBranchesThatBothHoldAWriterTheyNeverDeclared(t *testing
 	}
 }
 
-// stubExecutorNoSurface is an executor that resolves backends and nothing else
-// — the shape `iterion validate --exec` runs on (pkg/dryrun's executor
-// implements no tool surface).
+// decoratorWithoutTheSeam wraps the production executor and forgets the
+// tool-surface method — the shape the seam is reached by, since it is an
+// optional type assertion. Embedding NodeExecutor keeps it a legal executor.
+type decoratorWithoutTheSeam struct{ NodeExecutor }
+
+// The two executors an engine is built with in production both answer the
+// tool-surface seam, and that is a COMPILE-time guarantee (the pins beside the
+// interface and in pkg/dryrun). This test names the class the pins protect, so
+// removing the pin AND the method is a red test, not only a silent widening.
+// (The pin alone is the build-time guard; this test is the runtime witness that
+// the class is still named.)
+//
+// Why the guarantee is made there and not at runtime, measured both ways: an
+// executor that cannot answer sends admission back to the declared list, and
+// neither available runtime answer is shippable. Falling back to a
+// program-only executor reads the declared list verbatim whenever no
+// backend resolves at all (neither the node's `backend:` nor the workflow's
+// `default_backend:`) — and it refuses what `--auto-memory off` admits. Refusing outright costs
+// 88 top-level tests of this package (113 with subtests), measured with
+// `if surfaces == nil { return sharedWorkspace }`, and takes parallel fan-out
+// away from any engine built through pkg/benchmark's exported ExecutorFactory.
+func TestBothProductionExecutorsAnswerTheToolSurfaceSeam(t *testing.T) {
+	var claw any = (*model.ClawExecutor)(nil)
+	if _, ok := claw.(EffectiveToolSurfaceResolver); !ok {
+		t.Error("*model.ClawExecutor no longer answers the seam — admission would read the declared `tools:` list, which is the reading #1652 removed")
+	}
+	// dryrun's executor is pinned in its own package: pkg/dryrun imports
+	// pkg/runtime, so this package cannot name it.
+}
+
+// stubExecutorNoSurface is an executor that resolves backends and nothing else.
+// No production executor has this shape any more — both leaves answer the seam,
+// and both are pinned — so it is not a double of one: it exists so the verdict
+// can be measured against an executor that CANNOT answer.
 type stubExecutorNoSurface struct{ NodeExecutor }
 
 func (stubExecutorNoSurface) EffectiveBackendName(ir.Node) string { return "" }
@@ -275,10 +309,12 @@ func (stubExecutorNoSurface) EffectiveBackendName(ir.Node) string { return "" }
 // The shared-worktree question must be answered the same way whatever the
 // engine's executor happens to implement. Keyed on "a tool-surface resolver was
 // supplied", `iterion validate --exec --strict` — a documented CI gate, whose
-// dry-run executor implements none — reported a clean verdict on a fan-out the
-// same tree kills at the router. Two products of one tree disagreeing about one
-// file is the defect; the rule is a property of the QUESTION, not of the
-// caller's capabilities.
+// dry-run executor implemented no tool surface at the time — reported a clean
+// verdict on a fan-out the same tree kills at the router. It answers the seam
+// since #1652, so that divergence cannot recur through THAT executor; the
+// parameter is what keeps the next one from re-opening it. Two products of one
+// tree disagreeing about one file is the defect; the rule is a property of the
+// QUESTION, not of the caller's capabilities.
 func TestTheSharedWorktreeQuestionDoesNotDependOnWhatTheExecutorImplements(t *testing.T) {
 	branch := func(id string) *ir.AgentNode {
 		return agentNode(id, []string{"read_file"}, "claude_code", nil)
@@ -301,5 +337,37 @@ func TestTheSharedWorktreeQuestionDoesNotDependOnWhatTheExecutorImplements(t *te
 				t.Fatalf("two claude_code branches were admitted onto one worktree — the verdict moved with the executor's capabilities, so `iterion validate --exec` and `iterion run` answer differently about one file")
 			}
 		})
+	}
+}
+
+// An executor that cannot answer the seam leaves admission reading the program
+// alone — a weaker reading than a run can give, and one an operator has no
+// other way to learn about. So the run says WHICH executor, by concrete type,
+// and says it once however many branches ask.
+func TestTheRunSaysWhichExecutorCannotAnswerTheToolSurfaceSeam(t *testing.T) {
+	var buf bytes.Buffer
+	node := agentNode("n", []string{"read_file"}, "claw", func(n *ir.AgentNode) { n.AutoMemory = "on" })
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"n": node}}
+	production := model.NewClawExecutor(model.NewRegistry(), wf)
+	e := &Engine{workflow: wf, executor: decoratorWithoutTheSeam{production}, logger: iterlog.New(iterlog.LevelWarn, &buf)}
+
+	for i := 0; i < 3; i++ {
+		_ = isMutatingNodeIn(wf, node, "", e.backendResolver(), e.toolSurfaceResolver(), false)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "decoratorWithoutTheSeam") {
+		t.Fatalf("the run does not name the executor that could not answer, so nobody can find the decorator that dropped the method: %q", out)
+	}
+	if got := strings.Count(out, "does not implement the effective-tool-surface seam"); got != 1 {
+		t.Errorf("warned %d times for one engine, want 1 — admission asks per node, per branch, on every fan-out", got)
+	}
+
+	// The executor that DOES answer says nothing: a line an operator sees on
+	// every healthy run is a line they learn to ignore.
+	var quiet bytes.Buffer
+	ok := &Engine{workflow: wf, executor: production, logger: iterlog.New(iterlog.LevelWarn, &quiet)}
+	_ = isMutatingNodeIn(wf, node, "", ok.backendResolver(), ok.toolSurfaceResolver(), false)
+	if strings.Contains(quiet.String(), "effective-tool-surface seam") {
+		t.Errorf("the production executor warned although it answers the seam: %q", quiet.String())
 	}
 }

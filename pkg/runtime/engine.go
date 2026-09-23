@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -159,11 +160,15 @@ type varsSetter interface{ SetVars(map[string]any) }
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	resourceScope            *runResourceScope
-	workflow                 *ir.Workflow
-	store                    store.RunStore
-	executor                 NodeExecutor
-	logger                   *iterlog.Logger
+	resourceScope *runResourceScope
+	workflow      *ir.Workflow
+	store         store.RunStore
+	executor      NodeExecutor
+	logger        *iterlog.Logger
+	// toolSurfaceWarnOnce keeps the "this executor cannot answer the
+	// tool-surface seam" warning to one line per engine: admission asks per
+	// node, per branch, on every fan-out.
+	toolSurfaceWarnOnce      sync.Once
 	onNodeFinished           func(runID, nodeID string, output map[string]any)
 	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure

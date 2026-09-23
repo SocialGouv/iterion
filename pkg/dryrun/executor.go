@@ -783,3 +783,13 @@ func (x *Executor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool)
 	})
 	return x.toolSurface.EffectiveToolNames(node, mayEscalateToUltracode)
 }
+
+// The engine reaches the tool surface through an OPTIONAL type assertion, so an
+// executor that forgets the method stays a legal executor and silently sends
+// admission back to the node's declared list. Asserted here, beside the
+// implementation, so a rename breaks the build rather than a verdict — and
+// against the EXPORTED seam, not a structural copy of it: a copy catches a
+// rename and misses the seam gaining a term, which is the change that would
+// really produce the silent revert. pkg/runtime cannot assert it for us:
+// dryrun imports it, not the other way round.
+var _ runtime.EffectiveToolSurfaceResolver = (*Executor)(nil)
