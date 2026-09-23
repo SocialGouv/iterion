@@ -575,6 +575,11 @@ tasks:
       - go run -mod=vendor ./scripts/docslinks
       - node docs/scripts/check-anchor-slugs.mjs
 
+  docs:links:test:
+    desc: Run the site link checker's own tests — every URL form the built site serves, and every one it does not
+    cmds:
+      - node --test 'docs/scripts/**/*.test.mjs'
+
   docs:links:new:
     desc: Only the links broken since the merge base with BASE (default origin/main) — what a change adds, the inherited backlog excluded; what the advisory CI step reports
     vars:
