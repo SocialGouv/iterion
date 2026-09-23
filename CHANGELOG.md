@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.192.1](https://github.com/SocialGouv/iterion/compare/v3.192.0...v3.192.1) (2026-09-23)
+
+### Bug Fixes
+
+* **model:** a failing tool node leaves its output on the event, not only in the log ([#1692](https://github.com/SocialGouv/iterion/issues/1692)) ([8b67cd3](https://github.com/SocialGouv/iterion/commit/8b67cd355ced202d2e6cc6115cc5ce8360a7fad9))
+
+    <details><summary>why</summary>
+
+    A tool node's completion event carried its error and nothing else. On a failure that meant one string — `exit status 1` — while the command's own stdout and stderr went to the run log, a different sink, under a hook an operator auditing the failure does not read.
+
+    </details>
+
 ## [3.192.0](https://github.com/SocialGouv/iterion/compare/v3.191.2...v3.192.0) (2026-09-23)
 
 ### Features
