@@ -99,11 +99,9 @@ type effectiveToolSurfaceResolver = EffectiveToolSurfaceResolver
 // nothing but the executor's silence made a branch count, the refusal says so
 // and names the executor's type.
 //
-// Admission reads a second optional method beside this one,
-// `EffectiveBackendName(ir.Node) string`. An executor that routes a node
-// elsewhere than its IR backend — a launch-time `--backend`, a wrapper around
-// the production executor — must implement or forward it too, or admission
-// reads the IR's backend and may admit a route no `tools:` list bounds.
+// Admission reads a second seam beside this one, EffectiveBackendResolver, and
+// an executor has to answer both: one that answers only this one is still read
+// at the worst case, for the route.
 //
 // A node's `tools:` list is not that list: the runtime folds its own opt-ins
 // over it at build time, from state that is not in the IR (a launch-time
@@ -145,7 +143,8 @@ type EffectiveToolSurfaceResolver interface {
 // the executor wherever nothing else made the branch count. Sequential nodes, agents and judges marked `readonly:`, tool
 // and subbot nodes, and every executor that answers are untouched. Both
 // executors this module builds answer it; an embedder's own — pkg/benchmark
-// exports `ExecutorFactory` — or a wrapper around one of ours pays one method.
+// exports `ExecutorFactory` — or a wrapper around one of ours pays one method
+// per seam.
 //
 // Reading the program alone (`model.NewProgramExecutor`) is no substitute, in
 // either direction: it stops before the host, so where neither the node nor
@@ -160,7 +159,6 @@ func (e *Engine) toolSurfaceResolver() effectiveToolSurfaceResolver {
 	if r, ok := e.executor.(effectiveToolSurfaceResolver); ok {
 		return r
 	}
-	e.warnExecutorLacksToolSurface()
 	return unansweredSurface{executorType: fmt.Sprintf("%T", e.executor)}
 }
 
@@ -175,26 +173,46 @@ func (u unansweredSurface) EffectiveToolNames(ir.Node, bool) []string {
 	return []string{"<unknown: " + u.executorType + " does not report the tools it grants>"}
 }
 
-// cause is the refusal's reason for a branch that counts as writing only
-// because its executor cannot answer, naming the first node it counts.
-func (u unansweredSurface) cause(nodeID string) string {
-	return fmt.Sprintf("node %q counts as writing because executor %s does not implement runtime.EffectiveToolSurfaceResolver, so the tools it will hold cannot be read — implement or forward EffectiveToolNames and EffectiveBackendName on the executor, or mark the node `readonly:`", nodeID, u.executorType)
+// unansweredCause is the refusal's reason for a branch that counts as writing
+// only because its executor cannot answer one or both of the seams admission
+// reads, naming the first node it counts.
+func unansweredCause(nodeID, executorType string, noTools, noBackend bool) string {
+	missing, unread := "runtime.EffectiveToolSurfaceResolver", "the tools it will hold cannot be read"
+	switch {
+	case noTools && noBackend:
+		missing, unread = "runtime.EffectiveToolSurfaceResolver or runtime.EffectiveBackendResolver", "neither the route it will take nor the tools it will hold can be read"
+	case noBackend:
+		missing, unread = "runtime.EffectiveBackendResolver", "the route it will take cannot be read"
+	}
+	return fmt.Sprintf("node %q counts as writing because executor %s does not implement %s, so %s — implement or forward EffectiveToolNames and EffectiveBackendName on the executor, or mark the node `readonly:`", nodeID, executorType, missing, unread)
 }
 
-// warnExecutorLacksToolSurface says WHICH executor cannot answer, once per
-// engine, during admission — so it is logged by the time any refusal it causes
-// is returned: a run whose fan-outs are refused should not have to be read
+// warnExecutorLacksSeams says WHICH executor cannot answer, and which seams it
+// lacks, once per engine, at its first parallel-branch admission — where the
+// worst case is taken, and not at the sandbox's setup, which asks the backend
+// seam on every run — so it is logged by the time any refusal it causes is
+// returned: a run whose fan-outs are refused should not have to be read
 // backwards from the refusal to learn why.
 // It needs an engine given a logger (`WithLogger`; `runtime.New` sets no
 // default) — the refusal's own reason names the executor too, so a logger-less
 // engine still says it where it matters. Named by concrete type, because the
 // point is to identify the executor that does not answer.
-func (e *Engine) warnExecutorLacksToolSurface() {
+func (e *Engine) warnExecutorLacksSeams() {
 	if e.logger == nil {
 		return
 	}
-	e.toolSurfaceWarnOnce.Do(func() {
-		e.logger.Warn("runtime: executor %T does not implement runtime.EffectiveToolSurfaceResolver — parallel-branch admission cannot tell what the nodes it runs will hold, so it takes the worst case: every agent and judge not marked `readonly:` counts as possibly writing to the shared workspace, and its fan-outs are refused wherever a node declaring a write tool would be. Implement or forward EffectiveToolNames and EffectiveBackendName on the executor (a nil answer from EffectiveToolNames means \"the declaration is all there is\"), or mark the branch nodes `readonly:`. The two executors this module builds implement it; a wrapper that embeds the NodeExecutor interface does not inherit it", e.executor)
+	e.seamWarnOnce.Do(func() {
+		var missing []string
+		if _, ok := e.executor.(effectiveToolSurfaceResolver); !ok {
+			missing = append(missing, "runtime.EffectiveToolSurfaceResolver")
+		}
+		if _, ok := e.executor.(effectiveBackendResolver); !ok {
+			missing = append(missing, "runtime.EffectiveBackendResolver")
+		}
+		if len(missing) == 0 {
+			return
+		}
+		e.logger.Warn("runtime: executor %T does not implement %s — parallel-branch admission cannot read what the nodes it runs will do, so it takes the worst case: every agent and judge not marked `readonly:` counts as possibly writing to the shared workspace, and its fan-outs are refused wherever a node declaring a write tool would be. Implement or forward EffectiveToolNames and EffectiveBackendName on the executor (a nil answer from EffectiveToolNames means \"the declaration is all there is\", an empty one from EffectiveBackendName \"the IR's backend is all there is\"), or mark the branch nodes `readonly:`. The two executors this module builds implement both; a wrapper that embeds the NodeExecutor interface inherits neither", e.executor, strings.Join(missing, " or "))
 	})
 }
 
@@ -220,26 +238,56 @@ func isMutatingNode(node ir.Node) bool {
 	return isMutatingNodeWithBackend(node, "", nil, nil)
 }
 
-// effectiveBackendResolver is implemented by the production model executor.
-// Keeping the interface here avoids duplicating its evolving resolution chain
-// (launch override -> DSL -> workflow default -> env -> auto-detection).
-type effectiveBackendResolver interface {
+// effectiveBackendResolver is the package-internal spelling of the seam.
+type effectiveBackendResolver = EffectiveBackendResolver
+
+// EffectiveBackendResolver reports the backend a node will run on, resolved
+// the way DISPATCH resolves it: launch-time `--backend` overrides,
+// the node's and the workflow's backend, then the host's default and its
+// credential probe. Pre-run analyses that key on a node's backend ask it rather
+// than re-deriving that chain from the IR, which would miss the overrides.
+//
+// An empty answer means "no route beyond the IR's own", and the caller then
+// reads the node's backend from the IR: it is what a program-only resolver
+// answers where the program names no backend. An implementor that routes a node
+// elsewhere and answers "" silently widens parallel-branch admission.
+//
+// An executor that does not implement the interface is not read as answering
+// "". Admission takes the worst case instead — a route no `tools:` list bounds
+// — so every agent and judge it would run that is not `readonly:` counts as
+// possibly writing, exactly as under EffectiveToolSurfaceResolver, and the
+// refusal names the executor. Exported for the same reason as that seam: an
+// implementor in another package pins itself against THE interface.
+type EffectiveBackendResolver interface {
 	EffectiveBackendName(ir.Node) string
 }
 
 // backendResolver is the ONE place the engine asks its executor for the
-// dispatch-time backend resolution. Every pre-run analysis that keys on a
-// node's backend — workspace-safety admission, the sandbox's claw
-// bind-mount — reads it here rather than re-deriving from the IR, which
-// would silently miss the launch-time `--backend` / `--model` overrides.
-// Returns nil for an executor that does not resolve backends (a stub),
-// which every caller reads as "the IR is all there is".
+// dispatch-time backend resolution. Workspace-safety admission and the
+// sandbox's claw bind-mount read it here rather than re-deriving from the IR,
+// which would silently miss the launch-time `--backend` overrides.
+// An executor that does not resolve backends gets a stand-in, never nil.
 func (e *Engine) backendResolver() effectiveBackendResolver {
 	if e == nil {
 		return nil
 	}
-	r, _ := e.executor.(effectiveBackendResolver)
-	return r
+	if r, ok := e.executor.(effectiveBackendResolver); ok {
+		return r
+	}
+	return unansweredBackend{executorType: fmt.Sprintf("%T", e.executor)}
+}
+
+// unansweredBackend stands in for an executor that cannot say where its nodes
+// will run. Its answer is one name no reader can take for a backend that a
+// `tools:` list bounds — it names no backend that receives a list at all — so
+// admission reads every agent and judge as unbounded without a special case.
+// The sandbox mounts the claw runner for a node the resolver routes to claw;
+// this answer never names claw, so the sandbox reads the IR alone, as it does
+// for a driver-level call. The refusal's reason recognises it by type.
+type unansweredBackend struct{ executorType string }
+
+func (u unansweredBackend) EffectiveBackendName(ir.Node) string {
+	return "<unknown: " + u.executorType + " does not report the backend it routes to>"
 }
 
 func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver effectiveBackendResolver, surfaces effectiveToolSurfaceResolver) bool {
@@ -365,17 +413,20 @@ func llmToolSurfaceCanWrite(
 	return false
 }
 
-// The engine's LEAF executors answer the tool-surface seam. Asserted at compile
-// time so dropping or renaming the method breaks the build, not the fan-outs:
-// an executor that stops answering is read at the worst case (see
-// toolSurfaceResolver), where every agent and judge it runs that is not
-// `readonly:` counts as writing.
+// The engine's LEAF executors answer both seams admission reads. Asserted at
+// compile time so dropping or renaming either method breaks the build, not the
+// fan-outs: an executor that stops answering is read at the worst case (see
+// toolSurfaceResolver and backendResolver), where every agent and judge it runs
+// that is not `readonly:` counts as writing.
 // The pin does not reach a wrapper around this type, which is a different type
 // entirely; a wrapper that does not forward the method gets the same worst
 // case, and the refusal names it.
 // dryrun's executor asserts the same thing in its own package — pkg/runtime
 // cannot import it, since dryrun imports pkg/runtime.
-var _ effectiveToolSurfaceResolver = (*model.ClawExecutor)(nil)
+var (
+	_ effectiveToolSurfaceResolver = (*model.ClawExecutor)(nil)
+	_ effectiveBackendResolver     = (*model.ClawExecutor)(nil)
+)
 
 func unrestrictedCLIBackendCanWrite(
 	node ir.Node,
@@ -628,6 +679,7 @@ func fallbacksReachCLIBackend(node ir.Node, lookup func(string) string) bool {
 // node (a non-parallel_safe tool, a full_access agent, a non-isolated subbot)
 // is still reported as mutating.
 func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string, fanOutEachTemplate bool) bool {
+	e.warnExecutorLacksSeams()
 	visited := map[string]bool{}
 	queue := []string{startNodeID}
 	for len(queue) > 0 {
@@ -715,21 +767,31 @@ func (e *Engine) mutationCauses(branches []string, convergence string, fanOutEac
 }
 
 func (e *Engine) branchMutationCause(startNodeID, globalConvergence string, fanOutEachTemplate bool) string {
-	surfaces := e.toolSurfaceResolver()
-	if _, unanswered := surfaces.(unansweredSurface); unanswered {
+	backends, surfaces := e.backendResolver(), e.toolSurfaceResolver()
+	_, noBackend := backends.(unansweredBackend)
+	_, noTools := surfaces.(unansweredSurface)
+	if noBackend || noTools {
 		// Blame the executor only when its silence is what made the BRANCH
 		// count. A branch that writes on its own account anywhere along it —
-		// a declared writer, `full_access:`, a route no list bounds, a tool or
-		// subbot node — is reported for that, since implementing the method
-		// would not change its verdict.
-		if own := e.branchMutationCauseFrom(nil, startNodeID, globalConvergence, fanOutEachTemplate); own != "" {
+		// a declared writer, `full_access:`, an authored CLI fallback, a tool
+		// or subbot node, or what an answered seam says — is reported for
+		// that, read at the most permissive answer each silent seam could
+		// give, since implementing them would not change its verdict.
+		ownBackends, ownSurfaces := backends, surfaces
+		if noBackend {
+			ownBackends = mostPermissiveRoute{}
+		}
+		if noTools {
+			ownSurfaces = nil
+		}
+		if own := e.branchMutationCauseFrom(ownBackends, ownSurfaces, startNodeID, globalConvergence, fanOutEachTemplate); own != "" {
 			return own
 		}
 	}
-	return e.branchMutationCauseFrom(surfaces, startNodeID, globalConvergence, fanOutEachTemplate)
+	return e.branchMutationCauseFrom(backends, surfaces, startNodeID, globalConvergence, fanOutEachTemplate)
 }
 
-func (e *Engine) branchMutationCauseFrom(surfaces effectiveToolSurfaceResolver, startNodeID, globalConvergence string, fanOutEachTemplate bool) string {
+func (e *Engine) branchMutationCauseFrom(backends effectiveBackendResolver, surfaces effectiveToolSurfaceResolver, startNodeID, globalConvergence string, fanOutEachTemplate bool) string {
 	visited := map[string]bool{}
 	queue := []string{startNodeID}
 	for len(queue) > 0 {
@@ -746,7 +808,7 @@ func (e *Engine) branchMutationCauseFrom(surfaces effectiveToolSurfaceResolver, 
 		if !ok || isTerminalNode(node) {
 			continue
 		}
-		if !isMutatingNodeIn(e.workflow, node, e.workflow.DefaultBackend, e.backendResolver(), surfaces, fanOutEachTemplate) {
+		if !e.countsInPass(node, backends, surfaces, fanOutEachTemplate) {
 			for _, edge := range e.workflow.Edges {
 				if edge.From == nodeID {
 					queue = append(queue, edge.To)
@@ -754,10 +816,16 @@ func (e *Engine) branchMutationCauseFrom(surfaces effectiveToolSurfaceResolver, 
 			}
 			continue
 		}
-		if u, unanswered := surfaces.(unansweredSurface); unanswered {
+		ub, noBackend := backends.(unansweredBackend)
+		us, noTools := surfaces.(unansweredSurface)
+		if noBackend || noTools {
 			// Reached only once the branch writes on no account of its own:
 			// the executor's silence is the whole reason this node counts.
-			return u.cause(nodeID)
+			typ := us.executorType
+			if noBackend {
+				typ = ub.executorType
+			}
+			return unansweredCause(nodeID, typ, noTools, noBackend)
 		}
 		if surfaces != nil {
 			// Declared names are compared through the shared spelling table,
@@ -782,18 +850,65 @@ func (e *Engine) branchMutationCauseFrom(surfaces effectiveToolSurfaceResolver, 
 			if backend == "" {
 				backend = strings.TrimSpace(ir.ExpandWithDefault(e.workflow.DefaultBackend, nil))
 			}
-			if r := e.backendResolver(); r != nil {
-				if eff := strings.TrimSpace(r.EffectiveBackendName(node)); eff != "" {
+			if backends != nil {
+				if eff := strings.TrimSpace(backends.EffectiveBackendName(node)); eff != "" {
 					backend = eff
 				}
 			}
-			if declarationIsNoBound(backend, true) { // the cause of a shared-worktree refusal
+			// A route still spelled as a template was read pessimistically
+			// because nothing resolved it; naming it as a backend would be
+			// the wrong reason, so it is left to the bare node below.
+			if !strings.Contains(backend, "{{") && declarationIsNoBound(backend, true) { // the cause of a shared-worktree refusal
 				return fmt.Sprintf("node %q runs on %s, where a `tools:` list does not bound what the node holds", nodeID, backend)
+			}
+			for _, fb := range llm.GetFallbacks() {
+				if b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, nil)); !strings.Contains(b, "{{") && declarationIsNoBound(b, true) {
+					return fmt.Sprintf("node %q falls back to %s, where a `tools:` list does not bound what the node holds", nodeID, b)
+				}
 			}
 		}
 		return fmt.Sprintf("node %q", nodeID)
 	}
 	return ""
+}
+
+// mostPermissiveRoute stands in for the backend seam in the own-account pass
+// of an executor that cannot answer it. That seam REPLACES a node's IR backend
+// — a launch override may route a `backend: claude_code` node onto claw, and a
+// `{{vars.…}}` one is read by nothing else — so while the executor is silent,
+// no route the IR names is the branch's own account. A node counts there only
+// if it writes on EVERY route a declaration bounds — claw and codex, see
+// countsInPass — so what stays the branch's own is what writes on any route: a
+// declared writer, `full_access:`, a fallback no declaration bounds, a tool or
+// subbot node. Its own answer, claw, only words the reason.
+type mostPermissiveRoute struct{}
+
+func (mostPermissiveRoute) EffectiveBackendName(ir.Node) string { return delegate.BackendClaw }
+
+// declarationBoundRoutes are the backends on which a node's `tools:` list is
+// the bound on what it holds.
+var declarationBoundRoutes = []string{delegate.BackendClaw, delegate.BackendCodex}
+
+// answersRoute resolves every node to one backend.
+type answersRoute string
+
+func (r answersRoute) EffectiveBackendName(ir.Node) string { return string(r) }
+
+// countsInPass is the attribution walk's classifier. In the own-account pass of
+// a silent backend seam a node counts only if it writes on every route a
+// declaration bounds: neither route is more permissive than the other for
+// every node — claw un-restricts a list the moment a CLI fallback exists, codex
+// holds its full toolset when no list is declared.
+func (e *Engine) countsInPass(node ir.Node, backends effectiveBackendResolver, surfaces effectiveToolSurfaceResolver, fanOutEachTemplate bool) bool {
+	if _, own := backends.(mostPermissiveRoute); own {
+		for _, route := range declarationBoundRoutes {
+			if !isMutatingNodeIn(e.workflow, node, e.workflow.DefaultBackend, answersRoute(route), surfaces, fanOutEachTemplate) {
+				return false
+			}
+		}
+		return true
+	}
+	return isMutatingNodeIn(e.workflow, node, e.workflow.DefaultBackend, backends, surfaces, fanOutEachTemplate)
 }
 
 // llmDeclaredTools is the node's own `tools:` list, or nil for a kind that has

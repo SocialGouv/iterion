@@ -165,10 +165,10 @@ type Engine struct {
 	store         store.RunStore
 	executor      NodeExecutor
 	logger        *iterlog.Logger
-	// toolSurfaceWarnOnce keeps the "this executor cannot answer the
-	// tool-surface seam" warning to one line per engine: admission asks per
+	// seamWarnOnce keeps the "this executor cannot answer the seams
+	// admission reads" warning to one line per engine: admission asks per
 	// node, per branch, on every fan-out.
-	toolSurfaceWarnOnce      sync.Once
+	seamWarnOnce             sync.Once
 	onNodeFinished           func(runID, nodeID string, output map[string]any)
 	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
