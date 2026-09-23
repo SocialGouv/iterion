@@ -2343,6 +2343,131 @@ func TestProductDocsCoverageGateHonoursADeclaredIDPattern(t *testing.T) {
 	}
 }
 
+// TestProductDocsCoverageGateRefusesAStaleInventoryReference: the inventory
+// and the corpus are regenerated separately, so a feature can keep citing an
+// entry the corpus no longer holds. Unchecked, that drift makes two of this
+// gate's own rules mutually unsatisfiable — documenting the feature with that
+// entry is a PHANTOM_DOC, omitting it is a GAP — and since fail_log orders the
+// campaign to fix exactly the named causes, the run burns every pass obeying
+// two contradictory instructions.
+func TestProductDocsCoverageGateRefusesAStaleInventoryReference(t *testing.T) {
+	requireGitPython(t)
+	t.Run("an entry the corpus no longer holds", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		mutate(t, ws, ".golden-master/feature-coverage.json",
+			`{"feature": "items.detail", "entries": ["039"]}`,
+			`{"feature": "items.detail", "entries": ["039", "404"]}`)
+		got := runCoverage(t, ws)
+		if got.OK {
+			t.Fatalf("a map pointing at evidence that is not there was accepted:\n%s", got.Log)
+		}
+		if !strings.Contains(got.Log, "corpus entries that DO NOT EXIST (404)") {
+			t.Fatalf("the refusal does not name the stale reference:\n%s", got.Log)
+		}
+	})
+	// A truthy list that names nothing is not coverage. It used to join the
+	// covered features with an empty entry set: a permanent GAP whose detail
+	// listed no entry to document.
+	t.Run("entries that are a truthy list of nothing", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		mutate(t, ws, ".golden-master/feature-coverage.json",
+			`{"feature": "items.detail", "entries": ["039"]}`,
+			`{"feature": "items.detail", "entries": ["   "]}`)
+		got := runCoverage(t, ws)
+		if got.OK || !strings.Contains(got.Log, "COVERED with no usable corpus entry") {
+			t.Fatalf("a feature mapped to blank entries was not refused by name:\n%s", got.Log)
+		}
+	})
+}
+
+// TestProductDocsCoverageGateRefusesACitedCatchAll: the catch-all rule cuts
+// BOTH ways. A cited path is read as a pattern, so a lone placeholder path
+// matches every corpus entry — it would pass while restituting nothing, and
+// anchor its chapter into the bargain. The hole the declared-route side closes
+// must be closed on the side the graded agent writes.
+func TestProductDocsCoverageGateRefusesACitedCatchAll(t *testing.T) {
+	requireGitPython(t)
+	for _, catchAll := range []string{"/**", "/{slug}", "/:id"} {
+		t.Run(catchAll, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
+				"## One item — `"+catchAll+"` (`039`)")
+			got := runCoverage(t, ws)
+			if got.OK {
+				t.Fatalf("a placeholder-only citation passed — it matches every path and restitutes none:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, "is made of PLACEHOLDERS ONLY") {
+				t.Fatalf("the refusal does not name the cause:\n%s", got.Log)
+			}
+		})
+	}
+	// A path with one literal segment still proves something, and `/` is a
+	// literal route: neither may be caught by this rule.
+	ws := newCoverageFixture(t)
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("the rule fired on the intact fixture, whose pages cite `/` and `/dashboard/items/{id}`:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNamesTheRepairInItsHeadingLine: the rule reads
+// the HEADING's own line, so a reference in the chapter body does not anchor
+// it. An agent that repairs by adding body references reads the complaint as
+// already satisfied and the bounded loop exhausts max_passes without
+// converging — the refusal has to name the repair.
+func TestProductDocsCoverageGateNamesTheRepairInItsHeadingLine(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
+		"## One item\n\nThe chapter body cites `items.detail` and `039` all the same.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a chapter anchored only in its body satisfied the rule:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "IN THE HEADING LINE ITSELF") {
+		t.Fatalf("the refusal does not name the repair it wants:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCatalogIngestRefusesASymlinkedLocalPath: normpath does not
+// resolve symlinks, so a symlink COMMITTED in the docs repo and named by the
+// catalog walked straight past a textual containment check. The catalog is
+// repo content — hostile-grade by this node's own rule — so one docs-repo PR
+// would pull an out-of-workspace repository into the scratch dir and hand it
+// to the campaign agent as source material.
+func TestProductDocsCatalogIngestRefusesASymlinkedLocalPath(t *testing.T) {
+	requireGitPython(t)
+	outside := t.TempDir()
+	gitIn(t, outside, "init", "-q", "-b", "main")
+	writeFile(t, outside, "secret-notes.md", "# not for the campaign\n")
+	gitIn(t, outside, "add", "-A")
+	gitIn(t, outside, "commit", "-q", "-m", "seed")
+
+	scratch := t.TempDir()
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	if err := os.Symlink(outside, filepath.Join(ws, "mirror")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \"mirror\"\n",
+		`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"mirror"}]}`+"\n")
+	writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OKCount != 0 || got.Degraded != 1 {
+		t.Fatalf("a symlink to a repository outside the workspace was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+	}
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "escapes the docs workspace") {
+		t.Fatalf("the refusal does not name its cause: %q", note)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "sources", "demo", "secret-notes.md")); err == nil {
+		t.Fatalf("the out-of-workspace repository reached the scratch dir anyway")
+	}
+}
+
 // TestProductDocsCoverageGateInertWithoutANet is the NON-REGRESSION contract.
 // A product with no golden-master net must get the bot it had before this gate
 // existed: nothing certified, nothing refused, an EMPTY log (a log is what

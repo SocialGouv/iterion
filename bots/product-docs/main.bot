@@ -699,9 +699,10 @@ prompt campaign_user:
     inventory identifier, a path the net observes or a declared route
     serves. Never cite a reference you did not read in those files;
   - every chapter (heading level 2 and below) carries at least one such
-    reference, or declares it restitutes none with the declared
-    anchorless marker. That marker is the only HTML comment the
-    editorial lint tolerates.
+    reference IN ITS HEADING LINE ITSELF — a reference in the chapter
+    body does NOT anchor it — or declares it restitutes none with the
+    declared anchorless marker. That marker is the only HTML comment
+    the editorial lint tolerates.
   When the path IS empty there is no net, and none of the above
   applies.
 
@@ -1491,8 +1492,14 @@ for raw in repos:
         if os.path.isabs(local):
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path refused: a source path is RELATIVE to the docs workspace, never absolute'})
             continue
-        ws_n = os.path.normpath(ws)
-        cand = os.path.normpath(os.path.join(ws_n, local))
+        ## realpath, not normpath: normpath does not resolve symlinks, so a
+        ## symlink COMMITTED in the docs repo and named by the catalog
+        ## walks straight past a textual containment check -- and the
+        ## catalog is repo content, hostile-grade by this node's own rule.
+        ## That is the same tree nobody chose to expose the absolute and
+        ## dot-dot refusals exist to keep out.
+        ws_n = os.path.realpath(ws)
+        cand = os.path.realpath(os.path.join(ws_n, local))
         if cand != ws_n and not cand.startswith(ws_n.rstrip('/') + '/'):
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path refused: ' + local + ' escapes the docs workspace'})
             continue
@@ -2258,12 +2265,18 @@ for i, f in enumerate(features):
         refuse('NET_UNREADABLE', name, 'listed twice among the COVERED features -- the count would grow without inventorying anything')
         continue
     ents = f.get('entries')
-    if not isinstance(ents, list) or not ents:
-        refuse('NET_UNREADABLE', name, 'COVERED with no corpus entry -- a feature without a reference cannot be anchored')
+    ## The USABLE set decides, not the list's truthiness: entries of [' ']
+    ## is a truthy list that names nothing, and it would join the covered
+    ## features with an empty entry set -- a permanent GAP whose detail
+    ## lists no entry to document, unactionable where the doctrine
+    ## promises a named refusal.
+    own = set(e.strip() for e in ents if isinstance(e, str) and e.strip()) if isinstance(ents, list) else set()
+    if not own:
+        refuse('NET_UNREADABLE', name, 'COVERED with no usable corpus entry -- a feature without a reference cannot be anchored')
         entry_lists[name] = set()
         continue
     feature_names.append(name)
-    entry_lists[name] = set(e.strip() for e in ents if isinstance(e, str) and e.strip())
+    entry_lists[name] = own
 exclusion_names, exclusion_reasons = [], {}
 for i, x in enumerate(exclusions):
     name = x.get('feature') if isinstance(x, dict) else None
@@ -2293,6 +2306,19 @@ for e in entries:
     if isinstance(p, str) and p.startswith('/'):
         parts = urlsplit(p)
         entry_paths.setdefault(parts.path, set()).update(k for k, _v in parse_qsl(parts.query, keep_blank_values=True))
+## The INVENTORY MUST POINT AT EVIDENCE THAT IS THERE. The two artifacts
+## are regenerated separately, so a feature can keep citing an entry the
+## corpus no longer holds. Left unchecked that drift makes two of this
+## gate's own rules mutually unsatisfiable: documenting the feature with
+## that entry is refused as a PHANTOM_DOC, omitting it is refused as a
+## GAP, and the campaign burns every pass obeying two contradictory
+## orders. The net's harness refuses the same drift on its side; this
+## re-reads it here rather than assuming it was run.
+for name in feature_names:
+    absent = sorted(e for e in entry_lists.get(name, set()) if e not in corpus_ids)
+    if absent:
+        refuse('NET_UNREADABLE', name, 'the inventory maps it to corpus entries that DO NOT EXIST (' + ', '.join(absent) + ') -- the map points at evidence that is not there, and no page can satisfy both the gap rule and the phantom rule')
+
 ## The DECLARED route table. Goldy runs its own routes_probe at every gate
 ## and commits no artifact, so this file is OPTIONAL: absent, the path check
 ## DEGRADES to the corpus alone and says so in the log and in
@@ -2485,7 +2511,7 @@ for where, no, level, title in headings:
     ## answer is the one the single pass already computed for this line:
     ## a second copy of the test is how the two come to disagree.
     if not has_anchor.get((where, no), False):
-        refuse('UNANCHORED_CHAPTER', where + ':' + str(no), 'the chapter ' + title + ' names NO reference it restitutes -- anchor it on a corpus entry, an inventory id or a path, or declare it observes nothing with ' + (no_anchor or '<coverage_no_anchor_marker>'))
+        refuse('UNANCHORED_CHAPTER', where + ':' + str(no), 'the chapter ' + title + ' names NO reference it restitutes -- put a corpus entry, an inventory id or a path IN THE HEADING LINE ITSELF (a reference in the chapter body does NOT anchor it), or declare it restitutes none with ' + (no_anchor or '<coverage_no_anchor_marker>'))
 ## PHANTOM_DOC -- every cited anchor must exist, in the corpus, in the
 ## inventory or in the declarations; never in the writer's memory.
 cited_entries, cited_paths = set(), set()
@@ -2500,7 +2526,13 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
         cited_paths.add(path)
         parts = urlsplit(path)
         hits = corpus_matches(parts.path)
-        if any(route_proves(r) and pattern_matches(r, parts.path) for r in declared):
+        ## The catch-all rule cuts BOTH ways. A cited path is read as a
+        ## pattern, so a lone placeholder path matches every corpus entry
+        ## and would pass while restituting nothing -- the same hole the
+        ## declared-route side closes, on the side the graded agent writes.
+        if not route_proves(parts.path):
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the cited path ' + path + ' is made of PLACEHOLDERS ONLY -- like a framework catch-all it matches every path and restitutes none; cite a path the net actually observed')
+        elif any(route_proves(r) and pattern_matches(r, parts.path) for r in declared):
             pass
         elif hits:
             pass

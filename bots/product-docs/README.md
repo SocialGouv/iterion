@@ -131,7 +131,7 @@ silence:
 | `PHANTOM_DOC` | a documented screen the net never saw: a cited corpus entry that does not exist, an inventory id nobody inventoried, a path that is neither a declared route nor a corpus entry path, a query parameter the corpus never observes on that path |
 | `GAP` | a covered feature no line documents — **one** line must carry its identifier **and** one of its own entries |
 | `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, with prose (a bare identifier or a `TODO` is silence under a label) |
-| `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) naming no reference it restitutes and not declaring that it restitutes none |
+| `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) naming no reference **in its heading line itself** — a reference in the chapter body does not anchor it — and not declaring that it restitutes none |
 | `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, no `exclusions` key, an empty route table |
 
 That last row is the point of the design, not a detail: a guard written
@@ -157,7 +157,10 @@ Three things the gate deliberately does not assume:
   `coverage_entry_id_pattern` and the inference stops entirely.
 - **A catch-all route.** A route made only of placeholders (`/{slug}`,
   `/**`) matches every path and proves none: for a path only such a
-  route covers, the corpus reference is the only evidence.
+  route covers, the corpus reference is the only evidence. The rule cuts
+  both ways — a *cited* path made only of placeholders is refused too,
+  since a citation is read as a pattern and a lone `` `/**` `` would
+  otherwise match every corpus entry while restituting nothing.
 
 **The route table is a degradation, and a loud one.** golden-master
 states its routes through `config.json`'s `routes_probe` — a command it
