@@ -709,7 +709,7 @@ func runScanHealthBody(t *testing.T, files map[string]string, minGeneric string,
 	}
 	rendered := body
 	for ref, val := range map[string]string{
-		"{{vars.scan_dir}}":             scanDir,
+		"{{input.scan_dir}}":            scanDir,
 		"{{vars.min_generic_scanners}}": minGeneric,
 		"{{input.langs}}":               "[]",
 		"{{vars.workspace_dir}}":        dir,

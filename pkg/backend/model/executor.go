@@ -89,6 +89,10 @@ type ClawExecutor struct {
 	// workspace this run (SetMirroredSkills), as opposed to whatever the
 	// target repo ships at the same path.
 	mirroredSkills []string
+
+	// slashWarnedOnce keeps a workspace-command divergence notice to one
+	// line per command file per run, across nodes and parallel branches.
+	slashWarnedOnce slashWarnOnce
 	// sharedStateDir is a directory reachable at the same absolute path from
 	// the host and the sandbox that is NOT in the target repo's checkout
 	// (SetSharedStateDir); empty when there is none.
@@ -231,6 +235,10 @@ type ClawExecutor struct {
 	// codex OAuth, ANTHROPIC_API_KEY, …) so resolveBackendName can
 	// auto-select a backend when neither node nor workflow specifies one.
 	detector *detect.CachedDetector
+	// staticProgramOnly marks an executor built to answer questions ABOUT A
+	// PROGRAM rather than to run one: it reads the .bot and the workflow and
+	// never the host. See NewProgramExecutor.
+	staticProgramOnly bool
 
 	// inbox is the operator-chatbox binder. When set, every Task built
 	// by this executor gets an InboxDrain closure so CLI-based backends

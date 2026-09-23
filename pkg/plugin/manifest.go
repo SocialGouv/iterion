@@ -101,9 +101,10 @@ func (f ConfigField) validate(plugin string) error {
 // Contributes is the set of typed contribution points.
 //
 // Skills, Commands and Agents are markdown files mirrored into the workspace's
-// .claude/<skills|commands|agents>/ directory at run start (claude_code
-// discovers them via --setting-sources project; the claw backend reads the
-// same dirs). They share one mirror mechanism and one collision policy.
+// .claude/<skills|commands|agents>/ directory at run start. claude_code
+// discovers all three from the workspace; claw reads the skills and the
+// commands, not the agents (docs/plugins.md, parity table). They share one
+// mirror mechanism and one collision policy.
 type Contributes struct {
 	Rewriters  []RewriterSpec  `yaml:"rewriters"`
 	MCPServers []MCPServerSpec `yaml:"mcp_servers"`
@@ -112,7 +113,8 @@ type Contributes struct {
 	Agents     []string        `yaml:"agents"`
 	// Hooks are paths to JSON settings fragments ({"hooks": {<Event>: [...]}}),
 	// idempotently merged into the workspace's .claude/settings.json so
-	// claude_code fires them (discovered via --setting-sources project). A
+	// claude_code fires them (discovered via --setting-sources project) and
+	// claw fires the command-type subset it bridges. A
 	// command-type hook runs arbitrary shell on tool events — installed plugins
 	// are opt-in (disabled by default), so this is the operator's choice.
 	Hooks     []string       `yaml:"hooks"`

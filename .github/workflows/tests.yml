@@ -1054,6 +1054,14 @@ jobs:
         with:
           node-version: 24
 
+      # Before the install, because it needs none: the checker is plain node,
+      # and its verdict is worth having even on a run whose dependencies do
+      # not resolve. Mirror of `task docs:links:test`; internal/ciguard
+      # asserts the two stay identical. The file is named rather than globbed
+      # — a glob that matches nothing exits 0 having run nothing.
+      - name: Link checker self-test
+        run: node --test docs/scripts/check-links.test.mjs
+
       - name: Install dependencies
         run: |
           corepack enable

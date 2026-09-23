@@ -3,6 +3,56 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.194.1](https://github.com/SocialGouv/iterion/compare/v3.194.0...v3.194.1) (2026-09-23)
+
+### Bug Fixes
+
+* **bots:** every acting prompt in the catalogue says what it reads is data, per-pass scan directories, the deepsec coverage sum, and 14 typed literals bound ([#1494](https://github.com/SocialGouv/iterion/issues/1494) [#1475](https://github.com/SocialGouv/iterion/issues/1475) [#1495](https://github.com/SocialGouv/iterion/issues/1495) [#1524](https://github.com/SocialGouv/iterion/issues/1524)) ([#1739](https://github.com/SocialGouv/iterion/issues/1739)) ([7ea7be1](https://github.com/SocialGouv/iterion/commit/7ea7be17c5cedda64bfdc1b2b396878db9ff60df)), references [#1473](https://github.com/SocialGouv/iterion/issues/1473) [#1323](https://github.com/SocialGouv/iterion/issues/1323) [#1652](https://github.com/SocialGouv/iterion/issues/1652) [#1737](https://github.com/SocialGouv/iterion/issues/1737) [#1646](https://github.com/SocialGouv/iterion/issues/1646) [#1349](https://github.com/SocialGouv/iterion/issues/1349) [#1722](https://github.com/SocialGouv/iterion/issues/1722) [#1722](https://github.com/SocialGouv/iterion/issues/1722) [#1737](https://github.com/SocialGouv/iterion/issues/1737)
+
+    <details><summary>why</summary>
+
+    Four tickets on one surface: the shipped bot catalogue, its prompts, its tests and its regenerated catalogue.
+
+    </details>
+* **docs,repomap,repograph:** the link checker judges what the site serves and asks git what github serves, code is not prose for the link scanners, one spelling for docs/public links, one skip set ([#1618](https://github.com/SocialGouv/iterion/issues/1618) [#1619](https://github.com/SocialGouv/iterion/issues/1619) [#1620](https://github.com/SocialGouv/iterion/issues/1620) [#1621](https://github.com/SocialGouv/iterion/issues/1621)) ([#1741](https://github.com/SocialGouv/iterion/issues/1741)) ([728f172](https://github.com/SocialGouv/iterion/commit/728f1721b967b82affe635914446cacfa4cad1cf)), references [#1508](https://github.com/SocialGouv/iterion/issues/1508) [#1508](https://github.com/SocialGouv/iterion/issues/1508) [#1723](https://github.com/SocialGouv/iterion/issues/1723) [#1724](https://github.com/SocialGouv/iterion/issues/1724)
+
+    <details><summary>why</summary>
+
+    Four tickets on one surface: the documentation link checker, the scanners that read a page's links, and the sets the generated artifacts walk.
+
+    </details>
+* **runtime,server,backends:** quota slots released only when nothing started, fork inputs gated, the gated formatting spawn bounded, and a declaration is not a bound ([#1638](https://github.com/SocialGouv/iterion/issues/1638) [#1608](https://github.com/SocialGouv/iterion/issues/1608) [#1682](https://github.com/SocialGouv/iterion/issues/1682) [#1652](https://github.com/SocialGouv/iterion/issues/1652)) ([#1729](https://github.com/SocialGouv/iterion/issues/1729)) ([9ccc818](https://github.com/SocialGouv/iterion/commit/9ccc818039b5626cc2d97b9373ac192cb40ab710)), closes [#1670](https://github.com/SocialGouv/iterion/issues/1670), references [#1672](https://github.com/SocialGouv/iterion/issues/1672) [#1615](https://github.com/SocialGouv/iterion/issues/1615) [#1651](https://github.com/SocialGouv/iterion/issues/1651)
+
+    <details><summary>why</summary>
+
+    Four small hardenings, one per ticket, each on a surface where a bound the operator reads as enforced was not.
+
+    </details>
+
+## [3.194.0](https://github.com/SocialGouv/iterion/compare/v3.193.0...v3.194.0) (2026-09-23)
+
+### Features
+
+* **backends:** a workspace .claude/commands/ command reaches a claw node ([#1418](https://github.com/SocialGouv/iterion/issues/1418) lot 1) ([#1712](https://github.com/SocialGouv/iterion/issues/1712)) ([aac4480](https://github.com/SocialGouv/iterion/commit/aac448056800fcbd977eed30b150586126a4d08b))
+
+    <details><summary>why</summary>
+
+    ## What
+
+    </details>
+
+## [3.193.0](https://github.com/SocialGouv/iterion/compare/v3.192.2...v3.193.0) (2026-09-23)
+
+### Features
+
+* **modernize:** a lot's gate can reach a deployed application ([#1693](https://github.com/SocialGouv/iterion/issues/1693)) ([c31be5c](https://github.com/SocialGouv/iterion/commit/c31be5c01fc87a4ea2e393cb6b84352cfb68139f))
+
+    <details><summary>why</summary>
+
+    The modernize bot declared no platform credential, so a contract could not declare an exit gate that judges a DEPLOYED application — only a locally started one. Such a gate refuses for want of an identity it has no way to be given, whatever the lot did, and that refusal says nothing about the work.
+
+    </details>
+
 ## [3.192.2](https://github.com/SocialGouv/iterion/compare/v3.192.1...v3.192.2) (2026-09-23)
 
 ### Bug Fixes

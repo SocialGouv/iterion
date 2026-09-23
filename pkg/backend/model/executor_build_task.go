@@ -353,6 +353,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 	chain []chainElement,
 	baseModel string,
 	build elementBuilder,
+	sess *nodeBuildSession,
 ) (chainOutcome, error) {
 	if e.hooks.OnDelegateStarted != nil {
 		e.hooks.OnDelegateStarted(nodeID, DelegateInfo{
@@ -367,6 +368,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 			di := delegateInfoFromResult(bn, out.Result)
 			di.DeclaredModel = baseModel
 			di.Error = err
+			sess.describeDivergence(&di)
 			e.hooks.OnDelegateError(nodeID, di)
 		}
 		return out, fmt.Errorf("%s %q: backend %q failed: %w", errPrefix, nodeID, backendName, err)
@@ -379,6 +381,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 		// origin — the metrics claw-exclusion keys on it) but flag it so
 		// recordServed and the event do not claim a backend SERVED.
 		di.Skipped = out.Skipped
+		sess.describeDivergence(&di)
 		e.hooks.OnDelegateFinished(nodeID, di)
 	}
 	return out, nil
@@ -399,20 +402,84 @@ func (e *ClawExecutor) dispatchWithObservability(
 // single-shot caller want.
 type nodeBuildSession struct {
 	promptEmitted bool
-	boardToken    string
-	boardMinted   bool
+	// emittedPrompt is the user text the claimed llm_prompt event
+	// recorded. A chain can cross backends (a `fallbacks:` route names
+	// one), and the user prompt is now backend-dependent — a workspace
+	// command expands for claw and not for claude_code — so the element
+	// that SERVES may receive text the recorded event does not show.
+	emittedPrompt string
+	// lastPrompt / lastBackend are the text and backend of the element that
+	// built LAST — the one that serves, since the walk only moves forward.
+	// The divergence is recomputed against it rather than latched on the
+	// first element that differed: a claw → claude_code → claw chain ends on
+	// the element that received exactly the recorded prompt, and reporting
+	// it as divergent would be a false alarm in the one record a reader
+	// trusts to say what ran.
+	lastPrompt  string
+	lastBackend string
+	// ignoredFrontmatter names the command frontmatter keys this run
+	// dropped for THIS node. Keyed per node, not per command file: a second
+	// node invoking the same command with a broader `tools:` set is a
+	// different exposure and has to be told.
+	ignoredFrontmatter []string
+	boardToken         string
+	boardMinted        bool
+}
+
+// describeDivergence records on the outgoing delegate event that the
+// element which served this node received a user prompt the recorded
+// llm_prompt does not show. Without it a cross-backend `fallbacks:` route
+// is a silent lie in events.jsonl, iterion report, inspect --node and the
+// studio's LLM Trace: the run succeeds and every reader shows the primary's
+// text.
+func (s *nodeBuildSession) describeDivergence(di *DelegateInfo) {
+	if s == nil {
+		return
+	}
+	// Against the element that SERVED, not against every element that ever
+	// differed: the flag answers "is the recorded prompt the one that ran".
+	if s.promptEmitted && s.lastPrompt != s.emittedPrompt {
+		di.PromptDiverged = true
+		di.PromptDivergedOn = s.lastBackend
+	}
+	// The security-relevant divergence rides the event too, so a
+	// deterministic gate reading events.jsonl can see it. A log line cannot
+	// be asserted on.
+	di.CommandFrontmatterIgnored = s.ignoredFrontmatter
 }
 
 // claimPrompt reports whether THIS build should emit the node's prompt
 // event, and records that it did.
-func (s *nodeBuildSession) claimPrompt() bool {
+//
+// Every build hands over the text it produced, claiming or not: the first
+// claims and is recorded, and a later element on the same chain compares
+// against it. One llm_prompt per node stays the invariant (three readers
+// start an LLM step per event), so a divergence is reported as a FACT on
+// the delegate_finished event rather than as a second prompt.
+func (s *nodeBuildSession) claimPrompt(userText, backendName string) bool {
 	if s == nil {
 		return true
 	}
+	s.lastPrompt, s.lastBackend = userText, backendName
 	if s.promptEmitted {
 		return false
 	}
 	s.promptEmitted = true
+	s.emittedPrompt = userText
+	return true
+}
+
+// noteIgnoredFrontmatter records, once per node, the command frontmatter
+// keys that were dropped. Returns whether this is the first time for this
+// node — the caller uses it to log once without suppressing a second node.
+func (s *nodeBuildSession) noteIgnoredFrontmatter(keys []string) bool {
+	if s == nil {
+		return true
+	}
+	if len(s.ignoredFrontmatter) > 0 {
+		return false
+	}
+	s.ignoredFrontmatter = keys
 	return true
 }
 
@@ -527,7 +594,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			}
 			return &built, nil
 		})
-	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
+	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build, sess)
 	if err != nil {
 		// A failed delegation still SPENT, and everything below this line
 		// went to trouble to keep the figure: claude_code's `typedFailure`
@@ -989,11 +1056,11 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
-	userText, userContent := e.buildUserPromptParts(f, input, td, backendName)
+	userText, userContent := e.buildUserPromptParts(ctx, f, input, td, backendName, sess)
 
 	// Emit prompt content for observability — once per node execution,
 	// not once per chain element (see nodeBuildSession).
-	if e.hooks.OnLLMPrompt != nil && sess.claimPrompt() {
+	if sess.claimPrompt(userText, backendName) && e.hooks.OnLLMPrompt != nil {
 		e.hooks.OnLLMPrompt(f.id, systemText, userText)
 	}
 
@@ -1306,7 +1373,7 @@ func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]a
 // the (stateless) LLM doesn't lose the thread — without this, claw
 // would re-ask the same question because its conversation history isn't
 // persisted.
-func (e *ClawExecutor) buildUserPromptParts(f backendFields, input map[string]any, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
+func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields, input map[string]any, td *TemplateData, backendName string, sess *nodeBuildSession) (string, []delegate.ContentBlock) {
 	userText := e.buildUserMessage(f.userPrompt, input, td)
 	// And the multimodal variant when this backend supports it AND the
 	// resolved prompt references at least one image attachment.
@@ -1315,11 +1382,43 @@ func (e *ClawExecutor) buildUserPromptParts(f backendFields, input map[string]an
 		_, userContent = e.buildUserContent(f.userPrompt, input, td, e.imageAttachs)
 	}
 
+	// A workspace `.claude/commands/` command, substituted for its
+	// invocation — the capability claude_code gets from the workspace
+	// natively. It happens HERE, not in the claw
+	// backend, because everything downstream consumes the prompt as final:
+	// the OnLLMPrompt event that feeds events.jsonl and the run log, the
+	// ask_user prepend just below, and the schema re-ask that appends its
+	// feedback to this text. Expanding later would emit one prompt and
+	// send another.
+	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+	if hit {
+		userText = expanded
+		// The blocks above were split around the INVOCATION, so their TEXT
+		// is the thing that was just replaced — but their image bytes are
+		// the operator's attachment, and claude_code keeps those when a
+		// prompt both invokes a command and references one. Substituting
+		// the text and keeping the images is what parity means here;
+		// dropping the blocks wholesale sent a `tools: []` node an image
+		// path it could not read.
+		userContent = slashCommandUserContent(userContent, expanded)
+	}
+
 	// On re-invocation after an ask_user pause, prepend the prior
 	// question and the user's answer so the (stateless) LLM doesn't
 	// lose the thread. Without this, claw would re-ask the same
 	// question because its conversation history isn't persisted.
-	userText = prependPriorAskUser(userText, input)
+	//
+	// It has to reach the BLOCKS too. A backend holding multimodal content
+	// builds its wire message from the blocks alone, so a prefix added only
+	// to the text is a prefix the model never sees — and the prompt event
+	// records it as sent. That loses the operator's answer and the node
+	// re-asks the same question, which is the one thing this prepend
+	// exists to stop.
+	prior := prependPriorAskUser(userText, input)
+	if prefix, ok := strings.CutSuffix(prior, userText); ok && prefix != "" && len(userContent) > 0 {
+		userContent = append([]delegate.ContentBlock{{Type: "text", Text: prefix}}, userContent...)
+	}
+	userText = prior
 	return userText, userContent
 }
 

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
@@ -254,10 +255,14 @@ func HeadingText(md string) string {
 }
 
 var (
-	imageRe    = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
-	linkRe     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	refLinkRe  = regexp.MustCompile(`\[([^\]]*)\]\[[^\]]*\]`)
-	codeSpanRe = regexp.MustCompile("`+[^`]*`+")
+	imageRe   = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
+	linkRe    = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	refLinkRe = regexp.MustCompile(`\[([^\]]*)\]\[[^\]]*\]`)
+	// The code-span and fenced-block rules live in internal/mdcode: the
+	// question "which bytes are code" is asked by every scanner this
+	// repository runs over its markdown, and a second copy of the answer is
+	// how the map and the guard came to disagree with this file.
+	codeSpanRe = mdcode.SpanPattern()
 	htmlTagRe  = regexp.MustCompile(`<[^>]+>`)
 	// A shortcode renders to an emoji glyph, which the slug rule drops.
 	shortcodeRe = regexp.MustCompile(`:[a-z0-9_+-]+:`)
@@ -268,17 +273,15 @@ var (
 	// Indentation is not bounded: GitHub renders a `##` continued inside a
 	// list item (four spaces in) as a heading, and a phantom anchor from an
 	// indented code block costs less than a phantom broken link.
-	atxHeadingRe   = regexp.MustCompile(`^\s*(?:(?:>|[-*+]|\d+[.)])\s+)*(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
-	setextLineRe   = regexp.MustCompile(`^\s{0,3}(=+|-{3,})\s*$`)
-	htmlHeadingRe  = regexp.MustCompile(`(?i)<h[1-6][^>]*>(.*?)</h[1-6]>`)
-	htmlAnchorRe   = regexp.MustCompile(`(?i)<[a-z][a-z0-9]*\b[^>]*\s(?:id|name)="([^"]+)"`)
-	fenceRe        = regexp.MustCompile("^\\s*(?:>\\s?)*(`{3,}|~{3,})")
-	refDefRe       = regexp.MustCompile(`^\s{0,3}\[([^\]^][^\]]*)\]:\s*(<[^>]*>|\S+)`)
-	htmlHrefRe     = regexp.MustCompile(`(?i)<(?:a|img)\b[^>]*\s(?:href|src)="([^"]+)"`)
-	schemeRe       = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
-	blockquoteRe   = regexp.MustCompile(`^\s{0,3}(?:>\s?)+`)
-	listOrHeadRe   = regexp.MustCompile(`^\s{0,3}(?:[-*+]\s|\d+[.)]\s|#|\||>)`)
-	frontMatterEnd = regexp.MustCompile(`^(---|\.\.\.)\s*$`)
+	atxHeadingRe  = regexp.MustCompile(`^\s*(?:(?:>|[-*+]|\d+[.)])\s+)*(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
+	setextLineRe  = regexp.MustCompile(`^\s{0,3}(=+|-{3,})\s*$`)
+	htmlHeadingRe = regexp.MustCompile(`(?i)<h[1-6][^>]*>(.*?)</h[1-6]>`)
+	htmlAnchorRe  = regexp.MustCompile(`(?i)<[a-z][a-z0-9]*\b[^>]*\s(?:id|name)="([^"]+)"`)
+	refDefRe      = regexp.MustCompile(`^\s{0,3}\[([^\]^][^\]]*)\]:\s*(<[^>]*>|\S+)`)
+	htmlHrefRe    = regexp.MustCompile(`(?i)<(?:a|img)\b[^>]*\s(?:href|src)="([^"]+)"`)
+	schemeRe      = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
+	blockquoteRe  = regexp.MustCompile(`^\s{0,3}(?:>\s?)+`)
+	listOrHeadRe  = regexp.MustCompile(`^\s{0,3}(?:[-*+]\s|\d+[.)]\s|#|\||>)`)
 )
 
 // Document is one parsed markdown file: the anchors it defines and the links
@@ -313,11 +316,9 @@ func Parse(name string, content []byte) *Document {
 	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
 
 	var (
-		fenceChar  byte
-		fenceLen   int
-		inFence    bool
+		fence      mdcode.FenceScanner
+		front      mdcode.FrontMatterScanner
 		inComment  bool
-		inFront    bool
 		prevText   string // previous non-skipped line, for setext headings
 		prevIsText bool
 	)
@@ -327,18 +328,17 @@ func Parse(name string, content []byte) *Document {
 		lineNo := i + 1
 		line := raw
 
-		if i == 0 && frontMatterEnd.MatchString(line) && strings.HasPrefix(line, "---") {
-			inFront = true
-			continue
-		}
-		if inFront {
-			if frontMatterEnd.MatchString(line) {
-				inFront = false
-			}
+		// The front-matter rule is internal/mdcode's, shared with the docs
+		// map: the two used to answer differently and the map published the
+		// difference.
+		if front.Skip(line) {
 			continue
 		}
 
-		if !inFence {
+		// Asked BEFORE this line is fed to the scanner: an HTML comment does
+		// not start inside a fenced block, and the state that decides is the
+		// one the previous lines left.
+		if !fence.Open() {
 			line, inComment = stripComments(line, inComment)
 			if inComment && strings.TrimSpace(line) == "" {
 				prevIsText = false
@@ -346,20 +346,11 @@ func Parse(name string, content []byte) *Document {
 			}
 		}
 
-		if m := fenceRe.FindStringSubmatch(line); m != nil {
-			marker := m[1]
-			if !inFence {
-				inFence, fenceChar, fenceLen = true, marker[0], len(marker)
-				prevIsText = false
-				continue
-			}
-			rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
-			if marker[0] == fenceChar && len(marker) >= fenceLen && rest == "" {
-				inFence = false
-				continue
-			}
-		}
-		if inFence {
+		// The whole fence machine is internal/mdcode's: which lines are
+		// delimiters AND which delimiter closes which block. This file used
+		// to carry its own copy of the second half.
+		if fence.Code(line) {
+			prevIsText = false
 			continue
 		}
 

@@ -246,6 +246,26 @@ iterion fork --run-id PARENT --node implement --turn 0 --new-inputs inputs.json
 
 The new run is created in `cancelled` state at the selected conversation turn; resume it to execute. `--rewind-code` additionally requests the captured code snapshot where available. `--name` controls the friendly name.
 
+`--new-inputs` crosses the same var-constraint gate a launch crosses — a value
+outside a var's `[enum: …]` or off its `[matching: "<re>"]` is refused here,
+naming the var, the value and the constraint. Only the values you **change** are
+judged: re-sending the parent's own values (what the studio's ForkDialog does
+when you edit one field) never re-opens a declaration that was tightened after
+the parent ran. A value that reads from the environment (`${VAR}`) is refused on
+a constrained var rather than guessed, because the process that runs the child
+is not the one that reads it here.
+
+The check needs the source the parent **executed**, which runs record on their
+own document since **2026-08-04**. A fork of a run older than that — or of one
+whose source was dropped (over the 1 MiB record cap, or cleared by a forced
+cloud resume) or no longer compiles — is refused whenever `--new-inputs` changes
+anything, and says why. Two ways on: fork **without** `--new-inputs` (a plain
+recovery fork is never refused), or launch the workflow afresh with the values
+you want. Admitting the change unchecked is not one of them: the child is
+executed by `resume`, which deliberately never re-judges stored values.
+(`POST /api/runs/{id}/fork` answers `400` for the same refusals; the CLI prints
+them and exits non-zero.)
+
 ### `iterion rewind`
 
 ```bash

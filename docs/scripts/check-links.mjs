@@ -6,91 +6,215 @@
 //   - internal links resolve to a built page in dist/
 //   - github blob/tree links to this repo resolve to a real path in the tree
 // Run as the postbuild step so "no link 404s" stays enforced, not one-off.
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+//
+// The checker BLOCKS publishing, so a false positive costs as much as a hole
+// and is harder to see. Every predicate here is exported and exercised against
+// a built fixture by check-links.test.mjs — `task docs:links:test`.
+import { readFileSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import posixpath from 'node:path/posix'
 
 const docsRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = join(docsRoot, '..')
-const dist = join(docsRoot, '.vitepress', 'dist')
+const distDir = join(docsRoot, '.vitepress', 'dist')
 
-const BLOB = 'https://github.com/SocialGouv/iterion/blob/main/'
-const TREE = 'https://github.com/SocialGouv/iterion/tree/main/'
-const BASE = '/iterion/'
+export const BLOB = 'https://github.com/SocialGouv/iterion/blob/main/'
+export const TREE = 'https://github.com/SocialGouv/iterion/tree/main/'
+export const BASE = '/iterion/'
 
-if (!existsSync(dist)) {
-  console.error('check-links: dist/ not found — run the build first.')
-  process.exit(1)
+// An href that names no location in this site: a URL carrying a scheme
+// (mailto:, tel:, javascript:, data:, http:) or a protocol-relative one. The
+// first alternative is RFC 3986's `scheme` rule exactly, which is why a
+// relative path may not be mistaken for one — `notes:2026.html` really IS an
+// absolute URL to a browser.
+//
+// config.ts skips `scheme://` plus a hardcoded `mailto:`, so the two files
+// agree on `//example.com/x` — the form that used to be reported as an
+// absolute link without a base — and this one is the wider of the two.
+const NOT_A_PATH = /^([a-z][a-z0-9+.-]*:|\/\/)/i
+
+// An href is percent-encoded; dist keys are the bytes readdir returns. A
+// malformed escape is left as written rather than thrown: the checker's job
+// is to report the link, not to die on it.
+function decodeHref(s) {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
 }
 
 // Set of dist-relative file paths that exist (the built site).
-const distFiles = new Set()
-;(function walk(d) {
-  for (const e of readdirSync(d)) {
-    const p = join(d, e)
-    statSync(p).isDirectory() ? walk(p) : distFiles.add(p.slice(dist.length + 1).replace(/\\/g, '/'))
-  }
-})(dist)
+export function collectDistFiles(dist) {
+  const files = new Set()
+  ;(function walk(d) {
+    for (const e of readdirSync(d)) {
+      const p = join(d, e)
+      statSync(p).isDirectory() ? walk(p) : files.add(p.slice(dist.length + 1).replace(/\\/g, '/'))
+    }
+  })(dist)
+  return files
+}
 
-const siteExists = (sitePath) => {
+export function siteExists(distFiles, sitePath) {
   // '.' and './' both name the site root: normalize() collapses `..` and `../`
   // to one or the other depending only on the href's trailing slash, from any
   // depth. dist keys carry neither prefix (path.join never emits one), so both
   // must map to '' or the root is reported dead from every subdirectory.
   const p = sitePath === '.' ? '' : sitePath.replace(/^\.\//, '')
   if (p === '' || p.endsWith('/')) return distFiles.has(p + 'index.html')
-  if (/\.[a-z0-9]+$/i.test(p)) return distFiles.has(p) // asset with extension (css/js/png/ico…)
-  return distFiles.has(p + '.html') || distFiles.has(p + '/index.html')
+  // No extension heuristic. A page name can carry a dot — `probe.v1.2` is a
+  // version, and `/\.[a-z0-9]+$/` read `.2` as a file extension — so the
+  // built site is asked for all three spellings instead of one of them being
+  // chosen from the href. Strictly more permissive than the branch it
+  // replaces: it can only turn a false positive into a pass, never hide a
+  // dead link, since every arm still has to name a file dist really holds.
+  return distFiles.has(p) || distFiles.has(p + '.html') || distFiles.has(p + '/index.html')
 }
 
-const hrefRe = /href="([^"]+)"/g
-const broken = new Map() // href -> Set(pages)
-const flag = (href, page) => {
-  if (!broken.has(href)) broken.set(href, new Set())
-  broken.get(href).add(page)
+// trackedPaths is the set of paths github.com serves for this repository: the
+// files git tracks, plus every directory one of them lies in (a tree URL
+// names a directory, and git has no object for one that holds no file).
+//
+// The question is "does GIT serve this path", and the disk cannot answer it:
+// a gitignored directory, an untracked one, and an empty one — git cannot
+// track an empty directory at all — each satisfy existsSync and 404 for a
+// reader.
+//
+// It reads the checkout, never a ref: `actions/checkout` at depth 1 has the
+// commit and not the history, and not necessarily a ref named after the
+// default branch, so asking git for `main:<path>` would flag every github
+// link in CI — a false positive in a tool that blocks publishing.
+export function trackedPaths(repoRoot) {
+  let listing
+  try {
+    listing = execFileSync('git', ['-C', repoRoot, 'ls-files', '-z'], {
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (err) {
+    throw new Error(
+      `check-links: cannot list the tracked files of ${repoRoot} (${String(err.message).trim()}) — ` +
+        'the github half of this check asks what git serves, and falling back to the disk would ' +
+        'certify the very paths it exists to catch',
+    )
+  }
+  const paths = new Set()
+  for (const file of listing.split('\0')) {
+    if (!file) continue
+    paths.add(file)
+    for (let dir = posixpath.dirname(file); dir && dir !== '.'; dir = posixpath.dirname(dir)) paths.add(dir)
+  }
+  if (paths.size === 0) {
+    throw new Error(
+      `check-links: git tracks no file under ${repoRoot} — every github link would be reported broken, ` +
+        'which says something about this invocation and nothing about the links',
+    )
+  }
+  return paths
 }
 
-for (const rel of distFiles) {
-  if (!rel.endsWith('.html')) continue
-  const page = rel
-  const pagedir = posixpath.dirname(page)
-  const html = readFileSync(join(dist, rel), 'utf8')
-  let m
-  while ((m = hrefRe.exec(html))) {
-    const raw = m[1]
-    const base = raw.split('#')[0]
-    if (base === '' || raw.startsWith('#') || raw.startsWith('mailto:')) continue
+// repoResolver is the predicate brokenLinks asks about a github target. The
+// listing is read once: a subprocess per link would be 600 of them.
+export function repoResolver(repoRoot) {
+  const tracked = trackedPaths(repoRoot)
+  return (relpath) => tracked.has(relpath)
+}
 
-    if (base.startsWith(BLOB) || base.startsWith(TREE)) {
-      const relpath = (base.startsWith(BLOB) ? base.slice(BLOB.length) : base.slice(TREE.length)).replace(/\/$/, '')
-      if (relpath && !existsSync(join(repoRoot, relpath))) flag(base, page)
-      continue
-    }
-    if (base.startsWith('http://') || base.startsWith('https://')) continue // other external
+// brokenLinks audits every built page of dist and returns href -> Set(pages).
+// `repoHas(relpath)` answers whether github.com serves that path of this
+// repository.
+export function brokenLinks({ dist, distFiles, repoHas }) {
+  const hrefRe = /href="([^"]+)"/g
+  const broken = new Map()
+  const flag = (href, page) => {
+    if (!broken.has(href)) broken.set(href, new Set())
+    broken.get(href).add(page)
+  }
 
-    let sp
-    if (base.startsWith(BASE)) sp = base.slice(BASE.length)
-    else if (base.startsWith('/')) {
-      flag(base, page) // absolute without base → points at the domain root → 404
-      continue
-    } else {
-      sp = posixpath.normalize(posixpath.join(pagedir, base))
-      if (sp.startsWith('..')) {
-        flag(base, page)
+  for (const rel of distFiles) {
+    if (!rel.endsWith('.html')) continue
+    const page = rel
+    const pagedir = posixpath.dirname(page)
+    const html = readFileSync(join(dist, rel), 'utf8')
+    let m
+    hrefRe.lastIndex = 0
+    while ((m = hrefRe.exec(html))) {
+      const raw = m[1]
+      // A fragment names a place on the page and a query string is part of no
+      // file name: both are cut off before anything looks the rest up, or the
+      // query rides into the lookup key and `./philosophy?utm=1` is reported
+      // dead.
+      const base = raw.split('#')[0].split('?')[0]
+      if (base === '') continue
+
+      if (base.startsWith(BLOB) || base.startsWith(TREE)) {
+        const relpath = decodeHref(
+          base.startsWith(BLOB) ? base.slice(BLOB.length) : base.slice(TREE.length),
+          // Every trailing slash: a tree URL written `…/docs//` names the
+          // same directory, and stripping one of two left a path git has
+          // never heard of.
+        ).replace(/\/+$/, '')
+        if (relpath && !repoHas(relpath)) flag(base, page)
         continue
       }
+      if (NOT_A_PATH.test(base)) continue // another origin, or no location at all
+
+      // Decoded before the climb check, so an escaped `..` is still a climb.
+      const target = decodeHref(base)
+      let sp
+      if (target.startsWith(BASE)) sp = target.slice(BASE.length)
+      // `/iterion` is the site root written without its trailing slash, which
+      // GitHub Pages answers with a 301 to `/iterion/` — a redirect, not a 404.
+      else if (target + '/' === BASE) sp = ''
+      else if (target.startsWith('/')) {
+        flag(base, page) // absolute without base → points at the domain root → 404
+        continue
+      } else {
+        sp = posixpath.normalize(posixpath.join(pagedir, target))
+        if (sp.startsWith('..')) {
+          flag(base, page)
+          continue
+        }
+      }
+      if (!siteExists(distFiles, sp)) flag(base, page)
     }
-    if (!siteExists(sp)) flag(base, page)
   }
+  return broken
 }
 
-if (broken.size) {
-  console.error(`\n❌ ${broken.size} broken link(s):`)
-  for (const [href, pages] of [...broken].sort()) {
-    const list = [...pages].sort()
-    console.error(`   ${href}  ←  ${list[0]}${list.length > 1 ? ` (+${list.length - 1})` : ''}`)
+function main() {
+  if (!existsSync(distDir)) {
+    console.error('check-links: dist/ not found — run the build first.')
+    process.exit(1)
   }
-  process.exit(1)
+  const distFiles = collectDistFiles(distDir)
+  const broken = brokenLinks({ dist: distDir, distFiles, repoHas: repoResolver(repoRoot) })
+
+  if (broken.size) {
+    console.error(`\n❌ ${broken.size} broken link(s):`)
+    for (const [href, pages] of [...broken].sort()) {
+      const list = [...pages].sort()
+      console.error(`   ${href}  ←  ${list[0]}${list.length > 1 ? ` (+${list.length - 1})` : ''}`)
+    }
+    process.exit(1)
+  }
+  console.log(`links: all internal + github targets resolve ✓ (${distFiles.size} files scanned)`)
 }
-console.log(`links: all internal + github targets resolve ✓ (${distFiles.size} files scanned)`)
+
+// Through the REAL path of argv[1]: `import.meta.url` is already resolved, so
+// comparing it to an unresolved argv[1] left a publish-blocking gate that
+// printed nothing and exited 0 when it was invoked through a symlinked path.
+// `existsSync` first because `realpathSync` THROWS on a path that is not
+// there, and this runs at module load — a throw here would kill the importer,
+// which is how this file is read by its own tests.
+//
+// One residue, deliberately not chased: under `--preserve-symlinks-main`
+// node leaves `import.meta.url` unresolved, the two sides disagree again and
+// main() does not run. Nothing in this repository sets that flag.
+const invokedDirectly =
+  process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+if (invokedDirectly) main()

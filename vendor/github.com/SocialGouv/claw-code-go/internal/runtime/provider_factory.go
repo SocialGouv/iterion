@@ -9,14 +9,18 @@ import (
 	foundryprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/foundry"
 	openaiprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/vertex"
+	zaiprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/zai"
 )
 
 // SelectProvider returns the Provider for the given name.
-// Supported: "anthropic" (default), "openai", "xai", "dashscope", "bedrock", "vertex", "foundry".
+// Supported: "anthropic" (default), "openai", "xai", "dashscope", "zai",
+// "bedrock", "vertex", "foundry".
 func SelectProvider(name string) api.Provider {
 	switch name {
 	case "openai", "xai", "dashscope":
 		return openaiprovider.New()
+	case "zai":
+		return zaiprovider.New()
 	case "bedrock":
 		return bedrockprovider.New()
 	case "vertex":

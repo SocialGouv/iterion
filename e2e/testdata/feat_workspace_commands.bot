@@ -1,0 +1,40 @@
+## feat_workspace_commands.bot — backend parity for `.claude/commands/`.
+##
+## Both nodes send the SAME prompt, `/parity-probe`, which is an
+## invocation of a command the workspace contributes. Neither node has a
+## tool (`tools: []`), so the only way the token in that file can reach a
+## model is the invocation being resolved into the file's body — on
+## claude_code natively, on claw through the in-process resolver.
+
+dsl: 2
+
+prompt sys:
+  You are a terse assistant. Answer with a single line.
+
+prompt invoke:
+  /parity-probe
+
+schema answer:
+  text: string
+
+agent via_claude_code:
+  backend: claude_code
+  model: "anthropic/claude-sonnet-4-6"
+  tools: []
+  output: answer
+  system: sys
+  user: invoke
+
+agent via_claw:
+  backend: claw
+  provider: "openai"
+  model: "openai/gpt-5.4-mini"
+  tools: []
+  output: answer
+  system: sys
+  user: invoke
+
+workflow main:
+  entry: via_claude_code
+  via_claude_code -> via_claw
+  via_claw -> done

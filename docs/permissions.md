@@ -178,10 +178,30 @@ scheduler in particular still reads such a node exactly as it reads an
 undeclared one. Two measured reasons. `claudeNativeTools` is a hardcoded
 enumeration of a roster iterion does not own, and the same package names tools
 outside it — `orchestrationTools`' `Agent`, `TaskOutput` and `Monitor` — which
-therefore survive `--disallowedTools`; MCP tools are not on that roster either,
-so a node's `mcp_servers:` stay reachable. (`Workflow` is the exception that
-proves the shape: it is *not* on the roster and is withheld separately, from
-every non-ultracode node, whatever the list says.) On claw,
+therefore survive `--disallowedTools` on an ordinary spawn; MCP tools are not
+on that roster either, so a node's `mcp_servers:` stay reachable. (MCP tools do
+not reach the structured-output spawn either, but by a different mechanism: it
+passes no `--mcp-config`, and `--strict-mcp-config` stops the CLI falling back
+to the host scopes — set `ITERION_CLAUDE_CODE_STRICT_MCP=0` and they come
+back.) (`Workflow`
+is the exception that proves the shape: it is *not* on the roster and is
+withheld separately, from every non-ultracode node, whatever the list says.)
+The one spawn where none of them survives is the **structured-output pass of a
+GATED node**: it cannot carry the permission hook, so it withholds the roster,
+the whole orchestration surface this package enumerates (`Agent`, `Task`,
+`TaskOutput`, `Monitor`, `Workflow` — ultracode or not, because nothing there
+can run the policy the author wrote), and the names the live CLI was measured
+still registering afterwards: `EnterWorktree`/`ExitWorktree` (they move the
+worktree the session acts in), `CronCreate`/`CronDelete`/`CronList` and
+`ScheduleWakeup` (they schedule future work), `SendMessage`, `RemoteTrigger`,
+`BashOutput`, `KillShell`, `TaskStop`. `StructuredOutput` is the one tool that
+pass needs and is deliberately not withheld. That withholding is the enforced
+half and it is **incomplete** — it names a roster iterion does not own, so the
+tools outside those lists survive it (#1651). The sentence that pass also
+carries — *"Do not call any tool other than StructuredOutput; just return the
+JSON."* — covers those names whatever their spelling, but only while the model
+cooperates, which under a prompt-injection threat is the weaker control: it is
+defence in depth beside the flag, never in place of it. On claw,
 `assembleEffectiveTools` adds `ask_user` when `interaction:` is set, then
 `todo_write`, then `read_file`/`write_file`/`glob` under `auto_memory:` — so a
 node that declared no tools can end up holding a file writer, which **C270**

@@ -752,8 +752,10 @@ type Run struct {
 	// whole reason you are rewinding.
 	//
 	// Best-effort and size-capped (see runtime.maxPersistedWorkflowSource):
-	// an unreadable or oversized source simply disables auto-targeting,
-	// leaving `--node` to work as before.
+	// an unreadable or oversized source disables auto-targeting, leaving
+	// `--node` to work as before, and makes `fork --new-inputs` refuse —
+	// the fork gate checks operator-supplied values against the var
+	// constraints declared in the source the run executed.
 	WorkflowSource string `json:"workflow_source,omitempty" bson:"workflow_source,omitempty"`
 	// WorkflowSources is every file of the unit the run executed — the
 	// main and the fragments its imports reach — by slash path from the

@@ -115,8 +115,9 @@ func GetActiveProvider() string {
 // Resolution order:
 //  1. ANTHROPIC_API_KEY env var  → provider "anthropic" / method "api_key"
 //  2. OPENAI_API_KEY env var     → provider "openai"    / method "api_key"
-//  3. Active provider in ~/.claw-code/credentials.json
-//  4. Legacy ~/.claw-code/auth.json (Anthropic OAuth from Phase 3 flows)
+//  3. ZAI_API_KEY env var        → provider "zai"       / method "api_key"
+//  4. Active provider in ~/.claw-code/credentials.json
+//  5. Legacy ~/.claw-code/auth.json (Anthropic OAuth from Phase 3 flows)
 func ResolveCredentials() (provider, token, method string, err error) {
 	// Env-var overrides take precedence over any stored state.
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
@@ -124,6 +125,14 @@ func ResolveCredentials() (provider, token, method string, err error) {
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		return "openai", key, "api_key", nil
+	}
+	// z.ai's native key: provider "zai", GLM through the Anthropic-compatible
+	// endpoint. Checked AFTER the ANTHROPIC_* pair so an operator who pointed
+	// ANTHROPIC_BASE_URL at z.ai keeps that explicit choice; the bare key
+	// alone now names its own provider instead of falling through to the
+	// store's default.
+	if key := os.Getenv("ZAI_API_KEY"); key != "" {
+		return "zai", key, "api_key", nil
 	}
 
 	// Try the credentials store.

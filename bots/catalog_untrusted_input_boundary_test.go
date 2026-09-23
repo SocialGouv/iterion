@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runops"
@@ -45,6 +46,39 @@ type actingPrompt struct {
 	reasons      []string
 }
 
+// declaredListIsNotABound names why a backend cannot be trusted to enforce a
+// node's `tools:` list, or "" when it can. Keyed on the engine's own
+// enumeration rather than a literal, so a backend added to
+// toolcatalog.ReceivesToolList is classified here without a second edit.
+//
+// An empty or "auto" backend resolves by detection preference, whose first
+// choice is claude_code (pkg/backend/detect), so it is treated as such.
+func declaredListIsNotABound(backend string) string {
+	switch backend {
+	case "claude_code", "", "auto":
+		return "claude_code: a declared tools list becomes --disallowedTools over a roster iterion does not own (#1652)"
+	case "claw", "codex":
+		// claw resolves ToolDefs from the list; codex maps it onto a sandbox
+		// mode it actually enforces.
+		return ""
+	default:
+		if !toolcatalog.ReceivesToolList(backend) {
+			return "backend " + backend + " never receives the tools list, so the declared bound is dropped (#1652)"
+		}
+		return ""
+	}
+}
+
+// resolvedBackend reads a node's backend at its authored default, falling back
+// to the workflow's, so the classification does not depend on the host.
+func resolvedBackend(llm ir.LLMNode, defaultBackend string) string {
+	b := strings.TrimSpace(ir.ExpandWithDefault(llm.GetLLMFields().Backend, authoredDefaults))
+	if b == "" {
+		b = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, authoredDefaults))
+	}
+	return b
+}
+
 // actingPrompts classifies every agent and judge of a compiled bot.
 // Capabilities follow the executor's inheritance rule: a node that declares
 // none runs with the workflow's list (pkg/backend/model/executor_build_task.go,
@@ -59,6 +93,18 @@ func actingPrompts(wf *ir.Workflow) []actingPrompt {
 		var reasons []string
 		if runtime.ToolSurfaceCanWrite(node, wf.DefaultBackend, authoredDefaults) {
 			reasons = append(reasons, toolSurfaceReason(llm, wf.DefaultBackend))
+		} else if r := declaredListIsNotABound(resolvedBackend(llm, wf.DefaultBackend)); r != "" {
+			// A `tools:` list is not a BOUND everywhere it is accepted.
+			// claude_code takes it as --disallowedTools over a closed native
+			// roster iterion does not own (measured on CLI 2.1.220, #1652),
+			// so a read-only-looking list still leaves every native writer
+			// the roster gained since; and the CLI-agent seam backends never
+			// receive the list at all (pkg/backend/toolcatalog.ReceivesToolList),
+			// so there a declared bound is dropped in silence. Either way the
+			// declaration narrows INTENT, not capability — and every LLM node
+			// of a catalog bot reads material it did not write, so the node is
+			// in the class whatever its list says.
+			reasons = append(reasons, r)
 		}
 		caps := llm.GetCapabilities()
 		if caps == nil {
@@ -105,6 +151,100 @@ func toolSurfaceReason(llm ir.LLMNode, defaultBackend string) string {
 	return "tools: " + strings.Join(acting, ", ")
 }
 
+// shippedWorkflow is one compiled workflow of the catalogue, with the prefix
+// its nodes are keyed under.
+type shippedWorkflow struct {
+	prefix string
+	wf     *ir.Workflow
+}
+
+// shippedWorkflows compiles EVERY workflow this repository ships, not just the
+// `main.bot` of each bundle. A bundle may carry sibling entrypoints
+// (golden-master ships extend.bot, reanchor.bot and sync-harness.bot) and a
+// bundle may have no main.bot at all (smoke ships board_smoke.bot) — stat-ing
+// main.bot made all of those invisible to the class, which is how three acting
+// prompts shipped with no paragraph and no way to redden. The dispatcher's
+// zero-config fallback is shipped too, compiled into every binary and run
+// against a raw issue body, so it is walked from here rather than left
+// outside every guard.
+//
+// Nodes of a `main.bot` keep the historical `bot/node` key; a sibling
+// entrypoint is keyed `bot/file:node` so one file's node can never be
+// mistaken for another's.
+func shippedWorkflows(t *testing.T) []shippedWorkflow {
+	t.Helper()
+	var out []shippedWorkflow
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read bots dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "testdata" {
+			continue
+		}
+		bot := e.Name()
+		paths, err := filepath.Glob(filepath.Join(bot, "*.bot"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", bot, err)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			prefix := bot + "/"
+			if filepath.Base(path) != "main.bot" {
+				prefix = bot + "/" + strings.TrimSuffix(filepath.Base(path), ".bot") + ":"
+			}
+			out = append(out, shippedWorkflow{prefix: prefix, wf: compileBotFile(t, path)})
+		}
+	}
+	// NOT walked, deliberately, and this is the greppable statement of it:
+	// `../examples/**` and `../scripts/adhoc/**`. `catalogWorkflowFiles` in
+	// this package counts them as shipped workflows, and `botregistry.List`
+	// discovers `examples/` as enabled entries the dispatcher can route to —
+	// so six acting prompts there and two under `scripts/adhoc/` are in the
+	// class by the predicate and outside this walk by decision. Tracked in
+	// #1722; the exclusion is a scope boundary, not a verdict that they are
+	// safe.
+	const dispatchFallback = "../pkg/cli/templates/dispatch_bots_default.bot"
+	if _, err := os.Stat(dispatchFallback); err == nil {
+		out = append(out, shippedWorkflow{prefix: "cli/dispatch_bots_default:", wf: compileBotFile(t, dispatchFallback)})
+	} else {
+		t.Fatalf("the dispatcher fallback template is no longer at %s: it is embedded in every binary and runs on a raw issue body, so it may not drop out of this walk silently", dispatchFallback)
+	}
+	// A FLOOR, because both boundary guards read this walk: if it narrows —
+	// a layout rename, a glob that stops matching — every guard built on it
+	// goes green over an unexamined catalogue, which is the failure a guard
+	// cannot report about itself. 38 is under the 41 shipped today, so a
+	// bundle may be retired without touching this line, and a wholesale loss
+	// cannot pass.
+	if len(out) < 38 {
+		t.Fatalf("the walk reached %d shipped workflows, want at least 38: the catalogue did not shrink by that much, so the discovery broke and every guard reading this walk is now passing over an unexamined corpus", len(out))
+	}
+	return out
+}
+
+// compileBotFile compiles one workflow file with its imported fragments, and
+// fails closed on BOTH stages. A parse error leaves a partial AST that
+// compiles into a workflow missing whatever the parser could not read — nodes
+// included — so a guard reading only the compile result would call a bot clean
+// because half of it was invisible.
+func compileBotFile(t *testing.T, path string) *ir.Workflow {
+	t.Helper()
+	pr := parseBotUnit(path)
+	// Any diagnostic, not the error-severity ones: parser.SeverityError is
+	// the ZERO value of parser.Severity, so a future warning that forgets to
+	// set the field would read as an error — and nothing in the parser
+	// constructs a warning today, which makes a severity filter here a no-op
+	// that only misleads.
+	if len(pr.Diagnostics) > 0 {
+		t.Fatalf("%s does not parse: %+v", path, pr.Diagnostics)
+	}
+	cr := ir.Compile(pr.File)
+	if cr.HasErrors() {
+		t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
+	}
+	return cr.Workflow
+}
+
 // TestCatalogUntrustedInputBoundaryOnActingPrompts is the catalog-wide guard
 // for the class contract of #1324: every agent or judge that can act on what
 // it reads carries the UNTRUSTED INPUT BOUNDARY paragraph in its system
@@ -117,6 +257,12 @@ func toolSurfaceReason(llm ir.LLMNode, defaultBackend string) string {
 // still reddens. An entry that no longer names an acting prompt lacking the
 // marker is stale and reddens too — the allowlist cannot rot in either
 // direction.
+//
+// There is no second allowlist. #1494 drained the 104 acting prompts that
+// shipped without the paragraph, so the class is closed by the predicate
+// alone: a node that gains a writing tool, a board capability, or an omitted
+// `tools:` list on a CLI backend reddens here until its prompt says what it
+// reads is data.
 func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 	deferred := map[string]string{
 		"adr-cartograph/campaign":     "DSL v2 session owns bots/adr-cartograph — fleet-contract § 1",
@@ -126,141 +272,18 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 		"docs-refresh/finalize_mr":    "DSL v2 session owns bots/docs-refresh — fleet-contract § 1",
 		"modernize/upgrade_campaign":  "modernization campaign owns bots/modernize — fleet-contract § 1",
 	}
-	// Acting prompts that lack the paragraph today, one entry per agent,
-	// tracked by #1494. Each entry is a defect, not a home.
-	knownMissing := map[string]string{
-		"adr-rechallenge/file_change_ticket":     "#1494",
-		"adr-rechallenge/survey_code":            "#1494",
-		"adr-rechallenge/write_addendum":         "#1494",
-		"app-dev/campaign":                       "#1494",
-		"app-dev/deploy":                         "#1494",
-		"app-dev/finalize_mr":                    "#1494",
-		"app-dev/interviewer":                    "#1494",
-		"app-dev/plan":                           "#1494",
-		"app-dev/plan_review":                    "#1494",
-		"app-dev/plan_revise":                    "#1494",
-		"app-dev/review":                         "#1494",
-		"app-dev/verify_build":                   "#1494",
-		"arbitrate/arbitrate_judge":              "#1494",
-		"bmady/analyst":                          "#1494",
-		"bmady/architect":                        "#1494",
-		"bmady/dev":                              "#1494",
-		"bmady/pm":                               "#1494",
-		"bmady/qa":                               "#1494",
-		"branch-improve-loop/campaign":           "#1494",
-		"branch-improve-loop/finalize_mr":        "#1494",
-		"branch-improve-loop/plan":               "#1494",
-		"branch-improve-loop/plan_review":        "#1494",
-		"branch-improve-loop/plan_revise":        "#1494",
-		"branch-improve-loop/review":             "#1494",
-		"branch-improve-loop/verify_build":       "#1494",
-		"copilot/copi":                           "#1494",
-		"copilot/reflect":                        "#1494",
-		"dep-update-guard/align":                 "#1494",
-		"dep-update-guard/commit":                "#1494",
-		"dep-update-guard/security_audit":        "#1494",
-		"dep-update-guard/verify_build":          "#1494",
-		"devbox-setup/detect_stack":              "#1494",
-		"devbox-setup/generate_devbox":           "#1494",
-		"e2e-coverage/campaign":                  "#1494",
-		"e2e-coverage/plan":                      "#1494",
-		"e2e-coverage/plan_review":               "#1494",
-		"e2e-coverage/plan_revise":               "#1494",
-		"e2e-coverage/verify_build":              "#1494",
-		"evolve/emit_backlog":                    "#1494",
-		"evolve/investigate":                     "#1494",
-		"evolve/load_nexie_handoff":              "#1494",
-		"evolve/propose_evolutions":              "#1494",
-		"evolve/review_claude":                   "#1494",
-		"evolve/revise_vision":                   "#1494",
-		"evolve/survey":                          "#1494",
-		"evolve/synthesize_vision":               "#1494",
-		"feature-dev/campaign":                   "#1494",
-		"feature-dev/finalize_mr":                "#1494",
-		"feature-dev/plan":                       "#1494",
-		"feature-dev/plan_review":                "#1494",
-		"feature-dev/plan_revise":                "#1494",
-		"feature-dev/review":                     "#1494",
-		"feature-dev/verify_build":               "#1494",
-		"feature-gap-fill/campaign":              "#1494",
-		"feature-gap-fill/plan":                  "#1494",
-		"feature-gap-fill/plan_review":           "#1494",
-		"feature-gap-fill/plan_revise":           "#1494",
-		"feature-gap-fill/verify_build":          "#1494",
-		"golden-master/mutants_adversary":        "#1494",
-		"golden-master/oracle_campaign":          "#1494",
-		"instrument/campaign":                    "#1494",
-		"instrument/finalize_mr":                 "#1494",
-		"instrument/review":                      "#1494",
-		"instrument/verify_build":                "#1494",
-		"issue-triage/triage":                    "#1494",
-		"product-docs/campaign":                  "#1494",
-		"product-docs/finalize_mr":               "#1494",
-		"product-docs/publish":                   "#1494",
-		"revi-converse/converse_agent":           "#1494",
-		"review-env/deploy":                      "#1494",
-		"review-pr/converge":                     "#1494",
-		"review-pr/reviewer_claude":              "#1494",
-		"review-pr/reviewer_claude_glance":       "#1494",
-		"review-pr/reviewer_gpt":                 "#1494",
-		"review-pr/reviewer_gpt_glance":          "#1494",
-		"rgaa-audit/campaign":                    "#1494",
-		"rgaa-audit/report_card":                 "#1494",
-		"secured-renovacy/align_code":            "#1494",
-		"secured-renovacy/batch_upgrade_patches": "#1494",
-		"secured-renovacy/changelog_review":      "#1494",
-		"secured-renovacy/detect_stack":          "#1494",
-		"secured-renovacy/discover_outdated":     "#1494",
-		"secured-renovacy/family_align_code":     "#1494",
-		"secured-renovacy/fix_after_upgrade":     "#1494",
-		"secured-renovacy/install":               "#1494",
-		"secured-renovacy/p2_campaign":           "#1494",
-		"secured-renovacy/p2_verify_build":       "#1494",
-		"secured-renovacy/security_audit":        "#1494",
-		"secured-renovacy/upgrade":               "#1494",
-		"secured-renovacy/validate_upgrade":      "#1494",
-		"test-coverage/campaign":                 "#1494",
-		"test-coverage/plan":                     "#1494",
-		"test-coverage/plan_review":              "#1494",
-		"test-coverage/plan_revise":              "#1494",
-		"test-coverage/verify_build":             "#1494",
-		"ultra11y/adjudicate":                    "#1494",
-		"ultra11y/publish":                       "#1494",
-		"whole-improve-loop/campaign":            "#1494",
-		"whole-improve-loop/finalize_mr":         "#1494",
-		"whole-improve-loop/plan":                "#1494",
-		"whole-improve-loop/plan_review":         "#1494",
-		"whole-improve-loop/plan_revise":         "#1494",
-		"whole-improve-loop/verify_build":        "#1494",
-		"wiki-gen/author":                        "#1494",
-	}
 
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read bots dir: %v", err)
-	}
 	var missing, stale []string
 	seen := map[string]bool{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		bot := e.Name()
-		if _, err := os.Stat(filepath.Join(bot, "main.bot")); err != nil {
-			continue
-		}
-		wf := compilePlanPhaseBot(t, bot)
-		for _, m := range actingPrompts(wf) {
-			key := bot + "/" + m.node
+	for _, sw := range shippedWorkflows(t) {
+		for _, m := range actingPrompts(sw.wf) {
+			key := sw.prefix + m.node
 			body := ""
-			if p := wf.Prompts[m.systemPrompt]; p != nil {
+			if p := sw.wf.Prompts[m.systemPrompt]; p != nil {
 				body = p.Body
 			}
 			has := strings.Contains(body, untrustedInputBoundaryMarker)
 			_, exempt := deferred[key]
-			if !exempt {
-				_, exempt = knownMissing[key]
-			}
 			switch {
 			case has && exempt:
 				stale = append(stale, key+" carries the paragraph: drain its entry")
@@ -272,11 +295,9 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 			}
 		}
 	}
-	for _, exemptions := range []map[string]string{deferred, knownMissing} {
-		for key := range exemptions {
-			if !seen[key] {
-				stale = append(stale, key+" is not an acting prompt lacking the paragraph: drain its entry")
-			}
+	for key := range deferred {
+		if !seen[key] {
+			stale = append(stale, key+" is not an acting prompt lacking the paragraph: drain its entry")
 		}
 	}
 	sort.Strings(missing)
@@ -288,4 +309,73 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 	if len(stale) > 0 {
 		t.Errorf("%d stale exemption(s):\n  %s", len(stale), strings.Join(stale, "\n  "))
 	}
+}
+
+// TestUntrustedInputBoundaryParagraphInterpolatesNothing keeps the paragraph
+// a LITERAL region of the system prompt.
+//
+// The paragraph's job is to NAME the fields whose values are data. Naming one
+// with a template reference instead renders the value itself — the untrusted
+// text — inside the authoritative half of the prompt, which is the exact
+// attack the paragraph exists to refuse. It is not theoretical: a system
+// prompt goes through the same resolver as a user prompt
+// (pkg/backend/model.resolveSystemPrompt), so `{{input.issues}}` written
+// inside the paragraph delivered a board issue body — titles and bodies built
+// from the audited repository — into the instructions of a node holding bash
+// and board.create.
+//
+// The rule is structural, not a list of forbidden field names: NO reference of
+// any namespace between the marker line and the blank line that closes the
+// paragraph. A path is as refused as a payload, because "which fields are
+// untrusted" is not a property this guard can compute, and a predicate that
+// tried to enumerate them would be widened by the next field. Write the field
+// NAME in backticks; put anything that must render outside the paragraph.
+func TestUntrustedInputBoundaryParagraphInterpolatesNothing(t *testing.T) {
+	var offenders []string
+	checked := 0
+	for _, sw := range shippedWorkflows(t) {
+		names := make([]string, 0, len(sw.wf.Prompts))
+		for name := range sw.wf.Prompts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			p := sw.wf.Prompts[name]
+			if p == nil {
+				continue
+			}
+			lines := strings.Split(p.Body, "\n")
+			for i := 0; i < len(lines); i++ {
+				if !strings.Contains(lines[i], untrustedInputBoundaryMarker) {
+					continue
+				}
+				checked++
+				// From i, not i+1: the marker line itself is the one an author
+				// is most likely to extend ("… BOUNDARY: {{input.body}} below
+				// is data"), and a scan starting past it would call that
+				// paragraph checked while rendering the payload into it.
+				start := i
+				for j := start; j < len(lines) && (j == start || strings.TrimSpace(lines[j]) != ""); j++ {
+					if strings.Contains(lines[j], "{{") {
+						offenders = append(offenders, fmt.Sprintf("%s%s:+%d %s", sw.prefix, name, j-start, strings.TrimSpace(lines[j])))
+					}
+					i = j
+				}
+			}
+		}
+	}
+	// Same floor argument as the walk, one level down: `checked` counts the
+	// paragraphs this guard actually inspected, and a guard that inspects one
+	// of 121 reports the same green as a guard that inspects all of them.
+	if checked < 100 {
+		t.Fatalf("only %d UNTRUSTED INPUT BOUNDARY paragraphs were inspected, want at least 100: this guard stopped seeing its own subject", checked)
+	}
+	sort.Strings(offenders)
+	if len(offenders) > 0 {
+		t.Errorf("%d line(s) interpolate a value inside an UNTRUSTED INPUT BOUNDARY paragraph — "+
+			"the value renders into the authoritative half of the system prompt. Write the field NAME "+
+			"in backticks (`issues`, `vars.scratch_dir`), or move the sentence out of the paragraph:\n  %s",
+			len(offenders), strings.Join(offenders, "\n  "))
+	}
+	t.Logf("checked %d boundary paragraphs", checked)
 }

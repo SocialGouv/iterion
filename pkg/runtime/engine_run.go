@@ -19,8 +19,13 @@ import (
 
 // maxPersistedWorkflowSource caps the .bot text stamped onto a run.
 // A `.bot` is a few KB in practice; the cap only exists so a pathological
-// generated workflow cannot bloat every run document. Exceeding it
-// disables `rewind --auto` for that run, nothing else.
+// generated workflow cannot bloat every run document.
+//
+// What a run pays for exceeding it: `rewind --auto` can no longer diff it, and
+// `fork --new-inputs` is refused — the fork gate checks operator-supplied
+// values against the var constraints, and the source it reads them from is
+// this record. Forking that run WITHOUT changing an input is unaffected, which
+// is the recovery path; the refusal names both ways on.
 const maxPersistedWorkflowSource = 1 << 20 // 1 MiB
 
 // recordedSources returns the .bot text to persist on the run and, for a
@@ -34,9 +39,12 @@ const maxPersistedWorkflowSource = 1 << 20 // 1 MiB
 // that loads. A single file records its main alone. One cap holds the
 // whole: past it, nothing is recorded.
 //
-// Best-effort by design — this only powers `rewind --auto`'s ability to
-// name the changed node. A source we cannot read or that busts the cap
-// leaves the run auto-targetable=false and `--node` unaffected.
+// Best-effort by design. Two readers depend on it: `rewind --auto`'s ability
+// to name the changed node, and the fork gate, which checks operator-supplied
+// var values against the constraints declared in the source the run executed.
+// A source we cannot read or that busts the cap leaves the run
+// auto-targetable=false with `--node` unaffected, and makes
+// `fork --new-inputs` refuse rather than admit an unchecked value.
 func (e *Engine) recordedSources() (string, []store.WorkflowSourceFile) {
 	if e.compiledFiles != nil {
 		return sourcesOf(e.compiledMain, e.compiledFiles)
@@ -91,7 +99,8 @@ func sameSourceFiles(a, b []store.WorkflowSourceFile) bool {
 //
 // Returns an empty source when the main is absent from files or the whole busts
 // maxPersistedWorkflowSource: past the cap nothing is recorded, which leaves
-// `rewind --auto` unavailable for that run and nothing else.
+// `rewind --auto` unavailable for that run and `fork --new-inputs` refused on
+// it (the fork gate reads the constraints from this record).
 func RecordedSourcesOf(main string, files map[string]string) (string, []store.WorkflowSourceFile) {
 	return sourcesOf(main, files)
 }

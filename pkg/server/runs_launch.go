@@ -307,10 +307,28 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Launch admission: suspend → concurrency → rate → cost cap →
 	// monthly run quota (which also meters). Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	adm, d := s.gateLaunch(r.Context())
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
+	// The quota increment IS the metering, so every return between here and
+	// the call into the run service abandons an admitted launch and has to
+	// hand the MONTHLY unit back — a malformed body or an unresolvable bot
+	// would otherwise spend the org's month one request at a time. rollback is
+	// nil-safe and a no-op when nothing was metered (local mode, super-admin,
+	// the fail-open arms), so this is inert on those paths.
+	//
+	// It hands back the monthly unit and nothing else: gateLaunch also spends
+	// a per-minute launch-rate token, which launchAdmission does not carry, so
+	// a client looping a bad request still empties that bucket. That belongs
+	// to the gate, not to this handler.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	// Root span for the launch path. Keeping it on the request ctx
 	// means the OTel HTTP middleware (when wired) sees it as a child
 	// of the inbound HTTP server span. The detached ctx below
@@ -650,8 +668,27 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		spec.BundleDir = dir
 	}
+	// Past this statement the slot is spent unless the run service says
+	// otherwise. It is the callee that knows: an error out of Launch does NOT
+	// by itself mean no run started — spawnRun persists the run document and
+	// can still fail afterwards, and a cloud publish reports failure after the
+	// message landed — so the fact travels on the error (RunPersistedError)
+	// and the arm below reads it. Inferring it here, either way, is what the
+	// two failure modes are made of: keep every error and a repeatable launch
+	// failure charges per attempt; release every error and a run that started
+	// gets refunded.
+	runMayExist = true
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
+		// The callee reports whether anything durable happened; the caller no
+		// longer infers it. Absent that marker nothing was persisted and no
+		// message was handed to a runner, so the metered slot goes back — that
+		// is the ticket's headline case, a repeatable launch failure charging
+		// per attempt. Present, it stays: releasing a slot for a run that DID
+		// start is an under-count, and lets an org exceed its paid quota.
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
 			span.SetStatus(codes.Error, "server draining")
@@ -710,10 +747,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	adm, d := s.gateLaunch(r.Context())
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
+	// Same rule as handleLaunchRun: the increment is the metering, so the
+	// returns that precede the resume hand the unit back.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	id := r.PathValue("id")
 	if id == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
@@ -867,8 +913,21 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if resumeLB != nil {
 		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
 	}
+	// Past this statement the slot is spent unless the run service says
+	// otherwise — see handleLaunchRun. A resume publish can report an error
+	// after the runner already claimed the revision it published, and that is
+	// one of the cases the callee reports.
+	runMayExist = true
 	res, err := s.runs.Resume(ctx, resumeSpec)
 	if err != nil {
+		// Same rule as the launch arm, and it subsumes the lost-resume race:
+		// ErrRunNotResumable comes only from validateResumable, ahead of any
+		// compile, spawn or publish, so it carries no marker and the unit goes
+		// back. A parked gate has two legitimate resumers, so that race is
+		// routine and must not meter the studio's own chat.
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
 			span.SetStatus(codes.Error, "server draining")

@@ -35,6 +35,9 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/SocialGouv/iterion/internal/mdcode"
+	"github.com/SocialGouv/iterion/internal/treeskip"
 )
 
 // Extractor renders one generated map from a repository tree.
@@ -164,23 +167,6 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// skipDir names the trees no map ever describes: vendored or installed
-// third-party code, sibling worktrees, the engine's own run scratch, and
-// docs/.vitepress/, which holds the site's machinery — config, theme, build
-// output — and never a documented page.
-// A map that indexed vendor/ would be mostly vendor/.
-// `testdata` is here for the same reason the Go toolchain ignores it:
-// it is where a parser project keeps DELIBERATELY broken fixtures. A
-// `.go` file that does not parse is a hard error in this package, so
-// without this entry a fixture nobody intended to compile turns the
-// repository's required `test` check red.
-var skipDir = map[string]bool{
-	"vendor": true, "node_modules": true, ".git": true, ".works": true,
-	".repos": true, ".iterion": true, ".devbox": true, "graphify-out": true,
-	".claude": true, ".task": true, "dist": true, ".pnpm-store": true,
-	".vitepress": true, "testdata": true,
-}
-
 // walkDirs visits every directory under root that is not skipped,
 // calling fn with the directory's repo-relative path ("." for root).
 func walkDirs(root string, fn func(rel string, entries []os.DirEntry) error) error {
@@ -195,7 +181,7 @@ func walkDirs(root string, fn func(rel string, entries []os.DirEntry) error) err
 		if relErr != nil {
 			return relErr
 		}
-		if rel != "." && skipDir[d.Name()] {
+		if rel != "." && treeskip.Dir(d.Name()) {
 			return filepath.SkipDir
 		}
 		entries, readErr := os.ReadDir(abs)
@@ -228,7 +214,12 @@ func firstSentence(text string, max int) string {
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		text = strings.TrimSpace(text[:cut]) + "…"
+		// Then close a code span the cut opened and did not finish. A half
+		// span renders a stray backtick, and — the reason this is here
+		// rather than in the renderer — every scanner downstream then reads
+		// the text the span was quoting as prose, so a link form the page
+		// only QUOTED is rewritten or refused as a link.
+		text = strings.TrimSpace(mdcode.CloseDanglingSpan(text[:cut])) + "…"
 	}
 	return strings.ReplaceAll(text, "|", `\|`)
 }

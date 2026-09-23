@@ -94,6 +94,12 @@ type Executor struct {
 	// pass takes are bounded by the program, not by its loops.
 	childMemos map[string]*childMemo
 
+	// toolSurface answers the engine's tool-surface seam, built once and
+	// lazily: the guard asks it per node, and a dry run that meets no
+	// agent/judge node never builds it at all.
+	toolSurfaceOnce sync.Once
+	toolSurface     *model.ClawExecutor
+
 	mu       sync.Mutex
 	vars     map[string]any
 	workDir  string
@@ -751,4 +757,29 @@ func sortFindings(fs []Finding) {
 		}
 		return fs[i].Detail < fs[j].Detail
 	})
+}
+
+// EffectiveToolNames answers the engine's tool-surface seam for a dry run.
+//
+// The engine's parallel-branch guard asks its executor which tools a node will
+// actually hold, because the runtime folds its own opt-ins over the author's
+// `tools:` list at build time (`auto_memory:` grants a file writer on claw,
+// ultracode grants the subagent tool). An executor that cannot answer leaves
+// the guard reading the declaration — and then `iterion validate --exec
+// --strict` calls clean a fan-out `iterion run` refuses at the router, which
+// is two products of one tree disagreeing about one file.
+//
+// The answer is not re-derived here — a second copy of the append rules is the
+// thing this seam exists to remove — but it is asked of a PROGRAM-ONLY
+// executor. A real one resolves its opt-ins through the host too
+// (ITERION_AUTO_MEMORY, ITERION_DEFAULT_BACKEND, a credential probe), and a
+// static check that read those would give one file two verdicts on two
+// machines, and refuse a file a run with `--auto-memory off` admits. A dry run
+// judges the program; a run is judged again by the engine, against what that
+// run holds.
+func (x *Executor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string {
+	x.toolSurfaceOnce.Do(func() {
+		x.toolSurface = model.NewProgramExecutor(x.wf)
+	})
+	return x.toolSurface.EffectiveToolNames(node, mayEscalateToUltracode)
 }

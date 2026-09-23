@@ -910,6 +910,11 @@ func (s *Service) spawnRun(
 		return nil, regErr
 	}
 
+	// startedRun records the one fact a caller cannot reconstruct: whether
+	// THIS call brought a run into being. Written from what each write
+	// returned, never re-read from the store — see RunPersistedError.
+	startedRun := false
+
 	// Launch path only (nil on resume, whose doc already exists): persist
 	// the run doc BEFORE returning, so a GET /api/runs/{id} issued right
 	// after the launch response never 404s on the engine goroutine still
@@ -927,22 +932,35 @@ func (s *Service) spawnRun(
 		if parentRunID != "" {
 			if pc := store.AsParentedRunCreator(s.store); pc != nil {
 				_, createErr = pc.CreateChildRun(context.Background(), runID, wf.Name, parentRunID, precreateInputs)
+				startedRun = createErr == nil
 			} else {
 				var created *store.Run
 				created, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
 				if createErr == nil {
+					// THIS call made the document. Recorded here, from what
+					// the call returned, and never re-read from the store: a
+					// launch whose client-supplied run_id already exists
+					// creates nothing (CreateRun is an exclusive create) and
+					// a store probe would find someone else's run and charge
+					// for it, once per attempt.
+					startedRun = true
 					created.ParentRunID = parentRunID
 					createErr = s.store.SaveRun(context.Background(), created)
 				}
 			}
 		} else {
 			_, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+			startedRun = createErr == nil
 		}
 		if createErr != nil {
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
-			return nil, fmt.Errorf("runview: create run: %w", createErr)
+			err := fmt.Errorf("runview: create run: %w", createErr)
+			if startedRun {
+				return nil, &RunPersistedError{RunID: runID, Err: err}
+			}
+			return nil, err
 		}
 	}
 
@@ -970,7 +988,15 @@ func (s *Service) spawnRun(
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
-			return nil, fmt.Errorf("runview: persist budget override: %w", saveErr)
+			err := fmt.Errorf("runview: persist budget override: %w", saveErr)
+			// Only when THIS call made the run. On a resume the document
+			// existed all along and nothing has been published yet, so
+			// nothing started — and the question a meter asks is whether
+			// this call started work, never whether a document exists.
+			if startedRun {
+				return nil, &RunPersistedError{RunID: runID, Err: err}
+			}
+			return nil, err
 		}
 	}
 

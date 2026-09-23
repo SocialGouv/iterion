@@ -1103,6 +1103,7 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		"raw_output_len":       info.RawOutputLen,
 		"parse_fallback":       info.ParseFallback,
 		"formatting_pass_used": info.FormattingPassUsed,
+		"prompt_diverged":      info.PromptDiverged,
 	}
 	if info.Skipped {
 		// `backend` above is the FAILED route's (the spend's origin, which
@@ -1118,6 +1119,9 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 	}
 	if h.logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
+	}
+	if len(info.CommandFrontmatterIgnored) > 0 {
+		data["command_frontmatter_ignored"] = info.CommandFrontmatterIgnored
 	}
 	h.emit(nodeID, store.EventDelegateFinished, data)
 	if info.Skipped {

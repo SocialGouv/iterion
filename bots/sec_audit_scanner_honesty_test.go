@@ -99,7 +99,10 @@ func TestGenericScannerDropsAFailedToolsOutput(t *testing.T) {
 	render := func(scanDir, ws string) string {
 		out := body
 		for ref, val := range map[string]string{
-			"{{vars.scan_dir}}":      scanDir,
+			// The node resolves its files through the scan_dir its edge carries
+			// from compute scan_dir_resolve, which keys the scratch on the run.
+			// scanDir here IS one pass's directory.
+			"{{input.scan_dir}}":     scanDir,
 			"{{vars.workspace_dir}}": ws,
 		} {
 			out = strings.ReplaceAll(out, ref, val)
@@ -297,7 +300,7 @@ func TestScanHealthReddensWhenAScannerOutputIsGone(t *testing.T) {
 		}
 		rendered := body
 		for ref, val := range map[string]string{
-			"{{vars.scan_dir}}":             scanDir,
+			"{{input.scan_dir}}":            scanDir,
 			"{{vars.min_generic_scanners}}": "2",
 			"{{input.langs}}":               "[]",
 			"{{vars.workspace_dir}}":        dir,
