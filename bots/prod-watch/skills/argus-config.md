@@ -179,10 +179,14 @@ managed secret under the name `forge_token` (see vuln-watch's
 - **`:warning: coverage this tick was PARTIAL (reasons below)`** — a Loki
   query was truncated at `max_lines`, fell out of the max window (a gap)
   or failed, or the template list was cut at 200; the reasons are quoted
-  under the note. The frontier stopped at the last line fetched, so
-  nothing is skipped, but absence of a finding proves nothing for that
-  tick. The note repeats when the coverage or the kind of failure
-  changes, not every tick.
+  under the note, a gap first. A truncated or failed walk skips nothing
+  (the frontier stopped at the last line read, the next tick reads on),
+  but absence of a finding proves nothing for that tick. A **gap does
+  skip lines**: the cursor fell out of the max window and the lines in
+  between are never read — raise `max_lines` or the cadence (or
+  `max_window_minutes`). The note repeats when the kind of partiality
+  changes (a query entering a gap, a different error, a truncation or a
+  cut appearing), not every tick.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

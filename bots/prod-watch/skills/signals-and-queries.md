@@ -15,7 +15,9 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
 - `from` = the frontier where the last walk stopped, or the high-water
   mark − `overlap_seconds` (default 60 s), whichever is earlier — never
   before the band's lower bound, and bounded below by
-  `to − max_window_minutes` (default 60). A first tick uses
+  `to − max_window_minutes` (default 60): a cursor older than that is a
+  declared **gap** — the lines between it and the floor are never read,
+  and the coverage note says so. A first tick uses
   `bootstrap_window_minutes` (default 10) instead; `0` is a valid window
   that reads nothing and sets the cursor at `to`. A cursor ahead of `to`
   (an ingest lag raised between two ticks) is an empty window this tick,
@@ -29,7 +31,8 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   the window: the frontier stops at the last line fetched, the tick
   reports `truncated: true` and the scan reports `coverage: partial`.
   Nothing is skipped — the next tick reopens at the frontier (a complete
-  walk moves it to its window's end, never past it) — but "no finding"
+  walk moves it to its window's end, or keeps it where an earlier walk
+  already read further) — but "no finding"
   proves nothing for a partial tick. A group of lines sharing one
   nanosecond wider than the cap drains across ticks, `max_lines` a tick.
 - Every line is written exactly once across ticks: the overlap re-reads
@@ -127,8 +130,10 @@ What leaves the node (`signals.json`, scratch; counts on stdout):
   same for the LIVE lines alone (`count_live`, `first_ts_live`,
   `sample_live`, `streams_live`, `query_live`) — what decide posts on.
   The list keeps the 200 templates with the most live lines;
-  `templates_cut` says when it was cut (coverage is partial then) and
-  `templates_total` how many there were.
+  `templates_cut` says when it was cut (coverage is partial then),
+  `templates_total` how many there were, and `history_cut` the newest
+  line of each cut template that had history lines only (a cut drops
+  those first; they still move a known incident's clock).
 - **leak** — per class: `count`, `distinct` (hashes of the values, never
   the values), `sources` (query + container/pod + first/last), one
   `sample_masked` (`jo***@***` style, or `nir:***12`).
@@ -178,7 +183,10 @@ Messages carry a marker (`PRODUCTION ALERT` / `ESCALATED` / `STILL OPEN`
 the incident title, the detail line, severity, first-seen date and the
 occurrence count, and — for a log template — the redacted sample as a
 quote. Notes (`:warning:`) announce an overflow, a silent source (its
-last error quoted), or a partial-coverage tick — once per change of
-coverage or of the lane errors' kind, with its reasons quoted (lane
-errors, truncated or gapped queries, a cut template list), so a query
-dark for good says why.
+last error quoted), or a partial-coverage tick — once per change in the
+KIND of partiality (a query entering a gap, a different lane error, a
+truncation or a cut appearing; queries truncated in turn are one kind),
+with its reasons quoted: the gaps first — they lose lines — then the
+lane errors, the truncated queries, a cut template list. So a query dark
+for good, or a flood that outruns `max_lines` until the cursor falls out
+of the max window, says why once, instead of every tick or never.

@@ -528,14 +528,16 @@ func TestProdWatch_ForeignCursorObjectIsRefusedByName(t *testing.T) {
 // TestProdWatch_ExtendedRandomDrive: drives the cursor chain over seventeen ticks per seed across what
 // the regime drive does not combine: max-window changes (declared gaps),
 // failures on FIRST walks inside a burst, the query dropped and re-added,
-// bursts under churn, zero-width ticks (lag 400 s). Each seed forces one of
-// the four rare dimensions (seed % 4: first-window failure, gap, drop and
-// re-add, zero-width) and asserts it was exercised. Oracle: the read-point
-// oracle (no hole; every owed line written exactly once unless a
-// legitimately declared gap excused it) and no line written twice.
+// bursts under churn, zero-width ticks (lag 400 s), a lag raised after a
+// walk truncated below the mark. Each seed forces one of the five rare
+// dimensions (seed % 5: first-window failure, gap, drop and re-add,
+// zero-width, lag raised below the mark) and asserts it was exercised; the
+// drain ticks must read cleanly. Oracle: the read-point oracle (no hole;
+// every owed line written exactly once unless a legitimately declared gap
+// excused it) and no line written twice.
 func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
-	seeds := 4
+	seeds := 5
 	if v, err := strconv.Atoi(os.Getenv("R8_SEEDS")); err == nil && v > 0 {
 		seeds = v
 	}
@@ -543,13 +545,13 @@ func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 	if v, err := strconv.Atoi(os.Getenv("R8_FIRST")); err == nil && v > 0 {
 		first = v
 	}
-	dimensions := []string{"first-window failure", "gap", "drop/re-add", "zero-width"}
+	dimensions := []string{"first-window failure", "gap", "drop/re-add", "zero-width", "lag raised below the mark"}
 	for seed := first; seed < first+seeds; seed++ {
 		seed := seed
 		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
 			t.Parallel()
 			rnd := rand.New(rand.NewSource(int64(seed)*104729 + 17))
-			force := seed % 4
+			force := seed % 5
 			h := newPWHarness(t)
 			overlap := []int{0, 1, 5, 60, 300}[rnd.Intn(5)]
 			page := []int{1, 2, 3, 7, 1000}[rnd.Intn(5)]
@@ -573,7 +575,8 @@ func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 			}
 			oracle := newPWReadOracle("errors-q")
 			oracle.onFail = dump
-			var drops, gaps, fails, bootErr, truncs, zero int
+			var drops, gaps, fails, bootErr, truncs, zero, lagBelowMark int
+			var lastCovered int64
 			inject := func(n, tick int) {
 				for i := 0; i < n; i++ {
 					var ts int64
@@ -594,7 +597,7 @@ func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 			}
 			// failAt: 0 no failure; -1 a random call among the tick's first
 			// eight; n > 0 the tick's n-th Loki call (and its retry).
-			tick := func(k, maxLines, lag, maxWin, failAt int) {
+			tick := func(k, maxLines, lag, maxWin, failAt int) map[string]any {
 				t.Helper()
 				h.lines.Store(append([]pwLine(nil), lines...))
 				switch {
@@ -614,9 +617,16 @@ func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 				if !ok {
 					drops++
 					log = append(log, fmt.Sprintf("tick %d: errors DROPPED", k))
-					return
+					return nil
 				}
 				pq := pqa.(map[string]any)
+				from, _ := strconv.ParseInt(fmt.Sprint(pq["from_ns"]), 10, 64)
+				to, _ := strconv.ParseInt(fmt.Sprint(pq["to_ns"]), 10, 64)
+				covered, _ := strconv.ParseInt(fmt.Sprint(pq["covered_to_ns"]), 10, 64)
+				if lastCovered != 0 && from < to && to < lastCovered && pq["truncated"] != true && pq["error"] == "" {
+					lagBelowMark++ // a complete walk whose window ends below the mark
+				}
+				lastCovered = covered
 				if pq["gap"] == true {
 					gaps++
 				}
@@ -635,6 +645,7 @@ func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 				log = append(log, fmt.Sprintf("tick %d max_lines=%d lag=%d win=%dm overlap=%d page=%d failAt=%d | from=%v to=%v lines=%v trunc=%v gap=%v err=%.40q covered=%v frontier=%v ofrom=%v band=%d boot=%v",
 					k, maxLines, lag, maxWin, overlap, page, failAt, pq["from_ns"], pq["to_ns"], pq["lines"], pq["truncated"], pq["gap"], pq["error"], pq["covered_to_ns"], pq["frontier_ns"], pq["overlap_from_ns"], len(pq["band"].([]any)), pq["bootstrap"]))
 				oracle.observe(t, k, pq, h.servedSince(servedFrom), lines, maxWin)
+				return pq
 			}
 			if force <= 1 || rnd.Intn(2) == 0 { // a burst inside the FIRST window
 				base := now - 250*int64(time.Second)
@@ -676,8 +687,20 @@ func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 					present, maxLines, lag, maxWin, failAt = true, 6000, 0, 60, 0
 				case force == 3 && k == 2: // … then the lag raised past the mark
 					present, lag, maxWin, failAt = true, 400, 60, 0
+				case force == 4 && k == 0: // a complete walk sets the mark …
+					present, maxLines, lag, maxWin, failAt, overlap = true, 6000, 0, 60, 0, 60
+				case force == 4 && k == 1: // … late lines below it truncate the next walk …
+					present, maxLines, lag, maxWin, failAt, overlap = true, 3, 0, 60, 0, 60
+					for i := 0; i < 10; i++ {
+						lines = append(lines, pwLine{TS: lastCovered - int64(40-3*i)*int64(time.Second), Line: fmt.Sprintf("ERROR late-below-mark-%d", i), Container: "api", Q: "errors-q"})
+					}
+				case force == 4 && k == 2: // … the lag raised so the window ends between the frontier and the mark …
+					present, maxLines, maxWin, failAt, overlap = true, 6000, 60, 0, 0
+					lag = int((time.Now().UnixNano()-lastCovered)/int64(time.Second)) + 25
+				case force == 4 && k == 3: // … and the next window opens where that walk stopped
+					present, maxLines, lag, maxWin, failAt, overlap = true, 6000, 0, 60, 0, 0
 				}
-				if lag > 2 {
+				if lag > 2 && maxWin < 60 {
 					maxWin = 60 // a cursor more than a full window ahead is an error by design
 				}
 				if !present {
@@ -689,11 +712,14 @@ func TestProdWatch_ExtendedRandomDrive(t *testing.T) {
 			present = true
 			configure()
 			for k := 12; k < 17; k++ {
-				tick(k, 6000, 0, 60, 0)
+				if pq := tick(k, 6000, 0, 60, 0); pq == nil || pq["error"] != "" {
+					dump()
+					t.Fatalf("seed %d: drain tick %d must read cleanly: %v", seed, k, pq)
+				}
 			}
-			t.Logf("seed %d (forced: %s) exercised: drops=%d gaps=%d failed-walks=%d (first-window=%d) truncated=%d zero-width=%d lines=%d",
-				seed, dimensions[force], drops, gaps, fails, bootErr, truncs, zero, len(lines))
-			if []int{bootErr, gaps, drops, zero}[force] == 0 {
+			t.Logf("seed %d (forced: %s) exercised: drops=%d gaps=%d failed-walks=%d (first-window=%d) truncated=%d zero-width=%d lag-below-mark=%d lines=%d",
+				seed, dimensions[force], drops, gaps, fails, bootErr, truncs, zero, lagBelowMark, len(lines))
+			if []int{bootErr, gaps, drops, zero, lagBelowMark}[force] == 0 {
 				dump()
 				t.Fatalf("seed %d did not exercise its forced dimension (%s)", seed, dimensions[force])
 			}
@@ -1050,8 +1076,8 @@ func TestProdWatch_CutTemplateListConcludesNothing(t *testing.T) {
 			reasons = fmt.Sprint(m["reasons"])
 		}
 	}
-	if !strings.Contains(reasons, "template list cut") {
-		t.Fatalf("the coverage note names the cut: %q", reasons)
+	if !strings.Contains(reasons, "template list cut: 206 templates") {
+		t.Fatalf("the coverage note names the cut and its size (205 worker templates and the known one): %q", reasons)
 	}
 }
 
@@ -1197,6 +1223,17 @@ func TestProdWatch_ForeignStateContainersAreRefusedByName(t *testing.T) {
 		{"a dropped cursor's band is a number", cursor(`{"covered_to_ns":"5","frontier_ns":"5","band":5,"band_base_ns":"0","overlap_from_ns":"0"}`), "'gone'"},
 		{"a dropped cursor's mark is not a number", cursor(`{"covered_to_ns":"x"}`), "'gone'"},
 		{"a dropped cursor's band entry has no numeric offset", cursor(`{"covered_to_ns":"5","band":["x:abcdabcdabcdabcd"]}`), "'gone'"},
+		{"a dropped cursor's clock is a number", cursor(`{"covered_to_ns":"5","band":[],"at":123}`), "'gone'"},
+		{"incidents is null", `{"version":1,"generation":1,"cursors":{},"incidents":null,"health":{}}`, "incidents"},
+		{"health is null", `{"version":1,"generation":1,"cursors":{},"incidents":{},"health":null}`, "health"},
+		{"cursors is null", `{"version":1,"generation":1,"cursors":null,"incidents":{},"health":{}}`, "cursors"},
+		{"cursors.loki is null", `{"version":1,"generation":1,"cursors":{"loki":null},"incidents":{},"health":{}}`, "cursors.loki"},
+		{"generation is not a number", `{"version":1,"generation":"x","cursors":{},"incidents":{},"health":{}}`, "generation"},
+		{"an incident is a string", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":"x"},"health":{}}`, "incidents["},
+		{"an incident's count is not a number", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"count":"x"}},"health":{}}`, ".count"},
+		{"an incident's severity is a list", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"severity":["high"]}},"health":{}}`, ".severity"},
+		{"an incident's last sighting is not a date", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"last_seen":"yesterday"}},"health":{}}`, ".last_seen"},
+		{"a health record is a number", `{"version":1,"generation":1,"cursors":{},"incidents":{},"health":{"loki":5}}`, "health["},
 	}
 	for _, c := range cases {
 		c := c
@@ -1247,5 +1284,199 @@ func TestProdWatch_LeakScanCountsALineOnceAcrossQueries(t *testing.T) {
 	leaks := sig["leak"].([]any)
 	if out["lines_scanned"].(float64) != 1 || len(tpls) != 1 || tpls[0].(map[string]any)["count"].(float64) != 1 || len(leaks) != 1 || leaks[0].(map[string]any)["count"].(float64) != 1 {
 		t.Fatalf("one line, whatever the queries that returned it: scanned=%v templates=%v leaks=%v", out["lines_scanned"], tpls, leaks)
+	}
+}
+
+// TestProdWatch_FloodGapIsAnnouncedWithItsReasons: a sustained flood
+// truncates every walk, then the frontier falls out of the max window and
+// the lane skips lines (a declared gap). The coverage note announces the
+// truncation, then the gap — lines skipped, with its reason — and stays
+// quiet while nothing changes in kind.
+func TestProdWatch_FloodGapIsAnnouncedWithItsReasons(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiOnly(1000, 0))
+	var lines []pwLine
+	start := time.Now().Add(-90 * time.Second).UnixNano()
+	for i := 0; i < 3000; i++ { // 20 lines a second for 150 s
+		lines = append(lines, pwLine{TS: start + int64(i)*int64(50*time.Millisecond), Line: fmt.Sprintf("ERROR flood %d", i), Container: "api", Q: "errors-q"})
+	}
+	h.lines.Store(lines)
+	var notes []string
+	for k := 0; k < 4; k++ {
+		outs := h.cursorTick(t, wf, cursorVars(h, 1, 0, 20))
+		pq := outs["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)
+		note := ""
+		for _, s := range outs["decide"]["stale_sources"].([]any) {
+			if m := s.(map[string]any); m["source"] == "coverage" {
+				note = fmt.Sprint(m["reasons"])
+			}
+		}
+		notes = append(notes, note)
+		if k == 0 && (pq["truncated"] != true || pq["gap"] == true) {
+			t.Fatalf("tick 0 is truncated, without a gap: %v", pq)
+		}
+		if k > 0 && pq["gap"] != true {
+			t.Fatalf("tick %d: the frontier fell out of the max window: %v", k, pq)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if !strings.Contains(notes[0], "errors: truncated") {
+		t.Fatalf("tick 0 announces the truncation: %q", notes[0])
+	}
+	if !strings.Contains(notes[1], "errors: gap") || !strings.Contains(notes[1], "skipped") {
+		t.Fatalf("tick 1 announces the gap and that lines were skipped: %q", notes[1])
+	}
+	if notes[2] != "" || notes[3] != "" {
+		t.Fatalf("nothing changed in kind: no further note: %q", notes[2:])
+	}
+}
+
+// TestProdWatch_CoverageReasonsPutTheGapFirst: long lane errors never push
+// a gap — lines lost — out of the note's budget.
+func TestProdWatch_CoverageReasonsPutTheGapFirst(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	var perr []any
+	for i := 0; i < 4; i++ {
+		perr = append(perr, map[string]any{"probe": fmt.Sprintf("probe%d", i), "error": "ValueError: Prometheus answered status 'error': " + strings.Repeat("x", 160)})
+	}
+	state := map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{"loki": map[string]any{}}, "incidents": map[string]any{}, "health": map[string]any{}}
+	signals := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial"}
+	out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 20, "error": "", "truncated": true, "gap": true, "from_ns": "100", "to_ns": "900"}},
+		"prom_ok":        false, "prom_errors": perr, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": false}})
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, stderr)
+	}
+	for _, s := range out["stale_sources"].([]any) {
+		if m := s.(map[string]any); m["source"] == "coverage" {
+			if r := fmt.Sprint(m["reasons"]); !strings.HasPrefix(r, "errors: gap") {
+				t.Fatalf("the gap leads the reasons: %q", r)
+			}
+			return
+		}
+	}
+	t.Fatalf("a coverage note is posted: %v", out["stale_sources"])
+}
+
+// TestProdWatch_CoverageNoteKeysOnTheKindOfPartiality: two queries truncated
+// in turn do not re-post the note every tick (truncation loses nothing); a
+// query entering a gap does (lines are lost).
+func TestProdWatch_CoverageNoteKeysOnTheKindOfPartiality(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	window := func(truncated, gap bool) map[string]any {
+		return map[string]any{"lines": 20, "error": "", "truncated": truncated, "gap": gap, "from_ns": "100", "to_ns": "900"}
+	}
+	state := map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{"loki": map[string]any{}}, "incidents": map[string]any{}, "health": map[string]any{}}
+	signals := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial"}
+	lanes := map[string]any{"loki": true, "prometheus": false, "probes": false}
+	note := func(out map[string]any) string {
+		for _, s := range out["stale_sources"].([]any) {
+			if m := s.(map[string]any); m["source"] == "coverage" {
+				return fmt.Sprint(m["reasons"])
+			}
+		}
+		return ""
+	}
+	var notes []string
+	for _, pq := range []map[string]any{
+		{"errors": window(true, false), "other": window(false, false)},
+		{"errors": window(false, false), "other": window(true, false)},
+		{"errors": window(true, false), "other": window(false, false)},
+		{"errors": window(true, true), "other": window(false, false)},
+	} {
+		out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{"loki_per_query": pq, "lanes": lanes})
+		if err != nil {
+			t.Fatalf("decide: %v %s", err, stderr)
+		}
+		notes = append(notes, note(out))
+		state = pwStateNext(t, out)
+	}
+	if notes[0] == "" || notes[1] != "" || notes[2] != "" || !strings.Contains(notes[3], "errors: gap") {
+		t.Fatalf("a note for the first truncation, none while queries take turns, one for the gap: %q", notes)
+	}
+}
+
+// TestProdWatch_CutHistoryStillAdvancesTheClock: a template seen only in a
+// new query's first window, in a tick whose template list is cut, is cut
+// first (history ranks last) — and still moves its incident's clock, so no
+// "not observed any more" note follows against a pattern seen minutes ago.
+func TestProdWatch_CutHistoryStillAdvancesTheClock(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, lokiOnly(1000, 60))
+	lines := []pwLine{{TS: nsAgo(100 * time.Second), Line: "ERROR warmup", Container: "api", Q: "errors-q"}}
+	h.lines.Store(lines)
+	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	const known = "ERROR payment gateway refused the card"
+	fp := pwTemplateFP(known)
+	st := h.state(t)
+	inc := incident("loki", "medium", true, 49, 49)
+	inc["title_arg"] = known
+	st["incidents"] = map[string]any{fp: inc}
+	h.setState(t, st)
+	h.writeConfig(t, func(cfg map[string]any) {
+		lokiOnly(1000, 60)(cfg)
+		cfg["loki"].(map[string]any)["queries"].(map[string]any)["zzz_new"] = "new-q"
+	})
+	word := func(i int) string {
+		w := ""
+		for j := 0; j < 4; j++ {
+			w += string(rune('a' + i%26))
+			i /= 26
+		}
+		return w
+	}
+	base := nsAgo(20 * time.Second)
+	for i := 0; i < 205; i++ {
+		for r := 0; r < 2; r++ {
+			lines = append(lines, pwLine{TS: base + int64(i*2+r)*int64(time.Millisecond), Line: "ERROR worker " + word(i) + " crashed", Container: "api", Q: "errors-q"})
+		}
+	}
+	for i := 0; i < 3; i++ { // the known template, in the new query's first window only
+		lines = append(lines, pwLine{TS: nsAgo(time.Duration(300-i) * time.Second), Line: known, Container: "api", Q: "new-q"})
+	}
+	h.lines.Store(lines)
+	outs := h.cursorTickWith(t, wf, cursorVars(h, 60, 0, 5000), map[string]any{"max_alerts": 1000})
+	if outs["leak_scan"]["coverage"] != "partial" {
+		t.Fatalf("the list is cut: %v", outs["leak_scan"])
+	}
+	seen := h.state(t)["incidents"].(map[string]any)[fp].(map[string]any)["last_seen"]
+	if at, err := time.Parse(time.RFC3339, fmt.Sprint(seen)); err != nil || time.Since(at) > 10*time.Minute {
+		t.Fatalf("the cut history sighting moves the clock: last_seen=%v (%v)", seen, err)
+	}
+	outs = h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	for _, q := range pwQuietFPs(outs) {
+		if q == fp {
+			t.Fatalf("no \"not observed any more\" against a pattern seen minutes ago: %v", pwQuietFPs(outs))
+		}
+	}
+}
+
+// TestProdWatch_HistoryClockNeverMovesBack: a history line older than the
+// incident's last sighting leaves the clock where it is.
+func TestProdWatch_HistoryClockNeverMovesBack(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	inc := incident("loki", "medium", true, 0.05, 0.05)
+	last := inc["last_seen"]
+	state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "health": map[string]any{},
+		"incidents": map[string]any{"loki:t1": inc}}
+	sig := map[string]any{"templates": []map[string]any{{"template_id": "t1", "query": "errors", "template": "ERROR job # failed", "count": 2, "count_live": 0,
+		"first_ts": strconv.FormatInt(nsAgo(11*time.Minute), 10), "last_ts": strconv.FormatInt(nsAgo(10*time.Minute), 10), "sample": "ERROR job <num> failed", "streams": []string{"container=w"}}},
+		"leak": []any{}}
+	out, stderr, err := pwDecide(t, wf, h, sig, state, nil)
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, stderr)
+	}
+	if got := pwStateNext(t, out)["incidents"].(map[string]any)["loki:t1"].(map[string]any)["last_seen"]; got != last {
+		t.Fatalf("an older history line must not move the clock back: %v -> %v", last, got)
 	}
 }

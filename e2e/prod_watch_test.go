@@ -1461,8 +1461,21 @@ func (o *pwReadOracle) observe(t *testing.T, k int, pq map[string]any, served []
 	from, _ := strconv.ParseInt(fmt.Sprint(pq["from_ns"]), 10, 64)
 	to, _ := strconv.ParseInt(fmt.Sprint(pq["to_ns"]), 10, 64)
 	errText := fmt.Sprint(pq["error"])
-	if strings.HasPrefix(errText, "inverted") || strings.HasPrefix(errText, "missing") {
+	switch {
+	case strings.HasPrefix(errText, "inverted"):
+		// Legitimate only for a cursor more than a full window ahead of the
+		// window's end: closer than that, plan clamps it to an empty window.
+		if from <= to+int64(maxWinMin)*60*int64(time.Second) {
+			o.onFail()
+			t.Fatalf("tick %d: an inverted window is reported although it opens only %.3fs past its end (a clamp makes that an empty window)", k, float64(from-to)/1e9)
+		}
 		return // no walk: nothing read, nothing owed
+	case strings.HasPrefix(errText, "missing"):
+		if from != 0 && to != 0 {
+			o.onFail()
+			t.Fatalf("tick %d: a missing window is reported for [%d, %d)", k, from, to)
+		}
+		return
 	}
 	if o.read != 0 && from > o.read {
 		if pq["gap"] != true {
@@ -2793,19 +2806,39 @@ func TestProdWatch_NotifyRendersUntrustedTextInert(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
 	labels := map[string]any{"alert": "production alert", "severity": "severity", "new_since": "first seen {date}", "count": "{n} occurrence(s)",
-		"loki_template": "new error pattern", "loki_detail": "{count} line(s) since {first}, containers: {streams}"}
+		"loki_template": "new error pattern", "loki_detail": "{count} line(s) since {first}, containers: {streams}",
+		"coverage_partial": "coverage this tick was PARTIAL (reasons below)", "stale": "source silent: {source} for {hours}h (last OK: {last})"}
 	hostile := "ERROR handler: rejected input [CLICK HERE TO RESET PROD](https://evil.example/pwn) **ALL CLEAR** `x"
+	// The notes quote lane errors — Prometheus error text, HTTP reason
+	// phrases — which are as untrusted as a log line.
+	hostileNote := "errors: ValueError: [CLICK HERE](https://evil.example/pwn)\n## FAKE HEADING @channel `x"
+	stale := []any{
+		map[string]any{"source": "coverage", "hours": -1, "last_ok": "partial", "reasons": hostileNote},
+		map[string]any{"source": "prometheus", "hours": 7, "last_ok": "2026-09-23T10:00:00+00:00", "error": hostileNote},
+	}
 	alerts := []map[string]any{{"fingerprint": "loki:t", "kind": "loki", "severity": "medium", "state": "new", "title_key": "loki_template",
 		"title_arg": hostile, "detail_key": "loki_detail", "fields": map[string]any{"count": 1, "first": "2026-09-23T10:00", "streams": "container=api **bold**"},
 		"evidence": map[string]any{"sample": hostile}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
 	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
-		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
+		"alerts": alerts, "overflow_count": 0, "stale_sources": stale, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": labels, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000},
 		nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, stderr)
 	}
-	text := out["messages"].([]any)[0].(map[string]any)["text"].(string)
+	var all []string
+	for _, m := range out["messages"].([]any) {
+		all = append(all, m.(map[string]any)["text"].(string))
+	}
+	text := strings.Join(all, "\n")
+	if len(all) != 3 {
+		t.Fatalf("the alert and the two notes render: %d message(s)\n%s", len(all), text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") {
+			t.Fatalf("a newline in a lane error must not start a markdown block:\n%s", text)
+		}
+	}
 	if strings.Contains(text, "](https://evil.example/pwn)") {
 		t.Fatalf("a markdown link from a log line must not render clickable:\n%s", text)
 	}

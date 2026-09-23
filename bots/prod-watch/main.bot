@@ -508,16 +508,61 @@ tool plan:
                 state = json.load(fh)
         except ValueError:
             raise SystemExit('prod-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
-    ## The whole state is validated here, before any lane runs: its
-    ## top-level containers are objects or absent, and every cursor of the
-    ## Loki map — configured or not: decide trims the dropped ones — parses
-    ## below. A foreign value is refused by name; a falsy one is never read
-    ## as empty.
+    ## The whole state is validated here, before any lane runs — decide
+    ## reads it after every lane ran, and a foreign value must be a named
+    ## refusal, never a traceback. An ABSENT key reads as empty; a PRESENT
+    ## one has its shape, null included (the bot writes null for `halt`
+    ## only). Every cursor of the Loki map — configured or not: decide trims
+    ## the dropped ones — parses below.
+    def refuse_state(where, value, what):
+        raise SystemExit('prod-watch: state.' + where + ' is not ' + what + ' (' + repr(value)[:60] +
+                         ') -- repair it or remove the state file')
+    def is_iso(v):
+        try:
+            datetime.datetime.fromisoformat(v)
+            return True
+        except (TypeError, ValueError):
+            return False
+    def is_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
     if not isinstance(state, dict):
         raise SystemExit('prod-watch: state file ' + spath + ' is not a JSON object -- repair or remove it')
-    for key in ('cursors', 'incidents', 'health', 'halt'):
-        if state.get(key) is not None and not isinstance(state.get(key), dict):
-            raise SystemExit('prod-watch: state.' + key + ' is not an object (' + repr(state.get(key))[:60] + ') -- repair it or remove the state file')
+    for key in ('cursors', 'incidents', 'health'):
+        if key in state and not isinstance(state[key], dict):
+            refuse_state(key, state[key], 'an object')
+    if state.get('halt') is not None and not isinstance(state['halt'], dict):
+        refuse_state('halt', state['halt'], 'an object')
+    if 'generation' in state and not is_int(state['generation']):
+        refuse_state('generation', state['generation'], 'an integer')
+    for key in ('last_coverage', 'last_coverage_key'):
+        if state.get(key) is not None and not isinstance(state[key], str):
+            refuse_state(key, state[key], 'a string')
+    for ifp, rec in (state.get('incidents') or {}).items():
+        where = 'incidents[' + repr(ifp)[:40] + ']'
+        if not isinstance(rec, dict):
+            refuse_state(where, rec, 'an object')
+        for f in ('fp', 'kind', 'severity', 'prev_severity', 'title_key', 'title_arg', 'detail_key'):
+            if rec.get(f) is not None and not isinstance(rec[f], str):
+                refuse_state(where + '.' + f, rec[f], 'a string')
+        for f in ('first_seen', 'last_seen', 'last_notified'):
+            if rec.get(f) is not None and not is_iso(rec[f]):
+                refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
+        if rec.get('count') is not None and not is_int(rec['count']):
+            refuse_state(where + '.count', rec['count'], 'an integer')
+        for f in ('alerted', 'quiet_noted'):
+            if rec.get(f) is not None and not isinstance(rec[f], bool):
+                refuse_state(where + '.' + f, rec[f], 'a boolean')
+        if rec.get('fields') is not None and not isinstance(rec['fields'], dict):
+            refuse_state(where + '.fields', rec['fields'], 'an object')
+    for src, hrec in (state.get('health') or {}).items():
+        where = 'health[' + repr(src)[:40] + ']'
+        if not isinstance(hrec, dict):
+            refuse_state(where, hrec, 'an object')
+        for f in ('last_ok', 'last_warned'):
+            if hrec.get(f) is not None and not is_iso(hrec[f]):
+                refuse_state(where + '.' + f, hrec[f], 'an ISO timestamp')
+        if hrec.get('last_error') is not None and not isinstance(hrec['last_error'], str):
+            refuse_state(where + '.last_error', hrec['last_error'], 'a string')
     halt = state.get('halt') or None
     halted = bool(halt)
     halt_reason = ''
@@ -536,11 +581,10 @@ tool plan:
     if boot_min < 0:
         print('prod-watch: loki.bootstrap_window_minutes ' + str(boot_min) + ' is negative -- using 0 (a first window may not start after its own end)', file=sys.stderr)
         boot_min = 0
-    cursors = (state.get('cursors') or {}).get('loki')
-    if cursors is None:
-        cursors = {}
-    if not isinstance(cursors, dict):
-        raise SystemExit('prod-watch: state.cursors.loki is not an object (' + repr(cursors)[:60] + ') -- delete it (or the state file) and let the queries bootstrap')
+    lane_cursors = state.get('cursors') or {}
+    if 'loki' in lane_cursors and not isinstance(lane_cursors['loki'], dict):
+        refuse_state('cursors.loki', lane_cursors['loki'], 'an object')
+    cursors = lane_cursors.get('loki') or {}
     windows = {}
 
     def cursor_int(c, name, field, default=0):
@@ -564,6 +608,9 @@ tool plan:
             raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ' is not an object (' + repr(c)[:60] +
                              ') -- delete that cursor (or the state file) and let the query bootstrap')
         prev = cursor_int(c, name, 'covered_to_ns')
+        if c.get('at') is not None and not is_iso(c['at']):
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': at is not an ISO timestamp (' + repr(c['at'])[:60] +
+                             ') -- delete that cursor (or the state file) and let the query bootstrap')
         band = c.get('band')
         if band is None:
             band = []
@@ -1529,6 +1576,9 @@ tool leak_scan:
     ## of the list, and a cut list is partial coverage — decide learns it.
     tpl_list.sort(key=lambda t: (t['count_live'], t['count']), reverse=True)
     templates_cut = len(tpl_list) > 200
+    ## A cut drops the history-only templates first (they rank last); the
+    ## newest line of each still moves a known incident's clock.
+    history_cut = {t['template_id']: t['last_ts'] for t in tpl_list[200:] if t['count_live'] == 0}
     leak_list = []
     for f in findings.values():
         leak_list.append({'class': f['class'], 'severity': f['severity'], 'count': f['count'],
@@ -1542,7 +1592,7 @@ tool leak_scan:
     if templates_cut:
         coverage = 'partial'
     signals = {'app': app.get('name') or '', 'coverage': coverage, 'lines_scanned': scanned,
-               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list),
+               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list), 'history_cut': history_cut,
                'leak': leak_list, 'per_query': per_query}
     with open(signals_path, 'w', encoding='utf-8') as fh:
         json.dump(signals, fh, ensure_ascii=False, indent=1)
@@ -1610,6 +1660,14 @@ tool decide:
             return datetime.datetime.fromtimestamp(int(ts) / 1e9, datetime.timezone.utc).isoformat(timespec='seconds')
         except (TypeError, ValueError, OverflowError, OSError):
             return ''
+
+    def follow_history(rec, last_ts):
+        ## A pattern seen in history lines moves its incident's clock to the
+        ## newest of them when that is later than the incident knew — never
+        ## back — so no "not observed any more" is concluded against it.
+        last = iso_of_ns(last_ts)
+        if last and age_h(last) < age_h(rec.get('last_seen') or ''):
+            rec['last_seen'] = last
 
     signals = jload(signals_file, {})
     spath = os.path.join(state_dir, 'state.json')
@@ -1682,12 +1740,8 @@ tool decide:
         if c['kind'] == 'loki' and int(c['tick_count'] or 0) == 0 and prev is not None:
             ## A known template seen only in history lines (a first window)
             ## is not a recurrence: its count, fields and quiet note stay as
-            ## they are. Its clock follows the newest history line, though,
-            ## when that shows the pattern later than the incident knew — so
-            ## no "not observed any more" is concluded against it.
-            last = iso_of_ns(c.get('last_ts'))
-            if last and age_h(last) < age_h(prev.get('last_seen') or ''):
-                prev['last_seen'] = last
+            ## they are; only its clock follows those lines.
+            follow_history(prev, c.get('last_ts'))
             observed_new += 1
             continue
         seen_fps.add(fp)
@@ -1721,6 +1775,10 @@ tool decide:
                            'fields': c['fields'], 'evidence': c['evidence'], 'count': rec['count'],
                            'first_seen': rec['first_seen'], 'prev_severity': prev_sev})
         incidents[fp] = rec
+
+    for tid, last_ts in (signals.get('history_cut') or {}).items():
+        if incidents.get('loki:' + tid) is not None:
+            follow_history(incidents['loki:' + tid], last_ts)
 
     ## ── incidents NOT seen this tick ───────────────────────────────
     ## Three questions, three predicates: `lane_ok` — may this tick be
@@ -1803,29 +1861,33 @@ tool decide:
             h['last_warned'] = now_iso
 
     ## ── coverage note, once per change ────────────────────────────
-    ## A change is the coverage flipping OR the lane errors changing in
-    ## kind (digits folded: an inverted window carries fresh timestamps
-    ## every tick) — a query dark for good says so once, with its reason,
-    ## instead of hiding behind a note that fired one tick and never again.
+    ## A change is the coverage flipping OR the KIND of partiality changing:
+    ## a query entering a gap (lines skipped — named, it is a loss), the
+    ## lane errors (digits folded: an inverted window carries fresh
+    ## timestamps every tick), a truncation or a cut appearing. Queries
+    ## truncated in turn keep one kind — truncation loses nothing, the
+    ## next tick reads on — so a note says each change once, with its
+    ## reasons, instead of every tick or never again.
     coverage = signals.get('coverage') or ('partial' if (loki_truncated or loki_errors) else 'full')
     lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
                                    for e in (loki_errors + prom_errors)))[:600]
-    error_kind = re.sub(r'\d+', '#', lane_errors)
-    ## What the coverage note says: the lane errors, the truncated and
-    ## gapped queries, and a cut template list.
-    reasons = [lane_errors] if lane_errors else []
-    for q, i in sorted(loki_per_query.items()):
-        if i.get('truncated'):
-            reasons.append(q + ': truncated at max_lines')
-        if i.get('gap'):
-            reasons.append(q + ': gap (the cursor fell out of the max window)')
+    gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
+    truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
+    ## The reasons, the loss first: a gap, then the errors, then what is
+    ## only behind — so a long error never pushes a loss out of the budget.
+    reasons = [q + ': gap — the cursor fell out of the max window, the lines in between were skipped' for q in gapped]
+    if lane_errors:
+        reasons.append(lane_errors)
+    reasons += [q + ': truncated at max_lines' for q in truncated_qs]
     if signals.get('templates_cut'):
         reasons.append('template list cut: ' + str(signals.get('templates_total') or '?') +
                        ' templates, the 200 with the most live lines kept')
     coverage_reasons = '; '.join(reasons)[:600]
-    coverage_changed = coverage != (state.get('last_coverage') or 'full') or error_kind != (state.get('last_lane_errors') or '')
+    coverage_key = '|'.join([re.sub(r'\d+', '#', lane_errors), ','.join(gapped),
+                             'truncated' if truncated_qs else '', 'cut' if signals.get('templates_cut') else ''])
+    coverage_changed = coverage != (state.get('last_coverage') or 'full') or coverage_key != (state.get('last_coverage_key') or '|||')
     state['last_coverage'] = coverage
-    state['last_lane_errors'] = error_kind
+    state['last_coverage_key'] = coverage_key
 
     ## ── priority, cap, staging ────────────────────────────────────
     order = {'new': 3, 'escalated': 3, 'reminder': 2, 'quiet': 1}
