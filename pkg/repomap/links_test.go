@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/pkg/repomap"
 )
 
@@ -60,8 +61,13 @@ func TestEveryLinkAGeneratedMapEmitsResolvesFromTheCommonsDirectory(t *testing.T
 			if r := rowSourceRe.FindStringSubmatch(line); r != nil {
 				source = r[1]
 			}
-			for _, m := range emittedLinkRe.FindAllStringSubmatch(line, -1) {
-				target := m[1]
+			// The scan runs over internal/mdcode's mask, which keeps the
+			// line's offsets: a `](…)` inside a code span is a form the row
+			// QUOTES — the map reproduces the page's own prose — and reading
+			// it as a link reports a broken one where none is written.
+			for _, loc := range emittedLinkRe.FindAllStringSubmatchIndex(mdcode.Mask(line), -1) {
+				written := line[loc[2]:loc[3]]
+				target := written
 				if i := strings.Index(target, "#"); i >= 0 {
 					target = target[:i]
 				}
@@ -75,13 +81,13 @@ func TestEveryLinkAGeneratedMapEmitsResolvesFromTheCommonsDirectory(t *testing.T
 				repoRel := path.Join(repomap.OutputDir, target)
 				if strings.HasPrefix(repoRel, "..") {
 					t.Errorf("%s (row of %s): %q escapes the repository (resolves to %q)",
-						source, artifact, m[1], repoRel)
+						source, artifact, written, repoRel)
 					continue
 				}
 				info, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(repoRel)))
 				if err != nil {
 					t.Errorf("%s (row of %s): %q names nothing — resolved to %q: %v",
-						source, artifact, m[1], repoRel, err)
+						source, artifact, written, repoRel, err)
 					continue
 				}
 
@@ -95,7 +101,7 @@ func TestEveryLinkAGeneratedMapEmitsResolvesFromTheCommonsDirectory(t *testing.T
 				}
 				if sitePath := path.Join(siteDir, target); strings.HasPrefix(sitePath, "..") {
 					t.Errorf("%s (row of %s): %q climbs out of the site root docs/ (resolves to %q on the site)",
-						source, artifact, m[1], sitePath)
+						source, artifact, written, sitePath)
 				}
 				switch {
 				case info.IsDir() && !strings.HasSuffix(target, "/"):
@@ -111,10 +117,10 @@ func TestEveryLinkAGeneratedMapEmitsResolvesFromTheCommonsDirectory(t *testing.T
 						break
 					}
 					t.Errorf("%s (row of %s): %q names the directory %q, under which the site builds no page",
-						source, artifact, m[1], repoRel)
+						source, artifact, written, repoRel)
 				case !info.IsDir() && strings.HasSuffix(target, "/"):
 					t.Errorf("%s (row of %s): %q gives the file %q a trailing slash, which the site routes as a directory",
-						source, artifact, m[1], repoRel)
+						source, artifact, written, repoRel)
 				}
 			}
 		}
@@ -165,6 +171,10 @@ func TestTheDocsMapLinksEveryPageToTheFileItNames(t *testing.T) {
 // something else from docs/references/ — often a file that exists, which is
 // how a wrong link passes a resolution check. Emitting one is the signal to
 // route that column through reanchor, not to delete this test.
+//
+// A `](…)` inside a code span is not one: a doc comment that quotes a link
+// form renders it as literal text in both readers of the map, and the scan
+// runs over internal/mdcode's mask for that reason.
 func TestThePackageAndBotMapsEmitNoLinks(t *testing.T) {
 	maps, err := repomap.Generate(repoRoot)
 	if err != nil {
@@ -176,9 +186,9 @@ func TestThePackageAndBotMapsEmitNoLinks(t *testing.T) {
 		if !ok {
 			t.Fatalf("no %s map among %d artifacts", stem, len(maps))
 		}
-		for _, m := range emittedLinkRe.FindAllStringSubmatch(body, -1) {
+		for _, loc := range emittedLinkRe.FindAllStringSubmatchIndex(mdcode.Mask(body), -1) {
 			t.Errorf("%s renders %q as a markdown link — a quoted column started carrying `](…)`; re-anchor it against the source that wrote it, or escape the brackets",
-				artifact, m[1])
+				artifact, body[loc[2]:loc[3]])
 		}
 	}
 }
@@ -222,5 +232,52 @@ func TestADirectoryQuotedInAPageStaysADirectoryOnTheMap(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the map does not carry %s:\n%s", want, body)
 		}
+	}
+}
+
+// The generator, end to end, on the page the ticket describes: a page whose
+// opening sentence QUOTES a link form inside backticks. `iterion map gen`
+// used to abort on it — and with it `task map:gen` and the required `test`
+// check — naming a broken link on a page that has none.
+//
+// This runs the real extractor rather than reanchor alone: the refusal that
+// used to fire travelled up through readDocRow and Extract, and a unit test
+// of the helper cannot see that the whole artifact stopped rendering.
+func TestAPageQuotingALinkFormStillRendersItsRow(t *testing.T) {
+	root := t.TempDir()
+	for rel, body := range map[string]string{
+		"docs/why.md": "# Why\n\nThe docs map used to emit `](../../docs/foo.md)`, which github.com renders and the site cannot.\n",
+		"docs/ok.md":  "# Ok\n\nIt links [the why](why.md) for the detail.\n",
+	} {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var docs repomap.Extractor
+	for _, e := range repomap.Extractors() {
+		if e.Stem() == "docs" {
+			docs = e
+		}
+	}
+	if docs == nil {
+		t.Fatal("no docs extractor — this test would prove nothing")
+	}
+	body, err := docs.Extract(root)
+	if err != nil {
+		t.Fatalf("the docs map refused a page whose links are all sound: %v", err)
+	}
+	// The quoted form is reproduced as the page wrote it …
+	if !strings.Contains(body, "`](../../docs/foo.md)`") {
+		t.Errorf("the summary column no longer quotes the code span as the page wrote it:\n%s", body)
+	}
+	// … and the sentence that really links is still re-anchored, so the
+	// guarantee is not "reanchor was turned off".
+	if !strings.Contains(body, "](../why.md)") {
+		t.Errorf("the real link on the sibling page was not re-anchored:\n%s", body)
 	}
 }

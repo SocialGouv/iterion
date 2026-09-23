@@ -580,6 +580,14 @@ tasks:
       - go run -mod=vendor ./scripts/docslinks
       - node docs/scripts/check-anchor-slugs.mjs
 
+  docs:links:test:
+    desc: Run the site link checker's own tests — every URL form the built site serves, and every one it does not
+    cmds:
+      # The file is NAMED, not globbed: `node --test '<glob>'` exits 0 having
+      # run nothing when the glob matches no file, so a rename would retire
+      # the whole suite in silence. Naming it exits 1 the day the path moves.
+      - node --test docs/scripts/check-links.test.mjs
+
   docs:links:new:
     desc: Only the links broken since the merge base with BASE (default origin/main) — what a change adds, the inherited backlog excluded; what the advisory CI step reports
     vars:

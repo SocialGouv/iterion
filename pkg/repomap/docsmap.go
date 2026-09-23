@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/mdcode"
 )
 
 // docsPages maps docs/ — 300-odd pages and 100-odd ADRs whose only index
@@ -102,10 +104,16 @@ var externalTargetRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.-]*:|//)`)
 // path. Scheme URLs pass through; so does a `/`-absolute target, which
 // github.com resolves against the site origin rather than this repository —
 // `task docs:links` reports that one on the page that wrote it.
+//
+// An occurrence inside a code span is a form the page QUOTES, not a link it
+// makes. Rewriting one would edit quoted text, and refusing one fails the
+// whole generator on a page whose own links are sound — which is what a page
+// documenting this rule does. internal/mdcode says where the code is, at the
+// same offsets, so the grammar of a link stays this file's.
 func reanchor(summary, page string) (string, error) {
 	pageDir := path.Dir(page)
 	var failed error
-	out := linkTargetRe.ReplaceAllStringFunc(summary, func(m string) string {
+	rewrite := func(m string) string {
 		target := m[2 : len(m)-1]
 		frag := ""
 		if i := strings.Index(target, "#"); i >= 0 {
@@ -141,8 +149,18 @@ func reanchor(summary, page string) (string, error) {
 			rel += "/"
 		}
 		return "](" + rel + frag + ")"
-	})
-	return out, failed
+	}
+
+	masked := mdcode.Mask(summary)
+	var out strings.Builder
+	end := 0
+	for _, loc := range linkTargetRe.FindAllStringIndex(masked, -1) {
+		out.WriteString(summary[end:loc[0]])
+		out.WriteString(rewrite(summary[loc[0]:loc[1]]))
+		end = loc[1]
+	}
+	out.WriteString(summary[end:])
+	return out.String(), failed
 }
 
 // readDocRow pulls a page's H1, its first prose sentence, and — for an
@@ -157,14 +175,20 @@ func readDocRow(abs, rel string) (docRow, error) {
 	row := docRow{Path: rel, IsADR: strings.HasPrefix(rel, "docs/adr/")}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	inFence := false
+	// The fence rule is internal/mdcode's — the whole machine, not the half
+	// that says which lines are delimiters. Recognising `~~~` and blockquoted
+	// fences while closing on any delimiter ends a ``` block on the `~~~`
+	// line inside it, which is content, and the sentence this function then
+	// hands to reanchor is quoted code.
+	var fence mdcode.FenceScanner
+	var front mdcode.FrontMatterScanner
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "```") {
-			inFence = !inFence
-			continue
-		}
-		if inFence || line == "" {
+		// The scanner reads the RAW line: a fence closes at its opener's own
+		// blockquote depth and indentation, and trimming erases both before
+		// it can measure them.
+		raw := scanner.Text()
+		line := strings.TrimSpace(raw)
+		if front.Skip(raw) || fence.Code(raw) || line == "" {
 			continue
 		}
 		switch {

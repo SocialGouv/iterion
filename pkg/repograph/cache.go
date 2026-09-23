@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/treeskip"
 )
 
 // CacheDir is where a built graph lives, relative to the repository
@@ -109,7 +111,7 @@ func Fingerprint(root string) (string, error) {
 		}
 		if d.IsDir() {
 			rel, _ := filepath.Rel(root, abs)
-			if rel != "." && skipDir[d.Name()] {
+			if rel != "." && treeskip.Dir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil

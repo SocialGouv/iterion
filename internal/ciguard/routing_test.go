@@ -260,7 +260,8 @@ type taskfileTasks struct {
 // The witness: change either side alone and this names the pair.
 func TestTheInlinedTasksMatchTheirTaskfileEntry(t *testing.T) {
 	mirrors := map[string]struct{ job, step, task string }{
-		"fmt-check": {"fmt-check", "Shipped bots and examples are canonical", "fmt:check"},
+		"fmt-check":  {"fmt-check", "Shipped bots and examples are canonical", "fmt:check"},
+		"docs-build": {"docs-build", "Link checker self-test", "docs:links:test"},
 	}
 	wsrc, err := os.ReadFile(workflowPath)
 	if err != nil {
