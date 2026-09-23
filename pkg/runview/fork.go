@@ -47,6 +47,11 @@ type ForkSpec struct {
 	// NewInputs, when non-nil, replaces the child run's Inputs map
 	// (merged onto the parent's). Useful for "fork with a different
 	// prompt vars" workflows from the studio's ForkDialog JSON editor.
+	//
+	// The values an operator CHANGES here cross the same var-constraint gate
+	// a launch crosses (`[enum: …]`, `[matching: "<re>"]`) — see
+	// gateForkInputs. A value re-sent unchanged does not: the parent was
+	// already admitted with it.
 	NewInputs map[string]any
 }
 
@@ -100,6 +105,13 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	childID, err := store.GenerateRunID()
 	if err != nil {
 		return nil, fmt.Errorf("generate child run id: %w", err)
+	}
+	// The var-constraint gate, on the ONE surface that writes operator var
+	// values into a run without entering Engine.Run. Before CreateRun, so a
+	// refusal leaves nothing behind and the atomic contract is untouched: the
+	// caller receives no child id, exactly as for every other early error.
+	if err := s.gateForkInputs(parent, spec.NewInputs); err != nil {
+		return nil, err
 	}
 	childInputs := map[string]any{}
 	for k, v := range parent.Inputs {

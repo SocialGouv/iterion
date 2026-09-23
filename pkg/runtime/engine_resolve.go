@@ -1152,13 +1152,34 @@ func (e *Engine) varExpandFn() func(string) string {
 // an error naming every violating var, its value, and what it failed —
 // the operator typed the value and is still at the keyboard.
 func (e *Engine) validateVarConstraints(inputs map[string]any) error {
+	return ValidateVarConstraints(e.workflow.Vars, inputs, e.varExpandFn())
+}
+
+// ValidateVarConstraints is that gate as a function, so a surface that admits
+// operator-supplied var values WITHOUT entering Engine.Run — `fork`'s
+// `new_inputs`, the one such surface — refuses the same values for the same
+// reasons, in the same words, instead of growing a second opinion.
+//
+// `expand` is the reading the values get. The caller owns it because it is a
+// property of the process, not of the declaration: the engine resolves
+// ${PROJECT_DIR} and friends from the run it is about to start, and a caller
+// with no run in hand has no honest answer for them — which is why the fork
+// surface refuses an environment-dependent value outright rather than guessing
+// one (see runview's fork gate).
+func ValidateVarConstraints(vars map[string]*ir.Var, inputs map[string]any, expand func(string) string) error {
 	if len(inputs) == 0 {
 		return nil
 	}
-	expandFn := e.varExpandFn()
+	if expand == nil {
+		// A nil expander reads the JUDGING process's environment, which is the
+		// one thing this signature exists to prevent: the caller that has no
+		// honest answer for `${…}` must say so, not inherit os.Getenv.
+		return errors.New("runtime: ValidateVarConstraints: an expander is required — a nil one would judge against this process's environment")
+	}
+	expandFn := expand
 	var violations []string
 	for _, k := range slices.Sorted(maps.Keys(inputs)) {
-		decl, isVar := e.workflow.Vars[k]
+		decl, isVar := vars[k]
 		if !isVar || decl.Type != ir.VarString {
 			continue
 		}
