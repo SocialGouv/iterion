@@ -11,6 +11,11 @@ import (
 	"syscall"
 )
 
+// ErrExpansionTooLarge is returned by Expand when the substitution would
+// produce more than the caller's ceiling. It is raised DURING production,
+// so the caller pays the bound rather than the expansion.
+var ErrExpansionTooLarge = errors.New("commands: expansion exceeds the byte ceiling")
+
 // WorkspaceCommand is one markdown slash command discovered under a
 // workspace's `.claude/commands/` directory — the project-commands
 // convention Claude Code reads through `--setting-sources project`.
@@ -210,36 +215,77 @@ func LookupWorkspace(workDir, name string) (WorkspaceCommand, bool, error) {
 // reader sees and this loop leaves literal, so a body carrying one had its
 // arguments neither substituted NOR appended, which deleted the operator's
 // message.
-func Expand(cmd WorkspaceCommand, args string) (expanded string, consumed bool) {
+//
+// maxBytes bounds the OUTPUT, and the bound is enforced AS THE OUTPUT IS
+// PRODUCED: the loop stops and returns ErrExpansionTooLarge the moment the
+// next write would cross it, so the refusal costs the bound and not the
+// expansion. Measuring a finished string instead would bound the bill and
+// not the memory, and both inputs here are attacker-influenced on a review
+// run — a body of 24 000 `$ARGUMENTS` sits under any sane file ceiling and
+// still reaches gigabytes once the arguments carry a pasted diff, which in
+// a multi-replica server takes co-tenant runs down before anyone is billed.
+// A non-positive maxBytes means unbounded.
+func Expand(cmd WorkspaceCommand, args string, maxBytes int) (expanded string, consumed bool, err error) {
 	body := cmd.Body
+	if maxBytes > 0 && len(body) > maxBytes {
+		// Nothing to produce: the literal text alone already crosses.
+		return "", false, ErrExpansionTooLarge
+	}
 	if !strings.ContainsRune(body, '$') {
-		return body, false
+		return body, false, nil
 	}
 	fields := strings.Fields(args)
 	var b strings.Builder
-	b.Grow(len(body) + len(args))
+	b.Grow(growHint(len(body)+len(args), maxBytes))
+	// write appends s unless it would cross the bound.
+	write := func(s string) bool {
+		if maxBytes > 0 && b.Len()+len(s) > maxBytes {
+			return false
+		}
+		b.WriteString(s)
+		return true
+	}
 	for i := 0; i < len(body); {
 		if body[i] != '$' {
-			b.WriteByte(body[i])
+			if !write(body[i : i+1]) {
+				return "", false, ErrExpansionTooLarge
+			}
 			i++
 			continue
 		}
 		if rest, found := strings.CutPrefix(body[i:], "$ARGUMENTS"); found {
-			b.WriteString(args)
+			if !write(args) {
+				return "", false, ErrExpansionTooLarge
+			}
 			consumed = true
 			i = len(body) - len(rest)
 			continue
 		}
 		if n, width, ok := positionalAt(body, i); ok && n >= 1 && n <= len(fields) {
-			b.WriteString(fields[n-1])
+			if !write(fields[n-1]) {
+				return "", false, ErrExpansionTooLarge
+			}
 			consumed = true
 			i += width
 			continue
 		}
-		b.WriteByte(body[i])
+		if !write(body[i : i+1]) {
+			return "", false, ErrExpansionTooLarge
+		}
 		i++
 	}
-	return b.String(), consumed
+	return b.String(), consumed, nil
+}
+
+// growHint caps the builder's pre-allocation at the bound: the unbounded
+// hint (body + args) is the right guess for a body with one placeholder and
+// a gross over-allocation for the refusal path this bound exists to make
+// cheap.
+func growHint(want, maxBytes int) int {
+	if maxBytes > 0 && want > maxBytes {
+		return maxBytes
+	}
+	return want
 }
 
 // maxPositional bounds the index a `$N` placeholder may name. It is a

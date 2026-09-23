@@ -38,6 +38,10 @@ func LookupWorkspace(workDir, name string) (WorkspaceCommand, bool, error) {
 	return intl.LookupWorkspace(workDir, name)
 }
 
+// ErrExpansionTooLarge is returned by Expand when the substitution would
+// produce more than the caller's ceiling.
+var ErrExpansionTooLarge = intl.ErrExpansionTooLarge
+
 // Expand substitutes `$ARGUMENTS` and the one-based `$1` … `$9`
 // placeholders of a command body. Text that came from an argument is never
 // re-scanned.
@@ -45,8 +49,16 @@ func LookupWorkspace(workDir, name string) (WorkspaceCommand, bool, error) {
 // The second return says whether a placeholder actually TOOK the arguments.
 // A body that consumes none must have them appended — that is what Claude
 // Code does, and dropping them deletes the operator's message.
-func Expand(cmd WorkspaceCommand, args string) (expanded string, consumed bool) {
-	return intl.Expand(cmd, args)
+//
+// maxBytes bounds the OUTPUT as it is produced: Expand stops and returns
+// ErrExpansionTooLarge the moment the next write would cross it, so an
+// embedder handed an untrusted command body pays the bound rather than the
+// expansion. A body under a file-size check can still amplify — 24 000
+// `$ARGUMENTS` times a large argument tail reaches gigabytes — and
+// measuring the finished string would bound only the bill. Non-positive
+// means unbounded.
+func Expand(cmd WorkspaceCommand, args string, maxBytes int) (expanded string, consumed bool, err error) {
+	return intl.Expand(cmd, args, maxBytes)
 }
 
 // DynamicBodyForms names the Claude Code command features present in a body
