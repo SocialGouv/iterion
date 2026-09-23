@@ -117,6 +117,12 @@ func toolSurfaceReason(llm ir.LLMNode, defaultBackend string) string {
 // still reddens. An entry that no longer names an acting prompt lacking the
 // marker is stale and reddens too — the allowlist cannot rot in either
 // direction.
+//
+// There is no second allowlist. #1494 drained the 104 acting prompts that
+// shipped without the paragraph, so the class is closed by the predicate
+// alone: a node that gains a writing tool, a board capability, or an omitted
+// `tools:` list on a CLI backend reddens here until its prompt says what it
+// reads is data.
 func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 	deferred := map[string]string{
 		"adr-cartograph/campaign":     "DSL v2 session owns bots/adr-cartograph — fleet-contract § 1",
@@ -125,114 +131,6 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 		"docs-refresh/campaign":       "DSL v2 session owns bots/docs-refresh — fleet-contract § 1",
 		"docs-refresh/finalize_mr":    "DSL v2 session owns bots/docs-refresh — fleet-contract § 1",
 		"modernize/upgrade_campaign":  "modernization campaign owns bots/modernize — fleet-contract § 1",
-	}
-	// Acting prompts that lack the paragraph today, one entry per agent,
-	// tracked by #1494. Each entry is a defect, not a home.
-	knownMissing := map[string]string{
-		"adr-rechallenge/file_change_ticket":     "#1494",
-		"adr-rechallenge/survey_code":            "#1494",
-		"adr-rechallenge/write_addendum":         "#1494",
-		"app-dev/campaign":                       "#1494",
-		"app-dev/deploy":                         "#1494",
-		"app-dev/finalize_mr":                    "#1494",
-		"app-dev/interviewer":                    "#1494",
-		"app-dev/plan":                           "#1494",
-		"app-dev/plan_review":                    "#1494",
-		"app-dev/plan_revise":                    "#1494",
-		"app-dev/review":                         "#1494",
-		"app-dev/verify_build":                   "#1494",
-		"arbitrate/arbitrate_judge":              "#1494",
-		"bmady/analyst":                          "#1494",
-		"bmady/architect":                        "#1494",
-		"bmady/dev":                              "#1494",
-		"bmady/pm":                               "#1494",
-		"bmady/qa":                               "#1494",
-		"branch-improve-loop/campaign":           "#1494",
-		"branch-improve-loop/finalize_mr":        "#1494",
-		"branch-improve-loop/plan":               "#1494",
-		"branch-improve-loop/plan_review":        "#1494",
-		"branch-improve-loop/plan_revise":        "#1494",
-		"branch-improve-loop/review":             "#1494",
-		"branch-improve-loop/verify_build":       "#1494",
-		"copilot/copi":                           "#1494",
-		"copilot/reflect":                        "#1494",
-		"dep-update-guard/align":                 "#1494",
-		"dep-update-guard/commit":                "#1494",
-		"dep-update-guard/security_audit":        "#1494",
-		"dep-update-guard/verify_build":          "#1494",
-		"devbox-setup/detect_stack":              "#1494",
-		"devbox-setup/generate_devbox":           "#1494",
-		"e2e-coverage/campaign":                  "#1494",
-		"e2e-coverage/plan":                      "#1494",
-		"e2e-coverage/plan_review":               "#1494",
-		"e2e-coverage/plan_revise":               "#1494",
-		"e2e-coverage/verify_build":              "#1494",
-		"evolve/emit_backlog":                    "#1494",
-		"evolve/investigate":                     "#1494",
-		"evolve/load_nexie_handoff":              "#1494",
-		"evolve/propose_evolutions":              "#1494",
-		"evolve/review_claude":                   "#1494",
-		"evolve/revise_vision":                   "#1494",
-		"evolve/survey":                          "#1494",
-		"evolve/synthesize_vision":               "#1494",
-		"feature-dev/campaign":                   "#1494",
-		"feature-dev/finalize_mr":                "#1494",
-		"feature-dev/plan":                       "#1494",
-		"feature-dev/plan_review":                "#1494",
-		"feature-dev/plan_revise":                "#1494",
-		"feature-dev/review":                     "#1494",
-		"feature-dev/verify_build":               "#1494",
-		"feature-gap-fill/campaign":              "#1494",
-		"feature-gap-fill/plan":                  "#1494",
-		"feature-gap-fill/plan_review":           "#1494",
-		"feature-gap-fill/plan_revise":           "#1494",
-		"feature-gap-fill/verify_build":          "#1494",
-		"golden-master/mutants_adversary":        "#1494",
-		"golden-master/oracle_campaign":          "#1494",
-		"instrument/campaign":                    "#1494",
-		"instrument/finalize_mr":                 "#1494",
-		"instrument/review":                      "#1494",
-		"instrument/verify_build":                "#1494",
-		"issue-triage/triage":                    "#1494",
-		"product-docs/campaign":                  "#1494",
-		"product-docs/finalize_mr":               "#1494",
-		"product-docs/publish":                   "#1494",
-		"revi-converse/converse_agent":           "#1494",
-		"review-env/deploy":                      "#1494",
-		"review-pr/converge":                     "#1494",
-		"review-pr/reviewer_claude":              "#1494",
-		"review-pr/reviewer_claude_glance":       "#1494",
-		"review-pr/reviewer_gpt":                 "#1494",
-		"review-pr/reviewer_gpt_glance":          "#1494",
-		"rgaa-audit/campaign":                    "#1494",
-		"rgaa-audit/report_card":                 "#1494",
-		"secured-renovacy/align_code":            "#1494",
-		"secured-renovacy/batch_upgrade_patches": "#1494",
-		"secured-renovacy/changelog_review":      "#1494",
-		"secured-renovacy/detect_stack":          "#1494",
-		"secured-renovacy/discover_outdated":     "#1494",
-		"secured-renovacy/family_align_code":     "#1494",
-		"secured-renovacy/fix_after_upgrade":     "#1494",
-		"secured-renovacy/install":               "#1494",
-		"secured-renovacy/p2_campaign":           "#1494",
-		"secured-renovacy/p2_verify_build":       "#1494",
-		"secured-renovacy/security_audit":        "#1494",
-		"secured-renovacy/upgrade":               "#1494",
-		"secured-renovacy/validate_upgrade":      "#1494",
-		"test-coverage/campaign":                 "#1494",
-		"test-coverage/plan":                     "#1494",
-		"test-coverage/plan_review":              "#1494",
-		"test-coverage/plan_revise":              "#1494",
-		"test-coverage/verify_build":             "#1494",
-		"ultra11y/adjudicate":                    "#1494",
-		"ultra11y/publish":                       "#1494",
-		"whole-improve-loop/campaign":            "#1494",
-		"whole-improve-loop/finalize_mr":         "#1494",
-		"whole-improve-loop/plan":                "#1494",
-		"whole-improve-loop/plan_review":         "#1494",
-		"whole-improve-loop/plan_revise":         "#1494",
-		"whole-improve-loop/verify_build":        "#1494",
-		"wiki-gen/author":                        "#1494",
 	}
 
 	entries, err := os.ReadDir(".")
@@ -258,9 +156,6 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 			}
 			has := strings.Contains(body, untrustedInputBoundaryMarker)
 			_, exempt := deferred[key]
-			if !exempt {
-				_, exempt = knownMissing[key]
-			}
 			switch {
 			case has && exempt:
 				stale = append(stale, key+" carries the paragraph: drain its entry")
@@ -272,11 +167,9 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 			}
 		}
 	}
-	for _, exemptions := range []map[string]string{deferred, knownMissing} {
-		for key := range exemptions {
-			if !seen[key] {
-				stale = append(stale, key+" is not an acting prompt lacking the paragraph: drain its entry")
-			}
+	for key := range deferred {
+		if !seen[key] {
+			stale = append(stale, key+" is not an acting prompt lacking the paragraph: drain its entry")
 		}
 	}
 	sort.Strings(missing)
@@ -288,4 +181,77 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 	if len(stale) > 0 {
 		t.Errorf("%d stale exemption(s):\n  %s", len(stale), strings.Join(stale, "\n  "))
 	}
+}
+
+// TestUntrustedInputBoundaryParagraphInterpolatesNothing keeps the paragraph
+// a LITERAL region of the system prompt.
+//
+// The paragraph's job is to NAME the fields whose values are data. Naming one
+// with a template reference instead renders the value itself — the untrusted
+// text — inside the authoritative half of the prompt, which is the exact
+// attack the paragraph exists to refuse. It is not theoretical: a system
+// prompt goes through the same resolver as a user prompt
+// (pkg/backend/model.resolveSystemPrompt), so `{{input.issues}}` written
+// inside the paragraph delivered a board issue body — titles and bodies built
+// from the audited repository — into the instructions of a node holding bash
+// and board.create.
+//
+// The rule is structural, not a list of forbidden field names: NO reference of
+// any namespace between the marker line and the blank line that closes the
+// paragraph. A path is as refused as a payload, because "which fields are
+// untrusted" is not a property this guard can compute, and a predicate that
+// tried to enumerate them would be widened by the next field. Write the field
+// NAME in backticks; put anything that must render outside the paragraph.
+func TestUntrustedInputBoundaryParagraphInterpolatesNothing(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read bots dir: %v", err)
+	}
+	var offenders []string
+	checked := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		bot := e.Name()
+		if _, err := os.Stat(filepath.Join(bot, "main.bot")); err != nil {
+			continue
+		}
+		wf := compilePlanPhaseBot(t, bot)
+		names := make([]string, 0, len(wf.Prompts))
+		for name := range wf.Prompts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			p := wf.Prompts[name]
+			if p == nil {
+				continue
+			}
+			lines := strings.Split(p.Body, "\n")
+			for i := 0; i < len(lines); i++ {
+				if !strings.Contains(lines[i], untrustedInputBoundaryMarker) {
+					continue
+				}
+				checked++
+				for j := i + 1; j < len(lines) && strings.TrimSpace(lines[j]) != ""; j++ {
+					if strings.Contains(lines[j], "{{") {
+						offenders = append(offenders, fmt.Sprintf("%s/%s:+%d %s", bot, name, j-i, strings.TrimSpace(lines[j])))
+					}
+					i = j
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no UNTRUSTED INPUT BOUNDARY paragraph found in the catalogue: this guard stopped seeing its own subject")
+	}
+	sort.Strings(offenders)
+	if len(offenders) > 0 {
+		t.Errorf("%d line(s) interpolate a value inside an UNTRUSTED INPUT BOUNDARY paragraph — "+
+			"the value renders into the authoritative half of the system prompt. Write the field NAME "+
+			"in backticks (`issues`, `vars.scratch_dir`), or move the sentence out of the paragraph:\n  %s",
+			len(offenders), strings.Join(offenders, "\n  "))
+	}
+	t.Logf("checked %d boundary paragraphs", checked)
 }

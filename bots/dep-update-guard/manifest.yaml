@@ -1,7 +1,7 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.9.1
+version: 2.9.2
 ## 2.9.1 — a refusal stands EVERY commitment down, and vouching comes first.
 ## (a) The four vouched_sha exits are no longer one class: the two structural
 ## ones (no gate_sha, this run cannot name what it read) still touch nothing,

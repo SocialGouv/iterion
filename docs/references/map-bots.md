@@ -10,41 +10,41 @@
 | Bot | Persona | What it does | `.bot` files · skills | Version |
 |---|---|---|---|---|
 | `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 1 · 6 | 2.0.2 |
-| `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 1 · 2 | 0.1.1 |
-| `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 1 · 6 | 0.3.2 |
-| `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 1 · 0 | 0.1.2 |
-| `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 1 · 6 | 0.1.2 |
-| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.8.2 |
+| `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 1 · 2 | 0.1.2 |
+| `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 1 · 6 | 0.3.3 |
+| `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 1 · 0 | 0.1.3 |
+| `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 1 · 6 | 0.1.3 |
+| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.8.3 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 1 · 0 | 0.1.2 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 1 · 5 | 0.2.8 |
-| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 1 · 3 | 2.9.1 |
-| `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 1 · 1 | 0.1.2 |
+| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 1 · 3 | 2.9.2 |
+| `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 1 · 1 | 0.1.3 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 1 · 7 | 3.5.9 |
-| `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 1 · 5 | 0.4.2 |
-| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 1 · 8 | 0.1.2 |
-| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.6.0 |
-| `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.3.2 |
+| `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 1 · 5 | 0.4.3 |
+| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 1 · 8 | 0.1.3 |
+| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.6.1 |
+| `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.3.3 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1 · 3 | 1.6.1 |
-| `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 4 · 6 | 0.1.3 |
-| `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 1 · 8 | 0.1.2 |
-| `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 1 · 3 | 0.2.1 |
-| `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 1 · 3 | 0.5.0 |
-| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1 · 7 | 1.1.1 |
-| `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 1 · 1 | 0.1.2 |
-| `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 1 · 0 | 0.1.2 |
-| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.9 |
-| `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 1 · 8 | 2.0.1 |
+| `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 4 · 6 | 0.1.4 |
+| `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 1 · 8 | 0.1.3 |
+| `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 1 · 3 | 0.2.2 |
+| `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 1 · 3 | 0.4.1 |
+| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1 · 7 | 1.1.2 |
+| `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 1 · 1 | 0.1.3 |
+| `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 1 · 0 | 0.1.3 |
+| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.10 |
+| `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 1 · 8 | 2.0.2 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 1 · 8 | 0.1.2 |
-| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.5 |
-| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 1 · 2 | 0.2.3 |
+| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.6 |
+| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 1 · 2 | 0.2.4 |
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 1 · 11 | 0.1.2 |
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 1 · 11 | 0.1.2 |
-| `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 1 · 4 | 2.3.2 |
-| `ultra11y` | 🦮 Ally | Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a pull-request mode. | 1 · 3 | 0.1.2 |
+| `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 1 · 4 | 2.3.3 |
+| `ultra11y` | 🦮 Ally | Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a pull-request mode. | 1 · 3 | 0.1.3 |
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 1 · 1 | 0.1.1 |
 | `whats-next` | 🧭 Nexie | Conversational co-CTO. | 1 · 11 | 0.3.4 |
-| `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 1 · 10 | 2.4.2 |
-| `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1 · 2 | 1.0.4 |
+| `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 1 · 10 | 2.4.3 |
+| `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1 · 2 | 1.0.5 |
 
 ## Skills
 

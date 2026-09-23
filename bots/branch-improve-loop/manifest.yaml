@@ -1,7 +1,7 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.8.2
+version: 1.8.3
 ## 1.8.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,
 ## the decline probe does the same, the commit instruction excludes it and the

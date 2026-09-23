@@ -235,13 +235,17 @@ every catalog bot, classifies every agent and judge with the rule above,
 and fails on any member whose system prompt lacks the phrase. The only
 exemption is a per-agent `deferred` entry naming the session that owns the
 bot, and a stale entry (the paragraph landed, or the node stopped acting)
-fails the test too. When you add a node that writes, files, patches or
-shells out, write the paragraph in the same change — the reference
-wordings are `report_card_system` and `triage_system` in
+fails the test too. There is no allowlist of members still to do: #1494
+drained the last 104, so every acting prompt in the catalogue carries the
+paragraph today and a new one reddens the guard until it does.
+
+When you add a node that writes, files, patches or shells out, write the
+paragraph in the same change — the reference wordings are
+`report_card_system` and `triage_system` in
 `bots/sec-audit-source/main.bot`, `campaign_system` in
 `bots/feature-dev/lib/prompts.bot` for an implementer, and
-`verify_build_system` there for a node that runs the repository's own
-commands.
+`verify_system` there (the prompt of the `verify_build` node) for a node
+that runs the repository's own commands.
 
 ## Catalog bots are repo-agnostic
 
