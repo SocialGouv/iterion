@@ -158,6 +158,9 @@ func disallowOrchestrationToolsFromEnv() bool {
 //     backed by the Kimi family), same contract as "zai".
 //   - "" / "auto" — current process-env-driven precedence (below).
 //
+// The hint is matched folded (normalizeProviderHint): it is operator text, and
+// which account pays must not depend on its capitalisation.
+//
 // A facade hint with no key reachable REFUSES rather than degrades: every
 // Anthropic-flavoured channel is actively suppressed so the node surfaces
 // "no <provider> credential" instead of quietly spending a different
@@ -590,8 +593,29 @@ func suppressAnthropicWireEnv() map[string]string {
 	}
 }
 
+// normalizeProviderHint folds a routing hint into the form the switches in
+// this file are written in: lower-case, no surrounding space.
+//
+// The hint is operator TEXT and nothing upstream folds it — a bot's
+// `provider:` field is trimmed but never cased (ir.SplitProviderStep), a
+// launch-time override is stored verbatim, and the compiler's unknown-hint
+// diagnostic is a warning. Matching the exact literal therefore let
+// `provider: "Moonshot"` miss every facade branch and fall through to the
+// DEFAULT precedence: another vendor's account, another bill, and no refusal —
+// the failure ErrNoFacadeCredential exists to make loud.
+//
+// Folded ONCE at the top of the two functions that take a raw hint — this file
+// routes with one (anthropicCredEnvForCLI) and refuses with the other
+// (facadeHintRefusal) — rather than at each comparison, so a branch added
+// later cannot be the one that forgot.
+func normalizeProviderHint(hint string) string {
+	return strings.ToLower(strings.TrimSpace(hint))
+}
+
 // facadeEnvKey names the process-env fallback a facade hint honours when the
-// run carries no BYOK key for it, or "" when the slot has none.
+// run carries no BYOK key for it, or "" when the slot has none. Its argument
+// is a NORMALIZED hint (normalizeProviderHint) or a slot name read from
+// secrets.AnthropicWireSlotOrder.
 //
 // ZAI_API_KEY is z.ai's own variable and nothing else reads it, so an
 // ambient value means "route me to z.ai". MOONSHOT_API_KEY is NOT symmetric:
@@ -656,6 +680,7 @@ func (e *ErrNoFacadeCredential) Error() string {
 // one that routes, and the disagreement would be invisible — the node would
 // either run suppressed (opaque 401) or be refused while funded.
 func facadeHintRefusal(providerHint string, env map[string]string) error {
+	providerHint = normalizeProviderHint(providerHint)
 	envVar := facadeEnvKey(providerHint)
 	if envVar == "" || !isForfaitSuppressed(env) {
 		return nil
@@ -701,6 +726,7 @@ func UsageMeterBackendForProvider(prov secrets.Provider) string {
 }
 
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
+	providerHint = normalizeProviderHint(providerHint)
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
 	// providerHint=="anthropic": force Anthropic-direct. Skip the z.ai

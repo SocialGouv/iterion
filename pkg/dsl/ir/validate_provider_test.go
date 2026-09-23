@@ -40,6 +40,15 @@ func TestProvider_KnownChainNoWarning(t *testing.T) {
 	expectNoDiag(t, r, DiagUnknownProvider)
 }
 
+// The runtime routes on a FOLDED hint (delegate.normalizeProviderHint), so the
+// diagnostic must accept the spellings it honours: warning that "Moonshot will
+// be ignored" is false the moment the delegate routes it, and it reads as an
+// instruction to delete a working route.
+func TestProvider_KnownProviderIsAcceptedWhateverItsCase(t *testing.T) {
+	r := compileFile(t, providerSrc("claude_code", "Anthropic,ZAI,Moonshot,AUTO"))
+	expectNoDiag(t, r, DiagUnknownProvider)
+}
+
 // The C087 message must name every hint the compiler accepts. A list that
 // lags the set tells an author a valid hint is a typo — and the fix they then
 // apply is to remove a working route.

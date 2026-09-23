@@ -102,10 +102,15 @@ func (c *compiler) validateProviders(w *Workflow) {
 					"%s %q: provider chain element %q is malformed — the `provider:model` form needs both a provider and a model",
 					kind, id, tok)
 			}
-			if hint == "auto" || hint == "" {
+			// Looked up FOLDED, echoed as typed. The runtime folds the hint
+			// before it routes (delegate.normalizeProviderHint), so matching
+			// the literal here would report a hint that works as a typo — and
+			// the fix an author then applies is to delete a working route.
+			folded := strings.ToLower(hint)
+			if folded == "auto" || folded == "" {
 				continue
 			}
-			if !KnownProviders[hint] {
+			if !KnownProviders[folded] {
 				c.warnfAt(DiagUnknownProvider, id, "",
 					"%s %q: provider %q is not a known routing hint (known: %s) — it will be ignored and the node falls back to default credential precedence",
 					kind, id, hint, KnownProviderList())
