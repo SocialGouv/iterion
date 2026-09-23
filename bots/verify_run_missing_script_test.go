@@ -58,6 +58,8 @@ func discoverScriptGateCarriers(t *testing.T) []scriptGateCarrier {
 		t.Fatal(err)
 	}
 	var found []scriptGateCarrier
+	declares := map[string]bool{}
+	matched := map[string]bool{}
 	for _, rel := range mains {
 		pr := parseBotUnit(rel)
 		if pr.File == nil {
@@ -66,6 +68,13 @@ func discoverScriptGateCarriers(t *testing.T) []scriptGateCarrier {
 		cr := ir.Compile(pr.File)
 		if cr.Workflow == nil {
 			continue
+		}
+		// A SECOND, independent signal that this bundle runs a verify.sh gate:
+		// it declares the gate's own result schema. Independent of how the
+		// command spells the exec, which is the way the discriminator above can
+		// go stale without anyone noticing.
+		if cr.Workflow.Schemas["verify_result"] != nil {
+			declares[rel] = true
 		}
 		defaults := map[string]string{}
 		for name, v := range cr.Workflow.Vars {
@@ -79,6 +88,7 @@ func discoverScriptGateCarriers(t *testing.T) []scriptGateCarrier {
 				continue
 			}
 			found = append(found, scriptGateCarrier{rel: rel, node: node, command: tn.Command, vars: defaults})
+			matched[rel] = true
 		}
 	}
 	// Node maps iterate in random order; the subtest order must not be a coin flip.
@@ -88,8 +98,28 @@ func discoverScriptGateCarriers(t *testing.T) []scriptGateCarrier {
 		}
 		return found[i].node < found[j].node
 	})
-	// A floor, because the failure mode of a discriminator is to match nothing and
-	// leave a vacuous guard looking green.
+	// The cross-check runs FIRST because it names the culprit. A bare count cannot
+	// catch a carrier that spells its exec differently — `['sh', '-e', script]`,
+	// `['bash', script]` — so cross the two independent signals: every bundle that
+	// declares the gate's result schema must have been matched by the command
+	// discriminator.
+	//
+	// The reverse does NOT hold and is not asserted: secured-renovacy runs the
+	// script from a second-phase node without declaring `verify_result`.
+	var unmatched []string
+	for rel := range declares {
+		if !matched[rel] {
+			unmatched = append(unmatched, rel)
+		}
+	}
+	if len(unmatched) > 0 {
+		sort.Strings(unmatched)
+		t.Fatalf("%v declare a verify_result schema and no node of theirs matched %q — either the "+
+			"discriminator is stale or these carriers ship the defect unguarded",
+			unmatched, executesTheScript)
+	}
+	// And a floor, because the other failure mode of a discriminator is to match
+	// nothing at all and leave a vacuous guard looking green.
 	if len(found) < 11 {
 		t.Fatalf("discovered %d verify.sh gate carriers, want >= 11 — the discriminator %q is stale "+
 			"and this guard is near-vacuous", len(found), executesTheScript)
@@ -259,11 +289,4 @@ func TestVerifyRunRefusalSurvivesALoudWorkspace(t *testing.T) {
 			assertRefused(t, res)
 		})
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

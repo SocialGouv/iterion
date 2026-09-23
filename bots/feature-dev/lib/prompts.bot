@@ -366,7 +366,7 @@ prompt review_system:
 
 prompt review_user:
   Review the working tree at {{vars.workspace_dir}}.
-  Base hint: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+  Base hint: {{input.base_ref}}   ·   build passed: {{input.build_passed}}   ·   build skipped: {{input.build_skipped}}
 
   Findings you raised last pass (do not re-raise unless still unaddressed):
   {{input.prior_findings}}

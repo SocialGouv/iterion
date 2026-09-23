@@ -929,7 +929,7 @@ if not os.path.exists(script):
     skipped = True
     passed = False
     rc = 6
-    out = 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build/test gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing. Write it DELIBERATELY -- verify_probe reuses an existing script for the rest of the run, so an empty gate written just to get past this refusal keeps reporting green after a build system appears.'
+    out = 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build/test gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing.'
 else:
     def sh_uncommented(text):
         # The script and the CI config, read with comments removed -- shared by
@@ -1209,11 +1209,13 @@ if not new_test_code:
 # A refusal is written at the FRONT of out, and the sections above append to it.
 # Tail-only truncation would therefore drop the very reason the gate refused --
 # measured: 40 matrix problems pushed NO VERIFY SCRIPT out of a 4000-char tail, and
-# log_tail is what fail_log hands the next pass. Keep both ends.
+# log_tail is what fail_log hands the next pass. The head is ADDED, never paid for out
+# of the tail: on a red build the tail IS the failure, and trimming it to make room for
+# a build banner trades the answer for the preamble.
 def framed(s):
     if len(s) <= 4000:
         return s
-    return s[:800] + chr(10) + '[...truncated...]' + chr(10) + s[-3160:]
+    return s[:800] + chr(10) + '[...truncated...]' + chr(10) + s[-4000:]
 
 print(json.dumps({'passed': passed, 'skipped': skipped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': framed(out)}))
 "`

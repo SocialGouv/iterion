@@ -979,7 +979,7 @@ except OSError:
     pass
 script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
-    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 6, 'log_tail': 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing. Write it DELIBERATELY -- verify_probe reuses an existing script for the rest of the run, so an empty gate written just to get past this refusal keeps reporting green after a build system appears.'}))
+    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 6, 'log_tail': 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing.'}))
     raise SystemExit(0)
 def sh_uncommented(text):
     # The script and the CI config, read with comments removed -- shared by

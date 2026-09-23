@@ -718,7 +718,7 @@ compute gate:
   output: gate_state
   expr:
     converged: "outputs.verify_run.passed && outputs.campaign.feature_complete && outputs.review.clean"
-    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), if(outputs.verify_run.skipped, outputs.verify_run.log_tail + '\\n\\n' + outputs.review.findings, outputs.verify_run.log_tail))"
 
 ## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
 ## edges use the C012-exhaustive simple form. No LLM, no shell.

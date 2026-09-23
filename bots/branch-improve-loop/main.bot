@@ -827,7 +827,7 @@ prompt review_system:
 
 prompt review_user:
   Review the working tree at {{vars.workspace_dir}}.
-  Base: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+  Base: {{input.base_ref}}   ·   build passed: {{input.build_passed}}   ·   build skipped: {{input.build_skipped}}
 
   Findings you raised last pass (do not re-raise unless still unaddressed):
   {{input.prior_findings}}
@@ -2297,7 +2297,7 @@ compute gate:
     ## Repeated rather than referenced: a compute's fields are evaluated
     ## against the node's input and the run, never against its own siblings.
     ship_now: "(outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean) || outputs.campaign.stopped_on_reserve"
-    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), if(outputs.verify_run.skipped, outputs.verify_run.log_tail + '\\n\\n' + outputs.review.findings, outputs.verify_run.log_tail))"
 
 ## mr_gate routes the post-convergence tail into at most ONE of two
 ## mutually-exclusive booleans (the unconditional edge to done is the C012
@@ -2596,10 +2596,12 @@ ledger = [e for e in ledger if isinstance(e, dict)]
 pushed = flag('PUSHED')
 clean = flag('CLEAN')
 verify_ok = flag('VERIFY_OK')
-# A skip (no verify.sh was produced) already arrives as passed=false, so this
-# term is redundant for the verdict. It is kept because it is not redundant for
-# the DIAGNOSIS: on a required check, 'the build never ran' and 'the build went
-# red' call for different moves from whoever reads the status.
+# A skip (no verify.sh was produced) already arrives as passed=false, and
+# verify_ok is gate.converged, which reads passed -- so a skip makes verify_ok
+# false too. This term is therefore redundant for the VERDICT and load-bearing
+# for the DIAGNOSIS, which is why the note below tests it FIRST: 'the build
+# never ran' and 'the build went red' call for different moves from whoever
+# reads the required check, and the second would be a false statement here.
 verify_skipped = flag('VERIFY_SKIPPED')
 
 banked = str(os.environ.get('BANKED_BRANCH') or '').strip()
@@ -2680,10 +2682,10 @@ if gate_enabled and gate_ctx:
             bits.append(str(len(fixed)) + ' fix(es) never reached this head')
         if not clean:
             bits.append('issues remain in the diff')
-        if not verify_ok:
-            bits.append('build/tests red')
-        elif verify_skipped:
+        if verify_skipped:
             bits.append('build/tests never ran')
+        elif not verify_ok:
+            bits.append('build/tests red')
         note = ', '.join(bits) + ' - not mergeable yet'
     payload['gate'] = {'enabled': True, 'context': gate_ctx, 'blocking_count': blocking,
                        'threshold': 'ledger', 'total_findings': len(ledger), 'note': note}

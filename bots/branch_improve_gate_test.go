@@ -167,12 +167,42 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		}
 	})
 
-	// verify_run reports passed=true when it SKIPPED. Tolerable as a loop
-	// signal; on a required check it claims a build that never ran.
+	// A skipped build arrives as verify_ok=false too: verify_ok is
+	// gate.converged, which reads verify_run.passed, and a missing verify.sh is
+	// a refusal (#1598). "true/true" is therefore not a state this node can be
+	// handed any more — the realistic pair is false/true.
 	t.Run("a skipped build is not a green build", func(t *testing.T) {
-		got, _ := runWith(t, allFixed, "true", "true", "true", "true")
+		got, _ := runWith(t, allFixed, "true", "true", "false", "true")
 		if n := blocking(t, got.Gate); n < 1 {
 			t.Errorf("blocking_count = %v with a build that never ran", n)
+		}
+	})
+
+	// The required check is read by a human deciding what to do next, so the
+	// note must not send them after a build failure that never happened. The
+	// skip is the MORE SPECIFIC case and has to be tested first: verify_ok is
+	// false on a skip as well, so an `if not verify_ok` written first makes the
+	// skip branch unreachable and the status says "red" about a build that
+	// never ran.
+	t.Run("a skipped build is diagnosed as never run, not as red", func(t *testing.T) {
+		got, _ := runWith(t, allFixed, "true", "true", "false", "true")
+		note, _ := got.Gate["note"].(string)
+		if !strings.Contains(note, "never ran") {
+			t.Errorf("note = %q, want it to say the build never ran", note)
+		}
+		if strings.Contains(note, "build/tests red") {
+			t.Errorf("note = %q — it accuses a build failure that never happened", note)
+		}
+	})
+
+	t.Run("a genuinely red build is still diagnosed as red", func(t *testing.T) {
+		got, _ := runWith(t, allFixed, "true", "true", "false", "false")
+		note, _ := got.Gate["note"].(string)
+		if !strings.Contains(note, "build/tests red") {
+			t.Errorf("note = %q, want it to name the red build", note)
+		}
+		if strings.Contains(note, "never ran") {
+			t.Errorf("note = %q — a red build did run", note)
 		}
 	})
 

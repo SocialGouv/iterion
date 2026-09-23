@@ -98,7 +98,7 @@ protection and no click banks unverified work, which is worse.
 The mechanisms above are shipped, not perfect. Four gaps are worth carrying in
 your head, because each is a place the ratchet slips silently:
 
-- **A missing `verify.sh` is now a REFUSAL** (#1598, closed). `verify_run`
+- **A missing `verify.sh` is now a REFUSAL** (#1598, gate half closed; claims-citation half open). `verify_run`
   reports `skipped: true, passed: false` when the builder produced no script, at
   all eleven carriers — a gate that did not run cannot certify, and #1585 rests
   the unattended-merge decision on exactly these gates. `skipped` stays in the
@@ -107,15 +107,22 @@ your head, because each is a place the ratchet slips silently:
   build writes a `verify.sh` that exits 0 — an explicit empty gate leaves a
   reviewable artefact where a missing script leaves nothing. **That hatch is the
   gap below, not a way around it.**
-- **The reuse pre-check validates shape, not content.** After the first pass,
-  `verify_probe` reuses the existing `verify.sh` on size plus `sh -n`. A script
-  containing `echo ok` passes both and becomes the run's deterministic truth —
-  caught only in a repo whose CI already has a drift gate for `verify_run` to
-  mirror. Measured on four carriers (branch-improve-loop, instrument,
-  whole-improve-loop, feature-dev): an empty hatch written on pass 1 still
-  reports `passed: true, skipped: false` on pass 2 against a tree that does not
-  compile — and `skipped: false` means no reader downstream can tell. The
-  refusal message warns the author, which is not the same as preventing it (#1707).
+- **The reuse pre-check validates shape, not content**, in four of the five
+  bundles that have one. Read off the compiled IR: a `verify_probe` node exists
+  in **five** of the eleven gate carriers (app-dev, branch-improve-loop,
+  feature-dev, instrument, whole-improve-loop) and in none of the other six. In
+  four of those five it reuses the existing `verify.sh` on size plus `sh -n`, so
+  a script containing `echo ok` passes both and becomes the run's deterministic
+  truth — caught only in a repo whose CI already has a drift gate for
+  `verify_run` to mirror. Measured on exactly those four: an empty hatch written
+  on pass 1 still reports `passed: true, skipped: false` on pass 2 against a tree
+  that does not compile, and `skipped: false` means no reader downstream can tell.
+  **app-dev is the exception**: its probe fingerprints ten build manifests
+  (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, their locks …) and
+  forces a re-author when one changes — so a build system that ships one of them
+  does dislodge the hatch there, and a Makefile, CMake, Gradle or Maven project
+  does not. The refusal message warns the author, which is not the same as
+  preventing it (#1707).
 - **The merge gate blocks only when six things hold**: the run's
   forge-publish grant (without it the bot posts no status at all), the bot's
   `gate_enabled`, its pinned `gate_context`, the forge's statuses-write
