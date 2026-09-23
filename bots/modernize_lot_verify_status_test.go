@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 )
 
 // modernizeLotVerifyOut is the subset of lot_verify's report the tests read.
@@ -77,9 +79,17 @@ func modernizeLotVerify(t *testing.T, script, ws, lotID, base, exitGate string) 
 // placeholder the engine emits for an unresolved optional secret — which is
 // what a run with no credential installed actually sees, and which must NOT
 // be exported as if it were a path.
+//
+// That placeholder is taken from the engine itself rather than spelled out
+// here: executor_tool.go falls back to secretguard.PlaceholderForName for any
+// secret reference that resolves to nothing, so a hand-written twin would be
+// a string production never emits — and the day lot_verify learns to
+// RECOGNISE a placeholder (refusing explicitly instead of relying on the path
+// not existing), a twin would keep this bench green while the real rendering
+// walked past the new guard.
 func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate string, env []string, credPath ...string) (modernizeLotVerifyOut, int) {
 	t.Helper()
-	cred := "iterion-secret-placeholder-deploy_credential"
+	cred := secretguard.PlaceholderForName("deploy_credential")
 	if len(credPath) > 0 {
 		cred = credPath[0]
 	}
