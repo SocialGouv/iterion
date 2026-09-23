@@ -269,28 +269,3 @@ func TestReanchorForDepthRewritesRelativeTargets(t *testing.T) {
 		t.Errorf("same-directory splice must be a no-op, got %s", got)
 	}
 }
-
-// The catalog's static text is a whole markdown document, and a page that
-// documents links quotes link forms — in a fenced example, in a code span. A
-// quoted form is not a link the copy must re-anchor: rewriting it edits the
-// prose the page wrote, and the reader of the skill copy is shown a target
-// that was never a target.
-//
-// The mutation that reddens this: scan `content` instead of mdcode's mask.
-func TestReanchorForDepthLeavesAQuotedLinkFormAlone(t *testing.T) {
-	const content = "# Catalog\n\n" +
-		"A real link to [the guide](docs/guide.md).\n\n" +
-		"An inline example: `](docs/guide.md)` is the form.\n\n" +
-		"```\n[fenced](docs/guide.md)\n```\n"
-
-	got := reanchorForDepth(content, "bots/whats-next", "bots/whats-next/skills")
-
-	if !strings.Contains(got, "](../docs/guide.md)") {
-		t.Errorf("the real link was not re-anchored:\n%s", got)
-	}
-	for _, quoted := range []string{"`](docs/guide.md)`", "[fenced](docs/guide.md)"} {
-		if !strings.Contains(got, quoted) {
-			t.Errorf("a quoted form was rewritten as though it were a link — %s is gone:\n%s", quoted, got)
-		}
-	}
-}

@@ -178,7 +178,11 @@ func readDocRow(abs, rel string) (docRow, error) {
 	inFence := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "```") {
+		// The fence rule is internal/mdcode's, the same one the mask and the
+		// documentation link checker read: a third spelling here would give
+		// this repository two answers about where a page's code is, in the
+		// very function that then hands the sentence to reanchor.
+		if mdcode.FenceMarker(line) != "" {
 			inFence = !inFence
 			continue
 		}

@@ -222,6 +222,15 @@ func TestALongSentenceQuotingALinkFormIsNotCutInsideItsCodeSpan(t *testing.T) {
 			quote: "Avant ce correctif, la carte des docs réécrivait la phrase d'ouverture sans lire les spans et émettait la forme `](../../docs/foo.md) ou sa voisine ](../foo.md)`, que github.com rend et que le site ignore.",
 		},
 		{
+			// The dangling run sits BEFORE a later closed span of a
+			// different width — a page quoting both a `…` form and a ``…``
+			// form, which is what the page documenting this rule writes. A
+			// repair that looked only past the LAST span reported nothing to
+			// repair and the generator aborted.
+			name:  "a cut span followed by a closed span of another width",
+			quote: "Le correctif de la carte des docs evoque la forme `](../../docs/foo.md) puis la forme ``doublee`` que la page cite sans jamais la suivre et rien de plus.",
+		},
+		{
 			// The cut lands at the last space before the bound, so the span
 			// has to CARRY spaces for the cut to fall inside it — which is
 			// what a span quoting two forms, or a sentence, always does.

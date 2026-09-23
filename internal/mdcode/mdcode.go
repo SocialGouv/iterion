@@ -152,8 +152,8 @@ func Mask(md string) string {
 	return string(out)
 }
 
-// CloseDanglingSpan repairs a string whose last backtick run opens a code
-// span the string does not close, by appending the run that closes it.
+// CloseDanglingSpan repairs a string that opens a code span it does not
+// close, by appending the backtick run that closes it.
 //
 // It is what a caller that TRUNCATES prose owes every scanner downstream. A
 // cut lands where a byte bound falls, and one landing between a span's two
@@ -164,26 +164,48 @@ func Mask(md string) string {
 //
 // Closing rather than cutting, because cutting loses text: a cut at the first
 // backtick of a 60-byte ADR status leaves an EMPTY cell, and a cut mid-cell
-// drops the very name the sentence was quoting. Closing keeps every byte the
-// truncation kept and costs at most a few backticks.
+// drops the very name the sentence was quoting.
+//
+// The dangling run is the first one NO span covers, which is not the same as
+// the first one after the last span: a cut inside a `…` form followed by a
+// closed “…“ form leaves the dangling run BEFORE a pair, and looking only
+// past the last pair reported nothing to repair. A page that quotes two
+// backtick widths is exactly the page that documents this rule.
 func CloseDanglingSpan(s string) string {
-	end := 0
-	for _, r := range Spans(s) {
-		end = r[1]
+	spans := Spans(s)
+	covered := func(pos int) bool {
+		for _, r := range spans {
+			if pos >= r[0] && pos < r[1] {
+				return true
+			}
+		}
+		return false
 	}
-	i := strings.IndexByte(s[end:], '`')
-	if i < 0 {
-		return s
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] == '`' {
+			j++
+		}
+		if covered(i) {
+			i = j
+			continue
+		}
+		// A run with nothing after it opened nothing worth keeping.
+		if strings.TrimSpace(s[j:]) == "" {
+			return s[:i]
+		}
+		// A separator when the text already ends in backticks: appended
+		// directly, the closing run would MERGE with the trailing one into a
+		// single wider run, which closes nothing.
+		sep := ""
+		if s[len(s)-1] == '`' {
+			sep = " "
+		}
+		return s + sep + strings.Repeat("`", j-i)
 	}
-	open := end + i
-	n := 0
-	for j := open; j < len(s) && s[j] == '`'; j++ {
-		n++
-	}
-	// A run with nothing after it opened nothing worth keeping: drop it
-	// rather than close an empty span.
-	if strings.TrimSpace(s[open+n:]) == "" {
-		return s[:open]
-	}
-	return s + strings.Repeat("`", n)
+	return s
 }

@@ -624,7 +624,9 @@ func firstSentence(text string, max int) string {
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		text = strings.TrimSpace(text[:cut]) + "…"
+		// Close a code span the cut opened: a stray backtick in a node's
+		// Doc is what every reader of it shows for the rest of the line.
+		text = strings.TrimSpace(mdcode.CloseDanglingSpan(text[:cut])) + "…"
 	}
 	return text
 }

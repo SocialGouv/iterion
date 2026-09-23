@@ -190,6 +190,9 @@ func TestCloseDanglingSpanKeepsTheTextAndClosesTheSpan(t *testing.T) {
 		{"a closed span followed by a dangling run", "`a` then `b", "`a` then `b`"},
 		{"a dangling double run", "text ``half", "text ``half``"},
 		{"a run with nothing after it opened nothing", "text `", "text "},
+		{"the dangling run sits BEFORE a later closed span", "the form `](../x.md) then ``double`` quoted", "the form `](../x.md) then ``double`` quoted`"},
+		{"the closing run must not merge with a trailing run", "``a`", "``a` ``"},
+		{"a wider trailing run does not close a narrower opener", "a `b``", "a `b`` `"},
 		{"a run followed only by space is dropped too", "text `  ", "text "},
 		// The cell whose payload the first version of this helper threw away.
 		{"the real corpus cell keeps its name", "the stdio server (`iterion", "the stdio server (`iterion`"},
@@ -199,8 +202,13 @@ func TestCloseDanglingSpanKeepsTheTextAndClosesTheSpan(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("CloseDanglingSpan(%q) = %q, want %q", tc.src, got, tc.want)
 			}
-			// Whatever it returns must read as code-complete: a second pass
-			// changes nothing, and Mask hides the span it just closed.
+			// Whatever it returns must read as code-complete — asserted
+			// against Spans, not against CloseDanglingSpan itself: a witness
+			// that asks the function under test whether it succeeded passes
+			// on exactly the inputs the function is blind to.
+			if pos, ok := danglingBacktick(got); ok {
+				t.Errorf("CloseDanglingSpan(%q) = %q, still dangling at byte %d", tc.src, got, pos)
+			}
 			if again := mdcode.CloseDanglingSpan(got); again != got {
 				t.Errorf("not idempotent: %q then %q", got, again)
 			}
@@ -221,5 +229,58 @@ func TestCloseDanglingSpanNeverEmptiesATextThatHadText(t *testing.T) {
 		if got := mdcode.CloseDanglingSpan(src); strings.TrimSpace(strings.Trim(got, "`")) == "" {
 			t.Errorf("CloseDanglingSpan(%q) = %q — a cell that had text lost all of it", src, got)
 		}
+	}
+}
+
+// danglingBacktick reports a backtick byte that no code span covers — the
+// independent oracle for "this string is code-complete".
+func danglingBacktick(s string) (int, bool) {
+	spans := mdcode.Spans(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] != '`' {
+			continue
+		}
+		inside := false
+		for _, r := range spans {
+			if i >= r[0] && i < r[1] {
+				inside = true
+				break
+			}
+		}
+		if !inside {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// Every string this repository can truncate must come out code-complete. An
+// exhaustive sweep is what found the merge bug: the closing run appended to a
+// text already ending in backticks widened the trailing run instead.
+func TestCloseDanglingSpanLeavesNoDanglingBacktick(t *testing.T) {
+	alphabet := []string{"`", "a", " "}
+	var build func(prefix string, depth int)
+	checked := 0
+	build = func(prefix string, depth int) {
+		if depth == 0 {
+			got := mdcode.CloseDanglingSpan(prefix)
+			checked++
+			if pos, ok := danglingBacktick(got); ok {
+				t.Fatalf("CloseDanglingSpan(%q) = %q, dangling at %d", prefix, got, pos)
+			}
+			if again := mdcode.CloseDanglingSpan(got); again != got {
+				t.Fatalf("CloseDanglingSpan(%q) = %q is not idempotent: %q", prefix, got, again)
+			}
+			return
+		}
+		for _, c := range alphabet {
+			build(prefix+c, depth-1)
+		}
+	}
+	for n := 0; n <= 7; n++ {
+		build("", n)
+	}
+	if checked < 3000 {
+		t.Fatalf("only %d strings swept — this test would prove little", checked)
 	}
 }

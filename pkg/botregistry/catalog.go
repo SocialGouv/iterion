@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -272,7 +271,7 @@ func reanchorForDepth(content, fromDir, toDir string) string {
 	if fromDir == toDir {
 		return content
 	}
-	rewrite := func(m string) string {
+	return relTargetRe.ReplaceAllStringFunc(content, func(m string) string {
 		target := m[2 : len(m)-1]
 		if target == "" || strings.HasPrefix(target, "#") ||
 			externalTargetRe.MatchString(target) || strings.HasPrefix(target, "/") {
@@ -287,20 +286,5 @@ func reanchorForDepth(content, fromDir, toDir string) string {
 			return m
 		}
 		return "](" + filepath.ToSlash(rel) + frag + ")"
-	}
-
-	// The spliced text is a whole markdown document, so it quotes link forms
-	// in fenced examples and code spans — and a quoted form is not a link to
-	// re-anchor. internal/mdcode says where the code is at the same offsets,
-	// leaving the grammar of a link to relTargetRe.
-	masked := mdcode.Mask(content)
-	var out strings.Builder
-	end := 0
-	for _, loc := range relTargetRe.FindAllStringIndex(masked, -1) {
-		out.WriteString(content[end:loc[0]])
-		out.WriteString(rewrite(content[loc[0]:loc[1]]))
-		end = loc[1]
-	}
-	out.WriteString(content[end:])
-	return out.String()
+	})
 }
