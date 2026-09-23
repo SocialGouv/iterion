@@ -574,6 +574,13 @@ tasks:
     cmds:
       - go test -count=1 -run 'TestGeneratedDSLDocsAreFresh|TestRegistryMatchesTheParser|TestEBNF' ./pkg/dsl/spec/
 
+  auto-maintenance:check:
+    desc: "Run the auto-maintenance agreements against a repository (REPO=owner/name): 1 on a measured disagreement, 2 on a blind spot. See docs/auto-maintenance.md"
+    requires:
+      vars: [REPO]
+    cmds:
+      - ./scripts/auto-maintenance-check.sh {{.REPO}}
+
   docs:links:
     desc: Check every relative link and #anchor of the tracked markdown against the tree, the way GitHub resolves them (0 broken is the contract), and hold the site's slugifier to the same GitHub-verified anchors
     cmds:
