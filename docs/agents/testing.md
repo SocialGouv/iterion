@@ -5,6 +5,83 @@ time: a git subprocess that outlives its temp dir, a run whose workspace is the
 operator's own checkout, Mongo conformance that only runs in CI, and a UI suite
 that touches the operator's store.
 
+**Before anything else, read [The proof discipline](#the-proof-discipline)
+below**: which layer proves your change, and when a session is expected to
+spend LLM money to find out.
+
+## The proof discipline
+
+There are two layers, and the whole discipline is knowing which one your
+change needs.
+
+| layer | proves | cost | runs |
+|---|---|---|---|
+| **deterministic** | the real seams, credential-free, stub executor | free | **every push and PR** (`go test ./e2e/...` + `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
+| **live** (`-tags live`) | what a real harness actually does | real LLM spend | only when a human or an agent asks — **no CI job carries the tag** |
+
+The free layer carries **361 of the 387 rows** of
+[`e2e-coverage-matrix.md`](../e2e-coverage-matrix.md); only **7** are
+`covered-live`. So the cheap reflex covers almost everything, and the paid one
+stays affordable because it is rare and targeted.
+
+### What a session owes, by what it touched
+
+1. **Always** — `devbox run -- task check` (lint + the free layer). Not
+   negotiable, not a judgement call.
+2. **Touched a core surface** — add or adjust the **deterministic** row first.
+   A capability reachable without a credential belongs in the free layer;
+   moving it to `live` because that was quicker to write is how a suite
+   becomes unaffordable to run.
+3. **Touched something only a real model can prove** — a backend's behaviour,
+   a bot's judgement, structured output on a real harness, the permission gate
+   at `ask`, a session resume — then **run the matching live target**, and say
+   in the PR which one and what it cost:
+
+   ```bash
+   devbox run -- task test:live:bot:review-pr     # one bot
+   devbox run -- task test:live:feat:permission   # one feature
+   devbox run -- task test:live:quality:unit      # free: the snapshot engine
+   ```
+
+   Never the `*:all` aggregates, and never wired into blocking CI
+   ([cost discipline](../live-e2e-coverage.md#cost-discipline)).
+4. **No live target covers what you changed** — that is the interesting case.
+   Write one, or **adapt the nearest**, in the same change. A live layer that
+   never grows with the engine is a live layer that slowly stops proving
+   anything.
+5. **A live target fails** — it is a **finding, not a chore**. File it under
+   the epic it belongs to. A live test *relaxed* until it passes again is a
+   regression that got away; say so in the ticket, not in the diff.
+
+### Deciding to spend
+
+The spend is real, so it is arbitrated, not assumed:
+
+- **Say what it will cost before running it** — per-target estimates live in
+  each test's doc comment and in its Taskfile `desc`.
+- **Prefer one target to a sweep.** Bounded and repeatable beats exhaustive
+  and unaffordable.
+- **Record the result** — the last-green ledger
+  ([#1422](https://github.com/SocialGouv/iterion/issues/1422)) exists so the
+  next session can answer "does this still pass?" for free. Until it lands,
+  say it in the PR.
+- **If the budget says no, say no in writing.** "Not re-proven, would cost
+  ~$X" in the PR is honest and actionable. Silence reads as "proven" to every
+  later reader, which is the one thing it never means.
+
+### The trap this repo has already paid for
+
+More tests is not more proof. A test exercises the **site**, not the
+guarantee; a stub that accepts anything certifies nothing; a guard that
+enumerates spellings never converges. **Name a test for what its mutation
+reddens** — if no mutation separates the elaborate version from the simple
+one, ship the simple one. A matrix row added without any mutation going red
+has cost money and bought nothing.
+
+Full reference for the live layer (harness, judge panel, env knobs, authoring
+a new target): [`docs/live-e2e-coverage.md`](../live-e2e-coverage.md).
+Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/issues/1421).
+
 ## Testing Patterns
 
 - `tmpStore()` — creates temp directory-backed RunStore for test isolation

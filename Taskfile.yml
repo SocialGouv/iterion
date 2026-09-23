@@ -1242,6 +1242,11 @@ tasks:
         PY
         echo "Updated docker/llm-clis/package.json — review and commit."
 
+  board:epics:sync:
+    desc: "Check the GitHub board's Epic field against the sub-issue parents (APPLY=1 to fix)"
+    cmds:
+      - scripts/board-epics-sync.sh {{if eq .APPLY "1"}}--apply{{end}}
+
   docker:build:
     desc: Build the iterion container image locally (tagged ghcr.io/socialgouv/iterion:dev)
     cmds:

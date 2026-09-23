@@ -162,6 +162,19 @@ devbox run -- go build -o iterion ./cmd/iterion
 devbox run -- go test ./...
 ```
 
+**The proof discipline — which layer proves your change.** `task check` (lint +
+the free deterministic layer, ~93 % of the coverage matrix) is owed by **every**
+session, always. The `live` layer costs real LLM money and **no CI job runs it**:
+reach for the one matching target when you touched something only a real model
+can prove — a backend's behaviour, structured output on a real harness, the
+permission gate at `ask`, a bot's judgement — then say in the PR which target
+and what it cost. No target covers it? Write or adapt one in the same change. A
+live failure is a **finding**, not a chore; a live test relaxed until it passes
+again is a regression that got away. Budget says no? Write "not re-proven, ~$X"
+— silence reads as "proven". The rules, the per-surface obligations and the
+traps already paid for:
+[docs/agents/testing.md](docs/agents/testing.md#the-proof-discipline).
+
 ## Key Dependencies
 
 - Go 1.26.0
@@ -207,7 +220,8 @@ index and contribution rule: **[docs/agents/README.md](docs/agents/README.md)**.
 | A node picks the wrong model, loses tools, or acts "dumber" than its native harness; sandboxes, plugins, supervisors, cursors | [backends-and-execution.md](docs/agents/backends-and-execution.md) |
 | Something launched a run and you need to know what | [automation-surfaces.md](docs/agents/automation-surfaces.md) |
 | Writing or amending a catalog bot (and keeping the engine bot-agnostic) | [bot-authoring.md](docs/agents/bot-authoring.md) |
-| Adding a test, or chasing one that leaks into the operator's checkout | [testing.md](docs/agents/testing.md) |
+| Deciding whether a change owes a live (paid) e2e run, adding a test, or chasing one that leaks into the operator's checkout | [testing.md](docs/agents/testing.md) |
+| Judging how *proven* a surface is — battle-tested backends, bots with production evidence, the two test layers | [state-of-the-art.md](docs/state-of-the-art.md) |
 | Launching a catalog bot against this repo for real | [dogfood.md](docs/agents/dogfood.md) |
 | Running the security bots on iterion itself | [security-selfaudit.md](docs/agents/security-selfaudit.md) |
 | "How do I configure / operate / debug X" — the operational index | [runbooks.md](docs/agents/runbooks.md) |

@@ -27,11 +27,24 @@ the GitHub board is the roadmap/chantier view. An `iterion issue import`
 mirror (GitHub → native, one-way idempotent) can bridge the two when a
 ticket should be dispatched to a bot.
 
+**Every ticket lives under an epic.** The board is organised by **`epic:`
+issues** — one per chantier, carrying its own state of play, its acquis and
+its open sub-issues. A ticket belongs to its epic **twice**: as a **sub-issue**
+(the authority) and through the **`Epic` field** (the projection the views
+need — a board column accepts a single-select, never "Parent issue"). A new
+ticket gets both, and `task board:epics:sync` says so. `epic:` is an
+*objective container*; a multi-page specification is a **`design:`** ticket
+that an epic consumes. Mechanics, views and the one step the API cannot do:
+[docs/board-epics.md](docs/board-epics.md). How proven each surface actually
+is — the repo-side twin of the epics: [docs/state-of-the-art.md](docs/state-of-the-art.md).
+
 A work session on iterion follows three phases:
 
 **Phase A — plan & align (start of session).** Read the board, triage the
-Inbox, make the statuses true, pick or confirm the session's ticket. Work
-discovered mid-session becomes a new issue, not a side quest.
+Inbox, make the statuses true, pick or confirm the session's ticket. Start
+from the **🎯 Epics** view rather than the flat Kanban: it says where each
+objective stands, which is what picking work needs. Work discovered
+mid-session becomes a new issue **under an epic**, not a side quest.
 
 **Claim before work (multi-session rule).** Several agent sessions (Claude
 Code, Codex, others) often run in parallel on iterion. A session *claims*
