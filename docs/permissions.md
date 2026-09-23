@@ -147,10 +147,47 @@ reviewer node, counting only what the list itself contributes:
 
 ```
 no tools: list                          the list adds nothing
+tools: []                               the list adds all fourteen
 tools: [bash, read_file, glob, grep]    the list adds
   [Write Edit MultiEdit NotebookEdit Task WebFetch WebSearch ToolSearch
    TodoWrite Skill]
 ```
+
+**`tools: []` is a declaration, not an absence.** An empty list is the author
+saying *this node has no tools*; a node with no `tools:` line leaves the
+surface undeclared, which is what "the list adds nothing" above means. The two
+used to be byte-identical — the parser returned nil for `[]`, the AST's JSON
+seam dropped it and `iterion fmt` deleted the line — so a node that asked for
+no tools kept the whole native roster (#1615). They are told apart from the
+parser down, through one predicate (`toolcatalog.ToolsDeclared`) and one
+explicit fact on the task (`delegate.Task.ToolsDeclared`).
+
+Three backends receive the list and narrow on it (`toolcatalog.ReceivesToolList`):
+claw resolves zero tool definitions from it, claude_code disallows all
+fourteen names of `claudeNativeTools`, codex drops to the `read-only` sandbox.
+pi, kimi and grok are driven through the CLI-agent seam, which never passes
+the list to the agent: there the bound is dropped and **C270** says so at
+compile time. Because an older engine reads `tools: []` as an absent list —
+the opposite bound — a bundle that spells it asks for
+`requires.iterion >= 3.190.0`, and an older runner refuses the bundle rather
+than inverting it.
+
+**What `tools: []` is not.** It is a narrowing, not a proof that the node
+holds nothing, and nothing in the engine treats it as one — the parallel-branch
+scheduler in particular still reads such a node exactly as it reads an
+undeclared one. Two measured reasons. `claudeNativeTools` is a hardcoded
+enumeration of a roster iterion does not own, and the same package names tools
+outside it — `orchestrationTools`' `Agent`, `TaskOutput` and `Monitor` — which
+therefore survive `--disallowedTools`; MCP tools are not on that roster either,
+so a node's `mcp_servers:` stay reachable. (`Workflow` is the exception that
+proves the shape: it is *not* on the roster and is withheld separately, from
+every non-ultracode node, whatever the list says.) On claw,
+`assembleEffectiveTools` adds `ask_user` when `interaction:` is set, then
+`todo_write`, then `read_file`/`write_file`/`glob` under `auto_memory:` — so a
+node that declared no tools can end up holding a file writer, which **C270**
+warns about at compile time. A bound that must hold is a `deny:` rule,
+evaluated by the gate — and there too the spelling has to be one the gate
+knows (a rule naming `Bash` does not bound claw's `repl`).
 
 (A non-ultracode node also carries `Workflow` on that flag whatever its
 `tools:` says — the orchestration surface, unrelated to the list. And a tool
@@ -171,9 +208,20 @@ that needs that eligibility still needs the `tools:` list.
 
 A rule is a *bound on what runs*, never a grant of what exists: a node
 whose `tools:` omits a tool cannot call it however its `allow:` reads. The
-compiler does not try to reconcile the two — it would have to agree with
-three alias tables in three packages, and the first one to drift would tell
-an author to delete a live `deny:` rule.
+compiler still does not try to reconcile the two, and the reason is now a
+measure rather than a fear of drift: a workflow `allow:` list is shared by
+nodes with *different* `tools:` lists, so a rule inert on one node exists for
+its siblings. Over the 81 shipped `.bot` files, a check of that shape fires 13 times on
+`allow:` rules and **13 of 13 come from a workflow-level list** — it would
+tell an author to change a node because of a rule written for its siblings
+(#1579).
+
+What the two fields no longer do is disagree about a *word*. Both read one
+spelling table (`toolcatalog.CanonicalToolName`): a `tools:` entry grants
+through a projection of that key onto each backend's roster, and a rule
+matches the key a call canonicalises to. Before they shared it, `run_command`
+granted native `Bash` and matched no rule, and `deny: ["tool_search"]` did not
+bound a `ToolSearch` call.
 
 Matching semantics (`pkg/backend/permission`):
 
@@ -188,8 +236,19 @@ Matching semantics (`pkg/backend/permission`):
 supported route: a single `Bash(...)` rule covers claude_code's `Bash`,
 claw's `bash`/`shell`, pi's `bash`, Grok's `run_terminal_command`, and Kimi's
 `Bash`; `Edit(...)` covers `Edit`/`edit_file`/`file_edit`/Grok's
-`search_replace`; `Read(...)` covers `Read`/`read_file`; etc.
-(see `canonicalToolName`).
+`search_replace`; `Read(...)` covers `Read`/`read_file`; `Bash(...)` also
+covers `run_command`, `Edit(...)` codex's `apply_patch`, `Write(...)`
+`file_write`, and `ToolSearch` claw's `tool_search`; etc. (see
+`toolcatalog.CanonicalToolName`, the one table, and `canonicalToolName` for
+the MCP-name handling layered on it).
+
+A row of that table asserts that two spellings ARE the same tool, never that
+one suggests the other: `allow:` widens, so collapsing a narrower intent onto
+a broader tool would grant more than the author wrote. `workspace_grep` is
+therefore not `grep` and `diagnostic_shell` is not `bash` — `bots/copilot`
+allows the first of each pair while denying the second. For the same reason a
+second shell is not a spelling of the first: a rule naming `Bash` does not
+bound claw's `repl`.
 
 ### Claude Code diagnostic bridge
 

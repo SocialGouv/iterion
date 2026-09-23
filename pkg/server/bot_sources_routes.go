@@ -16,8 +16,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -201,6 +203,14 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 		s.botSourceError(w, r, err)
 		return
 	}
+	// The same fold refusal as the per-file route (#1612), asked of the
+	// whole bundle: this is where the studio's CLOUD save of a bot in
+	// several files lands, and where a push that folds a stored value
+	// would otherwise replace it with a text its author never wrote. A
+	// slug that does not exist yet is a creation — no before, no claim.
+	if !s.bundleFoldsNothing(w, r, tenantID, slug, bs.Files) {
+		return
+	}
 	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
@@ -286,12 +296,27 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	for k, v := range bs.Files {
 		files[k] = v
 	}
+	stored := bs.Files[path]
 	files[path] = body.Content
 	bs.Files = files
 	bs.Version = body.Version
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
+	}
+	// This route takes file CONTENT, not a document, so it cannot ask the
+	// writer whether it could have produced it. It can ask the only
+	// question the two texts it holds answer: would this write put on ONE
+	// line a value the stored file writes over several? That is the same
+	// refusal canon.Text makes of a document (#1612), and it belongs here
+	// because this is the one write a CLIENT performs — the studio's cloud
+	// single-file save and the files drawer, neither of which goes through
+	// a save path of ours.
+	if workflowfile.IsWorkflowFile(path) {
+		if line, size, folds := canon.Folds(path, stored, body.Content); folds {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
+			return
+		}
 	}
 	// The file put is what is checked: a companion workflow through its
 	// own unit, a fragment through every workflow that may import it.
@@ -659,4 +684,35 @@ func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err erro
 	default:
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 	}
+}
+
+// bundleFoldsNothing reports whether a whole-bundle write leaves every
+// stored workflow's multi-line values over their lines, answering the
+// refusal itself when it does not. A slug with nothing stored is a
+// creation and folds nothing; a store that cannot be read is an error,
+// never a quiet "nothing to compare".
+func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, tenantID, slug string, files map[string]string) bool {
+	stored, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), tenantID), tenantID, slug)
+	if errors.Is(err, botsource.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		s.botSourceError(w, r, err)
+		return false
+	}
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths) // a stable name in the refusal, whatever the map order
+	for _, path := range paths {
+		if !workflowfile.IsWorkflowFile(path) {
+			continue
+		}
+		if line, size, folds := canon.Folds(path, stored.Files[path], files[path]); folds {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
+			return false
+		}
+	}
+	return true
 }

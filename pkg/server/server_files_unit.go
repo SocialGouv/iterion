@@ -15,10 +15,10 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
-	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
@@ -42,8 +42,17 @@ type unitFileInfo struct {
 	Imports []string `json:"imports,omitempty"`
 }
 
+// canonReason is a canon refusal without its sentinel prefix, for a message
+// that already says which file it is about and what was being attempted.
+func canonReason(err error) string {
+	return strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")
+}
+
 func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
-	info := &unitInfo{Root: filepath.ToSlash(filepath.Dir(reqPath)), Main: u.Main, Revision: u.Digest}
+	// Files is never nil: the picker of the Source view iterates it, and a
+	// JSON `null` would reach a TS `UnitFileInfo[]` that declares itself
+	// non-nullable.
+	info := &unitInfo{Root: filepath.ToSlash(filepath.Dir(reqPath)), Main: u.Main, Revision: u.Digest, Files: []unitFileInfo{}}
 	for _, f := range u.Files {
 		fi := unitFileInfo{Rel: f.Rel}
 		if f.AST != nil {
@@ -508,8 +517,12 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		if f.AST != nil && sameProgram(part, f.AST) {
 			continue
 		}
-		text := unparse.Unparse(part)
-		if err := unparse.Verify(part, text); err != nil {
+		text, err := canon.Text(f.Rel, part, f.Source)
+		if err != nil {
+			if errors.Is(err, canon.ErrRefused) {
+				httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved from the studio: %s. Leave the file as it is, or edit it directly", f.Rel, canonReason(err))
+				return
+			}
 			httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved as .bot source without changing it: %v", f.Rel, err)
 			return
 		}
@@ -803,8 +816,12 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		if f.AST != nil && sameProgram(part, f.AST) {
 			continue
 		}
-		text := unparse.Unparse(part)
-		if err := unparse.Verify(part, text); err != nil {
+		text, err := canon.Text(f.Rel, part, f.Source)
+		if err != nil {
+			if errors.Is(err, canon.ErrRefused) {
+				httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved from the studio: %s. Leave the file as it is, or edit it directly", f.Rel, canonReason(err))
+				return
+			}
 			httpError(w, http.StatusUnprocessableEntity, "%s cannot be rendered as .bot source without changing it: %v", f.Rel, err)
 			return
 		}
@@ -824,4 +841,329 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		patched[rel] = text
 	}
 	writeJSON(w, unparseResponse{Source: source, Files: out, Revision: unit.LoadMap(patched, main).Digest})
+}
+
+// unitRequest is where a per-file request of the Source view reads its bot
+// from: a cloud bundle's files map, or a main in the workspace. It keeps
+// what staging one file needs, so the picker's render and its apply cannot
+// disagree on which unit they mean — and so a disk unit is re-staged
+// through LoadDirStaged, which keeps every file's on-disk name (what an
+// `include` and a `subbot` resolve against) instead of a map key.
+type unitRequest struct {
+	unit  *unit.Unit
+	files map[string]string // set for a cloud bundle
+	main  string
+	abs   string // set for a unit on disk
+	root  string // the unit's directory on disk, "" for a files map
+}
+
+// stage reloads the unit with rel's text replaced by source.
+func (ur unitRequest) stage(rel, source string) *unit.Unit {
+	if ur.files != nil {
+		patched := make(map[string]string, len(ur.files))
+		for k, v := range ur.files {
+			patched[k] = v
+		}
+		patched[rel] = source
+		return unit.LoadMap(patched, ur.main)
+	}
+	// Keyed the way loadDir keys its staged map: from the directory of the
+	// MAIN on disk, not by the unit's rel. For a main that is itself a
+	// `lib/` fragment the two differ, and a mismatched key is read as "no
+	// staged text" — the loader falls back to disk and the route answers
+	// 200 with the author's edit silently gone.
+	key := rel
+	if ur.root != "" {
+		if k, err := filepath.Rel(filepath.Dir(ur.abs), filepath.Join(ur.root, filepath.FromSlash(rel))); err == nil {
+			key = filepath.ToSlash(k)
+		}
+	}
+	return unit.LoadDirStaged(ur.abs, map[string][]byte{key: []byte(source)})
+}
+
+// resolveUnitRequest is the ONE place the two modes are told apart. A path
+// goes through s.safePath — the audited workspace boundary — and through
+// workflowfile.IsWorkflowFile, like every other route that reads a bot.
+func (s *Server) resolveUnitRequest(files map[string]string, main, path string) (unitRequest, error) {
+	if len(files) > 0 {
+		if main == "" {
+			main = "main.bot"
+		}
+		if !workflowfile.IsWorkflowFile(main) {
+			return unitRequest{}, fmt.Errorf("main %q is not a workflow file: a unit is read from a .bot", main)
+		}
+		return unitRequest{unit: unit.LoadMap(files, main), files: files, main: main}, nil
+	}
+	if path == "" {
+		return unitRequest{}, errors.New("a per-file request names no bot: give the bundle's files and its main, or the workspace path of the main")
+	}
+	if !workflowfile.IsWorkflowFile(path) {
+		return unitRequest{}, fmt.Errorf("%s is not a workflow file: a unit is read from a .bot", path)
+	}
+	abs, err := s.safePath(path)
+	if err != nil {
+		return unitRequest{}, err
+	}
+	u := unit.LoadDir(abs)
+	return unitRequest{unit: u, main: u.Main, abs: abs, root: u.Root}, nil
+}
+
+// unitFile is the unit's file named rel, and whether it holds one. A rel
+// the unit does not hold is an error wherever it appears: answering the
+// whole unit, or answering unchanged, would let a stale or mistyped name
+// read as success and send the author's typed text to the bin — including
+// the name of a fragment deleted under the open picker, which the staged
+// text would otherwise resurrect.
+func unitFile(u *unit.Unit, rel string) (unit.File, bool) {
+	for _, f := range u.Files {
+		if f.Rel == rel {
+			return f, true
+		}
+	}
+	return unit.File{}, false
+}
+
+// unparseUnitPart renders ONE file of a unit: what the Source view's picker
+// shows for the file it is on. Read-only — no revision is presented and
+// nothing is written — so a file of a unit that no longer loads, or one the
+// writer cannot reproduce, is still readable.
+func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc *ast.File) {
+	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if ur.unit.Merged == nil {
+		httpError(w, http.StatusUnprocessableEntity, "the bot's files hold no program")
+		return
+	}
+	f, ok := unitFile(ur.unit, req.File)
+	if !ok {
+		httpError(w, http.StatusUnprocessableEntity, "%q is not a file of this bot (%s)", req.File, strings.Join(unitRels(ur.unit), ", "))
+		return
+	}
+	parts, err := splitByProvenance(doc, ur.unit)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	// A unit's `bindable` is the MAIN's parse alone, so a FRAGMENT the
+	// parser could only salvage leaves the buffer unsalvaged and this view
+	// on — and the loader keeps that file's partial AST, so the part here
+	// is missing everything after the error. Rendering it back would show
+	// the author a text their file does not contain and hide the very lines
+	// they have to fix, which is what this route exists not to do.
+	if spr := parser.Parse(f.Rel, string(f.Source)); parseHasErrors(spr.Diagnostics) {
+		// The diagnostic itself, not a guess about it: several error-severity
+		// diagnostics leave a COMPLETE ast (an unknown property, a bad `dsl:`
+		// value), so "does not parse" would be false of them — while the
+		// render is still not the file, which is what this refuses.
+		writeJSON(w, unparseResponse{
+			Source:  string(f.Source),
+			Refused: fmt.Sprintf("iterion could not read all of %s (%s), so the document holds only what could be read of it — repair it where this bot's files live", f.Rel, firstParseError(spr.Diagnostics)),
+			Stored:  true,
+		})
+		return
+	}
+	text, err := canon.Text(f.Rel, parts[f.Rel], f.Source)
+	if err != nil {
+		if errors.Is(err, canon.ErrRefused) {
+			// The writer cannot reproduce this file. Rendering it anyway
+			// would show the author a text their file does not contain —
+			// the lie the salvage path already refuses to tell — so the
+			// file's own text comes back, with the reason it is the only
+			// thing that can.
+			writeJSON(w, unparseResponse{Source: string(f.Source), Refused: canonReason(err), Stored: true})
+			return
+		}
+		httpError(w, http.StatusUnprocessableEntity, "%s cannot be rendered as .bot source without changing it: %v", f.Rel, err)
+		return
+	}
+	writeJSON(w, unparseResponse{Source: text})
+}
+
+// parseUnitWithFile re-parses a unit with ONE file replaced by the text the
+// Source view's picker holds: the author edits a real file, and the merged
+// document the canvas and the save both work from is rebuilt from it.
+//
+// It answers no revision. A revision is a claim about the files at REST —
+// the token saveUnit and unparseUnitFiles compare against disk, or against
+// the bundle as stored — and an overlay changed neither. Answering the
+// staged unit's digest would make every later save a false conflict;
+// answering the current one would adopt a colleague's edit made meanwhile
+// and destroy the conflict detection outright. The client keeps the
+// revision it opened at.
+func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
+	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if _, ok := unitFile(ur.unit, req.File); !ok {
+		httpError(w, http.StatusUnprocessableEntity, "%q is not a file of this bot (%s)", req.File, strings.Join(unitRels(ur.unit), ", "))
+		return
+	}
+	// The staged text must PARSE on its own. A file the parser can only
+	// salvage merges as the declarations it COULD read, and a document
+	// missing them writes that file back short — 200, no diagnostic, the
+	// author's declarations gone. The refusal is what the Source view shows
+	// instead, which is where the author fixes it.
+	//
+	// It is a parse check and nothing more: text that parses but declares
+	// less than it did is the author's edit, and /api/parse answers parse
+	// diagnostics alone on every one of its three shapes. What the program
+	// compiles to is /api/validate's question.
+	pr := parser.Parse(req.File, req.Source)
+	if parseHasErrors(pr.Diagnostics) {
+		var errs []string
+		for _, d := range pr.Diagnostics {
+			if d.Severity == parser.SeverityError {
+				errs = append(errs, d.Error())
+			}
+		}
+		httpError(w, http.StatusUnprocessableEntity, "%s does not parse, so it cannot be applied — the rest of the bot would be saved without what it declares: %s", req.File, strings.Join(errs, "; "))
+		return
+	}
+	cur, _ := unitFile(ur.unit, req.File) // present: the guard above returned otherwise
+	if !sameImports(cur.AST, pr.File) {
+		httpError(w, http.StatusUnprocessableEntity, "%s changes this bot's `import` lines, which the per-file editor cannot apply: a save writes each declaration back to the file it came from and reads the imports from the files themselves. Removing one here would leave the import in place and empty the fragment; adding one would make every later save refuse. Edit the import on disk (or in the bundle's files) and reopen the bot.", req.File)
+		return
+	}
+	// Same reason as the imports: splitByProvenance rebuilds every part with
+	// the STORED file's profile, so a `dsl:` line changed here is never
+	// written — while the declarations WOULD have been read under the new
+	// one, which is how a quoted value changes meaning between the two.
+	if cur.AST != nil && pr.File != nil && cur.AST.EffectiveProfile() != pr.File.EffectiveProfile() {
+		httpError(w, http.StatusUnprocessableEntity, "%s changes this bot's `dsl:` profile, which the per-file editor cannot apply: a save writes each declaration back under the profile the file already has, so the change would be dropped and the values read under the other profile. Change it where this bot's files live and reopen the bot.", req.File)
+		return
+	}
+	staged := ur.stage(req.File, req.Source)
+	var diags []string
+	for _, d := range staged.Diagnostics {
+		diags = append(diags, d.Error())
+	}
+	if staged.Merged == nil {
+		writeJSON(w, parseResponse{Diagnostics: diags})
+		return
+	}
+	// staged.Root is "" for a bundle's files map and the directory for a
+	// unit on disk: provenance names each file the way the document the
+	// client already holds does, so a save can still tell the files apart.
+	docJSON, err := ast.MarshalFileWithProvenance(staged.Merged, staged.Root)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+		return
+	}
+	info := unitInfoOf(staged, staged.Main)
+	info.Root = ""
+	info.Revision = ""
+	mainSource := ""
+	if mf, ok := unitFile(staged, staged.Main); ok {
+		mainSource = string(mf.Source)
+	}
+	writeJSON(w, parseResponse{
+		Document:    json.RawMessage(docJSON),
+		Diagnostics: diags,
+		Unit:        info,
+		Bindable:    !parseHasErrors(parser.Parse(staged.Main, mainSource).Diagnostics),
+	})
+}
+
+// openedText is the current text of the workspace file a document was
+// opened from — the BEFORE a fold is judged against (#1612). Empty, with
+// no error, when the document has no workspace file to be about: an
+// unbound buffer, or a path with a scheme (a cloud `botsource://` bot,
+// whose writes are judged by the bot-source routes on the two texts they
+// hold). A path that IS named and cannot be resolved is an error, never a
+// silent "nothing to compare": that is how a guard stops firing quietly.
+func (s *Server) openedText(w http.ResponseWriter, path string) ([]byte, bool) {
+	if path == "" || strings.Contains(path, "://") {
+		return nil, true
+	}
+	if !workflowfile.IsWorkflowFile(path) {
+		// The same bound every other route that reads a bot applies. Without
+		// it this answers the whole content of any workspace file, since a
+		// refusal echoes the text it read.
+		httpError(w, http.StatusBadRequest, "%s is not a workflow file: a document is rendered against a .bot", path)
+		return nil, false
+	}
+	abs, err := s.safePath(path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return nil, false
+	}
+	b, err := os.ReadFile(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		// A path the buffer is headed for but that is not written yet.
+		return nil, true
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "read error: %v", err)
+		return nil, false
+	}
+	return b, true
+}
+
+// sameImports reports whether two readings of one file carry the same
+// import lines, in the same order. The per-file editor may not change
+// them: splitByProvenance rebuilds every file's Imports — and the unit's
+// membership — from the files on disk, so a changed import is not written
+// but silently dropped, taking the fragment it names with it.
+func sameImports(a, b *ast.File) bool {
+	var left, right []string
+	if a != nil {
+		for _, im := range a.Imports {
+			left = append(left, im.Path)
+		}
+	}
+	if b != nil {
+		for _, im := range b.Imports {
+			right = append(right, im.Path)
+		}
+	}
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// unitFoldReason names a file of the unit whose multi-line form the
+// FLATTENED text does not carry. It is a question about what is handed
+// over, not about each file on its own: the merged program is rendered at
+// the merged profile, so a unit can hold a file `iterion fmt` refuses and
+// still flatten faithfully, and a unit of files it accepts can flatten
+// folded. Asking per file answered both the wrong way round — it blocked a
+// download that was byte-faithful and stayed silent on one that was not.
+//
+// Empty when nothing is lost, and empty too when the unit cannot be
+// resolved, which is the one case the merged view had nothing to be about.
+// It ANNOTATES a display; the writes are refused on their own, each
+// against the file it is about.
+func (s *Server) unitFoldReason(source string, files map[string]string, main, path string) string {
+	ur, err := s.resolveUnitRequest(files, main, path)
+	if err != nil || ur.unit.Merged == nil {
+		return ""
+	}
+	for _, f := range ur.unit.Files {
+		if line, size, folds := canon.Folds(f.Rel, string(f.Source), source); folds {
+			return fmt.Sprintf("%s: the value at line %d is written over several lines and the merged program has no form for one — its %d characters come back as a single line (#1612)", f.Rel, line, size)
+		}
+	}
+	return ""
+}
+
+// firstParseError is the first error-severity diagnostic of a parse, for a
+// message that quotes what happened rather than characterising it.
+func firstParseError(diags []parser.Diagnostic) string {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return d.Error()
+		}
+	}
+	return "unreadable"
 }

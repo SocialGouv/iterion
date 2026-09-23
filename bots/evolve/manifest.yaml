@@ -1,7 +1,15 @@
 name: evolve
 display_name: Evoly
 icon: 🧬
-version: 0.1.1
+version: 0.1.2
+## 0.1.2 — the gpt reviewer's `tools: []` is carried by the file again. The
+## line had been dropped by a formatting pass (an empty list used to read as
+## an absent one), leaving ten comment lines describing a rule nothing
+## enforced. The engine floor rises because the DECLARATION is backend-blind:
+## an engine below it reads `tools: []` as an absent list everywhere, which on
+## this node's pinned claw backend happens to resolve to zero tools anyway,
+## but on any other route means the CLI's own toolset. The floor states what
+## the file means, not what one backend does with it.
 ## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside eighteen prompts (47 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.
@@ -81,4 +89,4 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.141.0"
+  iterion: ">= 3.190.0"

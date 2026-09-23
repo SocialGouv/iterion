@@ -35,7 +35,12 @@ export function useFileWatcher() {
       const store = docStoreRef.current.getState();
       const { addToast, notifyFilesChanged } = useUIStore.getState();
       const filePath = store.currentFilePath;
-      const dirty = store.isDirty();
+      // An open Source-view edit counts: its buffer is local to that
+      // component, so isDirty() alone cannot see it, and an auto-reload
+      // would swap the document and the revision under what the author is
+      // typing — the Apply that follows would then land on top of whoever
+      // wrote the file meanwhile.
+      const dirty = store.isDirty() || store.sourceEditing;
 
       if (event.type === "file_created" || event.type === "file_deleted") {
         notifyFilesChanged();
@@ -43,9 +48,18 @@ export function useFileWatcher() {
 
       switch (event.type) {
         case "file_deleted":
-          if (event.path === filePath) {
-            addToast("Current file was deleted externally", "warning", { persistent: true });
-          }
+          // The file itself, or — for a bot in several files — one of the
+          // fragments its imports reach. The Source view's picker lists
+          // them, and a fragment deleted from under it would otherwise
+          // leave a name in the list that nothing answers for.
+          if (!filePath || !touchesOpenUnit(event.path, filePath, store.unit)) break;
+          addToast(
+            event.path === filePath
+              ? "Current file was deleted externally"
+              : `${event.path} was deleted externally — it is one of this bot's files`,
+            "warning",
+            { persistent: true },
+          );
           break;
 
         case "file_modified": {
@@ -102,7 +116,14 @@ export function useFileWatcher() {
             clearTimeout(reloadTimerRef.current);
             reloadTimerRef.current = setTimeout(() => {
               const current = docStoreRef.current.getState();
-              if (current.currentFilePath !== targetPath || current.isDirty()) {
+              // sourceEditing too: the author can open a Source-view edit
+              // inside this debounce window, and reading isDirty() alone
+              // here loses the guard the branch above applies.
+              if (
+                current.currentFilePath !== targetPath ||
+                current.isDirty() ||
+                current.sourceEditing
+              ) {
                 return;
               }
               reload(targetPath, true);

@@ -66,7 +66,7 @@
 | `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ToolChecker`, `WatchStore` | 19 · 84 |
 | `pkg/backend/tool/privacy` | implements two iterion built-in tools that detect and redact personally identifiable information (PII): - privacy_filter: detect or redact 5… | — | 3 · 14 |
 | `pkg/backend/tool/privacy/detector` | implements the pure-Go PII detection backend used by the privacy_filter / privacy_unfilter built-in tools. | `Rule` | 4 · 12 |
-| `pkg/backend/toolcatalog` | the compile-time view of a node's `tools:` list: which backends the list actually CONSTRAINS, and which bare tool names the run-time registry can… | — | 2 · 11 |
+| `pkg/backend/toolcatalog` | the compile-time view of a node's `tools:` list: which backends the list actually CONSTRAINS, and which bare tool names the run-time registry can… | — | 4 · 15 |
 | `pkg/backend/tooldisplay` | turns a tool call (name + raw JSON input) into the strings the engine renders in console logs and the per-node Tools tab. | — | 1 · 5 |
 | `pkg/benchmark` | implements a multi-recipe benchmark runner with isolated workspaces and comparable metrics collection. | — | 6 · 25 |
 | `pkg/benchmark/asymptote` | computes per-iteration quality scores from persisted runs and compares groups of runs (e.g. | — | 4 · 13 |
@@ -81,7 +81,7 @@
 | `pkg/botscaffold` | renders a new bot bundle (main.bot + manifest.yaml + README.md + the bundle layout directories) from a builder Spec. | — | 3 · 17 |
 | `pkg/botsource` | persists TEAM-AUTHORED bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image. | `Store` | 4 · 39 |
 | `pkg/brand` | embeds iterion's bot identity — the mascot avatar of the official `iterion-bot` GitHub account — so the server can upload it onto the accounts it… | — | 1 · 8 |
-| `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 21 · 169 |
+| `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 22 · 171 |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — | 2 · 38 |
 | `pkg/cli` | implements the iterion command-line interface. | — | 80 · 323 |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` | 1 · 10 |
@@ -109,12 +109,12 @@
 | `pkg/dsl/ast` | MarshalFile / UnmarshalFile provide JSON serialization and deserialization for File types, converting Go iota-based enums to human-readable string… | — | 8 · 137 |
 | `pkg/dsl/author` | reads and writes the YAML twin of a `.bot` file — the author document of lot 5 of #1010: the same declarations as the `.bot`, in the `.bot`'s… | — | 6 · 4 |
 | `pkg/dsl/author/internal/probecheck` | Command probecheck is the harness of the F20 authoring probe for the YAML twin (docs/references/dsl-authoring-probe.md): it reads author documents… | — | 1 · 0 |
-| `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program AND to carry the same… | — | 2 · 5 |
+| `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program AND to carry the same… | — | 2 · 7 |
 | `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 27 |
 | `pkg/dsl/fix` | applies the mechanical remedies of compile diagnostics to a `.bot` text — the edits a diagnostic can carry because its fix is the same every time… | — | 1 · 6 |
 | `pkg/dsl/internal/dsltest` | holds the equivalence oracle the DSL packages' tests share: "the program that comes out of this transport, serialiser or editor is the program that… | — | 1 · 2 |
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
-| `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 46 · 469 |
+| `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 46 · 470 |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — | 1 · 6 |
 | `pkg/dsl/parser` | — | — | 22 · 234 |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 8 · 74 |

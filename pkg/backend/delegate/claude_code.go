@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 
@@ -55,40 +56,33 @@ var claudeNativeTools = []string{
 }
 
 // claudeNativeToolsForAllowed maps Iterion declarations to the corresponding
-// Claude Code tool names. Unknown declarations are intentionally not treated
-// as native permissions: they may be an Iterion wrapper or an MCP tool, but
-// must never widen the ambient native surface by accident.
+// Claude Code tool names.
+//
+// It is a PROJECTION of the shared spelling table (toolcatalog.CanonicalToolName)
+// onto this backend's roster, never a second table: a synonym added there
+// grants here and bounds in the permission gate at once, which is what stops
+// `tools:` and `allow:/ask:/deny:` from disagreeing about one word (#1579).
+//
+// A declaration whose canonical key names no native tool is intentionally not
+// treated as a native permission: it may be an Iterion wrapper or an MCP
+// tool, and must never widen the ambient native surface by accident.
+//
+// Keying on the canonical rather than on a spelling list of its own DOES
+// widen what some declarations keep, deliberately: `shell`/`sh`/
+// `run_terminal_command` now keep `Bash`, `multiedit`/`str_replace`/
+// `search_replace`/`edit_mode`/`apply_patch` keep `Edit`+`MultiEdit`,
+// `agent`/`spawn_subagent` keep `Task`, `web`/`fetchurl` keep `WebFetch`, and
+// the case-insensitive forms of all of them do too. Each was a node declaring
+// a tool and losing it — the same disagreement between `tools:` and the gate
+// that #1579 is about, seen from the grant side. Measured over the repo's
+// whole `.bot` corpus: of its 85 distinct declared tool names, exactly one
+// changes what it grants — `agent`, on two e2e fixtures, and on no shipped
+// bot.
 func claudeNativeToolsForAllowed(allowed []string, diagnosticShell bool) map[string]bool {
 	native := make(map[string]bool)
 	for _, declared := range allowed {
-		switch strings.ToLower(strings.TrimSpace(declared)) {
-		case "bash", "run_command":
-			native["Bash"] = true
-		case "read", "read_file", "readfile", "cat":
-			native["Read"] = true
-		case "glob", "find":
-			native["Glob"] = true
-		case "grep":
-			native["Grep"] = true
-		case "write", "write_file", "file_write":
-			native["Write"] = true
-		case "edit", "edit_file", "file_edit":
-			native["Edit"] = true
-			native["MultiEdit"] = true
-		case "notebook_edit":
-			native["NotebookEdit"] = true
-		case "task":
-			native["Task"] = true
-		case "web_fetch":
-			native["WebFetch"] = true
-		case "web_search":
-			native["WebSearch"] = true
-		case "tool_search":
-			native["ToolSearch"] = true
-		case "todo_write":
-			native["TodoWrite"] = true
-		case "skill":
-			native["Skill"] = true
+		for _, name := range claudeNativeForCanonical[toolcatalog.CanonicalToolName(declared)] {
+			native[name] = true
 		}
 	}
 	if diagnosticShell {
@@ -97,11 +91,150 @@ func claudeNativeToolsForAllowed(allowed []string, diagnosticShell bool) map[str
 	return native
 }
 
-// claudeNativeDisallowedTools turns a non-empty DSL tools: declaration into
-// an actual Claude Code visibility boundary. With no declaration, legacy
-// unrestricted native-tool semantics are preserved.
-func claudeNativeDisallowedTools(allowed []string, diagnosticShell bool) []string {
-	if len(allowed) == 0 {
+// claudeNativeForCanonical is the projection itself: one row per concept the
+// native roster has a tool for. `edit` is one-to-many on purpose — no
+// declaration grants MultiEdit on its own, so an edit-capable node that lost
+// it could not apply a multi-hunk change.
+var claudeNativeForCanonical = map[string][]string{
+	"bash":         {"Bash"},
+	"read":         {"Read"},
+	"glob":         {"Glob"},
+	"grep":         {"Grep"},
+	"write":        {"Write"},
+	"edit":         {"Edit", "MultiEdit"},
+	"notebookedit": {"NotebookEdit"},
+	"agent":        {"Task"},
+	"webfetch":     {"WebFetch"},
+	"websearch":    {"WebSearch"},
+	"toolsearch":   {"ToolSearch"},
+	"todowrite":    {"TodoWrite"},
+	"skill":        {"Skill"},
+}
+
+// claudeSpawnBounds are the bounds that hold for a task whatever the spawn
+// is — the ones that do NOT come from the node's `tools:` declaration.
+//
+// They live in a function, beside claudeToolOptions, for one measured reason:
+// a claude_code task with an output schema spawns the CLI TWICE on the same
+// session under the same always-on bypassPermissions, and a bound carried on
+// one spawn and not the other is no bound at all.
+//
+// The bounds that travel on ARGV follow the task this way. The HOOK-borne
+// ones cannot: claudesdk.Prompt has no hook channel and drops them, which is
+// why the permission gate is answered on the spawn that cannot carry it
+// (formatOutput) by withholding the native surface there, and never on the
+// one that can — joining the gate to the declaration would delete a gated
+// node's own tools. Capabilities that are not bounds
+// (secrets materialisation, the rtk rewriter, inbox drain, edit-miss
+// resilience, ask_user) are absent from the second spawn on purpose: their
+// absence narrows it.
+//
+//   - --strict-mcp-config makes the node's own MCP declaration authoritative:
+//     the operator's personal ~/.claude.json servers don't boot inside bot
+//     nodes (undeclared tools, per-visit npx/chromium boots on loop-heavy
+//     bots, API keys on the argv — issue #506).
+//     ITERION_CLAUDE_CODE_STRICT_MCP=0 restores host inheritance.
+//   - The multi-agent Workflow tool is the ultracode prerogative, so a node
+//     that is not in ultracode mode never sees it. Claude Code arms that tool
+//     on the word "ultracode" anywhere in the prompt, and a node's prompt
+//     carries the content it works on (a PR title, a diff): left in the
+//     toolset, it would let the DATA switch the node into an orchestration
+//     the operator's effort never granted. The single-subagent surface
+//     (Agent/Task/TaskOutput/Monitor) stays by default — that adaptivity is
+//     the point of the backend — and goes with the opt-in knob for a
+//     deployment whose served model family hallucinates task ids and
+//     deadlocks on TaskOutput. Ultracode nodes keep everything.
+func claudeSpawnBounds(task Task) []claudesdk.Option {
+	var opts []claudesdk.Option
+	if strictMCPFromEnv() {
+		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
+	}
+	if !task.Ultracode {
+		disallowed := append([]string(nil), workflowOrchestrationTools...)
+		if disallowOrchestrationToolsFromEnv() {
+			disallowed = append(disallowed, orchestrationTools...)
+		}
+		opts = append(opts, claudesdk.WithDisallowedTools(disallowed...))
+	}
+	// tool_max_steps caps agentic tool-use iterations. The field was defined
+	// in delegate.Task but never wired into the CLI, so an author who set
+	// `tool_max_steps: 25` got silent infinity — observed with GLM running
+	// discover_outdated through 60+ tool calls instead of stopping at 25.
+	// Mapped to claude's --max-turns (the closest semantic: one turn = one
+	// assistant message exchange, usually one tool call + response). A cap
+	// carried on one spawn and not the other is not a cap.
+
+	if task.ToolMaxSteps > 0 {
+		opts = append(opts, claudesdk.WithMaxTurns(task.ToolMaxSteps))
+	}
+	return opts
+}
+
+// claudeToolOptions turns a node's `tools:` declaration into the two CLI
+// flags that carry it, for ONE spawn. It is a pure function so the decision
+// can be executed rather than reasoned about, and so that every spawn of a
+// task can take the same one: Execute's main pass and formatOutput's
+// structured-output pass both call it, and a boundary appended to one and not
+// the other is no boundary at all. The one exception is a GATED task, whose
+// formatting spawn withholds the whole native surface instead of carrying the
+// declaration — the two lists stay disjoint there (see formatOutput).
+//
+// It is not the node's whole tool surface: the bounds that do not come from
+// the declaration live in claudeSpawnBounds (`Workflow`-withholding, the
+// orchestration knob, --strict-mcp-config, --max-turns); the gated-task
+// withholding is NOT one of them — it belongs to formatOutput alone, the
+// spawn that cannot carry the hook, and putting it in the shared helper
+// deleted a gated node's own declared tools. `extraAllowedTools` is accumulated by the ask_user /
+// board / runs / user-MCP wiring before it arrives here. What this owns is
+// the declaration.
+//
+// The base list plus those extras are registered once, so no tool is listed
+// twice (WithAllowedTools appends). An UNDECLARED surface means "no
+// restriction" and registers nothing. A declared-empty list still registers:
+// WithAllowedTools with no name is a no-op (the CLI flag is emitted only for
+// a non-empty list), and the disallow list is the boundary.
+func claudeToolOptions(task Task, extraAllowedTools []string) []claudesdk.Option {
+	if !toolBoundaryApplies(task) {
+		return nil
+	}
+	combined := append([]string(nil), task.AllowedTools...)
+	combined = append(combined, extraAllowedTools...)
+	return []claudesdk.Option{
+		claudesdk.WithAllowedTools(combined...),
+		// WithAllowedTools is an approval list, not an availability boundary.
+		// Remove every undeclared built-in tool as well so a restricted judge
+		// with Read/Glob cannot silently fall back to Bash or a write surface.
+		claudesdk.WithDisallowedTools(
+			claudeNativeDisallowedTools(task.AllowedTools, true, task.DiagnosticShell)...,
+		),
+	}
+}
+
+// toolBoundaryApplies reports whether this task's tool list is a visibility
+// BOUNDARY for the CLI — the question `tools:` answers, as opposed to how
+// many names it holds.
+//
+// A DECLARED list is one, empty included: `tools: []` is the author saying
+// the node has no tools. An UNDECLARED list is not — the node keeps the
+// ambient native surface — except when the runtime itself put something in
+// AllowedTools (the image-attachment read_image append), which is a boundary
+// the same way a declared list is.
+func toolBoundaryApplies(task Task) bool {
+	return task.ToolsDeclared || len(task.AllowedTools) > 0
+}
+
+// claudeNativeDisallowedTools turns a DSL tools: declaration into an actual
+// Claude Code visibility boundary: every native tool the declaration does not
+// name is removed. A DECLARED but empty list therefore removes all fourteen —
+// that is the whole point of `tools: []`, and reading it as "no declaration"
+// is what let a node that asked for no tools keep the full native roster.
+//
+// Whether a declaration exists at all is the caller's question, answered once
+// by toolBoundaryApplies; `declared` keeps this function total for anyone who
+// calls it without asking first — with no declaration the legacy unrestricted
+// native-tool semantics are preserved.
+func claudeNativeDisallowedTools(allowed []string, declared, diagnosticShell bool) []string {
+	if !declared {
 		return nil
 	}
 	nativeAllowed := claudeNativeToolsForAllowed(allowed, diagnosticShell)
@@ -209,26 +342,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	// boot inside bot nodes (undeclared tools, per-visit npx/chromium boots
 	// on loop-heavy bots, API keys on the argv — issue #506).
 	// ITERION_CLAUDE_CODE_STRICT_MCP=0 restores host inheritance.
-	if strictMCPFromEnv() {
-		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
-	}
-	// The multi-agent Workflow tool is the ultracode prerogative, so a node
-	// that is not in ultracode mode never sees it. Claude Code arms that
-	// tool on the word "ultracode" anywhere in the prompt, and a node's
-	// prompt carries the content it works on (a PR title, a diff): left in
-	// the toolset, it would let the DATA switch the node into an
-	// orchestration the operator's effort never granted. The single-subagent
-	// surface (Agent/Task/TaskOutput/Monitor) stays by default — that
-	// adaptivity is the point of the backend — and goes with the opt-in knob
-	// for a deployment whose served model family hallucinates task ids and
-	// deadlocks on TaskOutput. Ultracode nodes keep everything.
-	if !task.Ultracode {
-		disallowed := append([]string(nil), workflowOrchestrationTools...)
-		if disallowOrchestrationToolsFromEnv() {
-			disallowed = append(disallowed, orchestrationTools...)
-		}
-		opts = append(opts, claudesdk.WithDisallowedTools(disallowed...))
-	}
+	opts = append(opts, claudeSpawnBounds(task)...)
 	// Cwd handling differs by sandbox state. On the host (no sandbox)
 	// we pass the workdir straight through to claudesdk → cmd.Dir.
 	// In the sandbox it's the host worktree path that doesn't exist
@@ -348,17 +462,6 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	}
 
 	opts = append(opts, perTaskSpawnOpts(task)...)
-
-	// tool_max_steps caps agentic tool-use iterations. Until now this
-	// field was defined in delegate.Task but never wired into the CLI,
-	// so recipe authors who set `tool_max_steps: 25` got silent infinity
-	// — observed with GLM running discover_outdated through 60+ tool
-	// calls instead of stopping at 25. Map it to claude's --max-turns
-	// (the closest semantic: one turn = one assistant message exchange,
-	// which usually contains one tool call + response).
-	if task.ToolMaxSteps > 0 {
-		opts = append(opts, claudesdk.WithMaxTurns(task.ToolMaxSteps))
-	}
 
 	return opts, sandboxCleanup
 }
@@ -541,23 +644,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		b.Logger.Warn("[%s#%d/claude-code] watch.* capabilities are not yet supported on the claude_code backend (claw only); ignoring for this node", task.NodeID, task.Iteration)
 	}
 
-	// Single allowed-tools registration: the node's restrictive base list
-	// plus any MCP extras accumulated above (ask_user, board.*), built once
-	// so no tool is listed twice (WithAllowedTools appends). An empty base
-	// list means "no restriction", so we register nothing in that case —
-	// matching the per-block guards that only extended the allowlist when
-	// task.AllowedTools was non-empty.
-	if len(task.AllowedTools) > 0 {
-		combined := append([]string(nil), task.AllowedTools...)
-		combined = append(combined, extraAllowedTools...)
-		opts = append(opts, claudesdk.WithAllowedTools(combined...))
-		// WithAllowedTools is an approval list, not an availability boundary.
-		// Remove every undeclared built-in tool as well so a restricted judge
-		// with Read/Glob cannot silently fall back to Bash or a write surface.
-		opts = append(opts, claudesdk.WithDisallowedTools(
-			claudeNativeDisallowedTools(task.AllowedTools, task.DiagnosticShell)...,
-		))
-	}
+	opts = append(opts, claudeToolOptions(task, extraAllowedTools)...)
 
 	// Operator-chatbox mid-session inbox delivery (see helper) and
 	// Edit-miss resilience (PostToolUse) — breaks the Edit/MultiEdit
@@ -1282,9 +1369,18 @@ func taskExtraEnvOpts(task Task) []claudesdk.Option {
 }
 
 // formatOutput performs the second pass of two-pass execution: resumes the
-// Pass 1 session with WithOutputFormat (no tools) to guarantee structured JSON
-// output conforming to the schema. The model already has full context from the
+// Pass 1 session with WithOutputFormat to guarantee structured JSON output
+// conforming to the schema. The model already has full context from the
 // session, so only a short formatting instruction is needed.
+//
+// It is a full CLI spawn, not a tool-less one: it carries every bound this
+// task has that can travel on argv — claudeSpawnBounds always, and
+// claudeToolOptions unless the task is GATED, where the native surface is
+// withheld instead of the declaration being restated.
+// The hook-borne ones cannot travel — Prompt has no hook channel — so a gated
+// task has its native surface withheld here instead. The sentence that used
+// to sit here — "(no tools)" — is what kept that gap invisible for five
+// rounds; what it names is the instruction, not the toolset.
 func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error) {
 	// Use the parent context directly — the runtime already enforces budget
 	// timeouts. Adding a short artificial timeout here risks cancelling the
@@ -1307,6 +1403,34 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			}
 		}),
 	}
+	// Every bound this task carries, on THIS spawn too. It is a second CLI
+	// process resuming the same session under the same always-on
+	// bypassPermissions, so a bound appended to one spawn and not the other
+	// is no bound at all: a node that declared `tools: []` was handed the
+	// whole native roster here, and a non-ultracode node kept `Workflow` —
+	// the one tool the DATA in the resumed transcript can arm. No MCP extras:
+	// this pass passes no --mcp-config and reformats text the first pass
+	// already produced.
+	// The permission gate cannot travel to THIS spawn: it is a PreToolUse
+	// hook, and hooks exist only on the Session path — claudesdk.Prompt has
+	// no hook channel and drops them silently (#1672). Execute's spawn
+	// carries the hook and therefore keeps everything the node DECLARED —
+	// `tools:` bounds what exists, the policy bounds what runs, and joining
+	// them would delete a gated node's own tools. Here, with no gate to run,
+	// the native surface is withheld instead, and the DECLARATION is not
+	// emitted at all: naming a tool on `--allowedTools` and on
+	// `--disallowedTools` in one argv would make the withholding rest on the
+	// CLI resolving deny over allow — stated in WithDisallowedTools' godoc,
+	// never executed here. Disjoint lists hold whatever that precedence is.
+	// Nothing is lost: a declaration has no role on a spawn where nothing may
+	// run, and its own disallow half is a subset of the whole roster.
+	// StructuredOutput, the only tool this pass needs, is not on the roster.
+	if task.Permission.Enabled() {
+		opts = append(opts, claudesdk.WithDisallowedTools(claudeNativeDisallowedTools(nil, true, false)...))
+	} else {
+		opts = append(opts, claudeToolOptions(task, nil)...)
+	}
+	opts = append(opts, claudeSpawnBounds(task)...)
 
 	// Cwd / CLI path handling mirrors Execute(): on the host, pass workdir
 	// through; in the sandbox, leave cwd unset (the docker driver picks the

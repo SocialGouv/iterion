@@ -98,7 +98,9 @@ func RunFmt(opts FmtOptions) (FmtResult, error) {
 		}
 		out, err := canon.Bytes(path, raw)
 		if err != nil {
-			res.Refused = append(res.Refused, path+": "+strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": "))
+			// canon states the fact; what to do about it is the caller's,
+			// and for `fmt` it is "this file stays as its author wrote it".
+			res.Refused = append(res.Refused, path+": "+strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")+". Left as it is")
 			res.RefusedPaths = append(res.RefusedPaths, canon.NormalizeBaselinePath(path))
 			continue
 		}

@@ -323,7 +323,7 @@ var llmProperties = []Property{
 	pSystem, pUser,
 	enum("session", "How the node's LLM session relates to the previous node's", "fresh", "inherit", "inherit_if_available", "fork", "artifacts_only", "persist"),
 	prop("session_slot", Ident, "Named durable session slot; requires session: persist"),
-	prop("tools", ToolList, "Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend"),
+	prop("tools", ToolList, "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)"),
 	prop("tool_policy", ToolList, "Tool-policy entries applied on top of tools"),
 	prop("capabilities", ToolList, "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)"),
 	prop("skills", SkillList, "Skill-library skills mirrored into the run's .claude/skills"),

@@ -21,7 +21,7 @@
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 1 · 1 | 0.1.2 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 1 · 7 | 3.5.9 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 1 · 5 | 0.4.2 |
-| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 1 · 8 | 0.1.1 |
+| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 1 · 8 | 0.1.2 |
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.6.0 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.3.2 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1 · 3 | 1.6.1 |

@@ -123,7 +123,7 @@ func isRootEntry(rel string) bool {
 
 func walkSyntax(entries []string, read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
-	var declaredBy, unread, importedBy, contractedBy, aliasBy, matchingBy []string
+	var declaredBy, unread, importedBy, contractedBy, aliasBy, matchingBy, emptyToolsBy []string
 	visited := map[string]bool{}
 	var visit func(rel string)
 	visit = func(rel string) {
@@ -179,6 +179,9 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 			if f.AST != nil && declaresVarMatching(f.AST) {
 				matchingBy = append(matchingBy, f.Name)
 			}
+			if f.AST != nil && declaresEmptyTools(f.AST) {
+				emptyToolsBy = append(emptyToolsBy, f.Name)
+			}
 			p := f.Profile
 			switch {
 			case p > profile:
@@ -218,7 +221,8 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 	contractedBy = slices.Compact(slices.Sorted(slices.Values(contractedBy)))
 	aliasBy = slices.Compact(slices.Sorted(slices.Values(aliasBy)))
 	matchingBy = slices.Compact(slices.Sorted(slices.Values(matchingBy)))
-	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, MatchingBy: matchingBy, Unread: unread}
+	emptyToolsBy = slices.Compact(slices.Sorted(slices.Values(emptyToolsBy)))
+	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, MatchingBy: matchingBy, EmptyToolsBy: emptyToolsBy, Unread: unread}
 }
 
 // aliasUses collects the tool-name spellings of one file's AST that resolve
@@ -310,7 +314,11 @@ type SyntaxRequirements struct {
 	// it is a parse error on the file rather than an unmet requirement on
 	// the bundle.
 	MatchingBy []string
-	Unread     []string
+	// EmptyToolsBy names the files where an agent or judge declares
+	// `tools: []`: below DeclaredEmptyToolsSince that list reads as absent,
+	// which is the opposite bound on every CLI backend.
+	EmptyToolsBy []string
+	Unread       []string
 }
 
 // UsesImport reports whether any source of the bundle imports.
@@ -325,6 +333,10 @@ func (r SyntaxRequirements) UsesVarMatching() bool { return len(r.MatchingBy) > 
 // UsesToolAliases reports whether any source of the bundle spells a Claw
 // tool alias in a tool list.
 func (r SyntaxRequirements) UsesToolAliases() bool { return len(r.AliasBy) > 0 }
+
+// UsesDeclaredEmptyTools reports whether any source declares an empty
+// agent/judge `tools:` list.
+func (r SyntaxRequirements) UsesDeclaredEmptyTools() bool { return len(r.EmptyToolsBy) > 0 }
 
 // Asks reports whether the sources use anything a floor is asked for — the
 // one predicate the push admission, `validate` and the scaffold read, so a
@@ -352,6 +364,9 @@ func (r SyntaxRequirements) Describe() string {
 	}
 	if r.UsesToolAliases() {
 		parts = append(parts, fmt.Sprintf("the Claw tool alias (%s)", strings.Join(r.AliasBy, ", ")))
+	}
+	if r.UsesDeclaredEmptyTools() {
+		parts = append(parts, fmt.Sprintf("an empty `tools: []` declaration (%s)", strings.Join(r.EmptyToolsBy, ", ")))
 	}
 	return strings.Join(parts, " and ")
 }
@@ -446,11 +461,48 @@ var syntaxFloors = []syntaxFloor{
 		},
 	},
 	{
+		pins: map[string]string{"bundle.DeclaredEmptyToolsSince": DeclaredEmptyToolsSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return DeclaredEmptyToolsSince, "an empty `tools: []` declaration", req.UsesDeclaredEmptyTools()
+		},
+	},
+	{
 		pins: map[string]string{"parser.VarMatchingSince": parser.VarMatchingSince},
 		need: func(req SyntaxRequirements) (string, string, bool) {
 			return parser.VarMatchingSince, `a var's [matching: "<re>"] constraint`, req.UsesVarMatching()
 		},
 	},
+}
+
+// declaresEmptyTools reports whether any agent or judge of the file — top
+// level or inside a group — declares an EMPTY `tools:` list. Nilness is the
+// carrier (toolcatalog.ToolsDeclared): a non-nil list of length zero is the
+// declaration, an absent one is nil.
+func declaresEmptyTools(f *ast.File) bool {
+	empty := func(tools []string) bool { return tools != nil && len(tools) == 0 }
+	for _, a := range f.Agents {
+		if empty(a.Tools) {
+			return true
+		}
+	}
+	for _, j := range f.Judges {
+		if empty(j.Tools) {
+			return true
+		}
+	}
+	for _, g := range f.Groups {
+		for _, a := range g.Agents {
+			if empty(a.Tools) {
+				return true
+			}
+		}
+		for _, j := range g.Judges {
+			if empty(j.Tools) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // declaresVarMatching reports whether any var of the file — top-level or

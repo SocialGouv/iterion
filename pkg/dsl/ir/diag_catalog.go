@@ -182,6 +182,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagUseParamMismatch:           {"Use param mismatch", "Bind exactly the group's declared params in `with { ... }`."},
 	DiagForeachConflictsLoop:       {"foreach conflicts with loop", "Use one iteration form per edge: `as foreach` OR `as <loop>(N)`."},
 	DiagDuplicateForeach:           {"Conflicting foreach definitions", "Edges sharing a foreach name must agree on its element binding and collection; give one of them its own name."},
+	DiagEmptyToolsNotEnforced:      {"Declared-empty tools: not enforced", "Bound the node with `deny:` rules (on kimi/grok those need `sandbox: none`, C136), or run it on a backend that receives the list (claw, claude_code, codex)."},
 	DiagSubbotNoSource:             {"subbot without source", "Add `source: \"<child>.bot\"` (relative to this file)."},
 
 	// Fallback chains (ADR-087).

@@ -328,7 +328,7 @@ agent reviewer:
   system: review_system
   user: review_user
   session: fresh
-  tools: [bash, read_file, grep]
+  tools: [bash, read_file, grep]   ## `tools: []` = declared empty; no line = undeclared
   tool_policy: [git.*, read_file]
   capabilities: [board.read]
   skills: ["review-playbook"]
@@ -777,7 +777,7 @@ workflow w:
   worker -> done
 ```
 
-Every surface reads the unit, never the main alone: `iterion validate main.bot` (a fragment validated alone says where it is validated), `run`, `resume`, `fork`, `rewind --auto`, the dispatcher, the studio (which opens the merged document with each declaration's file on it and saves each declaration back where it came from — a new one to the main), the cloud editor, the bot registry (the launch form's vars come from the whole unit), the catalog, and the recipes embedded in the binary — `iterion run feature-dev/main.bot` from any directory writes the whole bot to its cache, and the studio's Examples list serves an embedded bot in several files as one flat program. A remote launch uploads the program written out as one file; the cloud snapshot freezes `lib/` with the rest, and a subbot declared in a fragment resolves like one declared in the main. The run's identity covers every file of the unit and every `{{include}}` its prompts read, so a fragment edited under a parked run is a source change (`iterion resume` refuses it without `--force`), and the run records every file it executed (`workflow_sources`) for `rewind --auto` to diff. A bundle that imports declares the engine floor that reads it (`requires: { iterion: ">= 3.145.0" }`): `validate` asks for it (C252), a push refuses without (409). `iterion bots create <slug> --template library` scaffolds the shape.
+Every surface reads the unit, never the main alone: `iterion validate main.bot` (a fragment validated alone says where it is validated), `run`, `resume`, `fork`, `rewind --auto`, the dispatcher, the studio (which opens the merged document with each declaration's file on it and saves each declaration back where it came from — a new one to the main; its Source view is a picker over the unit's files, showing ONE file's text at a time, with the merged program as a read-only entry beside them, and an edit re-parses the unit with that file replaced), the cloud editor, the bot registry (the launch form's vars come from the whole unit), the catalog, and the recipes embedded in the binary — `iterion run feature-dev/main.bot` from any directory writes the whole bot to its cache, and the studio's Examples list serves an embedded bot in several files as one flat program. A remote launch uploads the program written out as one file; the cloud snapshot freezes `lib/` with the rest, and a subbot declared in a fragment resolves like one declared in the main. The run's identity covers every file of the unit and every `{{include}}` its prompts read, so a fragment edited under a parked run is a source change (`iterion resume` refuses it without `--force`), and the run records every file it executed (`workflow_sources`) for `rewind --auto` to diff. A bundle that imports declares the engine floor that reads it (`requires: { iterion: ">= 3.145.0" }`): `validate` asks for it (C252), a push refuses without (409). `iterion bots create <slug> --template library` scaffolds the shape.
 
 ### `subbot`
 

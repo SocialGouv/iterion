@@ -407,11 +407,12 @@ interface TagListFieldProps {
   values: string[];
   onChange: (v: string[]) => void;
   placeholder?: string;
+  help?: string;
 }
 
-export function TagListField({ label, values, onChange, placeholder = "Add..." }: TagListFieldProps) {
+export function TagListField({ label, values, onChange, placeholder = "Add...", help }: TagListFieldProps) {
   return (
-    <FieldRow label={label}>
+    <FieldRow label={label} help={help}>
       {/* Generous cap: tool-policy patterns can be long; never truncate a rule. */}
       <TagInput value={values} onChange={onChange} placeholder={placeholder} maxTagLength={512} />
     </FieldRow>

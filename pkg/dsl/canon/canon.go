@@ -39,12 +39,12 @@ func Bytes(name string, src []byte) ([]byte, error) {
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("%w: does not parse: %s", ErrRefused, strings.Join(errs, "; "))
 	}
-	text, err := provenText(pr.File)
+	text, err := Text(name, pr.File, []byte(norm.Text))
 	if err != nil {
+		if errors.Is(err, ErrRefused) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: cannot be rewritten without changing the program: %v", ErrRefused, err)
-	}
-	if line, n := collapsedValue(name, text); line > 0 {
-		return nil, fmt.Errorf("%w: the value at line %d is written over several lines and the writer has no form for one — it would come back as a single line of %d characters (#1612). Leave the file as it is", ErrRefused, line, n)
 	}
 	if text == norm.Text {
 		return src, nil
@@ -54,35 +54,93 @@ func Bytes(name string, src []byte) ([]byte, error) {
 	return norm.MapBack(src, []rewrite.Edit{{Start: 0, End: len(norm.Text), Repl: text}}), nil
 }
 
-// provenText is the writer's text for f, proven to read as the same
-// program (unparse.Verify) — or the reason it cannot be. From parsed text
-// the proof holds by the round-trip the writer keeps; it is what stands
-// between a document the writer cannot carry and a file that means
-// something else.
-func provenText(f *ast.File) (string, error) {
+// Text is the writer's text for f, proven to read as the same program and
+// to carry the same comments (unparse.Verify), and refused (ErrRefused)
+// when the writer would take the multi-line form away from a value f holds
+// over several lines (#1612). It is what every path that turns a document
+// into the bytes of a `.bot` goes through — `iterion fmt` through Bytes,
+// and the studio's saves — so the one guarantee is written once.
+//
+// src is the current text of that file, and the refusal is a statement
+// ABOUT IT: folding is a before/after property, and a value its author
+// already wrote as `"a\nb"` comes back on one line having lost nothing. No
+// src, no before, nothing claimed.
+//
+// A verify failure comes back unwrapped: the caller says what it was doing
+// when it could not render the document, and only the fold is a refusal of
+// this file as it stands. The caller also supplies the remedy, since what
+// to do differs between a path about to WRITE the file and one displaying
+// it.
+func Text(name string, f *ast.File, src []byte) (string, error) {
 	text := unparse.Unparse(f)
 	if err := unparse.Verify(f, text); err != nil {
 		return "", err
 	}
+	if line, size, folds := Folds(name, string(src), text); folds {
+		return "", fmt.Errorf("%w: the value at line %d is written over several lines and the writer has no form for one — its %d characters would come back as a single line (#1612)", ErrRefused, line, size)
+	}
 	return text, nil
 }
 
-// collapsedValue finds the first value the writer put on ONE line although
-// it holds several — a `|` block scalar, or a raw string spanning lines,
-// re-emitted as `"…\n…"`. The writer has no multi-line form (#1612), and a
-// file whose embedded script comes back as one line of half a million
-// characters is not the file the author wrote, however faithfully it still
-// compiles. Structural, not a length rule: a value that HOLDS a newline and
-// whose text OCCUPIES one line is the whole of it.
-func collapsedValue(name, text string) (line, size int) {
+// Folds reports whether replacing stored by incoming takes away the
+// multi-line form of a value stored writes over several lines (#1612), and
+// where stored writes the first of them. Asked either of a render (Text)
+// or of two texts somebody else produced — a write route that receives
+// file CONTENT rather than a document.
+//
+// The writer has ONE multi-line form, the backtick raw string, and it
+// abandons that form for the WHOLE file the moment a single value needs
+// the strict escape (unparse.str: a backtick together with a quote, a
+// carriage return, a newline inside a group body — and every value under
+// `## strict-escape`). So a render is all or nothing: one that folds
+// anything has no value left over its lines at all. That is what is asked
+// here — incoming folds something AND keeps nothing spread — and against a
+// render it is exact, which is why every spread value of stored folds and
+// naming the first of them is right.
+//
+// Against text an author wrote by hand the same question is a tight
+// approximation rather than a proof: such a file may hold an escaped
+// `"a\nb"` on one line beside a value over its lines, and it is precisely
+// by keeping one spread that it says it did not fold. What it does not
+// catch is an author folding one value while spreading another in the same
+// write; what it will not do is refuse a file its own bytes back, or
+// refuse a declaration being deleted.
+func Folds(name, stored, incoming string) (line, size int, folds bool) {
+	if !foldsSomething(name, incoming) {
+		return 0, 0, false
+	}
+	if _, _, after := spreadValues(name, incoming); after > 0 {
+		return 0, 0, false
+	}
+	line, size, before := spreadValues(name, stored)
+	if before == 0 {
+		return 0, 0, false
+	}
+	return line, size, true
+}
+
+// spreadValues counts the values text writes over SEVERAL lines, and gives
+// the line and length of the first.
+func spreadValues(name, text string) (line, size, n int) {
 	for _, t := range parser.NewLexer(name, text).All() {
-		if t.Type != parser.TokenString || !strings.Contains(t.Value, "\n") {
+		if t.Type != parser.TokenString || t.EndLine <= t.Line {
 			continue
 		}
-		if t.EndLine > t.Line {
-			continue // written over the lines it holds: nothing collapsed
+		if n == 0 {
+			line, size = t.Line, t.End-t.Offset
 		}
-		return t.Line, t.End - t.Offset
+		n++
 	}
-	return 0, 0
+	return line, size, n
+}
+
+// foldsSomething reports whether text writes a value holding a newline on
+// ONE line.
+func foldsSomething(name, text string) bool {
+	for _, t := range parser.NewLexer(name, text).All() {
+		if t.Type == parser.TokenString && strings.Contains(t.Value, "\n") && t.EndLine == t.Line {
+			return true
+		}
+	}
+	return false
 }

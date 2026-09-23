@@ -36,7 +36,7 @@ function launchableStore(salvaged: boolean) {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  api.unparse.mockResolvedValue("workflow x:\n  entry: done\n");
+  api.unparse.mockResolvedValue({ source: "workflow x:\n  entry: done\n" });
 });
 
 afterEach(cleanup);

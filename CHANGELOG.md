@@ -3,6 +3,30 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.191.0](https://github.com/SocialGouv/iterion/compare/v3.190.0...v3.191.0) (2026-09-23)
+
+### Features
+
+* **studio:** a per-file Source view for a bot in several files, and the fold refusal at the chokepoint ([#1665](https://github.com/SocialGouv/iterion/issues/1665)) ([5b35906](https://github.com/SocialGouv/iterion/commit/5b359061d4cb7b12d4422471ffdd46b6111a7df6)), references [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1659](https://github.com/SocialGouv/iterion/issues/1659) [#1227](https://github.com/SocialGouv/iterion/issues/1227) [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1649](https://github.com/SocialGouv/iterion/issues/1649) [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1674](https://github.com/SocialGouv/iterion/issues/1674)
+
+    <details><summary>why</summary>
+
+    The Source view showed a bot in several files as its merged program, read-only, and told the author to "open each file from the files drawer" — a control that renders only for a cloud `botsource://` path, so every local author was sent to something that was not on their screen. It is now a picker over `unit.files`: one file's text at a time, rendered from the open document by provenance, with the merged program as a read-only entry; an edit is re-parsed with that one file replaced, and the save…
+
+    </details>
+
+## [3.190.0](https://github.com/SocialGouv/iterion/compare/v3.189.0...v3.190.0) (2026-09-23)
+
+### Features
+
+* **dsl:** an empty tools: list declares no tools, and one table settles what a tool name means ([#1671](https://github.com/SocialGouv/iterion/issues/1671)) ([34daaec](https://github.com/SocialGouv/iterion/commit/34daaecd64dbee40819c807901aef6c6fe08bc55)), closes [#1676](https://github.com/SocialGouv/iterion/issues/1676), references [#1581](https://github.com/SocialGouv/iterion/issues/1581) [#1640](https://github.com/SocialGouv/iterion/issues/1640) [#1656](https://github.com/SocialGouv/iterion/issues/1656) [#1615](https://github.com/SocialGouv/iterion/issues/1615) [#1579](https://github.com/SocialGouv/iterion/issues/1579) [#1](https://github.com/SocialGouv/iterion/issues/1) [#2](https://github.com/SocialGouv/iterion/issues/2) [#1673](https://github.com/SocialGouv/iterion/issues/1673) [#1673](https://github.com/SocialGouv/iterion/issues/1673) [#1631](https://github.com/SocialGouv/iterion/issues/1631)
+
+    <details><summary>why</summary>
+
+    "this node has no tools" was unsayable. Four independent erasures: the parser returned nil for `[]`, the AST's JSON seam dropped it through `omitempty`, `iterion fmt` wrote the line only for a non-empty list, and the studio replaced an emptied tag list with `undefined`. `bots/evolve`'s gpt reviewer is what that cost: a formatting pass deleted its `tools: []` and left ten comment lines describing a rule nothing carried.
+
+    </details>
+
 ## [3.189.0](https://github.com/SocialGouv/iterion/compare/v3.188.0...v3.189.0) (2026-09-23)
 
 ### Features
