@@ -103,13 +103,16 @@ Cloud: bind team secrets by name (`POST /api/teams/<id>/secrets` with
   ticks.jsonl            append-only tick ledger (the digest slice reads it)
 ```
 
-The Loki cursors also carry short hashes of the lines counted in the
-overlap band (`overlap_hashes`, sha1 prefixes of `timestamp + line`) so the
-next tick does not count them twice — bounded to the last 4000 lines; when
-the band is cut, the cursor also carries the bound it still covers
-(`overlap_from_ns`) and the next window opens there. They are not reversible, but they are
-a **confirmation oracle** over raw log content — one more reason the ops
-repository that carries the state is private.
+Each Loki cursor carries a high-water mark (`covered_to_ns`, never moving
+backwards), the frontier where the last walk stopped (`frontier_ns`), the
+overlap band as `[timestamp, hash]` pairs of the lines seen there (`band`,
+sha1 prefixes of `timestamp + line`, about 4000 entries at most, cut only
+on a timestamp boundary) and the band's lower bound (`overlap_from_ns`):
+the next window opens at the frontier or at the overlap below the mark,
+never before the band's bound, so a line is written exactly once across
+ticks. The hashes are not reversible, but they are a **confirmation
+oracle** over raw log content — one more reason the ops repository that
+carries the state is private.
 
 Two options, pick ONE: gitignore the state dir (host cron on one
 machine), or `--var state_commit=true` (required on ephemeral cloud
@@ -168,9 +171,11 @@ managed secret under the name `forge_token` (see vuln-watch's
   deployment (the ingress/kube-state presets are examples). Fix the
   query; the incident quiets down once the probe answers.
 - **`:warning: log coverage this tick was PARTIAL`** — a Loki query was
-  truncated at `max_lines` or failed; the cursor stopped at the last line
-  fetched, so nothing is skipped, but absence of a finding proves nothing
-  for that tick.
+  truncated at `max_lines` or failed (the failure is quoted under the
+  note); the frontier stopped at the last line fetched, so nothing is
+  skipped, but absence of a finding proves nothing for that tick. The note
+  repeats when the coverage or the kind of failure changes, not every
+  tick.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

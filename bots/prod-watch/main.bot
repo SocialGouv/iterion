@@ -208,7 +208,7 @@ schema loki_output:
   ## {query: {lines, truncated, covered_to_ns, error}}
   per_query: json
   ## [{query, error}] — a failed query is reported, not fatal; the node
-  ## hard-fails only when every configured query failed, or on 401/403.
+  ## hard-fails on 401/403 only; a failed query degrades the lane.
   errors: json
   ok: bool
 
@@ -532,20 +532,33 @@ tool plan:
         c = cursors.get(name) or {}
         prev = int(c.get('covered_to_ns') or 0)
         if prev > 0:
-            ## A band cut at the producer's bound carries where it still
-            ## covers from: the window opens there, never earlier.
-            frm = max(floor_ns, prev - overlap_s * 10 ** 9, int(c.get('overlap_from_ns') or 0))
-            gap = prev < floor_ns
+            ## The window reopens where the last walk stopped (its frontier,
+            ## below the high-water mark after a truncated walk) or at the
+            ## overlap below the mark, whichever is earlier — but never
+            ## before the band's lower bound: lines below it are no longer
+            ## known and would be counted again.
+            frontier = int(c.get('frontier_ns') or prev)
+            frm = max(floor_ns, int(c.get('overlap_from_ns') or 0), min(frontier, prev - overlap_s * 10 ** 9))
+            gap = frontier < floor_ns
+            if to_ns < frm <= to_ns + max_window_min * 60 * 10 ** 9:
+                ## The cursor is ahead of `now - ingest_lag` (a lag raised
+                ## between two ticks): nothing to read yet — an empty window,
+                ## the cursor stays. Further ahead than a full window is a
+                ## clock or an edited state: left inverted, poll_loki says so.
+                print('prod-watch: loki query ' + name + ': cursor ' + str((frm - to_ns) // 10 ** 9) +
+                      's ahead of the window end (ingest lag raised?) -- empty window this tick', file=sys.stderr)
+                frm = to_ns
         else:
             ## Bootstrap: a short first window, so an install does not
             ## replay an hour of history as if it were news.
             frm = to_ns - min(max_window_min, boot_min) * 60 * 10 ** 9
             gap = False
         ## The overlap re-reads the tail of the previous window on purpose
-        ## (late ingestion); the lines already counted there travel as
-        ## hashes so they are not counted twice.
+        ## (late ingestion); the lines already seen there travel as
+        ## (timestamp, hash) pairs so they are not counted twice.
         windows[name] = {'from_ns': str(frm), 'to_ns': str(to_ns), 'gap': gap, 'bootstrap': prev == 0,
-                         'prev_covered_to_ns': str(prev), 'overlap_hashes': list(c.get('overlap_hashes') or []),
+                         'prev_covered_to_ns': str(prev), 'frontier_ns': str(int(c.get('frontier_ns') or prev)),
+                         'band': list(c.get('band') or []), 'overlap_from_ns': str(int(c.get('overlap_from_ns') or 0)),
                          'overlap_ns': str(overlap_s * 10 ** 9)}
     loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
                  'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
@@ -638,13 +651,14 @@ tool resolve_release:
 
 ## Loki through the Grafana datasource proxy. Each configured query is
 ## paged FORWARD over its frozen window [from, to): a page is `page_size`
-## lines, the next page starts at the last timestamp + 1ns, and the walk
-## stops at the window's end or at max_lines (then the window is
-## TRUNCATED: the cursor stays at the last line fetched and the tick says
-## so). The lines go to a scratch file and nowhere else — this node's
-## stdout carries counts and paths. Per-query failures are reported; the
-## node hard-fails on a credential refusal (401/403) or when every query
-## failed.
+## lines, the next page resumes AT the last timestamp (inclusive, the
+## re-read deduplicated), and the walk stops at the window's end or at
+## max_lines (then the window is TRUNCATED: the cursor's frontier stays at
+## the last line fetched and the tick says so). The lines go to a scratch
+## file and nowhere else — this node's stdout carries counts and paths.
+## Per-query failures degrade the lane (decide refuses the tick only when
+## every configured lane failed); the node hard-fails on a credential
+## refusal (401/403) only.
 tool poll_loki:
   input: loki_input
   output: loki_output
@@ -738,37 +752,74 @@ tool poll_loki:
                 last = e
         raise last
 
+    BAND_CAP = 4000
     total, truncated_any, errors, per_query, ok_count = 0, False, [], {}, 0
+
+    def hand_over(band_prev, seen, covered, frontier, overlap_ns, truncated):
+        ## The band the next tick dedups against, as (ts, hash) pairs: every
+        ## line this walk SAW plus what the previous band still knew inside
+        ## the next window (a truncated walk does not re-read all it
+        ## inherited), windowed at the earliest point the next window can
+        ## open. Bounded to about BAND_CAP entries, cut only on a TIMESTAMP
+        ## boundary — never inside a group sharing one nanosecond — and
+        ## never inside the frontier group of a truncated walk (the next
+        ## window reopens there). `overlap_from` is the band's lower bound:
+        ## the next window never opens before it, or the cut lines would be
+        ## counted again every tick.
+        low = min(frontier, covered - overlap_ns)
+        merged = {}
+        for ts, h in band_prev:
+            if ts >= low:
+                merged[h] = ts
+        for ts, h in seen:
+            if ts >= low:
+                merged[h] = ts
+        pairs = sorted(((ts, h) for h, ts in merged.items()))
+        overlap_from = low
+        if len(pairs) > BAND_CAP:
+            cut = len(pairs) - BAND_CAP
+            if truncated:
+                cut = min(cut, next((k for k, pr in enumerate(pairs) if pr[0] >= frontier), len(pairs)))
+            while cut > 0 and pairs[cut][0] == pairs[cut - 1][0]:
+                cut -= 1
+            if cut > 0:
+                overlap_from = pairs[cut - 1][0] + 1
+                pairs = pairs[cut:]
+        return [[str(ts), h] for ts, h in pairs], overlap_from
+
     with open(raw_path, 'w', encoding='utf-8') as raw:
         for name, logql in queries.items():
             w = windows.get(name) or {}
             frm, to = int(w.get('from_ns') or 0), int(w.get('to_ns') or 0)
+            prev_to = int(w.get('prev_covered_to_ns') or 0)
+            frontier_prev = int(w.get('frontier_ns') or prev_to)
+            overlap_ns = int(w.get('overlap_ns') or 0)
+            band_prev = [(int(ts), h) for ts, h in (w.get('band') or [])]
+            meta = {'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap'))}
             if not frm or not to or frm > to:
                 ## A window that does not exist, or that starts after its own
                 ## end (the cursor ahead of `now - ingest_lag`: a lag raised
-                ## between two ticks, a clock): the query's error, the cursor
-                ## stays where it is, time heals it.
+                ## between two ticks, a clock): the query's error — the lane
+                ## degrades, the cursor stays where it is, time heals it.
                 err = 'missing window' if not frm or not to else 'inverted window: from ' + str(frm) + ' > to ' + str(to)
                 errors.append({'query': name, 'error': err})
-                per_query[name] = {'lines': 0, 'truncated': False, 'covered_to_ns': str(to), 'error': err,
-                                   'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
-                                   'skipped_overlap': 0, 'overlap_hashes': [], 'overlap_from_ns': '0'}
+                per_query[name] = dict(meta, lines=0, truncated=False, error=err, covered_to_ns=str(prev_to),
+                                       frontier_ns=str(frontier_prev), band=[[str(ts), h] for ts, h in band_prev],
+                                       overlap_from_ns=str(w.get('overlap_from_ns') or 0), skipped_overlap=0)
                 continue
             if frm == to:
-                ## A zero-width window (a bootstrap of 0 minutes, explicit or
-                ## floored) is fully covered: the cursor is established at
-                ## `to` and the next tick reads from there. An error here
-                ## would never persist a cursor — every tick a bootstrap.
-                per_query[name] = {'lines': 0, 'truncated': False, 'covered_to_ns': str(to), 'error': '',
-                                   'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
-                                   'skipped_overlap': 0, 'overlap_hashes': [], 'overlap_from_ns': '0'}
+                ## A zero-width window (a bootstrap of 0 minutes, or a window
+                ## floor at `to`) is fully covered: nothing to read, the
+                ## high-water mark moves to `to`, the band is kept.
+                covered = max(to, prev_to)
+                band, overlap_from = hand_over(band_prev, [], covered, covered, overlap_ns, False)
+                per_query[name] = dict(meta, lines=0, truncated=False, error='', covered_to_ns=str(covered),
+                                       frontier_ns=str(covered), band=band, overlap_from_ns=str(overlap_from), skipped_overlap=0)
                 ok_count += 1
                 continue
             start, n, truncated, last_ts, err = frm, 0, False, 0, ''
-            prev_to = int(w.get('prev_covered_to_ns') or 0)
-            known = set(w.get('overlap_hashes') or [])
-            overlap_ns = int(w.get('overlap_ns') or 0)
-            band = []      # (ts, hash) of every line SEEN this walk — the next tick's overlap dedup
+            known = set(h for ts, h in band_prev)
+            seen = []      # (ts, hash) of every line SEEN this walk
             walk_seen = set()
             seen_at = {}   # ts -> lines already seen at that timestamp (the re-read allowance)
             skipped = 0
@@ -802,32 +853,30 @@ tool poll_loki:
                         walk_seen.add(h)
                         seen_at[ts] = seen_at.get(ts, 0) + 1
                         fresh += 1
-                        ## Every line seen belongs to the band the next tick may
-                        ## re-read — the skipped ones too, or a tick that only
-                        ## re-reads known lines hands over an empty list.
-                        band.append((ts, h))
-                        if ts <= prev_to and h in known:
+                        seen.append((ts, h))
+                        if h in known:
                             skipped += 1
                             continue
                         new_written += 1
                         raw.write(json.dumps({'q': name, 'ts': str(ts), 'line': line[:4000], 'stream': kept}, ensure_ascii=False) + chr(10))
-                    ## Only lines WRITTEN count against the cap: under sustained
-                    ## truncation the already-counted band is re-read every tick,
-                    ## and charging it would freeze the cursor on the same page.
+                    ## Only lines WRITTEN count against the cap: the band is
+                    ## re-read every tick, and charging it would freeze the
+                    ## walk on the same page.
                     n += new_written
                     if fresh == 0:
                         if len(entries) < limit:
                             break
-                        ## A nanosecond group wider than the page: the resume
-                        ## at `start` cannot get past it with this page size.
-                        ## Widen (bounded by the cap) instead of losing lines.
-                        if page_limit >= max_lines:
-                            ## The walk cannot get past the group within the
-                            ## cap: the query's error (loud, the cursor stays),
-                            ## never a cursor parked on the group for good.
-                            raise ValueError('a group of lines at one timestamp (' + str(start) + ') is wider than max_lines=' +
-                                             str(max_lines) + ' -- raise max_lines')
-                        page_limit = min(page_limit * 2, max_lines)
+                        ## A group sharing one nanosecond wider than the page:
+                        ## the resume at `start` cannot get past it with this
+                        ## page size. Widen — the re-read lines are not charged,
+                        ## so the page may grow beyond max_lines by the number
+                        ## already seen at `start`; a group wider than the cap
+                        ## drains across ticks, max_lines new lines a tick.
+                        allowance = max_lines + seen_at.get(start, 0)
+                        if page_limit >= allowance:
+                            raise ValueError('a group of lines at one timestamp (' + str(start) + ') did not fit a page of ' +
+                                             str(allowance) + ' -- raise max_lines')
+                        page_limit = min(page_limit * 2, allowance)
                         continue
                     if len(entries) < limit:
                         break
@@ -844,32 +893,34 @@ tool poll_loki:
             except Exception as e:
                 err = type(e).__name__ + ': ' + str(e)[:200]
                 errors.append({'query': name, 'error': err})
-            covered = last_ts if truncated else to
             if err:
-                covered = last_ts if last_ts else frm
-            ## The hashes the next tick may see again: every line at or after
-            ## the COVERED bound minus the overlap — the bound actually
-            ## persisted, not the frozen window end, or a truncated tick
-            ## hands over an empty list and the overlap band is re-counted.
-            tail = [(ts, h) for ts, h in band if ts >= covered - overlap_ns]
-            ## The band is bounded (state size). When it is cut, the bound it
-            ## still covers travels with it and the next window opens THERE,
-            ## not at covered - overlap: the cut lines would be counted again
-            ## every tick. This is the one place the band is cut.
-            capped = len(tail) > 4000
-            tail = tail[-4000:]
-            per_query[name] = {'lines': n, 'truncated': truncated, 'covered_to_ns': str(covered), 'error': err,
-                               'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
-                               'skipped_overlap': skipped, 'overlap_hashes': [h for ts, h in tail],
-                               'overlap_from_ns': str(tail[0][0] if capped else 0)}
+                ## The cursor does not move on a failed walk (decide keeps
+                ## the previous one); the lines written so far are counted.
+                per_query[name] = dict(meta, lines=n, truncated=truncated, error=err, covered_to_ns=str(prev_to),
+                                       frontier_ns=str(frontier_prev), band=[[str(ts), h] for ts, h in band_prev],
+                                       overlap_from_ns=str(w.get('overlap_from_ns') or 0), skipped_overlap=skipped)
+                total += n
+                continue
+            ## Two marks travel: the high-water mark `covered` (never moves
+            ## backwards — a truncated walk among late-arriving lines stops
+            ## below the previous mark) and the `frontier` where THIS walk
+            ## stopped, which is where the next window reopens.
+            if truncated:
+                frontier = last_ts
+                covered = max(prev_to, last_ts)
+            else:
+                frontier = covered = max(prev_to, to)
+            band, overlap_from = hand_over(band_prev, seen, covered, frontier, overlap_ns, truncated)
+            per_query[name] = dict(meta, lines=n, truncated=truncated, error='', covered_to_ns=str(covered),
+                                   frontier_ns=str(frontier), band=band, overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
             total += n
             truncated_any = truncated_any or truncated
-            if not err:
-                ok_count += 1
-    if queries and ok_count == 0:
-        raise SystemExit('prod-watch: every Loki query failed this tick: ' + json.dumps(errors)[:1500])
+            ok_count += 1
+    ## Per-query failures degrade the lane; the run itself is refused only
+    ## by decide, when EVERY configured lane failed (a Loki outage must not
+    ## silence a probe that sees production down).
     print(json.dumps({'raw_file': raw_path, 'lines': total, 'truncated': truncated_any, 'per_query': per_query,
-                      'errors': errors, 'ok': ok_count == len(queries)}, ensure_ascii=False))
+                      'errors': errors, 'ok': ok_count > 0, 'queries_ok': ok_count, 'queries_failed': len(errors)}, ensure_ascii=False))
 
 ## Prometheus probes through the Grafana datasource proxy. Each probe is
 ## an instant query whose samples are aggregated (max by default) and
@@ -1132,7 +1183,7 @@ tool leak_scan:
         digits = ''.join(str(int(ch, 36)) for ch in moved)
         return int(digits) % 97 == 1
     def luhn_ok(s):
-        d = [int(ch) for ch in re.sub(r'[ .-]', '', s)]
+        d = [int(ch) for ch in re.sub(r'\D', '', s)]
         if len(d) < 15 or len(d) > 19 or len(set(d)) == 1:
             return False
         total = 0
@@ -1144,29 +1195,53 @@ tool leak_scan:
             total += x
         return total % 10 == 0
     CARD_CONTEXT = re.compile(r'(?i)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
+    def iin_ok(d):
+        ## The issuer prefix of a real card network: Visa 4, Mastercard
+        ## 51-55 and 2221-2720, Amex 34/37, JCB 3528-3589, Discover
+        ## 6011 / 644-649 / 65, Diners 300-305 / 36 / 38 / 39, UnionPay 62,
+        ## Maestro's own BINs. A Luhn-valid 4-4-4-4 run of counters starting
+        ## with 88 or 99 is not a card.
+        n = len(d)
+        p2, p3, p4 = int(d[:2]), int(d[:3]), int(d[:4])
+        if n == 15:
+            return p2 in (34, 37)
+        if n in (16, 17, 18, 19):
+            return (d[0] == '4' or 51 <= p2 <= 55 or 2221 <= p4 <= 2720 or 3528 <= p4 <= 3589 or p2 == 62 or
+                    p4 == 6011 or 644 <= p3 <= 649 or p2 == 65 or 300 <= p3 <= 305 or p2 in (36, 38, 39) or
+                    p4 in (5018, 5020, 5038, 5893, 6304, 6759, 6761, 6762, 6763))
+        return False
     def card_shape(raw):
         ## A card's own grouping — 4-4-4-4 with a 1-3 digit tail for 17-19
-        ## digits, or the Amex 4-6-5 — under any one separator. A decimal, a
-        ## dashed build id or a list of counters is separated too, and Luhn
-        ## alone passes one run in ten of them.
-        groups = [len(g) for g in re.split(r'[ .-]', raw) if g]
+        ## digits, or the Amex 4-6-5 — under one repeated separator. A
+        ## decimal, a dashed build id or a list of counters is separated
+        ## too, and Luhn alone passes one run in ten of them.
+        groups = [len(g) for g in re.split(r'\D+', raw) if g]
         if groups == [4, 6, 5]:
             return True
         return groups[:4] == [4, 4, 4, 4] and (len(groups) == 4 or (len(groups) == 5 and 1 <= groups[4] <= 3))
     def card_ok(m):
         ## Luhn over a context-free digit run is a coin flip on trace ids,
         ## references and epoch timestamps — so a run is a card when Luhn
-        ## holds AND either it has a card's own grouping, or a card word
-        ## stands within 40 chars before it (which then outranks every other
-        ## heuristic: a 2-series Mastercard or a JCB reads like a timestamp
-        ## by value).
+        ## holds, the issuer prefix is a card network's, AND either it has a
+        ## card's own grouping, or a card word stands within 40 chars before
+        ## it (which then outranks every other heuristic: a 2-series
+        ## Mastercard or a JCB reads like a timestamp by value).
         raw = m.group(0)
-        if not luhn_ok(raw):
+        if not luhn_ok(raw) or not iin_ok(re.sub(r'\D', '', raw)):
             return False
         if card_shape(raw):
             return True
         window = m.string[max(0, m.start() - 40):m.start()]
         return bool(CARD_CONTEXT.search(window))
+    ## The belt under the card class: a run of 12+ digits, bare or under
+    ## ONE repeated separator of any kind, that no class claimed is masked
+    ## before the contact classes run — a PAN in pairs must not be read as
+    ## a phone number, and no sample ever shows such a run.
+    BELT_BARE = re.compile(r'(?<!\d)\d{12,}(?!\d)')
+    BELT_GROUPED = re.compile(r'(?<![A-Za-z0-9])\d{1,8}(?:([^A-Za-z0-9\n])\d{1,8}){1,12}(?![A-Za-z0-9])')
+    def belt(text):
+        text = BELT_BARE.sub('<num>', text)
+        return BELT_GROUPED.sub(lambda m: '<num>' if sum(ch.isdigit() for ch in m.group(0)) >= 12 else m.group(0), text)
 
     ## Order matters: a JWT contains digit runs, a bearer value may look
     ## like an email's local part. Secrets first, then validated
@@ -1177,9 +1252,13 @@ tool leak_scan:
         ('bearer', re.compile(r'(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}'), None),
         ('cloud_or_forge_token', re.compile(r'\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'), None),
         ('secret_kv', re.compile(r'(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|token)\s*[=:]\s*[\'"]?([^\s\'"&,;<>]{6,})'), None),
-        ('nir', re.compile(r'(?<![\dA-Za-z])([12])[ .-]?(\d{2})[ .-]?(0[1-9]|1[0-2]|[2-9]\d)[ .-]?(\d{2}|2[AB])[ .-]?(\d{3})[ .-]?(\d{3})[ .-]?(\d{2})(?![\dA-Za-z])'), nir_ok),
+        ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?i)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
-        ('card', re.compile(r'(?<!\d)(?:\d[ .-]?){14,18}\d(?!\d|\.\d)'), lambda m: card_ok(m)),
+        ## Bare, or grouped under ONE repeated separator of any kind; a run
+        ## that continues past the match with the same separator is a row
+        ## of numbers, not a card.
+        ('card', re.compile(r'(?<!\d)(?:\d{15,19}|\d{1,6}(?:([^A-Za-z0-9\n])\d{1,6})(?:\1\d{1,6}){1,8})(?!\d|\.\d|\1\d)'), lambda m: card_ok(m)),
+        ('num', None, None),
         ('email', re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
         ('phone_fr', re.compile(r'(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
     ]
@@ -1218,6 +1297,9 @@ tool leak_scan:
         ## can spell one) is neutralised first, so no class can hide behind it.
         out = MARKER.sub('[literal-marker]', normalize(line))
         for cls, rx, validate in CLASSES:
+            if cls == 'num':
+                out = belt(out)
+                continue
             def repl(m):
                 if validate is not None and not validate(m):
                     return m.group(0)
@@ -1273,10 +1355,9 @@ tool leak_scan:
                     continue
                 tpl = template(scrubbed)
                 tid = hashlib.sha1(tpl.encode('utf-8')).hexdigest()[:12]
-                ## Belt on the one derived text that keeps its digits: a bare
-                ## run of 12+ digits (a PAN without a card word, a reference,
-                ## an epoch) is never worth showing in a chat sample.
-                sample = re.sub(r'(?<!\d)(?:\d[ .-]?){11,}\d(?!\d)', '<num>', scrubbed)[:300]
+                ## The sample is the scrubbed line: every class ran on it,
+                ## the belt included.
+                sample = scrubbed[:300]
                 t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0,
                                                'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set()})
                 t['count'] += 1
@@ -1326,7 +1407,7 @@ tool decide:
   output: decide_output
   language: py
   script: |
-    import json, os, datetime
+    import json, os, re, datetime
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     signals_file = {{input.signals_file}}
     prom_results = {{input.prom_results}} or []
@@ -1509,9 +1590,17 @@ tool decide:
             h['last_warned'] = now_iso
 
     ## ── coverage note, once per change ────────────────────────────
+    ## A change is the coverage flipping OR the lane errors changing in
+    ## kind (digits folded: an inverted window carries fresh timestamps
+    ## every tick) — a query dark for good says so once, with its reason,
+    ## instead of hiding behind a note that fired one tick and never again.
     coverage = signals.get('coverage') or ('partial' if (loki_truncated or loki_errors) else 'full')
-    coverage_changed = coverage != (state.get('last_coverage') or 'full')
+    lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
+                                   for e in (loki_errors + prom_errors)))[:600]
+    error_kind = re.sub(r'\d+', '#', lane_errors)
+    coverage_changed = coverage != (state.get('last_coverage') or 'full') or error_kind != (state.get('last_lane_errors') or '')
     state['last_coverage'] = coverage
+    state['last_lane_errors'] = error_kind
 
     ## ── priority, cap, staging ────────────────────────────────────
     order = {'new': 3, 'escalated': 3, 'reminder': 2, 'quiet': 1}
@@ -1534,11 +1623,13 @@ tool decide:
         rec = incidents.get(a['fingerprint'])
         if rec is not None and a['state'] == 'escalated' and a.get('prev_severity'):
             rec['severity'] = a['prev_severity']
+    if lanes.get('loki'):
+        for q in [q for q in cursors if q not in loki_per_query]:
+            del cursors[q]   # a query dropped from the config does not keep its band in the state for ever
     for q, info in loki_per_query.items():
         if not info.get('error') and info.get('covered_to_ns'):
-            cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'at': now_iso,
-                          'overlap_hashes': list(info.get('overlap_hashes') or []),
-                          'overlap_from_ns': str(info.get('overlap_from_ns') or 0)}
+            cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'frontier_ns': str(info.get('frontier_ns') or info['covered_to_ns']),
+                          'at': now_iso, 'band': list(info.get('band') or []), 'overlap_from_ns': str(info.get('overlap_from_ns') or 0)}
     needs_analysis = any(a['state'] in ('new', 'escalated') and a['kind'] in ('probe', 'prom', 'loki') for a in posted)
 
     ## Zero-façade guard: if EVERY configured lane errored this tick there
@@ -1568,7 +1659,7 @@ tool decide:
                (', BOOTSTRAP' if bootstrap else '') +
                ((' -- lane errors: ' + json.dumps(loki_errors + prom_errors)[:400]) if (loki_errors or prom_errors) else ''))
     print(json.dumps({'alerts': posted, 'alert_count': len(posted), 'overflow_count': overflow, 'generation': generation_seen,
-                      'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage}] if (coverage_changed and coverage == 'partial') else []),
+                      'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage, 'errors': lane_errors}] if (coverage_changed and (coverage == 'partial' or lane_errors)) else []),
                       'needs_analysis': needs_analysis, 'state_next_file': state_next, 'alertlog_file': alertlog,
                       'tick_file': tick, 'bootstrap': bootstrap, 'summary': summary}, ensure_ascii=False))
 
@@ -1658,7 +1749,10 @@ tool notify:
         messages.append(('medium', ':warning: ' + fmt('overflow', n=overflow), True))
     for s in stale:
         if s.get('source') == 'coverage':
-            messages.append(('medium', ':warning: ' + inert(labels.get('coverage_partial', 'coverage partial'), 300), True))
+            text = ':warning: ' + inert(labels.get('coverage_partial', 'coverage partial'), 300)
+            if s.get('errors'):
+                text += chr(10) + '> ' + code(str(s.get('errors')), 400)
+            messages.append(('medium', text, True))
         else:
             messages.append(('medium', ':warning: ' + fmt('stale', source=s.get('source'), hours=s.get('hours'), last=s.get('last_ok') or 'never'), True))
 

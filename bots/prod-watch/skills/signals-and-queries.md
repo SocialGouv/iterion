@@ -12,25 +12,39 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
 - `to = now − ingest_lag_seconds` (default 120 s): Loki ingestion is not
   instantaneous; a line that arrives after the cursor moved past its
   timestamp would be lost for good.
-- `from = previous covered_to − overlap_seconds` (default 60 s), bounded
-  below by `to − max_window_minutes` (default 60). A first tick uses
-  `bootstrap_window_minutes` (default 10) instead.
+- `from` = the frontier where the last walk stopped, or the high-water
+  mark − `overlap_seconds` (default 60 s), whichever is earlier — never
+  before the band's lower bound, and bounded below by
+  `to − max_window_minutes` (default 60). A first tick uses
+  `bootstrap_window_minutes` (default 10) instead; `0` is a valid window
+  that reads nothing and sets the cursor at `to`. A cursor ahead of `to`
+  (an ingest lag raised between two ticks) is an empty window this tick,
+  not an error; more than a full window ahead is reported as one.
 - The walk is `direction=forward`, `page_size` lines per page (default
-  1000), the next page starting at the last timestamp + 1 ns, until the
-  window is exhausted or `max_lines` (default 5000) is reached. Reaching
-  the cap **truncates** the window: the cursor stops at the last line
-  fetched, the tick reports `truncated: true` and the scan reports
-  `coverage: partial`. Nothing is skipped — the next tick resumes from
-  the cursor — but "no finding" proves nothing for a partial tick.
-- Overlap and page boundaries can hand the same line twice; the scan
-  deduplicates by `(timestamp, line)`.
+  1000), the next page resuming AT the last timestamp (inclusive, the
+  re-read deduplicated), until the window is exhausted or `max_lines`
+  (default 5000) new lines were written. Reaching the cap **truncates**
+  the window: the frontier stops at the last line fetched, the tick
+  reports `truncated: true` and the scan reports `coverage: partial`.
+  Nothing is skipped — the next tick reopens at the frontier — but "no
+  finding" proves nothing for a partial tick. A group of lines sharing one
+  nanosecond wider than the cap drains across ticks, `max_lines` a tick.
+- Every line is written exactly once across ticks: the overlap re-reads
+  the tail of the previous window on purpose (late ingestion) and the
+  lines seen there travel in the cursor's band, as `[timestamp, hash]`
+  pairs; the scan additionally deduplicates by `(timestamp, line)`.
 - A query that failed keeps its previous cursor (the window is retried
-  next tick) and is listed in `errors`; a run where EVERY query failed
-  hard-fails; a 401/403 hard-fails immediately (a credential problem is
-  actionable now).
+  next tick) and is listed in `errors`; the lane is degraded, the run goes
+  on with its other lanes (decide refuses a tick only when EVERY
+  configured lane failed); a 401/403 hard-fails immediately (a credential
+  problem is actionable now).
 
-The persisted cursor is `cursors.loki.<query>.covered_to_ns` in
-`state.json` — the upper bound actually covered, never `now`.
+The persisted cursor is `cursors.loki.<query>` in `state.json`:
+`covered_to_ns` (the high-water mark, never moving backwards),
+`frontier_ns` (where the last walk stopped; below the mark after a
+truncated walk), `band` (the pairs of the overlap, about 4000 at most, cut
+only on a timestamp boundary) and `overlap_from_ns` (the band's lower
+bound).
 
 ## The redaction scan (`leak_scan`)
 
@@ -46,7 +60,7 @@ The only node that opens `loki_raw.jsonl`. For every line, in this order
 | `secret_kv` | `password=…`, `token: …`, `api_key=…` (the value only) | key kept, value replaced |
 | `nir` | 13 digits + 2-digit key, **key validated** (Corsica 2A/2B handled) | `[REDACTED:nir]` |
 | `iban` | country code + check digits + BBAN, **mod-97 validated** | `[REDACTED:iban]` |
-| `card` | 15–19 digits, **Luhn-validated**, and either grouped like a card (4-4-4-4 with a 1–3 digit tail for 17–19 digits, or the Amex 4-6-5, under spaces, dots or hyphens) or preceded by a card word within 40 chars | `[REDACTED:card]` |
+| `card` | 15–19 digits, **Luhn-validated**, the issuer prefix a card network's (Visa, Mastercard, Amex, JCB, Discover, Diners, UnionPay, Maestro), and either grouped like a card (4-4-4-4 with a 1–3 digit tail for 17–19 digits, or the Amex 4-6-5, under one repeated separator of any kind) or preceded by a card word within 40 chars | `[REDACTED:card]` |
 | `email` | RFC-lite address | `[REDACTED:email]` |
 | `phone_fr` | French national or `+33` number | `[REDACTED:phone_fr]` |
 
@@ -56,8 +70,10 @@ timestamp is not an IBAN; a digit run is a card only with a card's own
 grouping or a card word next to it, since Luhn alone is a coin flip on
 trace ids, epochs, decimals and lists of counters), they do not make it a
 proof. Runs of blanks are folded to one space first, so tabs between a
-card's groups do not hide it. A bare run of 12+ digits that is not a card is
-still masked as `<num>` in every sample. This slice reports every class at severity `high`; the
+card's groups do not hide it. A run of 12+ digits, bare or under one
+repeated separator of any kind, that no class claimed is masked as `<num>`
+before the contact classes run (a PAN in pairs is not a phone number) and
+therefore in every sample. This slice reports every class at severity `high`; the
 policy slice adds per-class `critical` with keyword context and the
 circuit-breaker.
 
@@ -117,4 +133,5 @@ Messages carry a marker (`PRODUCTION ALERT` / `ESCALATED` / `STILL OPEN`
 the incident title, the detail line, severity, first-seen date and the
 occurrence count, and — for a log template — the redacted sample as a
 quote. Notes (`:warning:`) announce an overflow, a silent source, or a
-partial-coverage tick (once per change).
+partial-coverage tick — once per change of coverage or of the lane
+errors' kind, with the errors quoted, so a query dark for good says why.
