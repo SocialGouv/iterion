@@ -331,10 +331,14 @@ that would defeat determinism:
   bundle. It is left out of the archive and of the content hash on both sides
   (pack and extraction), and is never extracted from an archive that carries
   one (packed before this rule, or by hand): a bundle hashes the same with or
-  without its drafts, and two archives that differ only by a draft land the
-  same files in the content-addressed cache. A directory named like one is a
-  directory. `iterion bundle pack` says how many drafts it left out. A
-  plugin's source tree is not a bundle: its files travel whatever their name.
+  without its drafts. An archive's directory entries create nothing at
+  extraction either — the extracted tree is its files' alone, the content the
+  hash sees — so two archives that hash alike land the same tree in the
+  content-addressed cache whichever is opened first. A directory named like
+  a draft is a directory. `iterion bundle pack` says how many drafts it left
+  out. A plugin's source tree is not a bundle: `PackTree` carries every file
+  whatever its name, and its hash is that archive's own, not a bundle
+  identity.
 
 Symlinks, devices, sockets, and other non-regular entries are
 **rejected** at pack time with a clear error.

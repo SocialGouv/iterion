@@ -85,3 +85,44 @@ func TestTheStoresWalkersAgreeOnWhatADraftIs(t *testing.T) {
 		t.Fatalf("ExecutableFiles left out an executable member under a directory named like a draft: %v", exec)
 	}
 }
+
+// A row persisted before the rule may carry a draft: Materialize leaves it
+// behind, as the snapshot's materialiser does, and ReadBundleDir reads back
+// exactly what was materialised — the two stay inverses on what launches.
+func TestMaterializeLeavesAnOldDraftKeyBehind(t *testing.T) {
+	dir := t.TempDir()
+	if err := Materialize(dir, map[string]string{"main.bot": "dsl: 2\n", "main.bot.yaml": "dsl: 2\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "main.bot.yaml")); err == nil {
+		t.Fatal("a draft a persisted row carried was materialised")
+	}
+	back, err := ReadBundleDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 1 || back["main.bot"] != "dsl: 2\n" {
+		t.Fatalf("the round trip is not the .bot alone: %v", back)
+	}
+}
+
+// A FILE named .iterion is a file to leave behind, not a directory to skip:
+// its siblings sorted after it stay members.
+func TestAFileNamedIterionSkipsNoSibling(t *testing.T) {
+	dir := t.TempDir()
+	for rel, body := range map[string]string{"main.bot": "dsl: 2\n", ".iterion": "a file", "z.md": "kept"} {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := ReadBundleDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := files[".iterion"]; ok {
+		t.Fatal("a file named .iterion was carried to the store")
+	}
+	if _, ok := files["z.md"]; !ok {
+		t.Fatalf("a sibling sorted after the .iterion file was left behind: %v", files)
+	}
+}

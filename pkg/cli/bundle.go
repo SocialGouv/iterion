@@ -20,8 +20,9 @@ type BundlePackResult struct {
 	BytesOut int64  `json:"bytes_out"`
 	// DraftsLeftOut counts the author documents (`.bot.yaml`) the source
 	// tree held and the archive does not carry: a draft is never a member
-	// of the bundle.
-	DraftsLeftOut int `json:"drafts_left_out,omitempty"`
+	// of the bundle. A counter, always present: a reader tells zero drafts
+	// from a build that does not count them.
+	DraftsLeftOut int `json:"drafts_left_out"`
 }
 
 // RunBundlePack writes a deterministic `.botz` archive from srcDir.

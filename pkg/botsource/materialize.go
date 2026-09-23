@@ -30,6 +30,12 @@ func Materialize(dir string, files map[string]string) error {
 			_ = os.RemoveAll(dir)
 			return err
 		}
+		if bundle.IsDraftEntry(rel, false) {
+			// A row persisted before the rule may carry a draft: it is not
+			// materialised — the store holds what launches, and ReadBundleDir
+			// would not carry it back. The two stay inverses on what launches.
+			continue
+		}
 		dst := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			_ = os.RemoveAll(dir)
@@ -43,8 +49,9 @@ func Materialize(dir string, files map[string]string) error {
 	return nil
 }
 
-// ReadBundleDir is Materialize's inverse: it walks a bundle directory into
-// the path→content map the store persists. One definition of "what a
+// ReadBundleDir is Materialize's inverse on what launches — a draft a
+// persisted row still carries is neither materialised nor read back: it
+// walks a bundle directory into the path→content map the store persists. One definition of "what a
 // bundle dir contains" shared by the CLI push and the server-side
 // fork-from-catalog, so the two cannot drift: skips .git/, Go test files
 // and author documents (skipBundleEntry), refuses non-UTF-8 content

@@ -359,3 +359,150 @@ func TestAPluginTreeKeepsAnAuthorDocument(t *testing.T) {
 		t.Fatalf("PackTree dropped a plugin's file because of its name: %v", zipNames(t, out))
 	}
 }
+
+func treeListing(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			rel += "/"
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// buildZipWithEntries writes a ZIP by hand: files, an explicit directory
+// entry for each name ending in "/", and a symlink entry for each name in
+// links — what a producer other than the packer may carry.
+func buildZipWithEntries(t *testing.T, dest string, files map[string]string, dirs []string, links map[string]string) {
+	t.Helper()
+	f, err := os.Create(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	for _, n := range sortedKeys(files) {
+		w, err := zw.Create(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(files[n])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range dirs {
+		hdr := &zip.FileHeader{Name: d}
+		hdr.SetMode(0o755 | os.ModeDir)
+		if _, err := zw.CreateHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, n := range sortedKeys(links) {
+		hdr := &zip.FileHeader{Name: n, Method: zip.Store}
+		hdr.SetMode(0o777 | os.ModeSymlink)
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(links[n])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The extracted tree is the archive's FILES alone: a directory entry
+// creates nothing, so two archives that hash alike — one holding a
+// subdirectory whose only member was a draft, or an explicit empty
+// directory entry, the other not — land the same tree in the one cache
+// slot whichever is opened first, and the bundle reads the same resource
+// directories from it. Proven in both orders.
+func TestArchivesThatHashAlikeLandOneTreeWhateverTheirDirectoryEntries(t *testing.T) {
+	bare := t.TempDir()
+	writeTree(t, bare, map[string]string{"main.bot": minimalBotIter})
+	bareOut := filepath.Join(t.TempDir(), "bare.botz")
+	rb, err := PackDir(bare, bareOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drafted := t.TempDir()
+	writeTree(t, drafted, map[string]string{"main.bot": minimalBotIter, "prompts/p.bot.yaml": "dsl: 2\n"})
+	draftedOut := filepath.Join(t.TempDir(), "drafted.botz")
+	rd, err := PackDir(drafted, draftedOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rd.Hash != rb.Hash {
+		t.Fatalf("a draft-only subdirectory changed the identity: %s vs %s", rd.Hash, rb.Hash)
+	}
+	emptyDirOut := filepath.Join(t.TempDir(), "emptydir.botz")
+	buildZipWithEntries(t, emptyDirOut, map[string]string{"main.bot": minimalBotIter}, []string{"skills/", "prompts/"}, nil)
+
+	for _, tc := range []struct{ name, first, second string }{
+		{"drafted then bare", draftedOut, bareOut},
+		{"bare then drafted", bareOut, draftedOut},
+		{"empty dirs then bare", emptyDirOut, bareOut},
+		{"bare then empty dirs", bareOut, emptyDirOut},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir() // ONE cache root, as in production
+			b1, c1, err := Open(tc.first, cache)
+			if err != nil {
+				t.Fatalf("open first: %v", err)
+			}
+			defer c1()
+			b2, c2, err := Open(tc.second, cache)
+			if err != nil {
+				t.Fatalf("open second: %v", err)
+			}
+			defer c2()
+			if b1.Hash != b2.Hash || b1.Dir != b2.Dir {
+				t.Fatalf("one identity expected: %s@%s vs %s@%s", b1.Hash, b1.Dir, b2.Hash, b2.Dir)
+			}
+			want := []string{".ready", "bundle.lock", "main.bot"}
+			if got := treeListing(t, b1.Dir); strings.Join(got, " ") != strings.Join(want, " ") {
+				t.Fatalf("the slot holds %v, want %v: a directory entry survived and the bundle would read it as a resource", got, want)
+			}
+			if b1.PromptsDir != "" || b2.PromptsDir != "" || b1.SkillsDir != "" || b2.SkillsDir != "" {
+				t.Fatalf("the bundle exposes a resource directory it never carried: prompts %q/%q skills %q/%q", b1.PromptsDir, b2.PromptsDir, b1.SkillsDir, b2.SkillsDir)
+			}
+		})
+	}
+}
+
+// A symlink entry named like a draft is a symlink: refused by the archive
+// reader before the draft rule is asked, never swallowed in silence.
+func TestASymlinkInAnArchiveNamedLikeADraftIsRefused(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "evil.botz")
+	buildZipWithEntries(t, archive, map[string]string{"main.bot": minimalBotIter}, nil, map[string]string{"evil.bot.yaml": "/etc/passwd"})
+	_, _, err := Open(archive, t.TempDir())
+	errContains(t, err, "symlink")
+}
+
+// A symlink on disk named like a draft is a symlink for the snapshot too:
+// refused as not portable, not left behind as a draft.
+func TestASnapshotRefusesASymlinkNamedLikeADraft(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"parent/main.bot": "parent-v1"})
+	if err := os.Symlink("main.bot", filepath.Join(dir, "parent", "x.bot.yaml")); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+	s := &Snapshot{Root: "parent"}
+	errContains(t, s.AddDir("parent", filepath.Join(dir, "parent")), "not portable")
+}

@@ -39,4 +39,16 @@ func TestBundlePackSaysHowManyDraftsItLeftOut(t *testing.T) {
 	if strings.Contains(buf.String(), "--to") {
 		t.Fatalf("the notice prescribes a flag this build does not have:\n%s", buf.String())
 	}
+
+	// A counter, always present: zero drafts reads as zero, not as a build
+	// that does not count them.
+	bare := t.TempDir()
+	writeFixture(t, bare, "main.bot", "tool t:\n  command: \"true\"\n  output: out\n\nschema out:\n  ok: bool\n\nworkflow w:\n  entry: t\n  t -> done\n")
+	p, buf = newTestPrinter(cli.OutputJSON)
+	if err := cli.RunBundlePack(bare, filepath.Join(t.TempDir(), "z.botz"), false, p); err != nil {
+		t.Fatalf("pack (bare): %v", err)
+	}
+	if !strings.Contains(buf.String(), "\"drafts_left_out\": 0") && !strings.Contains(buf.String(), "\"drafts_left_out\":0") {
+		t.Fatalf("drafts_left_out absent when zero:\n%s", buf.String())
+	}
 }

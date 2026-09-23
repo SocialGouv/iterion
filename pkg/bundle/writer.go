@@ -133,7 +133,10 @@ func PackDir(srcDir, outPath string) (*PackResult, error) {
 // Used for non-bot archives — e.g. the marketplace serving a plugin's
 // source tree as a downloadable ZIP. Such a tree is not a bundle: an author
 // document in it is a file like any other here, and the rule that leaves a
-// draft out of a bundle (IsDraftEntry) is PackDir's.
+// draft out of a bundle (IsDraftEntry) is PackDir's. Its Hash is the
+// archive's own — every file of the tree — not the bundle identity
+// ContentHashDir computes, and the bundle readers (Open, ExtractArchive)
+// are not its readers.
 func PackTree(srcDir, outPath string) (*PackResult, error) {
 	return packTree(srcDir, outPath, false)
 }
