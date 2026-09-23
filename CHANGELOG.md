@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.197.1](https://github.com/SocialGouv/iterion/compare/v3.197.0...v3.197.1) (2026-09-23)
+
+### Bug Fixes
+
+* **runtime:** the backend seam's zero value is the refusal too — read at the worst case, named in the refusal, answered by the dry run ([#1767](https://github.com/SocialGouv/iterion/issues/1767)) ([#1777](https://github.com/SocialGouv/iterion/issues/1777)) ([914afa3](https://github.com/SocialGouv/iterion/commit/914afa33a689bd23c3659ba9916940c7c982a592)), references [#1748](https://github.com/SocialGouv/iterion/issues/1748) [#1758](https://github.com/SocialGouv/iterion/issues/1758) [#1748](https://github.com/SocialGouv/iterion/issues/1748)
+
+    <details><summary>why</summary>
+
+    ## What
+
+    </details>
+
 ## [3.197.0](https://github.com/SocialGouv/iterion/compare/v3.196.2...v3.197.0) (2026-09-23)
 
 ### Features
