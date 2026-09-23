@@ -63,14 +63,19 @@ lots:
 		base := git("rev-parse", "HEAD")
 
 		// No credPath: the reference renders the placeholder an unresolved
-		// optional secret gets.
+		// optional secret gets. The gate is `test -z`, not `test -f`, and
+		// that is the whole point: `test -f` fails BOTH when the variable is
+		// unset and when the placeholder was exported as a path, so it could
+		// not tell the two apart — it would stay green against the very
+		// regression this case exists to catch. `test -z` passes only when
+		// nothing was exported.
 		out, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base,
-			"test -f \"$DEPLOY_CREDENTIAL\"", nil)
+			"test -z \"$DEPLOY_CREDENTIAL\"", nil)
 		if exit != 0 {
 			t.Fatalf("lot_verify exited %d, want a verdict (out %+v)", exit, out)
 		}
-		if out.GatePassed {
-			t.Error("gate_passed = true with no credential installed — the placeholder was exported as if it were a path")
+		if !out.GatePassed {
+			t.Errorf("gate_passed = false with no credential installed — $DEPLOY_CREDENTIAL is not empty, so the placeholder was exported as if it were a path: %s", out.LogTail)
 		}
 	})
 }

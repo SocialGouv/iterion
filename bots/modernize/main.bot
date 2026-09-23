@@ -1042,11 +1042,18 @@ tool lot_verify:
     # Only an existing FILE is exported: an unresolved optional secret renders
     # a placeholder, and exporting that would hand the gate a path to nothing
     # — worse than empty, because the gate would fail on a ghost instead of
-    # reporting a missing credential. setdefault, so a sandbox that already
-    # bound the variable keeps its own value.
+    # reporting a missing credential.
+    #
+    # The assignment is UNCONDITIONAL. A sandbox already bound the variable to
+    # the same mounted path this reference renders, so it is a no-op there;
+    # on a host run the script inherits the runner's environment, and an
+    # ambient DEPLOY_CREDENTIAL — a generic enough name for a CI runner to
+    # carry one — must not outrank the credential this run installed. A gate
+    # judging against an identity nobody installed, and saying nothing about
+    # it, is the silent pass this whole verdict exists to prevent.
     _deploy_credential = {{secrets.deploy_credential}}
     if isinstance(_deploy_credential, str) and os.path.isfile(_deploy_credential):
-        os.environ.setdefault("DEPLOY_CREDENTIAL", _deploy_credential)
+        os.environ["DEPLOY_CREDENTIAL"] = _deploy_credential
 
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True
