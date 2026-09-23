@@ -248,7 +248,7 @@ export default function AssistantFileChangeOffer({
   const activeTargetUnsafe = activeTarget && (
     !session ||
     currentRevision !== proposal.revision ||
-    session.store.getState().isDirty()
+    session.store.getState().hasUnsavedWork()
   );
   const blocked = unavailable || activeTargetUnsafe;
   const reloadRef = useRef<() => void>(() => {});
@@ -274,7 +274,9 @@ export default function AssistantFileChangeOffer({
       !path ||
       !isEditorSessionActive(proposal.sessionId) ||
       before._generation !== proposal.revision ||
-      before.isDirty()
+      // The Source view's un-applied text is work this reload would take —
+      // the measured loss of #1662, on the documented way out of a salvage.
+      before.hasUnsavedWork()
     ) {
       warnReload("Authoring file changes were saved, but the open tab changed and was not reloaded.");
       return false;
@@ -289,7 +291,7 @@ export default function AssistantFileChangeOffer({
         !store ||
         store.currentFilePath !== path ||
         store._generation !== proposal.revision ||
-        store.isDirty()
+        store.hasUnsavedWork()
       ) {
         warnReload("Authoring file changes were saved, but the open tab changed and was not reloaded.");
         return false;

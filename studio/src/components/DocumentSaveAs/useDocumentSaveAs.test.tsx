@@ -154,6 +154,62 @@ describe("useDocumentSaveAs", () => {
     expect(api.saveFile).not.toHaveBeenCalled();
   });
 
+  it("carries a whole file's un-applied Source text to the new name", async () => {
+    const store = documentStore();
+    store.setState({
+      currentFilePath: "bots/demo/main.bot",
+      sourceBuffer: {
+        path: "bots/demo/main.bot",
+        rel: null,
+        text: "typed, not applied",
+        base: "as rendered",
+        doc: null,
+      },
+    });
+    render(<Harness store={store} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(store.getState().currentFilePath).toBe("main.bot"));
+    expect(store.getState().sourceBuffer).toMatchObject({
+      path: "main.bot",
+      rel: null,
+      text: "typed, not applied",
+    });
+    expect(store.getState().hasUnsavedWork()).toBe(true);
+  });
+
+  it("does not carry a FRAGMENT's text into a tab no view can show it in, and says so", async () => {
+    // A buffer typed for one file of a unit, with the unit gone: no writer
+    // produces it today — every path that drops a unit drops the buffer in
+    // the same `set` — so it is built by hand. Save As makes the tab a single
+    // file, where the view shows the whole file only: carried, this text
+    // could be neither adopted nor released, and the tab would read unsaved
+    // for ever right after a successful save.
+    const store = documentStore();
+    store.setState({
+      currentFilePath: "bots/demo/main.bot",
+      sourceBuffer: {
+        path: "bots/demo/main.bot",
+        rel: "lib/nodes.bot",
+        text: "typed for the fragment",
+        base: "as rendered",
+        doc: null,
+      },
+    });
+    render(<Harness store={store} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(store.getState().currentFilePath).toBe("main.bot"));
+    expect(store.getState().sourceBuffer).toBeNull();
+    expect(store.getState().hasUnsavedWork()).toBe(false);
+    const warning = useUIStore
+      .getState()
+      .toasts.find((t) => t.message.includes("lib/nodes.bot is no longer one of this tab's files"));
+    expect(warning).toMatchObject({ type: "warning", persistent: true });
+  });
+
   it("does not open a filesystem Save As dialog in cloud mode", async () => {
     const store = documentStore();
     useServerInfoStore.setState({ info: { mode: "cloud" } as never });

@@ -1,3 +1,4 @@
+import { useDropEditorTab } from "@/hooks/useDropEditorTab";
 import { Pencil2Icon } from "@radix-ui/react-icons";
 import { useCallback, useEffect, useMemo } from "react";
 import { useLocation, useSearch } from "wouter";
@@ -23,6 +24,7 @@ import {
 // loop because wouter's setLocation reference and the persist
 // middleware's hydration can each invalidate the deps array.
 export default function EditorTabsView() {
+  const { guardDroppingEditorTab, dialog: discardSourceDialog } = useDropEditorTab();
   const search = useSearch();
   const [, setLocation] = useLocation();
   // useShallow lets Zustand compare the filtered array element-by-element
@@ -147,17 +149,21 @@ export default function EditorTabsView() {
   }, [setLocation]);
 
   // Close: dispose the tab + sync URL to the new active tab (or
-  // /editor if none remain).
+  // /editor if none remain). Disposing takes the tab's store — the document
+  // AND the Source view's un-applied text — so it asks first, like every
+  // other path that drops that text.
   const handleClose = useCallback(
     (id: string) => {
-      useTabsStore.getState().closeTab(id);
-      const next = useTabsStore.getState();
-      const newActive = next.tabs.find((t) => t.id === next.activeEditorTabId);
-      const file = newActive?.params.file ?? "";
-      const target = file ? `/editor?file=${encodeURIComponent(file)}` : "/editor";
-      setLocation(target, { replace: true });
+      void guardDroppingEditorTab(() => {
+        useTabsStore.getState().closeTab(id);
+        const next = useTabsStore.getState();
+        const newActive = next.tabs.find((t) => t.id === next.activeEditorTabId);
+        const file = newActive?.params.file ?? "";
+        const target = file ? `/editor?file=${encodeURIComponent(file)}` : "/editor";
+        setLocation(target, { replace: true });
+      }, id);
     },
-    [setLocation],
+    [setLocation, guardDroppingEditorTab],
   );
 
   // The editor "home" (welcome + recent files) shows whenever no tab is active
@@ -169,6 +175,7 @@ export default function EditorTabsView() {
 
   return (
     <div className="h-full flex flex-col">
+      {discardSourceDialog}
       <InnerTabBar
         tabs={tabs}
         activeTabId={showHome ? null : activeTabId}

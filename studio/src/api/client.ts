@@ -1,5 +1,6 @@
 import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo } from "./types";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
+import { isWorkflowFile } from "@/lib/workflowFile";
 
 const BASE_URL = apiBase();
 
@@ -585,7 +586,7 @@ export async function openFile(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
     );
     const source = bundle.files?.[bs.rel] ?? "";
-    if (bs.rel.endsWith(".bot") && importsFragments(source)) {
+    if (isWorkflowFile(bs.rel) && importsFragments(source)) {
       // A workflow in several files — the bundle's main, or a companion
       // workflow of its own: the unit is parsed from the whole files map
       // with that file as its main, so the fragments its imports reach

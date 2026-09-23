@@ -3822,6 +3822,20 @@
         ],
         "type": "object"
       },
+      "botSourceFilePutReq": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
       "botSourceForkReq": {
         "properties": {
           "from": {
@@ -5430,9 +5444,27 @@
     "/api/admin/bots/{slug}/files/{path}": {
       "delete": {
         "operationId": "deleteAdminBotsBySlugFilesByPath",
+        "parameters": [
+          {
+            "description": "If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "DELETE /api/admin/bots/{slug}/files/{path...}",
@@ -5460,9 +5492,26 @@
       ],
       "put": {
         "operationId": "putAdminBotsBySlugFilesByPath",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botSourceFilePutReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "PUT /api/admin/bots/{slug}/files/{path...}",
@@ -11154,9 +11203,27 @@
     "/api/teams/{id}/bot-sources/{slug}/files/{path}": {
       "delete": {
         "operationId": "deleteTeamsByIdBotSourcesBySlugFilesByPath",
+        "parameters": [
+          {
+            "description": "If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "DELETE /api/teams/{id}/bot-sources/{slug}/files/{path...}",
@@ -11192,9 +11259,26 @@
       ],
       "put": {
         "operationId": "putTeamsByIdBotSourcesBySlugFilesByPath",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botSourceFilePutReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "PUT /api/teams/{id}/bot-sources/{slug}/files/{path...}",

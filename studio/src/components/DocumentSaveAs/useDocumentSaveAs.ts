@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 
 import * as api from "@/api/client";
 import { errorMessage } from "@/lib/errorHints";
-import type { DocumentStore } from "@/store/document";
+import { unreachableSourceBuffer, type DocumentStore } from "@/store/document";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
@@ -137,7 +137,20 @@ export function useDocumentSaveAs() {
       const clean = stillCurrent && after._generation === savedGeneration;
 
       if (stillCurrent) {
+        const heldSource = after.sourceBuffer;
         after.setCurrentFilePath(result.path);
+        // `setCurrentFilePath` drops the Source view's buffer. Save As is the
+        // SAME program under a new name, so un-applied text the view can
+        // still show there is carried to it; text it cannot show is said to be
+        // discarded rather than held where nothing reaches it. The question is
+        // the one the view's own release asks, put to the tab as it is now.
+        if (heldSource && heldSource.text !== heldSource.base) {
+          const carried = { ...heldSource, path: result.path };
+          const now = target.store.getState();
+          const unreachable = unreachableSourceBuffer(carried, now.currentFilePath, now.unit);
+          if (unreachable) addToast(unreachable, "warning", { persistent: true });
+          else after.setSourceBuffer(carried);
+        }
         after.setCurrentSource(result.source);
         if (clean) after.markSaved();
       }

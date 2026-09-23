@@ -96,7 +96,7 @@ export function useDocumentFileOps({
   const READ_ONLY_MSG = sharedBundle
     ? "This workflow comes from a locked shared bundle. Edit its source bundle, update bots.lock, then run iterion bots sync."
     : "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
-  const isDirty = useDocumentStore((s) => s.isDirty);
+  const hasUnsavedWork = useDocumentStore((s) => s.hasUnsavedWork);
   const addWorkflow = useDocumentStore((s) => s.addWorkflow);
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
@@ -110,10 +110,12 @@ export function useDocumentFileOps({
   const [loading, setLoading] = useState(false);
   const [confirmRemoveWorkflow, setConfirmRemoveWorkflow] = useState(false);
 
+  // `hasUnsavedWork`, not `isDirty`: the Source view's un-applied text is
+  // work this discard takes too, and it moves no document generation (#1662).
   const confirmDiscard = useCallback(async () => {
-    if (!isDirty()) return true;
+    if (!hasUnsavedWork()) return true;
     return confirm(DISCARD_CHANGES_PROMPT);
-  }, [isDirty, confirm]);
+  }, [hasUnsavedWork, confirm]);
 
   const handleNew = useCallback(async () => {
     if (!(await confirmDiscard())) return;
@@ -277,15 +279,31 @@ export function useDocumentFileOps({
       return;
     }
     if (currentFilePath) {
+      const path = currentFilePath;
+      const generation = documentStore.getState()._generation;
       try {
         // A bot in several files presents the revision it was opened at,
         // and keeps the one the save returns.
-        const result = await api.saveFile(currentFilePath, document, unit ? { revision: unit.revision } : undefined);
+        const result = await api.saveFile(path, document, unit ? { revision: unit.revision } : undefined);
+        pushRecent(path);
+        // The answer is about the file it wrote. A tab that has moved to
+        // another file meanwhile takes none of it — not this file's source,
+        // not its unit, not a "saved" mark over the other file's work.
+        const now = documentStore.getState();
+        if (now.currentFilePath !== path) {
+          addToast(`Saved ${path}`, "success");
+          return;
+        }
         setCurrentSource(result.source);
-        if (unit) setUnit({ ...unit, revision: result.revision ?? unit.revision });
-        markSaved();
-        addToast("Saved successfully", "success");
-        pushRecent(currentFilePath);
+        // The revision goes onto the unit as it is NOW: a per-file Apply
+        // during the write may have changed its files.
+        if (now.unit) setUnit({ ...now.unit, revision: result.revision ?? now.unit.revision });
+        const clean = now._generation === generation;
+        if (clean) markSaved();
+        addToast(
+          clean ? "Saved successfully" : "Saved, but newer editor changes remain unsaved",
+          clean ? "success" : "warning",
+        );
       } catch (err) {
         console.error("Save failed:", err);
         // The server's own sentence: a save refused because the writer

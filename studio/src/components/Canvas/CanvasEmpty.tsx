@@ -2,6 +2,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { useConfirm } from "@/hooks/useConfirm";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { createEmptyDocument } from "@/lib/defaults";
@@ -32,8 +33,27 @@ export default function CanvasEmpty() {
   const libraryExpanded = useUIStore((s) => s.libraryExpanded);
   const setFilePickerOpen = useUIStore((s) => s.setFilePickerOpen);
   const [examplesOpen, setExamplesOpen] = useState(false);
+  const hasUnsavedWork = useDocumentStore((s) => s.hasUnsavedWork);
+  const { confirm, dialog: discardDialog } = useConfirm();
 
-  const handleStartBlank = () => {
+  // Both of these rebind the tab to another program: `setCurrentFilePath`
+  // drops the Source view's buffer, which is the one unmount the view cannot
+  // adopt back. That is the same question File → New asks through
+  // `confirmDiscard`, and this card renders over exactly the situation the
+  // repair path lives in — a main that does not parse has no nodes, so the
+  // card sits beside the Source pane the author is typing the fix into.
+  const confirmDiscard = async () => {
+    if (!hasUnsavedWork()) return true;
+    return confirm({
+      title: "Discard unsaved changes?",
+      message: "This tab has changes that have not been saved. They are lost.",
+      confirmLabel: "Discard",
+      confirmVariant: "danger",
+    });
+  };
+
+  const handleStartBlank = async () => {
+    if (!(await confirmDiscard())) return;
     setDocument(createEmptyDocument());
     setDiagnostics([], []);
     setCurrentFilePath(null);
@@ -41,6 +61,7 @@ export default function CanvasEmpty() {
   };
 
   const handleLoadExample = async (name: string) => {
+    if (!(await confirmDiscard())) return;
     try {
       // Shared helper: load + bind the path the server names, else
       // bots/<name> (where a save lands) + keep the example's
@@ -64,6 +85,7 @@ export default function CanvasEmpty() {
 
   return (
     <div className="absolute inset-0 z-[var(--z-canvas)] flex items-center justify-center pointer-events-none">
+      {discardDialog}
       <div className="pointer-events-auto rounded-lg border border-border-default bg-surface-1/95 backdrop-blur px-6 py-5 text-center shadow-[var(--shadow-popover)] max-w-lg">
         <h2 className="text-base font-semibold text-fg-default mb-1">No workflow loaded</h2>
         <p className="text-xs text-fg-subtle mb-4">
@@ -74,7 +96,7 @@ export default function CanvasEmpty() {
             icon={<FileIcon />}
             label="Start blank"
             description="Empty workflow"
-            onClick={handleStartBlank}
+            onClick={() => void handleStartBlank()}
           />
           <Tile
             icon={<StackIcon />}
