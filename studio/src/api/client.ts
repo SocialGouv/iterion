@@ -262,16 +262,129 @@ export async function parseSource(
   });
 }
 
+/** UnparsedSource is a document rendered as .bot source, with the reason
+ *  the writer cannot reproduce the file it came from when that is the
+ *  case. */
+export interface UnparsedSource {
+  source: string;
+  /** Set when a value the file writes over several lines would come back
+   *  as one (#1612, pkg/dsl/canon). Folding is a before/after property, so
+   *  it is answered only where the server holds the file's current text:
+   *  the server READS that text itself, from `path` or from the unit's
+   *  files, and the client never supplies it. `source` is then the file's
+   *  own text, never the writer's. The paths that WRITE refuse outright;
+   *  this is what the ones that DISPLAY get instead, so the author reads
+   *  their file rather than nothing. */
+  refused?: string;
+  /** True when `source` is the bytes the server READ — the file as it is
+   *  kept — and not a render of the document. It decides whether the
+   *  answer may be handed to the author AS their file: the per-file and
+   *  single-file refusals read a file, the merged (`flatten`) one renders
+   *  a program that is no file at all. Reading `refused` as "so source is
+   *  the file" is right three times out of four and hands over a
+   *  collapsed render the fourth. */
+  stored?: boolean;
+}
+
 /** unparse renders a document as .bot source. `flatten` renders the merged
  *  program of a bot in several files for DISPLAY only: the server refuses
  *  to render such a document as one file otherwise, since a save of that
- *  text would fold every file into the main. */
-export async function unparse(document: IterDocument, options?: { flatten?: boolean }): Promise<string> {
-  const res = await request<{ source: string }>("/unparse", {
+ *  text would fold every file into the main.
+ *
+ *  `path` is the workspace file the document was opened from, and it is
+ *  what lets the answer carry `refused`: a fold is a before/after property
+ *  and the server reads that before itself. Passing the text instead would
+ *  make the guard depend on a field the client overwrites — `currentSource`
+ *  is the launch's inline text, not the file's. */
+export async function unparse(
+  document: IterDocument,
+  options?: { flatten?: boolean; path?: string | null },
+): Promise<UnparsedSource> {
+  const bs = options?.path ? parseBotSourceEditorPath(options.path) : null;
+  if (bs) {
+    // A cloud bot has a before too — the bundle holds it — and the server
+    // cannot read one off a `botsource://` path, which resolves to no file
+    // on its disk. Both shapes carry the files map instead: a per-file
+    // render for a bot in one file (a unit of one, whose single part is
+    // the whole document), and the bundle's files beside the merged text
+    // so a flatten can name what that text no longer carries.
+    const bundle = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
+    const files = bundle.files ?? {};
+    return request("/unparse", {
+      method: "POST",
+      body: JSON.stringify(
+        options?.flatten
+          ? { document, files, main: bs.rel, flatten: true }
+          : { document, files, main: bs.rel, file: bs.rel },
+      ),
+    });
+  }
+  const res = await request<UnparsedSource>("/unparse", {
     method: "POST",
-    body: JSON.stringify(options?.flatten ? { document, flatten: true } : { document }),
+    body: JSON.stringify({
+      document,
+      ...(options?.flatten ? { flatten: true } : {}),
+      ...(options?.path ? { path: options.path } : {}),
+    }),
   });
-  return res.source;
+  return { source: res.source, refused: res.refused, stored: res.stored };
+}
+
+/** unparseUnitFile renders ONE file of a bot in several files: what the
+ *  Source view's picker shows for the file it is on. Read-only — it
+ *  presents no revision and writes nothing — so a file the writer cannot
+ *  reproduce still comes back, as ITS OWN text, with the reason. */
+export async function unparseUnitFile(
+  document: IterDocument,
+  editorPath: string,
+  rel: string,
+): Promise<UnparsedSource> {
+  const bs = parseBotSourceEditorPath(editorPath);
+  if (bs) {
+    const bundle = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
+    return request("/unparse", {
+      method: "POST",
+      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel }),
+    });
+  }
+  return request("/unparse", {
+    method: "POST",
+    body: JSON.stringify({ document, path: editorPath, file: rel }),
+  });
+}
+
+/** parseUnitFile re-parses a bot in several files with ONE of them
+ *  replaced by the text the Source view holds: the author edits a real
+ *  file, and the merged document the canvas and the save work from is
+ *  rebuilt from it.
+ *
+ *  It answers NO revision, and the caller keeps the one it opened at: a
+ *  revision is a claim about the files at rest, and an overlay moved none.
+ *  Taking the staged unit's digest would make the very next save a false
+ *  conflict; taking the current one would adopt a colleague's edit. */
+export async function parseUnitFile(
+  editorPath: string,
+  rel: string,
+  source: string,
+): Promise<{ document: IterDocument; diagnostics: string[]; unit?: UnitInfo; bindable?: boolean }> {
+  const bs = parseBotSourceEditorPath(editorPath);
+  if (bs) {
+    const bundle = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
+    return request("/parse", {
+      method: "POST",
+      body: JSON.stringify({ files: bundle.files ?? {}, main: bs.rel, file: rel, source }),
+    });
+  }
+  return request("/parse", {
+    method: "POST",
+    body: JSON.stringify({ path: editorPath, file: rel, source }),
+  });
 }
 
 /** A bot in several files has an `import "lib/x.bot"` line at the head of
@@ -543,7 +656,7 @@ export async function saveFile(
       );
       return { path, source: rewritten.source, files: Object.keys(rewritten.files).sort(), revision: rewritten.revision };
     }
-    const source = await unparse(document);
+    const { source } = await unparse(document);
     await apiRequest(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
       { method: "PUT", body: JSON.stringify({ content: source, version: current.version }) },

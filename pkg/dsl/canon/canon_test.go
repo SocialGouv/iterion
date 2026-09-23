@@ -130,11 +130,11 @@ func TestAFileThatDoesNotParseIsRefused(t *testing.T) {
 // produces — is refused.
 func TestTheTextIsProvenBeforeItIsHandedBack(t *testing.T) {
 	deep := &ast.File{Prompts: []*ast.PromptDecl{{Name: "deep", Body: "    first, deeper\nsecond, shallower"}}}
-	if text, err := provenText(deep); err == nil {
+	if text, err := Text("deep.bot", deep, nil); err == nil {
 		t.Fatalf("a body no text can carry was written:\n%s", text)
 	}
 	sound := &ast.File{Prompts: []*ast.PromptDecl{{Name: "sound", Body: "first\n  second, deeper"}}}
-	if _, err := provenText(sound); err != nil {
+	if _, err := Text("sound.bot", sound, nil); err != nil {
 		t.Fatalf("a sound body was refused: %v", err)
 	}
 }

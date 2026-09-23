@@ -113,7 +113,7 @@ describe("the toolbar's Save", () => {
     ["Copy", "copies"],
   ])("refuses to export a salvage when the author %s it", async (button) => {
     const store = salvagedStore("bots/x/main.bot");
-    api.unparse.mockResolvedValue("workflow x:\n  entry: done\n");
+    api.unparse.mockResolvedValue({ source: "workflow x:\n  entry: done\n" });
     render(
       <DocumentStoreProvider store={store}>
         <Harness />
@@ -141,5 +141,213 @@ describe("the toolbar's Save", () => {
 
     await waitFor(() => expect(api.saveFile).toHaveBeenCalled());
     expect(api.saveFile.mock.calls[0]?.[0]).toBe("bots/x/main.bot");
+  });
+});
+
+// The writer cannot reproduce every `.bot`: a value its author wrote over
+// several lines has no multi-line form and would come back as one (#1612,
+// pkg/dsl/canon). The server refuses to write such a file and says which
+// file, which line, and what to do — and these are the surfaces that have
+// to pass that on rather than swallow it.
+describe("the toolbar against a file the writer cannot reproduce", () => {
+  function boundStore(path: string): DocumentStore {
+    const store = createDocumentStore();
+    store.getState().setDocument(createEmptyDocument());
+    store.getState().setCurrentFilePath(path);
+    store.getState().markSaved();
+    return store;
+  }
+
+  it("shows the server's reason when a save is refused, not four words", async () => {
+    const store = boundStore("bots/x/main.bot");
+    api.saveFile.mockRejectedValue(
+      new Error(
+        "bots/x/main.bot cannot be saved from the studio: the value at line 5 is written over several lines and the writer has no form for one — its 470494 characters would come back as a single line (#1612). Leave the file as it is, or edit it directly",
+      ),
+    );
+    render(
+      <DocumentStoreProvider store={store}>
+        <Harness />
+      </DocumentStoreProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The forbidden alternative, named: "Save failed" alone, which leaves
+    // the author with nothing to act on.
+    await waitFor(() => {
+      const texts = useUIStore.getState().toasts.map((t) => t.message);
+      expect(texts.join("\n")).toMatch(/line 5/);
+    });
+    expect(useUIStore.getState().toasts.map((t) => t.message).join("\n")).toMatch(/#1612/);
+  });
+
+  // Download is the harsher of the two: a `.bot` on the author's disk,
+  // under a name they will trust. It was the one of the pair with no
+  // witness — deleting its refusal left the whole suite green.
+  // The server answers the file AS STORED in `source` when it refuses, so
+  // a clean canvas can still have its file: refusing there would withhold
+  // the author's own bytes to protect them from a render they are not
+  // being given. A DIRTY canvas is the case where that text is not what
+  // they are looking at.
+  it("exports the file as stored when the canvas matches it", async () => {
+    const store = boundStore("bots/x/main.bot");
+    store.getState().markSaved();
+    api.unparse.mockResolvedValue({
+      source: "THE FILE AS IT IS STORED",
+      refused: "the value at line 5 is written over several lines",
+      stored: true,
+    });
+    const written: string[] = [];
+    const realCreate = URL.createObjectURL;
+    URL.createObjectURL = vi.fn((b: Blob) => {
+      written.push(String((b as unknown as { __text?: string }).__text ?? "blob"));
+      return "blob:x";
+    }) as unknown as typeof URL.createObjectURL;
+    try {
+      render(
+        <DocumentStoreProvider store={store}>
+          <Harness />
+        </DocumentStoreProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Download" }));
+      await waitFor(() => {
+        const texts = useUIStore.getState().toasts.map((t) => t.message).join("\n");
+        expect(texts).toMatch(/as it is stored/i);
+      });
+      // The forbidden alternative, named: refusing and writing nothing.
+      expect(written).toHaveLength(1);
+    } finally {
+      URL.createObjectURL = realCreate;
+    }
+  });
+
+  it("does not write a .bot the file does not contain", async () => {
+    const store = boundStore("bots/x/main.bot");
+    // The canvas holds edits the stored file does not carry.
+    store.getState().setDocument(createEmptyDocument());
+    expect(store.getState().isDirty()).toBe(true);
+    api.unparse.mockResolvedValue({
+      source: "THE FOLDED RENDER",
+      refused: "the value at line 5 is written over several lines",
+      stored: true,
+    });
+    const created: string[] = [];
+    const realCreate = URL.createObjectURL;
+    URL.createObjectURL = vi.fn(() => {
+      created.push("blob");
+      return "blob:x";
+    }) as unknown as typeof URL.createObjectURL;
+    try {
+      render(
+        <DocumentStoreProvider store={store}>
+          <Harness />
+        </DocumentStoreProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Download" }));
+      await waitFor(() => {
+        const texts = useUIStore.getState().toasts.map((t) => t.message).join("\n");
+        expect(texts).toMatch(/cannot be downloaded/i);
+      });
+      // The forbidden alternative, named: a file actually written.
+      expect(created).toHaveLength(0);
+    } finally {
+      URL.createObjectURL = realCreate;
+    }
+  });
+
+  it("warns instead of handing over a .bot the file does not contain", async () => {
+    const store = boundStore("bots/x/main.bot");
+    // Dirty: the stored text is not what the author is looking at.
+    store.getState().setDocument(createEmptyDocument());
+    api.unparse.mockResolvedValue({
+      source: "THE FILE AS IT IS",
+      refused: "the value at line 5 is written over several lines",
+    });
+    render(
+      <DocumentStoreProvider store={store}>
+        <Harness />
+      </DocumentStoreProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => {
+      const texts = useUIStore.getState().toasts.map((t) => t.message).join("\n");
+      expect(texts).toMatch(/cannot be copied/i);
+    });
+  });
+
+  // A bot in SEVERAL files downloads as its program — one text, which is
+  // what a `.bot` on the author's disk means. Asking for it per file would
+  // hand over the main alone: an import line and no nodes.
+  it("downloads a bot in several files as its program, never as its main alone", async () => {
+    const store = boundStore("botsource://t1/demo/main.bot");
+    store.getState().setUnit({
+      root: "",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    api.unparse.mockResolvedValue({ source: "THE MERGED PROGRAM" });
+    render(
+      <DocumentStoreProvider store={store}>
+        <Harness />
+      </DocumentStoreProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    await waitFor(() => expect(api.unparse).toHaveBeenCalled());
+    // flatten decides WHAT is rendered; the path travels with it so the
+    // answer can still name which of the bot's files the merged text no
+    // longer carries over its lines.
+    expect(api.unparse.mock.calls[0]?.[1]).toEqual({
+      flatten: true,
+      path: "botsource://t1/demo/main.bot",
+    });
+  });
+
+  // A bot in SEVERAL files takes the merged (`flatten`) answer, whose
+  // `source` is a RENDER of a program that is no file at all — the server
+  // says so with `stored`. Reading `refused` alone as "so source is the
+  // file" is right on the three answers that read a file and hands over a
+  // collapsed render on the fourth, which is the harm #1612 is about.
+  it("never hands over the merged render of a bot in several files", async () => {
+    const store = boundStore("bots/demo/main.bot");
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    store.getState().markSaved();
+    expect(store.getState().isDirty()).toBe(false);
+    api.unparse.mockResolvedValue({
+      // What the flatten route answers: the writer's merged text, with the
+      // author's two lines collapsed onto one.
+      source: 'tool t:\n  command: "one\\ntwo"\n',
+      refused: "lib/nodes.bot: the value at line 2 is written over several lines",
+      // no `stored` — this is not any file's bytes
+    });
+    const written: string[] = [];
+    const realCreate = URL.createObjectURL;
+    URL.createObjectURL = vi.fn(() => {
+      written.push("blob");
+      return "blob:x";
+    }) as unknown as typeof URL.createObjectURL;
+    try {
+      render(
+        <DocumentStoreProvider store={store}>
+          <Harness />
+        </DocumentStoreProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Download" }));
+      await waitFor(() => {
+        const texts = useUIStore.getState().toasts.map((t) => t.message).join("\n");
+        expect(texts).toMatch(/cannot be downloaded/i);
+      });
+      // The forbidden alternative, named: a .bot on the author's disk
+      // holding a value they wrote over several lines, on one.
+      expect(written).toHaveLength(0);
+      expect(useUIStore.getState().toasts.map((t) => t.message).join("\n")).not.toMatch(/as it is stored/i);
+    } finally {
+      URL.createObjectURL = realCreate;
+    }
   });
 });

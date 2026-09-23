@@ -46,7 +46,7 @@ function mount() {
 }
 
 beforeEach(() => {
-  api.unparse.mockReset().mockResolvedValue("PARSED SOURCE");
+  api.unparse.mockReset().mockResolvedValue({ source: "PARSED SOURCE" });
   useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null });
 });
 

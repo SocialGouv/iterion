@@ -42,7 +42,7 @@ async function liveProposal(path: string | null = "bots/demo/main.bot") {
   store.getState().setDocument(createEmptyDocument());
   store.getState().setCurrentFilePath(path);
   store.getState().markSaved();
-  api.unparse.mockResolvedValue("workflow original:\n  entry: a\n");
+  api.unparse.mockResolvedValue({ source: "workflow original:\n  entry: a\n" });
   const snapshot = await captureActiveEditorDocument();
   if (!snapshot) throw new Error("active editor snapshot was not captured");
   proposal.current = {

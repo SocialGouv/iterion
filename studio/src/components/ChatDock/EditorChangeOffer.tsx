@@ -430,7 +430,7 @@ export default function EditorChangeOffer({
     : "Apply changes only the live buffer; you can undo or save afterwards.";
   if (action === "saved") detail = path ?? "Saved";
   else if (needsReturn) detail = "Return to the captured editor tab to review or run this action.";
-  else if (unitBound) detail = "This bot is in several files: a proposed source cannot be split back into them. Edit each file from the files drawer.";
+  else if (unitBound) detail = "This bot is in several files: a proposed source cannot be split back into them. Copy the part that belongs to each file into the Source view, which is a picker over this bot’s files.";
   else if (readOnly) detail = "This locked shared bundle is read-only in the consumer project.";
   else if (!revisionMatches) detail = "The document changed since this proposal was created.";
   else if (saveOnly && saveDecision === "deny") detail = "Saving assistant changes is disabled in Settings → Assistant.";

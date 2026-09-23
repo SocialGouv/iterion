@@ -41,7 +41,7 @@ function salvagedStore() {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  api.unparse.mockResolvedValue("workflow y:\n  entry: done\n");
+  api.unparse.mockResolvedValue({ source: "workflow y:\n  entry: done\n" });
 });
 
 afterEach(cleanup);

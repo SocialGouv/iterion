@@ -100,7 +100,7 @@ export function useLaunchDoc(
       let cancelled = false;
       filesApi
         .unparse(storeDocument)
-        .then((src) => {
+        .then(({ source: src }) => {
           if (cancelled) return;
           setCurrentSource(src);
           setDoc(storeDocument);

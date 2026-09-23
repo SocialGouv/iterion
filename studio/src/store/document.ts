@@ -81,6 +81,13 @@ interface DocumentState {
   // (its files and the revision a save must present); null otherwise.
   // Dropped whenever the current file changes: a unit belongs to a file.
   unit: UnitInfo | null;
+  // The Source view holds an open, un-applied text edit. Its buffer is
+  // local to that component, so `_generation` does not move and isDirty()
+  // cannot see it — and the file watcher reads isDirty() to decide whether
+  // to reload a file changed on disk. Without this the reload swaps the
+  // document AND the revision under the buffer, and the Apply that follows
+  // lands on top of whoever wrote the file.
+  sourceEditing: boolean;
   _generation: number;
   _savedGeneration: number;
 
@@ -95,6 +102,7 @@ interface DocumentState {
   setSalvaged: (salvaged: boolean) => void;
   setCurrentSource: (source: string | null) => void;
   setUnit: (unit: UnitInfo | null) => void;
+  setSourceEditing: (editing: boolean) => void;
   markSaved: () => void;
   isDirty: () => boolean;
 
@@ -253,6 +261,7 @@ export function createDocumentStore() {
   detached: false,
   currentSource: null,
   unit: null,
+  sourceEditing: false,
   _generation: 0,
   _savedGeneration: 0,
   _history: [],
@@ -272,10 +281,11 @@ export function createDocumentStore() {
   // about this one, so the flag is dropped with the unit. A null path here is
   // a detachment — told apart from a fresh store's null by `detached`.
   setCurrentFilePath: (currentFilePath) =>
-    set({ currentFilePath, unit: null, salvaged: false, detached: currentFilePath === null }),
+    set({ currentFilePath, unit: null, salvaged: false, sourceEditing: false, detached: currentFilePath === null }),
   setSalvaged: (salvaged) => set({ salvaged }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
+  setSourceEditing: (sourceEditing) => set({ sourceEditing }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
   isDirty: () => {
     const s = get();
