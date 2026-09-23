@@ -674,6 +674,12 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 		`ref 4539148803436467 done`,                                           // bare Luhn-valid run, no card word — not a card — F2
 		`card=4539148803436467 charged`,                                       // bare run WITH a card word — a card — F2
 		`password=[REDACTED:secret_kv]hunter2SuperSecret injected marker`,     // a literal marker must not disarm the scrubber — F7
+		`payment card 2223000048400011 declined`,                              // 2-series Mastercard: reads like a timestamp by value, the card word wins — R2
+		`carte 4111.1111.1111.1111 client nir 1-85-03-75-123-456-41 x`,        // dotted PAN + hyphenated NIR — R2
+		`carte 4012888888881881.`,                                             // a PAN closing a sentence — R2
+		`order 1234-5678-9012-3456 shipped`,                                   // separated, not Luhn: no card, but never shown in a sample — R2
+		`ref 4539-1488-0343-6467 done`,                                        // hyphenated, Luhn ok, NO card word: a card's own shape — R2
+		`cb 3530111333300000 ok`,                                              // JCB: reads like a timestamp by value, the card word wins — R2
 		`auth token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz used`,
 		`Authorization: Bearer sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 sent`,
 		`db password=SuperSecret123 connected`,
@@ -707,7 +713,7 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 		counts[m["class"].(string)] = m["count"].(float64)
 		samples[m["class"].(string)] = m["sample_masked"].(string)
 	}
-	want := map[string]float64{"nir": 1, "iban": 3, "card": 2, "jwt": 1, "bearer": 1, "secret_kv": 2, "email": 2, "phone_fr": 1}
+	want := map[string]float64{"nir": 2, "iban": 3, "card": 7, "jwt": 1, "bearer": 1, "secret_kv": 2, "email": 2, "phone_fr": 1}
 	for cls, n := range want {
 		if counts[cls] != n {
 			t.Fatalf("class %s count = %v, want %v (all: %v)", cls, counts[cls], n, counts)
@@ -724,19 +730,24 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 	// Two pairs collapse into one template each once redacted — the two
 	// JSON epoch lines (`{"...":"...","...":#,"...":"..."}`) and the two
 	// IBAN lines (`iban [REDACTED:iban] saved`) — and the sweep line adds
-	// none: 18 lines, 16 templates.
+	// none: 24 lines, 22 templates.
 	if out["templates"].(float64) != float64(len(lines)-2) {
 		t.Fatalf("templates = %v, want %d (two redaction collapses, no template for the sweep line)", out["templates"], len(lines)-2)
 	}
 	sig, _ := os.ReadFile(out["signals_file"].(string))
 	for _, raw := range []string{"1 85 03 75 123 456 41", "3456 7890 189", "4539 1488 0343 6467", "SuperSecret123", "marie.curie", "pierre@", "eyJhbGciOiJIUzI1NiJ9",
-		"fr7630006000011234567890189", "nl91abna0417164300", "hunter2SuperSecret", "4539148803436467"} {
+		"fr7630006000011234567890189", "nl91abna0417164300", "hunter2SuperSecret", "4539148803436467",
+		"2223000048400011", "4111.1111.1111.1111", "1-85-03-75-123-456-41", "4012888888881881", "1234-5678-9012-3456",
+		"4539-1488-0343-6467", "3530111333300000"} {
 		if strings.Contains(string(sig), raw) {
 			t.Fatalf("raw value %q reached the derived signals", raw)
 		}
 	}
 	if !strings.Contains(string(sig), "[REDACTED:nir]") || !strings.Contains(string(sig), "[REDACTED:secret_kv]") {
 		t.Fatal("redaction markers missing from the samples")
+	}
+	if !strings.Contains(string(sig), "order <num> shipped") {
+		t.Fatal("a separated digit run that is not a card must still be masked in the sample")
 	}
 	// Template fingerprints ignore numbers: two lines differing only by
 	// their ids share one template.
@@ -867,6 +878,33 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	if lp["windows"].(map[string]any)["errors"].(map[string]any)["overlap_ns"] != "0" || lp["page_size"].(float64) != 1 {
 		t.Fatalf("explicit overlap_seconds=0 must give overlap_ns 0 and page_size 0 must floor at 1: %v", lp)
 	}
+	// A negative overlap would start the window AFTER its own cursor:
+	// floored at 0, and said on stderr.
+	h.writeConfig(t, func(cfg map[string]any) { cfg["loki"].(map[string]any)["overlap_seconds"] = -5 })
+	out, stderr, err = plan(h.tokenFile)
+	if err != nil || out["loki"].(map[string]any)["windows"].(map[string]any)["errors"].(map[string]any)["overlap_ns"] != "0" || !strings.Contains(stderr, "negative") {
+		t.Fatalf("a negative overlap must floor at 0 with a warning: %v %s %v", out["loki"], stderr, err)
+	}
+	// Same floor on the bootstrap window: negative would put the first
+	// window's start after its end.
+	h.writeConfig(t, func(cfg map[string]any) { cfg["loki"].(map[string]any)["bootstrap_window_minutes"] = -3 })
+	_ = os.RemoveAll(filepath.Join(h.ws, ".prod-watch"))
+	out, stderr, err = plan(h.tokenFile)
+	if err != nil {
+		t.Fatalf("plan: %v %s", err, stderr)
+	}
+	bw := out["loki"].(map[string]any)["windows"].(map[string]any)["errors"].(map[string]any)
+	bfrom, _ := strconv.ParseInt(bw["from_ns"].(string), 10, 64)
+	bto, _ := strconv.ParseInt(bw["to_ns"].(string), 10, 64)
+	if bw["bootstrap"] != true || bfrom != bto || !strings.Contains(stderr, "bootstrap_window_minutes -3 is negative") {
+		t.Fatalf("a negative bootstrap window must floor at 0 (an empty first window) with a warning: %v %s", bw, stderr)
+	}
+	// The typed refusal renders the REASON, not the summary — pinned on
+	// the compiled node so a template edit cannot silently drop it.
+	fn, ok := wf.Nodes["watch_halted"].(*ir.FailNode)
+	if !ok || fn.Message == nil || !strings.Contains(fn.Message.Raw, "outputs.plan.halt_reason") {
+		t.Fatalf("watch_halted must render outputs.plan.halt_reason: %+v", fn)
+	}
 	h.writeConfig(t, func(cfg map[string]any) {
 		cfg["loki"] = map[string]any{"queries": map[string]any{}}
 		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
@@ -950,7 +988,9 @@ func TestProdWatch_LokiOverlapAfterTruncation(t *testing.T) {
 	h := newPWHarness(t)
 	h.writeConfig(t, func(cfg map[string]any) {
 		cfg["loki"].(map[string]any)["page_size"] = 2
-		cfg["loki"].(map[string]any)["overlap_seconds"] = 1
+		// Wider than the lines' age (5 min): a cursor parked at "now" still
+		// keeps them in its overlap, so a skip-only tick must hand them over.
+		cfg["loki"].(map[string]any)["overlap_seconds"] = 400
 		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q"}
 		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
 		cfg["probes"] = []map[string]any{}
@@ -985,7 +1025,9 @@ func TestProdWatch_LokiOverlapAfterTruncation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(stateJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	vars["max_lines"] = 5000
+	// The cap STAYS at 2: under sustained truncation the already-counted
+	// band is re-read every tick and must neither be charged to the cap
+	// nor freeze the cursor.
 	plan, _, err = runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 	if err != nil {
 		t.Fatal(err)
@@ -998,6 +1040,34 @@ func TestProdWatch_LokiOverlapAfterTruncation(t *testing.T) {
 	pq2 := loki2["per_query"].(map[string]any)["errors"].(map[string]any)
 	if pq2["skipped_overlap"].(float64) != 2 || loki2["lines"].(float64) != 2 {
 		t.Fatalf("the two already-counted lines must be skipped and the two new ones fetched: %v", pq2)
+	}
+	if pq2["covered_to_ns"] == pq["covered_to_ns"] {
+		t.Fatalf("the cursor must ADVANCE under sustained truncation; it stayed at %v", pq["covered_to_ns"])
+	}
+	written, _ := os.ReadFile(loki2["raw_file"].(string))
+	if !strings.Contains(string(written), "line 2") || !strings.Contains(string(written), "line 3") || strings.Contains(string(written), "line 0") {
+		t.Fatalf("tick 2 must write exactly the next two lines: %s", written)
+	}
+	// Tick 3: nothing new, the window is consumed to its end. The band is
+	// re-read, skipped, and still handed over: with an empty handover the
+	// next tick would count these lines a second time.
+	stateJSON = fmt.Sprintf(`{"version":1,"generation":2,"cursors":{"loki":{"errors":{"covered_to_ns":"%s","overlap_hashes":%s}}},"incidents":{},"health":{}}`,
+		pq2["covered_to_ns"], mustJSON(t, pq2["overlap_hashes"]))
+	if err := os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(stateJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err = runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loki3, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+		"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+	if err != nil {
+		t.Fatalf("poll_loki 3: %v\n%s", err, stderr)
+	}
+	pq3 := loki3["per_query"].(map[string]any)["errors"].(map[string]any)
+	if loki3["lines"].(float64) != 0 || pq3["skipped_overlap"].(float64) < 1 || len(pq3["overlap_hashes"].([]any)) == 0 || loki3["truncated"] == true {
+		t.Fatalf("a skip-only tick writes nothing, is not truncated, and still hands over the band's hashes: %v", pq3)
 	}
 }
 
@@ -1363,15 +1433,53 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 		// environment (last duplicate key wins in exec.Cmd.Env).
 		return runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, "commit_state").Script, in, nil, nil), gittest.Env())
 	}
-	// happy path: committed, pushed, the lock file NOT in git
-	out, stderr, err := run(stage(1))
+	// Preflights on a FRESH repo, before the happy path: an ignore rule
+	// that would make `git add` skip the state refuses BEFORE a byte of
+	// state is written — a consumed tick on disk that git never carries
+	// would replay nothing and lose everything.
+	notWritten := func(what string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(h.ws, ".prod-watch", "state.json")); err == nil {
+			t.Fatalf("%s must refuse before the state is written; state.json exists", what)
+		}
+	}
+	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte(".prod-watch/\n"), 0o644)
+	_, stderr, err := run(stage(1))
+	if err == nil || !strings.Contains(stderr, "git ignores") || !strings.Contains(stderr, ".prod-watch") || strings.Contains(stderr, "Traceback") {
+		t.Fatalf("a gitignored state dir must refuse by name: %v %s", err, stderr)
+	}
+	notWritten("the ignore preflight")
+	// a FILE-level rule lets the dir through and would drop state.json from
+	// the commit in silence: refused by file name.
+	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte("*.json\n"), 0o644)
+	_, stderr, err = run(stage(1))
+	if err == nil || !strings.Contains(stderr, "git ignores") || !strings.Contains(stderr, "state.json") || strings.Contains(stderr, "Traceback") {
+		t.Fatalf("a file-level ignore rule must refuse naming the file: %v %s", err, stderr)
+	}
+	notWritten("the file-level ignore preflight")
+	_ = os.Remove(filepath.Join(h.ws, ".gitignore"))
+	// happy path: committed, pushed, the lock file NOT in git — nor a stray
+	// file an operator left in the state dir: the node stages what it
+	// writes, by name.
+	_ = os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755)
+	_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "stray.md"), []byte("notes\n"), 0o644)
+	var out map[string]any
+	out, stderr, err = run(stage(1))
 	if err != nil || out["committed"] != true {
 		t.Fatalf("first commit must land: %v %s %v", out, stderr, err)
 	}
 	tracked := git("ls-files", ".prod-watch")
-	if strings.Contains(tracked, ".lock") || !strings.Contains(tracked, "state.json") || !strings.Contains(tracked, ".gitattributes") || !strings.Contains(tracked, ".gitignore") {
-		t.Fatalf("the state dir is tracked without its lock file: %q", tracked)
+	if strings.Contains(tracked, ".lock") || strings.Contains(tracked, "stray.md") || !strings.Contains(tracked, "state.json") || !strings.Contains(tracked, ".gitattributes") || !strings.Contains(tracked, ".gitignore") {
+		t.Fatalf("the state dir is tracked without its lock file or a stray file: %q", tracked)
 	}
+	// git failing to stage (an index.lock left by a crashed git): a refusal
+	// that names it, never a "committed" — the add is judged by the index.
+	_ = os.WriteFile(filepath.Join(h.ws, ".git", "index.lock"), []byte(""), 0o644)
+	_, stderr, err = run(stage(2))
+	if err == nil || !strings.Contains(stderr, "unstaged") || !strings.Contains(stderr, "index.lock") {
+		t.Fatalf("a failed git add must refuse by name: %v %s", err, stderr)
+	}
+	_ = os.Remove(filepath.Join(h.ws, ".git", "index.lock"))
 	if log := git("log", "--oneline", "origin/main"); !strings.Contains(log, "chore(prod-watch)") {
 		t.Fatalf("the state commit must reach the remote: %s", log)
 	}
@@ -1389,12 +1497,69 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 	if err == nil || !strings.Contains(stderr, "outside the state dir") || !strings.Contains(stderr, "my_wip.txt") {
 		t.Fatalf("a foreign staged path must refuse by name: %v %s", err, stderr)
 	}
+	unmoved := func(what string) {
+		t.Helper()
+		if b, _ := os.ReadFile(filepath.Join(h.ws, ".prod-watch", "state.json")); !strings.Contains(string(b), `"generation":1`) {
+			t.Fatalf("%s must refuse BEFORE the state is written; state.json moved: %s", what, b)
+		}
+	}
+	unmoved("the staged-path preflight")
 	git("reset", "-q", "my_wip.txt")
 	_ = os.Remove(filepath.Join(h.ws, "my_wip.txt"))
-	// a gitignored state dir with state_commit=true: a named refusal, not a traceback
-	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte(".prod-watch/\n"), 0o644)
-	_, stderr, err = run(stage(2))
-	if err == nil || !strings.Contains(stderr, "gitignored") || strings.Contains(stderr, "Traceback") {
-		t.Fatalf("a gitignored state dir must refuse by name: %v %s", err, stderr)
+	// Once tracked, the state files are no longer subject to ignore rules
+	// (git carries a tracked file whatever the rules say): the node must
+	// not refuse what git accepts, or a repo-wide `*.json` rule halts the
+	// watchdog for nothing.
+	_ = os.WriteFile(filepath.Join(h.ws, ".gitignore"), []byte("*.json\n.prod-watch/\n"), 0o644)
+	out, stderr, err = run(stage(2))
+	if err != nil || out["committed"] != true {
+		t.Fatalf("a tracked state under an ignore rule must still commit: %v %s %v", out, stderr, err)
+	}
+	if log := git("log", "--oneline", "origin/main"); strings.Count(log, "chore(prod-watch)") != 2 {
+		t.Fatalf("the second state commit must reach the remote: %s", log)
+	}
+}
+
+// TestProdWatch_CommitStateSubdirWorkspace: the workspace is a subdirectory
+// of the repository and `diff.relative=true` is set — the staged-path guard
+// compares in the repository's frame and the commit lands.
+func TestProdWatch_CommitStateSubdirWorkspace(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	wf := compileFixture(t, "prod-watch/main.bot")
+	root := t.TempDir()
+	ws := filepath.Join(root, "ops")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	gittest.Run(t, filepath.Dir(bare), "init", "--bare", "-q", bare)
+	gittest.Run(t, root, "init", "-q", "-b", "main")
+	gittest.Run(t, root, "config", "diff.relative", "true")
+	_ = os.WriteFile(filepath.Join(root, "README.md"), []byte("ops\n"), 0o644)
+	gittest.Run(t, root, "add", "README.md")
+	gittest.Run(t, root, "commit", "-q", "-m", "init")
+	gittest.Run(t, root, "remote", "add", "origin", bare)
+	gittest.Run(t, root, "push", "-q", "-u", "origin", "main")
+	scratch := t.TempDir()
+	st := filepath.Join(scratch, "state_next.json")
+	_ = os.WriteFile(st, []byte(`{"version":1,"generation":1,"cursors":{"loki":{}},"incidents":{},"health":{}}`), 0o644)
+	al := filepath.Join(scratch, "alertlog_delta.jsonl")
+	_ = os.WriteFile(al, []byte(`{"at":"x"}`+"\n"), 0o644)
+	tk := filepath.Join(scratch, "tick.json")
+	_ = os.WriteFile(tk, []byte(`{"at":"x"}`), 0o644)
+	out, stderr, err := runPyEnv(t, ws, pwSub(t, pwTool(t, wf, "commit_state").Script, map[string]any{
+		"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": 0, "state_commit": true, "workspace": ws, "state_dir": ".prod-watch"},
+		nil, nil), gittest.Env())
+	if err != nil || out["committed"] != true {
+		t.Fatalf("a subdirectory workspace under diff.relative=true must commit: %v %s %v", out, stderr, err)
+	}
+	if tracked := gittest.Run(t, root, "ls-files", "ops/.prod-watch"); !strings.Contains(tracked, "ops/.prod-watch/state.json") {
+		t.Fatalf("state.json must be tracked in the repository's frame: %q", tracked)
+	}
+	if log := gittest.Run(t, root, "log", "--oneline", "origin/main"); !strings.Contains(log, "chore(prod-watch)") {
+		t.Fatalf("the state commit must reach the remote: %s", log)
 	}
 }

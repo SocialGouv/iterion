@@ -519,6 +519,13 @@ tool plan:
     to_ns = now_ns - ingest_lag * 10 ** 9
     floor_ns = to_ns - max_window_min * 60 * 10 ** 9
     overlap_s = int(loki['overlap_seconds'] if loki.get('overlap_seconds') is not None else 60)
+    if overlap_s < 0:
+        print('prod-watch: loki.overlap_seconds ' + str(overlap_s) + ' is negative -- using 0 (a window may not start after its own cursor)', file=sys.stderr)
+        overlap_s = 0
+    boot_min = int(loki['bootstrap_window_minutes'] if loki.get('bootstrap_window_minutes') is not None else 10)
+    if boot_min < 0:
+        print('prod-watch: loki.bootstrap_window_minutes ' + str(boot_min) + ' is negative -- using 0 (a first window may not start after its own end)', file=sys.stderr)
+        boot_min = 0
     cursors = (state.get('cursors') or {}).get('loki') or {}
     windows = {}
     for name in queries:
@@ -530,7 +537,6 @@ tool plan:
         else:
             ## Bootstrap: a short first window, so an install does not
             ## replay an hour of history as if it were news.
-            boot_min = int(loki['bootstrap_window_minutes'] if loki.get('bootstrap_window_minutes') is not None else 10)
             frm = to_ns - min(max_window_min, boot_min) * 60 * 10 ** 9
             gap = False
         ## The overlap re-reads the tail of the previous window on purpose
@@ -743,7 +749,7 @@ tool poll_loki:
             prev_to = int(w.get('prev_covered_to_ns') or 0)
             known = set(w.get('overlap_hashes') or [])
             overlap_ns = int(w.get('overlap_ns') or 0)
-            written = []   # (ts, hash) of every line written, for the next tick's overlap
+            band = []      # (ts, hash) of every line SEEN this walk — the next tick's overlap dedup
             walk_seen = set()
             seen_at = {}   # ts -> lines already seen at that timestamp (the re-read allowance)
             skipped = 0
@@ -768,7 +774,7 @@ tool poll_loki:
                         for ts, line in (stream.get('values') or []):
                             entries.append((int(ts), str(line), kept))
                     entries.sort(key=lambda e: e[0])
-                    fresh = 0
+                    fresh, new_written = 0, 0
                     for ts, line, kept in entries:
                         h = hashlib.sha1((str(ts) + chr(0) + line).encode('utf-8', 'replace')).hexdigest()[:16]
                         last_ts = max(last_ts, ts)
@@ -777,12 +783,19 @@ tool poll_loki:
                         walk_seen.add(h)
                         seen_at[ts] = seen_at.get(ts, 0) + 1
                         fresh += 1
+                        ## Every line seen belongs to the band the next tick may
+                        ## re-read — the skipped ones too, or a tick that only
+                        ## re-reads known lines hands over an empty list.
+                        band.append((ts, h))
                         if ts <= prev_to and h in known:
                             skipped += 1
                             continue
-                        written.append((ts, h))
+                        new_written += 1
                         raw.write(json.dumps({'q': name, 'ts': str(ts), 'line': line[:4000], 'stream': kept}, ensure_ascii=False) + chr(10))
-                    n += fresh
+                    ## Only lines WRITTEN count against the cap: under sustained
+                    ## truncation the already-counted band is re-read every tick,
+                    ## and charging it would freeze the cursor on the same page.
+                    n += new_written
                     if fresh == 0:
                         if len(entries) < limit:
                             break
@@ -816,11 +829,11 @@ tool poll_loki:
             ## the COVERED bound minus the overlap — the bound actually
             ## persisted, not the frozen window end, or a truncated tick
             ## hands over an empty list and the overlap band is re-counted.
-            tail_hashes = [h for ts, h in written if ts >= covered - overlap_ns]
-            per_query[name] = {'lines': n - skipped, 'truncated': truncated, 'covered_to_ns': str(covered), 'error': err,
+            tail_hashes = [h for ts, h in band if ts >= covered - overlap_ns]
+            per_query[name] = {'lines': n, 'truncated': truncated, 'covered_to_ns': str(covered), 'error': err,
                                'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
                                'skipped_overlap': skipped, 'overlap_hashes': tail_hashes[-4000:]}
-            total += n - skipped
+            total += n
             truncated_any = truncated_any or truncated
             if not err:
                 ok_count += 1
@@ -1090,7 +1103,7 @@ tool leak_scan:
         digits = ''.join(str(int(ch, 36)) for ch in moved)
         return int(digits) % 97 == 1
     def luhn_ok(s):
-        d = [int(ch) for ch in re.sub(r'[ -]', '', s)]
+        d = [int(ch) for ch in re.sub(r'[ .-]', '', s)]
         if len(d) < 15 or len(d) > 19 or len(set(d)) == 1:
             return False
         total = 0
@@ -1102,29 +1115,20 @@ tool leak_scan:
             total += x
         return total % 10 == 0
     CARD_CONTEXT = re.compile(r'(?i)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
-    def epoch_like(digits):
-        ## A separator-free run that reads as a Unix epoch at s / ms / us /
-        ## ns scale between 2000 and 2100 is a timestamp: Luhn passes one
-        ## in ten of them, and every structured logger emits one per line.
-        v = int(digits)
-        for scale in (1, 10 ** 3, 10 ** 6, 10 ** 9):
-            if 946684800 * scale <= v < 4102444800 * scale:
-                return True
-        return False
     def card_ok(m):
+        ## Luhn over a context-free, separator-free digit run is a coin flip
+        ## on trace ids, references and epoch timestamps — so a BARE run is a
+        ## card only with a card word within 40 chars (which then outranks
+        ## every other heuristic: a 2-series Mastercard or a JCB reads like a
+        ## timestamp by value). A spaced / dotted / hyphenated run is a
+        ## card's own shape and needs Luhn alone.
         raw = m.group(0)
         if not luhn_ok(raw):
             return False
-        bare = not re.search(r'[ -]', raw)
-        if bare and epoch_like(raw):
-            return False
-        if bare:
-            ## Luhn alone over a context-free digit run is a coin flip on
-            ## trace ids and references: a separator-free run needs a card
-            ## word nearby; a spaced / hyphenated one is a card's own shape.
-            window = m.string[max(0, m.start() - 40):m.start()]
-            return bool(CARD_CONTEXT.search(window))
-        return True
+        if re.search(r'[ .-]', raw):
+            return True
+        window = m.string[max(0, m.start() - 40):m.start()]
+        return bool(CARD_CONTEXT.search(window))
 
     ## Order matters: a JWT contains digit runs, a bearer value may look
     ## like an email's local part. Secrets first, then validated
@@ -1135,9 +1139,9 @@ tool leak_scan:
         ('bearer', re.compile(r'(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}'), None),
         ('cloud_or_forge_token', re.compile(r'\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'), None),
         ('secret_kv', re.compile(r'(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|token)\s*[=:]\s*[\'"]?([^\s\'"&,;<>]{6,})'), None),
-        ('nir', re.compile(r'(?<![\dA-Za-z])([12])\s?(\d{2})\s?(0[1-9]|1[0-2]|[2-9]\d)\s?(\d{2}|2[AB])\s?(\d{3})\s?(\d{3})\s?(\d{2})(?![\dA-Za-z])'), nir_ok),
+        ('nir', re.compile(r'(?<![\dA-Za-z])([12])[ .-]?(\d{2})[ .-]?(0[1-9]|1[0-2]|[2-9]\d)[ .-]?(\d{2}|2[AB])[ .-]?(\d{3})[ .-]?(\d{3})[ .-]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?i)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
-        ('card', re.compile(r'(?<![\d.])(?:\d[ -]?){14,18}\d(?![\d.])'), lambda m: card_ok(m)),
+        ('card', re.compile(r'(?<!\d)(?:\d[ .-]?){14,18}\d(?!\d|\.\d)'), lambda m: card_ok(m)),
         ('email', re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
         ('phone_fr', re.compile(r'(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
     ]
@@ -1232,7 +1236,7 @@ tool leak_scan:
                 ## Belt on the one derived text that keeps its digits: a bare
                 ## run of 12+ digits (a PAN without a card word, a reference,
                 ## an epoch) is never worth showing in a chat sample.
-                sample = re.sub(r'(?<!\d)\d{12,}(?!\d)', '<num>', scrubbed)[:300]
+                sample = re.sub(r'(?<!\d)(?:\d[ .-]?){11,}\d(?!\d)', '<num>', scrubbed)[:300]
                 t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0,
                                                'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set()})
                 t['count'] += 1
@@ -1700,21 +1704,55 @@ tool commit_state:
     state_dir = {{input.state_dir}}
     os.chdir(ws)
 
-    def _commit_push_state(sdir, msg):
-        ## A gitignored state dir with state_commit=true is the expected
-        ## misconfiguration (the docs offer both options): name it, do not
-        ## die on a traceback with git's explanation swallowed.
-        if subprocess.run(['git', 'check-ignore', '-q', '--no-index', sdir], capture_output=True).returncode == 0:
-            raise SystemExit('prod-watch: state_commit=true but the state dir ' + repr(sdir) + ' is gitignored -- '
-                             'un-ignore it (git is the state store on ephemeral runners) or run with state_commit=false')
-        added = subprocess.run(['git', 'add', sdir], capture_output=True, text=True)
-        if added.returncode != 0:
-            raise SystemExit('prod-watch: git add of the state dir failed: ' + ((added.stderr or added.stdout or '')[-400:]).strip())
+    STATE_FILES = ['state.json', 'alertlog.jsonl', 'ticks.jsonl']
+    ## Everything the node stages, by explicit path: the bot commits what it
+    ## writes, never a stray file an operator left in the state dir.
+    STAGED_FILES = STATE_FILES + ['.gitignore', '.gitattributes']
+
+    def _repo_frame(sdir):
+        ## The state dir in the REPOSITORY's frame: `git diff --cached
+        ## --name-only --no-relative` prints repo-root-relative paths whatever
+        ## `diff.relative` says, and the workspace may be a subdirectory.
         prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'], capture_output=True, text=True).stdout.strip()
-        sdir_repo = (prefix + sdir.rstrip('/')).lstrip('/')
-        staged = subprocess.run(['git', 'diff', '--cached', '--name-only'], capture_output=True, text=True).stdout.split(chr(10))
-        pfx = sdir_repo + '/'
-        outside = [p for p in staged if p.strip() and p != sdir_repo and not p.startswith(pfx)]
+        return (prefix + sdir.rstrip('/')).lstrip('/')
+
+    def _staged_outside(sdir):
+        ## The bot may ONLY ever commit the state dir. A staged path outside
+        ## it (the config, .github/**, an operator's WIP) would be a bug or an
+        ## injection — refused by name, never carried under the bot's identity.
+        sdir_repo = _repo_frame(sdir)
+        staged = subprocess.run(['git', 'diff', '--cached', '--name-only', '--no-relative'],
+                                capture_output=True, text=True).stdout.split(chr(10))
+        return [q for q in staged if q.strip() and q != sdir_repo and not q.startswith(sdir_repo + '/')]
+
+    def _ignored_state_paths(sdir):
+        ## Judge the FILES the node stages, not the directory: a repo-wide
+        ## `*.json` rule lets the dir through and would drop state.json.
+        ## Tracked files are not subject to ignore rules (`git add` carries
+        ## them), so this asks exactly what `git add` would refuse: the
+        ## paths still untracked under a rule.
+        paths = [os.path.join(sdir, f) for f in STAGED_FILES]
+        out = subprocess.run(['git', 'check-ignore'] + paths, capture_output=True, text=True).stdout
+        return [ln.strip() for ln in out.split(chr(10)) if ln.strip()]
+
+    def _commit_push_state(sdir, msg):
+        paths = [os.path.join(sdir, f) for f in STAGED_FILES]
+        added = subprocess.run(['git', 'add', '--'] + paths, capture_output=True, text=True)
+        said = ((added.stderr or added.stdout or '')[-400:]).strip()
+        ## Judged by the INDEX, never by the exit code: under a rule that
+        ## ignores the state dir itself, `git add` stages the tracked files
+        ## and still exits 1 for the directory it walked. What git actually
+        ## took: every state file tracked, with the content just written —
+        ## or "pushed" would describe a commit without the cursor in it.
+        missing = [f for f in STAGED_FILES
+                   if subprocess.run(['git', 'ls-files', '--error-unmatch', os.path.join(sdir, f)], capture_output=True).returncode != 0]
+        if missing:
+            raise SystemExit('prod-watch: git did not take ' + ', '.join(missing) + ' from the state dir ' + repr(sdir) +
+                             ' (an ignore rule?) -- refusing to push a state commit without them. git said: ' + said)
+        if subprocess.run(['git', 'diff', '--quiet', '--'] + paths).returncode != 0:
+            raise SystemExit('prod-watch: git add left state files unstaged in ' + repr(sdir) +
+                             ' -- refusing to commit a partial state. git said: ' + said)
+        outside = _staged_outside(sdir)
         if outside:
             raise SystemExit('prod-watch: refusing to commit path(s) outside the state dir ' + repr(sdir) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
@@ -1748,15 +1786,11 @@ tool commit_state:
     if state_commit:
         ## Preflight BEFORE a byte of state is written: a misconfiguration
         ## must not leave a consumed tick on disk that git will never carry.
-        ## --no-index: judge the ignore RULES, whether or not the dir is
-        ## already tracked (git add refuses an ignored pathspec either way).
-        if subprocess.run(['git', 'check-ignore', '-q', '--no-index', state_dir], capture_output=True).returncode == 0:
-            raise SystemExit('prod-watch: state_commit=true but the state dir ' + repr(state_dir) + ' is gitignored -- '
-                             'un-ignore it (git is the state store on ephemeral runners) or run with state_commit=false')
-        prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'], capture_output=True, text=True).stdout.strip()
-        sdir_repo = (prefix + state_dir.rstrip('/')).lstrip('/')
-        staged = subprocess.run(['git', 'diff', '--cached', '--name-only'], capture_output=True, text=True).stdout.split(chr(10))
-        outside = [q for q in staged if q.strip() and q != sdir_repo and not q.startswith(sdir_repo + '/')]
+        ignored = _ignored_state_paths(state_dir)
+        if ignored:
+            raise SystemExit('prod-watch: state_commit=true but git ignores ' + ', '.join(ignored) + ' -- un-ignore the state '
+                             'dir and its files (git is the state store on ephemeral runners) or run with state_commit=false')
+        outside = _staged_outside(state_dir)
         if outside:
             raise SystemExit('prod-watch: refusing to commit path(s) outside the state dir ' + repr(state_dir) +
                              ' already staged in this checkout: ' + ', '.join(outside[:10]))
