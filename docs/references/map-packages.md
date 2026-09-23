@@ -32,7 +32,7 @@
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — | 3 · 1 |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — | 3 · 8 |
 | `internal/httpx` | provides the shared JSON request/response helpers used by iterion's HTTP handlers. | — | 1 · 5 |
-| `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — | 1 · 6 |
+| `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — | 1 · 9 |
 | `internal/proctest` | checks OS resources owned by a test binary. | — | 2 · 2 |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — | 1 · 3 |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — | 1 · 3 |

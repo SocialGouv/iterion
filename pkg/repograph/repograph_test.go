@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/pkg/repograph"
 )
 
@@ -490,6 +491,52 @@ func TestALinkQuotedInsideCodeMintsNoEdge(t *testing.T) {
 	} {
 		if hasEdge(g, "doc:docs/a.md", quoted.node, repograph.RelLinks) {
 			t.Errorf("%s quoted in %s became an edge — the page quotes the form, it does not link the file", quoted.node, quoted.how)
+		}
+	}
+}
+
+// A doc comment longer than the bound is truncated for a symbol's Node.Doc,
+// and the cut can land inside a code span. The stray backtick that leaves is
+// what every reader of the node shows for the rest of the line.
+//
+// The mutation that reddens this: drop CloseDanglingSpan from this package's
+// firstSentence.
+func TestATruncatedDocCommentDoesNotEndInsideACodeSpan(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.test/m\n\ngo 1.26\n",
+		"pkg/long/long.go": "package long\n\n" +
+			"// Thing has a doc comment that runs well past the bound, with a code span " +
+			"carrying spaces in it such as `the form ](../../x.md) and its neighbour ](../y.md)` " +
+			"which the cut lands inside.\nfunc Thing() {}\n",
+	})
+	g := build(t, root)
+
+	var doc string
+	for _, n := range g.Nodes {
+		if n.Kind == repograph.KindSymbol && n.Label == "Thing" {
+			doc = n.Doc
+		}
+	}
+	if doc == "" {
+		t.Fatal("no Doc on the symbol node — this test would prove nothing")
+	}
+	if !strings.Contains(doc, "…") {
+		t.Fatalf("the doc comment was not truncated, so the cut is not exercised: %q", doc)
+	}
+	spans := mdcode.Spans(doc)
+	for i := 0; i < len(doc); i++ {
+		if doc[i] != '`' {
+			continue
+		}
+		inside := false
+		for _, r := range spans {
+			if i >= r[0] && i < r[1] {
+				inside = true
+				break
+			}
+		}
+		if !inside {
+			t.Fatalf("Node.Doc carries a backtick outside any code span at byte %d: %q", i, doc)
 		}
 	}
 }

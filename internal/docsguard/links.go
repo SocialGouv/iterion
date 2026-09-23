@@ -317,9 +317,7 @@ func Parse(name string, content []byte) *Document {
 	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
 
 	var (
-		fenceChar  byte
-		fenceLen   int
-		inFence    bool
+		fence      mdcode.FenceScanner
 		inComment  bool
 		inFront    bool
 		prevText   string // previous non-skipped line, for setext headings
@@ -342,7 +340,10 @@ func Parse(name string, content []byte) *Document {
 			continue
 		}
 
-		if !inFence {
+		// Asked BEFORE this line is fed to the scanner: an HTML comment does
+		// not start inside a fenced block, and the state that decides is the
+		// one the previous lines left.
+		if !fence.Open() {
 			line, inComment = stripComments(line, inComment)
 			if inComment && strings.TrimSpace(line) == "" {
 				prevIsText = false
@@ -350,19 +351,11 @@ func Parse(name string, content []byte) *Document {
 			}
 		}
 
-		if marker := mdcode.FenceMarker(line); marker != "" {
-			if !inFence {
-				inFence, fenceChar, fenceLen = true, marker[0], len(marker)
-				prevIsText = false
-				continue
-			}
-			rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
-			if marker[0] == fenceChar && len(marker) >= fenceLen && rest == "" {
-				inFence = false
-				continue
-			}
-		}
-		if inFence {
+		// The whole fence machine is internal/mdcode's: which lines are
+		// delimiters AND which delimiter closes which block. This file used
+		// to carry its own copy of the second half.
+		if fence.Code(line) {
+			prevIsText = false
 			continue
 		}
 

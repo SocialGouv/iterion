@@ -175,18 +175,15 @@ func readDocRow(abs, rel string) (docRow, error) {
 	row := docRow{Path: rel, IsADR: strings.HasPrefix(rel, "docs/adr/")}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	inFence := false
+	// The fence rule is internal/mdcode's — the whole machine, not the half
+	// that says which lines are delimiters. Recognising `~~~` and blockquoted
+	// fences while closing on any delimiter ends a ``` block on the `~~~`
+	// line inside it, which is content, and the sentence this function then
+	// hands to reanchor is quoted code.
+	var fence mdcode.FenceScanner
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		// The fence rule is internal/mdcode's, the same one the mask and the
-		// documentation link checker read: a third spelling here would give
-		// this repository two answers about where a page's code is, in the
-		// very function that then hands the sentence to reanchor.
-		if mdcode.FenceMarker(line) != "" {
-			inFence = !inFence
-			continue
-		}
-		if inFence || line == "" {
+		if fence.Code(line) || line == "" {
 			continue
 		}
 		switch {

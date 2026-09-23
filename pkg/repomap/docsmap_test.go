@@ -1,6 +1,8 @@
 package repomap
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -222,6 +224,14 @@ func TestALongSentenceQuotingALinkFormIsNotCutInsideItsCodeSpan(t *testing.T) {
 			quote: "Avant ce correctif, la carte des docs réécrivait la phrase d'ouverture sans lire les spans et émettait la forme `](../../docs/foo.md) ou sa voisine ](../foo.md)`, que github.com rend et que le site ignore.",
 		},
 		{
+			// The quoted target RESOLVES, so a broken repair does not trip
+			// the refusal above — only the balance oracle can catch it, which
+			// is what makes that assertion load-bearing rather than a second
+			// copy of the error check.
+			name:  "a resolvable target quoted in the cut span",
+			quote: "The docs map reproduced the opening sentence of every page with no notion of a code span, so it read the quoted `](adr/081.md) and its neighbour ](guide.md)` as links the page had written.",
+		},
+		{
 			// The dangling run sits BEFORE a later closed span of a
 			// different width — a page quoting both a `…` form and a ``…``
 			// form, which is what the page documenting this rule writes. A
@@ -246,10 +256,86 @@ func TestALongSentenceQuotingALinkFormIsNotCutInsideItsCodeSpan(t *testing.T) {
 			}
 			// The cell must not end mid-span either: a stray backtick is what
 			// makes every reader disagree about where the code was. Asked of
-			// the rule itself, not of a parity count — parity is not balance
-			// (``a`b` has four backticks and a dangling run).
-			if mdcode.CloseDanglingSpan(got) != got {
-				t.Errorf("the summary ends inside a code span: %s", got)
+			// mdcode.Spans, never of CloseDanglingSpan — firstSentence has
+			// already applied that function, so asking it again is a
+			// tautology that stays green for ANY implementation, including
+			// none at all.
+			if pos, dangling := backtickOutsideASpan(got); dangling {
+				t.Errorf("the summary ends inside a code span (byte %d): %s", pos, got)
+			}
+		})
+	}
+}
+
+// backtickOutsideASpan is the independent oracle for "this cell is
+// code-complete": it asks where the spans ARE, not whether the repair says it
+// succeeded.
+func backtickOutsideASpan(s string) (int, bool) {
+	spans := mdcode.Spans(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] != '`' {
+			continue
+		}
+		inside := false
+		for _, r := range spans {
+			if i >= r[0] && i < r[1] {
+				inside = true
+				break
+			}
+		}
+		if !inside {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// A page that shows a ```-fence by wrapping it in another fence is ordinary
+// markdown, and the inner `~~~` or `> ```sh` line is CONTENT. A scanner that
+// recognises those as delimiters but closes on any delimiter ends the outer
+// block early, and the "opening sentence" it then reads is quoted code —
+// which reanchor rewrites, or refuses, aborting `iterion map gen` on a page
+// whose own links are sound.
+//
+// The mutation that reddens this: a naive toggle in readDocRow, whatever set
+// of lines it recognises.
+func TestAFenceShownInsideAFenceDoesNotEndIt(t *testing.T) {
+	for _, tc := range []struct{ name, inner string }{
+		{"a tilde fence shown inside a backtick fence", "~~~"},
+		{"a blockquoted fence shown inside a backtick fence", "> ```sh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			body := "# Hazard\n\n```markdown\n" + tc.inner +
+				"\nNever write the form ](../../elsewhere/foo.md) — the site ignores it.\n" +
+				tc.inner + "\n```\n\nThe real opening sentence, which links to [the guide](guide.md).\n"
+			for rel, text := range map[string]string{
+				"docs/hazard.md": body,
+				"docs/guide.md":  "# Guide\n\nA guide.\n",
+			} {
+				abs := filepath.Join(root, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(abs, []byte(text), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var docs Extractor
+			for _, e := range Extractors() {
+				if e.Stem() == "docs" {
+					docs = e
+				}
+			}
+			out, err := docs.Extract(root)
+			if err != nil {
+				t.Fatalf("the extractor refused a page whose links are sound: %v", err)
+			}
+			if !strings.Contains(out, "The real opening sentence") {
+				t.Errorf("the summary is not the page's prose:\n%s", out)
+			}
+			if strings.Contains(out, "elsewhere/foo.md") {
+				t.Errorf("a link form quoted inside the fenced example reached the map:\n%s", out)
 			}
 		})
 	}

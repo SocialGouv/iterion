@@ -103,6 +103,49 @@ func FenceMarker(line string) string {
 	return marker
 }
 
+// FenceScanner tracks fenced code blocks across the lines of one document.
+//
+// A fence rule has TWO halves — which lines are delimiters, and which
+// delimiter closes which fence — and copying one half is worse than copying
+// neither: a scanner that recognises `~~~` and blockquoted fences as
+// delimiters but closes a block on any delimiter will END a ``` block on the
+// `~~~` line inside it, which CommonMark calls content. Measured: that exact
+// combination aborted `iterion map gen` on a page whose links were sound.
+// So the whole machine lives here and its users hold a scanner, never a
+// predicate.
+//
+// The zero value is ready: a document starts outside a fence.
+type FenceScanner struct {
+	open bool
+	char byte
+	n    int
+}
+
+// Open reports whether the scanner is currently inside a fenced block — the
+// state left by the lines already fed to Code, before the next one is read.
+func (f *FenceScanner) Open() bool { return f.open }
+
+// Code reports whether the line is code — a fence delimiter, or a line inside
+// a fenced block — and advances the scanner. A delimiter is code too: it is
+// not prose, and no user of this type has ever wanted it.
+func (f *FenceScanner) Code(line string) bool {
+	marker := FenceMarker(line)
+	if marker == "" {
+		return f.open
+	}
+	if !f.open {
+		f.open, f.char, f.n = true, marker[0], len(marker)
+		return true
+	}
+	// A fence closes only on a run of the SAME character, at least as long as
+	// the one that opened it, with nothing after it. Anything else is content.
+	rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
+	if marker[0] == f.char && len(marker) >= f.n && rest == "" {
+		f.open = false
+	}
+	return true
+}
+
 // Mask returns md with every byte of code replaced by a space: the body of a
 // fenced block, its delimiter lines, and every inline code span.
 //
@@ -118,29 +161,13 @@ func Mask(md string) string {
 			out[i] = ' '
 		}
 	}
-	var (
-		inFence   bool
-		fenceChar byte
-		fenceLen  int
-	)
+	var fence FenceScanner
 	for pos := 0; pos <= len(md); {
 		line, next := md[pos:], len(md)+1
 		if nl := strings.IndexByte(line, '\n'); nl >= 0 {
 			line, next = line[:nl], pos+nl+1
 		}
-		delimiter := false
-		if marker := FenceMarker(line); marker != "" {
-			switch {
-			case !inFence:
-				inFence, fenceChar, fenceLen, delimiter = true, marker[0], len(marker), true
-			default:
-				rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
-				if marker[0] == fenceChar && len(marker) >= fenceLen && rest == "" {
-					inFence, delimiter = false, true
-				}
-			}
-		}
-		if inFence || delimiter {
+		if fence.Code(line) {
 			blank(pos, pos+len(line))
 		} else {
 			for _, r := range Spans(line) {
@@ -165,6 +192,10 @@ func Mask(md string) string {
 // Closing rather than cutting, because cutting loses text: a cut at the first
 // backtick of a 60-byte ADR status leaves an EMPTY cell, and a cut mid-cell
 // drops the very name the sentence was quoting.
+//
+// The caller owes a SINGLE line: Spans pairs runs across a newline while
+// Mask reasons per line, so a repair spanning one would satisfy Spans and
+// still show backticks on the page. Both callers collapse newlines first.
 //
 // The dangling run is the first one NO span covers, which is not the same as
 // the first one after the last span: a cut inside a `…` form followed by a
