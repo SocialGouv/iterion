@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runops"
@@ -45,6 +46,29 @@ type actingPrompt struct {
 	reasons      []string
 }
 
+// declaredListIsNotABound names why a backend cannot be trusted to enforce a
+// node's `tools:` list, or "" when it can. Keyed on the engine's own
+// enumeration rather than a literal, so a backend added to
+// toolcatalog.ReceivesToolList is classified here without a second edit.
+//
+// An empty or "auto" backend resolves by detection preference, whose first
+// choice is claude_code (pkg/backend/detect), so it is treated as such.
+func declaredListIsNotABound(backend string) string {
+	switch backend {
+	case "claude_code", "", "auto":
+		return "claude_code: a declared tools list becomes --disallowedTools over a roster iterion does not own (#1652)"
+	case "claw", "codex":
+		// claw resolves ToolDefs from the list; codex maps it onto a sandbox
+		// mode it actually enforces.
+		return ""
+	default:
+		if !toolcatalog.ReceivesToolList(backend) {
+			return "backend " + backend + " never receives the tools list, so the declared bound is dropped (#1652)"
+		}
+		return ""
+	}
+}
+
 // resolvedBackend reads a node's backend at its authored default, falling back
 // to the workflow's, so the classification does not depend on the host.
 func resolvedBackend(llm ir.LLMNode, defaultBackend string) string {
@@ -69,16 +93,18 @@ func actingPrompts(wf *ir.Workflow) []actingPrompt {
 		var reasons []string
 		if runtime.ToolSurfaceCanWrite(node, wf.DefaultBackend, authoredDefaults) {
 			reasons = append(reasons, toolSurfaceReason(llm, wf.DefaultBackend))
-		} else if resolvedBackend(llm, wf.DefaultBackend) == "claude_code" {
-			// A `tools:` list is NOT a bound on claude_code. The CLI takes it
-			// as --disallowedTools over a closed native roster iterion does
-			// not own (measured on 2.1.220, #1652), so a list that names only
-			// read-only tools still leaves every native writer the roster
-			// gained since. Declaring the list is a narrowing of intent, not
-			// of capability — and every LLM node of a catalog bot reads
-			// material it did not write, so on this backend the node is in
-			// the class whatever its list says.
-			reasons = append(reasons, "claude_code: a declared tools list is not a bound there (#1652)")
+		} else if r := declaredListIsNotABound(resolvedBackend(llm, wf.DefaultBackend)); r != "" {
+			// A `tools:` list is not a BOUND everywhere it is accepted.
+			// claude_code takes it as --disallowedTools over a closed native
+			// roster iterion does not own (measured on CLI 2.1.220, #1652),
+			// so a read-only-looking list still leaves every native writer
+			// the roster gained since; and the CLI-agent seam backends never
+			// receive the list at all (pkg/backend/toolcatalog.ReceivesToolList),
+			// so there a declared bound is dropped in silence. Either way the
+			// declaration narrows INTENT, not capability — and every LLM node
+			// of a catalog bot reads material it did not write, so the node is
+			// in the class whatever its list says.
+			reasons = append(reasons, r)
 		}
 		caps := llm.GetCapabilities()
 		if caps == nil {
