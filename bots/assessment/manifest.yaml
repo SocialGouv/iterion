@@ -1,0 +1,56 @@
+name: assessment
+display_name: Assessy
+icon: 🧭
+version: 0.1.0
+## 0.1.0 — phase 1 of the assessment: the agnostic inventory floor, the
+## skill-guided per-stack extractors, the declaration lint, the versioned
+## measurement profile, the rendered state-of-the-repository and plan
+## documents, and the `.modernize/plan.yaml` draft validated by a contract
+## lint that walks EVERY lot. Effort projection is deliberately absent — it
+## consumes a measured campaign's cost ledger, which does not exist on a
+## first assessment, and a projection without one would invent its input.
+description: |
+  Assesses a repository at the START of a modernisation campaign and writes
+  the contract the execution bot then carries out: the state of the
+  repository, the modernisation programme proposed for it, its measured
+  size, and `.modernize/plan.yaml` itself.
+
+  It holds NO knowledge of any language, build tool or runtime. An
+  always-on agnostic floor measures what any git tree carries; everything
+  stack-specific is declared in the bundle's `stack-*.md` skills, executed
+  by ONE adaptive agent, and verified by a deterministic coverage gate that
+  derives its expectations from those same skill blocks. Adding a stack is
+  dropping a skill file — no DSL edit.
+
+  Two properties are load-bearing and both are gates, never prose. Every
+  declaration the survey agent writes is re-verified against the tree at a
+  pinned commit: an unverifiable, duplicated or overlapping declaration is
+  refused, because a declaration IS a number — declaring the same artefact
+  four times moves the published size by a whole band. And the size letter
+  is published WITH the identifier and version of the measurement profile
+  it is relative to; outside that profile's declared domain the bot
+  publishes the raw measurements and "not applicable" rather than a letter
+  that does not mean anything.
+when_to_use: |
+  Use at the beginning of a modernisation campaign, on a repository that
+  has no programme contract yet, to produce one. The bot needs a committed
+  BRIEF (`.modernize/brief.yaml`) carrying what no tree can state —
+  objectives, target versions, support policy, permitted changes, decisions
+  already taken. It refuses, named, when the brief is absent: guessing the
+  programme is the one thing the contract exists to prevent.
+
+  Do NOT use it to EXECUTE the programme — that is the modernisation bot's
+  job, gate to gate, under a behavioural net. Do NOT expect an effort
+  projection from it: hours per class of lot are calibrated on a measured
+  campaign, and the first assessment has none.
+author: SocialGouv (devthejo) — assessment/main.bot
+schema_version: 1
+
+launch:
+  primary: [brief_path, plan_path, out_dir]
+
+## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
+## release that reads the profile would refuse the header as an unknown
+## declaration — the floor keeps such a runner from admitting the bundle.
+requires:
+  iterion: ">= 3.141.0"

@@ -350,6 +350,7 @@ dispatcher routes on it), never the persona.
 | ReArchi | `adr-rechallenge` |
 | Appy | `app-dev` |
 | Themis | `arbitrate` |
+| Assessy | `assessment` |
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
 | Campy | `campaign` |
@@ -493,6 +494,45 @@ a judge) and force-escalates past a per-lot budget.
   an unmeasured case escalates by construction.
 - **Vars**: `budget_per_lot` (int), `doctrine_path` (string), `only_lot` (string), `plan_path` (string), `workspace_dir` (string)
 - **Path**: `bots/arbitrate/main.bot`
+
+### `assessment` — Assessy
+
+Assesses a repository at the START of a modernisation campaign and writes
+the contract the execution bot then carries out: the state of the
+repository, the modernisation programme proposed for it, its measured
+size, and `.modernize/plan.yaml` itself.
+
+It holds NO knowledge of any language, build tool or runtime. An
+always-on agnostic floor measures what any git tree carries; everything
+stack-specific is declared in the bundle's `stack-*.md` skills, executed
+by ONE adaptive agent, and verified by a deterministic coverage gate that
+derives its expectations from those same skill blocks. Adding a stack is
+dropping a skill file — no DSL edit.
+
+Two properties are load-bearing and both are gates, never prose. Every
+declaration the survey agent writes is re-verified against the tree at a
+pinned commit: an unverifiable, duplicated or overlapping declaration is
+refused, because a declaration IS a number — declaring the same artefact
+four times moves the published size by a whole band. And the size letter
+is published WITH the identifier and version of the measurement profile
+it is relative to; outside that profile's declared domain the bot
+publishes the raw measurements and "not applicable" rather than a letter
+that does not mean anything.
+
+- **Use when**:
+  Use at the beginning of a modernisation campaign, on a repository that
+  has no programme contract yet, to produce one. The bot needs a committed
+  BRIEF (`.modernize/brief.yaml`) carrying what no tree can state —
+  objectives, target versions, support policy, permitted changes, decisions
+  already taken. It refuses, named, when the brief is absent: guessing the
+  programme is the one thing the contract exists to prevent.
+  
+  Do NOT use it to EXECUTE the programme — that is the modernisation bot's
+  job, gate to gate, under a behavioural net. Do NOT expect an effort
+  projection from it: hours per class of lot are calibrated on a measured
+  campaign, and the first assessment has none.
+- **Vars**: `brief_path` (string), `out_dir` (string), `plan_path` (string), `profile_path` (string), `scratch_dir` (string), `survey_path` (string), `workspace_dir` (string)
+- **Path**: `bots/assessment/main.bot`
 
 ### `bmady` — Bmady
 
