@@ -77,7 +77,7 @@ is the work tracked in the Backends epic.
 
 ## 🤖 Bots — the fleet, and what it has actually done
 
-37 bundles under [`bots/`](../bots). The catalogue and its options live in
+38 bundles under [`bots/`](../bots). The catalogue and its options live in
 [examples.md](examples.md); this is the maturity read, and it covers only the
 bots with production evidence. **Everything not listed here is ⚪ or 🟠 by
 default** — implemented and documented, not proven in production.
@@ -95,6 +95,7 @@ default** — implemented and documented, not proven in production.
 | `review-pr` | **Revi** | 🟡 | `revi/review` is a required check on `iterion` **and** `buildkit-operator`. The last 25 merged iterion PRs (#1342→#1392) are **25/25 SUCCESS**. On the `mesure-impact` binding: **10 runs / 30 days, 0 failures**, p50 552 s, p95 884 s, **$13.68** total (~$1.37 a review) |
 | `feed-watch` | **Vigie** | 🟠 | **10 schedules** armed on the Ministères-Sociaux tenant, last *dispatched* today at 05:00Z. But a schedule record carries no run id, status or error ([#1426](https://github.com/SocialGouv/iterion/issues/1426)), and the runs API ignores `team_id` ([#1419](https://github.com/SocialGouv/iterion/issues/1419)) — **nothing here proves a run happened**. On the operator's host the same bot family is the top error source over two months ([#1425](https://github.com/SocialGouv/iterion/issues/1425)) |
 | `vuln-watch` | **Senti** | 🟠 | hourly (`25 * * * *`), last *dispatched* 2026-09-18T10:25Z — same caveat as Vigie: dispatch is not outcome |
+| `prod-watch` | **Argus** | ⚪ | slice A landed 2026-09-23 (the deterministic, zero-LLM watch tick + its hermetic harness, [#1696](https://github.com/SocialGouv/iterion/issues/1696)); **not wired to any deployment yet** — the epic is [#1695](https://github.com/SocialGouv/iterion/issues/1695) |
 | `docs-refresh` | **Doki** | 🟡 | weekly against this repo (Monday 04:00Z), opens its own MR; last fire 2026-09-14 |
 | `sec-audit-source` | **Seki** | 🟡 | reaching the cloud; **5 open findings sit untriaged in Inbox** (#1322 #1323 #1324 #1328 #1333) |
 | `branch-improve-loop` | **Billy** | 🟠 | proven in the gate loop, then **paused on iterion** since 2026-09-15 (`auto_fix_on_gate_failure` off — cost). `/billy` still answers on demand |
