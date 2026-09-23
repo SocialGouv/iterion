@@ -439,8 +439,9 @@ tool plan:
         sev = (p.get('severity') or 'critical').lower()
         if sev not in ('critical', 'high', 'medium', 'low'):
             raise SystemExit('prod-watch: http probe ' + repr(p['id']) + ' has an unknown severity ' + repr(sev))
-        http_probes.append({'id': str(p['id']), 'url': p['url'], 'expect_status': int(p.get('expect_status') or 200),
-                            'timeout_secs': int(p.get('timeout_secs') or 10), 'severity': sev})
+        http_probes.append({'id': str(p['id']), 'url': p['url'],
+                            'expect_status': int(p['expect_status'] if p.get('expect_status') is not None else 200),
+                            'timeout_secs': max(1, int(p['timeout_secs'] if p.get('timeout_secs') is not None else 10)), 'severity': sev})
 
     sinks = section('sinks', [])
     for s in sinks:
@@ -503,7 +504,7 @@ tool plan:
     now_ns = time.time_ns()
     to_ns = now_ns - ingest_lag * 10 ** 9
     floor_ns = to_ns - max_window_min * 60 * 10 ** 9
-    overlap_s = int(loki.get('overlap_seconds') or 60)
+    overlap_s = int(loki['overlap_seconds'] if loki.get('overlap_seconds') is not None else 60)
     cursors = (state.get('cursors') or {}).get('loki') or {}
     windows = {}
     for name in queries:
@@ -515,7 +516,8 @@ tool plan:
         else:
             ## Bootstrap: a short first window, so an install does not
             ## replay an hour of history as if it were news.
-            frm = to_ns - min(max_window_min, int(loki.get('bootstrap_window_minutes') or 10)) * 60 * 10 ** 9
+            boot_min = int(loki['bootstrap_window_minutes'] if loki.get('bootstrap_window_minutes') is not None else 10)
+            frm = to_ns - min(max_window_min, boot_min) * 60 * 10 ** 9
             gap = False
         ## The overlap re-reads the tail of the previous window on purpose
         ## (late ingestion); the lines already counted there travel as
@@ -524,7 +526,7 @@ tool plan:
                          'prev_covered_to_ns': str(prev), 'overlap_hashes': list(c.get('overlap_hashes') or [])[:4000],
                          'overlap_ns': str(overlap_s * 10 ** 9)}
     loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
-                 'page_size': int(loki.get('page_size') or 1000),
+                 'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
                  'stream_labels': loki.get('stream_labels') or ['namespace', 'container', 'pod', 'app', 'job']}
 
     lanes = {'loki': bool(queries), 'prometheus': bool(norm_probes), 'probes': bool(http_probes)}
@@ -675,10 +677,11 @@ tool poll_loki:
             return not a.is_multicast and not a.is_unspecified
         return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
     def _validate_host(host):
-        for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
-            v = (os.environ.get(k) or '').strip()
-            if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == host):
-                return
+        ## Same body in resolve_release, poll_loki, poll_prom and probe_http —
+        ## edit all four. No proxy exemption: the TARGET host is what is
+        ## validated here, whatever an egress proxy in the environment says.
+        if not host:
+            raise ValueError('URL has no host')
         for info in socket.getaddrinfo(host, None):
             if not _addr_ok(info[4][0]):
                 raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
@@ -726,15 +729,20 @@ tool poll_loki:
             prev_to = int(w.get('prev_covered_to_ns') or 0)
             known = set(w.get('overlap_hashes') or [])
             overlap_ns = int(w.get('overlap_ns') or 0)
-            tail_hashes = []
+            written = []   # (ts, hash) of every line written, for the next tick's overlap
+            walk_seen = set()
+            seen_at = {}   # ts -> lines already seen at that timestamp (the re-read allowance)
             skipped = 0
+            page_limit = page_size
             try:
                 while True:
                     remaining = max_lines - n
                     if remaining <= 0:
                         truncated = True
                         break
-                    limit = min(page_size, remaining)
+                    ## The inclusive resume re-reads the lines already seen at
+                    ## `start`; they are not charged against the cap.
+                    limit = min(page_limit, remaining + seen_at.get(start, 0))
                     data = get('/api/datasources/proxy/uid/' + uid + '/loki/api/v1/query_range',
                                {'query': logql, 'start': str(start), 'end': str(to), 'limit': str(limit), 'direction': 'forward'})
                     if data.get('status') != 'success':
@@ -746,22 +754,40 @@ tool poll_loki:
                         for ts, line in (stream.get('values') or []):
                             entries.append((int(ts), str(line), kept))
                     entries.sort(key=lambda e: e[0])
+                    fresh = 0
                     for ts, line, kept in entries:
                         h = hashlib.sha1((str(ts) + chr(0) + line).encode('utf-8', 'replace')).hexdigest()[:16]
                         last_ts = max(last_ts, ts)
+                        if h in walk_seen:
+                            continue   # re-read by the inclusive resume below
+                        walk_seen.add(h)
+                        seen_at[ts] = seen_at.get(ts, 0) + 1
+                        fresh += 1
                         if ts <= prev_to and h in known:
                             skipped += 1
                             continue
-                        if ts >= to - overlap_ns:
-                            tail_hashes.append(h)
+                        written.append((ts, h))
                         raw.write(json.dumps({'q': name, 'ts': str(ts), 'line': line[:4000], 'stream': kept}, ensure_ascii=False) + chr(10))
-                    n += len(entries)
+                    n += fresh
+                    if fresh == 0:
+                        if len(entries) < limit:
+                            break
+                        ## A nanosecond group wider than the page: the resume
+                        ## at `start` cannot get past it with this page size.
+                        ## Widen (bounded by the cap) instead of losing lines.
+                        if page_limit >= max_lines:
+                            truncated = True
+                            break
+                        page_limit = min(page_limit * 2, max_lines)
+                        continue
                     if len(entries) < limit:
                         break
-                    ## A page full to the brim: resume just past its last line.
-                    ## Lines sharing that exact nanosecond beyond the page are
-                    ## deduplicated downstream by (ts, line).
-                    start = last_ts + 1
+                    ## A page full to the brim: resume AT its last timestamp
+                    ## (Loki's start is inclusive). Several lines share one
+                    ## nanosecond routinely (a promtail timestamp stage at ms
+                    ## precision), and `last_ts + 1` would skip the ones the
+                    ## page cut off; the re-read is deduplicated by walk_seen.
+                    start = last_ts
                     if start >= to:
                         break
             except SystemExit:
@@ -772,6 +798,11 @@ tool poll_loki:
             covered = last_ts if truncated else to
             if err:
                 covered = last_ts if last_ts else frm
+            ## The hashes the next tick may see again: every line at or after
+            ## the COVERED bound minus the overlap — the bound actually
+            ## persisted, not the frozen window end, or a truncated tick
+            ## hands over an empty list and the overlap band is re-counted.
+            tail_hashes = [h for ts, h in written if ts >= covered - overlap_ns]
             per_query[name] = {'lines': n - skipped, 'truncated': truncated, 'covered_to_ns': str(covered), 'error': err,
                                'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
                                'skipped_overlap': skipped, 'overlap_hashes': tail_hashes[-4000:]}
@@ -834,10 +865,11 @@ tool poll_prom:
             return not a.is_multicast and not a.is_unspecified
         return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
     def _validate_host(host):
-        for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
-            v = (os.environ.get(k) or '').strip()
-            if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == host):
-                return
+        ## Same body in resolve_release, poll_loki, poll_prom and probe_http —
+        ## edit all four. No proxy exemption: the TARGET host is what is
+        ## validated here, whatever an egress proxy in the environment says.
+        if not host:
+            raise ValueError('URL has no host')
         for info in socket.getaddrinfo(host, None):
             if not _addr_ok(info[4][0]):
                 raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
@@ -974,12 +1006,23 @@ tool probe_http:
                 raise ValueError('unsupported URL scheme ' + repr(parts.scheme))
             _validate_host(parts.hostname or '')
             req = urllib.request.Request(url, headers={'User-Agent': 'prod-watch/0.1 (iterion health probe)'})
-            try:
-                with _opener.open(req, timeout=int(p.get('timeout_secs') or default_timeout)) as r:
-                    res['status'] = r.status
-                    r.read(64 * 1024)
-            except urllib.error.HTTPError as e:
-                res['status'] = e.code
+            ## One retry on a transport error or a 5xx: a dropped SYN on a
+            ## scheduled tick must not post a critical about a healthy app.
+            for attempt in (0, 1):
+                if attempt:
+                    time.sleep(2)
+                try:
+                    with _opener.open(req, timeout=int(p.get('timeout_secs') or default_timeout)) as r:
+                        res['status'] = r.status
+                        r.read(64 * 1024)
+                    break
+                except urllib.error.HTTPError as e:
+                    res['status'] = e.code
+                    if e.code < 500:
+                        break
+                except (TimeoutError, socket.timeout, urllib.error.URLError):
+                    if attempt:
+                        raise
             res['ok'] = res['status'] == res['expected']
             if not res['ok']:
                 res['error'] = 'HTTP ' + str(res['status'])
@@ -1044,6 +1087,30 @@ tool leak_scan:
                     x -= 9
             total += x
         return total % 10 == 0
+    CARD_CONTEXT = re.compile(r'(?i)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
+    def epoch_like(digits):
+        ## A separator-free run that reads as a Unix epoch at s / ms / us /
+        ## ns scale between 2000 and 2100 is a timestamp: Luhn passes one
+        ## in ten of them, and every structured logger emits one per line.
+        v = int(digits)
+        for scale in (1, 10 ** 3, 10 ** 6, 10 ** 9):
+            if 946684800 * scale <= v < 4102444800 * scale:
+                return True
+        return False
+    def card_ok(m):
+        raw = m.group(0)
+        if not luhn_ok(raw):
+            return False
+        bare = not re.search(r'[ -]', raw)
+        if bare and epoch_like(raw):
+            return False
+        if bare:
+            ## Luhn alone over a context-free digit run is a coin flip on
+            ## trace ids and references: a separator-free run needs a card
+            ## word nearby; a spaced / hyphenated one is a card's own shape.
+            window = m.string[max(0, m.start() - 40):m.start()]
+            return bool(CARD_CONTEXT.search(window))
+        return True
 
     ## Order matters: a JWT contains digit runs, a bearer value may look
     ## like an email's local part. Secrets first, then validated
@@ -1055,8 +1122,8 @@ tool leak_scan:
         ('cloud_or_forge_token', re.compile(r'\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'), None),
         ('secret_kv', re.compile(r'(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|token)\s*[=:]\s*[\'"]?([^\s\'"&,;<>]{6,})'), None),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])\s?(\d{2})\s?(0[1-9]|1[0-2]|[2-9]\d)\s?(\d{2}|2[AB])\s?(\d{3})\s?(\d{3})\s?(\d{2})(?![\dA-Za-z])'), nir_ok),
-        ('iban', re.compile(r'\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
-        ('card', re.compile(r'(?<!\d)(?:\d[ -]?){14,18}\d(?!\d)'), lambda m: luhn_ok(m.group(0))),
+        ('iban', re.compile(r'(?i)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
+        ('card', re.compile(r'(?<![\d.])(?:\d[ -]?){14,18}\d(?![\d.])'), lambda m: card_ok(m)),
         ('email', re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
         ('phone_fr', re.compile(r'(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
     ]
@@ -1087,14 +1154,17 @@ tool leak_scan:
         s['first'] = min(s['first'], ts)
         s['last'] = max(s['last'], ts)
 
+    MARKER = re.compile(r'\[REDACTED:[a-z_]+\]')
     def scrub(line, q, stream, ts):
-        out = normalize(line)
+        ## A marker LITERALLY present in the log (attacker-influenced text
+        ## can spell one) is neutralised first, so no class can hide behind it.
+        out = MARKER.sub('[literal-marker]', normalize(line))
         for cls, rx, validate in CLASSES:
             def repl(m):
                 if validate is not None and not validate(m):
                     return m.group(0)
                 value = m.group(1) if (cls == 'secret_kv' and m.lastindex) else m.group(0)
-                if '[REDACTED:' in value:
+                if MARKER.fullmatch(value):
                     ## A marker left by an earlier class is not a second value.
                     return m.group(0)
                 note(cls, value, q, stream, ts)
@@ -1116,6 +1186,13 @@ tool leak_scan:
     templates = {}
     seen_pairs = set()
     scanned = 0
+    counted = [info for info in per_query.values() if isinstance(info, dict) and 'lines' in info]
+    expected = sum(int(info.get('lines') or 0) for info in counted)
+    if not os.path.exists(raw_path):
+        if expected > 0:
+            raise SystemExit('prod-watch: the raw file ' + repr(raw_path) + ' is missing although the lanes reported ' +
+                             str(expected) + ' line(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
+    records = 0
     if os.path.exists(raw_path):
         with open(raw_path, encoding='utf-8') as fh:
             for ln in fh:
@@ -1126,6 +1203,7 @@ tool leak_scan:
                     rec = json.loads(ln)
                 except ValueError:
                     continue
+                records += 1
                 q, ts, line, stream = rec.get('q') or '', str(rec.get('ts') or ''), rec.get('line') or '', rec.get('stream') or {}
                 pair = hashlib.sha1((ts + chr(0) + line).encode('utf-8', 'replace')).hexdigest()
                 if pair in seen_pairs:
@@ -1137,14 +1215,21 @@ tool leak_scan:
                     continue
                 tpl = template(scrubbed)
                 tid = hashlib.sha1(tpl.encode('utf-8')).hexdigest()[:12]
+                ## Belt on the one derived text that keeps its digits: a bare
+                ## run of 12+ digits (a PAN without a card word, a reference,
+                ## an epoch) is never worth showing in a chat sample.
+                sample = re.sub(r'(?<!\d)\d{12,}(?!\d)', '<num>', scrubbed)[:300]
                 t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0,
-                                               'first_ts': ts, 'last_ts': ts, 'sample': scrubbed[:300], 'streams': set()})
+                                               'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set()})
                 t['count'] += 1
                 t['first_ts'] = min(t['first_ts'], ts)
                 t['last_ts'] = max(t['last_ts'], ts)
                 for k in ('container', 'pod'):
                     if stream.get(k):
                         t['streams'].add(k + '=' + str(stream[k]))
+    if counted and records != expected:
+        raise SystemExit('prod-watch: the raw file holds ' + str(records) + ' record(s) but the lanes reported ' + str(expected) +
+                         ' -- the handoff is inconsistent; refusing to score a partial read as an observation')
     tpl_list = []
     for t in templates.values():
         t['streams'] = sorted(t['streams'])[:6]

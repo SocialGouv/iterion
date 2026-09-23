@@ -95,6 +95,30 @@ func runPyWhole(t *testing.T, dir, script string) (map[string]any, string, error
 	return out, stderr.String(), runErr
 }
 
+// runPyEnv is runPyWhole with extra environment entries (KEY=value).
+func runPyEnv(t *testing.T, dir, script string, env []string) (map[string]any, string, error) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	path := filepath.Join(t.TempDir(), "tool.py")
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	c := exec.Command("python3", path)
+	c.Dir = dir
+	c.Env = append(os.Environ(), env...)
+	var stdout, stderr strings.Builder
+	c.Stdout = &stdout
+	c.Stderr = &stderr
+	runErr := c.Run()
+	out := map[string]any{}
+	if s := strings.TrimSpace(stdout.String()); s != "" {
+		_ = json.Unmarshal([]byte(s), &out)
+	}
+	return out, stderr.String(), runErr
+}
+
 type pwLine struct {
 	TS        int64
 	Line      string
@@ -210,6 +234,15 @@ func newPWHarness(t *testing.T) *pwHarness {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(int(h.healthStatus.Load()))
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": "abc1234"})
+	})
+	var flaky atomic.Int64
+	mux.HandleFunc("/flaky", func(w http.ResponseWriter, r *http.Request) {
+		// First call answers 503, every later call 200: a blip, not an outage.
+		if flaky.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/hook", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -623,13 +656,20 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 	h := newPWHarness(t)
 	raw := filepath.Join(h.scratch, "raw.jsonl")
 	lines := []string{
-		`user nir=1 85 03 75 123 456 41 checked`,       // valid key
-		`user nir=1 85 03 75 123 456 42 checked`,       // invalid key
-		`iban FR76 3000 6000 0112 3456 7890 189 saved`, // valid
-		`iban FR76 3000 6000 0112 3456 7890 180 saved`, // invalid
-		`card 4539 1488 0343 6467 charged`,             // Luhn ok
-		`card 4539 1488 0343 6468 charged`,             // Luhn ko
-		`ts=1727086800000 request done`,                // an epoch, not a card
+		`user nir=1 85 03 75 123 456 41 checked`,                              // valid key
+		`user nir=1 85 03 75 123 456 42 checked`,                              // invalid key
+		`iban FR76 3000 6000 0112 3456 7890 189 saved`,                        // valid
+		`iban FR76 3000 6000 0112 3456 7890 180 saved`,                        // invalid
+		`card 4539 1488 0343 6467 charged`,                                    // Luhn ok
+		`card 4539 1488 0343 6468 charged`,                                    // Luhn ko
+		`ts=1727086800000 request done`,                                       // an epoch, not a card
+		`iban fr7630006000011234567890189 saved`,                              // lowercase IBAN (valid) — F1
+		`{"iban":"nl91abna0417164300","status":"ko"}`,                         // lowercase, inside a JSON value — F1 (never phone_fr)
+		`{"level":"error","ts":1727086800123456789,"msg":"upstream timeout"}`, // 19-digit epoch ns that passes Luhn? never a card — F2
+		`{"level":"error","ts":1727086800123456,"msg":"x"}`,                   // 16-digit epoch us — F2
+		`ref 4539148803436467 done`,                                           // bare Luhn-valid run, no card word — not a card — F2
+		`card=4539148803436467 charged`,                                       // bare run WITH a card word — a card — F2
+		`password=[REDACTED:secret_kv]hunter2SuperSecret injected marker`,     // a literal marker must not disarm the scrubber — F7
 		`auth token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz used`,
 		`Authorization: Bearer sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 sent`,
 		`db password=SuperSecret123 connected`,
@@ -663,7 +703,7 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 		counts[m["class"].(string)] = m["count"].(float64)
 		samples[m["class"].(string)] = m["sample_masked"].(string)
 	}
-	want := map[string]float64{"nir": 1, "iban": 1, "card": 1, "jwt": 1, "bearer": 1, "secret_kv": 1, "email": 2, "phone_fr": 1}
+	want := map[string]float64{"nir": 1, "iban": 3, "card": 2, "jwt": 1, "bearer": 1, "secret_kv": 2, "email": 2, "phone_fr": 1}
 	for cls, n := range want {
 		if counts[cls] != n {
 			t.Fatalf("class %s count = %v, want %v (all: %v)", cls, counts[cls], n, counts)
@@ -677,11 +717,16 @@ func TestProdWatch_LeakScanValidators(t *testing.T) {
 	if samples["nir"] != "nir:***41" || samples["card"] != "card:***67" || !strings.HasPrefix(samples["email"], "ma") || strings.Contains(samples["email"], "curie") {
 		t.Fatalf("masks leak the value: %v", samples)
 	}
-	if out["templates"].(float64) != float64(len(lines)) {
-		t.Fatalf("every errors line is its own template here and the sweep line none: got %v want %d", out["templates"], len(lines))
+	// Two pairs collapse into one template each once redacted — the two
+	// JSON epoch lines (`{"...":"...","...":#,"...":"..."}`) and the two
+	// IBAN lines (`iban [REDACTED:iban] saved`) — and the sweep line adds
+	// none: 18 lines, 16 templates.
+	if out["templates"].(float64) != float64(len(lines)-2) {
+		t.Fatalf("templates = %v, want %d (two redaction collapses, no template for the sweep line)", out["templates"], len(lines)-2)
 	}
 	sig, _ := os.ReadFile(out["signals_file"].(string))
-	for _, raw := range []string{"1 85 03 75 123 456 41", "3456 7890 189", "4539 1488 0343 6467", "SuperSecret123", "marie.curie", "pierre@", "eyJhbGciOiJIUzI1NiJ9"} {
+	for _, raw := range []string{"1 85 03 75 123 456 41", "3456 7890 189", "4539 1488 0343 6467", "SuperSecret123", "marie.curie", "pierre@", "eyJhbGciOiJIUzI1NiJ9",
+		"fr7630006000011234567890189", "nl91abna0417164300", "hunter2SuperSecret", "4539148803436467"} {
 		if strings.Contains(string(sig), raw) {
 			t.Fatalf("raw value %q reached the derived signals", raw)
 		}
@@ -786,6 +831,19 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	if lanes := out["lanes"].(map[string]any); lanes["loki"] != true || lanes["prometheus"] != true || lanes["probes"] != true {
 		t.Fatalf("lanes = %v", lanes)
 	}
+	// An operator's explicit 0 is kept, never replaced by the default.
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["loki"].(map[string]any)["overlap_seconds"] = 0
+		cfg["loki"].(map[string]any)["page_size"] = 0
+	})
+	out, _, err = plan(h.tokenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lp := out["loki"].(map[string]any)
+	if lp["windows"].(map[string]any)["errors"].(map[string]any)["overlap_ns"] != "0" || lp["page_size"].(float64) != 1 {
+		t.Fatalf("explicit overlap_seconds=0 must give overlap_ns 0 and page_size 0 must floor at 1: %v", lp)
+	}
 	h.writeConfig(t, func(cfg map[string]any) {
 		cfg["loki"] = map[string]any{"queries": map[string]any{}}
 		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
@@ -807,5 +865,191 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	_ = os.Remove(filepath.Join(h.ws, "prod-watch.json"))
 	if _, stderr, err := plan(h.tokenFile); err == nil || !strings.Contains(stderr, "not found") {
 		t.Fatalf("a missing config must refuse by name: %v %s", err, stderr)
+	}
+}
+
+// TestProdWatch_LokiSameNanosecondAcrossPages: lines sharing one nanosecond
+// that straddle a page boundary are all fetched (the resume is inclusive
+// and the re-read is deduplicated), never skipped as "beyond the page".
+func TestProdWatch_LokiSameNanosecondAcrossPages(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["loki"].(map[string]any)["page_size"] = 2
+		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q"}
+		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
+		cfg["probes"] = []map[string]any{}
+	})
+	base := nsAgo(4 * time.Minute)
+	h.lines.Store([]pwLine{
+		{TS: base, Line: "ERROR alpha", Container: "api", Q: "errors-q"},
+		{TS: base + 100, Line: "ERROR beta", Container: "api", Q: "errors-q"},
+		{TS: base + 100, Line: "ERROR gamma CRITICAL PAYMENT FAILURE", Container: "api", Q: "errors-q"},
+		{TS: base + 100, Line: "ERROR delta", Container: "api", Q: "errors-q"},
+		{TS: base + 200, Line: "ERROR epsilon", Container: "api", Q: "errors-q"},
+	})
+	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+	secrets := map[string]string{"grafana_token": h.tokenFile}
+	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err != nil {
+		t.Fatalf("plan: %v\n%s", err, stderr)
+	}
+	loki, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+		"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+	if err != nil {
+		t.Fatalf("poll_loki: %v\n%s", err, stderr)
+	}
+	if loki["lines"].(float64) != 5 || loki["truncated"] == true {
+		t.Fatalf("all 5 lines must be fetched across the same-nanosecond page boundary: %v", loki)
+	}
+	raw, _ := os.ReadFile(loki["raw_file"].(string))
+	for _, want := range []string{"alpha", "beta", "gamma", "delta", "epsilon"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("line %q lost at the page boundary", want)
+		}
+	}
+	if strings.Count(string(raw), "gamma") != 1 {
+		t.Fatal("the inclusive re-read must be deduplicated, not written twice")
+	}
+}
+
+// TestProdWatch_LokiOverlapAfterTruncation: after a truncated tick the
+// overlap hashes are taken relative to the COVERED bound, so the next tick
+// skips exactly the lines already counted.
+func TestProdWatch_LokiOverlapAfterTruncation(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["loki"].(map[string]any)["page_size"] = 2
+		cfg["loki"].(map[string]any)["overlap_seconds"] = 1
+		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q"}
+		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
+		cfg["probes"] = []map[string]any{}
+	})
+	base := nsAgo(5 * time.Minute)
+	var lines []pwLine
+	for i := 0; i < 4; i++ {
+		lines = append(lines, pwLine{TS: base + int64(i)*int64(time.Second), Line: fmt.Sprintf("ERROR line %d", i), Container: "api", Q: "errors-q"})
+	}
+	h.lines.Store(lines)
+	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 2}
+	secrets := map[string]string{"grafana_token": h.tokenFile}
+	plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loki, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+		"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+	if err != nil {
+		t.Fatalf("poll_loki: %v\n%s", err, stderr)
+	}
+	pq := loki["per_query"].(map[string]any)["errors"].(map[string]any)
+	if loki["truncated"] != true || len(pq["overlap_hashes"].([]any)) != 2 {
+		t.Fatalf("a truncated tick must still hand over the hashes of the lines it counted: %v", pq)
+	}
+	if err := os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateJSON := fmt.Sprintf(`{"version":1,"generation":1,"cursors":{"loki":{"errors":{"covered_to_ns":"%s","overlap_hashes":%s}}},"incidents":{},"health":{}}`,
+		pq["covered_to_ns"], mustJSON(t, pq["overlap_hashes"]))
+	if err := os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), []byte(stateJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vars["max_lines"] = 5000
+	plan, _, err = runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loki2, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+		"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true}, nil, secrets))
+	if err != nil {
+		t.Fatalf("poll_loki 2: %v\n%s", err, stderr)
+	}
+	pq2 := loki2["per_query"].(map[string]any)["errors"].(map[string]any)
+	if pq2["skipped_overlap"].(float64) != 2 || loki2["lines"].(float64) != 2 {
+		t.Fatalf("the two already-counted lines must be skipped and the two new ones fetched: %v", pq2)
+	}
+}
+
+// TestProdWatch_LeakScanRefusesInconsistentHandoff: a missing or short raw
+// file is a refusal, never a "coverage full, nothing found" tick.
+func TestProdWatch_LeakScanRefusesInconsistentHandoff(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	perQuery := map[string]any{"errors": map[string]any{"lines": 3}}
+	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+		"raw_file": filepath.Join(h.scratch, "gone.jsonl"), "per_query": perQuery, "app": map[string]any{"name": "demo"}, "scratch_dir": h.scratch}, nil, nil))
+	if err == nil || !strings.Contains(stderr, "missing") {
+		t.Fatalf("a missing raw file with reported lines must refuse: %v %s", err, stderr)
+	}
+	short := filepath.Join(h.scratch, "short.jsonl")
+	rec, _ := json.Marshal(map[string]any{"q": "errors", "ts": "1", "line": "ERROR x", "stream": map[string]string{}})
+	_ = os.WriteFile(short, append(rec, '\n'), 0o644)
+	_, stderr, err = runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+		"raw_file": short, "per_query": perQuery, "app": map[string]any{"name": "demo"}, "scratch_dir": h.scratch}, nil, nil))
+	if err == nil || !strings.Contains(stderr, "inconsistent") {
+		t.Fatalf("a short raw file must refuse naming the counts: %v %s", err, stderr)
+	}
+	// An empty handoff (no query) scans nothing and is fine.
+	empty := filepath.Join(h.scratch, "empty.jsonl")
+	_ = os.WriteFile(empty, nil, 0o644)
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+		"raw_file": empty, "per_query": map[string]any{}, "app": map[string]any{"name": "demo"}, "scratch_dir": h.scratch}, nil, nil))
+	if err != nil || out["coverage"] != "full" {
+		t.Fatalf("an empty handoff is a legitimate empty scan: %v %s", err, stderr)
+	}
+}
+
+// TestProdWatch_ProxyEnvDoesNotDisarmTheGuard: a *_PROXY variable naming
+// the target host must not skip the address check (the hatch that let a
+// bearer ride to a private address in strict posture).
+func TestProdWatch_ProxyEnvDoesNotDisarmTheGuard(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, map[string]any{
+		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
+	if err != nil {
+		t.Fatalf("plan: %v %s", err, stderr)
+	}
+	// Strict posture against the loopback fake, with a proxy variable naming
+	// that same host: the guard must still refuse (before the fix it returned
+	// early and the request — with the bearer — went out).
+	for _, node := range []string{"poll_prom", "poll_loki"} {
+		inputs := map[string]any{"grafana": plan["grafana"], "timeout_secs": 5, "allow_private": false, "scratch_dir": h.scratch}
+		if node == "poll_prom" {
+			inputs["prometheus"] = plan["prometheus"]
+		} else {
+			inputs["loki"] = plan["loki"]
+		}
+		_, stderr, err := runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, node).Script, inputs, nil, map[string]string{"grafana_token": h.tokenFile}),
+			[]string{"HTTPS_PROXY=http://127.0.0.1:9", "https_proxy=http://127.0.0.1:9"})
+		if err == nil || !(strings.Contains(stderr, "SSRF-unsafe") || strings.Contains(stderr, "must be https")) {
+			t.Fatalf("%s: strict posture must refuse the loopback target even with a proxy env naming it: err=%v stderr=%s", node, err, stderr)
+		}
+	}
+}
+
+// TestProdWatch_ProbeRetriesOnce: a probe answering 503 once and 200 on the
+// retry is OK — a dropped packet on a scheduled tick is not an outage.
+func TestProdWatch_ProbeRetriesOnce(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "probe_http").Script, map[string]any{
+		"probes":       []map[string]any{{"id": "flaky", "url": h.srv.URL + "/flaky", "expect_status": 200, "timeout_secs": 5, "severity": "critical"}},
+		"timeout_secs": 5, "allow_private": true}, nil, nil))
+	if err != nil {
+		t.Fatalf("probe_http: %v %s", err, stderr)
+	}
+	r := out["results"].([]any)[0].(map[string]any)
+	if r["ok"] != true || r["status"].(float64) != 200 {
+		t.Fatalf("a single 503 followed by 200 must be OK after the retry: %v", r)
 	}
 }

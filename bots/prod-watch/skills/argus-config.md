@@ -103,6 +103,12 @@ Cloud: bind team secrets by name (`POST /api/teams/<id>/secrets` with
   ticks.jsonl            append-only tick ledger (the digest slice reads it)
 ```
 
+The Loki cursors also carry short hashes of the lines counted in the
+overlap band (`overlap_hashes`, sha1 prefixes of `timestamp + line`) so the
+next tick does not count them twice. They are not reversible, but they are
+a **confirmation oracle** over raw log content — one more reason the ops
+repository that carries the state is private.
+
 Two options, pick ONE: gitignore the state dir (host cron on one
 machine), or `--var state_commit=true` (required on ephemeral cloud
 runners — git is the state store; the workspace needs push credentials).
