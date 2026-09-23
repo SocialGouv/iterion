@@ -1,7 +1,58 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.9
+version: 2.9.1
+## 2.9.1 — a refusal stands EVERY commitment down, and vouching comes first.
+## (a) The four vouched_sha exits are no longer one class: the two structural
+## ones (no gate_sha, this run cannot name what it read) still touch nothing,
+## because the head may well still be the audited one; the two that prove the
+## head is NOT what was audited now take the commitment down, which is what
+## #1587 asked for. (b) A queue ENTRY is a commitment too, and a stronger one:
+## once the forge moves an armed PR into the queue, autoMergeRequest is null
+## and a disarm is a no-op while the queue merges the bump regardless. One
+## `stand_down` now removes both, and every refusal that leaves the PR bare —
+## or FAILS to — says so in its reason. (c) "already in the merge queue" was
+## acknowledged BEFORE vouching, so a queued revision this run never audited
+## read as success, the same hole "already armed" used to be. Vouching runs
+## first. (The dequeue input field is `id`, not `pullRequestId`.)
+## 2.9.0 — the ARMING is pinned, an opaque one is replaced, and a refusal
+## takes one down. (a) `enablePullRequestAutoMerge` carries `expectedHeadOid`
+## like the merge and the enqueue already did. SCOPE, STATED HONESTLY: GitHub
+## documents that field only as "the expected head OID of the pull request",
+## and nothing says it constrains the EVENTUAL merge. What it demonstrably
+## closes is the window between this run reading the head and arming on it —
+## not a push landing after the arming. That later push is covered by the
+## re-review and the red gate, and GitHub cancels an arming by itself only
+## when the pusher LACKS write, which a dependency bot's App does not. The
+## decisive experiment (arm on A, push B with write access, see which merges)
+## is filed, not assumed. (b) "auto-merge was already armed" is no longer an
+## answer: `AutoMergeRequest` exposes enabledAt/enabledBy/mergeMethod and NOT
+## expectedHeadOid, so an
+## existing arming says nothing about which commit the forge will take — it is
+## disarmed and replaced by one this run can vouch for. The pin is resolved
+## BEFORE anything is taken down: `vouched_sha` refuses on four disagreements,
+## and a disarm ahead of it left the PR bare on refusals this run could make
+## without touching the forge — with gate_enabled off, on EVERY pass.
+## (c) A non-green verdict
+## or a red/absent gate now DISARMS what an earlier pass armed instead of
+## returning while it stands; every refusal that leaves the PR bare says so in
+## its reason. `arm_automerge: false` still touches the forge not at all — off
+## means no mandate, not "undo what somebody else decided".
+## (d) The pin is shape-checked before it is sent: on the committed path it is
+## read off an agent's report, and the server REFUSES a pin it cannot read —
+## which would cost the required check. A malformed answer now degrades to an
+## unpinned post that says why.
+## 2.8.0 — the verdict is PINNED to the revision it is about. The publish
+## payload now carries `audited_sha`, and the server refuses a pin that is no
+## longer the head instead of retargeting the status. Without it the endpoint
+## resolved the pull request head at the moment it wrote the check, so a push
+## landing between the audit and the publish took this verdict as its own —
+## with a required check, zero required approvals and auto-merge armed, that
+## is a path for an unaudited commit to reach the default branch. Every one of
+## the six edges into `post_feedback` fills it with the sha true on ITS path
+## (the new commit where the alignment landed, the head this run read
+## elsewhere); an omission posts UNPINNED rather than failing, so
+## `dep_update_guard_pin_test.go` refuses an edge that forgets.
 ## 2.7.9 — the verify instruction's mirrored drift gate leaves iterion's `.claude/`
 ## scaffold out of its porcelain check, as does the gate's drift tail (#1364).
 ## 2.7.8 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph

@@ -195,6 +195,13 @@ schema publish_output:
   skipped_reason: string
   ## summary: what was posted + the re-fetch evidence behind the counts.
   summary: string
+  ## gate_*: the merge gate's outcome, STRUCTURED. A required status that never
+  ## lands blocks the pull request for good, so whether it landed must be a
+  ## predicate a downstream node can test — not a clause folded into `summary`
+  ## that a reader has to happen to notice.
+  gate_requested: bool
+  gate_posted: bool
+  gate_skipped_reason: string
 
 schema publish_health_input:
   published: bool
@@ -202,6 +209,9 @@ schema publish_health_input:
   total_findings: int
   skipped_reason: string
   review_url: string
+  gate_requested: bool
+  gate_posted: bool
+  gate_skipped_reason: string
 
 ## Deterministic anti-façade gate: when a publish was requested AND
 ## there were findings, at least one inline comment must have landed.

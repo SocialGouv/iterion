@@ -335,14 +335,30 @@ def finding_id(f):
     key = str(f.get('file') or '').strip() + chr(10) + t
     return 'R' + hashlib.sha256(key.encode()).hexdigest()[:6]
 
-def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
+def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary='', gate_requested=False, gate_posted=False, gate_skipped_reason=''):
+    # The gate travels STRUCTURED, not only folded into the summary string. A
+    # required check that never lands blocks the pull request for good, so the
+    # run must be able to say so with a predicate rather than with prose a
+    # reader has to notice -- publish_health is what raises it.
+    # (No backticks in these comments: this block is a backtick-delimited
+    # command: string, and one would terminate it. Same trap as below.)
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
                       'comments_posted': posted, 'suggestions_posted': sugg,
-                      'skipped_reason': skipped, 'summary': summary}))
+                      'skipped_reason': skipped, 'summary': summary,
+                      'gate_requested': bool(gate_requested), 'gate_posted': bool(gate_posted),
+                      'gate_skipped_reason': gate_skipped_reason}))
     raise SystemExit(0)
 
 url = os.environ.get('PUB_URL', '').strip()
 tok = os.environ.get('PUB_TOKEN', '').strip()
+# Read HERE, not at the gate block below: every emit() has to be able to say
+# whether a gate was expected, and the three failure exits run long before that
+# block. Left there, gate_requested defaulted to False on exactly the paths
+# where the check did NOT land -- publish_health then reported the publish as
+# healthy over a pull request nobody can merge. (No double quotes and no
+# backticks in these comments: the body rides a python3 -c argument, and either
+# one truncates it. TestReviewPRPublishCommandsRunCleanly executes it to check.)
+gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 pr = os.environ.get('PR_URL', '').strip()
 mode = os.environ.get('MODE', '').strip() or 'inline'
 findings_parse_failed = False
@@ -415,7 +431,7 @@ questions = [q.strip() for q in (os.environ.get('QUESTIONS') or '').split(chr(10
 # TICKET_CONFORMANCE follows the same scalar newline-joined contract.
 tickets = [t.strip() for t in (os.environ.get('TICKET_CONFORMANCE') or '').split(chr(10)) if t.strip()]
 if not url or not tok:
-    emit(False, skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
+    emit(False, gate_requested=gate_enabled, gate_skipped_reason='no forge publish endpoint bound to this run', skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
 nl = chr(10)
 sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
@@ -610,7 +626,6 @@ except (ValueError, TypeError):
 # note, never a verdict.
 fallback_served = (ai_value('AI_REVIEWER_CLAUDE_FALLBACK').lower() in ('true', '1', 'yes')
                    or ai_value('AI_REVIEWER_CLAUDE_GLANCE_FALLBACK').lower() in ('true', '1', 'yes'))
-gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
     # sev_rank is INVERTED (critical=0 .. low=3), so a SMALLER rank is MORE
@@ -650,6 +665,14 @@ if gate_enabled:
     payload['gate'] = {'enabled': True, 'context': gate_ctx,
                        'blocking_count': blocking, 'threshold': gate_sev,
                        'total_findings': len(findings)}
+    # Pin the verdict to the revision it JUDGED. The publish endpoint resolves
+    # the pull request head at the moment it writes the status, so a push
+    # landing between the review and here would otherwise take this verdict as
+    # its own; the server refuses a stale pin instead of retargeting. This is
+    # the very sha stale_anchors above already compares against the worktree
+    # HEAD - it was reported in the comment and never enforced on the gate.
+    if looks_like_sha:
+        payload['gate']['audited_sha'] = reviewed
     # Never let the status describe an unreadable review as a real blocking
     # finding: that message sent an operator hunting for a finding that was
     # never published. The note field overrides the server description.
@@ -680,9 +703,9 @@ except urllib.error.HTTPError as e:
         detail = e.read().decode()[:500].strip()
     except Exception:
         detail = ''
-    emit(False, skipped='forge publish endpoint HTTP ' + str(e.code) + ': ' + detail, summary='deterministic publish FAILED: the iterion forge-publish endpoint refused the request (HTTP ' + str(e.code) + ').')
+    emit(False, gate_requested=gate_enabled, gate_skipped_reason='forge publish endpoint HTTP ' + str(e.code), skipped='forge publish endpoint HTTP ' + str(e.code) + ': ' + detail, summary='deterministic publish FAILED: the iterion forge-publish endpoint refused the request (HTTP ' + str(e.code) + ').')
 except Exception as e:
-    emit(False, skipped='forge publish endpoint unreachable: ' + str(e)[:300], summary='deterministic publish FAILED: could not reach the iterion forge-publish endpoint.')
+    emit(False, gate_requested=gate_enabled, gate_skipped_reason='forge publish endpoint unreachable', skipped='forge publish endpoint unreachable: ' + str(e)[:300], summary='deterministic publish FAILED: could not reach the iterion forge-publish endpoint.')
 
 posted = int(res.get('comments_posted') or 0)
 sugg = int(res.get('suggestions_posted') or 0)
@@ -696,7 +719,9 @@ if bool(res.get('gate_posted')):
 elif str(res.get('gate_error') or ''):
     s = s + ' merge gate NOT posted: ' + str(res.get('gate_error')) + '.'
 emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
-     review_url=str(res.get('review_url') or ''), posted=posted, sugg=sugg, skipped='', summary=s)
+     review_url=str(res.get('review_url') or ''), posted=posted, sugg=sugg, skipped='', summary=s,
+     gate_requested=gate_enabled, gate_posted=bool(res.get('gate_posted')),
+     gate_skipped_reason=str(res.get('gate_error') or ''))
 "`
   input: publish_input
   output: publish_output
@@ -706,14 +731,24 @@ emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
 ## already succeeded upstream, so this informs (degraded=true) rather
 ## than hard-failing the run. Forge-agnostic: a pure count assertion.
 tool publish_health:
-  command: `TOTAL={{input.total_findings}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} python3 -c "
+  command: `TOTAL={{input.total_findings}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} GATE_REQ={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} python3 -c "
 import os, json, sys
 total = int(os.environ.get('TOTAL', '0') or '0')
 posted = int(os.environ.get('POSTED', '0') or '0')
 review_url = os.environ.get('REVIEW_URL', '')
 skipped = os.environ.get('SKIPPED', '')
-degraded = total > 0 and posted == 0
-if degraded:
+def flag(name):
+    return str(os.environ.get(name, '')).strip().lower() in ('1', 'true', 'yes', 'on')
+# A required status that never lands blocks the pull request for good, with
+# nothing red anywhere to say so - the run would otherwise report 'forge
+# publish OK'. This is the SAME condition the inline-anchor guard reports on,
+# and it is the more expensive of the two: anchors can be re-posted, a gate
+# nobody notices is a PR nobody can merge.
+gate_missing = flag('GATE_REQ') and not flag('GATE_POSTED')
+degraded = (total > 0 and posted == 0) or gate_missing
+if gate_missing:
+    banner = chr(9888) + ' MERGE GATE NOT POSTED: the review landed but its required check did not (reason: ' + (os.environ.get('GATE_SKIPPED', '') or 'none given') + '). Until a review posts the status on the CURRENT head, this PR cannot merge; push again or re-run the review on the same pr_url.'
+elif degraded:
     banner = chr(9888) + ' FORGE PUBLISH FAILED: ' + str(total) + ' finding(s) to post but 0 inline comments landed on the PR (reason: ' + (skipped or 'none given') + '). The board + markdown report still succeeded; fix the forge CLI auth and re-run with the same pr_url to publish.'
 else:
     banner = 'forge publish OK: ' + str(posted) + ' inline comment(s) posted; review: ' + (review_url or 'n/a')

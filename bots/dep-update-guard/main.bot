@@ -551,6 +551,14 @@ schema feedback_input:
   validate_summary: string
   commit_summary: string
   escalation: string
+  ## The revision THIS verdict is about, pinned so the gate cannot certify a
+  ## commit nobody audited: the publish endpoint resolves the PR head at the
+  ## moment it posts, and a push landing in between would otherwise carry this
+  ## verdict onto it. Every edge fills it with the sha true on ITS path — the
+  ## new commit on the did_commit edge, the head this run read everywhere else.
+  ## An empty pin posts UNPINNED rather than failing, so a forgotten edge is
+  ## silent: `dep_update_guard_gate_test.go` refuses one.
+  audited_sha: string
 
 schema feedback_output:
   ## verdict echoed back: the graph stamps it per-edge as a literal, so a
@@ -1234,6 +1242,7 @@ tool post_feedback:
     validate_summary = {{input.validate_summary}}
     escalation = {{input.escalation}}
     commit_summary = {{input.commit_summary}}
+    audited_sha = {{input.audited_sha}}
     token_ref = {{secrets.forge_token.path}}
     pub_url = {{vars.forge_publish_url}}
     pub_token = {{vars.forge_publish_token}}
@@ -1334,6 +1343,25 @@ tool post_feedback:
         if gate_on:
             payload["gate"] = {"enabled": True, "context": s(gate_context) or "vetty/deps",
                                "blocking_count": blocking, "threshold": "verdict"}
+            # Pin the verdict to the revision it is ABOUT. The endpoint resolves
+            # the PR head at the moment it posts; without this, a push landing
+            # between the audit and the publish takes this verdict as its own.
+            # The server refuses a stale pin rather than retargeting the status.
+            #
+            # The pin is SHAPE-CHECKED here because on the committed path it is
+            # read off an agent's report, and this file already records the
+            # model answering with the abbreviated form `git commit` prints
+            # (see same_commit below). The server REFUSES a pin it cannot read,
+            # and that refusal costs the required check - so a malformed answer
+            # degrades to an unpinned post, which the server reports as such,
+            # rather than to no status at all.
+            pin = s(audited_sha)
+            if re.match(r"^[0-9a-fA-F]{7,40}$", pin):
+                payload["gate"]["audited_sha"] = pin
+            elif pin:
+                gate_note = (gate_note + " " if gate_note else "") + \
+                            "(posted UNPINNED: this run reported " + repr(pin)[:48] + \
+                            " as the audited commit, which is not a commit id)"
             if gate_note:
                 payload["gate"]["note"] = gate_note
         req = urllib.request.Request(
@@ -1496,34 +1524,65 @@ tool arm_automerge:
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
 
+    # Set once a prior arming has been taken down. Every exit runs through
+    # out(), so the note reaches the reason whatever path refuses afterwards -
+    # a PR left bare must never be silent about it.
+    state_note = {"disarmed": False, "dequeued": False, "stuck": ""}
+
     def out(armed, reason=""):
-        print(json.dumps({"armed": bool(armed), "reason": reason or ""}))
+        reason = reason or ""
+        notes = []
+        if not bool(armed):
+            if state_note["disarmed"]:
+                notes.append("the prior auto-merge arming was disarmed and NOT replaced")
+            if state_note["dequeued"]:
+                notes.append("the pull request was removed from the merge queue")
+            # A commitment this run could NOT take down is the one the reader
+            # most needs to hear about: the PR stays on course to merge.
+            if state_note["stuck"]:
+                notes.append("STILL STANDING: " + state_note["stuck"])
+        if notes:
+            reason = (reason + " | " if reason else "") + "; ".join(notes) + \
+                     " - re-arm by hand if it was wanted"
+        print(json.dumps({"armed": bool(armed), "reason": reason}))
         raise SystemExit(0)
 
+    # Off means no mandate. Not "undo what somebody else decided": the forge is
+    # not touched at all, so an operator's own arming survives the switch.
     if not bool(enabled):
         out(False, "arm_automerge is off (default)")
+
+    # The verdict and gate checks below no longer exit on the spot. A refusal
+    # has to DISARM what an earlier pass armed: a hold says this revision must
+    # not merge, and an arming outlives the run that placed it - the forge goes
+    # on waiting for the checks either way. So the reason is computed here and
+    # acted on once the forge is reachable.
+    refusal = ""
     if s(verdict) not in ("clean", "committed"):
-        out(False, "verdict " + (s(verdict) or "(empty)") + " is not green")
+        refusal = "verdict " + (s(verdict) or "(empty)") + " is not green"
     # The gate is what a repo makes required. Arming while it is missing would
     # merge on the strength of a verdict the PR never displayed.
-    if bool(gate_on) and not bool(gate_posted):
-        out(False, "the merge gate did not land - not arming on a verdict the PR cannot show")
-    if bool(gate_on) and s(gate_state) and s(gate_state) != "success":
-        out(False, "merge gate is " + s(gate_state))
+    elif bool(gate_on) and not bool(gate_posted):
+        refusal = "the merge gate did not land - not arming on a verdict the PR cannot show"
+    elif bool(gate_on) and s(gate_state) and s(gate_state) != "success":
+        refusal = "merge gate is " + s(gate_state)
 
+    # Where the forge cannot be reached at all there is nothing to disarm, and
+    # the refusal - when there is one - is the more useful of the two reasons:
+    # it is about the bump, not about the plumbing.
     m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls)/(\d+)", s(pr_url))
     if not m:
-        out(False, "auto-merge arming is GitHub-only; no-op for " + (s(pr_url) or "(no pr_url)"))
+        out(False, refusal or ("auto-merge arming is GitHub-only; no-op for " + (s(pr_url) or "(no pr_url)")))
     host, owner, repo, num = m.group(1), m.group(2), m.group(3), int(m.group(4))
     if host != "github.com":
-        out(False, "auto-merge arming is GitHub-only; no-op for " + host)
+        out(False, refusal or ("auto-merge arming is GitHub-only; no-op for " + host))
 
     token = ""
     tref = s(token_ref)
     if tref:
         token = (open(tref).read().strip() if os.path.exists(tref) else tref)
     if not token:
-        out(False, "no forge_token bound")
+        out(False, refusal or "no forge_token bound")
 
     def graphql(query, variables):
         req = urllib.request.Request(
@@ -1565,9 +1624,30 @@ tool arm_automerge:
                "repository(owner: @owner, name: @name) { "
                "mergeQueue(branch: @branch) { id } "
                "} }").replace("@", at)
-    arm_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!) { "
-               "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method }) "
-               "{ clientMutationId } }").replace("@", at)
+    # The ARMING carries the pin too, and for a sharper reason than the merge
+    # does: an arming OUTLIVES this run. The forge keeps waiting for the checks,
+    # and a push landing afterwards moves the head under it - GitHub cancels an
+    # arming only when the pusher LACKS write, which a dependency bot's App does
+    # not. Unpinned, the commit that finally merges is whichever arrived last.
+    arm_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
+               "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method, "
+               "expectedHeadOid: @oid }) { clientMutationId } }").replace("@", at)
+    # An arming already on the PR cannot be inspected: AutoMergeRequest exposes
+    # enabledAt, enabledBy, mergeMethod and the commit message - and NOT
+    # expectedHeadOid. "Already armed" therefore says nothing about which commit
+    # the forge will merge. The only arming whose pin is known is the one this
+    # run places, so an existing one is REPLACED rather than trusted.
+    disarm_mut = ("mutation(@id: ID!) { "
+                  "disablePullRequestAutoMerge(input: { pullRequestId: @id }) "
+                  "{ clientMutationId } }").replace("@", at)
+    # A queue ENTRY outlives the run exactly as an arming does, and is strictly
+    # more committed: once the forge moves an armed PR into the queue,
+    # autoMergeRequest is null and a disarm is a no-op while the queue still
+    # merges the bump. The input field is `id` (the pull request), NOT
+    # `pullRequestId` - the API rejects the latter.
+    dequeue_mut = ("mutation(@id: ID!) { "
+                   "dequeuePullRequest(input: { id: @id }) "
+                   "{ clientMutationId } }").replace("@", at)
     # expectedHeadOid is the safety pin: the forge merges this exact commit or
     # nothing, so a push racing the decision can never be merged unreviewed.
     merge_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
@@ -1635,10 +1715,17 @@ tool arm_automerge:
         # this run: a push landing between the alignment and the status read
         # would carry the gate onto a commit no auditor ever saw. It is only
         # trustworthy where it agrees with what this run produced.
+        # The two exits ABOVE are structural - the gate never ran, or this run
+        # cannot name what it read - so the current head may well still be the
+        # audited one and nothing is taken down. The two BELOW are the opposite:
+        # the head is demonstrably NOT what was audited, so any commitment
+        # standing on this PR would land an unaudited revision. Those disarm.
         if not same_commit(gated, mine):
+            stand_down(pr)
             out(False, "the gate landed on " + gated[:12] + " but this run audited " +
                        mine[:12] + " - the branch head and the audited commit disagree")
         if head and not same_commit(head, gated):
+            stand_down(pr)
             out(False, "the branch moved after the audit (gated " + gated[:12] +
                        ", head is now " + head[:12] + ") - the new head has not been audited")
         return gated
@@ -1660,22 +1747,79 @@ tool arm_automerge:
         return s(pr.get("mergeStateStatus")).upper() == "CLEAN" and \
                s(pr.get("mergeable")).upper() == "MERGEABLE"
 
+    def disarm(node_id):
+        # Records the takedown BEFORE claiming it: out() appends the note to
+        # every later refusal, and a disarm that half-succeeded must not read
+        # as one that never happened.
+        graphql(disarm_mut, {"id": node_id})
+        state_note["disarmed"] = True
+
+    def stand_down(pr):
+        # ONE place that removes every standing commitment to merge this PR:
+        # the arming AND the queue entry. Two, because the forge nulls
+        # autoMergeRequest once it moves an armed PR into the queue - taking
+        # only the arming down there is a no-op while the queue still merges.
+        # Best-effort and never masks the refusal it precedes: what could not
+        # be removed is named in the reason instead.
+        node_id = pr.get("id")
+        if not node_id:
+            return
+        if pr.get("autoMergeRequest"):
+            try:
+                disarm(node_id)
+            except Exception as e:
+                state_note["stuck"] = "the arming could not be removed (" + str(e)[:90] + ")"
+        if pr.get("mergeQueueEntry"):
+            try:
+                graphql(dequeue_mut, {"id": node_id})
+                state_note["dequeued"] = True
+            except Exception as e:
+                state_note["stuck"] = "the queue entry could not be removed (" + str(e)[:90] + ")"
+
+    # A refusal that has to take an arming down: read the PR, disarm if one is
+    # there, then report. A forge failure here never masks the refusal - the
+    # bump's verdict is the thing the PR has to carry away.
+    if refusal:
+        try:
+            stand_down(read_pr())
+        except Exception as e:
+            out(False, refusal + " | a commitment to merge may still stand: the forge could not be "
+                       "read or written (" + str(e)[:110] + ")")
+        out(False, refusal)
+
     try:
         pr = read_pr()
         node_id = pr.get("id")
         if not node_id:
             out(False, "pull request not found via the forge API")
-        if pr.get("autoMergeRequest"):
-            out(True, "auto-merge was already armed")
+        # Vouching comes FIRST, before any state on the PR is acknowledged as
+        # good. An existing queue entry is as opaque as an existing arming -
+        # nothing says WHICH commit the forge queued - so acknowledging it
+        # before checking the head would bless a queued revision this run never
+        # audited, exactly the hole "already armed" used to be.
+        # The pin is resolved BEFORE anything is taken down. vouched_sha exits
+        # on four distinct disagreements, and a disarm placed ahead of it leaves
+        # the pull request BARE on a refusal this run could have made without
+        # touching the forge at all - worst with gate_enabled off, where no
+        # gate_sha is ever produced, so EVERY pass would tear an arming down and
+        # then refuse to replace it.
+        pin = vouched_sha(pr, "arm")
         if pr.get("mergeQueueEntry"):
             out(True, "already in the merge queue")
+        # An arming already on the PR is opaque - its expectedHeadOid cannot be
+        # read back - so it is replaced by one this run places and can vouch
+        # for, never accepted. Disarm first: enablePullRequestAutoMerge on an
+        # armed PR is refused, and re-arming is the whole point.
+        if pr.get("autoMergeRequest"):
+            disarm(node_id)
         # Arm FIRST, whatever the state. On a queue repo this is "merge when
         # ready" and covers CLEAN too; on a plain repo a CLEAN PR is refused
         # ("clean status") and falls through to the pinned direct merge. The
         # ordering matters: a merge-now-first bot direct-merges into a queue's
         # rejection and never lands anything on a queue-protected repo.
         try:
-            graphql(arm_mut, {"id": node_id, "method": s(method).upper() or "SQUASH"})
+            graphql(arm_mut, {"id": node_id, "method": s(method).upper() or "SQUASH",
+                              "oid": pin})
         except Exception as arm_err:
             if base_has_merge_queue(pr):
                 # The queue is the only door here; a direct merge would be
@@ -1755,7 +1899,8 @@ workflow dep_update_guard:
     verdict: "hold_security",
     audit_summary: "{{outputs.security_audit.summary}}",
     cves: "{{outputs.security_audit.cves}}",
-    malware_signals: "{{outputs.security_audit.malware_signals}}"
+    malware_signals: "{{outputs.security_audit.malware_signals}}",
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
   ## Safe → align the consuming code.
   audit_gate -> align when safe with { bump_summary: "{{outputs.prepare.bump_summary}}" }
@@ -1775,7 +1920,8 @@ workflow dep_update_guard:
     verdict: "needs_decision",
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
-    escalation: "{{outputs.escalate.guidance}}"
+    escalation: "{{outputs.escalate.guidance}}",
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
 
   verify_build -> verify_run
@@ -1800,7 +1946,8 @@ workflow dep_update_guard:
     verdict: "hold_unstable",
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
-    validate_summary: "{{outputs.verify_run.log_tail}}"
+    validate_summary: "{{outputs.verify_run.log_tail}}",
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
 
   commit -> commit_check
@@ -1823,7 +1970,10 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}"
+    commit_summary: "{{outputs.commit.summary}}",
+    ## The head did not move — that IS this verdict: align claimed edits and
+    ## the branch head disagrees. The read sha is the only one that exists.
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
   commit_check -> post_feedback when did_commit with {
     pr_url: "{{vars.pr_url}}",
@@ -1831,7 +1981,10 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}"
+    commit_summary: "{{outputs.commit.summary}}",
+    ## The ONE edge where the alignment moved the branch: the verdict covers
+    ## the commit this run pushed, not the head it read.
+    audited_sha: "{{outputs.commit.sha}}"
   }
   commit_check -> post_feedback else with {
     pr_url: "{{vars.pr_url}}",
@@ -1839,7 +1992,10 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}"
+    commit_summary: "{{outputs.commit.summary}}",
+    ## Nothing to align, so nothing was pushed: the verdict covers the head
+    ## this run read.
+    audited_sha: "{{outputs.prepare.head_sha}}"
   }
 
   ## Deterministic anti-façade gate on the comment, then done.

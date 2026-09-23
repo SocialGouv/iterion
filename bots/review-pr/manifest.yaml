@@ -1,7 +1,36 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.6
+version: 0.9.9
+## 0.9.9 — the lost-gate guard sees EVERY exit. 0.9.8 filled
+## gate_requested on the success emit only, so the three failure exits (no
+## endpoint bound, endpoint HTTP error, endpoint unreachable) left it at its
+## False default — and publish_health is blind wherever it is false. On a clean
+## review the inline-anchor predicate is false too, so a run whose check never
+## landed printed "forge publish OK" over a pull request nobody can merge: the
+## exact failure 0.9.8 claimed to close, on the paths where it matters most.
+## GATE_ENABLED is now read beside PUB_URL rather than in the gate block 200
+## lines down, which is why it was out of scope at the first exit.
+## Witnessed by driving publish_review's unreachable-endpoint exit and reading
+## what it emits — a test that drives publish_health alone stayed green on the
+## mutation, which is how the gap got in.
+## 0.9.8 — the gate's outcome travels STRUCTURED, so a check that never landed
+## cannot read as a healthy run. 0.9.7 pinned the verdict to the revision it
+## judged, and the server refuses a stale pin — but `publish_health` only ever
+## saw `total_findings` / `comments_posted`, so a head that moved during the
+## review cost `revi/review` entirely while the run reported "forge publish OK".
+## That is the defect 0.5.6 was written for, re-entered by another door: its own
+## words are "when the guard legitimately fires, it costs the inline anchors
+## only: the publish still happens, carrying the gate, because a required status
+## that never lands blocks a PR for good". `publish_output` now carries
+## gate_requested / gate_posted / gate_skipped_reason, the edge threads them,
+## and publish_health raises MERGE GATE NOT POSTED with the reason and the
+## recovery — the same predicate Vetty's feedback_health already used.
+## 0.9.7 — the verdict is PINNED to the revision it judged: the publish
+## payload carries `audited_sha` (the same `REVIEWED_SHA` the node already
+## compared against the worktree HEAD to annotate a stale anchor — it was
+## reported in the comment and never enforced on the gate), and the server
+## refuses a pin that is no longer the head instead of retargeting the status.
 ## 0.9.6 — the whole reviewer fleet is pinned to z.ai's GLM: `provider:
 ## "zai"` + `model: "glm-5.3"` on all four reviewer nodes, because this
 ## deployment's Anthropic forfait is capped and the merge gate must

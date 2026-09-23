@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,6 +36,11 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		Context       string `json:"context"`
 		BlockingCount int    `json:"blocking_count"`
 		Note          string `json:"note"`
+		// AuditedSHA pins the verdict to the revision this run read. The server
+		// refuses a pin that is no longer the head instead of retargeting the
+		// status, so a payload that drops it goes quietly back to certifying
+		// whatever revision arrived last.
+		AuditedSHA string `json:"audited_sha"`
 	}
 	type published struct {
 		PRURL   string `json:"pr_url"`
@@ -42,7 +48,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		Gate    *gate  `json:"gate"`
 	}
 
-	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool) (published, map[string]any) {
+	// pinOverride, when non-empty, replaces the audited_sha fixture — the one
+	// input on the committed path that an AGENT produces, so the one that can
+	// arrive in a shape the server refuses.
+	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool, pinOverride ...string) (published, map[string]any) {
 		t.Helper()
 		var got published
 		var seen bool
@@ -84,12 +93,16 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
+			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + srv.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
 			"{{vars.gate_enabled}}":        boolLit(gateEnabled),
 			"{{vars.gate_context}}":        `"` + gateContext + `"`,
 		} {
+			if ref == "{{input.audited_sha}}" && len(pinOverride) > 0 {
+				val = strconv.Quote(pinOverride[0])
+			}
 			body = strings.ReplaceAll(body, ref, val)
 		}
 		if strings.Contains(body, "{{") {
@@ -175,6 +188,32 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		}
 	})
 
+	// On the committed path the pin is read off an AGENT's report, and this bot
+	// has already been burned by the model answering with the abbreviated form
+	// `git commit` prints. The server REFUSES a pin it cannot read, and that
+	// refusal costs the required check — so a malformed answer must degrade to
+	// an UNPINNED post that says why, never to no status at all.
+	t.Run("a pin the server could not read degrades to unpinned, and says so", func(t *testing.T) {
+		for _, bad := range []string{
+			"a11ced0 (HEAD -> renovate/go-mods)", "HEAD", "none", "a11ced", "", "  ",
+		} {
+			t.Run(strconv.Quote(bad), func(t *testing.T) {
+				pub, _ := run(t, "committed", "iterion/review", true, bad)
+				if pub.Gate == nil {
+					t.Fatal("the gate must still be requested — a bad pin costs the pin, not the check")
+				}
+				if pub.Gate.AuditedSHA != "" {
+					t.Fatalf("a pin the server would refuse must not be sent, got %q", pub.Gate.AuditedSHA)
+				}
+				// Empty is the ordinary "nothing to pin" case (no commit on this
+				// path); only a value that was PRESENT and wrong needs saying.
+				if strings.TrimSpace(bad) != "" && !strings.Contains(pub.Gate.Note, "UNPINNED") {
+					t.Errorf("a pin that was present and unusable must be reported, got note %q", pub.Gate.Note)
+				}
+			})
+		}
+	})
+
 	t.Run("committed: says so, in the badge and the check", func(t *testing.T) {
 		got, _ := run(t, "committed", "iterion/review", true)
 		if got.Gate == nil || !strings.Contains(got.Gate.Note, "alignment committed") {
@@ -204,6 +243,13 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			pub, res := run(t, tc.verdict, "iterion/review", true)
 			if pub.Gate == nil {
 				t.Fatal("no gate in the publish payload")
+			}
+			// The pin has to REACH the endpoint, on every verdict — a hold is
+			// as much a statement about a revision as a pass is, and the
+			// server can only refuse a stale one it was given.
+			if pub.Gate.AuditedSHA != "feedfacefeed" {
+				t.Errorf("verdict %q: gate.audited_sha = %q, want the revision the run read — without it the status certifies whatever head the forge reports at publish time",
+					tc.verdict, pub.Gate.AuditedSHA)
 			}
 			blocked := pub.Gate.BlockingCount > 0
 			if blocked != tc.wantBlocked {
@@ -257,6 +303,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
+			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + redir.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
@@ -318,6 +365,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
+			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `""`,
 			"{{vars.forge_publish_token}}": `""`,
