@@ -79,9 +79,20 @@ vars:
   ## is a tool node reading FILES, and every child is judged in GIT — an
   ## artefact is landed when it is committed, never when a run says so.
   ##
+  ## OFF by default, and the reason is a measured gap rather than caution.
+  ## `pkg/runtime/engine_run.go` runs a `worktree: auto` child in the
+  ## parent's tree only when the parent holds a SANDBOX; the docs child
+  ## declares `worktree: auto`, so on a plain local `iterion run` it takes
+  ## a worktree of its own, finalises its pages onto a branch, and
+  ## `docs_landed` refuses — correctly, and every time. Defaulting ON would
+  ## break the repositories that already have a contract and a net and used
+  ## to run straight through. Turn it on with `--var phase_zero=true`
+  ## (sandboxed runs are unaffected); the default flips back the day that
+  ## condition asks "is this a subbot child" instead.
+  ##
   ## false starts the campaign exactly where it started before, at
   ## preflight, which refuses whatever prerequisite is missing.
-  phase_zero: bool = true
+  phase_zero: bool = false
   ## The programme BRIEF the assessment child turns into `plan_path`. Its
   ## absence, when the contract has to be written, is a REFUSAL — the same
   ## refusal preflight makes and for the same reason: a campaign supervises
@@ -229,10 +240,12 @@ schema review_ack:
 ##
 ##   phase_zero → assessment → golden_master → product_docs → preflight
 ##
-## The order is not a preference. The docs child's own gate reads the net's
-## inventory and corpus to decide whether the documentation covers the
-## product, so it cannot prove exhaustiveness before the net exists; and
-## neither child has anything to work from until the contract is written.
+## The order is not a preference. Neither child has anything to work from
+## until the contract is written, and documentation cannot be shown to
+## cover a product against an inventory that does not exist yet — which is
+## why `oracle_dir` is handed to the docs child. That last half is the
+## END STATE: the docs child reads no net TODAY, and the var it needs to
+## is being added on its own branch, so the key is inert until that lands.
 ##
 ## Nothing here weakens preflight. Phase 0 produces artefacts; preflight
 ## still refuses the campaign if what came out is not what a supervisor can
@@ -520,8 +533,13 @@ tool net_landed:
 ##
 ## The catalog is generated OUT OF TREE, in the run's scratch: a file
 ## written into the workspace would be an uncommitted change preflight then
-## refuses. It names one local source — this very checkout — so the child
-## reads the product from disk and reaches no network.
+## refuses. It names one source by `repos[].path` — this very checkout —
+## so the child reads the product from disk and reaches no forge. That key
+## is the docs child's LOCAL-SOURCE form, added on its own branch: until
+## that lands, its resolver reads only `url`, `github_repo` and
+## `gitlab_path`, and records this entry `degraded`. Merge order is the
+## guard; `url` is deliberately not used instead, because the local form
+## clones with the forge credentials stripped and `url` does not.
 tool docs_gate:
   output: docs_state
   language: py
@@ -586,9 +604,15 @@ tool docs_gate:
     print(json.dumps(out))
 
 ## product_docs — the child that writes the product's functional
-## documentation, reading the net's inventory to prove it covers the
-## product. Its own gate decides convergence; this graph only checks that
-## what it claims to have written is in git.
+## documentation. Its own gate decides convergence; this graph only checks
+## that what it claims to have written is in git.
+##
+## `oracle_dir` is handed over so the child can prove its coverage against
+## the net's inventory. The child declares no such var TODAY — the one
+## adding it is in flight on its own branch — and an undeclared key is
+## dropped in silence, so this is the interface being built to, not a
+## capability already in the tree. Same merge order as the catalog's
+## local-source key.
 subbot product_docs:
   source: "../product-docs/main.bot"
   with {

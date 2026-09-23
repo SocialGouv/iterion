@@ -49,10 +49,12 @@ phase_zero ─▶ assessment ─▶ golden_master ─▶ product_docs ─▶ pre
      └──────────────────── phase_zero: false ────────────────────┘
 ```
 
-The order is not a preference: the docs child's own gate reads the net's
-feature inventory and corpus to decide whether the documentation covers
-the product, so it cannot prove exhaustiveness before the net exists, and
-neither child has anything to work from until the contract is written.
+The order is not a preference: neither child has anything to work from
+until the contract is written, and documentation cannot be shown to cover
+a product against an inventory that does not exist yet — which is why
+`oracle_dir` is handed to the docs child. That last half is the **end
+state**: the docs child reads no net today, and the var it needs is being
+added on its own branch (see *Where this is waiting on a sibling* below).
 
 | child | source | skipped when | landed when |
 |---|---|---|---|
@@ -85,7 +87,23 @@ naming this checkout as its one local source: a catalog written into the
 workspace would be the uncommitted change preflight then refuses.
 
 `phase_zero: false` cuts the whole phase: the campaign enters at
-`preflight`, exactly as it did before.
+`preflight`, exactly as it did before. **That is the default today** — see
+below.
+
+### Where this is waiting on a sibling
+
+Phase 0 is built, falsified and off by default. Three things have to land
+before the default flips to `true`:
+
+| what | why it blocks | measured |
+|---|---|---|
+| the engine's subbot/worktree condition | `pkg/runtime/engine_run.go` runs a `worktree: auto` child in the parent's tree only when the parent holds a **sandbox**. The docs child declares `worktree: auto`, so a plain local `iterion run` gives it a worktree of its own, it finalises its pages onto a branch, and `docs_landed` refuses — correctly, and every time. | the condition reads `e.sharedSandbox != nil && e.sharedSandbox.Run != nil` while its own comment says "a subbot child in its parent's sandbox" |
+| the docs child's local-source key | the generated catalog names its one source with `repos[].path`. Until the child's resolver reads it, the entry is recorded `degraded` and the campaign documents a product from nothing. | `grep -c 'path' …/product-docs` resolver: `url`, `github_repo`, `gitlab_path` only |
+| the docs child's `oracle_dir` var | the coverage half of the ordering rationale. An undeclared key is dropped in silence. | `grep -cE 'oracle_dir\|feature-coverage\|corpus\.json' bots/product-docs/main.bot` → `0` |
+
+Until then, a campaign that turns phase 0 on gets a **named refusal**
+rather than a silent half-run — which is the point of judging children in
+git instead of believing them.
 
 ## What a campaign iteration does
 
@@ -125,7 +143,7 @@ workspace would be the uncommitted change preflight then refuses.
 | `stagnation_stop` | `2` | Consecutive child runs without a new commit that end the campaign. |
 | `lot_max_passes` | `4` | Forwarded to the child: repair passes per lot. |
 | `workspace_dir`, `plan_path` | `${PROJECT_DIR}`, `.modernize/plan.yaml` | Where the programme lives. |
-| `phase_zero` | `true` | **The phase-0 switch.** `false` enters at `preflight`, which refuses whichever prerequisite is missing — the campaign exactly as it ran before. |
+| `phase_zero` | `false` | **The phase-0 switch.** `false` enters at `preflight`, which refuses whichever prerequisite is missing — the campaign exactly as it ran before. Off by default until the three siblings below land; `--var phase_zero=true` turns it on. |
 | `brief_path` | `.modernize/brief.yaml` | The written brief the assessment child turns into the contract. Missing it, when the contract has to be written, is a **refusal**: a plan is never guessed. |
 | `oracle_dir` | `.golden-master` | Where phase 0 **builds** the net. Once the contract exists, `preflight` reads the net's location from the **contract**. |
 | `docs_dir` | `docs/client` | Where the docs child writes the product documentation, in the target repo. |

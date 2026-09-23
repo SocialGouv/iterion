@@ -520,6 +520,13 @@ func TestCampaignDocsGateWritesTheCatalogOutOfTree(t *testing.T) {
 
 		// The catalog carries the frozen shape, read back through yq —
 		// not through a string match on what the node wrote.
+		//
+		// This asserts the PRODUCER only. `repos[].path` is the docs
+		// child's local-source form and its resolver does not read it yet
+		// (it reads url / github_repo / gitlab_path, and records anything
+		// else `degraded`); the key is being added on that bot's own
+		// branch. So a green here is not a working integration — the merge
+		// order is, and phase 0 ships off until it holds.
 		raw, err := exec.Command("yq", "-o=json", out.CatalogPath).Output()
 		if err != nil {
 			t.Fatalf("the generated catalog does not parse: %v", err)

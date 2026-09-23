@@ -369,15 +369,19 @@ whole phase cut by one switch. Preflight is unchanged and still has the
 last word on what came out.
 
 - **Use when**:
-  Use to carry a WHOLE programme unattended, from a written brief. Phase 0
-  produces what the supervisor needs — the `.modernize/plan.yaml` contract
-  (from `.modernize/brief.yaml`), the behavioural net under
-  `.golden-master/`, the product documentation — skipping whichever already
-  exists; then one `iterion run` plays lot after lot where a human would
-  have relaunched modernize by hand, judged progress in git, executed
-  announced re-records between runs, and kept the journal. On a repository
-  that already has a contract and a net, phase 0 skips itself entirely, and
-  `phase_zero: false` turns it off.
+  Use to carry a WHOLE programme unattended once its two prerequisites
+  exist: a `.modernize/plan.yaml` contract and a behavioural net under
+  `.golden-master/` (verify-oracle.sh). One `iterion run` then plays lot
+  after lot where a human would have relaunched modernize by hand, judged
+  progress in git, executed announced re-records between runs, and kept the
+  journal.
+  
+  `--var phase_zero=true` additionally PRODUCES those prerequisites first —
+  the contract from `.modernize/brief.yaml`, the net, the product
+  documentation — skipping whichever already exists. It is opt-in for now:
+  the documentation child lands its pages on a branch rather than in the
+  campaign's checkout unless the run is sandboxed, and the supervisor
+  refuses what it cannot read in git.
   
   Do NOT use it to run a single lot (run modernize directly), to build ONLY
   the net (run golden-master directly), or to decide WHAT to modernise
