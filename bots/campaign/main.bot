@@ -257,8 +257,9 @@ schema review_ack:
 ##
 ## Reading files is the whole method: the contract either exists and parses,
 ## or it does not. `assessment` is skipped on the artefact, never on a
-## remembered state. The one refusal is the one preflight already makes: no
-## contract AND no brief to derive it from is a programme nobody wrote.
+## remembered state. Two refusals, both of them preflight's, made here
+## because here is hours earlier: a tree carrying work in flight, and no
+## contract AND no brief to derive one from — a programme nobody wrote.
 tool phase_zero:
   output: phase_zero_state
   language: py
@@ -309,6 +310,43 @@ tool phase_zero:
         if rev.returncode != 0:
             refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
         out["head_before"] = rev.stdout.strip()
+
+        # preflight makes this same refusal — but AFTER phase 0, which is
+        # hours of child runs too late. Every decision below reads the
+        # CHECKOUT, deliberately: an operator's uncommitted draft contract
+        # must SKIP the child rather than be overwritten by it. That only
+        # holds while the checkout IS the commit, so this bot's own rule —
+        # a supervisor acts between runs, on committed trees, and never
+        # adopts work in flight — is enforced here first. The two
+        # exclusions are preflight's: iterion's `.claude/` scaffold, laid by
+        # the engine at run start, and the engine's own materialised node
+        # script at the workspace root.
+        st = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                            capture_output=True, text=True, timeout=60)
+        if st.returncode != 0:
+            refuse("cannot read git status in %s: %s" % (ws, st.stderr[-400:]))
+
+        def is_scaffold(line):
+            path = line[3:]
+            if ' -> ' in path:
+                path = path.split(' -> ', 1)[1]
+            path = path.strip()
+            if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+                path = path[1:-1]
+            return path.startswith('.claude/')
+
+        dirty = [l for l in st.stdout.splitlines() if l.strip()
+                 and not os.path.basename(
+                     l[3:].strip().strip(chr(34))).startswith(".iterion-script-")
+                 and not is_scaffold(l)]
+        if dirty:
+            refuse("the workspace has %d uncommitted change(s) before phase 0 "
+                   "(e.g. %s). Phase 0 decides what to build by reading the "
+                   "CHECKOUT and then launches child runs that commit into it: "
+                   "on a tree carrying work in flight those decisions are taken "
+                   "on files nobody landed, and preflight would refuse hours "
+                   "later anyway. Commit or clean first."
+                   % (len(dirty), "; ".join(dirty[:5])))
 
         # "The contract is there" means it reads, not that a file of that
         # name exists: an unparseable plan is not a programme, and the child

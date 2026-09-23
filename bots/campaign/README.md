@@ -211,6 +211,13 @@ phase 0 committed.
 
 ## What phase 0 refuses, before anything is launched
 
+- **a tree carrying work in flight** → refuse, before a single child
+  starts. Every phase-0 decision reads the **checkout** on purpose, so an
+  operator's uncommitted draft contract skips the child instead of being
+  overwritten by it — which is only sound while the checkout *is* the
+  commit. `preflight` makes the same refusal, but hours of child runs
+  later. Same two exclusions as preflight: iterion's `.claude/` scaffold,
+  and the engine's own materialised node script.
 - **no contract and no brief** → refuse. The assessment child derives the
   contract from a brief; with neither, there is nothing to derive it
   from, and inventing lots is the one thing no bot here may do. Write the

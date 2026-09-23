@@ -174,11 +174,20 @@ func TestCampaignPhaseZeroDecidesOnTheArtefact(t *testing.T) {
 		f := f
 		t.Run(f.name, func(t *testing.T) {
 			ws, git := phaseZeroRepo(t)
+			// COMMITTED, not merely written: phase 0 refuses a tree
+			// carrying work in flight before it decides anything, so a
+			// fixture that only wrote its files would exercise that
+			// refusal instead of the decision it is about.
 			if f.plan != "" {
 				writeUnder(t, ws, ".modernize/plan.yaml", f.plan)
+				git("add", ".modernize/plan.yaml")
 			}
 			if f.brief != "" {
 				writeUnder(t, ws, ".modernize/brief.yaml", f.brief)
+				git("add", ".modernize/brief.yaml")
+			}
+			if f.plan != "" || f.brief != "" {
+				git("commit", "-qm", "fixture")
 			}
 			head := strings.TrimSpace(git("rev-parse", "HEAD"))
 
@@ -219,6 +228,108 @@ func TestCampaignPhaseZeroDecidesOnTheArtefact(t *testing.T) {
 	}
 }
 
+// TestCampaignPhaseZeroRefusesWorkInFlight. Every phase-0 decision reads the
+// CHECKOUT — deliberately, so an operator's uncommitted draft contract skips
+// the child rather than being overwritten by it. That is only sound while the
+// checkout IS the commit. preflight makes the same refusal, but hours of child
+// runs later, so phase 0 makes it first — and only when phase 0 is ON, because
+// off it must behave exactly as the campaign did before.
+//
+// The two exclusions are exercised, not assumed: iterion lays its own
+// `.claude/` scaffold in every run workspace, and the engine materialises the
+// executing node's script at the workspace root. A guard that dropped either
+// would refuse every run that ever reached it.
+func TestCampaignPhaseZeroRefusesWorkInFlight(t *testing.T) {
+	requireModernizeTools(t)
+
+	run := func(t *testing.T, ws string, enabled bool) (int, phaseZeroOut, string) {
+		t.Helper()
+		return runPhaseZeroNode(t, "phase_zero", map[string]string{
+			"{{vars.workspace_dir}}": strconv.Quote(ws),
+			"{{vars.phase_zero}}":    strconv.FormatBool(enabled),
+			"{{vars.plan_path}}":     strconv.Quote(".modernize/plan.yaml"),
+			"{{vars.brief_path}}":    strconv.Quote(".modernize/brief.yaml"),
+		}, "")
+	}
+	withContract := func(t *testing.T) (string, func(args ...string) string) {
+		t.Helper()
+		ws, git := phaseZeroRepo(t)
+		writeUnder(t, ws, ".modernize/plan.yaml", phaseZeroPlan)
+		git("add", ".modernize/plan.yaml")
+		git("commit", "-qm", "contract")
+		return ws, git
+	}
+
+	t.Run("an uncommitted file: refused before any child is launched", func(t *testing.T) {
+		ws, _ := withContract(t)
+		// At the root: `git status --porcelain` collapses an untracked
+		// DIRECTORY to its name, here as in preflight, so a nested fixture
+		// would assert on git's summarising rather than on the guard.
+		writeUnder(t, ws, "inflight.txt", "somebody's work\n")
+		exit, out, stderr := run(t, ws, true)
+		if exit != 1 {
+			t.Fatalf("exit = %d, want 1 (notice %q)", exit, out.Notice)
+		}
+		for _, ch := range []string{out.Notice, stderr} {
+			if !strings.Contains(ch, "uncommitted change(s) before phase 0") || !strings.Contains(ch, "inflight.txt") {
+				t.Errorf("channel = %q, want the refusal to name the count and the file", ch)
+			}
+		}
+	})
+
+	t.Run("a tracked file edited: refused too", func(t *testing.T) {
+		ws, _ := withContract(t)
+		writeUnder(t, ws, "README.md", "baseline\nedited\n")
+		if exit, out, _ := run(t, ws, true); exit != 1 || !strings.Contains(out.Notice, "README.md") {
+			t.Fatalf("exit = %d, notice = %q; want 1 naming README.md", exit, out.Notice)
+		}
+	})
+
+	t.Run("the same tree with phase 0 OFF: not refused", func(t *testing.T) {
+		ws, _ := withContract(t)
+		// At the root: `git status --porcelain` collapses an untracked
+		// DIRECTORY to its name, here as in preflight, so a nested fixture
+		// would assert on git's summarising rather than on the guard.
+		writeUnder(t, ws, "inflight.txt", "somebody's work\n")
+		exit, out, _ := run(t, ws, false)
+		if exit != 0 || !out.Disabled {
+			t.Fatalf("exit = %d, disabled = %v; want 0/true — off, phase 0 refuses nothing (notice %q)", exit, out.Disabled, out.Notice)
+		}
+	})
+
+	t.Run("iterion's own scaffold and node script alone: not work in flight", func(t *testing.T) {
+		ws, _ := withContract(t)
+		// What the engine itself lays in every run workspace.
+		writeUnder(t, ws, ".claude/skills/bot.md", "# scaffold\n")
+		writeUnder(t, ws, ".claude/settings.json", "{}\n")
+		writeUnder(t, ws, ".iterion-script-abc123.py", "print('node')\n")
+		exit, out, stderr := run(t, ws, true)
+		if exit != 0 {
+			t.Fatalf("exit = %d, want 0 — the engine's own files are not the operator's work (notice %q, stderr %q)", exit, out.Notice, stderr)
+		}
+		if out.RunAssessment {
+			t.Errorf("run_assessment = true with a committed contract (notice %q)", out.Notice)
+		}
+	})
+
+	t.Run("the scaffold plus one real stray: refused, and only the stray is named", func(t *testing.T) {
+		ws, _ := withContract(t)
+		writeUnder(t, ws, ".claude/skills/bot.md", "# scaffold\n")
+		writeUnder(t, ws, ".iterion-script-abc123.py", "print('node')\n")
+		writeUnder(t, ws, "stray.py", "x\n")
+		exit, out, _ := run(t, ws, true)
+		if exit != 1 {
+			t.Fatalf("exit = %d, want 1 (notice %q)", exit, out.Notice)
+		}
+		if !strings.Contains(out.Notice, "1 uncommitted change(s)") || !strings.Contains(out.Notice, "stray.py") {
+			t.Errorf("notice = %q, want exactly one change, named stray.py", out.Notice)
+		}
+		if strings.Contains(out.Notice, ".claude/") || strings.Contains(out.Notice, ".iterion-script-") {
+			t.Errorf("notice = %q, want the engine's own files left out of the count", out.Notice)
+		}
+	})
+}
+
 // TestCampaignPhaseZeroRefusesWithoutYq: with a contract file present and no
 // yq, whether that contract READS cannot be decided. Guessing either way
 // costs something real — skipping the child that repairs an unparseable
@@ -226,9 +337,11 @@ func TestCampaignPhaseZeroDecidesOnTheArtefact(t *testing.T) {
 // the way preflight already refuses for the same missing tool.
 func TestCampaignPhaseZeroRefusesWithoutYq(t *testing.T) {
 	requireModernizeTools(t)
-	ws, _ := phaseZeroRepo(t)
+	ws, git := phaseZeroRepo(t)
 	writeUnder(t, ws, ".modernize/plan.yaml", phaseZeroPlan)
 	writeUnder(t, ws, ".modernize/brief.yaml", "goal: x\n")
+	git("add", ".modernize/plan.yaml", ".modernize/brief.yaml")
+	git("commit", "-qm", "fixture")
 
 	subs := map[string]string{
 		"{{vars.workspace_dir}}": strconv.Quote(ws),
