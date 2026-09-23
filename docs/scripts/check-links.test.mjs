@@ -8,7 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 
@@ -42,14 +42,7 @@ function buildFixtureSite(hrefs) {
 function flagged(hrefs, { repoHas = () => true } = {}) {
   const dist = buildFixtureSite(hrefs)
   const distFiles = collectDistFiles(dist)
-  return new Set(brokenLinks({ dist, distFiles, repoHas }).broken.keys())
-}
-
-// … and the ones it flagged as sent to github for a file the site serves.
-function misrouted(hrefs, { repoHas = () => true } = {}) {
-  const dist = buildFixtureSite(hrefs)
-  const distFiles = collectDistFiles(dist)
-  return new Set(brokenLinks({ dist, distFiles, repoHas }).misrouted.keys())
+  return new Set(brokenLinks({ dist, distFiles, repoHas }).keys())
 }
 
 // Each row is a form the site SERVES. The checker rejecting one of these stops
@@ -219,19 +212,33 @@ test('publicSitePath answers for a path SEGMENT, not for a string prefix', () =>
   assert.equal(publicSitePath('pkg/repomap/repomap.go'), null)
 })
 
-// The canary for the rewrite rule in config.ts. The site ships these files
-// itself, so a page of the site linking the github copy walks the reader out
-// of the site for a file the same build just published — which is what the
-// page source says when the public/ rule stops firing.
-test('a github link to a file the site serves from public/ is reported as misrouted', () => {
-  const href = `${BLOB}${PUBLIC_ROOT}/comparatifs/index.html`
-  assert.deepEqual([...misrouted([href])], [href])
-  // Not "broken": it resolves on github.com. Calling it broken would send the
-  // author hunting for a missing file.
-  assert.deepEqual([...flagged([href])], [])
+test('a tree URL with a doubled trailing slash names the same directory', () => {
+  const href = `${TREE}docs//`
+  assert.deepEqual([...flagged([href], { repoHas: (p) => p === 'docs' })], [])
 })
 
-test('a github link outside public/ is not misrouted', () => {
-  const href = `${BLOB}pkg/repomap/repomap.go`
-  assert.deepEqual([...misrouted([href], { repoHas: () => true })], [])
+// A writing aid, not the guarantee: it asserts that config.ts still ROUTES
+// docs/public/ through the module that owns the mapping, so deleting the
+// branch is noticed. What the site really serves is the build's verdict, and
+// the earlier attempt to make the link checker judge this instead blocked
+// publishing on a correct, resolving github URL written deliberately in prose.
+test('config.ts routes docs/public/ through public-links.mjs', () => {
+  const config = readFileSync(new URL('../.vitepress/config.ts', import.meta.url), 'utf8')
+  assert.match(config, /publicSitePath/, 'config.ts no longer calls publicSitePath')
+  assert.match(config, /from '\.\/public-links\.mjs'/, 'config.ts no longer imports the mapping module')
+})
+
+// A github URL into docs/public/ is a link that RESOLVES. The site serves
+// those files from its own root too, so linking the github copy is a routing
+// preference — never a reason to stop publishing.
+//
+// An earlier round of this change made the checker refuse them, to catch the
+// day the rewrite rule in config.ts stops firing. It blocked the build on a
+// bare URL written deliberately in prose (markdown-it's linkify turns one
+// into an <a href>, and rewriteHref never sees absolute URLs), with no
+// escape hatch — a false positive in a tool that blocks, which is the defect
+// this whole change exists to remove.
+test('a github URL into docs/public/ resolves and is not a reason to fail', () => {
+  const href = `${BLOB}${PUBLIC_ROOT}/comparisons/feature-inventory.csv`
+  assert.deepEqual([...flagged([href], { repoHas: (p) => p === `${PUBLIC_ROOT}/comparisons/feature-inventory.csv` })], [])
 })

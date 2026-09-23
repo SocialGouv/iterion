@@ -58,14 +58,15 @@ func TestTheMapsAndTheGraphSkipTheSameTrees(t *testing.T) {
 	// A tree both generators accept: a module, a docs/ root, a bots/ dir.
 	write("go.mod", "module example.com/fixture\n\ngo 1.26\n")
 	write("docs/page.md", "# A page\n\nThe one page both artifacts always describe.\n")
-	if err := os.MkdirAll(filepath.Join(root, "bots"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	// One canary per candidate, on every surface either generator reads: a
-	// documentation page under docs/, and a Go package at the repository root.
+	// documentation page under docs/, a Go package at the repository root,
+	// and a bundle under bots/ — which is a THIRD call site of treeskip.Dir
+	// in each generator, and the one the first version of this guard left
+	// unexercised, so both mutants there survived the whole suite.
 	for _, name := range candidates {
 		write("docs/"+name+"/canary.md", "# Canary "+name+"\n\nA page inside "+name+".\n")
 		write(name+"/canary/canary.go", "// Package canary sits inside "+name+".\npackage canary\n")
+		write("bots/"+name+"/manifest.yaml", "name: canarybot-"+name+"\nversion: 0.0.1\n")
 	}
 
 	maps, err := repomap.Generate(root)
@@ -80,10 +81,13 @@ func TestTheMapsAndTheGraphSkipTheSameTrees(t *testing.T) {
 		t.Fatalf("build the graph over the fixture: %v", err)
 	}
 
+	// "Described" on ANY surface: the skip set is one answer, so a candidate
+	// that leaks through any of the three call sites is a candidate the
+	// artifact describes.
 	mapped := map[string]bool{}
 	for _, body := range maps {
 		for _, name := range candidates {
-			if strings.Contains(body, name+"/canary") {
+			if strings.Contains(body, name+"/canary") || strings.Contains(body, "canarybot-"+name) {
 				mapped[name] = true
 			}
 		}
@@ -91,7 +95,7 @@ func TestTheMapsAndTheGraphSkipTheSameTrees(t *testing.T) {
 	graphed := map[string]bool{}
 	for _, n := range graph.Nodes {
 		for _, name := range candidates {
-			if strings.Contains(n.Path, name+"/canary") {
+			if strings.Contains(n.Path, name+"/canary") || n.Path == "bots/"+name {
 				graphed[name] = true
 			}
 		}

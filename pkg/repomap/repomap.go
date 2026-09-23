@@ -36,6 +36,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/internal/treeskip"
 )
 
@@ -213,7 +214,12 @@ func firstSentence(text string, max int) string {
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		text = strings.TrimSpace(text[:cut]) + "…"
+		// Then back up past a code span the cut opened and did not close.
+		// A half span renders a stray backtick, and — the reason this is
+		// here rather than in the renderer — every scanner downstream then
+		// reads the text the span was quoting as prose, so a link form the
+		// page only QUOTED is rewritten or refused as a link.
+		text = strings.TrimSpace(mdcode.CutBeforeDanglingSpan(text[:cut])) + "…"
 	}
 	return strings.ReplaceAll(text, "|", `\|`)
 }

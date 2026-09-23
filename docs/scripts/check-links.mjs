@@ -10,13 +10,11 @@
 // The checker BLOCKS publishing, so a false positive costs as much as a hole
 // and is harder to see. Every predicate here is exported and exercised against
 // a built fixture by check-links.test.mjs — `task docs:links:test`.
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import posixpath from 'node:path/posix'
-
-import { PUBLIC_ROOT, publicSitePath } from '../.vitepress/public-links.mjs'
 
 const docsRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = join(docsRoot, '..')
@@ -26,11 +24,15 @@ export const BLOB = 'https://github.com/SocialGouv/iterion/blob/main/'
 export const TREE = 'https://github.com/SocialGouv/iterion/tree/main/'
 export const BASE = '/iterion/'
 
-// An href that names no location in this site: a URL with a scheme (mailto:,
-// tel:, javascript:, data:, http:) or a protocol-relative one. config.ts
-// recognises the same two forms — `/^([a-z]+:)?\/\//i` — and the two files
-// disagreeing is what reported `//example.com/x` as an absolute link without
-// a base.
+// An href that names no location in this site: a URL carrying a scheme
+// (mailto:, tel:, javascript:, data:, http:) or a protocol-relative one. The
+// first alternative is RFC 3986's `scheme` rule exactly, which is why a
+// relative path may not be mistaken for one — `notes:2026.html` really IS an
+// absolute URL to a browser.
+//
+// config.ts skips `scheme://` plus a hardcoded `mailto:`, so the two files
+// agree on `//example.com/x` — the form that used to be reported as an
+// absolute link without a base — and this one is the wider of the two.
 const NOT_A_PATH = /^([a-z][a-z0-9+.-]*:|\/\/)/i
 
 // An href is percent-encoded; dist keys are the bytes readdir returns. A
@@ -128,13 +130,10 @@ export function repoResolver(repoRoot) {
 export function brokenLinks({ dist, distFiles, repoHas }) {
   const hrefRe = /href="([^"]+)"/g
   const broken = new Map()
-  const misrouted = new Map()
-  const add = (into) => (href, page) => {
-    if (!into.has(href)) into.set(href, new Set())
-    into.get(href).add(page)
+  const flag = (href, page) => {
+    if (!broken.has(href)) broken.set(href, new Set())
+    broken.get(href).add(page)
   }
-  const flag = add(broken)
-  const misroute = add(misrouted)
 
   for (const rel of distFiles) {
     if (!rel.endsWith('.html')) continue
@@ -155,13 +154,11 @@ export function brokenLinks({ dist, distFiles, repoHas }) {
       if (base.startsWith(BLOB) || base.startsWith(TREE)) {
         const relpath = decodeHref(
           base.startsWith(BLOB) ? base.slice(BLOB.length) : base.slice(TREE.length),
-        ).replace(/\/$/, '')
-        // The site SERVES docs/public/ from its root, so a page of the site
-        // linking the github copy sends the reader away from a file this very
-        // build shipped. It resolves, so it is not broken — it is misrouted,
-        // and it means the public/ rule in config.ts stopped firing.
-        if (relpath && publicSitePath(relpath)) misroute(base, page)
-        else if (relpath && !repoHas(relpath)) flag(base, page)
+          // Every trailing slash: a tree URL written `…/docs//` names the
+          // same directory, and stripping one of two left a path git has
+          // never heard of.
+        ).replace(/\/+$/, '')
+        if (relpath && !repoHas(relpath)) flag(base, page)
         continue
       }
       if (NOT_A_PATH.test(base)) continue // another origin, or no location at all
@@ -186,7 +183,7 @@ export function brokenLinks({ dist, distFiles, repoHas }) {
       if (!siteExists(distFiles, sp)) flag(base, page)
     }
   }
-  return { broken, misrouted }
+  return broken
 }
 
 function main() {
@@ -195,22 +192,20 @@ function main() {
     process.exit(1)
   }
   const distFiles = collectDistFiles(distDir)
-  const { broken, misrouted } = brokenLinks({ dist: distDir, distFiles, repoHas: repoResolver(repoRoot) })
+  const broken = brokenLinks({ dist: distDir, distFiles, repoHas: repoResolver(repoRoot) })
 
-  const report = (map, headline) => {
-    console.error(`\n❌ ${map.size} ${headline}:`)
-    for (const [href, pages] of [...map].sort()) {
+  if (broken.size) {
+    console.error(`\n❌ ${broken.size} broken link(s):`)
+    for (const [href, pages] of [...broken].sort()) {
       const list = [...pages].sort()
       console.error(`   ${href}  ←  ${list[0]}${list.length > 1 ? ` (+${list.length - 1})` : ''}`)
     }
+    process.exit(1)
   }
-  if (broken.size) report(broken, 'broken link(s)')
-  if (misrouted.size) {
-    report(misrouted, `link(s) sent to github.com for a file the site serves from ${PUBLIC_ROOT}/`)
-    console.error(`   → ${PUBLIC_ROOT}/ is served from the site root; docs/.vitepress/public-links.mjs maps it.`)
-  }
-  if (broken.size || misrouted.size) process.exit(1)
   console.log(`links: all internal + github targets resolve ✓ (${distFiles.size} files scanned)`)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
+// Through the REAL path of argv[1]: `import.meta.url` is already resolved, so
+// comparing it to an unresolved argv[1] leaves a publish-blocking gate that
+// prints nothing and exits 0 when it is invoked through a symlinked path.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main()

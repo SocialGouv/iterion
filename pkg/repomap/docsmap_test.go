@@ -202,3 +202,42 @@ func TestReanchorReadsACodeSpanAsCodeAndNotAsALink(t *testing.T) {
 		})
 	}
 }
+
+// The summary is TRUNCATED before it is masked, and the cut lands where a
+// byte bound falls. A cut between a code span's two runs leaves half a span,
+// the mask correctly reads the surviving run as literal text, and the link
+// form the page was quoting is read as a link again — so the refusal fires
+// and `task map:gen`, with the required `test` check, goes red on a page
+// whose own links are all sound. That is the failure #1619 exists to remove,
+// reachable through the one path the first fix did not cover.
+//
+// The sentences below are over 140 bytes on purpose: every other case in this
+// file is under the bound and cannot see this.
+func TestALongSentenceQuotingALinkFormIsNotCutInsideItsCodeSpan(t *testing.T) {
+	for _, tc := range []struct{ name, quote string }{
+		{
+			name:  "a span carrying a target that leaves the repository",
+			quote: "Avant ce correctif, la carte des docs réécrivait la phrase d'ouverture sans lire les spans et émettait la forme `](../../docs/foo.md) ou sa voisine ](../foo.md)`, que github.com rend et que le site ignore.",
+		},
+		{
+			// The cut lands at the last space before the bound, so the span
+			// has to CARRY spaces for the cut to fall inside it — which is
+			// what a span quoting two forms, or a sentence, always does.
+			name:  "a span carrying spaces, cut between its two runs",
+			quote: "The docs map reproduced the opening sentence of every page with no notion of a code span, so it read the quoted `](../../docs/foo.md) and its neighbour ](../bar.md)` as links the page had written.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary := firstSentence(tc.quote, 140)
+			got, err := reanchor(summary, "docs/why.md")
+			if err != nil {
+				t.Fatalf("the truncated sentence was refused as a broken link: %v\n  summary: %s", err, summary)
+			}
+			// The cell must not end mid-span either: a stray backtick is what
+			// makes every reader disagree about where the code was.
+			if strings.Count(got, "`")%2 != 0 {
+				t.Errorf("the summary ends inside a code span (odd backtick count): %s", got)
+			}
+		})
+	}
+}
