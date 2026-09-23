@@ -125,7 +125,7 @@ func TestProcessBoardCard_AdmittedLaunchIsMetered(t *testing.T) {
 		if got := pub.count(); got != 1 {
 			t.Fatalf("the run service was asked %d time(s), want 1 — the gate admitted this launch", got)
 		}
-		u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if u.Runs != 0 {
 			t.Errorf("monthly runs = %d after a refused launch, want 0 — a run that never started must not consume a slot", u.Runs)
 		}
@@ -139,7 +139,7 @@ func TestProcessBoardCard_AdmittedLaunchIsMetered(t *testing.T) {
 		if err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{ID: "native:1", Bot: "probe", State: native.StateReady}); err != nil {
 			t.Fatalf("processBoardCard = %v, want nil for a finished run", err)
 		}
-		u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if u.Runs != 1 {
 			t.Errorf("monthly runs = %d after an accepted launch, want 1", u.Runs)
 		}

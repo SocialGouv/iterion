@@ -157,6 +157,50 @@ const (
 	RunEndReasonSuperseded RunEndReason = "superseded"
 )
 
+// RunTrust says who wrote the code in a run's workspace. It rides the run
+// document, not the launching surface, because the decisions it governs are
+// taken again long after the launch: a resume and a usage-window retry
+// re-resolve credentials from the stored run, and a forked child inherits its
+// parent's repository target.
+//
+// It is deliberately a named string rather than a bool so a third class can
+// be added later — and so the predicate every enforcement site calls is
+// Trusted(), which admits ONE value and refuses everything else. A future
+// RunTrust therefore has to state its own policy instead of inheriting the
+// trusted one by being unrecognised.
+type RunTrust string
+
+const (
+	// RunTrustDefault is the zero value: the workspace is the operator's own
+	// checkout, or a repository the tenant controls. Every run written before
+	// this field existed decodes to it, which is what those runs are.
+	RunTrustDefault RunTrust = ""
+	// RunTrustFork marks a workspace whose content was authored by someone
+	// outside the tenant — today, the head of a fork pull request served by
+	// the opt-in fork review lane. It WITHDRAWS, wherever it is read:
+	// the forge publish grant (no status, no review, no comment), the
+	// tenant's workflow/generic secrets (no forge_token in the run's
+	// credential bundle, hence none written into the workspace's git
+	// credential store), and any mutating bot. It does NOT withdraw the LLM
+	// credential: the lane's whole purpose is to produce a review, and its
+	// spend is bounded by the per-author budget instead.
+	RunTrustFork RunTrust = "fork"
+)
+
+// Trusted is the predicate EVERY enforcement site calls, and it admits
+// exactly one value. Written this way round on purpose: the negative form
+// (`t == RunTrustFork`) would read an unknown value — a document written by a
+// newer replica mid-rollout, a hand-edited row — as trusted and hand it the
+// publish grant and the tenant's secrets. `if !run.Trust.Trusted()` withdraws
+// for "fork" AND for anything this binary does not recognise, which is the
+// only safe answer to "I do not know who wrote this code".
+func (t RunTrust) Trusted() bool { return t == RunTrustDefault }
+
+// IsFork names the one untrusted class this binary knows, for the sites that
+// must WORD a refusal or pick a lane rather than withhold a capability.
+// Never use it to gate a capability — Trusted() is that predicate.
+func (t RunTrust) IsFork() bool { return t == RunTrustFork }
+
 // Message is the human sentence a reason writes into run.Error — what the run
 // list, the board cards and the merge-gate synthetic status quote. An unknown
 // or empty reason reads as a bare "cancelled": an automated stop that cannot
@@ -1080,6 +1124,20 @@ type Run struct {
 	// the run. Empty in local mode (workspace is the user's cwd).
 	RepoURL string `json:"repo_url,omitempty" bson:"repo_url,omitempty"`
 	RepoSHA string `json:"repo_sha,omitempty" bson:"repo_sha,omitempty"`
+	// Trust classifies WHO WROTE the code this run's workspace holds, and it
+	// is a property of the RUN rather than of its launching surface: a
+	// resume, a retry after a usage window and a forked child all rebuild
+	// their credentials from THIS document, long after the lane that admitted
+	// the work is out of scope. Empty (RunTrustDefault) is every run that
+	// exists today; see RunTrust for what RunTrustFork withdraws.
+	Trust RunTrust `json:"trust,omitempty" bson:"trust,omitempty"`
+	// RepoSHAExpected pins the commit the launch ADMITTED, for a lane whose
+	// RepoSHA is a mutable name an untrusted party can move between the
+	// admission and the checkout (a fork pull request's head ref). The runner
+	// fetches RepoSHA, then refuses the run when the fetched commit is not
+	// this one. Empty disables the comparison — every lane whose ref no
+	// untrusted party can move.
+	RepoSHAExpected string `json:"repo_sha_expected,omitempty" bson:"repo_sha_expected,omitempty"`
 	// ProjectPath is the stable forge slug ("group/project" on GitLab,
 	// "owner/repo" on GitHub/Forgejo) the run targets. Distinct from the
 	// raw RepoURL clone URL: it is the normalized, human-meaningful

@@ -7,6 +7,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { useCanManageTeam } from "@/hooks/useCanManageTeam";
 import { useConfirm } from "@/hooks/useConfirm";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
@@ -43,7 +44,7 @@ interface Props {
 }
 
 export default function ApiKeysPanel({ team, platform = false }: Props) {
-  const { activeRole, user } = useAuth();
+  const { user } = useAuth();
   // BYOK stores (/api/me/api-keys, /api/teams/{id}/api-keys) are only wired
   // in cloud mode — gate on server_info BEFORE fetching so local/desktop
   // mode never fires a doomed 404 request.
@@ -94,10 +95,15 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
     is_default: false,
   });
 
+  // The team arm asks about THIS team, not the active one: this panel is a
+  // tab of /teams/:id, which is reachable for a team the caller is not
+  // switched into. useCanManageTeam owns that rule for every team-scoped
+  // surface; deriving it inline here was a second, narrower copy of it.
+  const canManageTeam = useCanManageTeam(team?.id ?? "");
   const canManage = platform
     ? (user?.is_super_admin ?? false) // Platform keys fund every tenant.
     : team
-      ? activeRole === "admin" || activeRole === "owner" || (user?.is_super_admin ?? false)
+      ? canManageTeam
       : true; // Personal keys are always editable by their owner.
 
   // Post-mutation refresh: clear the shared error slot and refetch the list.

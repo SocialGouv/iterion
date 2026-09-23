@@ -254,7 +254,13 @@ the hours this one spent.
   caps, the shared-credential audience, and the **team lifecycle**
   (`iterion remote teams update|status|delete|add-member` — rename, suspend,
   delete an empty team, and place an account that already exists instead of
-  emailing it an invitation). Read *Moving a repo to another team* before
+  emailing it an invitation). Read *An account signs in and sees nothing*
+  when someone reports an empty workspace after a successful SSO login: a
+  GitHub login admitted outside the allow-list is provisioned active with no
+  org, no team and no password, which is indistinguishable from a broken
+  access until the four facts are read together (studio Admin → Users → the
+  account → *Access & origin*, or `iterion remote admin users get <id>`); the
+  section also carries the repair, org membership first. Read *Moving a repo to another team* before
   splitting a tenant: the provisioner rebuilds the managed forge secret and its
   `forge_token` binding on the target, and **nothing else keyed on `Team.ID`
   follows** — an operator secret, a `tracker_token` binding, a config-share, a

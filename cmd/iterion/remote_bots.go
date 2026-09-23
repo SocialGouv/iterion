@@ -201,7 +201,10 @@ var remoteMarketplaceModerationCmd = &cobra.Command{
 		case "reject":
 			var body []byte
 			if remoteModerationReason != "" {
-				body = []byte(fmt.Sprintf(`{"reason":%q}`, remoteModerationReason))
+				var err error
+				if body, err = jsonBody(map[string]string{"reason": remoteModerationReason}); err != nil {
+					return err
+				}
 			}
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/marketplace/moderation/"+args[1]+"/reject", body)
 		default:

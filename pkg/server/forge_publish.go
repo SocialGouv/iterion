@@ -96,6 +96,27 @@ const grantTenantMismatchReason = "grant_tenant_mismatch"
 // the RUN's tenant — the tenant whose run tried to speak as another.
 const auditActionGrantTenantMismatch = "forge.grant.tenant_mismatch"
 
+// grantUntrustedMintReason is the typed token for "no grant was minted for
+// this launch, because its workspace holds code the tenant did not write".
+// It is an OUTCOME, not a refusal: the launch proceeds without a grant, which
+// is what the fork review lane is for. Named so a log line, an audit row and
+// a test say the same word.
+const grantUntrustedMintReason = "grant_untrusted_mint"
+
+// auditActionGrantUntrustedMint is its audit action, on the launching tenant.
+const auditActionGrantUntrustedMint = "forge.grant.untrusted_mint"
+
+// grantUntrustedRunReason is the typed refusal a publish attempt earns when
+// the RUN's workspace holds code the tenant did not write. Distinct word from
+// the tenant mismatch on purpose: the operator action is different (this one
+// is never a misconfiguration to correct — it is the lane working).
+const grantUntrustedRunReason = "grant_untrusted_run"
+
+// auditActionGrantUntrustedRun is its audit action, recorded on the run's own
+// tenant so the team sees that something asked to publish on their behalf
+// from an untrusted workspace.
+const auditActionGrantUntrustedRun = "forge.grant.untrusted_run"
+
 // runOwnsGrant proves a publish grant belongs to the run that carries it, and
 // is the ONE place that decides it: every reader holding a run funnels through
 // here, so the rule cannot hold at one surface and not the next.
@@ -125,6 +146,25 @@ const auditActionGrantTenantMismatch = "forge.grant.tenant_mismatch"
 // visible — and the rows collapse in one query on the run id.
 func (s *Server) runOwnsGrant(run *store.Run, grant ForgePublishGrant, what string) bool {
 	if run == nil {
+		return false
+	}
+	// Trust before tenancy: a fork-lane run and a trusted run of the SAME
+	// tenant are indistinguishable to the tenant comparison below, so that
+	// check alone would let an untrusted run present any grant its own team
+	// holds. This is the belt to injectForgePublishVars' braces — that one
+	// refuses to MINT, this one refuses to HONOUR, and they are on opposite
+	// sides of the run's creation so no single mistake clears both.
+	if !run.Trust.Trusted() {
+		if s.logger != nil {
+			s.logger.Warn("forge gate: %s for run %s refused (%s): the run's workspace holds code the tenant did not write (trust=%q), which is never allowed to publish — nothing posted",
+				what, run.ID, grantUntrustedRunReason, string(run.Trust))
+		}
+		s.auditSystem(strings.TrimSpace(run.TenantID), "forge-gate", auditActionGrantUntrustedRun, "run", run.ID, map[string]any{
+			"reason":     grantUntrustedRunReason,
+			"trust":      string(run.Trust),
+			"grant_repo": grant.Repo,
+			"surface":    what,
+		})
 		return false
 	}
 	runTenant := strings.TrimSpace(run.TenantID)
@@ -810,6 +850,15 @@ func hostOfURL(raw string) string {
 // Launch-time grant minting + var injection
 // ---------------------------------------------------------------------------
 
+// forgePublishVars is the COMPLETE set of launch vars the grant path mints.
+// It exists so the mint and the withdrawal below read the same list: the
+// withdrawal was first written as three literal deletes against a mint of
+// four, and the fourth (the delivery-preflight endpoint) survived on a
+// refused launch. A set named once cannot drift from itself.
+func forgePublishVars() [4]string {
+	return [4]string{forgePublishVarURL, forgePublishVarToken, forgePublishVarPRState, forgePublishVarPreflight}
+}
+
 // forgePublishVarURL / forgePublishVarToken are the launch vars the server
 // injects; a bot opts in by declaring them in its vars: block (undeclared
 // launch vars are dropped by the IR, so blind injection is safe).
@@ -817,9 +866,10 @@ func hostOfURL(raw string) string {
 // and authenticated by the SAME token: a delivery tail asks it whether the
 // pull request is still open before it pushes onto its branch.
 const (
-	forgePublishVarURL     = "forge_publish_url"
-	forgePublishVarToken   = "forge_publish_token"
-	forgePublishVarPRState = "forge_pr_state_url"
+	forgePublishVarURL       = "forge_publish_url"
+	forgePublishVarToken     = "forge_publish_token"
+	forgePublishVarPRState   = "forge_pr_state_url"
+	forgePublishVarPreflight = "forge_delivery_preflight_url"
 )
 
 // injectForgePublishVars mints a per-run forge-publish grant and injects the
@@ -843,11 +893,59 @@ const (
 // registry is in-memory, so a restart empties it, and refusing there would
 // turn a stale token into a failed launch instead of a run that merely cannot
 // publish (the endpoint answers 401).
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
+// trust is the launch's own verdict on who wrote the code the run will hold.
+// It is a PARAMETER and not a field read off a run because at this point in
+// the tail there IS no run — the grant is minted before the launcher is
+// called, so "read the marker from the run document" is not available here.
+// An untrusted launch is refused a grant outright, and the refusal is an
+// error rather than a silent "no endpoint bound": the whole point of the
+// lane that sets it is that its output never reaches the forge, and a
+// capability that goes missing quietly is one nobody notices coming back.
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request, trust store.RunTrust) (map[string]string, error) {
+	prURL := strings.TrimSpace(vars["pr_url"])
+	// Ahead of ALL THREE early returns — the unwired-server one just below,
+	// the no-pr_url one, and the caller-pin one. A check placed after any of
+	// them lets a caller hand an untrusted launch a grant simply by putting
+	// one in vars: each returns the vars it was given. The unwired case is
+	// the least obvious and not hypothetical — a deployment with no forge
+	// connections mints nothing, so nothing would overwrite a caller-supplied
+	// forge_publish_url naming another deployment entirely.
+	//
+	// Deleting from a map is a no-op on absent keys, so placing this first
+	// costs a trusted launch nothing. Trusted() and not "== fork", so an
+	// unrecognised trust loses the grant too.
+	if !trust.Trusted() {
+		for _, k := range forgePublishVars() {
+			delete(vars, k)
+		}
+		// The WITHDRAWAL is the guarantee; it is not a reason to refuse the
+		// launch. An earlier revision returned an error here, and that was a
+		// defect of exactly the shape this repo warns about — a hardening
+		// that closes the path it exists to serve: reviewPRVars always sets
+		// pr_url, so EVERY fork-lane review would have failed to launch, and
+		// the lane could never have worked. A grant-less review is precisely
+		// what the lane is.
+		//
+		// Typed, greppable and logged all the same — silence is the thing
+		// forbidden, not continuing. The loud half lives where something
+		// actually ASKS to publish: runOwnsGrant refuses and audits there,
+		// holding a run, which is the only place the question is real.
+		if prURL != "" {
+			if s.logger != nil {
+				s.logger.Info("forge gate: %s: %s: no publish grant minted for an untrusted workspace (trust=%q) — the run reviews without one",
+					grantUntrustedMintReason, prURL, string(trust))
+			}
+			s.auditSystem(teamID, "forge-gate", auditActionGrantUntrustedMint, "launch", prURL, map[string]any{
+				"reason": grantUntrustedMintReason,
+				"trust":  string(trust),
+				"bot":    strings.TrimSpace(botID),
+			})
+		}
+		return vars, nil
+	}
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, nil
 	}
-	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
 		return vars, nil
 	}
@@ -904,7 +1002,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	}
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
 	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
-	vars["forge_delivery_preflight_url"] = base + "/api/v1/forge/delivery-preflight"
+	vars[forgePublishVarPreflight] = base + "/api/v1/forge/delivery-preflight"
 	vars[forgePublishVarToken] = token
 	return vars, nil
 }
@@ -961,7 +1059,13 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 			preferredConnID = conn.ID
 		}
 	}
-	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+	// The launch surfaces that hold no webhook payload — the studio/API
+	// launch and the cloud board coordinator — are operator-authenticated and
+	// pass prLaunchForkGuard above, so the workspace they name is the
+	// tenant's own. Stated rather than inferred: if one of them ever grows a
+	// path that admits an outsider's tree, this is the line that has to
+	// change with it.
+	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r, store.RunTrustDefault)
 }
 
 // errForgePublishGrantTenant marks a launch that pinned a forge publish grant

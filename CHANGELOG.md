@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.189.0](https://github.com/SocialGouv/iterion/compare/v3.188.0...v3.189.0) (2026-09-23)
+
+### Features
+
+* **dsl:** lot 5 PR A — structured registry, forms held to the parser, and the author JSON Schema ([#1584](https://github.com/SocialGouv/iterion/issues/1584)) ([#1631](https://github.com/SocialGouv/iterion/issues/1631)) ([8969915](https://github.com/SocialGouv/iterion/commit/8969915a2e17ae3c6d359ddc6be540e3f877f9bf)), references [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1094](https://github.com/SocialGouv/iterion/issues/1094) [#1094](https://github.com/SocialGouv/iterion/issues/1094) [#1624](https://github.com/SocialGouv/iterion/issues/1624) [#1627](https://github.com/SocialGouv/iterion/issues/1627) [#1628](https://github.com/SocialGouv/iterion/issues/1628) [#1628](https://github.com/SocialGouv/iterion/issues/1628) [#1656](https://github.com/SocialGouv/iterion/issues/1656)
+
+    <details><summary>why</summary>
+
+    `servers: ["forge"]`, `on: ["auth"]`, `watches: ["a"]`, `needs: ["gpu"]` read as EMPTY lists, `tools: [1, bash]` as `[bash]`: parseIdentList and parseToolRef consumed a token that could not open a name and reported nothing, so the server was never wired and no diagnostic said so. Both chokepoints now refuse the element where it stands — one E002 naming it, a hint that says "without quotes" for a quoted element — and the rest of the list is read. No shipped bot writes such an element (grep over…
+
+    </details>
+
+## [3.188.0](https://github.com/SocialGouv/iterion/compare/v3.187.0...v3.188.0) (2026-09-22)
+
+### Features
+
+* **security:** a run carries who wrote its workspace, and an untrusted one can neither publish, read a forge token, nor pass a pin it cannot enforce ([#1670](https://github.com/SocialGouv/iterion/issues/1670)) ([6898e6c](https://github.com/SocialGouv/iterion/commit/6898e6c7806b622d4e2a5c69aa49a662eb3e70e1)), references [#874](https://github.com/SocialGouv/iterion/issues/874) [#874](https://github.com/SocialGouv/iterion/issues/874) [#874](https://github.com/SocialGouv/iterion/issues/874) [#1639](https://github.com/SocialGouv/iterion/issues/1639) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Groundwork for the opt-in fork review lane (#874): the five constraints the ticket sets are only enforceable if "who wrote this code" is a property of the RUN, not of the surface that launched it. A resume, a usage-window retry and a forked child all rebuild their credentials from the stored run document, long after the admitting lane is out of scope.
+
+    </details>
+
+## [3.187.0](https://github.com/SocialGouv/iterion/compare/v3.186.0...v3.187.0) (2026-09-22)
+
+### Features
+
+* **server,studio,cli:** administering teams and members from the cloud console ([#1559](https://github.com/SocialGouv/iterion/issues/1559)) ([a686907](https://github.com/SocialGouv/iterion/commit/a6869077fa551abd5c400c816e66750e48ad2b04)), references [#1540](https://github.com/SocialGouv/iterion/issues/1540) [#1539](https://github.com/SocialGouv/iterion/issues/1539) [#1541](https://github.com/SocialGouv/iterion/issues/1541) [#1542](https://github.com/SocialGouv/iterion/issues/1542) [#1543](https://github.com/SocialGouv/iterion/issues/1543) [#1446](https://github.com/SocialGouv/iterion/issues/1446) [#1544](https://github.com/SocialGouv/iterion/issues/1544)
+
+    <details><summary>why</summary>
+
+    An operator could not answer the first question an account that "sees nothing" raises: where does it come from, and what was it actually granted? Every fact needed already lived in the store and none of it was reachable through the API, so the answer was a Mongo read or a guess.
+
+    </details>
+
 ## [3.186.0](https://github.com/SocialGouv/iterion/compare/v3.185.1...v3.186.0) (2026-09-22)
 
 ### Features

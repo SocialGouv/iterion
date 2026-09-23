@@ -314,6 +314,9 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			runtime.WithLoopBudgetGuard(msg.LoopBudgetGuard),
 			runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 			runtime.WithParentRunID(req.ParentRunID),
+			// The wire carries these (child := *msg); the DOCUMENT is built
+			// from a named field list and would otherwise read as trusted.
+			runtime.WithTrust(child.Trust, child.RepoSHAExpected),
 			runtime.WithParentNodeID(req.NodeID),
 			// Recursive wiring: a child that declares subbot nodes resolves
 			// its own children relative to ITS directory.

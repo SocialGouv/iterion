@@ -3296,10 +3296,16 @@
           "is_super_admin": {
             "type": "boolean"
           },
+          "last_login_at": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
           "status": {
+            "type": "string"
+          },
+          "updated_at": {
             "type": "string"
           }
         },
@@ -3558,6 +3564,155 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "adminUpdateUserReq": {
+        "properties": {
+          "is_super_admin": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "adminUserDetailView": {
+        "properties": {
+          "has_password": {
+            "type": "boolean"
+          },
+          "orgs": {
+            "items": {
+              "$ref": "#/components/schemas/adminUserOrgView"
+            },
+            "type": "array"
+          },
+          "sso_links": {
+            "items": {
+              "$ref": "#/components/schemas/adminUserSSOLinkView"
+            },
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/adminUserTeamView"
+            },
+            "type": "array"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserView"
+          }
+        },
+        "required": [
+          "user",
+          "has_password",
+          "orgs",
+          "teams",
+          "sso_links"
+        ],
+        "type": "object"
+      },
+      "adminUserOrgView": {
+        "properties": {
+          "joined_at": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": "string"
+          },
+          "org_slug": {
+            "type": "string"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "purge_after": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "org_id",
+          "role"
+        ],
+        "type": "object"
+      },
+      "adminUserSSOLinkView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "subject"
+        ],
+        "type": "object"
+      },
+      "adminUserTeamView": {
+        "properties": {
+          "joined_at": {
+            "type": "string"
+          },
+          "missing_team": {
+            "type": "boolean"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": "string"
+          },
+          "org_status": {
+            "type": "string"
+          },
+          "orphan_grant": {
+            "type": "boolean"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "team_name": {
+            "type": "string"
+          },
+          "team_slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "role"
+        ],
         "type": "object"
       },
       "apiKeyView": {
@@ -5005,6 +5160,9 @@
           "name": {
             "type": "string"
           },
+          "org_id": {
+            "type": "string"
+          },
           "personal": {
             "type": "boolean"
           },
@@ -6155,8 +6313,37 @@
       "get": {
         "operationId": "getAdminUsers",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "query": {
+                      "type": "string"
+                    },
+                    "users": {
+                      "items": {
+                        "$ref": "#/components/schemas/UserView"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "users",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/admin/users",
@@ -6166,6 +6353,25 @@
       }
     },
     "/api/admin/users/{id}": {
+      "get": {
+        "operationId": "getAdminUsersById",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/adminUserDetailView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/users/{id}",
+        "tags": [
+          "admin"
+        ]
+      },
       "parameters": [
         {
           "in": "path",
@@ -6178,9 +6384,26 @@
       ],
       "patch": {
         "operationId": "patchAdminUsersById",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/adminUpdateUserReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "PATCH /api/admin/users/{id}",
@@ -7579,6 +7802,37 @@
           "openapi.json"
         ]
       }
+    },
+    "/api/orgs/{id}": {
+      "get": {
+        "operationId": "getOrgsById",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orgView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/orgs/{id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/orgs/{id}/api-keys": {
       "get": {
@@ -10595,8 +10849,15 @@
       "get": {
         "operationId": "getTeamsById",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/teamSummaryView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}",

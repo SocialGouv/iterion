@@ -17,13 +17,16 @@ import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Input } from "@/components/ui/Input";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import { useDebounce } from "@/hooks/useDebounce";
 import { useServerInfoStore } from "@/store/serverInfo";
 
 import AdminNav from "./AdminNav";
+import UserDrawer from "./users/UserDrawer";
 
 const PAGE = 50;
 
@@ -41,12 +44,20 @@ export default function UsersAdminPage() {
   // change. keepPreviousData holds the previous page's rows on screen while
   // the next one loads — the manual fetch replaced them only on response.
   const [offset, setOffset] = useState(0);
+  // Server-side search: the match is an email PREFIX (or an exact id), so
+  // an operator holding an address finds the account without paging the
+  // whole platform. Debounced — one request per settled query, not per
+  // keystroke.
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search.trim(), 250);
   const query = useQuery({
-    queryKey: ["admin-users", offset],
-    queryFn: () => listAdminUsers({ offset, limit: PAGE }),
+    queryKey: ["admin-users", offset, debouncedSearch],
+    queryFn: () => listAdminUsers({ offset, limit: PAGE, q: debouncedSearch }),
     enabled: isSuper && isCloud,
     placeholderData: keepPreviousData,
   });
+  // The account whose file is open. Null = no drawer.
+  const [openUserID, setOpenUserID] = useState<string | null>(null);
   const users = query.data?.users ?? [];
   // Server-echoed offset — while a page is in flight this stays on the
   // previous page's value, like the manual fetch did.
@@ -192,13 +203,38 @@ export default function UsersAdminPage() {
           </InlineBanner>
         )}
 
+        <div>
+          <label htmlFor="admin-users-search" className="sr-only">
+            Search accounts by email or id
+          </label>
+          <Input
+            size="md"
+            id="admin-users-search"
+            type="search"
+            placeholder="Search by email prefix, or paste a user id…"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              // Back to the first page: a query typed while paged forward
+              // would answer "no users on this page" and read as "no match".
+              setOffset(0);
+            }}
+          />
+        </div>
+
         <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
           {!loaded ? (
             <div className="p-3">
               <TableSkeleton rows={5} cols={5} />
             </div>
           ) : users.length === 0 ? (
-            <EmptyState message="No users on this page." />
+            <EmptyState
+              message={
+                debouncedSearch
+                  ? `No account matches "${debouncedSearch}". The match is an email prefix or an exact user id — not a substring.`
+                  : "No users on this page."
+              }
+            />
           ) : (
           <Table caption="Platform users">
             <THead>
@@ -212,7 +248,13 @@ export default function UsersAdminPage() {
               {users.map((u) => (
                 <Tr key={u.id} className="align-top">
                   <Td>
-                    <div>{u.email}</div>
+                    <button
+                      type="button"
+                      className="text-accent-text hover:underline text-left"
+                      onClick={() => setOpenUserID(u.id)}
+                    >
+                      {u.email}
+                    </button>
                     <div className="text-caption text-fg-subtle font-mono">{u.id}</div>
                   </Td>
                   <Td className="text-fg-muted">{u.name ?? "—"}</Td>
@@ -227,6 +269,11 @@ export default function UsersAdminPage() {
                     )}
                   </Td>
                   <Td align="right" className="space-x-1 whitespace-nowrap">
+                    {/* Named for the question it answers, not for the widget
+                        it opens: the account's orgs, teams and provenance. */}
+                    <Button size="sm" variant="ghost" onClick={() => setOpenUserID(u.id)}>
+                      Access &amp; origin
+                    </Button>
                     {u.status === "disabled" ? (
                       <Button size="sm" variant="ghost" onClick={() => setConfirm({ user: u, action: "enable" })}>
                         Re-enable
@@ -310,6 +357,10 @@ export default function UsersAdminPage() {
           </Button>
         </div>
       </div>
+
+      {openUserID && (
+        <UserDrawer userID={openUserID} onClose={() => setOpenUserID(null)} />
+      )}
 
       <ConfirmDialog
         open={confirm !== null}

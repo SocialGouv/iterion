@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -143,15 +144,87 @@ func paginate[T any](items []T, page Page) []T {
 	return items[offset:end]
 }
 
-func (m *MemoryStore) ListUsers(_ context.Context, page Page) ([]User, error) {
+func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	// Normalized once, not per user: the predicate is called for every row
+	// in the store.
+	q := normalizeUserQuery(f.Query)
 	users := make([]User, 0, len(m.users))
 	for _, u := range m.users {
+		if !matchesUserQuery(u, q) {
+			continue
+		}
 		users = append(users, u)
 	}
 	sort.Slice(users, func(i, j int) bool { return users[i].CreatedAt.Before(users[j].CreatedAt) })
-	return paginate(users, page), nil
+	return paginate(users, f.Page), nil
+}
+
+// maxUserQueryLen bounds the email arm at the STORE's limit, not at a
+// product rule nothing enforces.
+//
+// MongoDB refuses a regex pattern past ~32 KB. QuoteMeta at most doubles the
+// input, so 16 000 bytes can never produce a pattern the server rejects, and
+// both stores stay on one answer instead of one erroring while the other
+// returns a clean page.
+//
+// It is deliberately NOT 254 (the RFC 5321 address cap): nothing in this
+// codebase enforces that cap on write — `NormalizeEmail` only lowercases and
+// trims, and no CreateUser path checks a length — so a 292-byte address is
+// storable today, and a read cap of 254 would make such an account
+// unfindable by its own address through the only tool an operator has.
+// A read cap cannot create an invariant; it can only hide rows. (Lowercasing
+// is not length-preserving either — a Kelvin sign shrinks by two bytes — so
+// a tight cap would apply to a length the operator never typed.)
+const maxUserQueryLen = 16000
+
+// userQuery is UserFilter.Query split into the forms its arms compare
+// against, so none is recomputed per row.
+//
+// The two arms differ on purpose: an email is case-insensitive by
+// construction (the unique index is on the normalized form) but an id is an
+// opaque token, and lower-casing it before comparing would make an id
+// containing an upper-case byte unfindable by its own id.
+type userQuery struct {
+	id            string // the trimmed query, compared verbatim
+	emailPrefix   string // the normalized query
+	matchesAllRow bool   // an empty query selects every user
+	// emailArmOff marks a prefix no email can carry — one holding a NUL,
+	// or longer than an address may be. MongoDB REFUSES both as a pattern
+	// ("cannot contain an embedded null byte", "pattern string is longer
+	// than the limit"), while a Go predicate would happily answer "no
+	// match": the same query would error on one store and return an empty
+	// page on the other. The id arm stays live — a NUL is legal in a BSON
+	// _id, so `_id: "a\x00b"` is a perfectly good lookup.
+	emailArmOff bool
+}
+
+func normalizeUserQuery(raw string) userQuery {
+	q := strings.TrimSpace(raw)
+	if q == "" {
+		return userQuery{matchesAllRow: true}
+	}
+	e := NormalizeEmail(q)
+	if strings.IndexByte(e, 0) >= 0 || len(e) > maxUserQueryLen {
+		return userQuery{id: q, emailArmOff: true}
+	}
+	return userQuery{id: q, emailPrefix: e}
+}
+
+// matchesUserQuery is UserFilter.Query's predicate, stated once so this
+// store and the Mongo `$or` cannot drift apart in meaning.
+func matchesUserQuery(u User, q userQuery) bool {
+	if q.matchesAllRow {
+		return true
+	}
+	if u.ID == q.id {
+		return true
+	}
+	if q.emailArmOff {
+		return false
+	}
+	return strings.HasPrefix(NormalizeEmail(u.Email), q.emailPrefix)
 }
 
 func (m *MemoryStore) UserCount(_ context.Context) (int64, error) {

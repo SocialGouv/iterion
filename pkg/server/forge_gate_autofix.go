@@ -388,6 +388,13 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 		// escalated when it is spent; the sweep's next offers carry the
 		// retries. A denial keeps its own recovery (the forge is told, the
 		// org quota resets on its own horizon).
+		// A refusal says nothing today — the same silence the relaunch lane
+		// had. It is not a failed start and must not escalate, but an
+		// operator who flipped a subscription's lane kind needs to see WHY
+		// the fixer never ran.
+		if res.Status == webhooks.StatusFiltered && s.logger != nil {
+			s.logger.Info("gate autofix: %s#%d refused: %s", repo, number, strings.TrimSpace(res.Error))
+		}
 		if res.Status == webhooks.StatusLaunchError && res.denial == nil {
 			why := strings.TrimSpace(res.Error)
 			switch {

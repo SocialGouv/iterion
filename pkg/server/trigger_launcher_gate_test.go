@@ -138,7 +138,7 @@ func TestServiceLauncher_MetersOnePerLaunchAndRollsBackARefusal(t *testing.T) {
 		if _, err := s.triggerLauncher().Launch(spineCtx(t), spinePlan("t1")); err != nil {
 			t.Fatalf("Launch = %v, want nil", err)
 		}
-		u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if u.Runs != 1 {
 			t.Errorf("monthly runs = %d after one spine launch, want 1", u.Runs)
 		}
@@ -152,7 +152,7 @@ func TestServiceLauncher_MetersOnePerLaunchAndRollsBackARefusal(t *testing.T) {
 		if _, err := s.triggerLauncher().Launch(spineCtx(t), spinePlan("t1")); err == nil {
 			t.Fatal("Launch = nil, want the run service's refusal")
 		}
-		u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+		u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 		if u.Runs != 0 {
 			t.Errorf("monthly runs = %d after a refused launch, want 0 — a run that never started consumes no slot", u.Runs)
 		}

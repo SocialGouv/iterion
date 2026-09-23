@@ -41,7 +41,7 @@ func seededFP(ownerKey string) string { return "fp-" + ownerKey }
 func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

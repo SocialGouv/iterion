@@ -242,6 +242,38 @@ func notDeleted(filter bson.M) bson.M {
 
 // SaveRun replaces the run document atomically. Tenant-scoped
 // callers can only overwrite documents belonging to their tenant.
+// writeOnceString is the aggregation half of a WRITE-ONCE string field: a
+// non-empty persisted value always wins, and an empty one is never
+// materialised.
+//
+// Written as a $cond on emptiness rather than $ifNull on null, because
+// $ifNull only shields against a MISSING field. `{$literal: ""}` is non-null,
+// so the obvious `$ifNull` spelling MATERIALISES `""` on the first ordinary
+// save — and every launcher alive today saves a run knowing nothing about
+// trust. Once the field exists as `""`, `$ifNull` keeps it forever, so a lane
+// that later marks the run fork cannot: the value reads back as
+// RunTrustDefault, i.e. TRUSTED, and every capability keyed on the marker
+// stays granted. Silent, and fail-OPEN — the worst direction.
+//
+// (It did NOT let a rival non-empty value overwrite a stored one; both
+// spellings refuse that. Said explicitly because an earlier revision of this
+// comment claimed otherwise.)
+//
+// The rule matches the filesystem twin exactly — there, `if persisted.X != ""
+// { keep persisted }` — and the twins must agree, or the guarantee depends on
+// which store a deployment runs.
+func writeOnceString(field, incoming string) bson.M {
+	if incoming == "" {
+		// Nothing to write: keep what is stored, or leave the field absent.
+		return bson.M{"$ifNull": bson.A{field, "$$REMOVE"}}
+	}
+	return bson.M{"$cond": bson.A{
+		bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{field, ""}}, ""}},
+		field,
+		bson.M{"$literal": incoming},
+	}}
+}
+
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// preserveUnknownBSON keeps only fields this struct does NOT know, so a
 	// blanked-but-known workflow_source is dropped rather than preserved: the
@@ -344,6 +376,10 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "continuation_state")
 	delete(doc, "failure_code")
 	delete(doc, "routing_policy")
+	// Removed from the literal half so the computed clause above decides
+	// them; left in, the $literal document would overwrite what it preserves.
+	delete(doc, "trust")
+	delete(doc, "repo_sha_expected")
 	doc["version"] = r.CASVersion + 1
 	terminalInc := 0
 	switch r.Status {
@@ -375,6 +411,15 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		// has not started producing (absent/queued/running status):
 		// fixing a contract onto ALREADY-TERMINAL work would decide
 		// retroactively — the exact attack the snapshot exists to stop.
+		// Trust and its commit pin are WRITE-ONCE, for the same reason and
+		// with a stricter rule: a run's answer to "who wrote this code" never
+		// legitimately changes, so once persisted it wins over any saver —
+		// including a binary too old to know the field, and any stale
+		// full-document save. There is no first-write window to reopen: a
+		// marker that could be cleared is a marker an attacker only has to
+		// race, and every capability this run is denied is read back from it.
+		"trust":             writeOnceString("$trust", string(r.Trust)),
+		"repo_sha_expected": writeOnceString("$repo_sha_expected", r.RepoSHAExpected),
 		"routing_policy": bson.M{"$cond": bson.A{
 			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$routing_policy", nil}}, nil}},
 			"$routing_policy",

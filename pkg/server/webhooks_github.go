@@ -205,7 +205,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		// check it never answers. Widening one var's reach without asking who
 		// else reads it is exactly how that would have shipped.
 		healVars["fix_head_sha"] = p.HeadSHA
-		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP, launchProvenance{})
 		return
 	}
 
@@ -380,7 +380,11 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	}
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
-	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch, extra)
+	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch, extra,
+		// Trusted: the fork guard above proved the head lives in this
+		// repository. The fork review lane fills this in with the commit its
+		// opt-in gesture proved.
+		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a
 	// volley of pushes costs one review of the final head (a re-request
@@ -505,7 +509,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// branches from there.
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{})
 }
 
 // issueLabeledVars composes the launch vars an implementer bot (featurly)

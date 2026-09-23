@@ -67,8 +67,11 @@ var remoteAdminOrgsCmd = &cobra.Command{
 			if len(args) != 3 {
 				return fmt.Errorf("usage: admin orgs status <org-id> <status>")
 			}
-			body := []byte(fmt.Sprintf(`{"status":%q}`, args[2]))
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/orgs/"+args[1]+"/status", body)
+			body, err := jsonBody(map[string]string{"status": args[2]})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/orgs/"+url.PathEscape(args[1])+"/status", body)
 		case "teams":
 			id, err := needID()
 			if err != nil {
@@ -87,18 +90,53 @@ var remoteAdminOrgsCmd = &cobra.Command{
 	}),
 }
 
+// remoteAdminUserQuery narrows the list to accounts whose email starts
+// with it, or the one whose id equals it.
+var remoteAdminUserQuery string
+
 var remoteAdminUsersCmd = &cobra.Command{
-	Use:   "users [update <user-id>]",
-	Short: "List platform users, or update one (--data)",
-	Args:  cobra.MaximumNArgs(2),
+	Use:   "users [get <user-id>|update <user-id>|reset-password <user-id>]",
+	Short: "List platform users (--q to search), or act on one",
+	Long: "`get` returns one account's FILE: status, last sign-in, whether a\n" +
+		"password sign-in is possible at all, its SSO links, and the orgs and\n" +
+		"teams it was actually GRANTED — the answer to \"where does this account\n" +
+		"come from, and why does it see nothing?\".\n\n" +
+		"`--q` matches an email PREFIX or an exact user id; it is not a substring\n" +
+		"search, so the server can answer it from the index on email.\n\n" +
+		"`reset-password` mints a one-shot temporary password (printed ONCE) and\n" +
+		"revokes every live session. It is the recovery path on a deployment with\n" +
+		"no outbound email; hand the password over out-of-band.",
+	Args: cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/users")
+			path := "/api/admin/users"
+			if q := strings.TrimSpace(remoteAdminUserQuery); q != "" {
+				path += "?q=" + url.QueryEscape(q)
+			}
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 		}
-		if args[0] != "update" || len(args) != 2 {
-			return fmt.Errorf("usage: admin users [update <user-id> --data @f]")
+		if len(args) != 2 {
+			return fmt.Errorf("usage: admin users [get <user-id>|update <user-id> --data @f|reset-password <user-id>]")
 		}
-		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", "/api/admin/users/"+args[1], remoteAdminData, "patch JSON")
+		// --q is read only by the list form above; accepting it silently on an
+		// action would answer a question the operator did not ask.
+		if strings.TrimSpace(remoteAdminUserQuery) != "" {
+			return fmt.Errorf("--q applies to the list form only (`admin users --q <prefix>`), not to %q", args[0])
+		}
+		// PathEscape: an id reaching a URL path unescaped lets `../` retarget
+		// the request through ServeMux's 307 redirect — the CLI would report
+		// success on a route the operator never named.
+		base := "/api/admin/users/" + url.PathEscape(args[1])
+		switch args[0] {
+		case "get":
+			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+		case "update":
+			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base, remoteAdminData, "patch JSON")
+		case "reset-password":
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/reset-password", nil)
+		default:
+			return fmt.Errorf("unknown users action %q (get|update|reset-password)", args[0])
+		}
 	}),
 }
 
@@ -372,8 +410,11 @@ every mutation lands on the platform audit log with a content digest.`,
 			if err != nil {
 				return err
 			}
-			body := []byte(fmt.Sprintf(`{"from":%q}`, slug))
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/bots/"+slug+"/fork", body)
+			body, err := jsonBody(map[string]string{"from": slug})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/bots/"+url.PathEscape(slug)+"/fork", body)
 		default:
 			return fmt.Errorf("unknown bots action %q (want push|show|pull|rm|fork)", action)
 		}
@@ -793,6 +834,7 @@ var remotePluginsCmd = &cobra.Command{
 func init() {
 	remoteAdminOrgsCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
+	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminUserQuery, "q", "", "Match an email prefix, or an exact user id")
 
 	for _, c := range []*cobra.Command{remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd} {
 		c.Flags().StringVar(&remoteLLMFromEnv, "from-env", "", "Read the secret value from this environment variable")

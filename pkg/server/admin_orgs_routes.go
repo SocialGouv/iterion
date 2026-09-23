@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -72,7 +73,12 @@ func toOrgView(o identity.Org) orgView {
 // teamSummaryView is the lightweight team row used by the org teams
 // drill-down (super-admin) and the org self-serve teams list.
 type teamSummaryView struct {
-	ID                string `json:"id"`
+	ID string `json:"id"`
+	// OrgID names the team's parent. Without it a client that resolved a
+	// team by id had to find the owning org in its OWN membership tree —
+	// which answers nothing for a caller who is not a member, exactly the
+	// caller this row exists to serve.
+	OrgID             string `json:"org_id,omitempty"`
 	Name              string `json:"name"`
 	Slug              string `json:"slug"`
 	Status            string `json:"status"`
@@ -85,6 +91,7 @@ type teamSummaryView struct {
 func toTeamSummaryView(t identity.Team) teamSummaryView {
 	return teamSummaryView{
 		ID:                t.ID,
+		OrgID:             t.OrgID,
 		Name:              t.Name,
 		Slug:              t.Slug,
 		Status:            string(t.EffectiveStatus()),
@@ -461,7 +468,7 @@ func (s *Server) buildOrgUsageView(ctx context.Context, st identity.Store, o ide
 
 	// Org-keyed monthly counters: one read, keyed by org.ID.
 	if s.orgUsage != nil {
-		if u, err := s.orgUsage.Usage(ctx, o.ID, now); err == nil {
+		if u, err := s.orgUsage.Usage(ctx, orgusage.OrgSubject(o.ID), now); err == nil {
 			v.RunsThisMonth = u.Runs
 			v.CostUSDThisMonth = u.CostUSD
 			v.InputTokens = u.InputTokens

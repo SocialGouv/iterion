@@ -85,6 +85,7 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 | `GET` | `/api/teams` | member | List the caller's teams |
 | `POST` | `/api/teams` | member | Create a team |
 | `GET` | `/api/teams/{id}/members` | team member | List members |
+| `PUT` | `/api/teams/{id}/members/{user_id}` | team admin | Place an account that ALREADY exists, idempotently (`{"role":…}`). Refuses **422** when the user is not yet a member of the team's ORG — that membership is the identity boundary a team grant sits inside, so the order is `PUT /api/orgs/…` first |
 | `PATCH` | `/api/teams/{id}/members/{user_id}` | team admin | Change role |
 | `DELETE` | `/api/teams/{id}/members/{user_id}` | team admin | Remove a member |
 | `GET` | `/api/teams/{id}/invitations` | team admin | List pending invitations |
@@ -105,9 +106,11 @@ need org **admin/owner** (`canManageOrg`). Sources:
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
+| `GET` | `/api/orgs/{id}` | org member | One org — name, slug, status, quotas. The twin of `GET /api/teams/{id}`, so a console can resolve an org by id instead of by the caller's own membership tree |
 | `GET` | `/api/orgs/{id}/members` | org member | List org members + roles |
+| `PUT` | `/api/orgs/{id}/members/{user_id}` | **super-admin** | Place an account that ALREADY exists, idempotently (`{"role":…}`). Creates or updates, where `PATCH` requires an existing membership. Super-admin because it names an account id rather than an address its owner answers at: under org admin it absorbs any account, discloses its email through the roster, and turns the 404/200 split into an existence oracle. An org admin adds by `POST …/invitations` |
 | `PATCH` | `/api/orgs/{id}/members/{user_id}` | org admin | Change a member's org role (`member\|admin\|owner`) |
-| `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member |
+| `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member (cascades to every team grant inside the org) |
 | `GET` | `/api/orgs/{id}/invitations` | org admin | List pending org invitations |
 | `POST` | `/api/orgs/{id}/invitations` | org admin | Mint an org invitation token |
 | `DELETE` | `/api/orgs/{id}/invitations/{invite_id}` | org admin | Revoke |
@@ -454,7 +457,8 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
 | `GET` | `/api/admin/orgs/{id}/teams` | super-admin | List the org's teams |
-| `GET` | `/api/admin/users` | super-admin | List users (`?offset=&limit=` pagination; limit default 50, max 200) |
+| `GET` | `/api/admin/users` | super-admin | List users (`?offset=&limit=` pagination, limit default 50 / max 200; `?q=` matches an email PREFIX or an exact user id — not a substring, so the match rides the unique index on `email`) |
+| `GET` | `/api/admin/users/{id}` | super-admin | One account's file: status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was **granted** — not what it could reach. See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
 | `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
