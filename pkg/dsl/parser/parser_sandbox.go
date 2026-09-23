@@ -289,7 +289,18 @@ func (p *parser) parseStringMapBlock() map[string]string {
 // own inline loop used to APPEND the refusal as an empty string — an empty
 // egress rule beside the diagnostic.
 func (p *parser) parseStringOrIdentList() []string {
-	return p.parseBracketList(p.expectStringOrIdentOK)
+	return p.parseBracketList(func() (string, bool) {
+		t := p.peek()
+		v, ok := p.expectStringOrIdentOK()
+		if ok && v == "" {
+			// An empty string is neither a rule nor a mount: the sandbox
+			// refuses it when it starts (netproxy: "empty rule"), long after
+			// the author could act. Said here, left out, the rest read.
+			p.addErrorHint(DiagExpectedToken, t, "an empty string is not a rule or a mount", "Delete the empty element, or write the pattern.")
+			return "", false
+		}
+		return v, ok
+	})
 }
 
 // expectStringOrIdent accepts either a quoted string literal or a
