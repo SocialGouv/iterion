@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
@@ -254,10 +255,14 @@ func HeadingText(md string) string {
 }
 
 var (
-	imageRe    = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
-	linkRe     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	refLinkRe  = regexp.MustCompile(`\[([^\]]*)\]\[[^\]]*\]`)
-	codeSpanRe = regexp.MustCompile("`+[^`]*`+")
+	imageRe   = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
+	linkRe    = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	refLinkRe = regexp.MustCompile(`\[([^\]]*)\]\[[^\]]*\]`)
+	// The code-span and fenced-block rules live in internal/mdcode: the
+	// question "which bytes are code" is asked by every scanner this
+	// repository runs over its markdown, and a second copy of the answer is
+	// how the map and the guard came to disagree with this file.
+	codeSpanRe = mdcode.SpanPattern()
 	htmlTagRe  = regexp.MustCompile(`<[^>]+>`)
 	// A shortcode renders to an emoji glyph, which the slug rule drops.
 	shortcodeRe = regexp.MustCompile(`:[a-z0-9_+-]+:`)
@@ -272,7 +277,7 @@ var (
 	setextLineRe   = regexp.MustCompile(`^\s{0,3}(=+|-{3,})\s*$`)
 	htmlHeadingRe  = regexp.MustCompile(`(?i)<h[1-6][^>]*>(.*?)</h[1-6]>`)
 	htmlAnchorRe   = regexp.MustCompile(`(?i)<[a-z][a-z0-9]*\b[^>]*\s(?:id|name)="([^"]+)"`)
-	fenceRe        = regexp.MustCompile("^\\s*(?:>\\s?)*(`{3,}|~{3,})")
+	fenceRe        = mdcode.FencePattern()
 	refDefRe       = regexp.MustCompile(`^\s{0,3}\[([^\]^][^\]]*)\]:\s*(<[^>]*>|\S+)`)
 	htmlHrefRe     = regexp.MustCompile(`(?i)<(?:a|img)\b[^>]*\s(?:href|src)="([^"]+)"`)
 	schemeRe       = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)

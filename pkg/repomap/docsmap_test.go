@@ -138,3 +138,67 @@ func TestReanchorNamesEveryTargetThatLeavesTheRepository(t *testing.T) {
 		}
 	}
 }
+
+// A page that merely QUOTES a link form inside backticks carries no link:
+// the string is inline code, and both readers of the map render it as text.
+// Rewriting it edits quoted prose, and refusing it fails `task map:gen` — and
+// so the required `test` check — on a page whose own links are all sound. The
+// page most likely to write one of these is the page documenting the rule.
+//
+// Each row is a form the corpus can write. The mutation that reddens them all
+// is scanning the raw sentence instead of internal/mdcode's mask.
+func TestReanchorReadsACodeSpanAsCodeAndNotAsALink(t *testing.T) {
+	for _, tc := range []struct{ name, page, quote, want string }{
+		{
+			// The ticket's own page: this form used to abort the generator.
+			name:  "a single-backtick span carrying a target that leaves the repository",
+			page:  "docs/why.md",
+			quote: "The docs map used to emit `](../../docs/foo.md)`, which github.com renders and the site cannot.",
+			want:  "The docs map used to emit `](../../docs/foo.md)`, which github.com renders and the site cannot.",
+		},
+		{
+			name:  "a single-backtick span carrying a target that would be rewritten",
+			page:  "docs/guide.md",
+			quote: "Write `](adr/081.md)` and the map re-anchors it.",
+			want:  "Write `](adr/081.md)` and the map re-anchors it.",
+		},
+		{
+			// Two backticks are how a span that itself carries a backtick is
+			// written, which is exactly how a doc quotes a link to a `file`.
+			name:  "a double-backtick span",
+			page:  "docs/guide.md",
+			quote: "Written ``](`x`.md)`` in the page.",
+			want:  "Written ``](`x`.md)`` in the page.",
+		},
+		{
+			name:  "a full link inside a span",
+			page:  "docs/guide.md",
+			quote: "The form `[the page](../../docs/dsl.md)` is the one that breaks.",
+			want:  "The form `[the page](../../docs/dsl.md)` is the one that breaks.",
+		},
+		{
+			// The mask must not disarm the feature: a real link in the same
+			// sentence as a quoted one is still re-anchored, at its own offset.
+			name:  "a real link beside a quoted one is still re-anchored",
+			page:  "docs/guide.md",
+			quote: "See [the decisions](adr/081.md), never `](../../docs/foo.md)`.",
+			want:  "See [the decisions](../adr/081.md), never `](../../docs/foo.md)`.",
+		},
+		{
+			name:  "a quoted form before a real link does not shift it",
+			page:  "docs/guide.md",
+			quote: "Never `](../../x.md)`, always [the page](sub/page.md).",
+			want:  "Never `](../../x.md)`, always [the page](../sub/page.md).",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := reanchor(tc.quote, tc.page)
+			if err != nil {
+				t.Fatalf("the quoted form was refused as a broken link: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("reanchor page %s\n  quote %s\n  got  %s\n  want %s", tc.page, tc.quote, got, tc.want)
+			}
+		})
+	}
+}

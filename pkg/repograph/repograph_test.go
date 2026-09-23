@@ -460,3 +460,36 @@ func TestABundleManifestMovesTheFingerprint(t *testing.T) {
 		t.Fatal("a bundle manifest changed and the fingerprint did not move — the builder reads it, so the cache must see it")
 	}
 }
+
+// A link a page QUOTES is not a link the page makes. A documentation
+// repository quotes link forms exactly when it documents links — in a fenced
+// example, in a diagnostic's text, in a code span — and an edge minted from
+// one makes `map path` answer that a route exists because a page printed it,
+// which is the corruption linkDocs's own doc comment refuses for a broken
+// target and used to allow for a quoted one.
+//
+// The mutation that reddens this: scan the raw body instead of the mask.
+func TestALinkQuotedInsideCodeMintsNoEdge(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.test/m\n\ngo 1.26\n",
+		"docs/a.md": "# A\n\nA real link to [b](b.md).\n\n" +
+			"An inline example: `[c](c.md)` is the form.\n\n" +
+			"```\n[d](d.md)\n```\n",
+		"docs/b.md": "# B\n",
+		"docs/c.md": "# C\n",
+		"docs/d.md": "# D\n",
+	})
+	g := build(t, root)
+
+	if !hasEdge(g, "doc:docs/a.md", "doc:docs/b.md", repograph.RelLinks) {
+		t.Error("the page's real link produced no edge — the mask hid a link instead of code")
+	}
+	for _, quoted := range []struct{ node, how string }{
+		{"doc:docs/c.md", "a code span"},
+		{"doc:docs/d.md", "a fenced block"},
+	} {
+		if hasEdge(g, "doc:docs/a.md", quoted.node, repograph.RelLinks) {
+			t.Errorf("%s quoted in %s became an edge — the page quotes the form, it does not link the file", quoted.node, quoted.how)
+		}
+	}
+}

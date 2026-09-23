@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/internal/treeskip"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -468,8 +469,14 @@ func linkDocs(g *Graph, root string, pages []docPage) {
 		}
 	}
 	for _, p := range pages {
-		for _, m := range mdLink.FindAllStringSubmatch(p.body, -1) {
-			target := m[1]
+		// The scan runs over internal/mdcode's mask, which keeps the body's
+		// offsets: a `](…)` inside a fenced block or a code span is a form
+		// the page QUOTES — an example, a diagnostic's text — and an edge
+		// minted from one makes `map path` answer that a route exists
+		// because a page printed it.
+		masked := mdcode.Mask(p.body)
+		for _, m := range mdLink.FindAllStringSubmatchIndex(masked, -1) {
+			target := p.body[m[2]:m[3]]
 			if strings.HasPrefix(target, "#") || strings.Contains(target, "://") ||
 				strings.HasPrefix(target, "mailto:") {
 				continue
