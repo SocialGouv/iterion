@@ -62,12 +62,6 @@ var (
 // has always read the approximation.
 func SpanPattern() *regexp.Regexp { return spanRe }
 
-// FencePattern returns the fenced-block delimiter pattern, capturing the
-// delimiter itself in group 1: a caller that tracks open/close state needs
-// the marker, since a fence closes only on a run of the same character at
-// least as long as the one that opened it.
-func FencePattern() *regexp.Regexp { return fenceRe }
-
 // Spans returns the byte ranges of one line's inline code spans, in order and
 // without overlap: each backtick run is paired with the next run of its own
 // length, and an unpaired run is left as the literal text a renderer shows.
@@ -103,13 +97,16 @@ func Spans(line string) [][2]int {
 	return spans
 }
 
-// FenceMarker returns the fenced-block delimiter a line carries, or "".
+// fenceMarker returns the fenced-block delimiter a line carries, or "".
 //
 // A backtick fence's info string may not itself contain a backtick: "```go
 // `x`" is a PARAGRAPH, not a fence. Reading one as an opener costs the whole
 // rest of the page, because no later line closes it.
-func FenceMarker(line string) string { return fenceMarker(line, fenceRe) }
-
+//
+// Unexported, and taking its pattern as a parameter rather than reading a
+// package var: WHICH pattern applies depends on whether a block is open, and
+// an exported helper answering with only one of them would invite a caller to
+// decide a close with the opener's rule — the defect that cost a round.
 func fenceMarker(line string, re *regexp.Regexp) string {
 	m := re.FindStringSubmatch(line)
 	if m == nil {

@@ -96,25 +96,44 @@ func TestMaskHidesCodeAndKeepsProse(t *testing.T) {
 	}
 }
 
-// The two patterns are this package's whole definition of code, and the
-// scanners that strip rather than mask read them from here. A pattern that
-// stopped recognising a form would let that form through every caller.
-func TestThePatternsRecogniseTheFormsTheCorpusWrites(t *testing.T) {
-	for _, span := range []string{"`x`", "``x``", "```x```"} {
-		if m := mdcode.SpanPattern().FindString(span); m != span {
-			t.Errorf("SpanPattern reads %q out of %q", m, span)
-		}
+// The scanner's patterns are asymmetric, and that asymmetry IS the rule: a
+// list marker starts a new list item, so it can introduce an OPENER and never
+// a closer. This package owns the rule, so this package has to be able to
+// redden on it — the regression that taught it was invisible to
+// `go test ./internal/mdcode/...`.
+func TestOnlyAnOpenerMayCarryAListMarker(t *testing.T) {
+	for _, tc := range []struct{ name, opener, inner, closer string }{
+		{"a bullet", "- ```", "+ ```", "  ```"},
+		{"a numbered item", "1. ```", "- ```", "   ```"},
+		{"a blockquote", "> ```sh", "> - ```", "> ```"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var f mdcode.FenceScanner
+			if !f.Code(tc.opener) || !f.Open() {
+				t.Fatalf("%q did not open a fence", tc.opener)
+			}
+			if !f.Code(tc.inner) {
+				t.Errorf("%q inside the block is not code", tc.inner)
+			}
+			if !f.Open() {
+				t.Errorf("%q closed the block — a list marker introduces an item, never a closer", tc.inner)
+			}
+			if !f.Code(tc.closer) || f.Open() {
+				t.Errorf("%q did not close the block opened by %q", tc.closer, tc.opener)
+			}
+		})
 	}
-	if mdcode.SpanPattern().MatchString("no code here") {
-		t.Error("SpanPattern matches prose")
+}
+
+// An info string carrying a backtick means the line is a paragraph. Asserted
+// through the scanner, which is the only way this rule is reachable now.
+func TestAnInfoStringWithABacktickOpensNothing(t *testing.T) {
+	var f mdcode.FenceScanner
+	if f.Code("```go `x`") || f.Open() {
+		t.Error("a paragraph that looks like a fence opener opened one")
 	}
-	for _, fence := range []string{"```", "```go", "~~~", "> ```", "   ````"} {
-		if !mdcode.FencePattern().MatchString(fence) {
-			t.Errorf("FencePattern does not recognise %q", fence)
-		}
-	}
-	if mdcode.FencePattern().MatchString("`` not a fence") {
-		t.Error("FencePattern treats a two-backtick run as a fence")
+	if !f.Code("```go") || !f.Open() {
+		t.Error("a genuine opener no longer opens")
 	}
 }
 

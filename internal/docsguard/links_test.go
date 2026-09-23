@@ -478,8 +478,8 @@ func TestExcludedMatchesDirectoryPrefixesOnly(t *testing.T) {
 // goes unchecked, which is the silent direction.
 //
 // The rule lives in internal/mdcode, so Mask and this scanner cannot answer
-// it differently; the mutation that reddens this is FenceMarker returning the
-// raw pattern match.
+// it differently; the mutation that reddens this is mdcode's fenceMarker
+// dropping its info-string check.
 func TestAParagraphThatLooksLikeAFenceDoesNotSwallowThePage(t *testing.T) {
 	target := Parse("target.md", []byte("# Target\n\n```go `x`\n\n## Review tiers\n\nBody.\n"))
 	if !target.Anchors["review-tiers"] {
