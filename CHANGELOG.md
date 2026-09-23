@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.196.0](https://github.com/SocialGouv/iterion/compare/v3.195.0...v3.196.0) (2026-09-23)
+
+### Features
+
+* **dsl:** the author YAML twin — surfaces, part 1: admission, transport, validate, fmt (lot 5, PR C1) ([#1720](https://github.com/SocialGouv/iterion/issues/1720)) ([9db9ee3](https://github.com/SocialGouv/iterion/commit/9db9ee3dee540688f3d7f9ace60a5c598e6830a0)), references [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1741](https://github.com/SocialGouv/iterion/issues/1741) [#1739](https://github.com/SocialGouv/iterion/issues/1739)
+
+    <details><summary>why</summary>
+
+    The author document — a `.bot.yaml`, the YAML twin of a `.bot` read by pkg/dsl/author — is a draft of a workflow, never one (lot 5 of #1010, the arbitrated surface: a way of writing the .bot, not a second truth). Before any surface reads one, every surface that would launch, upload, schedule, store or resolve one refuses it by name, with one typed sentinel (`bundle.ErrAuthorDocument`, errors.Is) and the remedy in the message (write the .bot it stands for — the fmt command that writes it names…
+
+    </details>
+
 ## [3.195.0](https://github.com/SocialGouv/iterion/compare/v3.194.1...v3.195.0) (2026-09-23)
 
 ### Features
