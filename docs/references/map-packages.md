@@ -84,7 +84,7 @@
 | `pkg/botscaffold` | renders a new bot bundle (main.bot + manifest.yaml + README.md + the bundle layout directories) from a builder Spec. | — | 3 · 17 |
 | `pkg/botsource` | persists TEAM-AUTHORED bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image. | `Store` | 4 · 39 |
 | `pkg/brand` | embeds iterion's bot identity — the mascot avatar of the official `iterion-bot` GitHub account — so the server can upload it onto the accounts it… | — | 1 · 8 |
-| `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 23 · 176 |
+| `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 23 · 178 |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — | 2 · 38 |
 | `pkg/cli` | implements the iterion command-line interface. | — | 82 · 327 |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` | 1 · 10 |
@@ -172,7 +172,7 @@
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 248 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 53 · 355 |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 53 · 358 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` | 3 · 67 |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `PreparedSpec`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` | 7 · 72 |

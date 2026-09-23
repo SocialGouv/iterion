@@ -57,10 +57,11 @@ func (r *FmtResult) refuse(path, why string) {
 // twin beside it — x.bot.yaml → x.bot, x.bot → x.bot.yaml — proven the same
 // program before it is written. A destination already there and not what
 // the source writes is refused without --force, one that is already it is
-// a no-op, one that is there and is not a file (a directory) is refused
-// while the files named beside it are converted, and --check reports what
-// a write would do — the refusal included: the CI form of "is the .bot
-// beside the document the one it writes?".
+// a no-op, one that is there and is not a file (a directory) or cannot be
+// read is refused whatever --force says (twinAt) while the files named
+// beside it are converted, and --check reports what a write would do — the
+// refusal included: the CI form of "is the .bot beside the document the one
+// it writes?".
 func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 	var res FmtResult
 	if opts.Baseline != "" {
@@ -84,10 +85,8 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 		if (opts.To == "bot") != isDoc || (opts.To == "yaml" && !workflowfile.IsWorkflowFile(p)) {
 			return res, fmt.Errorf("%w: %s", ErrFmtToKind, p)
 		}
-		// The twin is written under a name its readers take: a document's
-		// suffix is read case-folded, a workflow file's is not.
-		if dest := twinPath(opts.To, p); !workflowfile.IsWorkflowFile(dest) && !workflowfile.IsAuthorDocument(dest) {
-			return res, fmt.Errorf("%w: %s stands for %s, a name `fmt` would not read back (a workflow file ends in `.bot`, lower-case) — rename the document first", ErrFmtToDestination, p, dest)
+		if dest, ok := twinNameReadBack(opts.To, p); !ok {
+			return res, fmt.Errorf("%w: %s", ErrFmtToDestination, twinNameRefusal("fmt", p, dest))
 		}
 	}
 	changed := false
@@ -102,9 +101,9 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 			continue
 		}
 		res.Notices = append(res.Notices, notices...)
-		existing, there, why := destinationBytes(dest)
+		existing, there, why := twinAt(dest)
 		if why != "" {
-			res.refuse(dest, why)
+			res.refuse(dest, why+"; nothing is written there. Left as it is")
 			continue
 		}
 		f := FmtFile{Path: dest, From: path}
@@ -142,30 +141,49 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 	return res, nil
 }
 
-// destinationBytes is what is at dest: its bytes when a regular file is
-// there, nothing when nothing is, and — for a destination that is there
-// and is not a regular file (a directory, a device), or cannot be read —
-// the reason the conversion refuses it, that file's alone: the files named
-// beside it are converted all the same.
-func destinationBytes(dest string) (existing []byte, there bool, why string) {
+// twinAt is what is at the path of a twin — the .bot an author document
+// stands for, or the document of a .bot: a readable file's bytes, nothing
+// (there false), or why no twin can be written there whatever --force says:
+// a path that cannot be looked at, one that is there and is not a file (a
+// directory, a device), a file that cannot be read. fmt refuses to write
+// over such a path — that file's alone, the files named beside it are
+// converted all the same — and a surface reading a document refuses it as
+// the .bot it stands for, in the same words.
+func twinAt(dest string) (existing []byte, there bool, why string) {
 	info, err := os.Stat(dest)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, false, ""
 	case err != nil:
-		return nil, false, "cannot be looked at (" + err.Error() + "). Nothing written"
+		return nil, false, "cannot be looked at (" + err.Error() + ")"
 	case !info.Mode().IsRegular():
 		kind := "special file"
 		if info.IsDir() {
 			kind = "directory"
 		}
-		return nil, true, "is there and is a " + kind + ", not a file; nothing is written over it. Left as it is"
+		return nil, true, "is there and is a " + kind + ", not a file"
 	}
 	existing, err = os.ReadFile(dest)
 	if err != nil {
-		return nil, true, "is there and cannot be read to be compared (" + err.Error() + "). Left as it is"
+		return nil, true, "is there and cannot be read (" + err.Error() + ")"
 	}
 	return existing, true, ""
+}
+
+// twinNameReadBack is the twin of path — the .bot a document stands for, or
+// the document of a .bot — and whether it is a name the surfaces that read
+// it take back: a document's suffix is read case-folded, a workflow file's
+// is not, so `UPPER.BOT.YAML` stands for `UPPER.BOT`, a name no .bot surface
+// reads as a workflow file.
+func twinNameReadBack(to, path string) (dest string, ok bool) {
+	dest = twinPath(to, path)
+	return dest, workflowfile.IsWorkflowFile(dest) || workflowfile.IsAuthorDocument(dest)
+}
+
+// twinNameRefusal says why surface refuses path, whose twin dest is a name
+// twinNameReadBack does not take.
+func twinNameRefusal(surface, path, dest string) string {
+	return fmt.Sprintf("%s stands for %s, a name `%s` would not read back (a workflow file ends in `.bot`, lower-case) — rename the document first", path, dest, surface)
 }
 
 // convertTwin writes the twin of one file: the .bot an author document
