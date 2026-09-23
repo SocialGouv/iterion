@@ -551,7 +551,12 @@ on the run (`workflow_sources`, beside `workflow_source` for the main), so an
 edit in a fragment is seen like one in the main. A run of such a bot that
 recorded its main alone — launched before the unit's files were recorded, or
 over the 1 MiB cap — is refused rather than diffed on the main, and asks for
-`--node`.
+`--node`. A run over that cap is also refused whenever `--new-inputs` CHANGES
+anything: the fork gate reads the recorded source to check the values against
+their var constraints, and refuses rather than admit an unchecked one. Forking
+it without changing an input — the recovery path — is unaffected, re-sending
+the parent's own values included; see
+[the fork command](cli-reference.md#iterion-fork).
 
 Detection is declaration-granular and resolves indirection:
 

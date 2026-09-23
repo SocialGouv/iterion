@@ -235,6 +235,10 @@ type ClawExecutor struct {
 	// codex OAuth, ANTHROPIC_API_KEY, …) so resolveBackendName can
 	// auto-select a backend when neither node nor workflow specifies one.
 	detector *detect.CachedDetector
+	// staticProgramOnly marks an executor built to answer questions ABOUT A
+	// PROGRAM rather than to run one: it reads the .bot and the workflow and
+	// never the host. See NewProgramExecutor.
+	staticProgramOnly bool
 
 	// inbox is the operator-chatbox binder. When set, every Task built
 	// by this executor gets an InboxDrain closure so CLI-based backends

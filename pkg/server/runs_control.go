@@ -243,6 +243,13 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 				"fork: %v — only agent/judge nodes that have completed at least one LLM turn can be forked; pick one of the run's agent nodes", err)
 			return
 		}
+		// What the operator typed in `new_inputs` is a bad request, not a
+		// server fault: a mistyped var value would otherwise show the studio a
+		// 500 banner and count against the API's own error budget.
+		if errors.Is(err, runview.ErrForkInputsRefused) || errors.Is(err, runview.ErrForkInputsUnverifiable) {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "fork: %v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "fork: %v", err)
 		return
 	}

@@ -25,12 +25,12 @@ func TestIsMutatingNode_ToolParallelSafeScopedToFanOutEach(t *testing.T) {
 	if !isMutatingNode(n) {
 		t.Error("parallel_safe tool must stay mutating in the general (non-fan_out_each) classifier")
 	}
-	if isMutatingNodeCtx(n, "", nil, true) {
+	if isMutatingNodeCtx(n, "", nil, nil, true) {
 		t.Error("parallel_safe tool must be exempt on a fan_out_each template")
 	}
 	// Without the flag, a tool is mutating in both contexts.
 	plain := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "plain"}}
-	if !isMutatingNodeCtx(plain, "", nil, true) {
+	if !isMutatingNodeCtx(plain, "", nil, nil, true) {
 		t.Error("plain tool must stay mutating even on a fan_out_each template")
 	}
 }
@@ -125,10 +125,10 @@ func (r fixedBackendResolver) EffectiveBackendName(ir.Node) string { return stri
 
 func TestIsMutatingNode_EffectiveBackendAndFullAccess(t *testing.T) {
 	n := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}}
-	if !isMutatingNodeWithBackend(n, "", fixedBackendResolver("codex")) {
+	if !isMutatingNodeWithBackend(n, "", fixedBackendResolver("codex"), nil) {
 		t.Error("agent resolved to unrestricted codex must be mutating")
 	}
-	if isMutatingNodeWithBackend(n, "codex", fixedBackendResolver("claw")) {
+	if isMutatingNodeWithBackend(n, "codex", fixedBackendResolver("claw"), nil) {
 		t.Error("effective claw launch override must win over the workflow default")
 	}
 	full := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "full"}, LLMFields: ir.LLMFields{FullAccess: true}}
@@ -561,11 +561,11 @@ func TestIsMutatingNode_TemplatedBackendIsPessimistic(t *testing.T) {
 		Tools:     []string{"read_file"},
 		Fallbacks: []ir.Fallback{{Name: "cli", Backend: "claude_code"}},
 	}
-	if !isMutatingNodeWithBackend(n, "", nil) {
+	if !isMutatingNodeWithBackend(n, "", nil, nil) {
 		t.Error("a templated backend read without a resolver must be admitted as mutating")
 	}
 	// With the resolver wired the executor's own answer decides, as before.
-	if isMutatingNodeWithBackend(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}, LLMFields: ir.LLMFields{Backend: "{{vars.b}}"}, Tools: []string{"read_file"}}, "", fixedBackendResolver("claw")) {
+	if isMutatingNodeWithBackend(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}, LLMFields: ir.LLMFields{Backend: "{{vars.b}}"}, Tools: []string{"read_file"}}, "", fixedBackendResolver("claw"), nil) {
 		t.Error("a resolver that reads claw with no CLI route keeps the node read-only")
 	}
 }

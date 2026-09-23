@@ -46,7 +46,7 @@
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` | 2 · 12 |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — | 2 · 22 |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — | 1 · 7 |
-| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 33 · 184 |
+| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 33 · 185 |
 | `pkg/backend/delegate/claudesdk` | provides a Go SDK for the Claude Code CLI. | `ContentBlock`, `MCPServerConfig`, `Message` | 16 · 117 |
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — | 1 · 4 |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — | 8 · 125 |
@@ -105,7 +105,7 @@
 | `pkg/dispatcher/native` | implements iterion's first-class issue/kanban tracker. | `BoardAdmin`, `BoardStore`, `IssueGetter`, `LaunchClaimer`, `StateReasoner`, `UniqueTitleCreator` | 22 · 226 |
 | `pkg/dispatcher/native/boardops` | contains the capability-gated operations that the __mcp-board MCP server and the /api/v1/mcp/board HTTP handler share. | — | 1 · 17 |
 | `pkg/dispatcher/tracker` | defines the issue-tracker abstraction used by the dispatcher (`iterion dispatch`). | `ClaimLeaser`, `ClaimReaper`, `LaunchStateLister`, `Tracker` | 13 · 63 |
-| `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 6 · 42 |
+| `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 6 · 43 |
 | `pkg/dsl/ast` | MarshalFile / UnmarshalFile provide JSON serialization and deserialization for File types, converting Go iota-based enums to human-readable string… | — | 8 · 137 |
 | `pkg/dsl/author` | reads and writes the YAML twin of a `.bot` file — the author document of lot 5 of #1010: the same declarations as the `.bot`, in the `.bot`'s… | — | 6 · 4 |
 | `pkg/dsl/author/internal/probecheck` | Command probecheck is the harness of the F20 authoring probe for the YAML twin (docs/references/dsl-authoring-probe.md): it reads author documents… | — | 1 · 0 |
@@ -167,9 +167,9 @@
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — | 30 · 32 |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — | 1 · 8 |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
-| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 245 |
+| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 70 · 246 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 51 · 349 |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 53 · 355 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` | 3 · 67 |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `PreparedSpec`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` | 7 · 72 |

@@ -124,7 +124,9 @@ type RunStore interface {
 	// this write exists to prevent.
 	//
 	// Empty src with no files is a legal clear: the compile busted the
-	// 1 MiB cap, which costs the run auto-targetability and nothing else.
+	// 1 MiB cap, which costs the run auto-targetability and the ability to
+	// be forked WITH changed inputs (the fork gate reads its constraints
+	// from this record).
 	// Granular for the same reason as the budget setters: the resume has
 	// already CAS-transitioned the doc to `queued`, so a whole-doc SaveRun
 	// from the copy loaded before that would revert it.
