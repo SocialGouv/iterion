@@ -14,7 +14,7 @@
 | `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 1 · 6 | 0.4.0 |
 | `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 1 · 0 | 0.1.3 |
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 1 · 6 | 0.1.3 |
-| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.9.0 |
+| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.9.1 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 1 · 0 | 0.1.2 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 1 · 5 | 0.2.9 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 1 · 3 | 2.9.3 |

@@ -1085,6 +1085,10 @@ schema post_feedback_input:
   ## whatever the findings, and a build that was skipped proves nothing at all.
   verify_ok: bool
   verify_skipped: bool
+  ## The BUILD verdict alone. verify_ok is the whole convergence (build AND
+  ## clean tree AND clean review), so it goes false when only the review did
+  ## -- and a note derived from it would accuse a build that passed.
+  verify_passed: bool
   ## The prior review's findings and what became of each — rendered verbatim as
   ## a table so the author sees, per finding they were shown, whether it was
   ## fixed, refused (with the argument) or deferred.
@@ -2560,7 +2564,7 @@ if u:
 ## Keep this python body free of the double-quote character: the whole body is
 ## wrapped by the shell in a double-quoted argument.
 tool publish_verdict:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} VERIFY_PASSED={{input.verify_passed}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
 import os, json, urllib.request, urllib.error
 
 def flag(name):
@@ -2603,6 +2607,12 @@ verify_ok = flag('VERIFY_OK')
 # never ran' and 'the build went red' call for different moves from whoever
 # reads the required check, and the second would be a false statement here.
 verify_skipped = flag('VERIFY_SKIPPED')
+# The build verdict on its own. verify_ok above is gate.converged -- build AND
+# clean tree AND clean review -- so it is the right term for the BLOCKING count
+# and the wrong one for the note: on a green build whose review found issues it
+# is false, and 'build/tests red' would then be a false statement on a status a
+# human reads to decide what to do next.
+verify_passed = flag('VERIFY_PASSED')
 
 banked = str(os.environ.get('BANKED_BRANCH') or '').strip()
 take = str(os.environ.get('HOW_TO_TAKE') or '').strip()
@@ -2684,7 +2694,7 @@ if gate_enabled and gate_ctx:
             bits.append('issues remain in the diff')
         if verify_skipped:
             bits.append('build/tests never ran')
-        elif not verify_ok:
+        elif not verify_passed:
             bits.append('build/tests red')
         note = ', '.join(bits) + ' - not mergeable yet'
     payload['gate'] = {'enabled': True, 'context': gate_ctx, 'blocking_count': blocking,
@@ -2965,6 +2975,7 @@ workflow branch_improve_loop:
     superseded:     "{{outputs.push_back_tool.superseded}}",
     finding_ledger: "{{outputs.campaign.finding_ledger}}",
     verify_ok:      "{{outputs.gate.converged}}",
+    verify_passed:  "{{outputs.verify_run.passed}}",
     verify_skipped: "{{outputs.verify_run.skipped}}"
   }
   ## The pull request merged (or closed) while the campaign ran. The comment
