@@ -61,6 +61,22 @@ func BoardToolsFor(caps []string) []string {
 // asks about. (Moving a card to `eligible` does start a run through the
 // dispatcher — a real effect, and not a write to the workspace this node
 // shares with its parallel siblings.)
+//
+// The runs half holds only while that server serves READS. A tool that
+// launched work would break it — a run started without `worktree: auto`
+// executes in the caller's cwd, which is the worktree the siblings share — so
+// the vocabulary is pinned by a test rather than believed (pkg/runops). The
+// operator-facing `local_run` / `local_resume` DO launch and are deliberately
+// not matched: pkg/operatormcp serves them under the server name `iterion`,
+// never under `iterion_board` or `iterion_runs`.
+//
+// What this does NOT establish: that an FQN in these two namespaces is served
+// by iterion. A target repo's `.mcp.json` may declare a server under either
+// name and `wireUserMCP` registers it verbatim, last, over iterion's own — so
+// the tools behind a matching FQN can be foreign. That is a reserved-name gap
+// in the MCP catalog, not in this predicate, and it does not move the verdict
+// its one reader computes: ambient MCP tools never enter the effective surface
+// at all. Filed separately.
 func IsIterionMCPTool(name string) bool {
 	return strings.HasPrefix(name, "mcp__"+boardMCPServerName+"__") ||
 		strings.HasPrefix(name, "mcp__"+runsMCPServerName+"__")

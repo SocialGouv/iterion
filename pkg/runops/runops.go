@@ -84,6 +84,14 @@ func Call(ctx context.Context, rs store.RunStore, caps Capabilities, name string
 	if !caps[CapRunsRead] {
 		return nil, ErrCapabilityDenied
 	}
+	// Dispatch is bounded by the ADVERTISED vocabulary, not only by the
+	// switch below: what this server serves and what it declares must be the
+	// same set. A reader elsewhere in the engine classifies these tools from
+	// the declared list — a name reachable here but absent from `tools` would
+	// be judged on a vocabulary it is not in.
+	if !advertises(name) {
+		return nil, fmt.Errorf("runops: unknown tool %q", name)
+	}
 	switch name {
 	case "run_get":
 		return callRunGet(ctx, rs, raw)
@@ -94,6 +102,17 @@ func Call(ctx context.Context, rs store.RunStore, caps Capabilities, name string
 	default:
 		return nil, fmt.Errorf("runops: unknown tool %q", name)
 	}
+}
+
+// advertises reports whether the name is one this server declares. Built from
+// the same slice ToolsFor reads, so the two cannot drift.
+func advertises(name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 type runDiagnosis struct {
