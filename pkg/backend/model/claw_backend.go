@@ -1195,6 +1195,14 @@ var providerCredentialEnvVars = []string{
 	// existing ClaudeCodeSandboxConfigDir mount (mirroring CODEX_HOME) is the
 	// shape that closes it.
 	"ZAI_API_KEY",
+	// Moonshot's factory reads BOTH the key and the base URL that decides
+	// WHICH gateway it is spent on (registry.go moonshotBaseURL: the .cn
+	// endpoint, an operator proxy). A missing key is loud — the in-container
+	// factory refuses by name — but a missing base URL is not: the node keeps
+	// working against the published endpoint while the host talks to the
+	// operator's, one node on two vendors' infrastructure with nothing said.
+	"MOONSHOT_API_KEY",
+	"MOONSHOT_BASE_URL",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
 	// key, which is METERED and billed to its lender.

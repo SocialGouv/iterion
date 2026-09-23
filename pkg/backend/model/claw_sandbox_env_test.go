@@ -243,3 +243,52 @@ func TestForwardableProviderEnv_ExpiredForfaitRefusesInsteadOfBlinding(t *testin
 		t.Fatalf("expected a named expiry refusal, got %v", err)
 	}
 }
+
+// The contract written above providerCredentialEnvVars, applied to the
+// provider that just landed: a provider whose Resolve() reads os.Getenv must
+// have its variable listed, or the in-container runner — which rebuilds its
+// registry from env alone — resolves without it.
+//
+// Moonshot reads two. MOONSHOT_API_KEY is the loud half (the in-container
+// factory refuses by name). MOONSHOT_BASE_URL is the silent one: the node
+// keeps working, against the PUBLISHED endpoint, while the operator pinned
+// another gateway on the host — one node, two vendors' infrastructure, and
+// nothing said. So the assertion is not on the list, it is on the ANSWER the
+// two sides give to the same question.
+func TestForwardableProviderEnv_CarriesTheMoonshotRoute(t *testing.T) {
+	t.Setenv("MOONSHOT_API_KEY", "moonshot-platform-key")
+	t.Setenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/anthropic")
+	hostBase := moonshotBaseURL()
+
+	env, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+
+	// The container sees ONLY what crossed: rebuild that view and ask the
+	// registry's own resolvers, rather than reading the list back to itself.
+	t.Setenv("MOONSHOT_API_KEY", env["MOONSHOT_API_KEY"])
+	t.Setenv("MOONSHOT_BASE_URL", env["MOONSHOT_BASE_URL"])
+	if got := moonshotBaseURL(); got != hostBase {
+		t.Errorf("in-container Moonshot endpoint = %q, host = %q — the same node talks to two vendors' gateways", got, hostBase)
+	}
+	if _, err := NewRegistry().Resolve("moonshot/kimi-k2"); err != nil {
+		t.Errorf("in-container resolve of a moonshot node: %v", err)
+	}
+}
+
+// The run's own key still beats the ambient one across the seam — the whole
+// point of the boundary is that a tenant's credential is what pays.
+func TestForwardableProviderEnv_MoonshotBYOKBeatsTheAmbientKey(t *testing.T) {
+	t.Setenv("MOONSHOT_API_KEY", "moonshot-platform-key")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant-key"},
+	})
+	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["MOONSHOT_API_KEY"] != "moonshot-tenant-key" {
+		t.Errorf("MOONSHOT_API_KEY = %q, want the tenant's own key", env["MOONSHOT_API_KEY"])
+	}
+}
