@@ -310,7 +310,24 @@ func (s *speller) scalar(f spec.Form, values []string, what string, n *yaml.Node
 		if n.Style == 0 && isIdent(n.Value) {
 			return n.Value, true
 		}
-		return q(n.Value), true
+		body := n.Value
+		switch n.Style {
+		case yaml.LiteralStyle, yaml.FoldedStyle:
+			// A prompt written in place is a text of the document like any
+			// other, read as a declared prompt's body is: the block's final
+			// line break is the scalar's, not the author's — clip keeps
+			// exactly it, keep (`|+`) keeps it and the author's trailing
+			// blank lines after it, which stay; a quoted body's newline is
+			// the author's. And a block scalar is read as the scanner read
+			// it (blockBreaks), or two authored lines reach the model
+			// joined by an invisible separator.
+			body = strings.TrimSuffix(body, "\n")
+			var ok bool
+			if body, ok = s.blockBreaks(what, n, body); !ok {
+				return "", false
+			}
+		}
+		return q(body), true
 	case spec.Enum:
 		if tag == "!!null" {
 			s.refuse(n, what+" takes one of "+strings.Join(values, ", ")+", got nothing")
