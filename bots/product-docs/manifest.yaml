@@ -40,14 +40,25 @@ version: 1.3.0
 ## is an index row; `CONCEALED_EXCLUSION` asks for prose of its OWN,
 ## sharing vocabulary with the reason the net records, once per hole (a
 ## row of dots is length without words, and one sentence cannot answer
-## for two); the anchorless marker has a CEILING
-## (`coverage_max_anchorless`, default 0) and the exclusions chapter,
-## anchored by its role, spends nothing; the exclusions title is matched
-## WHOLE ("Les exclusions de garantie" no longer opens the chapter of
-## holes); an inventory-prefixed token is verified WHEREVER it sits, and
-## only an ambiguous inferred vocabulary (bare digits) falls back to the
-## citing line — visibly, as `entry_ids_degraded`, with
-## `coverage_entry_id_pattern` recommended for any numeric net. A TAIL
+## for two, and a summary line naming two holes no longer locks the
+## second out of its own paragraph); the anchorless marker has a CEILING
+## (`coverage_max_anchorless`, default 2) which the anchor refusal
+## HONOURS — it offers the marker only while headroom remains instead of
+## naming a remedy the ceiling takes back, and never asks for a bigger
+## ceiling (a launch var outside the writeable set); the exclusions
+## chapter, anchored by its role, spends nothing, and a sub-heading
+## repeating the declared token no longer closes the chapter early; the
+## exclusions title is matched WHOLE ("Les exclusions de garantie" no
+## longer opens the chapter of holes); and a REFERENCE IS WHAT THE PAGE SAYS
+## IS ONE — `coverage_citation_open` + token +
+## `coverage_citation_close` (`[[ref:001]]`), never a code span. The
+## gate infers nothing in either direction: every citation is verified
+## wherever it sits (an invented screen alone on its line is refused)
+## and nothing else is ever looked at (an interface label, a file name,
+## an inline `404` stay prose). That replaces a (length, character-class)
+## shape inference no setting could settle — tightened it let an
+## invention through, loosened it ordered the campaign to delete
+## reader-facing prose. A TAIL
 ## WILDCARD (`/dashboard/**`) proves nothing on EITHER side — cited by a
 ## page or declared by the route table, one predicate governs both;
 ## `coverage_routes_file` is

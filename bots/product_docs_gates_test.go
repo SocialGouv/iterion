@@ -1882,47 +1882,48 @@ print('ok')
 // three-digit entry ids, which is one campaign's convention.
 
 type coverageOut struct {
-	OK               bool             `json:"coverage_ok"`
-	NetPresent       bool             `json:"net_present"`
-	Causes           []map[string]any `json:"causes"`
-	CauseCount       int              `json:"cause_count"`
-	Total            int              `json:"features_total"`
-	Documented       int              `json:"features_documented"`
-	Exclusions       int              `json:"exclusions_total"`
-	Named            int              `json:"exclusions_named"`
-	Chapters         int              `json:"chapters"`
-	Anchorless       int              `json:"chapters_unanchored_declared"`
-	AnchorlessMax    int              `json:"chapters_anchorless_max"`
-	EntryIDsDegraded bool             `json:"entry_ids_degraded"`
-	NetUnproven      bool             `json:"net_unproven"`
-	CountsLine       string           `json:"counts_line"`
-	RoutesTotal      int              `json:"routes_declared"`
-	Degraded         bool             `json:"routes_degraded"`
-	OracleUsed       string           `json:"oracle_dir_used"`
-	Log              string           `json:"log"`
+	OK            bool             `json:"coverage_ok"`
+	NetPresent    bool             `json:"net_present"`
+	Causes        []map[string]any `json:"causes"`
+	CauseCount    int              `json:"cause_count"`
+	Total         int              `json:"features_total"`
+	Documented    int              `json:"features_documented"`
+	Exclusions    int              `json:"exclusions_total"`
+	Named         int              `json:"exclusions_named"`
+	Chapters      int              `json:"chapters"`
+	Anchorless    int              `json:"chapters_unanchored_declared"`
+	AnchorlessMax int              `json:"chapters_anchorless_max"`
+	NetUnproven   bool             `json:"net_unproven"`
+	CountsLine    string           `json:"counts_line"`
+	RoutesTotal   int              `json:"routes_declared"`
+	Degraded      bool             `json:"routes_degraded"`
+	OracleUsed    string           `json:"oracle_dir_used"`
+	Log           string           `json:"log"`
 }
 
-// fixtureAnchorlessCeiling is what the SHARED fixtures need: the method
-// chapter they carry declares it restitutes nothing, and two tests add one of
-// their own. The production default is 0 — an escape hatch with no ceiling is
-// the rule — and TestProductDocsCoverageGateCapsAnchorlessChapters pins it.
-const fixtureAnchorlessCeiling = "3"
+// shippedAnchorlessCeiling is the DEFAULT the bundle ships. The fixtures run
+// at it, deliberately: a bench that has to loosen the shipped ceiling to pass
+// is a bench measuring a product nobody runs.
+const shippedAnchorlessCeiling = "2"
 
 func coverageCommand(t *testing.T, ws, productDir, oraclePath string) string {
 	t.Helper()
-	return coverageCommandWith(t, ws, productDir, oraclePath, defaultExclusionsToken, "")
+	return coverageCommandWith(t, ws, productDir, oraclePath, defaultExclusionsToken)
 }
 
-// coverageCommandWith exposes the two declared identifiers a product may
-// override: the exclusions-chapter token (the pages are not written in the
-// gate's language) and the corpus-id pattern (which replaces the shape
-// inference with an exact rule).
-func coverageCommandWith(t *testing.T, ws, productDir, oraclePath, exclToken, entryPattern string) string {
+// coverageCommandWith exposes the declared exclusions-chapter token: the pages
+// are not written in the gate's language.
+func coverageCommandWith(t *testing.T, ws, productDir, oraclePath, exclToken string) string {
 	t.Helper()
-	return coverageCommandCapped(t, ws, productDir, oraclePath, exclToken, entryPattern, fixtureAnchorlessCeiling)
+	return coverageCommandCapped(t, ws, productDir, oraclePath, exclToken, shippedAnchorlessCeiling)
 }
 
-func coverageCommandCapped(t *testing.T, ws, productDir, oraclePath, exclToken, entryPattern, maxAnchorless string) string {
+func coverageCommandCapped(t *testing.T, ws, productDir, oraclePath, exclToken, maxAnchorless string) string {
+	t.Helper()
+	return coverageCommandFull(t, ws, productDir, oraclePath, exclToken, maxAnchorless, citeOpen, citeClose, "routes.txt")
+}
+
+func coverageCommandFull(t *testing.T, ws, productDir, oraclePath, exclToken, maxAnchorless, open, close, routes string) string {
 	t.Helper()
 	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "coverage_check"), map[string]string{
 		"vars.workspace_dir":               ws,
@@ -1930,13 +1931,24 @@ func coverageCommandCapped(t *testing.T, ws, productDir, oraclePath, exclToken, 
 		"input.oracle_path":                oraclePath,
 		"vars.coverage_exclusions_heading": exclToken,
 		"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
-		"vars.coverage_routes_file":        "routes.txt",
-		"vars.coverage_entry_id_pattern":   entryPattern,
+		"vars.coverage_routes_file":        routes,
+		"vars.coverage_citation_open":      open,
+		"vars.coverage_citation_close":     close,
 		"vars.coverage_placeholders":       defaultPlaceholders,
 		"vars.coverage_min_prose":          "60",
 		"vars.coverage_max_anchorless":     maxAnchorless,
 	})
 }
+
+// The shipped citation syntax. A reference is what the page SAYS is one; a
+// code span is prose, whatever it looks like.
+const (
+	citeOpen  = "[[ref:"
+	citeClose = "]]"
+)
+
+// ref writes a citation the way a page does.
+func ref(token string) string { return citeOpen + token + citeClose }
 
 const (
 	coverageCorpus = `{"entries": [
@@ -1965,21 +1977,22 @@ const (
 const (
 	coverageHome = "# The product\n" +
 		"\n" +
-		"## The landing page — `/` (`001`)\n" +
+		"## The landing page — [[ref:/]] [[ref:001]]\n" +
 		"\n" +
-		"`home.landing` is the first screen a visitor sees (`001`): it carries\n" +
-		"the sign-in call to action and nothing else.\n" +
+		"[[ref:home.landing]] [[ref:001]] is the first screen a visitor sees: it\n" +
+		"carries the sign-in call to action and nothing else.\n" +
 		"\n" +
-		"## The item list — `/dashboard/items` (`026`)\n" +
+		"## The item list — [[ref:/dashboard/items]] [[ref:026]]\n" +
 		"\n" +
-		"The manager lands here — `items.list`, entry `026` — and reads twenty rows.\n" +
-		"Paging is `items.list.paging` (`027`), twenty rows per page\n" +
-		"(`/dashboard/items?page=2`).\n" +
+		"The manager lands here — [[ref:items.list]] [[ref:026]] — and reads twenty rows.\n" +
+		"Paging is [[ref:items.list.paging]] [[ref:027]], twenty rows per page\n" +
+		"([[ref:/dashboard/items?page=2]]).\n" +
 		"\n" +
-		"## One item — `/dashboard/items/{id}` (`039`)\n" +
+		"## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]\n" +
 		"\n" +
-		"`items.detail` (`039`) shows one item in full: every field the manager\n" +
-		"filled in, the history of its changes and the actions still open to them.\n" +
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n" +
+		"manager filled in, the history of its changes and the actions still open\n" +
+		"to them.\n" +
 		"\n" +
 		"## How this page was built <!--no-anchor-->\n" +
 		"\n" +
@@ -1988,7 +2001,7 @@ const (
 		"\n" +
 		"## Exclusions\n" +
 		"\n" +
-		"- `menu.logout` — signing out tears the session down without showing a " +
+		"- [[ref:menu.logout]] — signing out tears the session down without showing a " +
 		"screen of its own, so the net never captures it and this documentation " +
 		"does not describe it.\n"
 )
@@ -2077,7 +2090,7 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			want: "GAP -- items.list.paging",
 			sabotage: func(t *testing.T, ws string) {
 				mutate(t, ws, "docs/demo/README.md",
-					"Paging is `items.list.paging` (`027`), twenty rows per page\n", "")
+					"Paging is [[ref:items.list.paging]] [[ref:027]], twenty rows per page\n", "")
 			},
 		},
 		{
@@ -2087,15 +2100,15 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			want: "GAP -- items.detail",
 			sabotage: func(t *testing.T, ws string) {
 				mutate(t, ws, "docs/demo/README.md",
-					"`items.detail` (`039`) shows one item in full:",
-					"`items.detail` shows one item in full:\nIts reference is `039`,")
+					"[[ref:items.detail]] [[ref:039]] shows one item in full:",
+					"[[ref:items.detail]] shows one item in full:\nIts reference is [[ref:039]],")
 			},
 		},
 		{
 			name: "CONCEALED_EXCLUSION: the exclusion is no longer named at all",
 			want: "CONCEALED_EXCLUSION -- menu.logout",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/exclusions.md", "- `menu.logout` — signing out", "- signing out")
+				mutate(t, ws, "docs/demo/exclusions.md", "- [[ref:menu.logout]] — signing out", "- signing out")
 			},
 		},
 		{
@@ -2103,10 +2116,10 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			want: "CONCEALED_EXCLUSION -- menu.logout",
 			sabotage: func(t *testing.T, ws string) {
 				mutate(t, ws, "docs/demo/exclusions.md",
-					"- `menu.logout` — signing out tears the session down without showing a "+
+					"- [[ref:menu.logout]] — signing out tears the session down without showing a "+
 						"screen of its own, so the net never captures it and this documentation "+
 						"does not describe it.",
-					"- `menu.logout` — see above.")
+					"- [[ref:menu.logout]] — see above.")
 			},
 		},
 		{
@@ -2114,10 +2127,10 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			want: "CONCEALED_EXCLUSION -- menu.logout",
 			sabotage: func(t *testing.T, ws string) {
 				mutate(t, ws, "docs/demo/exclusions.md",
-					"- `menu.logout` — signing out tears the session down without showing a "+
+					"- [[ref:menu.logout]] — signing out tears the session down without showing a "+
 						"screen of its own, so the net never captures it and this documentation "+
 						"does not describe it.",
-					"- `menu.logout` — TODO: write down why this one sits outside the perimeter, later on.")
+					"- [[ref:menu.logout]] — TODO: write down why this one sits outside the perimeter, later on.")
 			},
 		},
 		{
@@ -2132,17 +2145,17 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 		},
 		{
 			name: "PHANTOM_DOC: an invented corpus entry",
-			want: "the entry 999 is cited and DOES NOT EXIST",
+			want: "the reference 999 is CITED and",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page (`999`)")
+				mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page ([[ref:999]])")
 			},
 		},
 		{
 			name: "PHANTOM_DOC: an inventory id nobody inventoried",
-			want: "the id items.invented is cited and IS NOT in the inventory",
+			want: "the reference items.invented is CITED and",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/README.md", "the actions still open to them.",
-					"the actions still open to them, and so does `items.invented`.")
+				mutate(t, ws, "docs/demo/README.md", "the actions still open",
+					"the actions [[ref:items.invented]] still open")
 			},
 		},
 		{
@@ -2150,23 +2163,23 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			name: "PHANTOM_DOC: a path the application does not serve, in a title",
 			want: "the path /dashboard/invented is NEITHER a declared route NOR a corpus entry path",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/README.md", "## The item list — `/dashboard/items` (`026`)",
-					"## The item list — `/dashboard/invented` (`026`)")
+				mutate(t, ws, "docs/demo/README.md", "## The item list — [[ref:/dashboard/items]] [[ref:026]]",
+					"## The item list — [[ref:/dashboard/invented]] [[ref:026]]")
 			},
 		},
 		{
 			name: "PHANTOM_DOC: a filter the net never exercises",
 			want: "the parameter sort of /dashboard/items?sort=name is observed on NO corpus entry",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/README.md", "(`/dashboard/items?page=2`)",
-					"(`/dashboard/items?page=2`, `/dashboard/items?sort=name`)")
+				mutate(t, ws, "docs/demo/README.md", "([[ref:/dashboard/items?page=2]])",
+					"([[ref:/dashboard/items?page=2]], [[ref:/dashboard/items?sort=name]])")
 			},
 		},
 		{
 			name: "UNANCHORED_CHAPTER: a title stripped of every reference",
 			want: "UNANCHORED_CHAPTER",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)", "## One item")
+				mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]", "## One item")
 			},
 		},
 		{
@@ -2244,8 +2257,8 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			sabotage: func(t *testing.T, ws string) {
 				writeFile(t, ws, ".golden-master/routes.txt",
 					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /{slug}\nGET /**\n")
-				mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
-					"## One item — `/dashboard/invented` (`039`)")
+				mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+					"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
 			},
 		},
 		{
@@ -2259,8 +2272,8 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			sabotage: func(t *testing.T, ws string) {
 				writeFile(t, ws, ".golden-master/routes.txt",
 					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/**\n")
-				mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
-					"## One item — `/dashboard/invented` (`039`)")
+				mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+					"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
 			},
 		},
 	}
@@ -2293,14 +2306,14 @@ func TestProductDocsCoverageGateRefusesAnIndexTable(t *testing.T) {
 	// Every feature, every entry, every path — and not one sentence.
 	writeFile(t, ws, "docs/demo/README.md", "# The product\n"+
 		"\n"+
-		"## Index — `/` (`001`)\n"+
+		"## Index — [[ref:/]] [[ref:001]]\n"+
 		"\n"+
 		"| feature | entry | path |\n"+
 		"|---|---|---|\n"+
-		"| `home.landing` | `001` | `/` |\n"+
-		"| `items.list` | `026` | `/dashboard/items` |\n"+
-		"| `items.list.paging` | `027` | `/dashboard/items?page=2` |\n"+
-		"| `items.detail` | `039` | `/dashboard/items/{id}` |\n")
+		"| [[ref:home.landing]] | [[ref:001]] | [[ref:/]] |\n"+
+		"| [[ref:items.list]] | [[ref:026]] | [[ref:/dashboard/items]] |\n"+
+		"| [[ref:items.list.paging]] | [[ref:027]] | [[ref:/dashboard/items?page=2]] |\n"+
+		"| [[ref:items.detail]] | [[ref:039]] | [[ref:/dashboard/items/{id}]] |\n")
 	got := runCoverage(t, ws)
 	if got.OK {
 		t.Fatalf("a table of anchors was blessed as an exhaustive documentation:\n%s", got.Log)
@@ -2326,17 +2339,17 @@ func TestProductDocsCoverageGateVerifiesAnInventedReferenceAnywhere(t *testing.T
 	ws := newCoverageFixture(t)
 	writeFile(t, ws, "docs/demo/more.md", "# More screens "+defaultNoAnchorMarker+"\n"+
 		"\n"+
-		"The reporting screen `items.reporting` shows the month as the manager left it.\n"+
+		"The reporting screen [[ref:items.reporting]] shows the month as the manager left it.\n"+
 		"\n"+
-		"The export screen `items.exporting` writes the year to a file for the auditor.\n"+
+		"The export screen [[ref:items.exporting]] writes the year to a file for the auditor.\n"+
 		"\n"+
-		"The archive screen `items.archiving` hides what nobody consults any more.\n")
+		"The archive screen [[ref:items.archiving]] hides what nobody consults any more.\n")
 	got := runCoverage(t, ws)
 	if got.OK {
 		t.Fatalf("three invented screens, one per sentence, were blessed:\n%s", got.Log)
 	}
 	for _, name := range []string{"items.reporting", "items.exporting", "items.archiving"} {
-		if !strings.Contains(got.Log, "the id "+name+" is cited and IS NOT in the inventory") {
+		if !strings.Contains(got.Log, "the reference "+name+" is CITED and") {
 			t.Fatalf("the invented reference %s was not verified on its own line:\n%s", name, got.Log)
 		}
 	}
@@ -2351,7 +2364,7 @@ func TestProductDocsCoverageGateCapsAnchorlessChapters(t *testing.T) {
 		t.Helper()
 		var got coverageOut
 		runJSON(t, coverageCommandCapped(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
-			defaultExclusionsToken, "", cap), &got)
+			defaultExclusionsToken, cap), &got)
 		return got
 	}
 	ws := newCoverageFixture(t)
@@ -2361,7 +2374,7 @@ func TestProductDocsCoverageGateCapsAnchorlessChapters(t *testing.T) {
 	if got.OK {
 		t.Fatalf("the declared ceiling of 0 let a chapter through:\n%s", got.Log)
 	}
-	if !strings.Contains(got.Log, "DECLARE they restitute no reference and the ceiling is 0") {
+	if !strings.Contains(got.Log, "DECLARE they restitute no reference and at most 0 may") {
 		t.Fatalf("the refusal does not name the ceiling:\n%s", got.Log)
 	}
 	if got := run(ws, "1"); !got.OK {
@@ -2372,7 +2385,7 @@ func TestProductDocsCoverageGateCapsAnchorlessChapters(t *testing.T) {
 		t.Fatalf("counts = %d declared / ceiling %d, want 1 and 0", got.Anchorless, got.AnchorlessMax)
 	}
 	// Marking one more chapter costs: at the same ceiling it is refused.
-	mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
 		"## One item "+defaultNoAnchorMarker)
 	if got := run(ws, "1"); got.OK {
 		t.Fatalf("a second declaration was free at a ceiling of 1:\n%s", got.Log)
@@ -2403,9 +2416,9 @@ func TestProductDocsCoverageGateRefusesACopiedExclusionProse(t *testing.T) {
 		"\n"+
 		"## Exclusions\n"+
 		"\n"+
-		"- `menu.logout` — signing out tears the session down without showing a screen "+
+		"- [[ref:menu.logout]] — signing out tears the session down without showing a screen "+
 		"of its own, so the net never captures it.\n"+
-		"- `menu.language` — the language switch changes no served content, so the corpus "+
+		"- [[ref:menu.language]] — the language switch changes no served content, so the corpus "+
 		"captures nothing of it either.\n")
 	if got := runCoverage(t, ws); !got.OK {
 		t.Fatalf("two exclusions, each with its own prose, were refused:\n%s", got.Log)
@@ -2420,8 +2433,8 @@ func TestProductDocsCoverageGateRefusesACopiedExclusionProse(t *testing.T) {
 		"\n"+
 		"## Exclusions\n"+
 		"\n"+
-		"- `menu.logout`"+shared+
-		"- `menu.language`"+shared)
+		"- [[ref:menu.logout]]"+shared+
+		"- [[ref:menu.language]]"+shared)
 	got := runCoverage(t, ws)
 	if got.OK {
 		t.Fatalf("one sentence answered for two different holes:\n%s", got.Log)
@@ -2435,8 +2448,8 @@ func TestProductDocsCoverageGateRefusesACopiedExclusionProse(t *testing.T) {
 		"\n"+
 		"## Exclusions\n"+
 		"\n"+
-		"- `menu.logout` — "+strings.Repeat(".", 70)+"\n"+
-		"- `menu.language` — "+strings.Repeat("-_", 40)+"\n")
+		"- [[ref:menu.logout]] — "+strings.Repeat(".", 70)+"\n"+
+		"- [[ref:menu.language]] — "+strings.Repeat("-_", 40)+"\n")
 	got = runCoverage(t, ws)
 	if got.OK {
 		t.Fatalf("a row of punctuation passed for written prose:\n%s", got.Log)
@@ -2447,12 +2460,122 @@ func TestProductDocsCoverageGateRefusesACopiedExclusionProse(t *testing.T) {
 		"\n"+
 		"## Exclusions\n"+
 		"\n"+
-		"- `menu.logout` — pour mémoire, rien de particulier à signaler ici pour ce point précis.\n"+
-		"- `menu.language` — the language switch changes no served content, so the corpus "+
+		"- [[ref:menu.logout]] — pour mémoire, rien de particulier à signaler ici pour ce point précis.\n"+
+		"- [[ref:menu.language]] — the language switch changes no served content, so the corpus "+
 		"captures nothing of it either.\n")
 	got = runCoverage(t, ws)
 	if got.OK || !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout") {
 		t.Fatalf("prose that shares not one word with the recorded reason was accepted:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateKeepsTheExclusionsChapterOpenUnderSubHeadings: a
+// sub-heading repeating the declared token used to RE-ANCHOR the chapter at
+// its own deeper level; the next sibling at that depth then satisfied
+// `level <= exc_level` and closed the whole chapter, so every exclusion named
+// after it read as concealed — a convergence term no rewrite of the prose can
+// satisfy, and the run burns its remaining passes.
+func TestProductDocsCoverageGateKeepsTheExclusionsChapterOpenUnderSubHeadings(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"### Exclusions\n"+
+		"\n"+
+		"A first group, split out for the reader.\n"+
+		"\n"+
+		"### Limites connues "+defaultNoAnchorMarker+"\n"+
+		"\n"+
+		"- "+ref("menu.logout")+" — signing out tears the session down without showing a "+
+		"screen of its own, so the net never captures it and this documentation does not describe it.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a sub-heading repeating the declared token closed the exclusions chapter early:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateStopsOfferingASpentMarker: the anchor refusal
+// NAMES the marker as its remedy, and the ceiling then refuses the marked
+// chapter — two UNANCHORED_CHAPTER causes ping-ponging until `max_passes`, and
+// the ceiling's own remedy (a launch var) is outside the writeable set. A
+// refusal must never offer what the next gate takes back.
+func TestProductDocsCoverageGateStopsOfferingASpentMarker(t *testing.T) {
+	requireGitPython(t)
+	run := func(ws, cap string) coverageOut {
+		t.Helper()
+		var got coverageOut
+		runJSON(t, coverageCommandCapped(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+			defaultExclusionsToken, cap), &got)
+		return got
+	}
+	// The fixture already spends one declaration on its method chapter.
+	// Strip a chapter's anchor: at a ceiling of 2 there is headroom, and the
+	// marker is a legitimate remedy.
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]", "## One item")
+	got := run(ws, "2")
+	if got.OK {
+		t.Fatalf("an unanchored chapter passed:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "declaration(s) left of 2") {
+		t.Fatalf("with headroom, the refusal does not offer the marker:\n%s", got.Log)
+	}
+	// At a ceiling of 1 the single declaration is already spent: the refusal
+	// must ask for an ANCHOR, name no marker, and never ask for a bigger
+	// ceiling — that is an operator decision, not a repair this run can make.
+	got = run(ws, "1")
+	if got.OK {
+		t.Fatalf("an unanchored chapter passed at a spent ceiling:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "ALL SPENT") {
+		t.Fatalf("with no headroom, the refusal does not say the hatch is full:\n%s", got.Log)
+	}
+	for _, forbidden := range []string{"declare it restitutes none", "raise the ceiling"} {
+		if strings.Contains(got.Log, forbidden) {
+			t.Fatalf("the refusal still offers %q, which the ceiling takes back:\n%s", forbidden, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateFindsAnExclusionItsOwnLine: the rule broke on the
+// FIRST qualifying line, then the one-prose-per-hole check refused it if an
+// earlier exclusion had claimed it. A legitimate summary line naming two holes
+// therefore made the second one UNFIXABLE — its own dedicated paragraph
+// further down was never looked at, and the refusal asked for prose the page
+// had already written.
+func TestProductDocsCoverageGateFindsAnExclusionItsOwnLine(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", strings.Replace(coverageInventory,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"}`,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"},
+  {"feature": "menu.language",
+   "reason": "the language switch changes no served content, so the corpus captures nothing"}`, 1))
+	// A summary line names BOTH holes — legitimate writing — and each then
+	// gets its own paragraph. The summary is read first; it must not lock the
+	// second exclusion out of the paragraph written for it.
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"Two screens sit outside: "+ref("menu.logout")+" and "+ref("menu.language")+" — the session "+
+		"teardown and the language switch, neither of which the corpus captures.\n"+
+		"\n"+
+		"- "+ref("menu.logout")+" — signing out tears the session down without showing a screen "+
+		"of its own, so the net never captures it.\n"+
+		"\n"+
+		"- "+ref("menu.language")+" — the language switch changes no served content, so the corpus "+
+		"captures nothing of it either.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a summary line naming two holes locked the second one out of its own paragraph:\n%s", got.Log)
+	}
+	if got.Named != 2 {
+		t.Fatalf("exclusions named = %d, want 2", got.Named)
 	}
 }
 
@@ -2479,8 +2602,8 @@ func TestProductDocsCoverageGateMatchesTheWholeExclusionsTitle(t *testing.T) {
 func TestProductDocsCoverageGateRefusesACitedTailWildcard(t *testing.T) {
 	requireGitPython(t)
 	ws := newCoverageFixture(t)
-	mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
-		"## One item — `/dashboard/**` (`039`)")
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item — [[ref:/dashboard/**]] [[ref:039]]")
 	got := runCoverage(t, ws)
 	if got.OK {
 		t.Fatalf("a cited tail wildcard claimed every screen below it and passed:\n%s", got.Log)
@@ -2508,10 +2631,11 @@ func TestProductDocsCoverageGateConfinesTheRoutesFile(t *testing.T) {
 			"vars.coverage_exclusions_heading": defaultExclusionsToken,
 			"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
 			"vars.coverage_routes_file":        bad,
-			"vars.coverage_entry_id_pattern":   "",
+			"vars.coverage_citation_open":      citeOpen,
+			"vars.coverage_citation_close":     citeClose,
 			"vars.coverage_placeholders":       defaultPlaceholders,
 			"vars.coverage_min_prose":          "60",
-			"vars.coverage_max_anchorless":     fixtureAnchorlessCeiling,
+			"vars.coverage_max_anchorless":     shippedAnchorlessCeiling,
 		})
 		runExpectingFailure(t, cmd, "absolute path or a dot-dot escape")
 	}
@@ -2553,8 +2677,8 @@ func TestProductDocsCoverageGateReadsAnAbsentExclusionsKeyAsEmpty(t *testing.T) 
 	// No `exclusions` key at all: this product has no hole to declare.
 	writeFile(t, ws, ".golden-master/feature-coverage.json",
 		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}]}`)
-	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — `/checkout/pay` (`checkout-pay`)\n\n"+
-		"`payment/card` is the only means of payment a customer may use, recorded as `checkout-pay`, "+
+	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — "+ref("/checkout/pay")+" "+ref("checkout-pay")+"\n\n"+
+		ref("payment/card")+" "+ref("checkout-pay")+" is the only means of payment a customer may use, "+
 		"and the order is confirmed on the same screen.\n")
 	got := runCoverage(t, ws)
 	if !got.OK {
@@ -2587,7 +2711,7 @@ func TestProductDocsCoverageGateIgnoresFencedSamples(t *testing.T) {
 			"\n"+
 			"```sh\n"+
 			"# Fetch the invented page\n"+
-			"curl `/dashboard/invented` `999` `made.up.id`\n"+
+			"curl [[ref:/dashboard/invented]] [[ref:999]]\n"+
 			"```\n")
 	got := runCoverage(t, ws)
 	if !got.OK {
@@ -2625,7 +2749,7 @@ func TestProductDocsCoverageGateScopesTheChapterToItsPage(t *testing.T) {
 	// chapter, so a leaked chapter state would survive into it.
 	writeFile(t, ws, "docs/demo/b-annex.md",
 		"## Extra notes "+defaultNoAnchorMarker+"\n\n"+
-			"- `menu.logout` — signing out tears the session down without showing a "+
+			"- [[ref:menu.logout]] — signing out tears the session down without showing a "+
 			"screen of its own, so the net never captures it and this page mentions it only in passing.\n")
 	got := runCoverage(t, ws)
 	if got.OK {
@@ -2647,7 +2771,7 @@ func TestProductDocsCoverageGateFoldsTheDeclaredToken(t *testing.T) {
 		t.Run(token, func(t *testing.T) {
 			ws := newCoverageFixture(t)
 			var got coverageOut
-			runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), token, ""), &got)
+			runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), token), &got)
 			if !got.OK {
 				t.Fatalf("the declared token %q never matched the chapter it names:\n%s", token, got.Log)
 			}
@@ -2657,71 +2781,125 @@ func TestProductDocsCoverageGateFoldsTheDeclaredToken(t *testing.T) {
 	ws := newCoverageFixture(t)
 	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions", "## Périmètre exclu")
 	var got coverageOut
-	runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "PÉRIMÈTRE EXCLU", ""), &got)
+	runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "PÉRIMÈTRE EXCLU"), &got)
 	if !got.OK {
 		t.Fatalf("an accented declared token never matched its accented heading:\n%s", got.Log)
 	}
 }
 
-// TestProductDocsCoverageGateDoesNotRefuseOrdinaryProse: a code span that
-// merely RESEMBLES a corpus id is not a citation. With a three-digit net any
-// inline `404` or `250` would otherwise be a blocking PHANTOM_DOC — and
-// because this gate is a convergence term, the campaign is told to fix
-// exactly those causes, so it would delete reader-facing prose to go green.
-// Co-location is what turns a resemblance into a citation.
-func TestProductDocsCoverageGateDoesNotRefuseOrdinaryProse(t *testing.T) {
+// TestProductDocsCoverageGateCitesOrDoesNot is the bench that decides, and it
+// asserts BOTH directions on the SAME fixture. Two earlier rounds oscillated
+// between a false green (an invented screen alone on its line was never
+// verified) and a false red (an ordinary code span refused as a corpus entry
+// that does not exist), because the gate GUESSED from a token's shape which of
+// the two it was. A bench that tests one direction only is what let that
+// oscillate: each round fixed the direction its bench measured and broke the
+// other.
+//
+// A reference is now what the page SAYS is one. So:
+//   - every citation is verified WHEREVER it sits, with nothing else on the
+//     line — no false green;
+//   - nothing that is not a citation is ever looked at — no false red.
+func TestProductDocsCoverageGateCitesOrDoesNot(t *testing.T) {
 	requireGitPython(t)
+
+	// ── direction 1: ordinary prose is NEVER a reference ────────────────
+	// Each of these was measured to redden the shape inference: `Mot de
+	// passe` and `package.json` share (12, {letters, punctuation}) with
+	// `checkout-pay`; `404` and `250` share (3, {digits}) with `001`.
+	prose := "# Questions " + defaultNoAnchorMarker + "\n\n" +
+		"## What if the item is gone " + defaultNoAnchorMarker + "\n\n" +
+		"The server answers `404` and the list shows `250` rows at most.\n" +
+		"The `Mot de passe` field is never pre-filled, `package.json` is not shipped,\n" +
+		"and a `user-profile` block is out of scope here.\n"
 	ws := newCoverageFixture(t)
-	writeFile(t, ws, "docs/demo/faq.md",
-		"# Questions "+defaultNoAnchorMarker+"\n\n"+
-			"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
-			"The server answers `404` and the list shows `250` rows at most.\n")
+	writeFile(t, ws, "docs/demo/faq.md", prose)
 	got := runCoverage(t, ws)
 	if !got.OK {
-		t.Fatalf("ordinary prose was read as a citation — the campaign would be told to delete it:\n%s", got.Log)
+		t.Fatalf("ordinary prose was read as a citation — coverage_ok is a convergence term, so the campaign would be ordered to delete reader-facing text:\n%s", got.Log)
 	}
-	// The fallback is a DEGRADATION and says so: a three-digit vocabulary is
-	// one ordinary prose shares, and `coverage_entry_id_pattern` ends it.
-	if !got.EntryIDsDegraded || !strings.Contains(got.Log, "BARE DIGITS") {
-		t.Fatalf("the narrowed entry check is invisible: entry_ids_degraded=%v\n%s", got.EntryIDsDegraded, got.Log)
+	for _, span := range []string{"404", "250", "Mot de passe", "package.json", "user-profile"} {
+		if strings.Contains(got.Log, span) {
+			t.Fatalf("the gate even NAMED the ordinary code span %q:\n%s", span, got.Log)
+		}
 	}
-	// The same token ON A CITING LINE is a citation, and is still refused.
-	mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page (`404`)")
+
+	// ── direction 2: a citation is verified wherever it sits ────────────
+	// Same fixture, same page, same tokens — marked as citations this time.
+	// Each sits alone on its line, citing nothing else: the case that used
+	// to pass, because verification rode on co-location.
+	for _, token := range []string{"404", "Mot de passe", "package.json", "user-profile", "items.reporting"} {
+		t.Run("cited: "+token, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			writeFile(t, ws, "docs/demo/faq.md", "# Questions "+defaultNoAnchorMarker+"\n\n"+
+				"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
+				"The screen "+ref(token)+" answers the question and nothing else does.\n")
+			got := runCoverage(t, ws)
+			if got.OK {
+				t.Fatalf("an invented reference alone on its line was never verified:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, "the reference "+token+" is CITED and") {
+				t.Fatalf("the refusal does not name the invented citation %q:\n%s", token, got.Log)
+			}
+		})
+	}
+
+	// ...and a citation of something the net DOES hold stays green in the
+	// same position, so the refusal above is about existence, not about
+	// being cited alone.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/faq.md", "# Questions "+defaultNoAnchorMarker+"\n\n"+
+		"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
+		"The screen "+ref("039")+" answers the question and nothing else does.\n")
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("a citation of an entry the corpus holds was refused:\n%s", got.Log)
+	}
+	// An empty citation names nothing and is refused rather than ignored.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/faq.md", "# Questions "+defaultNoAnchorMarker+"\n\n"+
+		"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
+		"The screen "+citeOpen+citeClose+" answers nothing at all here.\n")
 	got = runCoverage(t, ws)
-	if got.OK || !strings.Contains(got.Log, "the entry 404 is cited and DOES NOT EXIST") {
-		t.Fatalf("a look-alike token on a line that is already citing references slipped through:\n%s", got.Log)
+	if got.OK || !strings.Contains(got.Log, "an EMPTY citation") {
+		t.Fatalf("an empty citation was read as no citation:\n%s", got.Log)
 	}
 }
 
-// TestProductDocsCoverageGateHonoursADeclaredIDPattern: a product whose prose
-// carries look-alike tokens declares its corpus-id spelling and the inference
-// stops entirely — the check becomes exact rather than wider.
-func TestProductDocsCoverageGateHonoursADeclaredIDPattern(t *testing.T) {
+// TestProductDocsCoverageGateNeedsItsCitationSyntax: with no way to recognise a
+// reference the gate would read every page as citing nothing — a GAP per
+// feature at best, a silent pass at worst. Undeclared is a named refusal, and
+// its repair is a launch var, so it stops the run.
+func TestProductDocsCoverageGateNeedsItsCitationSyntax(t *testing.T) {
 	requireGitPython(t)
 	ws := newCoverageFixture(t)
-	mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page (`404`, `entry-nope`)")
-	run := func(pattern string) coverageOut {
-		t.Helper()
-		var got coverageOut
-		runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), defaultExclusionsToken, pattern), &got)
-		return got
+	for _, tc := range []struct{ name, open, close string }{
+		{"no opening token", "", citeClose},
+		{"no closing token", citeOpen, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runExpectingFailure(t, coverageCommandFull(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+				defaultExclusionsToken, shippedAnchorlessCeiling, tc.open, tc.close, "routes.txt"),
+				"the citation syntax is not declared")
+		})
 	}
-	got := run("^entry-")
-	if got.OK {
-		t.Fatalf("a token matching the DECLARED pattern and absent from the corpus was not refused:\n%s", got.Log)
+	// A docs repo already using [[...]] picks another spelling, and the same
+	// pages written with it are read the same way.
+	other := strings.NewReplacer(citeOpen, "<<ref:", citeClose, ">>")
+	for _, f := range []string{"docs/demo/README.md", "docs/demo/exclusions.md"} {
+		b, err := os.ReadFile(filepath.Join(ws, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ws, f), []byte(other.Replace(string(b))), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if strings.Contains(got.Log, "the entry 404") {
-		t.Fatalf("the declared pattern did not REPLACE the shape inference — 404 does not match ^entry-:\n%s", got.Log)
+	var got coverageOut
+	runJSON(t, coverageCommandFull(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+		defaultExclusionsToken, shippedAnchorlessCeiling, "<<ref:", ">>", "routes.txt"), &got)
+	if !got.OK {
+		t.Fatalf("a declared citation syntax other than the default was not honoured:\n%s", got.Log)
 	}
-	if !strings.Contains(got.Log, "the entry entry-nope is cited and DOES NOT EXIST") {
-		t.Fatalf("the declared pattern did not catch its own spelling:\n%s", got.Log)
-	}
-	// A pattern that does not compile is a NAMED refusal, never a traceback —
-	// and its repair is a launch var, outside the writeable set, so it stops
-	// the run instead of ordering the campaign to fix what it cannot touch.
-	runExpectingFailure(t,
-		coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), defaultExclusionsToken, "^[0-9"),
-		"does not compile")
 }
 
 // TestProductDocsCoverageGateRefusesAStaleInventoryReference: the inventory
@@ -2764,8 +2942,8 @@ func TestProductDocsCoverageGateRefusesACitedCatchAll(t *testing.T) {
 	for _, catchAll := range []string{"/**", "/{slug}", "/:id"} {
 		t.Run(catchAll, func(t *testing.T) {
 			ws := newCoverageFixture(t)
-			mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
-				"## One item — `"+catchAll+"` (`039`)")
+			mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+				"## One item — "+ref(catchAll)+" [[ref:039]]")
 			got := runCoverage(t, ws)
 			if got.OK {
 				t.Fatalf("a placeholder-only citation passed — it matches every path and restitutes none:\n%s", got.Log)
@@ -2791,8 +2969,8 @@ func TestProductDocsCoverageGateRefusesACitedCatchAll(t *testing.T) {
 func TestProductDocsCoverageGateNamesTheRepairInItsHeadingLine(t *testing.T) {
 	requireGitPython(t)
 	ws := newCoverageFixture(t)
-	mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
-		"## One item\n\nThe chapter body cites `items.detail` and `039` all the same.")
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item\n\nThe chapter body cites [[ref:items.detail]] and [[ref:039]] all the same.")
 	got := runCoverage(t, ws)
 	if got.OK {
 		t.Fatalf("a chapter anchored only in its body satisfied the rule:\n%s", got.Log)
@@ -2989,8 +3167,8 @@ func TestProductDocsCoverageGateDegradesVisiblyWithoutRoutes(t *testing.T) {
 	}
 	// Degraded is not disabled: an invented path is still refused, and the
 	// message says the check was narrower than it should have been.
-	mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
-		"## One item — `/dashboard/invented` (`039`)")
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
 	got = runCoverage(t, ws)
 	if got.OK {
 		t.Fatalf("the degraded check went GREEN on an invented path — a degraded gate that refuses nothing is a disabled one:\n%s", got.Log)
@@ -3001,9 +3179,8 @@ func TestProductDocsCoverageGateDegradesVisiblyWithoutRoutes(t *testing.T) {
 }
 
 // TestProductDocsCoverageGateReadsItsVocabularyFromTheNet: `001` is ONE
-// campaign's convention. A net numbering its entries differently must be read
-// the same way — the ids and their shape come off corpus.json, the inventory
-// prefixes off feature-coverage.json, and neither is written into the gate.
+// campaign's convention. A net naming its entries differently is read exactly
+// the same way — the gate never learns an id vocabulary, it reads citations.
 func TestProductDocsCoverageGateReadsItsVocabularyFromTheNet(t *testing.T) {
 	requireGitPython(t)
 	ws := t.TempDir()
@@ -3011,26 +3188,24 @@ func TestProductDocsCoverageGateReadsItsVocabularyFromTheNet(t *testing.T) {
 		`{"entries": [{"id": "checkout-pay", "method": "GET", "path": "/checkout/pay"}]}`)
 	writeFile(t, ws, ".golden-master/feature-coverage.json",
 		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}], "exclusions": []}`)
-	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — `/checkout/pay` (`checkout-pay`)\n\n"+
-		"`payment/card` (`checkout-pay`) is the only means of payment a customer may\n"+
-		"use, and the order is confirmed on that same screen without a further step.\n")
+	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — "+ref("/checkout/pay")+" "+ref("checkout-pay")+"\n\n"+
+		ref("payment/card")+" "+ref("checkout-pay")+" is the only means of payment a customer\n"+
+		"may use, and the order is confirmed on that same screen without a further step.\n")
 	got := runCoverage(t, ws)
 	if !got.OK {
 		t.Fatalf("the gate did not read the net's own vocabulary:\n%s", got.Log)
 	}
-	// This vocabulary is DISTINCTIVE — nothing in prose looks like
-	// `checkout-pay` — so the entry check is not degraded and a citation is
-	// verified wherever it sits.
-	if got.EntryIDsDegraded {
-		t.Fatalf("a distinctive corpus vocabulary was read as ambiguous:\n%s", got.Log)
-	}
-	// A token with the SAME shape as a real entry id, which the corpus does
-	// not carry, is caught — on a line citing NOTHING else, because the
-	// vocabulary leaves no room for doubt.
+	// A CITATION the corpus does not carry is caught on a line citing nothing
+	// else — and the same token as an ordinary code span on the same page is
+	// not, because only a citation is a reference.
 	writeFile(t, ws, "docs/demo/q.md", "# Refunds\n\nThe refund screen is recorded as `checkout-ref` and nothing else.\n")
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("a code span sharing the corpus vocabulary was refused:\n%s", got.Log)
+	}
+	writeFile(t, ws, "docs/demo/q.md", "# Refunds\n\nThe refund screen is recorded as "+ref("checkout-ref")+" and nothing else.\n")
 	got = runCoverage(t, ws)
-	if got.OK || !strings.Contains(got.Log, "the entry checkout-ref is cited and DOES NOT EXIST") {
-		t.Fatalf("an entry-shaped citation the corpus does not carry slipped through:\n%s", got.Log)
+	if got.OK || !strings.Contains(got.Log, "the reference checkout-ref is CITED and") {
+		t.Fatalf("a citation the corpus does not carry slipped through:\n%s", got.Log)
 	}
 }
 

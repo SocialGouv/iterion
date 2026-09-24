@@ -129,9 +129,9 @@ silence:
 | cause | what it catches |
 |---|---|
 | `PHANTOM_DOC` | a documented screen the net never saw: a cited corpus entry that does not exist, an inventory id nobody inventoried, a path that is neither a declared route nor a corpus entry path, a query parameter the corpus never observes on that path |
-| `GAP` | a covered feature no line documents — **one** line must carry its identifier **and** one of its own entries, **and** that line or its paragraph must READ: prose outside the references, `coverage_min_prose` characters of it. Co-presence is an index row, and an index restitutes nothing |
+| `GAP` | a covered feature no line documents — **one** line must **cite** its identifier **and** one of its own entries, **and** that line or its paragraph must READ: prose outside the citations, `coverage_min_prose` characters of it. Co-presence is an index row, and an index restitutes nothing |
 | `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, with prose of its **own** (a bare identifier or a `TODO` is silence under a label; a row of dots is length without words; one sentence cannot answer for two holes, and the prose has to share vocabulary with the reason the net records) |
-| `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) naming no reference **in its heading line itself** — a reference in the chapter body does not anchor it — and not declaring that it restitutes none; plus the ceiling, `coverage_max_anchorless`, on how many chapters may declare it at all |
+| `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) citing no reference **in its heading line itself** — a citation in the chapter body does not anchor it — and not declaring that it restitutes none; plus the ceiling, `coverage_max_anchorless`, on how many chapters may declare it at all |
 | `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, an empty route table |
 
 That last row is the point of the design, not a detail: a guard written
@@ -168,25 +168,26 @@ Three things the gate deliberately does not assume:
   **net**, not by the var — with no net there is no second gate to
   contradict, and `page_lint` is byte for byte, value for value, the
   node it was before this gate existed.
-- **The anchor vocabulary.** Inventory identifiers are recognised by the
-  prefixes the inventory itself uses and corpus ids by the shape the
-  corpus itself uses. `001` is one campaign's convention, not a rule.
+- **What a reference IS.** Nothing is inferred, in either direction. A
+  reference is what the page *says* is one —
+  `coverage_citation_open` + token + `coverage_citation_close`,
+  `[[ref:001]]` by default — and a code span is prose, whatever it looks
+  like. So every citation is verified **wherever it sits**, with nothing
+  else on its line (an invented screen described one sentence at a time
+  is refused), and nothing that is not a citation is ever looked at (an
+  interface label, a file name, an inline `404` stay prose). The token
+  is a corpus entry id, an inventory feature id, or a path (leading
+  slash); anything else the net does not hold is a `PHANTOM_DOC`.
 
-  Two questions, kept apart. **Co-location** — is this token on a line
-  that is already citing? — decides whether a resemblance is a citation
-  to *credit*. It does **not** decide whether a token must be
-  *verified*: an inventory-prefixed token (`items.detail`) claims to
-  name a feature wherever it sits and is checked everywhere, and so is
-  a token matching a declared `coverage_entry_id_pattern`. Only an
-  **ambiguous inferred** vocabulary falls back to the citing line: a
-  corpus numbering its entries with bare digits shares its whole
-  vocabulary with ordinary prose (an inline `404`, a count of `250`),
-  and since this gate is a convergence term the campaign would be told
-  to delete reader-facing text to go green. That fallback is a visible
-  degradation — `entry_ids_degraded`, named in the log — and
-  **declaring `coverage_entry_id_pattern` is recommended for any net
-  with numeric identifiers**: it ends the ambiguity and every citation
-  is then checked wherever it sits.
+  This replaces a shape inference — `(length, character classes)` — that
+  two review rounds could not settle: tightened, it let an invented
+  reference alone on its line through; loosened, it refused
+  `` `Mot de passe` `` and `` `package.json` `` as corpus entries that do
+  not exist, and since this gate is a convergence term the campaign was
+  ordered to delete reader-facing prose. **There is no setting that
+  closes both directions**; an explicit marker has no middle. Both ends
+  of the syntax are declared, so a docs repo already using `[[…]]` picks
+  another spelling; either one empty is a refusal that stops the run.
 - **A catch-all route.** A route made only of placeholders (`/{slug}`,
   `/**`) matches every path and proves none: for a path only such a
   route covers, the corpus reference is the only evidence. The rule cuts
@@ -218,15 +219,17 @@ degradation attached. Lifting it takes one artifact on the
 golden-master side — the `routes_probe` stdout committed as
 `<oracle_dir>/routes.txt`.
 
-**The escape hatch has a ceiling.** The anchor refusal *names* the
-marker that satisfies it, so an agent reading `fail_log` can answer
-every complaint by marking the chapter — an exception with no ceiling
-is the rule. `coverage_max_anchorless` (default **0**) caps how many
-chapters may declare they restitute nothing; above it the declarations
-are themselves the refusal, and each marked chapter is printed whether
-the run is red or green. The chapter that **opens** the declared
-exclusions chapter is anchored by its role: it needs no marker and
-spends nothing.
+**The escape hatch has a ceiling, and the refusal knows it.**
+`coverage_max_anchorless` (default **2**, what the bundle's own
+editorial model needs) caps how many chapters may declare they
+restitute nothing; above it the declarations are themselves the
+refusal. The anchor refusal offers the marker **only while headroom
+remains** — otherwise it asks for an anchor and says the hatch is full.
+A refusal that named a remedy the ceiling then took back made the two
+causes ping-pong until `max_passes`, and the ceiling's own remedy is a
+launch var the run may not write, so the refusals never ask for one. The
+chapter that **opens** the declared exclusions chapter is anchored by
+its role: it needs no marker and spends nothing.
 
 The counts are not private to the gate either. `counts_line` —
 features documented, exclusions named, chapters declared anchorless and
@@ -338,11 +341,11 @@ computed is **never** reported as an empty one.
 | `oracle_dir` | `.golden-master` | Where the golden-master net lives, looked up in the workspace then in each source clone. Both `feature-coverage.json` and `corpus.json` present ⇒ `coverage_check` is armed; empty disables the lookup |
 | `coverage_exclusions_heading` | `exclusions` | Title a heading must carry, WHOLE and anchored, to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive) |
 | `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token, and only when a net is present; empty disables the escape hatch |
-| `coverage_max_anchorless` | `0` | Ceiling on the chapters that may declare they restitute nothing. The exclusions chapter is anchored by its role and never counts |
+| `coverage_max_anchorless` | `2` | Ceiling on the chapters that may declare they restitute nothing. The anchor refusal offers the marker only while headroom remains. The exclusions chapter is anchored by its role and never counts |
 | `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
-| `coverage_entry_id_pattern` | `""` | Regex a code span must match to be read as a corpus entry id. Empty infers it from the shape the corpus itself uses. **Recommended for any net with numeric identifiers**: declaring it ends the ambiguity and every citation is verified wherever it sits |
+| `coverage_citation_open` / `coverage_citation_close` | `[[ref:` / `]]` | The citation syntax. A reference is what the page says is one; a code span is prose. Both are declared so a repo already using `[[…]]` can pick another spelling; either one empty is a refusal that stops the run |
 | `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page documents a feature or names an exclusion |
-| `coverage_min_prose` | `60` | Minimum prose characters, outside the references, on the line naming an exclusion and in the paragraph documenting a feature |
+| `coverage_min_prose` | `60` | Minimum prose characters, outside the citations, on the line naming an exclusion and in the paragraph documenting a feature |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/product-docs` | Out-of-tree scratch: the source clones + the promises ledger |
 | `max_passes` | `4` | Continuation-loop cap: the loop back to `scan_hints` is taken at most this many times, so a run makes up to `max_passes + 1` campaign passes |
