@@ -58,3 +58,23 @@ func TestAssessmentReadingAgentsHoldNoShell(t *testing.T) {
 		}
 	}
 }
+
+// THE ASSESSED REPOSITORY DOES NOT CHOOSE THE BINARIES. Provisioned, the
+// target's devbox.json is prepended to PATH ahead of the bundle's, so the
+// repository under assessment would pick the `python3` every tool node runs
+// under and the `yq` and `git` they call — packages it declares, flakes
+// included. This run reads the repository; it does not build it.
+func TestAssessmentDoesNotProvisionTheAssessedRepositorysToolchain(t *testing.T) {
+	pr := parseBotUnit("assessment/main.bot")
+	if pr.File == nil {
+		t.Fatal("parse produced no File")
+	}
+	compiled := ir.Compile(pr.File)
+	if compiled.Workflow == nil {
+		t.Fatal("compile produced no Workflow")
+	}
+	if got := compiled.Workflow.RepoDevbox; got != "off" {
+		t.Fatalf("repo_devbox = %q, want off: the assessed repository's declared toolchain would come "+
+			"first on the PATH this bundle's deterministic nodes resolve their interpreters from", got)
+	}
+}

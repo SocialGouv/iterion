@@ -3011,6 +3011,10 @@ tool contract_lint:
     GATE_PROBE_TIMEOUT_S = max(1, int({{vars.gate_probe_timeout_s}} or 120))
     GATE_PROBE_BUDGET_S = max(GATE_PROBE_TIMEOUT_S, 900)
 
+    # bash's own statuses for a command it could not find (127) or could not
+    # execute (126): the gate did not run, so it did not bite.
+    NOT_RUN_CODES = (126, 127)
+
     # The heads of a command that exits 0 whatever the tree holds. Listed for
     # the message they produce, never as the mechanism: see the probe below.
     VACUOUS_HEADS = ("true", ":", "exit", "echo", "printf", "/bin/true")
@@ -3473,11 +3477,13 @@ tool contract_lint:
                           "gate that is green before the lot begins is green after it whatever the "
                           "lot did: it cannot tell the work apart from its absence."
                    % "; ".join(verdicts))
-        elif isinstance(code, int):
-            # ONLY AN OBSERVED EXIT STATUS. A timeout and a failed spawn are
-            # both "not green", which is why they do not refuse the lot — but
-            # neither is a gate anybody SAW fail, and counting them would let a
-            # contract whose gates all hang report itself fully proven.
+        elif isinstance(code, int) and code not in NOT_RUN_CODES:
+            # ONLY AN OBSERVED FAILURE. A timeout, a failed spawn and a command
+            # the shell could not find or execute (126, 127) are all "not
+            # green", which is why they do not refuse the lot — but none is a
+            # gate anybody SAW fail. This run does not provision the target's
+            # toolchain, so "not found" is the common outcome of a real gate
+            # here, and counting it would report every such contract proven.
             out["gates_proven_red"] += 1
 
     # The sweep predicate, ALONE: a record already on the input tree satisfies
@@ -3873,9 +3879,20 @@ fail commit_failed:
 workflow assessment:
   entry: workspace_probe
 
-  ## No `sandbox:` block (ADR-082): the platform sandboxes by default. The
-  ## target's own toolchain comes from ITS repository; this bundle declares
-  ## only the two tools its deterministic nodes need.
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default.
+  ##
+  ## The TARGET's devbox.json is not provisioned: this run reads the
+  ## repository, it does not build it. Provisioned, the repository under
+  ## assessment would choose the binaries that come FIRST on PATH — the
+  ## `python3` every tool node of this bundle runs under, the `yq` and `git`
+  ## they call — through packages it declares, flakes included: code the
+  ## assessed repository supplies, run with this run's environment, which is
+  ## the defect this bundle refuses for its skills. The bundle's own
+  ## devbox.json declares what its deterministic nodes need. What the gate
+  ## probe loses is the target's toolchain: a gate whose command is not found
+  ## is left unproven, never counted as seen to fail.
+  repo_devbox: off
+
   budget:
     max_parallel_branches: 1
     max_duration: "3h"

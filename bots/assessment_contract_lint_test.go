@@ -100,6 +100,16 @@ func contractRepo(t *testing.T, contract, outcomes string) string {
 			t.Fatal(err)
 		}
 	}
+	// The build the fixture's gates call, failing on the tree the programme
+	// starts from: a gate seen to FAIL, for a reason the probe can observe —
+	// not a command the shell could not find.
+	if err := os.MkdirAll(filepath.Join(dir, "ci"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ci", "build.sh"),
+		[]byte("echo 'the build does not pass on this tree yet' >&2\nexit 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	gittest.Run(t, dir, "add", "-A")
 	gittest.Run(t, dir, "commit", "-qm", "contract")
 	return dir
@@ -747,18 +757,31 @@ func TestAssessmentGatesProvenRedCountsOnlyObservedFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("a gate whose command does not exist is not counted as proven", func(t *testing.T) {
-		absent := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
-			`      - "a-command-that-is-on-no-path"`, 1)
-		out := lintContract(t, absent, goodOutcomes)
-		if !assessmentBool(t, out, "ok") {
-			t.Fatalf("a gate invoking an absent binary was refused: %s", assessmentString(t, out, "reason"))
-		}
-		// bash reports 127, which IS an observed exit status: the gate bit.
-		if out["gates_proven_red"] != float64(2) {
-			t.Fatalf("gates_proven_red = %v, want 2", out["gates_proven_red"])
-		}
-	})
+	// The shell's own "not found" (127) and "not executable" (126) are not a
+	// gate failing: the gate did not run. The bundle does not provision the
+	// target's toolchain, so a real gate meets this more often than not here,
+	// and counting it would report such a contract fully proven.
+	for _, tc := range []struct{ name, gate string }{
+		{"a gate whose command does not exist is not counted as proven",
+			`      - "a-command-that-is-on-no-path"`},
+		{"a gate whose script cannot be executed is not counted as proven",
+			`      - "./ci/build.sh"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			absent := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`, tc.gate, 1)
+			if absent == aGoodContract {
+				t.Fatal("the mutation did not apply")
+			}
+			out := lintContract(t, absent, goodOutcomes)
+			if !assessmentBool(t, out, "ok") {
+				t.Fatalf("a gate that could not run was refused: %s", assessmentString(t, out, "reason"))
+			}
+			if out["gates_proven_red"] != float64(1) {
+				t.Fatalf("gates_proven_red = %v, want 1 — a gate the shell could not run was counted "+
+					"as a gate somebody saw fail", out["gates_proven_red"])
+			}
+		})
+	}
 }
 
 // THE PROBE RUNS AGENT-WRITTEN SHELL, so it runs it in an allowlisted

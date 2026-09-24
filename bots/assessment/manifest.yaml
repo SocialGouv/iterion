@@ -9,7 +9,10 @@ version: 0.1.2
 ## runner named is counted or refused; the sweep predicate is a whole command
 ## run alone on the input tree, and the gate probe runs in an empty home;
 ## "landed" is read from the tree HEAD names, and the commit is exactly the
-## artefact list; an absent bundle-owned skills directory is refused at entry.
+## artefact list; an absent bundle-owned skills directory is refused at entry;
+## the target repository's devbox.json is not provisioned (`repo_devbox: off`),
+## so the assessed repository does not choose the interpreter the bundle's
+## tool nodes run under; a gate that writes to the tree it checks is refused.
 ## 0.1.1 — the machine-readable `iterion:` blocks this bundle EXECUTES (the
 ## extractor scripts of each `stack-<id>.md`) and the measurement profile the
 ## published letter is a ratio against are read from the engine-owned copy of
