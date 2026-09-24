@@ -494,11 +494,23 @@ func TestAssessmentContractLintRefusesABlockedLotAndABlockedDependency(t *testin
 // different hands and anchored by the same line.
 func TestAssessmentContractLintRefusesAProposalIdThatIsAlsoALotId(t *testing.T) {
 	requireAssessmentTools(t, "python3", "git", "yq", "bash")
-	collided := strings.Replace(aGoodContract, "  - id: datastore-engine", "  - id: L2", 1)
-	collided = strings.Replace(collided, "proposal:datastore-engine", "proposal:L2", 1)
-	if collided == aGoodContract {
-		t.Fatal("the mutation did not apply")
+	// The proposal is moved BELOW the lots on purpose. With it above, the
+	// block-shape check finds the proposal's `- id: L2` first and refuses for
+	// a different reason — which is itself the finding, and leaves this guard
+	// unexercised. Below the lots, only the collision is left to catch it.
+	proposals := `proposals:
+  - id: datastore-engine
+    question: "which engine does the second datastore lot target?"
+    options: ["the incumbent", "the alternative"]
+    recommendation: "the alternative, on the support horizon in the brief"
+
+`
+	if !strings.Contains(aGoodContract, proposals) {
+		t.Fatal("the proposals block is not where this test expects it")
 	}
+	collided := strings.Replace(aGoodContract, proposals, "", 1)
+	collided += "\n" + strings.Replace(proposals, "  - id: datastore-engine", "  - id: L2", 1)
+	collided = strings.Replace(collided, "proposal:datastore-engine", "proposal:L2", 1)
 	out := lintContract(t, collided, goodOutcomes)
 	if assessmentBool(t, out, "ok") {
 		t.Fatal("an id naming both a proposal and a lot was accepted")
@@ -524,8 +536,10 @@ func TestAssessmentContractLintChecksTheContractAgainstTheBrief(t *testing.T) {
 		if assessmentBool(t, out, "ok") {
 			t.Fatal("a target the brief decided, carried by no lot, was accepted — the programme drops the decision silently")
 		}
-		if !strings.Contains(assessmentString(t, out, "reason"), "the runtime") {
-			t.Errorf("the refusal does not name the dropped target: %s", assessmentString(t, out, "reason"))
+		if !strings.Contains(assessmentString(t, out, "reason"), "silently drops") {
+			t.Errorf("the refusal is not the one for a dropped target — the case is being caught "+
+				"by a neighbouring rule, and this guard is unexercised: %s",
+				assessmentString(t, out, "reason"))
 		}
 	})
 

@@ -167,6 +167,33 @@ func TestAssessmentCommitRefusesAnIgnoredDeliverable(t *testing.T) {
 		})
 	}
 
+	// The one the residue check cannot see. A hook that REWRITES a staged
+	// document leaves it dirty, and `git status --porcelain` catches that; a
+	// hook that DELETES it leaves nothing at all — no dirt, no tracked file,
+	// no diff — and the commit lands without it while the command returns
+	// zero. Only verifying each artefact BY NAME in what landed catches this.
+	t.Run("a hook that deletes a document leaves nothing to be dirty", func(t *testing.T) {
+		ws := assessedWorkspace(t)
+		hooks := filepath.Join(ws, ".git", "hooks")
+		if err := os.MkdirAll(hooks, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		hook := "#!/bin/sh\ngit rm -q --cached -- docs/assessment/01-modernisation-programme.md\n" +
+			"rm -f docs/assessment/01-modernisation-programme.md\n"
+		if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out := assessmentCommit(t, ws)
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a document removed from the commit out from under the run was reported as " +
+				"landed — nothing was left dirty, and the return code was zero")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "01-modernisation-programme.md") {
+			t.Errorf("the refusal does not name the artefact that never landed: %s",
+				assessmentString(t, out, "reason"))
+		}
+	})
+
 	t.Run("a document the run reported and never wrote", func(t *testing.T) {
 		ws := assessedWorkspace(t)
 		if err := os.Remove(filepath.Join(ws, "docs", "assessment", "01-modernisation-programme.md")); err != nil {

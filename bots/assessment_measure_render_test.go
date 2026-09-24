@@ -76,6 +76,7 @@ func measureWithCoverage(t *testing.T, ws, scratch, surveyPath, floorPath,
 		"{{input.stacks_covered}}":     covered,
 		"{{input.coverage_degraded}}":  degraded,
 		"{{input.coverage_missing}}":   "[]",
+		"{{input.stacks_errored}}":     "[]",
 	})
 	if exit != 0 {
 		t.Fatalf("measure exited %d: %s", exit, stderr)
@@ -291,9 +292,21 @@ func TestAssessmentPublishedCoverageIsTheUnionNotTheAgentsFlag(t *testing.T) {
 		t.Fatalf("measure refused: %s", assessmentString(t, out, "reason"))
 	}
 	facts := assessmentString(t, out, "facts")
-	if !strings.Contains(facts, "confident") {
+	// On the UNSUPPORTED line specifically: `stack.detected` names it too, and
+	// a check that only asked whether the name appears anywhere would pass
+	// while the published gap read "none".
+	gap := ""
+	for _, line := range strings.Split(facts, "\n") {
+		if strings.HasPrefix(line, "stack.unsupported — ") {
+			gap = line
+		}
+	}
+	if gap == "" {
+		t.Fatalf("no stack.unsupported fact was published at all:\n%s", facts)
+	}
+	if !strings.Contains(gap, "confident") {
 		t.Fatalf("the published gap does not name the stack the runner could not cover — it is "+
-			"reading the agent's flag:\n%s", facts)
+			"reading the agent's flag: %s", gap)
 	}
 	if !strings.Contains(facts, "stack.coverage — the coverage of this measurement is DEGRADED") {
 		t.Errorf("the coverage gate's `degraded` verdict never reaches the document:\n%s", facts)
@@ -443,7 +456,10 @@ func TestAssessmentRenderRefusesATypedFigureAndAMisusedFact(t *testing.T) {
 			"{{input.plan_judgement}}": plan,
 			"{{input.open_questions}}": questions,
 		}, map[string]string{
-			"{{input.state_judgement}}": `"The repository carries " + "{" + "{fact:metric.first_party_lines}}."`,
+			// A VALID placeholder beside the wrong one: the field cites a
+			// measured fact, so the "cites no fact" rule is satisfied and only
+			// the brace-form rule is left to catch this.
+			"{{input.state_judgement}}": `"It carries [[fact:metric.first_party_lines]], and " + "{" + "{fact:metric.systems}} besides."`,
 		})
 		if exit != 0 {
 			t.Fatalf("render exited %d: %s", exit, stderr)

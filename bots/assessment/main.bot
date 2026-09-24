@@ -1914,6 +1914,10 @@ schema measure_input:
   stacks_covered: json
   coverage_degraded: bool
   coverage_missing: json
+  ## Stacks whose extractors ERRORED. An extractor that failed beside one that
+  ## worked leaves the stack covered and the measurement thinner, and that
+  ## difference is invisible in every table unless the document carries it.
+  stacks_errored: json
 
 ## measure — the published measurement, computed deterministically over the
 ## declared perimeter. It reads the measurement profile: metrics, canonical
@@ -1943,6 +1947,7 @@ tool measure:
     stacks_covered = {{input.stacks_covered}}
     coverage_degraded = {{input.coverage_degraded}}
     coverage_missing = {{input.coverage_missing}}
+    stacks_errored = {{input.stacks_errored}}
     profile_rel = {{vars.profile_path}}
     skills_dir = {{vars.bundle_skills_dir}}
 
@@ -2265,11 +2270,14 @@ tool measure:
                               % ", ".join(covered_ids)) if covered_ids else \
         "no stack was measured by an extractor"
     missing_outputs = [m for m in (coverage_missing or []) if isinstance(m, dict)]
+    errored = sorted({str(i) for i in (stacks_errored or []) if i})
     facts["stack.coverage"] = (
-        "the coverage of this measurement is DEGRADED: %s%s"
+        "the coverage of this measurement is DEGRADED: %s%s%s"
         % (("%s left unmeasured" % ", ".join(sorted(uncovered))) if uncovered else "no stack left unmeasured",
            ("; %s declared extractor output(s) did not land" % len(missing_outputs))
-           if missing_outputs else "")) if coverage_degraded else \
+           if missing_outputs else "",
+           ("; the extractors of %s reported an error" % ", ".join(errored)) if errored else "")) \
+        if coverage_degraded else \
         "every detected stack was measured by an extractor this bundle ships"
     facts["stack.extractor_outputs"] = plural(len(extractor_files), "extractor output")
     versions = ["%s %s" % (v.get("component"), v.get("version"))
@@ -2620,6 +2628,7 @@ tool render_plan:
     facts_path = {{input.facts_path}}
     lots = {{input.lots}}
     proposals = {{input.proposals}}
+    gates_proven_red = {{input.gates_proven_red}}
 
     out = {"ok": False, "code": "", "reason": "", "documents": []}
 
@@ -2652,6 +2661,8 @@ tool render_plan:
         "| | |",
         "|---|---|",
         "| lots declared | %d |" % (lots if isinstance(lots, int) else 0),
+        "| gates seen to FAIL on the tree the programme starts from | %d |"
+        % (gates_proven_red if isinstance(gates_proven_red, int) else 0),
         "| decisions left OPEN as proposals | %d |" % (proposals if isinstance(proposals, int) else 0),
         "| measured size | %s |" % facts.get("size.band", ""),
         "| stacks NOT covered by an extractor | %s |" % facts.get("stack.unsupported", ""),
@@ -2692,6 +2703,11 @@ schema render_plan_input:
   facts_path: string
   lots: int
   proposals: int
+  ## How many lots had their declared gate EXECUTED on the input tree and seen
+  ## to FAIL. Published because it is the count that says the programme is
+  ## verifiable: `lots` says how much was written, this says how much of it
+  ## can tell the work apart from its absence.
+  gates_proven_red: int
 
 fail render_refused:
   description: "the prose cited a fact the measurement never produced"
@@ -3552,7 +3568,8 @@ workflow assessment:
     stacks_unsupported: "{{outputs.inventory_health.stacks_unsupported}}",
     stacks_covered:     "{{outputs.inventory_health.stacks_covered}}",
     coverage_degraded:  "{{outputs.inventory_health.degraded}}",
-    coverage_missing:   "{{outputs.inventory_health.missing}}"
+    coverage_missing:   "{{outputs.inventory_health.missing}}",
+    stacks_errored:     "{{outputs.inventory_health.stacks_errored}}"
   }
 
   measure -> measurement_refused when not ok
@@ -3586,8 +3603,9 @@ workflow assessment:
   contract_lint -> contract_refused when not ok
   contract_lint -> render_plan when ok with {
     facts_path: "{{outputs.measure.facts_path}}",
-    lots:       "{{outputs.plan_draft.lots}}",
-    proposals:  "{{outputs.plan_draft.proposals}}"
+    lots:             "{{outputs.plan_draft.lots}}",
+    proposals:        "{{outputs.plan_draft.proposals}}",
+    gates_proven_red: "{{outputs.contract_lint.gates_proven_red}}"
   }
 
   render_plan -> plan_render_refused when not ok

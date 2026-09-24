@@ -636,6 +636,7 @@ func TestAssessmentAnOperatorProfileMayNotWearTheBundlesName(t *testing.T) {
 		"{{input.stacks_covered}}":     "[]",
 		"{{input.coverage_degraded}}":  "false",
 		"{{input.coverage_missing}}":   "[]",
+		"{{input.stacks_errored}}":     "[]",
 	})
 	if exit != 0 {
 		t.Fatalf("measure exited %d: %s", exit, stderr)
