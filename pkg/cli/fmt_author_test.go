@@ -102,6 +102,68 @@ func TestFmtToBotWritesTheBotADocumentStandsFor(t *testing.T) {
 	}
 }
 
+// --force replaces its destination whole, and says what that file carried
+// that the text replacing it does not: the .bot's comments and frontmatter
+// lines when a document writes it, the document's YAML comments when a
+// .bot does — named by count and the first, under --check as well; a
+// destination with none gets no note.
+func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
+	inTempWorkspace(t)
+	jp, _ := jsonPrinter()
+	bot := writeBot(t, "d/x.bot", "## owner: jo\n## tags: [x]\n\n# Why this bot exists.\ndsl: 2\n\nagent hello:\n  model: \"m\" # trailing\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
+	if _, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml: %v", err)
+	}
+	doc := "d/x.bot.yaml"
+	raw, err := os.ReadFile(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doc, []byte(strings.Replace(string(raw), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	said := func(res FmtResult, want string) bool {
+		for _, n := range res.Notices {
+			if strings.Contains(n, want) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, check := range []bool{true, false} {
+		res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Check: check, Printer: jp})
+		if check && !errors.Is(err, ErrFmtWouldChange) || !check && err != nil {
+			t.Fatalf("--to bot --force (check %v): %v", check, err)
+		}
+		if !said(res, "d/x.bot: --force replaces it whole — 4 comment line(s) it carries are not in what d/x.bot.yaml writes") || !said(res, "owner: jo") {
+			t.Fatalf("--to bot --force (check %v) replaced a commented .bot without saying so: %q", check, res.Notices)
+		}
+	}
+
+	// The other way: a document's YAML comment, replaced by what the .bot writes.
+	now, _ := os.ReadFile(doc)
+	if err := os.WriteFile(doc, append([]byte("# keep me\n"), now...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
+	if err != nil || !said(res, "d/x.bot.yaml: --force replaces it whole — 1 comment line(s) it carries are not in what d/x.bot writes (the first: # keep me)") {
+		t.Fatalf("--to yaml --force replaced a commented document without saying so: %v %q", err, res.Notices)
+	}
+
+	// Nothing carried, nothing said: the .bot now holds no comment.
+	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp}); err != nil {
+		t.Fatal(err)
+	}
+	now, _ = os.ReadFile(doc)
+	if err := os.WriteFile(doc, []byte(strings.Replace(string(now), "Say hello twice.", "Say hello thrice.", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
+	if err != nil || said(res, "--force replaces it whole") {
+		t.Fatalf("a note for a .bot that carried no comment: %v %q", err, res.Notices)
+	}
+}
+
 // A document whose program has no written .bot form (a profile-1 value with
 // no v1 form under a catalog long enough to put the directive out of the
 // lexer's window) is refused by --to bot, nothing written: the proof is the
@@ -306,6 +368,17 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 		if out, err := os.ReadFile(path + ".yaml"); err != nil || author.Parse(path+".yaml", out).HasErrors() {
 			t.Fatalf("the document of %s was not written, or does not read: %v\n%s", path, err, out)
 		}
+	}
+	// A prompt that includes a file resolves it beside the .bot, a file on
+	// disk: the proof reads the document back where the .bot is, not under
+	// the document's own name, which nothing has written yet.
+	writeBot(t, "r/rules.md", "Be brief.\n")
+	inc := writeBot(t, "r/include.bot", "dsl: 2\n\nprompt ask:\n  Say hello. {{include \"rules.md\"}}\n\nagent a:\n  model: \"m\"\n  system: ask\n\nworkflow w:\n  entry: a\n\n  a -> done\n")
+	if res, err := RunFmt(FmtOptions{Paths: []string{inc}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml of a .bot whose prompt includes a file beside it: %v %q", err, res.Refused)
+	}
+	if _, err := os.Stat("r/include.bot.yaml"); err != nil {
+		t.Fatalf("the document of a .bot with an include was not written: %v", err)
 	}
 
 	defer func(w func(*ast.File) ([]byte, error)) { writeDocument = w }(writeDocument)

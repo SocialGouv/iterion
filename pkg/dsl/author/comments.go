@@ -72,23 +72,23 @@ func Comments(src []byte) []string {
 
 // flowComments reads the comments inside flow collection n off the source
 // lines, in order, from its opening bracket to the one that closes it, as
-// yaml.v3's scanner reads them: a `#` outside a quoted scalar starts a
-// comment, to the end of its line, where a token may start — at the start
-// of a line, after a blank, a flow indicator or a closing quote; inside a
-// plain scalar (`a#b`) it is text. A quote opens a scalar only where a
-// scalar starts (after a bracket, a `,`, a `:` or an explicit key's `?`);
-// inside a plain one (`it's`) it is text.
+// yaml.v3's scanner reads them. Where a token may start, a `#` starts a
+// comment to the end of its line, a quote opens a quoted scalar, `:` and
+// `?` are indicators whatever follows them (in a flow collection), and any
+// other character starts a plain scalar. Inside a plain scalar a quote is
+// text (`it's`, `b:'c`), and so is a `#` with no blank before it (`a#b`);
+// the scalar ends at `,`, `?`, a bracket, or a `:` followed by a blank or
+// the end of its line, and goes on across blanks and line breaks otherwise.
 func flowComments(lines []string, n *yaml.Node) []string {
 	var out []string
-	depth, started := 0, false
-	var quote, prev rune // prev: the last rune outside a quote, blanks aside
+	depth, started, plain := 0, false, false
+	var quote rune
 	for li := n.Line - 1; li >= 0 && li < len(lines); li++ {
 		line := []rune(lines[li])
 		ci := 0
 		if li == n.Line-1 {
 			ci = max(n.Column-1, 0)
 		}
-		closedAt := -1 // where a quoted scalar closed on this line
 		for ; ci < len(line); ci++ {
 			r := line[ci]
 			switch {
@@ -97,7 +97,7 @@ func flowComments(lines []string, n *yaml.Node) []string {
 				case '\\':
 					ci++
 				case '"':
-					quote, prev, closedAt = 0, r, ci
+					quote = 0
 				}
 				continue
 			case quote == '\'':
@@ -105,40 +105,55 @@ func flowComments(lines []string, n *yaml.Node) []string {
 					if ci+1 < len(line) && line[ci+1] == '\'' {
 						ci++
 					} else {
-						quote, prev, closedAt = 0, r, ci
+						quote = 0
 					}
 				}
 				continue
 			case !started:
 				if r == '[' || r == '{' {
-					started, depth, prev = true, 1, r
+					started, depth = true, 1
 				}
 				continue
-			case (r == '"' || r == '\'') && strings.ContainsRune("[{,:", prev):
+			case r == ' ' || r == '\t':
+				continue
+			case r == '#' && (!plain || ci == 0 || line[ci-1] == ' ' || line[ci-1] == '\t'):
+				out = append(out, strings.TrimSpace(string(line[ci:])))
+				plain = false
+				ci = len(line)
+				continue
+			case plain && !endsPlain(line, ci):
+				continue
+			}
+			// A token starts at r, or r ends the plain scalar before it.
+			plain = false
+			switch r {
+			case '"', '\'':
 				quote = r
-			case r == '[' || r == '{':
+			case '[', '{':
 				depth++
-			case r == ']' || r == '}':
+			case ']', '}':
 				depth--
 				if depth == 0 {
 					return out
 				}
-			case r == '#' && (strings.TrimSpace(string(line[:ci])) == "" || strings.ContainsRune(" \t[]{},", line[ci-1]) || closedAt == ci-1):
-				// yaml.v3's scanner reads a `#` where a token may start as a
-				// comment — after a blank, a flow indicator or a closing
-				// quote; only inside a plain scalar is it text (`a#b`).
-				out = append(out, strings.TrimSpace(string(line[ci:])))
-				ci = len(line)
-				continue
-			case r == '?' && (ci+1 == len(line) || line[ci+1] == ' ' || line[ci+1] == '\t'):
-				// An explicit key's indicator: a scalar starts after it.
-				prev = ','
-				continue
-			}
-			if r != ' ' && r != '\t' {
-				prev = r
+			case ',', ':', '?':
+			default:
+				plain = true
 			}
 		}
 	}
 	return out
+}
+
+// endsPlain reports whether the rune at ci ends a plain scalar inside a
+// flow collection, as yaml.v3's scanner reads it: a flow indicator, `?`, or
+// a `:` followed by a blank or the end of its line.
+func endsPlain(line []rune, ci int) bool {
+	switch line[ci] {
+	case ',', '?', '[', ']', '{', '}':
+		return true
+	case ':':
+		return ci+1 == len(line) || line[ci+1] == ' ' || line[ci+1] == '\t'
+	}
+	return false
 }

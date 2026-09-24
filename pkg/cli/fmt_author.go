@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -124,6 +123,14 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 			res.refuse(dest, "is there and is not what "+path+" writes; --force overwrites it. Left as it is")
 			continue
 		default:
+			if there {
+				// --force replaces the file whole: what it carried and the
+				// text replacing it does not is said, not dropped in silence
+				// (under --check too — a check says what the write would do).
+				if n, first := replacedComments(opts.To, dest, existing, out); n > 0 {
+					res.Notices = append(res.Notices, fmt.Sprintf("%s: --force replaces it whole — %d comment line(s) it carries are not in what %s writes (the first: %s)", dest, n, path, first))
+				}
+			}
 			f.Changed = true
 			changed = true
 			if !opts.Check {
@@ -240,8 +247,11 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 		}
 		// The proof before the write: the document reads back — a value the
 		// writer spells and the reader refuses is refused here, not by the
-		// next validate — as the same program, beside the .bot.
-		back := author.Parse(abs+".yaml", out)
+		// next validate — as the same program. It is read under the .bot's
+		// own name: the document is not on disk yet, and an {{include}}
+		// resolves only beside a file that is (promptSourceDir); the .bot
+		// is, in the same directory. Its diagnostics are named as dest.
+		back := author.Parse(abs, out)
 		if back.HasErrors() {
 			return dest, nil, nil, fmt.Errorf("%w: cannot be written as a document: the document written does not read back: %s", canon.ErrRefused, diagnosticErrors(namedAs(back.Diagnostics, dest)))
 		}
@@ -261,7 +271,7 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 		carries := documentCarriesCatalog(out)
 		notices = append(notices, frontmatterNotices(path, pr.File, carries)...)
 		if n := commentsOutsideFrontmatter(pr.File, carries); n > 0 {
-			notices = append(notices, fmt.Sprintf("%s: %d comment line(s) are not represented in the document — a draft carries the catalog only, the .bot keeps them", path, n))
+			notices = append(notices, fmt.Sprintf("%s: %d comment line(s) are not represented in the document — a draft carries the catalog only; the .bot keeps them until `fmt --to bot --force` replaces it from the document", path, n))
 		}
 		return dest, out, notices, nil
 	}
@@ -302,16 +312,7 @@ func declarationMirror(f *ast.File) ([]byte, error) {
 		return nil, err
 	}
 	c.Profile = f.EffectiveProfile()
-	var declared, inline []*ast.PromptDecl
-	for _, p := range c.Prompts {
-		if p.Inline {
-			inline = append(inline, p)
-		} else {
-			declared = append(declared, p)
-		}
-	}
-	sort.Slice(inline, func(i, j int) bool { return inline[i].Name < inline[j].Name })
-	c.Prompts = append(declared, inline...)
+	c.Prompts = unparse.InlinePromptsLast(c.Prompts)
 	literalsByValue(reflect.ValueOf(c))
 	return ast.MarshalFile(c)
 }
@@ -411,7 +412,7 @@ func frontmatterNotices(path string, f *ast.File, carries bool) []string {
 		notes = append(notes, path+": "+why+" — the document carries no `catalog:`")
 	}
 	if len(extra) > 0 {
-		notes = append(notes, fmt.Sprintf("%s: %d key(s) of the frontmatter are not carried by `catalog:` (%s) — the document is a draft, the .bot keeps them", path, len(extra), strings.Join(extra, ", ")))
+		notes = append(notes, fmt.Sprintf("%s: %d key(s) of the frontmatter are not carried by `catalog:` (%s) — the document is a draft; the .bot keeps them until `fmt --to bot --force` replaces it from the document", path, len(extra), strings.Join(extra, ", ")))
 	}
 	return notes
 }
@@ -440,6 +441,61 @@ func documentCarriesCatalog(doc []byte) bool {
 // they are lost with the rest — the strict-escape directive aside (the
 // document says its profile with `dsl:`), and every comment a
 // declaration or an edge carries.
+// replacedComments counts the comment lines the file at dest carries that
+// the text replacing it does not — a .bot's `#` and `##` lines, frontmatter
+// included, or a document's YAML comments — and names the first, for the
+// note a --force write owes: it replaces the file whole.
+func replacedComments(to, dest string, existing, out []byte) (int, string) {
+	var had, kept []string
+	switch to {
+	case "bot":
+		had, kept = botCommentTexts(dest, existing), botCommentTexts(dest, out)
+	case "yaml":
+		had, kept = author.Comments(existing), author.Comments(out)
+	}
+	left := map[string]int{}
+	for _, c := range kept {
+		left[c]++
+	}
+	n, first := 0, ""
+	for _, c := range had {
+		if left[c] > 0 {
+			left[c]--
+			continue
+		}
+		if n == 0 {
+			first = c
+		}
+		n++
+	}
+	return n, first
+}
+
+// botCommentTexts is the text of every comment a .bot carries — the file's
+// own lines and those written around its declarations and edges — the
+// strict-escape directive aside: the writer decides that one.
+func botCommentTexts(name string, text []byte) []string {
+	f := parser.Parse(name, string(text)).File
+	var out []string
+	add := func(cs []*ast.Comment) {
+		for _, c := range cs {
+			if !parser.IsStrictEscapeDirective(c.Text) {
+				out = append(out, strings.TrimSpace(c.Text))
+			}
+		}
+	}
+	add(f.Comments)
+	for _, c := range ast.CommentCarriers(f) {
+		if c.Comments != nil {
+			add(*c.Comments)
+		}
+		for _, e := range c.Edges {
+			add(e.Comments)
+		}
+	}
+	return out
+}
+
 func commentsOutsideFrontmatter(f *ast.File, carries bool) int {
 	represented := 0
 	if carries {

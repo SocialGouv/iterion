@@ -875,6 +875,11 @@ func (s *speller) jsonText(what string, n *yaml.Node) (string, bool) {
 		case "!!float":
 			return s.number(what, n, textSite)
 		case "!!bool":
+			// A JSON value may be text: `True` is refused, as wherever a
+			// text is taken, never re-spelled `true`.
+			if !s.spelledAsTheBot(what, n, textSite) {
+				return "", false
+			}
 			b, _ := boolOf(n)
 			return strconv.FormatBool(b), true
 		case "!!null":

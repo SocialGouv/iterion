@@ -125,7 +125,7 @@
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 9 · 77 |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — | 1 · 44 |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — | 1 · 15 |
-| `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 4 · 4 |
+| `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 4 · 5 |
 | `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — | 2 · 12 |
 | `pkg/errtrack` | iterion's optional error-tracking seam. | — | 7 · 26 |
 | `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` | 3 · 16 |

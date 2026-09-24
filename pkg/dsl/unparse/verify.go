@@ -186,6 +186,7 @@ func reread(f *ast.File, text string) error {
 		// compile.
 		fa, fb := *f, *pr.File
 		fa.Profile, fb.Profile = fa.EffectiveProfile(), fb.EffectiveProfile()
+		fa.Prompts, fb.Prompts = InlinePromptsLast(fa.Prompts), InlinePromptsLast(fb.Prompts)
 		a, err := ast.MarshalFileWithoutComments(&fa)
 		if err != nil {
 			return fmt.Errorf("cannot compare the document: %w", err)
@@ -383,6 +384,27 @@ func checkFallbackNames(fbs []*ast.FallbackDecl) error {
 		}
 	}
 	return nil
+}
+
+// InlinePromptsLast is ps with the declared prompts first, in their order,
+// and the inline ones after them, sorted by name. An inline prompt is named
+// after its body and listed where its node is read — the writer puts
+// `system:` before `user:` and a group's nodes after the others, a document
+// may write them the other way — so its rank says nothing that a comparison
+// of two readings of one program should read; the node that uses it names
+// it. The slice is new, ps is left as it came.
+func InlinePromptsLast(ps []*ast.PromptDecl) []*ast.PromptDecl {
+	out := make([]*ast.PromptDecl, 0, len(ps))
+	var inline []*ast.PromptDecl
+	for _, p := range ps {
+		if p.Inline {
+			inline = append(inline, p)
+		} else {
+			out = append(out, p)
+		}
+	}
+	sort.SliceStable(inline, func(i, j int) bool { return inline[i].Name < inline[j].Name })
+	return append(out, inline...)
 }
 
 // canonicalPrompts is a shallow copy of f whose prompt bodies are in the

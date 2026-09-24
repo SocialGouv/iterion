@@ -109,8 +109,7 @@ func TestAValueYAMLReadsOtherwiseThanItIsWrittenIsRefused(t *testing.T) {
 		"a budget beyond every integer":           {budget, "1e19", "1", "YAML reads `1e19` as 10000000000000000000.0 — write `10000000000000000000.0`", []string{"10000000000000000000.0"}},
 		"a float var's default beyond integers":   {varDoc("float"), "1e19", "1.5", "YAML reads `1e19` as 10000000000000000000.0 — write `10000000000000000000.0`", []string{"10000000000000000000.0"}},
 		"a json var's default, a signed zero":     {varDoc("json"), "-0", "1", "YAML reads `-0` as 0 — write `0`, or quote the value if it is text", []string{"0", "'-0'"}},
-		"a json var's default, minus zero, octal": {varDoc("json"), "-00", "1", "YAML reads `-00` as 0 — write `0`, or quote the value if it is text", []string{"0", "'-00'"}},
-		"a budget with an exponent":               {budget, "1e2", "1", "YAML reads `1e2` as 100 — write `100`", []string{"100"}},
+		"a json var's default, minus zero, octal": {varDoc("json"), "-00", "1", "YAML reads `-00` as 0 — write `0`, or quote the value if it is text", []string{"0", "'-00'"}}, "a budget with an exponent": {budget, "1e2", "1", "YAML reads `1e2` as 100 — write `100`", []string{"100"}},
 		"a budget without its leading digit":      {budget, ".5", "1", "YAML reads `.5` as 0.5 — write `0.5`", []string{"0.5"}},
 		"a budget of minus zero":                  {budget, "-0.0", "1", "YAML reads `-0.0` as 0 — write `0`", []string{"0"}},
 		"a budget with a leading 0":               {budget, "01.5", "1", "YAML reads `01.5` as 1.5 — write `1.5`", []string{"1.5"}},
@@ -176,6 +175,9 @@ func TestAValueYAMLReadsOtherwiseThanItIsWrittenIsRefused(t *testing.T) {
 		"a preset of a string var, signed":          {preset("string"), "-10", "takes a non-negative integer: the .bot has no signed number, got -10 — quote the value if it is text", "'-10'", "x"},
 		"an int port's default, a signed zero":      {port("int"), "-0", "YAML reads `-0` as 0 — write `0`, or quote the value if it is text", "0", "1"},
 		"a float port's default, minus zero, octal": {port("float"), "-00", "YAML reads `-00` as 0 — write `0`, or quote the value if it is text", "0", "1"},
+		// A JSON value may be text: `True` inside one is refused, never
+		// re-spelled `true`.
+		"a bool inside a json port's default": {port("json"), "{a: True}", "YAML reads `True` as true — write `true`, or quote the value if it is text", "{a: 'True'}", "{a: true}"},
 	} {
 		errs := errorsOfDoc(tc.doc(tc.value))
 		if len(errs) != 1 || !strings.Contains(errs[0], "[E051]") || !strings.Contains(errs[0], tc.want) {
@@ -417,6 +419,16 @@ func TestCommentsAreListedInTheOrderTheyAreWritten(t *testing.T) {
 		"right after a bracket":         "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [# 1 kept\n      read_file, bash]\n",
 		"right after a closed quote":    "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [\"read_file\"# 1 kept\n      , bash]\n",
 		"a quote after an explicit key": "dsl: 2\ncontracts:\n  c:\n    version: 1\n    inputs:\n      n:\n        type: json\n        default: {? \"a #b\" : 1} # 1\n",
+		// A `:` with no blank after it is text inside a plain scalar, and
+		// the quote after it too; after a quoted key it is the indicator,
+		// and the quote after it opens a scalar.
+		"a quote after a colon in a plain":        "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [a, b:'c, # 1\n      d] # 2\n",
+		"a double quote after a colon in a plain": "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [a, b:\"c, # 1\n      d]\n",
+		"a permission pattern":                    "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    allow: [Bash(git log:'*), # 1\n      Read(**)]\n",
+		"a with value":                            "dsl: 2\nnodes:\n  - emit: e\n    event: ev\n    with: {a: b:'c, # 1\n      d: e}\n",
+		"a hash after a colon in a plain":         "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [a:#b, c] # 1\n",
+		"a hash after a plain word and a blank":   "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [a # 1\n      , b] # 2\n",
+		"a quote after a quoted key's colon":      "dsl: 2\nnodes:\n  - emit: e\n    event: ev\n    with: {\"a\":'b #c', d: e} # 1\n",
 	} {
 		got := Comments([]byte(src))
 		for i, c := range got {
