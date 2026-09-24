@@ -270,6 +270,25 @@ for collision, devbox and pause/resume rules.
    skill wins over a plugin skill and a
    [skill-library](skills-library.md) skill (precedence: bundle >
    plugin > library > hand-authored — ADR-059).
+
+   The same skills are ALSO written, verbatim, to
+   `<workDir>/.claude/iterion-skills/` — a copy the engine owns. That
+   directory is removed and refilled from the bundle on every mirror
+   pass (including for a run with no bundle), so it carries the
+   bundle's bytes under only the names the bundle ships, and no
+   collision policy applies to it. `${BUNDLE_SKILLS_DIR}` expands to
+   it, resolving to the in-container pathname when sandboxed.
+
+   Which one to read: an AGENT discovers skills under
+   `.claude/skills/`, where the workspace-wins rule is what lets an
+   operator customise one. A **tool node that parses a
+   machine-readable `iterion:` data block out of a skill** reads
+   `${BUNDLE_SKILLS_DIR}` instead — the workspace is a checkout of the
+   repository being worked on, so a file found under `.claude/skills/`
+   may be the bundle's or the repository's and nothing read back can
+   tell the two apart. A name the bundle does not ship has no file in
+   the owned copy, which is what makes "this name is not covered"
+   observable to the reader.
 2. **Prompts** in `prompts/*.md` are merged into the AST `prompts:`
    table **before** static validation runs, so node-level
    `system:`/`user:` references against bundle filenames type-check.

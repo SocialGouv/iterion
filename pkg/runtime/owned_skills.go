@@ -38,6 +38,15 @@ import (
 // runs before startSandbox on all three entry paths (Run, resumeRebuildState,
 // resumeFromFailure), so the pod's tar copy carries this directory already
 // written.
+//
+// Named residue: living in the workspace means a node that runs a shell
+// EARLIER in the same run can still rewrite it. What this removes is the
+// repository's own ability to supply the content — the path that needs no
+// node to misbehave and that travels in git. Closing the mid-run rewrite as
+// well takes one of two things, neither free: re-materialising the directory
+// before every tool node (on a copy-based driver that is one write-through
+// exec per skill file per node), or a read-only projection the kubernetes
+// driver cannot give (SupportsHostBindMounts=false).
 const ownedSkillsDirName = "iterion-skills"
 
 // OwnedSkillsDir returns the engine-owned bundle-skills directory for a

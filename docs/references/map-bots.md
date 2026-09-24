@@ -34,11 +34,11 @@
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 1 · 0 | 0.1.3 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 1 · 1 | 0.9.10 |
 | `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 1 · 8 | 2.0.2 |
-| `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 1 · 8 | 0.1.2 |
-| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.6 |
-| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 1 · 2 | 0.3.0 |
-| `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 1 · 11 | 0.1.2 |
-| `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 1 · 11 | 0.1.2 |
+| `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 1 · 8 | 0.1.3 |
+| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 1 · 25 | 0.1.7 |
+| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 1 · 2 | 0.3.1 |
+| `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 1 · 11 | 0.1.3 |
+| `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 1 · 11 | 0.1.3 |
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 1 · 4 | 2.4.0 |
 | `ultra11y` | 🦮 Ally | Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a pull-request mode. | 1 · 3 | 0.1.3 |
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 1 · 1 | 0.1.1 |
