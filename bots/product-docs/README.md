@@ -132,11 +132,28 @@ silence:
 | `GAP` | a covered feature no line documents — **one** line must carry its identifier **and** one of its own entries |
 | `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, with prose (a bare identifier or a `TODO` is silence under a label) |
 | `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) naming no reference **in its heading line itself** — a reference in the chapter body does not anchor it — and not declaring that it restitutes none |
-| `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, no `exclusions` key, an empty route table |
+| `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, an empty route table |
 
 That last row is the point of the design, not a detail: a guard written
 `if collection and …` is *disabled* exactly when the collection is
 empty, so each emptiness is decided out loud instead.
+
+**A cause whose repair lies outside the writeable set is a PRE-FLIGHT
+failure, never a term of convergence.** `scope_check` lets the campaign
+write `<product_dir>/**/*.md` and nothing else, so a complaint about the
+net, about a launch var or about the catalog is an order it is
+*forbidden* to obey: left in `fail_log` the two gates contradict each
+other and the run burns every pass. `coverage_check` therefore **stops
+the run**, naming every such cause, and the operator repairs the net
+where the net lives. The documentation-side refusals — a gap, a phantom,
+a concealed exclusion, an unanchored chapter, an empty product tree —
+stay convergence terms, because their repair is a `.md` file the
+campaign may write.
+
+An **absent** `exclusions` key is an empty list, which is how the net
+producer itself reads it (`coverage.get(key) or []`): a product with no
+hole to declare writes no key. Only a key that is *there* and mistyped
+is a refusal.
 
 Three things the gate deliberately does not assume:
 

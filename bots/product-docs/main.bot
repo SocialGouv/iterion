@@ -2303,17 +2303,24 @@ if not oracle:
     print(json.dumps({'coverage_ok': True, 'net_present': False, 'causes': [], 'cause_count': 0, 'features_total': 0, 'features_documented': 0, 'exclusions_total': 0, 'exclusions_named': 0, 'entries_cited': 0, 'paths_cited': 0, 'chapters': 0, 'chapters_unanchored_declared': 0, 'routes_declared': 0, 'routes_degraded': False, 'oracle_dir_used': '', 'log': ''}, ensure_ascii=False))
     raise SystemExit(0)
 causes = []
-def refuse(cause, where, detail):
-    causes.append({'cause': cause, 'where': where, 'detail': detail})
+def refuse(cause, where, detail, outside=False):
+    ## outside=True marks a cause whose REPAIR lands outside this run
+    ## writeable set. scope_check allows the campaign to write
+    ## <product_dir>/**/*.md and nothing else, so a complaint about the net,
+    ## about a launch var or about the catalog is an order it is forbidden to
+    ## obey: the two gates would contradict each other and the run would burn
+    ## every pass. Those are refused BEFORE the loop instead -- see the
+    ## pre-flight refusal below.
+    causes.append({'cause': cause, 'where': where, 'detail': detail, 'outside': outside})
 def load(path, what):
     if not os.path.isfile(path):
-        refuse('NET_UNREADABLE', path, what + ': file absent')
+        refuse('NET_UNREADABLE', path, what + ': file absent', True)
         return None
     try:
         with open(path, encoding='utf-8') as fh:
             return json.load(fh)
     except (OSError, ValueError) as exc:
-        refuse('NET_UNREADABLE', path, what + ': unreadable JSON -- ' + ' '.join(str(exc).split())[:200])
+        refuse('NET_UNREADABLE', path, what + ': unreadable JSON -- ' + ' '.join(str(exc).split())[:200], True)
         return None
 cov = load(os.path.join(oracle, 'feature-coverage.json'), 'the inventory feature-coverage.json')
 corpus = load(os.path.join(oracle, 'corpus.json'), 'the corpus corpus.json')
@@ -2327,23 +2334,31 @@ if corpus is not None:
 ## An if-collection-and-... guard is DISABLED on an empty collection: every loop
 ## below runs unguarded, and each emptiness is decided here, out loud.
 if not isinstance(features, list) or not features:
-    refuse('NET_UNREADABLE', 'feature-coverage.json', 'features is absent, empty or not a list -- with no inventory, completeness cannot be falsified: a refusal, not a vacuous pass')
+    refuse('NET_UNREADABLE', 'feature-coverage.json', 'features is absent, empty or not a list -- with no inventory, completeness cannot be falsified: a refusal, not a vacuous pass', True)
     features = []
+## An ABSENT exclusions key is an EMPTY LIST, which is how the net producer
+## itself reads it (golden-master validate_feature_coverage: coverage.get(key)
+## or []). A product that excludes nothing writes no key; refusing it would
+## refuse every such product for ever, and for a repair that lands in the net
+## -- a file this run is forbidden to write. Only a key that is THERE and
+## mistyped is a refusal.
+if exclusions is None:
+    exclusions = []
 if not isinstance(exclusions, list):
-    refuse('NET_UNREADABLE', 'feature-coverage.json', 'exclusions is absent or not a list -- the net no longer declares its holes, and a documentation with no declared hole lies by omission')
+    refuse('NET_UNREADABLE', 'feature-coverage.json', 'exclusions is present and is not a list -- the net no longer declares its holes in a readable shape, and a documentation with no declared hole lies by omission', True)
     exclusions = []
 if not isinstance(entries, list) or not entries:
-    refuse('NET_UNREADABLE', 'corpus.json', 'entries is absent, empty or not a list -- with no corpus no anchor exists: a refusal, not a vacuous pass')
+    refuse('NET_UNREADABLE', 'corpus.json', 'entries is absent, empty or not a list -- with no corpus no anchor exists: a refusal, not a vacuous pass', True)
     entries = []
 feature_names, entry_lists = [], {}
 for i, f in enumerate(features):
     name = f.get('feature') if isinstance(f, dict) else None
     if not isinstance(name, str) or not name.strip():
-        refuse('NET_UNREADABLE', 'features[' + str(i) + ']', 'inventory entry with no readable feature id')
+        refuse('NET_UNREADABLE', 'features[' + str(i) + ']', 'inventory entry with no readable feature id', True)
         continue
     name = name.strip()
     if name in entry_lists:
-        refuse('NET_UNREADABLE', name, 'listed twice among the COVERED features -- the count would grow without inventorying anything')
+        refuse('NET_UNREADABLE', name, 'listed twice among the COVERED features -- the count would grow without inventorying anything', True)
         continue
     ents = f.get('entries')
     ## The USABLE set decides, not the list's truthiness: entries of [' ']
@@ -2353,7 +2368,7 @@ for i, f in enumerate(features):
     ## promises a named refusal.
     own = set(e.strip() for e in ents if isinstance(e, str) and e.strip()) if isinstance(ents, list) else set()
     if not own:
-        refuse('NET_UNREADABLE', name, 'COVERED with no usable corpus entry -- a feature without a reference cannot be anchored')
+        refuse('NET_UNREADABLE', name, 'COVERED with no usable corpus entry -- a feature without a reference cannot be anchored', True)
         entry_lists[name] = set()
         continue
     feature_names.append(name)
@@ -2362,19 +2377,19 @@ exclusion_names, exclusion_reasons = [], {}
 for i, x in enumerate(exclusions):
     name = x.get('feature') if isinstance(x, dict) else None
     if not isinstance(name, str) or not name.strip():
-        refuse('NET_UNREADABLE', 'exclusions[' + str(i) + ']', 'exclusion with no readable feature id')
+        refuse('NET_UNREADABLE', 'exclusions[' + str(i) + ']', 'exclusion with no readable feature id', True)
         continue
     name = name.strip()
     if name in exclusion_reasons:
-        refuse('NET_UNREADABLE', name, 'excluded twice in the inventory -- its hole would be counted twice')
+        refuse('NET_UNREADABLE', name, 'excluded twice in the inventory -- its hole would be counted twice', True)
         continue
     exclusion_names.append(name)
     reason = x.get('reason') if isinstance(x.get('reason'), str) else ''
     exclusion_reasons[name] = reason
     if not reason.strip():
-        refuse('NET_UNREADABLE', name, 'EMPTY reason in the inventory -- the net no longer declares why this hole exists')
+        refuse('NET_UNREADABLE', name, 'EMPTY reason in the inventory -- the net no longer declares why this hole exists', True)
 for name in sorted(set(feature_names) & set(exclusion_reasons)):
-    refuse('NET_UNREADABLE', name, 'BOTH covered and excluded -- the inventory contradicts itself')
+    refuse('NET_UNREADABLE', name, 'BOTH covered and excluded -- the inventory contradicts itself', True)
 corpus_ids = set()
 entry_paths = {}
 for e in entries:
@@ -2398,7 +2413,7 @@ for e in entries:
 for name in feature_names:
     absent = sorted(e for e in entry_lists.get(name, set()) if e not in corpus_ids)
     if absent:
-        refuse('NET_UNREADABLE', name, 'the inventory maps it to corpus entries that DO NOT EXIST (' + ', '.join(absent) + ') -- the map points at evidence that is not there, and no page can satisfy both the gap rule and the phantom rule')
+        refuse('NET_UNREADABLE', name, 'the inventory maps it to corpus entries that DO NOT EXIST (' + ', '.join(absent) + ') -- the map points at evidence that is not there, and no page can satisfy both the gap rule and the phantom rule', True)
 
 ## The DECLARED route table. Goldy runs its own routes_probe at every gate
 ## and commits no artifact, so this file is OPTIONAL: absent, the path check
@@ -2420,9 +2435,9 @@ if routes_file:
                     if pat.startswith('/'):
                         declared.append(pat)
         except OSError as exc:
-            refuse('NET_UNREADABLE', routes_path, 'the declared route table is unreadable -- ' + ' '.join(str(exc).split())[:200])
+            refuse('NET_UNREADABLE', routes_path, 'the declared route table is unreadable -- ' + ' '.join(str(exc).split())[:200], True)
         if not declared:
-            refuse('NET_UNREADABLE', routes_path, 'the declared route table is EMPTY -- a table that declares nothing is not a degraded check, it is a broken one: a refusal, not a vacuous pass')
+            refuse('NET_UNREADABLE', routes_path, 'the declared route table is EMPTY -- a table that declares nothing is not a degraded check, it is a broken one: a refusal, not a vacuous pass', True)
 routes_degraded = not declared
 def segments(path):
     return [s for s in path.split('/') if s != '']
@@ -2471,7 +2486,7 @@ if entry_pattern:
     try:
         ENTRY_ID_RE = re.compile(entry_pattern)
     except re.error as exc:
-        refuse('NET_UNREADABLE', 'coverage_entry_id_pattern', 'the declared corpus-id pattern does not compile -- ' + ' '.join(str(exc).split())[:200])
+        refuse('NET_UNREADABLE', 'coverage_entry_id_pattern', 'the declared corpus-id pattern does not compile -- ' + ' '.join(str(exc).split())[:200], True)
 
 def entry_shaped(tok):
     ## The corpus declares its own id vocabulary. A campaign that wants the
@@ -2490,9 +2505,20 @@ def fold(s):
 ## The documentation. Absent or empty: a NAMED refusal, never a vacuous green.
 files = sorted(p for p in glob.glob(os.path.join(product_dir, '**', '*.md'), recursive=True) if os.path.isfile(p)) if product_dir else []
 if not product_dir:
-    refuse('NET_UNREADABLE', '<product_dir>', 'no product directory was resolved, so no published page could be read -- refusing to certify coverage')
+    refuse('NET_UNREADABLE', '<product_dir>', 'no product directory was resolved, so no published page could be read -- refusing to certify coverage', True)
 elif not files:
     refuse('NET_UNREADABLE', product_dir, 'NO markdown file -- the functional documentation does not exist: a refusal, not a vacuous pass')
+## PRE-FLIGHT REFUSAL. A cause whose repair lands OUTSIDE the writeable set
+## is not a term of convergence: scope_check lets this run write
+## <product_dir>/**/*.md and nothing else, so an order to repair the net, a
+## launch var or the catalog is an order the campaign is forbidden to obey.
+## Left as a gate term it makes two deterministic gates contradict each other
+## and the run burns every pass. The run stops HERE instead, naming every such
+## cause, and the operator repairs the net where the net lives.
+blocking = [c for c in causes if c.get('outside')]
+if blocking:
+    shown = [c['cause'] + ' -- ' + c['where'] + ': ' + c['detail'] for c in blocking[:40]]
+    raise SystemExit('product-docs: the non-regression net cannot be judged, and its repair lies OUTSIDE the writeable set of this run (' + (product_dir or '<product_dir>') + '/**/*.md). That is a PRE-FLIGHT failure, never a convergence term -- the campaign would be ordered to fix what it is forbidden to touch. ' + str(len(blocking)) + ' cause(s):' + chr(10) + chr(10).join('- ' + line for line in shown))
 lines = []
 for path in files:
     try:

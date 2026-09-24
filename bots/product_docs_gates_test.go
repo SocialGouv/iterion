@@ -2034,9 +2034,13 @@ func TestProductDocsCoverageGateBlessesAnExhaustiveDocumentation(t *testing.T) {
 func TestProductDocsCoverageGateFalsification(t *testing.T) {
 	requireGitPython(t)
 	cases := []struct {
-		name     string
-		want     string
-		sabotage func(t *testing.T, ws string)
+		name string
+		want string
+		// preflight: the repair lands OUTSIDE the writeable set
+		// (`<product_dir>/**/*.md`), so the node must stop the RUN by name
+		// rather than hand the campaign an order it is forbidden to obey.
+		preflight bool
+		sabotage  func(t *testing.T, ws string)
 	}{
 		{
 			// A feature the net inventories and the pages no longer carry.
@@ -2149,30 +2153,36 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			},
 		},
 		{
-			name: "NET_UNREADABLE: the inventory declares no feature",
-			want: "features is absent, empty or not a list",
+			name:      "NET_UNREADABLE: the inventory declares no feature",
+			want:      "features is absent, empty or not a list",
+			preflight: true,
 			sabotage: func(t *testing.T, ws string) {
 				writeFile(t, ws, ".golden-master/feature-coverage.json", `{"features": [], "exclusions": []}`)
 			},
 		},
 		{
-			name: "NET_UNREADABLE: the inventory stops declaring its holes",
-			want: "exclusions is absent or not a list",
+			// An ABSENT key is an empty list (the producer reads it that way);
+			// a key that is THERE and mistyped is the refusal.
+			name:      "NET_UNREADABLE: the inventory declares its holes in an unreadable shape",
+			want:      "exclusions is present and is not a list",
+			preflight: true,
 			sabotage: func(t *testing.T, ws string) {
 				writeFile(t, ws, ".golden-master/feature-coverage.json",
-					`{"features": [{"feature": "home.landing", "entries": ["001"]}]}`)
+					`{"features": [{"feature": "home.landing", "entries": ["001"]}], "exclusions": {"menu.logout": "gone"}}`)
 			},
 		},
 		{
-			name: "NET_UNREADABLE: the corpus is emptied",
-			want: "entries is absent, empty or not a list",
+			name:      "NET_UNREADABLE: the corpus is emptied",
+			want:      "entries is absent, empty or not a list",
+			preflight: true,
 			sabotage: func(t *testing.T, ws string) {
 				writeFile(t, ws, ".golden-master/corpus.json", `{"entries": []}`)
 			},
 		},
 		{
-			name: "NET_UNREADABLE: an exclusion loses its reason",
-			want: "EMPTY reason in the inventory",
+			name:      "NET_UNREADABLE: an exclusion loses its reason",
+			want:      "EMPTY reason in the inventory",
+			preflight: true,
 			sabotage: func(t *testing.T, ws string) {
 				mutate(t, ws, ".golden-master/feature-coverage.json",
 					`"reason": "session teardown, not a screen: measured by the ops runbook, not this net"`,
@@ -2180,15 +2190,17 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			},
 		},
 		{
-			name: "NET_UNREADABLE: the route table declares nothing",
-			want: "the declared route table is EMPTY",
+			name:      "NET_UNREADABLE: the route table declares nothing",
+			want:      "the declared route table is EMPTY",
+			preflight: true,
 			sabotage: func(t *testing.T, ws string) {
 				writeFile(t, ws, ".golden-master/routes.txt", "# every route was commented out\n")
 			},
 		},
 		{
-			name: "NET_UNREADABLE: the inventory both covers and excludes a feature",
-			want: "BOTH covered and excluded",
+			name:      "NET_UNREADABLE: the inventory both covers and excludes a feature",
+			want:      "BOTH covered and excluded",
+			preflight: true,
 			sabotage: func(t *testing.T, ws string) {
 				mutate(t, ws, ".golden-master/feature-coverage.json", `"feature": "menu.logout"`,
 					`"feature": "items.detail"`)
@@ -2212,6 +2224,10 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := newCoverageFixture(t)
 			tc.sabotage(t, ws)
+			if tc.preflight {
+				runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), tc.want)
+				return
+			}
 			got := runCoverage(t, ws)
 			if got.OK {
 				t.Fatalf("the gate stayed GREEN under sabotage — it falsifies nothing:\n%s", got.Log)
@@ -2221,6 +2237,38 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProductDocsCoverageGateReadsAnAbsentExclusionsKeyAsEmpty: a product that
+// excludes NOTHING writes no `exclusions` key, and the net producer reads an
+// absent key as an empty list (`coverage.get(key) or []`). Refusing it made
+// every such product NET_UNREADABLE for ever — and the repair `fail_log`
+// ordered lands in `<oracle_dir>`, which `scope_check` forbids this run to
+// write, so the campaign burned every pass obeying two contradictory gates.
+func TestProductDocsCoverageGateReadsAnAbsentExclusionsKeyAsEmpty(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, ".golden-master/corpus.json",
+		`{"entries": [{"id": "checkout-pay", "method": "GET", "path": "/checkout/pay"}]}`)
+	// No `exclusions` key at all: this product has no hole to declare.
+	writeFile(t, ws, ".golden-master/feature-coverage.json",
+		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}]}`)
+	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — `/checkout/pay` (`checkout-pay`)\n\n"+
+		"`payment/card` is the only means of payment a customer may use, recorded as `checkout-pay`, "+
+		"and the order is confirmed on the same screen.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a product with nothing to exclude was refused, for a repair it is forbidden to make:\n%s", got.Log)
+	}
+	if got.Exclusions != 0 {
+		t.Fatalf("exclusions_total = %d with no key, want 0", got.Exclusions)
+	}
+	// A key that is THERE and mistyped is still a refusal — and a pre-flight
+	// one, because its repair is in the net.
+	writeFile(t, ws, ".golden-master/feature-coverage.json",
+		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}], "exclusions": {"a": "b"}}`)
+	runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+		"exclusions is present and is not a list")
 }
 
 // TestProductDocsCoverageGateIgnoresFencedSamples: a fenced block is a page
@@ -2363,11 +2411,12 @@ func TestProductDocsCoverageGateHonoursADeclaredIDPattern(t *testing.T) {
 	if !strings.Contains(got.Log, "the entry entry-nope is cited and DOES NOT EXIST") {
 		t.Fatalf("the declared pattern did not catch its own spelling:\n%s", got.Log)
 	}
-	// A pattern that does not compile is a NAMED refusal, never a traceback.
-	got = run("^[0-9")
-	if got.OK || !strings.Contains(got.Log, "does not compile") {
-		t.Fatalf("a malformed declared pattern was not refused by name:\n%s", got.Log)
-	}
+	// A pattern that does not compile is a NAMED refusal, never a traceback —
+	// and its repair is a launch var, outside the writeable set, so it stops
+	// the run instead of ordering the campaign to fix what it cannot touch.
+	runExpectingFailure(t,
+		coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), defaultExclusionsToken, "^[0-9"),
+		"does not compile")
 }
 
 // TestProductDocsCoverageGateRefusesAStaleInventoryReference: the inventory
@@ -2384,13 +2433,8 @@ func TestProductDocsCoverageGateRefusesAStaleInventoryReference(t *testing.T) {
 		mutate(t, ws, ".golden-master/feature-coverage.json",
 			`{"feature": "items.detail", "entries": ["039"]}`,
 			`{"feature": "items.detail", "entries": ["039", "404"]}`)
-		got := runCoverage(t, ws)
-		if got.OK {
-			t.Fatalf("a map pointing at evidence that is not there was accepted:\n%s", got.Log)
-		}
-		if !strings.Contains(got.Log, "corpus entries that DO NOT EXIST (404)") {
-			t.Fatalf("the refusal does not name the stale reference:\n%s", got.Log)
-		}
+		runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+			"corpus entries that DO NOT EXIST (404)")
 	})
 	// A truthy list that names nothing is not coverage. It used to join the
 	// covered features with an empty entry set: a permanent GAP whose detail
@@ -2400,10 +2444,8 @@ func TestProductDocsCoverageGateRefusesAStaleInventoryReference(t *testing.T) {
 		mutate(t, ws, ".golden-master/feature-coverage.json",
 			`{"feature": "items.detail", "entries": ["039"]}`,
 			`{"feature": "items.detail", "entries": ["   "]}`)
-		got := runCoverage(t, ws)
-		if got.OK || !strings.Contains(got.Log, "COVERED with no usable corpus entry") {
-			t.Fatalf("a feature mapped to blank entries was not refused by name:\n%s", got.Log)
-		}
+		runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+			"COVERED with no usable corpus entry")
 	})
 }
 

@@ -32,6 +32,13 @@ version: 1.3.0
 ## itself), cloned locally with no forge, no network and no credential,
 ## then redacted like any other source. That is how a campaign
 ## documents its OWN repository.
+## PRE-FLIGHT vs CONVERGENCE. A cause whose repair lies OUTSIDE the
+## writeable set (`<product_dir>/**/*.md`) — the net, a launch var, the
+## catalog — stops the run by name instead of riding `fail_log`: left as
+## a gate term it orders the campaign to fix what `scope_check` forbids
+## it to touch, and the run burns every pass on two contradictory
+## instructions. An ABSENT `exclusions` key is an empty list, as the net
+## producer reads it; only a key that is there and mistyped refuses.
 ## SOURCE CONFINEMENT, one decision point. A source that names the
 ## FILESYSTEM is confined to the workspace whichever key carries it:
 ## `url` is read first, and an absolute path, a `file://` url or a
