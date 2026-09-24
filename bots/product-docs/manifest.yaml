@@ -22,11 +22,7 @@ version: 1.3.0
 ## identifiers (`coverage_*` vars), not French literals, and the anchor
 ## vocabulary is read off the net rather than assumed. page_lint
 ## exempts exactly the declared marker, so the two gates cannot order
-## the campaign to add and to remove the same characters. A resemblance
-## only becomes a CITATION on a line that is already citing references,
-## so an inline `404` in a three-digit net is prose and not a refusal —
-## and `coverage_entry_id_pattern` stops the inference outright for a
-## product whose pages carry look-alike tokens.
+## the campaign to add and to remove the same characters.
 ## Also: a catalog entry may now name a source by `path` — a repository
 ## already on disk, RELATIVE to the workspace (`.` being the workspace
 ## itself), cloned locally with no forge, no network and no credential,
@@ -36,8 +32,14 @@ version: 1.3.0
 ## cited. A documentation made of an anchor table, of chapters suffixed
 ## with the anchorless marker and of invented screens described one
 ## sentence at a time used to score GREEN. Now: `GAP` asks for PROSE
-## outside the references, on the line or in its paragraph — co-presence
-## is an index row; `CONCEALED_EXCLUSION` asks for prose of its OWN,
+## outside the references, in the BLOCK that carries them — a paragraph,
+## a list item, a table row, each read on its own as markdown renders
+## it, a heading documenting nothing — and a block that documents
+## several features needs that prose FOR EACH (an index table with a
+## descriptive column, and a paragraph of soft-wrapped index lines with
+## no markup at all, were credited whole to every feature they listed);
+## table pipes, HTML tags and link destinations are markup, not prose;
+## `CONCEALED_EXCLUSION` reads the same block and asks for prose of its OWN,
 ## sharing vocabulary with the reason the net records, once per hole (a
 ## row of dots is length without words, and one sentence cannot answer
 ## for two, and a summary line naming two holes no longer locks the
@@ -232,9 +234,9 @@ invocations:
 launch:
   primary: [catalog_path, product_id, scope_notes, open_mr]
   hidden: [workspace_dir, dismissed_path, scratch_dir, max_hints,
-           coverage_exclusions_heading, coverage_no_anchor_marker,
-           coverage_routes_file, coverage_entry_id_pattern,
-           coverage_placeholders, coverage_min_prose]
+           oracle_dir, coverage_exclusions_heading, coverage_no_anchor_marker,
+           coverage_routes_file, coverage_citation_open, coverage_citation_close,
+           coverage_placeholders, coverage_min_prose, coverage_max_anchorless]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
 ## release that reads the profile would refuse the header as an unknown

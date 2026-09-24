@@ -1984,9 +1984,10 @@ const (
 		"\n" +
 		"## The item list — [[ref:/dashboard/items]] [[ref:026]]\n" +
 		"\n" +
-		"The manager lands here — [[ref:items.list]] [[ref:026]] — and reads twenty rows.\n" +
+		"The manager lands here — [[ref:items.list]] [[ref:026]] — and reads twenty rows,\n" +
+		"newest first, each one showing its owner, its status and its last change.\n" +
 		"Paging is [[ref:items.list.paging]] [[ref:027]], twenty rows per page\n" +
-		"([[ref:/dashboard/items?page=2]]).\n" +
+		"([[ref:/dashboard/items?page=2]]), with a pager at the foot of the list to move between them.\n" +
 		"\n" +
 		"## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]\n" +
 		"\n" +
@@ -2189,7 +2190,12 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			name: "NET_UNREADABLE: the documentation is emptied",
 			want: "NO markdown file",
 			sabotage: func(t *testing.T, ws string) {
-				if err := os.RemoveAll(filepath.Join(ws, "docs/demo")); err != nil {
+				// Moved aside, not deleted: the product tree the gate reads
+				// is left holding no page.
+				if err := os.Rename(filepath.Join(ws, "docs/demo"), filepath.Join(ws, "docs/moved-aside")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(ws, "docs/demo"), 0o755); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -2327,6 +2333,221 @@ func TestProductDocsCoverageGateRefusesAnIndexTable(t *testing.T) {
 	// caught by the same rule.
 	if got := runCoverage(t, newCoverageFixture(t)); !got.OK {
 		t.Fatalf("the prose requirement fired on a documentation that reads:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateCreditsABlockItsOwnProse: prose is credited over
+// the BLOCK that carries a citation, and a block is what markdown renders as
+// one. Consecutive non-blank lines used to make one paragraph, so a table's
+// header and every other row were credited to each feature listed in it: an
+// index table with one descriptive column scored every feature documented.
+// The same false green went through a bullet list, HTML rows, a heading glued
+// to a paragraph and — with no markup at all — a paragraph of soft-wrapped
+// index lines, whose words were credited whole to each feature it listed.
+//
+// Each case isolates ONE rule and reads BOTH directions on the same page:
+// the features that must be refused, and the neighbour that must stay
+// documented by its own block.
+func TestProductDocsCoverageGateCreditsABlockItsOwnProse(t *testing.T) {
+	requireGitPython(t)
+	// One block's worth of real description: enough, on its own, for four
+	// features at once — so a case only reddens if the rule under test keeps
+	// its neighbours from borrowing it.
+	const long = "shows one item in full: every field the manager filled in when creating it, " +
+		"the complete history of its changes with the author and the date of each one, the comments " +
+		"left by colleagues, the attachments uploaded along the way, and the actions still open to them today."
+	// Five recognisable words in 39 characters: short of min_prose on its own.
+	const short = "shows the item record for every manager"
+	bare := []string{"home.landing", "items.list", "items.list.paging"}
+	cases := []struct {
+		name       string
+		body       string
+		gap        []string // features the gate must refuse
+		documented []string // features on the same page it must credit
+		want       string   // what the log must also say
+	}{
+		{
+			name: "an index table with a descriptive column",
+			body: "| Fonctionnalite | Reference | Description |\n" +
+				"|---|---|---|\n" +
+				"| [[ref:home.landing]] | [[ref:001]] | page accueil |\n" +
+				"| [[ref:items.list]] | [[ref:026]] | liste paginee |\n" +
+				"| [[ref:items.list.paging]] | [[ref:027]] | pagination vingt |\n" +
+				"| [[ref:items.detail]] | [[ref:039]] | fiche article |\n",
+			gap:  []string{"home.landing", "items.list", "items.list.paging", "items.detail"},
+			want: "the table row citing it",
+		},
+		{
+			name: "a table row that describes its feature documents it, and only it",
+			body: "Feature | Reference | Description\n" +
+				"--- | --- | ---\n" +
+				"[[ref:home.landing]] | [[ref:001]] | page accueil\n" +
+				"[[ref:items.list]] | [[ref:026]] | liste paginee\n" +
+				"[[ref:items.list.paging]] | [[ref:027]] | pagination vingt\n" +
+				"[[ref:items.detail]] | [[ref:039]] | " + long + "\n",
+			gap:        bare,
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a list item is read on its own",
+			body: "- [[ref:home.landing]] [[ref:001]] page accueil\n" +
+				"- [[ref:items.list]] [[ref:026]] liste paginee\n" +
+				"- [[ref:items.list.paging]] [[ref:027]] pagination vingt\n" +
+				"- [[ref:items.detail]] [[ref:039]] " + long + "\n",
+			gap:        bare,
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a list item wrapped over three lines is one item",
+			body: "- [[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n" +
+				"  manager filled in, the history of its changes and the actions still open\n" +
+				"  to them.\n",
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a line of block-level HTML is read on its own",
+			body: "<table>\n" +
+				"<tr><th>Feature</th><th>Reference</th><th>Description</th></tr>\n" +
+				"<tr><td>[[ref:home.landing]]</td><td>[[ref:001]]</td><td>page accueil</td></tr>\n" +
+				"<tr><td>[[ref:items.list]]</td><td>[[ref:026]]</td><td>liste paginee</td></tr>\n" +
+				"<tr><td>[[ref:items.list.paging]]</td><td>[[ref:027]]</td><td>pagination vingt</td></tr>\n" +
+				"<tr><td>[[ref:items.detail]]</td><td>[[ref:039]]</td><td>" + long + "</td></tr>\n" +
+				"</table>\n",
+			gap:        bare,
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a paragraph shares its prose between the features it documents",
+			body: "[[ref:home.landing]] [[ref:001]] page accueil visiteur\n" +
+				"[[ref:items.list]] [[ref:026]] liste paginee complete\n" +
+				"[[ref:items.list.paging]] [[ref:027]] pagination vingt lignes\n" +
+				"[[ref:items.detail]] [[ref:039]] fiche article detaillee\n",
+			gap:  []string{"home.landing", "items.list", "items.list.paging", "items.detail"},
+			want: "documents 4 feature(s)",
+		},
+		{
+			name: "a paragraph with prose enough for each of its features documents all of them",
+			body: "The manager opens the list — [[ref:items.list]] [[ref:026]] — and reads twenty rows,\n" +
+				"newest first, each one showing its owner, its status and its last change. Paging\n" +
+				"is [[ref:items.list.paging]] [[ref:027]]: twenty rows per page, with a pager at the\n" +
+				"foot of the list to move from one page to the next.\n",
+			documented: []string{"items.list", "items.list.paging"},
+		},
+		{
+			name: "a heading documents nothing",
+			body: "## [[ref:items.detail]] [[ref:039]] The item record, with every field the manager " +
+				"filled in, its history and the actions still open\n",
+			gap:  []string{"items.detail"},
+			want: "ONLY IN A HEADING",
+		},
+		{
+			name: "a heading is not part of the paragraph below it",
+			body: "## The screen the manager opens every morning to follow each item — [[ref:/dashboard/items/{id}]]\n" +
+				"[[ref:items.detail]] [[ref:039]] fiche article\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "an underlined title is a chapter heading",
+			body: "The item record\n" +
+				"---------------\n" +
+				"\n" +
+				"[[ref:items.detail]] [[ref:039]] " + long + "\n",
+			documented: []string{"items.detail"},
+			want:       "the chapter The item record names NO reference",
+		},
+		{
+			name: "a quote is not part of the paragraph above it",
+			body: "[[ref:items.detail]] [[ref:039]] fiche article\n" +
+				"> " + long + "\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "a template tag line ends the block",
+			body: "{% hint style=\"warning\" %}\n" +
+				"[[ref:items.detail]] [[ref:039]] shows one item in full for the manager\n" +
+				"{% endhint %}\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "table pipes are markup, not prose",
+			body: "Reference | Entry | Description\n" +
+				"--- | --- | ---\n" +
+				"[[ref:items.detail]] | [[ref:039]] | " + short + strings.Repeat(" |", 20) + "\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "HTML tags are markup, not prose",
+			body: "<tr><td>[[ref:items.detail]]</td><td>[[ref:039]]</td><td>" + short + "</td></tr>\n",
+			gap:  []string{"items.detail"},
+		},
+		{
+			name: "a link destination is not prose",
+			body: "[[ref:items.detail]] [[ref:039]] [the item record](https://example.org/manager/reading/items/record/history/listing/)\n",
+			gap:  []string{"items.detail"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			writeFile(t, ws, "docs/demo/README.md", "# The product\n\n## Index — [[ref:/]] [[ref:001]]\n\n"+tc.body)
+			got := runCoverage(t, ws)
+			for _, name := range tc.gap {
+				if !strings.Contains(got.Log, "GAP -- "+name+":") {
+					t.Fatalf("%s was credited with prose that is not its own:\n%s", name, got.Log)
+				}
+			}
+			for _, name := range tc.documented {
+				if strings.Contains(got.Log, "GAP -- "+name+":") {
+					t.Fatalf("%s is described by its own block and was refused:\n%s", name, got.Log)
+				}
+			}
+			if tc.want != "" && !strings.Contains(got.Log, tc.want) {
+				t.Fatalf("the log does not say %q:\n%s", tc.want, got.Log)
+			}
+		})
+	}
+}
+
+// TestProductDocsCoverageGateReadsAnExclusionOverItsBlock: the exclusion rule
+// measured its prose on the citing LINE, so a normally wrapped paragraph —
+// the reason said once, across two lines — was refused, and the refusal asked
+// for prose the page already carried. It now reads the block the gap rule
+// reads; and one block still answers for ONE hole.
+func TestProductDocsCoverageGateReadsAnExclusionOverItsBlock(t *testing.T) {
+	requireGitPython(t)
+	// The citing line alone carries 38 characters of prose; the paragraph
+	// says the whole reason.
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"Signing out "+ref("menu.logout")+" tears the session down and\n"+
+		"shows no screen of its own: the net never captures it, so it stays out.\n")
+	if got := runCoverage(t, ws); !got.OK || got.Named != 1 {
+		t.Fatalf("an exclusion explained by a paragraph wrapped over two lines was refused (named %d/1):\n%s", got.Named, got.Log)
+	}
+	// One paragraph naming two holes answers for the first only.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", strings.Replace(coverageInventory,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"}`,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"},
+  {"feature": "menu.language",
+   "reason": "the language switch changes no served content, so the corpus captures nothing"}`, 1))
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"The session teardown "+ref("menu.logout")+" and the language switch "+ref("menu.language")+" sit\n"+
+		"outside: neither is a screen, and the corpus captures nothing of either.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("one paragraph answered for two different holes:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout: the exclusion is named with the SAME prose as menu.language") {
+		t.Fatalf("the refusal does not name the second hole as sharing the first one's paragraph:\n%s", got.Log)
 	}
 }
 

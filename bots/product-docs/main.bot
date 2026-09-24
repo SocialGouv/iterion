@@ -262,9 +262,13 @@ vars:
   coverage_citation_open: string = "[[ref:"
   coverage_citation_close: string = "]]"
 
-  ## Substitutes that do not count as writing when a page names an
-  ## exclusion, and the minimum number of prose characters that does.
-  ## A bare identifier under a heading is silence wearing a label.
+  ## Substitutes that do not count as writing when a page documents a
+  ## feature or names an exclusion, and the minimum number of prose
+  ## characters that does. Prose is measured over the BLOCK carrying the
+  ## citation — a paragraph, a list item or a table row, never its
+  ## neighbours — outside the citations and the markup, and a block that
+  ## documents several features needs this much FOR EACH of them. A bare
+  ## identifier under a heading is silence wearing a label.
   coverage_placeholders: string = "TODO,FIXME,TBD,XXX,WIP,lorem ipsum"
   coverage_min_prose: int = 60
 
@@ -727,14 +731,18 @@ prompt campaign_user:
   the net observes (leading slash). The contract that gate enforces, and
   which you write to:
   - every COVERED feature needs ONE line that CITES its identifier AND
-    at least one of its own corpus entries, and that line (or its
-    paragraph) must carry real prose outside the citations — two
-    citations side by side are an index row, not a documented screen;
+    at least one of its own corpus entries, in a paragraph, a list item
+    or a table row that DESCRIBES it: {{vars.coverage_min_prose}}
+    characters of real prose outside the citations, FOR EACH feature
+    that block documents. Each table row, each list item and each
+    heading is read on its own — a neighbour's words are not yours, two
+    citations side by side are an index row, and a heading labels a
+    chapter without documenting anything;
   - every EXCLUSION must be named as such, under a chapter whose title
     IS EXACTLY the declared exclusions token (the WHOLE title, compared
-    case- and accent-insensitively), with real prose of its own saying
-    why — a bare identifier or a "TODO" is a hole, not a sentence, and
-    two exclusions may not share one sentence;
+    case- and accent-insensitively), in a paragraph or list item of its
+    own saying why — a bare identifier or a "TODO" is a hole, not a
+    sentence, and two exclusions may not share one paragraph;
   - every chapter (heading level 2 and below) CITES at least one
     reference IN ITS HEADING LINE ITSELF — a citation in the chapter
     body does NOT anchor it — or declares it restitutes none with the
@@ -2343,17 +2351,21 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 ##                         every path and proves none: for a path only
 ##                         such a route covers, the corpus is the only
 ##                         evidence.
-##   GAP                 — a covered feature no line documents. One
+##   GAP                 — a covered feature no block documents. One
 ##                         line must CITE its id AND one of its
-##                         inventory entries, and that line or its
-##                         paragraph must READ: the screen is anchored
+##                         inventory entries, and the block carrying it
+##                         -- a paragraph, a list item, a table row --
+##                         must READ, with prose enough for every
+##                         feature it documents: the screen is anchored
 ##                         on the reference that exercises it, and
 ##                         described for a reader. Two citations side by
-##                         side are an index row.
+##                         side are an index row, a neighbour's prose is
+##                         not the row's own, and a heading describes
+##                         nothing.
 ##   CONCEALED_EXCLUSION — an exclusion the pages do not name AS one,
-##                         under the declared exclusions chapter, with
-##                         prose. A documentation that hides a hole
-##                         lies about the application.
+##                         under the declared exclusions chapter, in a
+##                         block of prose of its own. A documentation
+##                         that hides a hole lies about the application.
 ##   UNANCHORED_CHAPTER  — a chapter (heading level >= 2) naming no
 ##                         reference it restitutes and not declaring it
 ##                         observes none. The general clause of
@@ -2617,32 +2629,122 @@ if not cite_open or not cite_close:
     refuse('NET_UNREADABLE', 'coverage_citation_open/close', 'the citation syntax is not declared -- with no way to recognise a reference this gate would certify a documentation it never read: a refusal, not a vacuous pass', True)
 CITE_RE = re.compile(re.escape(cite_open) + r'\s*([^' + chr(10) + r']*?)\s*' + re.escape(cite_close)) if (cite_open and cite_close) else None
 inventory_names = set(entry_lists) | set(exclusion_reasons)
-CODE_SPAN_RE = re.compile(BT + '([^' + BT + chr(10) + ']+)' + BT)
 HEADING_RE = re.compile(r'^(#{1,6})\s+(.*\S)\s*' + chr(36))
 FENCE_RE = re.compile(r'^\s{0,3}(' + BT * 3 + '+|~{3,})')
 WORD_RE = re.compile(r'[0-9a-z]+')
 PLACEHOLDER_RE = re.compile('|'.join(re.escape(p) for p in placeholders), re.I) if placeholders else None
+## THE UNIT A READER READS AS ONE. Prose is credited over the BLOCK that
+## carries a citation, and a block is what markdown renders as one: a run of
+## consecutive non-blank lines is a single paragraph only when nothing in it
+## starts a block of its own. A heading, a table row (with or without its
+## leading pipe), a list item and a line of block-level HTML are each read on
+## their own whatever the spacing; a quote marker, a thematic break and a
+## template tag line end the block before them. Lumped into one paragraph,
+## an index table credited its header and every other row to each feature
+## listed in it.
+QUOTE_RE = re.compile(r'^ {0,3}> ?')
+ITEM_RE = re.compile(r'^\s*(?:[-*+]|[0-9]{1,9}[.)])(?:\s|' + chr(36) + ')')
+HR_RE = re.compile(r'^ {0,3}(?:(?:-[ \t]*){3,}|(?:[*][ \t]*){3,}|(?:_[ \t]*){3,})' + chr(36))
+SETEXT_RE = re.compile(r'^ {0,3}(=+|-+)[ \t]*' + chr(36))
+DELIM_RE = re.compile(r'^\s*[|]?\s*:?-+:?\s*(?:[|]\s*:?-+:?\s*)*[|]?\s*' + chr(36))
+TEMPLATE_LINE_RE = re.compile(r'^\s*[{]%.*%[}]\s*' + chr(36))
+HTML_BLOCK_RE = re.compile(r'^ {0,3}</?(?:table|thead|tbody|tfoot|tr|td|th|caption|ul|ol|li|dl|dt|dd|div|p|details|summary|section|article|aside|header|footer|nav|figure|figcaption|blockquote|h[1-6])(?:[\s/>]|' + chr(36) + ')', re.I)
+TAG_RE = re.compile(r'</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>')
+LINK_DEST_RE = re.compile(r'\]\([^)]*\)')
 def fold(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if not unicodedata.combining(c)).lower()
-def bare_prose(text):
-    ## What a reader actually reads: the text MINUS its citations. A row of
-    ## citations is an index, and an index documents nothing. Code spans are
-    ## NOT removed -- they are prose now, and a page writing an interface
-    ## label in a code span has written words, not a reference.
-    return ' '.join((CITE_RE.sub(' ', text) if CITE_RE is not None else text).split())
+def unquote(text):
+    depth, m = 0, QUOTE_RE.match(text)
+    while m:
+        depth, text = depth + 1, text[m.end():]
+        m = QUOTE_RE.match(text)
+    return depth, text
+def page_blocks(rows):
+    ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
+    ## page, in order. content is the line without its quote markers.
+    blocks, cur, mode, in_fence = [], None, '', False
+    for idx, (no, text) in enumerate(rows):
+        if FENCE_RE.match(text):
+            ## A fenced sample teaches its reader to paste something; it
+            ## makes no claim about the product. A shell comment in it is not
+            ## a chapter and a path in it is not a citation -- the reason
+            ## page_lint exempts fenced blocks from its chrome rules.
+            in_fence, cur, mode = not in_fence, None, ''
+            continue
+        if in_fence:
+            continue
+        depth, content = unquote(text)
+        if not content.strip() or TEMPLATE_LINE_RE.match(content):
+            cur, mode = None, ''
+            continue
+        if cur is not None and cur['depth'] != depth:
+            cur, mode = None, ''
+        m = HEADING_RE.match(content)
+        if m:
+            blocks.append({'kind': 'heading', 'depth': depth, 'level': len(m.group(1)), 'title': m.group(2), 'lines': [(no, text, content)]})
+            cur, mode = None, ''
+            continue
+        m = SETEXT_RE.match(content)
+        if m and cur is not None and cur['kind'] == 'para':
+            ## An underline turns the paragraph above it into a heading, as
+            ## every renderer does -- a chapter written that way is a chapter.
+            cur['kind'], cur['level'] = 'heading', (1 if m.group(1)[0] == '=' else 2)
+            cur['title'] = ' '.join(c.strip() for _n, _t, c in cur['lines'])
+            cur, mode = None, ''
+            continue
+        if HR_RE.match(content):
+            cur, mode = None, ''
+            continue
+        nxt = unquote(rows[idx + 1][1])[1] if idx + 1 < len(rows) else ''
+        if not mode and '|' in content and '|' in nxt and DELIM_RE.match(nxt):
+            ## A TABLE is a header row followed by its delimiter row, leading
+            ## pipes or not -- lines of pipes with no delimiter render as a
+            ## paragraph, and are measured as one.
+            mode = 'row'
+        elif not mode and HTML_BLOCK_RE.match(content):
+            mode = 'html'
+        if mode:
+            ## A table or an HTML block runs to the next blank line, and each
+            ## of its lines is read on its own: a row credits its own cells.
+            blocks.append({'kind': mode, 'depth': depth, 'lines': [(no, text, content)]})
+            cur = None
+            continue
+        if ITEM_RE.match(content):
+            cur = {'kind': 'item', 'depth': depth, 'lines': [(no, text, content)]}
+            blocks.append(cur)
+            continue
+        if cur is not None:
+            cur['lines'].append((no, text, content))
+            continue
+        cur = {'kind': 'para', 'depth': depth, 'lines': [(no, text, content)]}
+        blocks.append(cur)
+    return blocks
+def block_prose(b):
+    ## What a reader READS in the block: its text MINUS its citations and the
+    ## markup that renders as no word -- table pipes, HTML tags, link
+    ## destinations (a URL spells words nobody reads). A row of citations is
+    ## an index, and an index documents nothing. Code spans stay: a page
+    ## writing an interface label in one has written words, not a reference.
+    out = []
+    for _no, _text, content in b['lines']:
+        s = CITE_RE.sub(' ', content) if CITE_RE is not None else content
+        s = LINK_DEST_RE.sub(']', TAG_RE.sub(' ', s))
+        if b['kind'] == 'row':
+            s = s.replace('|', ' ')
+        out.append(s)
+    return ' '.join(' '.join(out).split())
 def significant(text):
     ## The words a reader would recognise. Short ones carry no evidence that
     ## anything was written; folding makes the comparison accent-blind.
     return set(w for w in WORD_RE.findall(fold(text)) if len(w) >= 4)
-def written(text):
-    ## (prose, words) when the block is WRITING, ('', empty) otherwise. Length
-    ## alone is not writing: dots reach any length, and a declared substitute
-    ## is a label on silence.
-    prose = bare_prose(text)
+def written(prose, share=1):
+    ## (prose, words) when the block is WRITING for share subjects, ('',
+    ## empty) otherwise. Length alone is not writing: dots reach any length,
+    ## and a declared substitute is a label on silence.
     if PLACEHOLDER_RE is not None and PLACEHOLDER_RE.search(prose):
         return '', set()
     words = significant(prose)
-    if len(prose) < min_prose or len(words) < min_words:
+    if len(prose) < min_prose * share or len(words) < min_words * share:
         return '', set()
     return prose, words
 def opens_exclusions(title):
@@ -2671,105 +2773,84 @@ blocking = [c for c in causes if c.get('outside')]
 if blocking:
     shown = [c['cause'] + ' -- ' + c['where'] + ': ' + c['detail'] for c in blocking[:40]]
     raise SystemExit('product-docs: the non-regression net cannot be judged, and its repair lies OUTSIDE the writeable set of this run (' + (product_dir or '<product_dir>') + '/**/*.md). That is a PRE-FLIGHT failure, never a convergence term -- the campaign would be ordered to fix what it is forbidden to touch. ' + str(len(blocking)) + ' cause(s):' + chr(10) + chr(10).join('- ' + line for line in shown))
-lines = []
+pages = []
 for path in files:
     try:
         with open(path, encoding='utf-8', errors='replace') as fh:
-            for no, text in enumerate(fh.read().splitlines(), 1):
-                lines.append((path, no, text))
+            pages.append((path, list(enumerate(fh.read().splitlines(), 1))))
     except OSError as exc:
         refuse('NET_UNREADABLE', path, 'page unreadable -- ' + ' '.join(str(exc).split())[:200])
-## ONE pass in file order, so the chapter a citation sits under is a fact of
-## structure and not an opinion. Headings of EVERY level open the exclusions
-## chapter (a one-chapter-per-file model puts it at level 1); the anchor rule
-## below judges levels >= 2 only -- a file's title is judged by its body.
+## ONE pass over the blocks in file order, so the chapter a citation sits
+## under is a fact of structure and not an opinion. Headings of EVERY level
+## open the exclusions chapter (a one-chapter-per-file model puts it at level
+## 1); the anchor rule below judges levels >= 2 only -- a file's title is
+## judged by its body. A heading inside a quote is part of the quote, not a
+## chapter of the document.
 headings = []
 marked = []
 anchors_by_line = {}
-under_exclusions = {}
-has_anchor = {}
-para_of_line = {}
-para_text = {}
-para = 0
-exc_level = None
-in_exc = False
-in_fence = False
-current = ''
-for where, no, text in lines:
+blocks = []
+for where, rows in pages:
     ## Fence state and CHAPTER state are both PER PAGE. An unclosed fence
     ## at the end of one page would otherwise blind the gate to every page
     ## after it -- and a page ending inside the exclusions chapter would
     ## mark the NEXT page's lines as being under it, which is the exact
     ## false green this gate exists to refuse: an exclusion id cited with
     ## enough prose in an unrelated page would satisfy the rule.
-    if where != current:
-        current, in_fence = where, False
-        in_exc, exc_level = False, None
-        para += 1
-    if FENCE_RE.match(text):
-        in_fence = not in_fence
-        para += 1
-        continue
-    ## A PARAGRAPH is a run of consecutive non-blank lines; a blank line, a
-    ## fence and a heading each close one. It is the block a reader reads as
-    ## one, which is the unit the gap rule measures prose over -- a feature
-    ## documented by a sentence spread over two lines is documented.
-    if not text.strip():
-        para += 1
-        continue
-    if in_fence:
-        ## A fenced sample teaches its reader to paste something; it makes
-        ## no claim about the product. A shell comment in it is not a
-        ## chapter, and a path in it is not a citation -- the same reason
-        ## page_lint exempts fenced blocks from its chrome rules.
-        continue
-    m = HEADING_RE.match(text)
-    excl_heading = False
-    if m:
-        para += 1
-        level, title = len(m.group(1)), m.group(2)
-        excl_heading = opens_exclusions(title)
-        if level > 1:
-            headings.append((where, no, level, title, excl_heading))
+    in_exc, exc_level = False, None
+    for b in page_blocks(rows):
+        b['where'] = where
+        chapter = b['kind'] == 'heading' and b['depth'] == 0
+        excl_heading = chapter and opens_exclusions(b['title'])
         if excl_heading:
             ## Already inside the chapter, a DEEPER heading repeating the
             ## token must not re-anchor it at its own level: a sibling of
             ## that sub-heading would then close the whole chapter early,
             ## and every exclusion named after it would read as concealed.
             ## The SHALLOWEST level wins.
-            exc_level = level if exc_level is None else min(exc_level, level)
+            exc_level = b['level'] if exc_level is None else min(exc_level, b['level'])
             in_exc = True
-        elif exc_level is not None and level <= exc_level:
+        elif chapter and exc_level is not None and b['level'] <= exc_level:
             in_exc, exc_level = False, None
-    ents, ids, paths, unknown = [], [], [], []
-    ## EVERY citation, and ONLY the citations. A token is a path when it
-    ## leads with a slash, an entry when the corpus holds it, an inventory
-    ## id when the inventory does -- and an INVENTED reference otherwise,
-    ## wherever it sits and whatever else the line carries. A code span is
-    ## prose and is never read here.
-    for tok in (CITE_RE.findall(text) if CITE_RE is not None else []):
-        tok = tok.strip()
-        if not tok:
-            refuse('PHANTOM_DOC', where + ':' + str(no), 'an EMPTY citation ' + cite_open + cite_close + ' names nothing -- cite a corpus entry id, an inventory feature id or a path, or write prose')
-            continue
-        if tok.startswith('/'):
-            paths.append(tok)
-        elif tok in corpus_ids:
-            ents.append(tok)
-        elif tok in inventory_names:
-            ids.append(tok)
-        else:
-            ## The net holds neither. WHICH of the two it was meant to be is
-            ## not guessed -- guessing from a token shape is the habit this
-            ## node just got rid of, and the repair is the same either way:
-            ## cite something the net holds, or write prose.
-            unknown.append(tok)
-    anchored = bool(ents or ids or paths)
-    anchors_by_line[(where, no)] = (ents, ids, paths, unknown, text)
-    para_of_line[(where, no)] = para
-    para_text.setdefault(para, []).append(text)
-    under_exclusions[(where, no)] = in_exc
-    has_anchor[(where, no)] = anchored
+        b['under_exclusions'] = in_exc
+        b['names'], b['pairs'] = set(), set()
+        anchored = False
+        for no, text, _content in b['lines']:
+            ents, ids, paths, unknown = [], [], [], []
+            ## EVERY citation, and ONLY the citations. A token is a path when
+            ## it leads with a slash, an entry when the corpus holds it, an
+            ## inventory id when the inventory does -- and an INVENTED
+            ## reference otherwise, wherever it sits and whatever else the
+            ## line carries. A code span is prose and is never read here.
+            for tok in (CITE_RE.findall(text) if CITE_RE is not None else []):
+                tok = tok.strip()
+                if not tok:
+                    refuse('PHANTOM_DOC', where + ':' + str(no), 'an EMPTY citation ' + cite_open + cite_close + ' names nothing -- cite a corpus entry id, an inventory feature id or a path, or write prose')
+                    continue
+                if tok.startswith('/'):
+                    paths.append(tok)
+                elif tok in corpus_ids:
+                    ents.append(tok)
+                elif tok in inventory_names:
+                    ids.append(tok)
+                else:
+                    ## The net holds neither. WHICH of the two it was meant
+                    ## to be is not guessed -- guessing from a token shape is
+                    ## the habit this node got rid of, and the repair is the
+                    ## same either way: cite something the net holds, or
+                    ## write prose.
+                    unknown.append(tok)
+            anchors_by_line[(where, no)] = (ents, ids, paths, unknown, text)
+            anchored = anchored or bool(ents or ids or paths)
+            b['names'].update(ids)
+            ## The PAIR the gap rule reads: ONE line citing a covered feature
+            ## together with one of its own entries.
+            for name in ids:
+                if entry_lists.get(name, set()) & set(ents):
+                    b['pairs'].add(name)
+        if chapter and b['level'] > 1:
+            headings.append((where, b['lines'][0][0], b['level'], b['title'], excl_heading, anchored))
+        blocks.append(b)
 ## STRUCTURAL RULE -- every chapter carries an anchor, or DECLARES that it
 ## carries none. A chapter that can name no reference it restitutes describes
 ## a screen nobody captured: the general clause of the phantom refusal. The
@@ -2780,7 +2861,7 @@ for where, no, text in lines:
 ## rule. Requiring a marker there would force every product to spend one of
 ## its anchorless declarations on a chapter the gate itself named.
 judged = [h for h in headings if not h[4]]
-for where, no, level, title, _x in judged:
+for where, no, level, title, _x, _a in judged:
     if no_anchor and no_anchor in title:
         marked.append({'page': where, 'line': no, 'title': title.replace(no_anchor, '').strip()})
 ## THE COUNT IS KNOWN BEFORE THE FIRST REFUSAL IS WRITTEN, because a refusal
@@ -2790,15 +2871,15 @@ for where, no, level, title, _x in judged:
 ## asks for an ANCHOR and says the hatch is full -- and it never asks for a
 ## bigger ceiling, which is an operator decision outside the writeable set.
 headroom = max_anchorless - len(marked)
-for where, no, level, title, _x in judged:
+for where, no, level, title, _x, anchored in judged:
     if no_anchor and no_anchor in title:
         continue
     ## A chapter is anchored by a reference that EXISTS (or by a path, which
     ## is a citation by syntax) -- never by a token that merely resembles
     ## one, which would let a chapter fake its own anchor. The answer is the
-    ## one the single pass already computed for this line: a second copy of
-    ## the test is how the two come to disagree.
-    if not has_anchor.get((where, no), False):
+    ## one the single pass already computed for this heading: a second copy
+    ## of the test is how the two come to disagree.
+    if not anchored:
         remedy = (' or declare it restitutes none with ' + no_anchor + ' (' + str(headroom) + ' such declaration(s) left of ' + str(max_anchorless) + ')') if (no_anchor and headroom > 0) else (' -- the anchorless declarations are ALL SPENT (' + str(len(marked)) + ' of ' + str(max_anchorless) + '), so this chapter must carry a reference')
         refuse('UNANCHORED_CHAPTER', where + ':' + str(no), 'the chapter ' + title + ' names NO reference it restitutes -- cite a corpus entry, an inventory id or a path IN THE HEADING LINE ITSELF (a citation in the chapter body does NOT anchor it)' + remedy)
 ## THE ESCAPE HATCH HAS A CEILING. Above it, the declarations are themselves
@@ -2845,42 +2926,44 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
         for k, _v in parse_qsl(parts.query, keep_blank_values=True):
             if k not in observed:
                 refuse('PHANTOM_DOC', where + ':' + str(no), 'the parameter ' + k + ' of ' + path + ' is observed on NO corpus entry of that path -- a documented filter the net does not exercise')
-## GAP -- every covered feature carries ONE line citing its id AND at least
-## one of its inventory entries: the documented screen is anchored on the
-## reference that exercises it. The loop runs over EVERY feature, unguarded:
-## emptying the documentation of one feature or of all reddens the same way.
+## GAP -- every covered feature is DOCUMENTED by one block: a paragraph, a
+## list item or a table row with ONE line citing its id AND one of its own
+## inventory entries -- the documented screen is anchored on the reference
+## that exercises it -- and prose a reader reads. The loop runs over EVERY
+## feature, unguarded: emptying the documentation of one feature or of all
+## reddens the same way.
+##
+## CO-PRESENCE IS NOT DOCUMENTATION, and a neighbour's prose is not either.
+## Two citations on a line are an index row; a block's text is credited to
+## that block only, never to the rows or items around it; and a block that
+## documents several features SHARES its prose between them -- each needs
+## its own min_prose characters and min_words words. Credited whole to each,
+## a paragraph of soft-wrapped index lines documented every feature it
+## listed with one sentence's worth of words, no table syntax needed.
+## A HEADING DOCUMENTS NOTHING: it labels and anchors a chapter, and its
+## body is where a feature is described.
 undocumented = []
 for name in feature_names:
     own = entry_lists.get(name, set())
-    ok = False
-    cited_somewhere = False
-    for (where, no), (ents, ids, _p, _u, text) in sorted(anchors_by_line.items()):
-        ## The line must CITE the feature and CITE one of its entries. Read
-        ## off the citations the single pass collected -- a second reading of
-        ## the raw text is how the two come to disagree.
-        if name not in ids or not (own & set(ents)):
-            continue
-        cited_somewhere = True
-        ## CO-PRESENCE IS NOT DOCUMENTATION. Two citations on one line is an
-        ## index row: a table pairing every feature with its entry satisfied
-        ## this rule and restituted nothing. The line, or the paragraph that
-        ## carries it, must READ -- prose outside the citations, in the same
-        ## measure the exclusions rule asks for.
-        block = chr(10).join(para_text.get(para_of_line.get((where, no), -1), [text]))
-        prose, _w = written(block)
-        if prose:
-            ok = True
-            break
-    if not ok:
-        undocumented.append(name)
-        if cited_somewhere:
-            refuse('GAP', name, 'the covered feature is CITED but not documented: its id sits beside one of its entries (' + ', '.join(sorted(own)) + ') with no prose around them -- a row in an index, not a screen a functional reader can understand. Write at least ' + str(min_prose) + ' characters of text outside the citations, in that line or its paragraph')
-        else:
-            refuse('GAP', name, 'the covered feature is ABSENT from the documentation: no line CITES ' + cite_open + name + cite_close + ' together with one of its entries (' + ', '.join(cite_open + e + cite_close for e in sorted(own)) + ') -- a served, inventoried screen the functional reader will not find')
+    cands = [b for b in blocks if name in b['pairs']]
+    body = [b for b in cands if b['kind'] != 'heading']
+    if any(written(block_prose(b), len(b['pairs']))[0] for b in body):
+        continue
+    undocumented.append(name)
+    if body:
+        best = max(body, key=lambda b: len(block_prose(b)) / len(b['pairs']))
+        prose = block_prose(best)
+        refuse('GAP', name, 'the covered feature is CITED but not documented: at ' + best['where'] + ':' + str(best['lines'][0][0]) + ' the ' + {'para': 'paragraph', 'item': 'list item', 'row': 'table row', 'html': 'HTML line'}[best['kind']] + ' citing it with one of its entries (' + ', '.join(sorted(own)) + ') documents ' + str(len(best['pairs'])) + ' feature(s) with ' + str(len(prose)) + ' characters and ' + str(len(significant(prose))) + ' recognisable words of prose outside the citations -- a row in an index, not a screen a functional reader can understand. Each feature a block documents needs ' + str(min_prose) + ' characters and ' + str(min_words) + ' words of its own; the block is the paragraph, list item or table row that carries the citation, never its neighbours')
+    elif cands:
+        refuse('GAP', name, 'the covered feature is cited with one of its entries ONLY IN A HEADING -- a title labels a chapter and documents nothing: cite ' + cite_open + name + cite_close + ' with ' + ' or '.join(cite_open + e + cite_close for e in sorted(own)) + ' in the paragraph, list item or table row that describes it')
+    else:
+        refuse('GAP', name, 'the covered feature is ABSENT from the documentation: no line CITES ' + cite_open + name + cite_close + ' together with one of its entries (' + ', '.join(cite_open + e + cite_close for e in sorted(own)) + ') -- a served, inventoried screen the functional reader will not find')
 ## CONCEALED_EXCLUSION -- every exclusion is cited UNDER a chapter that says
-## exclusions, with PROSE: a bare id is not writing, and a placeholder is not
-## either. The full reason stays in the net; the page carries it for its
-## reader, and the gate refuses silence and substitutes alike.
+## exclusions, in a block with PROSE: a bare id is not writing, and a
+## placeholder is not either. The block is the one the gap rule reads -- a
+## paragraph wrapped over two lines says its reason once, across both. The
+## full reason stays in the net; the page carries it for its reader, and the
+## gate refuses silence and substitutes alike.
 hidden = []
 claimed = {}
 for name in sorted(exclusion_reasons):
@@ -2891,16 +2974,16 @@ for name in sorted(exclusion_reasons):
     ## OVERLAP it: two of its recognisable words, or the one it has.
     need = min(2, len(reason_words))
     ok = ''
-    for (where, no), (_e, ids, _p, _u, text) in sorted(anchors_by_line.items()):
-        if name not in ids or not under_exclusions.get((where, no), False):
+    for b in blocks:
+        if b['kind'] == 'heading' or not b['under_exclusions'] or name not in b['names']:
             continue
-        prose, words = written(text)
+        prose, words = written(block_prose(b))
         if not prose:
             continue
         if need and len(words & reason_words) < need:
             continue
-        ## PREFER A LINE NOBODY HAS CLAIMED. Breaking on the FIRST qualifying
-        ## line made a shared summary line -- one sentence naming two holes,
+        ## PREFER A BLOCK NOBODY HAS CLAIMED. Breaking on the FIRST qualifying
+        ## one made a shared summary -- one sentence naming two holes,
         ## legitimately -- claim the first exclusion and leave the second
         ## unfixable: its own dedicated paragraph further down was never
         ## looked at, and the refusal asked for prose it had already written.
@@ -2912,14 +2995,15 @@ for name in sorted(exclusion_reasons):
             break
     if not ok:
         hidden.append(name)
-        refuse('CONCEALED_EXCLUSION', name, 'the exclusion is nowhere named AS an exclusion in the documentation (its id cited under a chapter titled exactly ' + (excl_token or '<coverage_exclusions_heading>') + ', with prose of its own that says what the net says) -- a documentation that hides a hole lies about the application; the net records the reason: ' + (exclusion_reasons.get(name) or '')[:120])
+        refuse('CONCEALED_EXCLUSION', name, 'the exclusion is nowhere named AS an exclusion in the documentation (its id cited under a chapter titled exactly ' + (excl_token or '<coverage_exclusions_heading>') + ', in a paragraph, list item or table row whose prose of its own says what the net says) -- a documentation that hides a hole lies about the application; the net records the reason: ' + (exclusion_reasons.get(name) or '')[:120])
         continue
-    ## ONE PROSE, ONE EXCLUSION. The same sentence satisfying two holes
-    ## describes neither: it is a template, and a template is silence with
-    ## more characters.
+    ## ONE PROSE, ONE EXCLUSION. The same block satisfying two holes -- one
+    ## paragraph naming both, or one sentence copied under each -- describes
+    ## neither: it is a template, and a template is silence with more
+    ## characters.
     if ok in claimed:
         hidden.append(name)
-        refuse('CONCEALED_EXCLUSION', name, 'the exclusion is named with the SAME prose as ' + claimed[ok] + ' -- one sentence cannot say why two different holes exist; write what the net records for this one: ' + (exclusion_reasons.get(name) or '')[:120])
+        refuse('CONCEALED_EXCLUSION', name, 'the exclusion is named with the SAME prose as ' + claimed[ok] + ' -- one paragraph cannot say why two different holes exist; give this one a paragraph or list item of its own that says what the net records: ' + (exclusion_reasons.get(name) or '')[:120])
         continue
     claimed[ok] = name
 documented = len(feature_names) - len(undocumented)

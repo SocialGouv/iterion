@@ -129,8 +129,8 @@ silence:
 | cause | what it catches |
 |---|---|
 | `PHANTOM_DOC` | a documented screen the net never saw: a cited corpus entry that does not exist, an inventory id nobody inventoried, a path that is neither a declared route nor a corpus entry path, a query parameter the corpus never observes on that path |
-| `GAP` | a covered feature no line documents — **one** line must **cite** its identifier **and** one of its own entries, **and** that line or its paragraph must READ: prose outside the citations, `coverage_min_prose` characters of it. Co-presence is an index row, and an index restitutes nothing |
-| `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, with prose of its **own** (a bare identifier or a `TODO` is silence under a label; a row of dots is length without words; one sentence cannot answer for two holes, and the prose has to share vocabulary with the reason the net records) |
+| `GAP` | a covered feature no block documents — **one** line must **cite** its identifier **and** one of its own entries, **and** the block carrying it (a paragraph, a list item, a table row) must READ: prose outside the citations, `coverage_min_prose` characters of it **for each** feature that block documents. Co-presence is an index row, a neighbour's prose is not the row's own, and a heading documents nothing |
+| `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, in a block of prose of its **own** (a bare identifier or a `TODO` is silence under a label; a row of dots is length without words; one paragraph cannot answer for two holes, and the prose has to share vocabulary with the reason the net records) |
 | `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) citing no reference **in its heading line itself** — a citation in the chapter body does not anchor it — and not declaring that it restitutes none; plus the ceiling, `coverage_max_anchorless`, on how many chapters may declare it at all |
 | `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, an empty route table |
 
@@ -155,7 +155,7 @@ producer itself reads it (`coverage.get(key) or []`): a product with no
 hole to declare writes no key. Only a key that is *there* and mistyped
 is a refusal.
 
-Three things the gate deliberately does not assume:
+What the gate deliberately does not assume:
 
 - **Language.** The exclusions chapter token and the anchorless marker
   are declared identifiers (`coverage_exclusions_heading`,
@@ -188,6 +188,21 @@ Three things the gate deliberately does not assume:
   closes both directions**; an explicit marker has no middle. Both ends
   of the syntax are declared, so a docs repo already using `[[…]]` picks
   another spelling; either one empty is a refusal that stops the run.
+- **What a block IS.** Prose is credited over the block that carries
+  the citation, and a block is what markdown renders as one — not a run
+  of non-blank lines. A table row (leading pipes or not), a list item, a
+  line of block-level HTML and a heading are each read on their own; a
+  quote marker, a thematic break and a `{% … %}` template line end the
+  block before them; an underlined title is a heading. Table pipes, HTML
+  tags and link destinations are markup, not prose. A heading documents
+  nothing: it labels and anchors a chapter. And a block that documents
+  several features **shares** its prose between them — each needs its
+  own `coverage_min_prose`. Lumped into one paragraph, an index table
+  with a single descriptive column credited its header and every other
+  row to each feature listed in it; and a paragraph of soft-wrapped index
+  lines — no markup at all — was credited whole to each feature it
+  listed. A row that really describes its feature still documents it, by
+  its own cells.
 - **A catch-all route.** A route made only of placeholders (`/{slug}`,
   `/**`) matches every path and proves none: for a path only such a
   route covers, the corpus reference is the only evidence. The rule cuts
@@ -345,7 +360,7 @@ computed is **never** reported as an empty one.
 | `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
 | `coverage_citation_open` / `coverage_citation_close` | `[[ref:` / `]]` | The citation syntax. A reference is what the page says is one; a code span is prose. Both are declared so a repo already using `[[…]]` can pick another spelling; either one empty is a refusal that stops the run |
 | `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page documents a feature or names an exclusion |
-| `coverage_min_prose` | `60` | Minimum prose characters, outside the citations, on the line naming an exclusion and in the paragraph documenting a feature |
+| `coverage_min_prose` | `60` | Minimum prose characters, outside the citations and the markup, in the block (paragraph, list item, table row) naming an exclusion or documenting a feature — for EACH feature that block documents |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/product-docs` | Out-of-tree scratch: the source clones + the promises ledger |
 | `max_passes` | `4` | Continuation-loop cap: the loop back to `scan_hints` is taken at most this many times, so a run makes up to `max_passes + 1` campaign passes |
