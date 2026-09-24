@@ -325,16 +325,16 @@ func TestAnthropicWireFacadeSlot(t *testing.T) {
 // asserting it under a cleared env is asserting it in the one configuration
 // where no code can get it wrong.
 //
-// The colliding configuration is not exotic: claw-code-go's own operator hint
-// tells a Kimi user to `export ANTHROPIC_BASE_URL=<moonshot endpoint>`, and
-// that variable is exactly what zaiEnv reads; one internal gateway (LiteLLM,
+// The colliding configuration is not exotic: the generic way to put Claude
+// Code on Kimi is `export ANTHROPIC_BASE_URL=<moonshot endpoint>`, and that
+// variable is exactly what zaiEnv reads; one internal gateway (LiteLLM,
 // a corporate proxy) in front of both vendors does the same. When both
 // rendered one label the meter charged a Moonshot wall to the z.ai
 // fingerprint, parking the healthy key and continuing to hand out the walled
 // one — the inversion runCredKeys exists to prevent.
 func TestAnthropicWireFacadeSlot_ApartUnderCollidingBaseURLs(t *testing.T) {
 	for _, tc := range []struct{ name, anthropicBase, moonshotBase string }{
-		{"claw_hint_points_anthropic_base_url_at_moonshot", secrets.MoonshotDefaultBaseURL, ""},
+		{"anthropic_base_url_points_at_moonshot", secrets.MoonshotDefaultBaseURL, ""},
 		{"moonshot_override_points_at_zai", secrets.ZAIDefaultBaseURL, secrets.ZAIDefaultBaseURL},
 		{"one_gateway_in_front_of_both", "https://gateway.internal/anthropic", "https://gateway.internal/anthropic"},
 	} {

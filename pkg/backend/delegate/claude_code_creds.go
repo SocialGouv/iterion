@@ -59,10 +59,10 @@ const ForfaitSuppressedEnvKey = "ITERION_FORFAIT_SUPPRESSED"
 //
 // Without it the slot has to be re-derived from ANTHROPIC_BASE_URL at read
 // time, and that URL does not identify a vendor: it is operator-controlled,
-// and two facades legitimately hold the same value. claw-code-go's own Kimi
-// hint tells an operator to `export ANTHROPIC_BASE_URL=<moonshot endpoint>` —
+// and two facades legitimately hold the same value. The generic way to put
+// Claude Code on Kimi is `export ANTHROPIC_BASE_URL=<moonshot endpoint>` —
 // the variable zaiEnv reads — and one internal gateway in front of both
-// vendors does it too. A reader deciding between equal labels answers with
+// vendors does the same. A reader deciding between equal labels answers with
 // whichever it compared first, so a Moonshot wall lands on the z.ai
 // fingerprint: the meter then parks the healthy key and keeps handing out the
 // walled one.

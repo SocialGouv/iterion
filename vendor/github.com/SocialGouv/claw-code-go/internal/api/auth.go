@@ -209,22 +209,21 @@ var ForeignProviderEnvVars = []ForeignProviderEnvVar{
 		Hint:         "prefix your model name with `qwen/` or `qwen-` (e.g. `--model qwen-plus`) so prefix routing selects the DashScope backend",
 	},
 	{
-		// z.ai's Coding Plan exposes an Anthropic-compatible endpoint; the
-		// preferred wiring is to point Claude Code at it via ANTHROPIC_BASE_URL +
-		// ANTHROPIC_AUTH_TOKEN rather than a separate provider, so the hint
-		// steers users toward the env-passthrough pattern documented in
-		// iterion's docs/backends.md and .plans/zai-glm-oauth.md.
+		// z.ai and Moonshot each have a native provider here (providers/zai,
+		// providers/moonshot), selected by their own key. The hints say so
+		// rather than steering the operator to redirect ANTHROPIC_BASE_URL:
+		// that variable is shared by every Anthropic-wire caller in the
+		// environment, so pointing it at one vendor retargets the others —
+		// and a second vendor's hint pointing it elsewhere makes two routes
+		// indistinguishable by base URL.
 		EnvVar:       "ZAI_API_KEY",
 		ProviderName: "z.ai (GLM, Anthropic-compatible)",
-		Hint:         "z.ai's API is reached through the Anthropic wire format — set `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` and `ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY`, then leave `ANTHROPIC_API_KEY` UNSET so Claude Code routes to z.ai instead of Anthropic",
+		Hint:         "z.ai is a native provider — with `ZAI_API_KEY` set and no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` ahead of it, it is selected on its own and reaches https://api.z.ai/api/anthropic with that key; `ANTHROPIC_BASE_URL` does not need to point at z.ai",
 	},
 	{
-		// Moonshot exposes an Anthropic-compatible endpoint for Kimi, the
-		// same shape as z.ai's above, so the hint steers users to the same
-		// env-passthrough pattern rather than to a prefix router.
 		EnvVar:       "MOONSHOT_API_KEY",
 		ProviderName: "Moonshot (Kimi, Anthropic-compatible)",
-		Hint:         "Moonshot's API is reached through the Anthropic wire format — set `ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic` and `ANTHROPIC_AUTH_TOKEN=$MOONSHOT_API_KEY`, then leave `ANTHROPIC_API_KEY` UNSET so Claude Code routes to Moonshot instead of Anthropic",
+		Hint:         "Moonshot is a native provider — with `MOONSHOT_API_KEY` set and no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `ZAI_API_KEY` ahead of it, it is selected on its own and reaches https://api.moonshot.ai/anthropic with that key; pass the Kimi model id whole (e.g. `--model kimi-k2`), and `ANTHROPIC_BASE_URL` does not need to point at Moonshot",
 	},
 }
 
