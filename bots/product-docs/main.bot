@@ -2555,14 +2555,20 @@ def pattern_matches(pattern, target):
             return False
         i += 1
     return i == len(ts)
+def has_literal(pattern):
+    return any(not (s == '*' or s == '**' or s.startswith(':') or (s.startswith('{') and s.endswith('}'))) for s in segments(pattern))
 def route_proves(pattern):
     ## A framework catch-all (/{slug}, /**) declares every path and proves
-    ## none. For a path only such a route covers, the corpus reference is the
-    ## only evidence -- written as a CHECK, not as a comment.
+    ## none, and so does a TAIL WILDCARD: ** swallows an unbounded tail, so
+    ## /dashboard/** carries one literal segment and still matches screens it
+    ## has never described. For a path only such a route covers, the corpus
+    ## reference is the only evidence. ONE predicate, read by both sides: a
+    ## declared route and a cited path are the same claim written by two
+    ## different authors, and the rule that governs one governs the other.
     ps = segments(pattern)
     if not ps:
         return True
-    return any(not (s == '*' or s == '**' or s.startswith(':') or (s.startswith('{') and s.endswith('}'))) for s in ps)
+    return has_literal(pattern) and '**' not in ps
 def corpus_matches(cited):
     return [c for c in entry_paths if pattern_matches(cited, c)]
 ## The anchor vocabulary is READ FROM THE NET, never assumed. Inventory ids
@@ -2811,7 +2817,7 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
         ## pattern, so a lone placeholder path matches every corpus entry
         ## and would pass while restituting nothing -- the same hole the
         ## declared-route side closes, on the side the graded agent writes.
-        if not route_proves(parts.path):
+        if segments(parts.path) and not has_literal(parts.path):
             refuse('PHANTOM_DOC', where + ':' + str(no), 'the cited path ' + path + ' is made of PLACEHOLDERS ONLY -- like a framework catch-all it matches every path and restitutes none; cite a path the net actually observed')
         elif '**' in segments(parts.path):
             ## A cited path is read as a PATTERN, and ** swallows the whole

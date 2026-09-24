@@ -2248,6 +2248,21 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 					"## One item — `/dashboard/invented` (`039`)")
 			},
 		},
+		{
+			// ONE predicate governs both sides. A DECLARED tail wildcard
+			// carries a literal segment, so it clears the placeholders-only
+			// rule — and still matches every screen below it while describing
+			// none. What the gate refuses a page to cite, it refuses a route
+			// table to prove.
+			name: "PHANTOM_DOC: a declared tail wildcard proves nothing either",
+			want: "the path /dashboard/invented is NEITHER a declared route NOR a corpus entry path",
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/routes.txt",
+					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/**\n")
+				mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
+					"## One item — `/dashboard/invented` (`039`)")
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

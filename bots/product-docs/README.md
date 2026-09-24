@@ -192,10 +192,11 @@ Three things the gate deliberately does not assume:
   route covers, the corpus reference is the only evidence. The rule cuts
   both ways — a *cited* path made only of placeholders is refused too,
   since a citation is read as a pattern and a lone `` `/**` `` would
-  otherwise match every corpus entry while restituting nothing. So is a
-  cited **tail wildcard**: `` `/dashboard/**` `` carries one literal
-  segment, clears the placeholders-only rule, and claims every screen
-  below it.
+  otherwise match every corpus entry while restituting nothing. A **tail
+  wildcard** is the same claim wearing a literal segment:
+  `` `/dashboard/**` `` clears the placeholders-only rule and still
+  matches every screen below it. One predicate governs both sides — what
+  the gate refuses a page to cite, it refuses a route table to prove.
 - **The exclusions chapter title.** The declared token matches the
   **whole** heading, anchored, the way `page_lint` matches its own
   chrome headings. As a substring, an insurance product's

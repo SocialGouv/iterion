@@ -47,8 +47,10 @@ version: 1.3.0
 ## holes); an inventory-prefixed token is verified WHEREVER it sits, and
 ## only an ambiguous inferred vocabulary (bare digits) falls back to the
 ## citing line — visibly, as `entry_ids_degraded`, with
-## `coverage_entry_id_pattern` recommended for any numeric net. A cited
-## TAIL WILDCARD (`/dashboard/**`) is refused, `coverage_routes_file` is
+## `coverage_entry_id_pattern` recommended for any numeric net. A TAIL
+## WILDCARD (`/dashboard/**`) proves nothing on EITHER side — cited by a
+## page or declared by the route table, one predicate governs both;
+## `coverage_routes_file` is
 ## confined to the net, and the absence of any trace of the net's own
 ## gate is reported as `net_unproven`. The counts (`counts_line`) ride
 ## the run events and the PR body, so a declared-anchorless chapter
