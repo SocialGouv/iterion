@@ -44,6 +44,7 @@ import SearchOverlay from "./SearchOverlay";
 import { useCanvasHandlers } from "./useCanvasHandlers";
 import CommandPalette, { type CommandAction } from "@/components/shared/CommandPalette";
 import { useLocation } from "wouter";
+import { useEditorTabActive } from "@/components/Editor/editorTabActive";
 
 const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode, subbotFrame: SubbotFrameNode, fanoutFrame: FanoutFrame };
 const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
@@ -52,16 +53,13 @@ function isEditableNode(id: string): boolean {
   return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id) && !isGroupNodeId(id) && !isSubbotChildId(id);
 }
 
-interface CanvasProps {
-  // Whether the hosting editor tab is currently visible. Inactive tabs
-  // stay mounted with display:none; React Flow can't measure a hidden
-  // container, so when the tab is shown again we restore the saved
-  // viewport (or refit) to avoid a blank canvas. Defaults to true so
-  // standalone mounts behave unchanged.
-  active?: boolean;
-}
-
-export default function Canvas({ active = true }: CanvasProps) {
+export default function Canvas() {
+  // Whether the hosting editor tab is the one on screen. Inactive tabs stay
+  // mounted with display:none: React Flow can't measure a hidden container,
+  // so the viewport is restored (or refit) when the tab is shown again, and
+  // nothing global — a shortcut, the Arrange / Fit-view slot, a centring
+  // request — is answered from a hidden tab.
+  const active = useEditorTabActive();
   const addNode = useAddNode();
   const addFromLibrary = useAddFromLibrary();
   const addSubNode = useAddSubNode();
@@ -83,8 +81,8 @@ export default function Canvas({ active = true }: CanvasProps) {
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
-  const pendingFitNodeId = useUIStore((s) => s.pendingFitNodeId);
-  const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
+  const pendingFitNodeId = useSelectionStore((s) => s.pendingFitNodeId);
+  const setPendingFitNodeId = useSelectionStore((s) => s.setPendingFitNodeId);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView, getNodes, getViewport, setViewport } = useReactFlow();
@@ -165,8 +163,8 @@ export default function Canvas({ active = true }: CanvasProps) {
   // EditorView puts the target ir_node_id into the UI store; we wait
   // for it to appear in React Flow's node set (the layout pass needs
   // a tick) before calling fitView, then clear the request so a later
-  // navigation doesn't re-trigger. Taken by the tab on screen only: a hidden
-  // tab's canvas holding a node of the same name would take it and clear it.
+  // navigation doesn't re-trigger. The request is this tab's own, and it
+  // waits while the tab is hidden: a hidden canvas cannot be measured.
   useEffect(() => {
     if (!active || !pendingFitNodeId) return;
     const t = setTimeout(() => {

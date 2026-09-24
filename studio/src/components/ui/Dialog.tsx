@@ -1,6 +1,7 @@
 import * as RD from "@radix-ui/react-dialog";
 import { Cross2Icon } from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
+import { useHiddenSubtree } from "./hiddenSubtree";
 
 export interface DialogProps {
   open: boolean;
@@ -32,12 +33,13 @@ export function Dialog({
   stack = "modal",
   onOpenAutoFocus,
 }: DialogProps) {
+  const hidden = useHiddenSubtree();
   // "confirm" puts overlay AND content at --z-confirm; the content paints
   // above its own overlay by DOM order, and both sit above --z-modal.
   const overlayZ = stack === "confirm" ? "z-[var(--z-confirm)]" : "z-[var(--z-overlay)]";
   const contentZ = stack === "confirm" ? "z-[var(--z-confirm)]" : "z-[var(--z-modal)]";
   return (
-    <RD.Root open={open} onOpenChange={onOpenChange}>
+    <RD.Root open={open && !hidden} onOpenChange={onOpenChange}>
       <RD.Portal>
         <RD.Overlay className={`fixed inset-0 ${overlayZ} bg-scrim-modal animate-fade-in`} />
         <RD.Content

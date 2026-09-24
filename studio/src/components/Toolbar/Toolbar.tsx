@@ -59,8 +59,9 @@ import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDial
 export default function Toolbar() {
   const [, setLocation] = useLocation();
   // Every open tab has its own Toolbar: only the one on screen answers the
-  // keyboard and renders the picker, or a key pressed on one tab would
-  // undo, save or open in all of them.
+  // keyboard, or a key pressed on one tab would undo, save or open in all of
+  // them. (Its picker and dialogs render through the UI kit, which shows
+  // nothing from a hidden tab.)
   const active = useEditorTabActive();
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
@@ -140,6 +141,9 @@ export default function Toolbar() {
   useEffect(() => {
     if (!active) return;
     const handler = (e: KeyboardEvent) => {
+      // A key the focused element already answered — the canvas takes Ctrl+Z
+      // and Ctrl+Y itself — is not answered twice.
+      if (e.defaultPrevented) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -497,13 +501,11 @@ export default function Toolbar() {
         </div>
       </div>
 
-      {active && (
-        <FilePicker
-          open={filePickerOpen}
-          onOpenChange={setFilePickerOpen}
-          onPick={handlePickFile}
-        />
-      )}
+      <FilePicker
+        open={filePickerOpen}
+        onOpenChange={setFilePickerOpen}
+        onPick={handlePickFile}
+      />
 
       <ConfirmDialog
         open={confirmRemoveWorkflow}

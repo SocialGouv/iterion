@@ -85,12 +85,16 @@ async function mountBoth() {
       </div>
     </QueryClientProvider>,
   );
-  // EditorView is loaded lazily: wait until both tabs show their Toolbar.
-  await waitFor(() => {
-    for (const id of ["tab-a", "tab-b"]) {
-      expect(screen.getByTestId(id).querySelector('input[type="file"]')).not.toBeNull();
-    }
-  });
+  // EditorView is loaded lazily: wait until both tabs show their Toolbar —
+  // under a full run's load, longer than waitFor's default second.
+  await waitFor(
+    () => {
+      for (const id of ["tab-a", "tab-b"]) {
+        expect(screen.getByTestId(id).querySelector('input[type="file"]')).not.toBeNull();
+      }
+    },
+    { timeout: 10_000 },
+  );
   return { a, b };
 }
 
