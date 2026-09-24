@@ -2974,10 +2974,12 @@ tool contract_lint:
   output: contract_state
   language: py
   script: |
+    import hashlib
     import json
     import os
     import re
     import shutil
+    import signal
     import subprocess
     import sys
     import tempfile
@@ -3386,6 +3388,61 @@ tool contract_lint:
     probe_env["TZ"] = "UTC"
     probe_env["GIT_TERMINAL_PROMPT"] = "0"
     probe_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    # A GATE IS A CHECK, and it runs here on the live workspace — the tree the
+    # programme starts from. One that rewrites a tracked file (a lock file an
+    # install regenerates, a formatter run with its write flag) changes the
+    # thing it checks, and leaves the next bot a tree nobody committed. The
+    # tracked content is fingerprinted around every command and a change is
+    # refused, naming the command; nothing is restored, because the tree is
+    # not this node's to rewrite either.
+    def git_env():
+        env = dict(os.environ)
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"):
+            env.pop(key, None)
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_SYSTEM"] = os.devnull
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["LC_ALL"] = "C"
+        env["TZ"] = "UTC"
+        return env
+
+    GIT_ENV = git_env()
+
+    def tracked_state():
+        diff = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
+                               "--binary", "HEAD"], capture_output=True, env=GIT_ENV, timeout=600)
+        names = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "diff", "--name-only",
+                                "HEAD"], capture_output=True, text=True, env=GIT_ENV, timeout=600)
+        if diff.returncode != 0 or names.returncode != 0:
+            refuse("CONTRACT_REFUSED",
+                   "cannot read the tracked state of %s around the gate probe: %s" % (
+                       ws, (diff.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+                       or (names.stderr or "").strip()[-300:]))
+        return hashlib.sha256(diff.stdout).hexdigest(), sorted(n for n in names.stdout.splitlines() if n)
+
+    # One process GROUP per command, killed whole on the wall: a gate that
+    # starts a build leaves children behind, and a child still writing after
+    # the probe moved on is a write nobody attributed.
+    def run_probe(command):
+        try:
+            proc = subprocess.Popen(["bash", "-c", command], cwd=ws, env=probe_env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            return "did not run: %s" % exc
+        try:
+            return proc.wait(timeout=GATE_PROBE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # the group already exited between the wall and the kill
+            proc.wait()
+            return "timeout"
+
+    state_before = tracked_state()
     probe_spent = 0.0
     for lot_id, where, commands in gate_probes:
         if probe_spent >= GATE_PROBE_BUDGET_S:
@@ -3397,16 +3454,17 @@ tool contract_lint:
         all_green, verdicts = True, []
         for command in commands:
             started = time.time()
-            try:
-                run = subprocess.run(["bash", "-c", command], cwd=ws, env=probe_env,
-                                     capture_output=True, timeout=GATE_PROBE_TIMEOUT_S)
-                code = run.returncode
-            except subprocess.TimeoutExpired:
-                code = "timeout"
-            except (OSError, subprocess.SubprocessError) as exc:
-                code = "did not run: %s" % exc
+            code = run_probe(command)
             probe_spent += time.time() - started
             verdicts.append("%s -> %s" % (command, code))
+            state_after = tracked_state()
+            if state_after != state_before:
+                changed = sorted(set(state_after[1]) ^ set(state_before[1])) or state_after[1]
+                reject(where, "its gate command %r WRITES to the tree it checks: tracked content changed "
+                              "while it ran (%s). A gate is a check; one that rewrites the repository "
+                              "leaves the next run a tree nobody committed, and certifies its own edit."
+                       % (command, ", ".join(changed[:6]) or "content of already-modified files"))
+                state_before = state_after
             if code != 0:
                 all_green = False
                 break

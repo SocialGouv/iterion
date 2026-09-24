@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 )
@@ -908,4 +909,74 @@ func measureUnderProfile(t *testing.T, profile string) map[string]any {
 			"generic tool failure instead of MEASUREMENT_REFUSED: %s", exit, stderr)
 	}
 	return out
+}
+
+// gateRepo is a contract workspace carrying one more tracked file, the kind a
+// gate command could rewrite: a lock file an install regenerates.
+func gateRepo(t *testing.T, contract string) string {
+	t.Helper()
+	dir := contractRepo(t, contract, goodOutcomes)
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "lock.txt"), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, dir, "add", "--", "src/lock.txt")
+	gittest.Run(t, dir, "commit", "-qm", "a tracked lock file")
+	return dir
+}
+
+// A GATE IS A CHECK. It runs on the live workspace, before the assessment is
+// committed and before the next bot starts on the same tree: a gate that
+// rewrites a tracked file changes the thing it checks, and leaves behind a
+// tree nobody committed. Build output it leaves UNTRACKED is not that, and is
+// accepted on the same bench.
+func TestAssessmentGateProbeRefusesAGateThatWritesToTheTree(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+
+	t.Run("a gate rewriting a tracked file", func(t *testing.T) {
+		contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+			`      - "bash -c 'echo regenerated >> src/lock.txt; exit 1'"`, 1)
+		if contract == aGoodContract {
+			t.Fatal("the mutation did not apply")
+		}
+		out := lintContractIn(t, gateRepo(t, contract), aGoodBrief)
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a gate that rewrote a tracked file was accepted — the lint certified a gate " +
+				"that edits the tree it checks, and left that edit behind")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "WRITES to the tree") ||
+			!strings.Contains(assessmentString(t, out, "reason"), "src/lock.txt") {
+			t.Errorf("the refusal does not name the write: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	t.Run("a gate leaving untracked build output is a check", func(t *testing.T) {
+		contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+			`      - "bash -c 'mkdir -p build && echo out > build/out.txt; exit 1'"`, 1)
+		out := lintContractIn(t, gateRepo(t, contract), aGoodBrief)
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("a gate whose only trace is untracked build output was refused: %s",
+				assessmentString(t, out, "reason"))
+		}
+	})
+
+	// A command killed on the wall takes its children with it: a build left
+	// running writes after the probe has moved on, where nothing attributes
+	// the write to a gate.
+	t.Run("a gate's children die with it on the wall", func(t *testing.T) {
+		contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+			`      - "bash -c '(sleep 4; echo late >> src/lock.txt) & sleep 60'"`, 1)
+		dir := gateRepo(t, contract)
+		out := lintContractIn(t, dir, aGoodBrief)
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("a gate that timed out was refused: %s", assessmentString(t, out, "reason"))
+		}
+		// Past the child's own delay: a survivor would have written by now.
+		time.Sleep(3 * time.Second)
+		if body := mustRead(t, filepath.Join(dir, "src", "lock.txt")); body != "resolved\n" {
+			t.Fatalf("a child of a gate killed on the wall kept running and wrote to the tree: %q", body)
+		}
+	})
 }
