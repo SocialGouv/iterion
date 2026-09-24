@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.197.3](https://github.com/SocialGouv/iterion/compare/v3.197.2...v3.197.3) (2026-09-24)
+
+### Bug Fixes
+
+* **studio:** every async answer settles only what it was asked about ([#1770](https://github.com/SocialGouv/iterion/issues/1770)) ([#1793](https://github.com/SocialGouv/iterion/issues/1793)) ([1f29d1c](https://github.com/SocialGouv/iterion/commit/1f29d1c53d2f68426e0977e9647a7ad60e69eb4c)), closes [#1650](https://github.com/SocialGouv/iterion/issues/1650) [#1662](https://github.com/SocialGouv/iterion/issues/1662), references [#1733](https://github.com/SocialGouv/iterion/issues/1733) [#1791](https://github.com/SocialGouv/iterion/issues/1791) [#1790](https://github.com/SocialGouv/iterion/issues/1790) [#1788](https://github.com/SocialGouv/iterion/issues/1788) [#1789](https://github.com/SocialGouv/iterion/issues/1789)
+
+    <details><summary>why</summary>
+
+    Every answer the editor waits for — an Open, an example, an import, a save, a validation, a reload, a Source-view Apply, the assistant's apply and reload, a draft following its conversation — now carries the identity it was asked about, and settles only that. A superseded answer (a newer request speaks for the author) is dropped quietly; an answer refused because the author worked meanwhile says so.
+
+    </details>
+
 ## [3.197.2](https://github.com/SocialGouv/iterion/compare/v3.197.1...v3.197.2) (2026-09-24)
 
 ### Bug Fixes
