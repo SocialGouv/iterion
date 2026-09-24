@@ -1341,7 +1341,7 @@ router.
   Use for a READ-ONLY supply-chain audit of installed dependencies:
   post-install triage, malware / typosquat / install-hook detection,
   CVE baseline. Emits findings to the board; does not fix.
-- **Vars**: `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `scan_dir` (string), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `scan_dir` (string), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/sec-audit-deps/main.bot`
 
 ### `sec-audit-source` — Seki
@@ -1372,7 +1372,7 @@ language-agnostic baseline. Add a language by dropping a
   SSRF, IDOR, broken auth, hardcoded secrets, crypto misuse,
   deserialisation, path traversal, misconfig). Emits findings to the
   board; does not fix. Pre-release hardening / PR-scope review.
-- **Vars**: `confirm_threshold` (int), `context_path` (string), `context_ttl_days` (int), `deepsec_agent` (string), `deepsec_bank_max_bytes` (int), `deepsec_concurrency` (int), `deepsec_model` (string), `deepsec_out` (string), `deepsec_process_limit` (int), `deepsec_root` (string), `diff_base` (string), `enable_deepsec` (bool), `enable_project_context` (bool), `file_filter` (string), `findings_cap_per_file` (int), `force_context_refresh` (bool), `fp_append_policy` (string), `fp_path` (string), `hard_stop_categories` (string), `matchers_dir` (string), `max_fix_per_run` (int), `min_generic_scanners` (int), `patch_attempts` (int), `patch_dir` (string), `records_dir` (string), `records_ttl_days` (int), `remediate` (bool), `remediation_mode` (string), `scan_dir` (string), `scan_dir_ttl_days` (int), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `shard_concurrency` (int), `shard_size` (int), `triage_inline_max_bytes` (int), `workflow_path` (string), `workspace_dir` (string)
+- **Vars**: `bundle_skills_dir` (string), `confirm_threshold` (int), `context_path` (string), `context_ttl_days` (int), `deepsec_agent` (string), `deepsec_bank_max_bytes` (int), `deepsec_concurrency` (int), `deepsec_model` (string), `deepsec_out` (string), `deepsec_process_limit` (int), `deepsec_root` (string), `diff_base` (string), `enable_deepsec` (bool), `enable_project_context` (bool), `file_filter` (string), `findings_cap_per_file` (int), `force_context_refresh` (bool), `fp_append_policy` (string), `fp_path` (string), `hard_stop_categories` (string), `matchers_dir` (string), `max_fix_per_run` (int), `min_generic_scanners` (int), `patch_attempts` (int), `patch_dir` (string), `records_dir` (string), `records_ttl_days` (int), `remediate` (bool), `remediation_mode` (string), `scan_dir` (string), `scan_dir_ttl_days` (int), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `shard_concurrency` (int), `shard_size` (int), `triage_inline_max_bytes` (int), `workflow_path` (string), `workspace_dir` (string)
 - **Path**: `bots/sec-audit-source/main.bot`
 
 ### `secured-renovacy` — Renovacy
@@ -1391,7 +1391,7 @@ in-stride commits until the diff is clean and the tree is green.
   lockfiles, version bumps. MUTATES dependency manifests/lockfiles and
   aligns consuming code on breaking changes. Ask before running with
   major_policy: attempt.
-- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_families_per_run` (int), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
+- **Vars**: `bundle_skills_dir` (string), `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_families_per_run` (int), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
 - **Path**: `bots/secured-renovacy/main.bot`
 
 ### `supply-shield` — Shieldy
@@ -1425,7 +1425,7 @@ packages.jsonl` for host-wide cross-repo dedup.
   default; pass scope_mode=full for a whole-tree audit. Reports back on
   the forge and the board; does not fix. For a CVE-focused gate use the
   companion bot supply-shield-cve (Vulny).
-- **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield/main.bot`
 
 ### `supply-shield-cve` — Vulny
@@ -1457,7 +1457,7 @@ a CVE tomorrow as advisories land. Point `cache_path` at
   Diff-scoped by default; pass scope_mode=full for a whole-tree CVE
   baseline. Reports back on the forge and the board; does not fix. For a
   MALWARE-focused gate use the companion bot supply-shield (Shieldy).
-- **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield-cve/main.bot`
 
 ### `test-coverage` — Testy

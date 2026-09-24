@@ -168,10 +168,11 @@ func TestTwoPassesInOneScanDirDoNotOverwriteEachOther(t *testing.T) {
 			"{{vars.scan_dir}}":                         sharedScan,
 		}
 		common := map[string]string{
-			"{{vars.scan_dir}}":      sharedScan,
-			"{{vars.workspace_dir}}": ws,
-			"{{vars.shard_size}}":    "1",
-			"{{vars.matchers_dir}}":  matchers,
+			"{{vars.scan_dir}}":          sharedScan,
+			"{{vars.workspace_dir}}":     ws,
+			"{{vars.bundle_skills_dir}}": filepath.Join(ws, ".claude", "iterion-skills"),
+			"{{vars.shard_size}}":        "1",
+			"{{vars.matchers_dir}}":      matchers,
 			// plan_shards sweeps stale pass-* directories at the writer; its
 			// body reads the run id and the TTL for that. 0 disables the
 			// sweep, which is what these two passes want — they must both
@@ -358,6 +359,7 @@ func runSecScanHealth(t *testing.T, passDir, sharedScan, ws string) (int, map[st
 		"{{vars.min_generic_scanners}}": "3",
 		"{{input.langs}}":               "[]",
 		"{{vars.workspace_dir}}":        ws,
+		"{{vars.bundle_skills_dir}}":    filepath.Join(ws, ".claude", "iterion-skills"),
 		"{{vars.enable_deepsec}}":       "false",
 		"{{vars.deepsec_out}}":          filepath.Join(sharedScan, "deepsec.json"),
 		"{{input.deepsec_paths}}":       shellQuote("{}"),
@@ -481,6 +483,7 @@ func TestPassDirIsSweptByTheNodeThatWritesIt(t *testing.T) {
 		"{{input.scan_dir}}":         filepath.Join(scanDir, "pass-"+runID),
 		"{{vars.scan_dir}}":          scanDir,
 		"{{vars.workspace_dir}}":     ws,
+		"{{vars.bundle_skills_dir}}": filepath.Join(ws, ".claude", "iterion-skills"),
 		"{{vars.shard_size}}":        "1",
 		"{{run.id}}":                 runID,
 		"{{vars.scan_dir_ttl_days}}": "30",

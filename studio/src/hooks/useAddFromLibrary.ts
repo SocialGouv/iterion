@@ -14,7 +14,7 @@ import {
   defaultTool,
   defaultCompute,
 } from "@/lib/defaults";
-import { parseGroups, groupToCommentText } from "@/lib/groups";
+import { documentGroups, groupToCommentText } from "@/lib/groups";
 import type { LibraryItem, NodeTemplate } from "@/lib/library/types";
 import type { IterDocument, SchemaDecl, VarField } from "@/api/types";
 
@@ -303,7 +303,7 @@ export function useAddFromLibrary() {
 
           // 3. Create the group annotation
           const baseGroupName = pattern.groupName ?? toSnakeCase(item.name);
-          const existingGroups = parseGroups(result.comments);
+          const existingGroups = documentGroups(result);
           const existingGroupNames = new Set(existingGroups.map((g) => g.name));
           const groupName = uniqueName(baseGroupName, existingGroupNames);
           const comment = { text: groupToCommentText({ name: groupName, nodeIds: createdNames }) };

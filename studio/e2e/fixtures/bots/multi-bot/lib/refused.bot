@@ -1,0 +1,11 @@
+## The writer has no multi-line form (#1612): this `command:` written over
+## two lines would come back as one escaped line under `dsl: 2`, so every
+## render of this file is refused and the Source view shows it as stored.
+
+dsl: 2
+
+tool collect_facts:
+  command: `echo iterion-ui-unit-fixture
+echo second line`
+  output: note
+  publish: collected_facts

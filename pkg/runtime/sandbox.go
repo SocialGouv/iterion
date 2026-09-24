@@ -292,9 +292,9 @@ type SandboxParams struct {
 	BoardMCPHandler http.Handler
 
 	// EffectiveBackend resolves a node's backend the way DISPATCH will —
-	// launch-time `--backend`/`--model` overrides included. The engine
-	// passes its executor; nil (a driver-level test) reads the raw IR
-	// alone. Without it the claw bind-mount decision misses every
+	// launch-time `--backend` overrides included. The engine
+	// passes its backendResolver(); nil (a driver-level test) reads the raw
+	// IR alone. Without it the claw bind-mount decision misses every
 	// override, since they are applied at dispatch and never folded back
 	// into the IR. Same seam as the workspace-safety admission check.
 	EffectiveBackend effectiveBackendResolver
@@ -1416,7 +1416,7 @@ func cloneStringMap(m map[string]string) map[string]string {
 //   - the IR as authored — the node's `backend:` (empty meaning claw, the
 //     implicit default) and its `fallbacks:` routes;
 //   - the backend DISPATCH will resolve, resolver being the executor's own
-//     chain (launch `--backend`/`--model` overrides → DSL → workflow
+//     chain (launch `--backend` overrides → DSL → workflow
 //     default → env → auto-detection). Overrides are applied at dispatch
 //     and never folded into the IR, so `--backend '*=claw'` on a workflow
 //     of claude_code nodes is invisible to the first reading alone.
@@ -1429,8 +1429,9 @@ func cloneStringMap(m map[string]string) map[string]string {
 // the node mid-run with `exec: /usr/local/bin/iterion: no such file or
 // directory`, an unused read-only bind costs nothing.
 //
-// A nil resolver (a driver-level call, a stub executor) reads the IR
-// alone: today's behaviour, unchanged.
+// A nil resolver (a driver-level call) reads the IR alone, and so does the
+// engine's stand-in for an executor that does not resolve backends: its
+// answer never names claw.
 func containsClawNode(wf *ir.Workflow, resolver effectiveBackendResolver) bool {
 	for _, n := range wf.Nodes {
 		if resolverRoutesToClaw(n, resolver) {
@@ -2238,7 +2239,9 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 }
 
 // writeThroughMirroredSkills pushes what the run mirrored into the host
-// workdir's .claude/ for its agents — bundle/plugin/library skills,
+// workdir's .claude/ for its agents — bundle/plugin/library skills, the
+// engine-owned copy of the bundle's skills (owned_skills.go, what a tool
+// node parsing an `iterion:` block reads),
 // plugin commands and agents, the merged hooks settings — into a copy-based
 // sandbox through the driver's write-through seam. The parent's own files
 // are already in its copy (rewriting them is idempotent: the host mirror
@@ -2268,7 +2271,7 @@ func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher s
 		}
 		n++
 	}
-	for _, sub := range []string{"skills", "commands", "agents"} {
+	for _, sub := range []string{"skills", "commands", "agents", ownedSkillsDirName} {
 		root := filepath.Join(workDir, ".claude", sub)
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {

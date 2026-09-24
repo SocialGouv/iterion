@@ -63,6 +63,14 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
+  ## Where a tool node reads a machine-readable `iterion:` block out of a
+  ## skill. The engine resets this directory and refills it from the bundle
+  ## on every mirror pass, so it carries the bundle's bytes under only the
+  ## names the bundle ships — unlike <workspace>/.claude/skills/, whose
+  ## collision policy lets the target checkout's own file win. A name the
+  ## bundle does not ship has no file here, and the "not covered" path is
+  ## what reports it.
+  bundle_skills_dir: string = "${BUNDLE_SKILLS_DIR}"
 
   ## Free-form context the operator can pass at run time. Empty
   ## by default — when empty, the prompt blocks render an empty
@@ -4275,7 +4283,7 @@ tool select_family:
 ## Identical mechanics to batch_upgrade_patches; the family-specific commit
 ## subject comes later in family_commit.
 tool family_upgrade:
-  command: `WS={{input.workspace_dir}} PKG_MGR={{input.pkg_manager}} MEMBERS={{input.members}} python3 -c "
+  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} MEMBERS={{input.members}} python3 -c "
 import os, sys, json, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -4287,7 +4295,7 @@ except Exception:
 def emit(d):
     print(json.dumps(d)); sys.exit(0)
 def lookup(name):
-    p = os.path.join(ws, '.claude', 'skills', 'package-managers.md')
+    p = os.path.join(os.environ.get('SKILLS', ''), 'package-managers.md')
     try:
         t = open(p, encoding='utf-8').read()
     except Exception:
@@ -4336,7 +4344,7 @@ emit({'success': True, 'output': 'family upgrade succeeded', 'upgraded_specs': [
 ## re-attempts each member individually with full agentic intel +
 ## validate, so we still get safety for genuinely tricky family bumps.
 tool family_validate:
-  command: `WS={{input.workspace_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -c "
+  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -c "
 import os, sys, json, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -4345,7 +4353,7 @@ fam = os.environ.get('FAMILY', '')
 def emit(d):
     print(json.dumps(d)); sys.exit(0)
 def lookup(name):
-    p = os.path.join(ws, '.claude', 'skills', 'package-managers.md')
+    p = os.path.join(os.environ.get('SKILLS', ''), 'package-managers.md')
     try:
         t = open(p, encoding='utf-8').read()
     except Exception:
@@ -4463,14 +4471,14 @@ agent family_align_code:
 ## it through the schema chain (yarn-up doesn't commit, so HEAD~0 is
 ## still the previous commit when family_validate flagged unstable).
 tool family_revert:
-  command: `WS={{input.workspace_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -c "
+  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -c "
 import os, sys, json, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
 pm = os.environ.get('PKG_MGR', '').strip().lower()
 fam = os.environ.get('FAMILY', '')
 def lookup(name):
-    p = os.path.join(ws, '.claude', 'skills', 'package-managers.md')
+    p = os.path.join(os.environ.get('SKILLS', ''), 'package-managers.md')
     try:
         t = open(p, encoding='utf-8').read()
     except Exception:

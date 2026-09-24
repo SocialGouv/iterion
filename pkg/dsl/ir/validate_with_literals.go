@@ -83,6 +83,14 @@ func (c *compiler) validateWithMappingLiterals(w *Workflow) {
 	}
 }
 
+// MappingArrivesAsText is mappingArrivesAsText for a host outside this
+// package that reads what a node's input holds: whether a `with` mapping
+// reaches its destination as a string, or passes a value through with its
+// type.
+func MappingArrivesAsText(dm *DataMapping) bool {
+	return mappingArrivesAsText(dm)
+}
+
 // mappingArrivesAsText mirrors the runtime's resolveMapping decision:
 // the destination receives a STRING for every mapping except one whose
 // raw text is exactly a single `{{…}}` block — that one resolves the

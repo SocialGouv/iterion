@@ -98,7 +98,15 @@ export default function EditorChangeOffer({
     [targetStore],
   );
   const unitBound = useSyncExternalStore(subscribeRevision, readUnitBound, () => false);
-  const unavailable = targetStale || !onEditor || readOnly || unitBound;
+  // A file the author asked for is still opening in that tab: that request
+  // wins, and an apply landing first would get its answer refused for edits
+  // nobody made. Available again once it ends — on the document it left.
+  const readPending = useCallback(
+    () => targetStore?.getState()._pendingIntent != null,
+    [targetStore],
+  );
+  const replacementPending = useSyncExternalStore(subscribeRevision, readPending, () => false);
+  const unavailable = targetStale || !onEditor || readOnly || unitBound || replacementPending;
   const hasDraft = !!proposal.source;
   // Intent is model-reported but never grants authority: it can only select
   // the operator's preconfigured branch. Unknown/legacy intent is non-explicit
@@ -288,6 +296,19 @@ export default function EditorChangeOffer({
         // Parsing/validation is asynchronous. Re-check afterwards so a late
         // result cannot clobber an edit the operator made meanwhile.
         const afterValidation = resolveEditorSession(proposal.sessionId);
+        // A file the author asked for began opening in that tab meanwhile:
+        // the proposal waits for it, as every background write does, and is
+        // looked at again once it ends — by the automatic run, which starts
+        // again when the tab is available, or by the Apply button.
+        if (
+          afterValidation &&
+          afterValidation.store.getState()._pendingIntent != null &&
+          afterValidation.store.getState()._generation === proposal.revision
+        ) {
+          autoStarted.current = null;
+          setAction("idle");
+          return;
+        }
         if (
           !afterValidation ||
           !routeRef.current.startsWith("/editor") ||
@@ -435,6 +456,7 @@ export default function EditorChangeOffer({
   else if (!revisionMatches) detail = "The document changed since this proposal was created.";
   else if (saveOnly && saveDecision === "deny") detail = "Saving assistant changes is disabled in Settings → Assistant.";
   else if (hasDraft && applyDecision === "deny") detail = "Applying assistant changes is disabled in Settings → Assistant.";
+  else if (replacementPending) detail = "Waiting for the file opening in that editor tab.";
   else if (action === "applying") detail = "Validating and applying the proposed bot…";
   else if (action === "saving") detail = "Saving the validated buffer to its existing file…";
   else if (action === "applied") {

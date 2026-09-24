@@ -1,0 +1,7 @@
+schema note:
+  value: string
+  summary: string
+
+schema check:
+  ok: bool
+  summary: string

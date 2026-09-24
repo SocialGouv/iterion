@@ -39,6 +39,14 @@ dsl: 2
 
 vars:
   workspace_dir:       string = "${PROJECT_DIR}"
+  ## Where a tool node reads a machine-readable `iterion:` block out of a
+  ## skill. The engine resets this directory and refills it from the bundle
+  ## on every mirror pass, so it carries the bundle's bytes under only the
+  ## names the bundle ships — unlike <workspace>/.claude/skills/, whose
+  ## collision policy lets the target checkout's own file win. A name the
+  ## bundle does not ship has no file here, and the "not covered" path is
+  ## what reports it.
+  bundle_skills_dir:   string = "${BUNDLE_SKILLS_DIR}"
   scope_notes:         string = ""
   severity_threshold:  string = "low"
   ## Per-run scanner output (JSON envelopes + shard plumbing). Pure
@@ -2938,7 +2946,7 @@ print(json.dumps({"scanner": "generic", "subscanners": ["gitleaks", "trivy", "se
 ## verify per-language coverage. Replaces the old per-language run_js/go/python
 ## scanner nodes + the closed has_js/has_go/has_python enum.
 tool run_lang_scanners:
-  command: `mkdir -p {{input.scan_dir}} && LANGS={{input.langs}} SCAN_DIR={{input.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
+  command: `mkdir -p {{input.scan_dir}} && LANGS={{input.langs}} SCAN_DIR={{input.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -c "
 import os, sys, json, re, subprocess
 _alias = {'javascript': 'js', 'typescript': 'js', 'ts': 'js', 'node': 'js', 'nodejs': 'js', 'golang': 'go', 'py': 'python', 'py3': 'python', 'python3': 'python'}
 def _norm_langs(_raw):
@@ -2987,7 +2995,11 @@ sub = []; paths = {}; errs = []
 for lang in langs:
     sp = os.path.join(skills, 'lang-%s.md' % lang)
     if not os.path.isfile(sp):
-        continue
+        # Named rather than silent: skills is the engine-owned copy of the
+        # bundle, so a missing file means the bundle ships no scanner set for
+        # this language. scan_health reports the same void as langs_detected
+        # minus langs_covered.
+        errs.append('lang %s: no lang-%s.md in the bundle skills — language not covered' % (lang, lang)); continue
     m = re.search(r'<!--\s*iterion:scanners(.*?)-->', open(sp, encoding='utf-8').read(), re.S)
     if not m:
         continue
@@ -4046,7 +4058,7 @@ compute scan_join:
 ## test resolves against the producer's own json_paths, which points at the
 ## per-pass path or is empty on every refusal.
 tool scan_health:
-  command: `SCAN_DIR={{input.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
+  command: `SCAN_DIR={{input.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.bundle_skills_dir}} ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
 import os, sys, json, re
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -5553,7 +5565,7 @@ except Exception as e:
 ## — treated as "no signal" → uncertain (NOT verified) downstream in
 ## aggregate_verdict.
 tool reproduce_rung:
-  command: `WS={{vars.workspace_dir}} FINDING={{input.finding}} SKILLS={{vars.workspace_dir}}/.claude/skills python3 -c "
+  command: `WS={{vars.workspace_dir}} FINDING={{input.finding}} SKILLS={{vars.bundle_skills_dir}} python3 -c "
 import os, sys, json, subprocess, re
 try:
     finding = json.loads(os.environ.get('FINDING','{}') or '{}')

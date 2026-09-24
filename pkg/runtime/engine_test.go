@@ -79,6 +79,10 @@ func (s *stubExecutor) EvictRun(string) {}
 // backend, so it grants nothing beyond a node's declaration.
 func (s *stubExecutor) EffectiveToolNames(ir.Node, bool) []string { return nil }
 
+// EffectiveBackendName answers the engine's backend seam: a stub routes no node
+// anywhere, so the IR's backend is all there is.
+func (s *stubExecutor) EffectiveBackendName(ir.Node) string { return "" }
+
 func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	if fn, ok := s.handlers[node.NodeID()]; ok {
 		return fn(input)

@@ -3,6 +3,54 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.197.3](https://github.com/SocialGouv/iterion/compare/v3.197.2...v3.197.3) (2026-09-24)
+
+### Bug Fixes
+
+* **studio:** every async answer settles only what it was asked about ([#1770](https://github.com/SocialGouv/iterion/issues/1770)) ([#1793](https://github.com/SocialGouv/iterion/issues/1793)) ([1f29d1c](https://github.com/SocialGouv/iterion/commit/1f29d1c53d2f68426e0977e9647a7ad60e69eb4c)), closes [#1650](https://github.com/SocialGouv/iterion/issues/1650) [#1662](https://github.com/SocialGouv/iterion/issues/1662), references [#1733](https://github.com/SocialGouv/iterion/issues/1733) [#1791](https://github.com/SocialGouv/iterion/issues/1791) [#1790](https://github.com/SocialGouv/iterion/issues/1790) [#1788](https://github.com/SocialGouv/iterion/issues/1788) [#1789](https://github.com/SocialGouv/iterion/issues/1789)
+
+    <details><summary>why</summary>
+
+    Every answer the editor waits for — an Open, an example, an import, a save, a validation, a reload, a Source-view Apply, the assistant's apply and reload, a draft following its conversation — now carries the identity it was asked about, and settles only that. A superseded answer (a newer request speaks for the author) is dropped quietly; an answer refused because the author worked meanwhile says so.
+
+    </details>
+
+## [3.197.2](https://github.com/SocialGouv/iterion/compare/v3.197.1...v3.197.2) (2026-09-24)
+
+### Bug Fixes
+
+* **runtime,bots:** read `iterion:` skill data blocks from an engine-owned copy ([#1797](https://github.com/SocialGouv/iterion/issues/1797)) ([84b62b2](https://github.com/SocialGouv/iterion/commit/84b62b2761c168f16b701b3f8dbecdeb9b208889))
+
+    <details><summary>why</summary>
+
+    A tool node that parses a machine-readable `iterion:` block out of a skill read it from `<workspace>/.claude/skills/`. That directory applies the workspace-wins collision policy, and the workspace is a checkout of the repository under audit: the checkout could both replace a shipped skill and supply a name the bundle never ships, and either was read as the bundle's. Five bots parse such blocks (`scanners`, `heuristics`, `lockfiles`, `reattack`, `pkgmgr`) across eleven read sites, and one of…
+
+    </details>
+
+## [3.197.1](https://github.com/SocialGouv/iterion/compare/v3.197.0...v3.197.1) (2026-09-23)
+
+### Bug Fixes
+
+* **runtime:** the backend seam's zero value is the refusal too — read at the worst case, named in the refusal, answered by the dry run ([#1767](https://github.com/SocialGouv/iterion/issues/1767)) ([#1777](https://github.com/SocialGouv/iterion/issues/1777)) ([914afa3](https://github.com/SocialGouv/iterion/commit/914afa33a689bd23c3659ba9916940c7c982a592)), references [#1748](https://github.com/SocialGouv/iterion/issues/1748) [#1758](https://github.com/SocialGouv/iterion/issues/1758) [#1748](https://github.com/SocialGouv/iterion/issues/1748)
+
+    <details><summary>why</summary>
+
+    ## What
+
+    </details>
+
+## [3.197.0](https://github.com/SocialGouv/iterion/compare/v3.196.2...v3.197.0) (2026-09-23)
+
+### Features
+
+* **studio:** per-file Source view hardened — groups from every comment, node permission controls, if-match writes and cloud repair, a store-held buffer, browser coverage ([#1576](https://github.com/SocialGouv/iterion/issues/1576) [#1580](https://github.com/SocialGouv/iterion/issues/1580) [#1650](https://github.com/SocialGouv/iterion/issues/1650) [#1659](https://github.com/SocialGouv/iterion/issues/1659) [#1662](https://github.com/SocialGouv/iterion/issues/1662) [#1649](https://github.com/SocialGouv/iterion/issues/1649)) ([#1738](https://github.com/SocialGouv/iterion/issues/1738)) ([6528250](https://github.com/SocialGouv/iterion/commit/652825080e2b4a12e77f65b58da3a01482318f1c)), references [1227/#1665](https://github.com/SocialGouv/iterion/issues/1665) [#1679](https://github.com/SocialGouv/iterion/issues/1679) [#1282](https://github.com/SocialGouv/iterion/issues/1282) [#1222](https://github.com/SocialGouv/iterion/issues/1222) [#1227](https://github.com/SocialGouv/iterion/issues/1227) [#1227](https://github.com/SocialGouv/iterion/issues/1227) [#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1749](https://github.com/SocialGouv/iterion/issues/1749) [#1749](https://github.com/SocialGouv/iterion/issues/1749) [#1755](https://github.com/SocialGouv/iterion/issues/1755) [#1749](https://github.com/SocialGouv/iterion/issues/1749) [#1755](https://github.com/SocialGouv/iterion/issues/1755)
+
+    <details><summary>why</summary>
+
+    Six tickets on one surface: the studio's per-file **Source view** (#1227/#1665), the bot-sources write paths, the canvas groups, and the agent inspector.
+
+    </details>
+
 ## [3.196.2](https://github.com/SocialGouv/iterion/compare/v3.196.1...v3.196.2) (2026-09-23)
 
 ### Bug Fixes

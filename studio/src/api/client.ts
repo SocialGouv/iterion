@@ -1,5 +1,6 @@
 import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo } from "./types";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
+import { isWorkflowFile } from "@/lib/workflowFile";
 
 const BASE_URL = apiBase();
 
@@ -247,6 +248,7 @@ export interface DiagnosticIssue {
 
 export async function parseSource(
   source: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   document: IterDocument;
   diagnostics: string[];
@@ -259,6 +261,7 @@ export async function parseSource(
   return request("/parse", {
     method: "POST",
     body: JSON.stringify({ source }),
+    signal: options?.signal,
   });
 }
 
@@ -399,6 +402,7 @@ export function importsFragments(source: string): boolean {
 export async function parseUnit(
   files: Record<string, string>,
   main: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   document: IterDocument;
   diagnostics: string[];
@@ -411,6 +415,7 @@ export async function parseUnit(
   return request("/parse", {
     method: "POST",
     body: JSON.stringify({ files, main }),
+    signal: options?.signal,
   });
 }
 
@@ -478,6 +483,7 @@ export async function listExamples(): Promise<string[]> {
 
 export async function loadExample(
   name: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   source: string;
   document: IterDocument;
@@ -504,7 +510,7 @@ export async function loadExample(
   // Encode each path segment but keep the slashes so subdirectory
   // examples (e.g. "feature_dev/main.bot") route correctly.
   const encoded = name.split("/").map(encodeURIComponent).join("/");
-  return request(`/examples/${encoded}`);
+  return request(`/examples/${encoded}`, { signal: options?.signal });
 }
 
 // File management
@@ -560,6 +566,7 @@ interface BotSourceFilesResponse {
 
 export async function openFile(
   path: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   source: string;
   document: IterDocument;
@@ -583,14 +590,15 @@ export async function openFile(
   if (bs) {
     const bundle = await apiRequest<BotSourceFilesResponse>(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+      { signal: options?.signal },
     );
     const source = bundle.files?.[bs.rel] ?? "";
-    if (bs.rel.endsWith(".bot") && importsFragments(source)) {
+    if (isWorkflowFile(bs.rel) && importsFragments(source)) {
       // A workflow in several files — the bundle's main, or a companion
       // workflow of its own: the unit is parsed from the whole files map
       // with that file as its main, so the fragments its imports reach
       // are in the document.
-      const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
+      const parsed = await parseUnit(bundle.files ?? {}, bs.rel, options);
       // The server's verdict, not a hardcoded true: a unit that does not
       // LOAD stays writable — its write back is refused there, naming the
       // fragment — but a main that did not PARSE makes the merged document a
@@ -604,7 +612,7 @@ export async function openFile(
         bindable: parsed.bindable !== false,
       };
     }
-    const parsed = await parseSource(source);
+    const parsed = await parseSource(source, options);
     // The verdict travels with the answer, the way /api/files/open carries it
     // for a file on disk. It has to: this path's save is a versioned PUT of
     // `unparse(document)`, and the compile guard behind it PASSES a salvage —
@@ -620,6 +628,7 @@ export async function openFile(
   return request("/files/open", {
     method: "POST",
     body: JSON.stringify({ path }),
+    signal: options?.signal,
   });
 }
 

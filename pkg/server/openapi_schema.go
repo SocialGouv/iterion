@@ -27,6 +27,29 @@ type routeOp struct {
 	// requestOptional marks a body the handler accepts EMPTY (every field has
 	// a default); the spec must not declare it required.
 	requestOptional bool
+	// query declares the query parameters a route READS. Path parameters are
+	// derived from the pattern, but a query token is invisible to the
+	// generator — and a spec that hides a parameter the route reads is a
+	// false document: a client built from it silently gets the weaker
+	// behaviour. Declare one here whenever a handler's decision depends on it.
+	query []queryParam
+}
+
+// queryParam is one declared query parameter of a route.
+type queryParam struct {
+	name        string
+	description string
+	// schemaType is the OpenAPI primitive ("integer", "string", …).
+	schemaType string
+}
+
+// ifMatchVersionParam is the if-match token the bodyless bundle-file write
+// reads (parseIfMatchVersion). Absent = last-write-wins; a malformed value is
+// refused rather than read as absent.
+var ifMatchVersionParam = queryParam{
+	name:        "version",
+	description: "If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400.",
+	schemaType:  "integer",
 }
 
 // routeSchemas maps "METHOD /pattern" (matching the recorded route key) to the
@@ -142,6 +165,28 @@ func routeSchemas() map[string]routeOp {
 		// documented-but-unverifiable is the exact shape this family exists
 		// to end.
 		"GET /api/teams/{id}/bot-sources": {response: botSourceListView{}},
+
+		// The per-file writes of a bundle, and the if-match token they read.
+		// The PUT takes it in its body; the DELETE carries no body of its own
+		// and takes it in the query. Both are declared: a client generated
+		// from a spec that hid the token would fall back to last-write-wins
+		// and overwrite a concurrent editor with no error anywhere.
+		"PUT /api/teams/{id}/bot-sources/{slug}/files/{path...}": {
+			request:  botSourceFilePutReq{},
+			response: botSourceView{},
+		},
+		"DELETE /api/teams/{id}/bot-sources/{slug}/files/{path...}": {
+			response: botSourceView{},
+			query:    []queryParam{ifMatchVersionParam},
+		},
+		"PUT /api/admin/bots/{slug}/files/{path...}": {
+			request:  botSourceFilePutReq{},
+			response: botSourceView{},
+		},
+		"DELETE /api/admin/bots/{slug}/files/{path...}": {
+			response: botSourceView{},
+			query:    []queryParam{ifMatchVersionParam},
+		},
 
 		// Forge integrations (connections + self-service OAuth/GitHub apps).
 		"GET /api/teams/{id}/forge/connections": {

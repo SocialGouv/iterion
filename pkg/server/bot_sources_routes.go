@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -257,6 +258,18 @@ func (s *Server) platformPushWarnings(tenantID string, bs botsource.BotSource) [
 		bs.Slug)}
 }
 
+// botSourceFilePutReq is the per-file write's body. A named type so the
+// OpenAPI generator can declare it: the if-match token a client must present
+// is part of the route's contract, and a spec that hides it hands a generated
+// client last-write-wins without saying so.
+type botSourceFilePutReq struct {
+	Content string `json:"content"`
+	// Version, when non-zero, is an if-match token: the write is rejected
+	// with 409 if the stored version advanced (a concurrent editor wrote in
+	// between). Omitted = last-write-wins.
+	Version int `json:"version,omitempty"`
+}
+
 // handlePutBotSourceFile writes one file into an existing bundle — the editor's
 // per-file save. The whole bundle is re-validated so a bad edit to any file is
 // caught, not just main.bot.
@@ -278,10 +291,7 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		s.botSourceError(w, r, err)
 		return
 	}
-	var body struct {
-		Content string `json:"content"`
-		Version int    `json:"version,omitempty"`
-	}
+	var body botSourceFilePutReq
 	r.Body = http.MaxBytesReader(w, r.Body, maxBotSourceBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
@@ -360,6 +370,15 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "cannot delete %s (the bundle entry)", botsource.MainBotFile)
 		return
 	}
+	// The if-match token, the same one the file put takes in its body. It
+	// rides the query here because a DELETE carries no body of its own and
+	// one is not reliably forwarded. Absent = last-write-wins, which is what
+	// a caller holding no token gets; malformed is refused rather than read
+	// as absent, or a typo would silently buy the weaker guarantee.
+	version, ok := s.parseIfMatchVersion(w, r)
+	if !ok {
+		return
+	}
 	// Clone before mutating — same aliasing hazard as the file put above.
 	files := make(map[string]string, len(bs.Files))
 	for k, v := range bs.Files {
@@ -375,7 +394,7 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// manifest still declares the floor its sources need.
 	before := validateBundleCompileSelected(bs.Files, []string{path})
 	bs.Files = files
-	bs.Version = 0 // no if-match on a delete
+	bs.Version = version
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -413,6 +432,18 @@ func (s *Server) writeBotSource(w http.ResponseWriter, r *http.Request, tenantID
 		s.auditBotSource(r, tenantID, "updated", out)
 		s.writeJSONFor(w, r, botSourceView{BotSource: out, Warnings: warnings})
 	case errors.Is(err, botsource.ErrNotFound):
+		// An if-match token names a row the caller READ. Falling through to
+		// a create here would drop it and resurrect the bundle from that
+		// caller's snapshot — the bot was deleted between this handler's
+		// read and this one, and the token is exactly what says so.
+		//
+		// 404 and not the version conflict: the bot was DELETED, not written
+		// by someone else, and a client told "another editor wrote to it,
+		// reload to see" would offer a reload that cannot succeed.
+		if bs.Version != 0 {
+			s.httpErrorFor(w, r, http.StatusNotFound, "bot source %q no longer exists: it was deleted since you read version %d", bs.Slug, bs.Version)
+			return
+		}
 		bs.CreatedBy = userID
 		out, cerr := s.botSources.Create(ctx, bs)
 		if cerr != nil {
@@ -668,6 +699,31 @@ func newDiagnostics(before, after []string) []string {
 		}
 	}
 	return fresh
+}
+
+// parseIfMatchVersion reads the `version` query token a bodyless bot-source
+// write presents. Absent is 0, which both store twins read as "no if-match"
+// — last-write-wins, the behaviour a caller with no token has to get. A
+// token that is not a positive integer is REFUSED: read as absent it would
+// hand a caller that asked for the check the one that does not check, and
+// the client could not tell the two apart.
+func (s *Server) parseIfMatchVersion(w http.ResponseWriter, r *http.Request) (int, bool) {
+	// Presence, not emptiness: `Get` cannot tell an ABSENT key from one
+	// present and empty, and `?version=` is what `?version=${token ?? ""}`
+	// produces. Read as absent it hands a caller that asked for the check
+	// the one that does not check — the very thing the refusal below exists
+	// to prevent.
+	q := r.URL.Query()
+	if !q.Has("version") {
+		return 0, true
+	}
+	raw := strings.TrimSpace(q.Get("version"))
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 1 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "version must be a positive integer, got %q", raw)
+		return 0, false
+	}
+	return v, true
 }
 
 // botSourceError maps store errors to actionable status codes.

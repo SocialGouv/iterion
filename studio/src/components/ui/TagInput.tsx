@@ -9,6 +9,15 @@ interface Props {
    *  are silently truncated on commit. Useful for `labels:` which we
    *  want to keep readable. */
   maxTagLength?: number;
+  /** Treat the values as LITERALS rather than labels: dedupe exactly
+   *  (case included) and stop reading a comma as a separator.
+   *
+   *  The two defaults below exist because this widget was written for
+   *  board labels. They are wrong for a value whose meaning is
+   *  case-sensitive or that may contain a comma — a permission rule is
+   *  both: the engine matches `Read(.env*)` and `Read(.ENV*)` as different
+   *  rules, so folding them loses one silently. */
+  literalValues?: boolean;
 }
 
 /** TagInput is a chip-based editor for string arrays. Used in the
@@ -17,7 +26,7 @@ interface Props {
  *  draft removes the last tag.
  *
  *  Tags are deduplicated case-insensitively but stored with the
- *  first-seen casing.
+ *  first-seen casing — unless `literalValues` is set.
  */
 export function TagInput({
   value,
@@ -25,6 +34,7 @@ export function TagInput({
   placeholder = "Add tag…",
   disabled = false,
   maxTagLength = 64,
+  literalValues = false,
 }: Props) {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -32,7 +42,9 @@ export function TagInput({
   const commit = (raw: string) => {
     const trimmed = raw.trim().slice(0, maxTagLength);
     if (!trimmed) return;
-    const exists = value.some((t) => t.toLowerCase() === trimmed.toLowerCase());
+    const exists = value.some((t) =>
+      literalValues ? t === trimmed : t.toLowerCase() === trimmed.toLowerCase(),
+    );
     if (exists) {
       setDraft("");
       return;
@@ -48,7 +60,7 @@ export function TagInput({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === ",") {
+    if (e.key === "Enter" || (e.key === "," && !literalValues)) {
       e.preventDefault();
       commit(draft);
       return;
