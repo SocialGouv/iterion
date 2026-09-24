@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -14,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/author"
 	"github.com/SocialGouv/iterion/pkg/dsl/canon"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -35,6 +38,11 @@ var (
 	// CHECK of canonical forms tolerates, and a conversion is not one.
 	ErrFmtToBaseline = errors.New("fmt: --baseline does not apply to --to")
 )
+
+// writeDocument renders a program as an author document — author.Write; a
+// seam for the test that holds convertTwin's read-back proof against a
+// writer defect, which no known program triggers.
+var writeDocument = author.Write
 
 // twinPath is the file a conversion writes: the .bot an author document
 // stands for (`x.bot.yaml` → `x.bot`, the `.yaml` off whatever its case),
@@ -190,11 +198,14 @@ func twinNameRefusal(surface, path, dest string) string {
 // stands for, proven to read back as the program the document describes
 // (unparse.Verify — the check `validate` reports as E054), with a notice
 // for what the .bot reads otherwise than the document wrote it (E053: the
-// .bot carries the reading); or the author document of a .bot, from a text
+// .bot carries the reading) and one for the document's YAML comments, which
+// the .bot is not written with; or the author document of a .bot, from a text
 // that parses without an error — never from one the parser recovered on —
-// with a notice for what the document does not carry: a frontmatter the
-// catalog reader does not read, the keys beyond the four of `catalog:`, the
-// ordinary comments.
+// proven to read back as the same program (ir.SameProgram, declaration by
+// declaration where nothing compiles to a workflow), with a notice
+// for what the document does not carry: a frontmatter the catalog reader
+// does not read, the keys beyond the four of `catalog:`, the ordinary
+// comments.
 func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices []string, err error) {
 	dest = twinPath(to, path)
 	abs, aerr := filepath.Abs(path)
@@ -214,15 +225,36 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 		if verr := unparse.Verify(res.File, text); verr != nil {
 			return dest, nil, nil, fmt.Errorf("%w: has no written .bot form: %v", canon.ErrRefused, verr)
 		}
+		if comments := author.Comments(raw); len(comments) > 0 {
+			notices = append(notices, fmt.Sprintf("%s: %d YAML comment line(s) are not carried into the .bot (the first: %s) — the .bot is written from the program; a ` #` inside a plain value starts one: quote the value when the `#` is part of it", path, len(comments), comments[0]))
+		}
 		return dest, []byte(text), notices, nil
 	case "yaml":
 		pr := parser.Parse(abs, string(raw))
 		if errs := diagnosticErrors(namedAs(pr.Diagnostics, path)); errs != "" {
 			return dest, nil, nil, fmt.Errorf("%w: does not parse: %s — a document is written from a program, never from a text the parser recovered on", canon.ErrRefused, errs)
 		}
-		out, werr := author.Write(pr.File)
+		out, werr := writeDocument(pr.File)
 		if werr != nil {
 			return dest, nil, nil, fmt.Errorf("%w: cannot be written as a document: %v", canon.ErrRefused, werr)
+		}
+		// The proof before the write: the document reads back — a value the
+		// writer spells and the reader refuses is refused here, not by the
+		// next validate — as the same program, beside the .bot.
+		back := author.Parse(abs+".yaml", out)
+		if back.HasErrors() {
+			return dest, nil, nil, fmt.Errorf("%w: cannot be written as a document: the document written does not read back: %s", canon.ErrRefused, diagnosticErrors(namedAs(back.Diagnostics, dest)))
+		}
+		ca, cb := ir.Compile(pr.File), ir.Compile(back.File)
+		why := ir.SameProgram(ca, cb)
+		if why == "" && (ca.Workflow == nil || cb.Workflow == nil) {
+			// No compiled program to compare — a fragment under lib/, a
+			// file of schemas or prompts, a bot that does not compile yet:
+			// SameProgram compares diagnostic codes only there.
+			why = sameDeclarations(pr.File, back.File)
+		}
+		if why != "" {
+			return dest, nil, nil, fmt.Errorf("%w: cannot be written as a document: the document written reads back as another program: %s", canon.ErrRefused, why)
 		}
 		// Whether the document carries a `catalog:` is read off the bytes
 		// written: the notes state what they hold, not what the writer meant.
@@ -234,6 +266,91 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 		return dest, out, notices, nil
 	}
 	return "", nil, nil, fmt.Errorf("fmt: --to takes bot or yaml, not %q", to)
+}
+
+// sameDeclarations compares, declaration by declaration, a .bot and the
+// program its document reads back as, when there is no compiled program to
+// compare: their span-free mirrors (ast.MarshalFileWithoutComments — the
+// document carries no comment), the profile as the text reads it, the
+// inline prompts by name (named after their bodies, an order that says
+// nothing) and every literal by its value (the writer spells `01.5` as
+// `1.5`, `010` as `10`). "" when they are one.
+func sameDeclarations(bot, back *ast.File) string {
+	a, err := declarationMirror(bot)
+	if err != nil {
+		return "the .bot cannot be compared: " + err.Error()
+	}
+	b, err := declarationMirror(back)
+	if err != nil {
+		return "the document cannot be compared: " + err.Error()
+	}
+	if bytes.Equal(a, b) {
+		return ""
+	}
+	return unparse.FirstJSONDifference(a, b)
+}
+
+// declarationMirror is f's mirror as sameDeclarations compares it, taken
+// off a copy: the JSON transport is the deep copy, comments left out.
+func declarationMirror(f *ast.File) ([]byte, error) {
+	raw, err := ast.MarshalFileWithoutComments(f)
+	if err != nil {
+		return nil, err
+	}
+	c, err := ast.UnmarshalFile(raw)
+	if err != nil {
+		return nil, err
+	}
+	c.Profile = f.EffectiveProfile()
+	var declared, inline []*ast.PromptDecl
+	for _, p := range c.Prompts {
+		if p.Inline {
+			inline = append(inline, p)
+		} else {
+			declared = append(declared, p)
+		}
+	}
+	sort.Slice(inline, func(i, j int) bool { return inline[i].Name < inline[j].Name })
+	c.Prompts = append(declared, inline...)
+	literalsByValue(reflect.ValueOf(c))
+	return ast.MarshalFile(c)
+}
+
+var literalType = reflect.TypeOf(ast.Literal{})
+
+// literalsByValue drops the spelling of every literal under v — a walk
+// over every exported field, so a literal the AST gains later is compared
+// by its value without anyone listing it.
+func literalsByValue(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			literalsByValue(v.Elem())
+		}
+	case reflect.Struct:
+		if v.Type() == literalType {
+			if v.CanSet() {
+				v.FieldByName("Raw").SetString("")
+			}
+			return
+		}
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() {
+				literalsByValue(v.Field(i))
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return // bytes (a json.RawMessage) hold no literal
+		}
+		for i := 0; i < v.Len(); i++ {
+			literalsByValue(v.Index(i))
+		}
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			literalsByValue(v.MapIndex(k))
+		}
+	}
 }
 
 // namedAs gives the diagnostics the file name the command was given —

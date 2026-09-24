@@ -195,7 +195,7 @@ func reread(f *ast.File, text string) error {
 			return fmt.Errorf("cannot compare the serialised source: %w", err)
 		}
 		if !bytes.Equal(a, b) {
-			return fmt.Errorf("the serialised source is not the same document: %s", firstJSONDifference(a, b))
+			return fmt.Errorf("the serialised source is not the same document: %s", FirstJSONDifference(a, b))
 		}
 	}
 	return nil
@@ -362,7 +362,7 @@ func sameContracts(a, b *ast.File) string {
 		return "cannot compare the serialised source's contracts: " + err.Error()
 	}
 	if !bytes.Equal(x, y) {
-		return firstJSONDifference(x, y)
+		return FirstJSONDifference(x, y)
 	}
 	for i, w := range a.Workflows {
 		if w == nil || i >= len(b.Workflows) || b.Workflows[i] == nil {
@@ -405,9 +405,9 @@ func canonicalPrompts(f *ast.File) *ast.File {
 	return &cp
 }
 
-// firstJSONDifference names the first key path at which two JSON documents
+// FirstJSONDifference names the first key path at which two JSON documents
 // diverge, so a refused save says which declaration did not survive.
-func firstJSONDifference(a, b []byte) string {
+func FirstJSONDifference(a, b []byte) string {
 	var x, y any
 	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
 		return "the documents differ"

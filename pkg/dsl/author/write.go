@@ -78,7 +78,7 @@ func inlineBodies(prompts []*ast.PromptDecl) map[string]string {
 // key to refuse. A scanner break needs the double quotes said explicitly
 // (see str).
 func keyNode(k string) *yaml.Node {
-	if strings.ContainsAny(k, scannerBreaks) {
+	if strings.ContainsAny(k, scannerBreaks) || k == mergeKey {
 		return quoted(k)
 	}
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k}
@@ -88,6 +88,11 @@ func keyNode(k string) *yaml.Node {
 // besides the newline: CR, NEL, LS, PS.
 var scannerBreaks = string([]rune{13, 0x85, 0x2028, 0x2029})
 
+// mergeKey is the one string yaml.v3's encoder writes plain and its decoder
+// reads back as another tag, key or value: a plain `<<` is the merge key.
+// Written quoted, it is the text (a vendor's parameter so named).
+const mergeKey = "<<"
+
 // str is a string value: plain when YAML reads the plain form back as the
 // same string (the encoder quotes the others), a literal block when it
 // holds a newline — and double-quoted when it holds a scanner break, the
@@ -96,7 +101,7 @@ var scannerBreaks = string([]rune{13, 0x85, 0x2028, 0x2029})
 // it; an LS or a PS is printable to it and would be written raw, where the
 // scanner ends a line and the reader settles a newline.
 func str(v string) *yaml.Node {
-	if strings.ContainsAny(v, scannerBreaks) {
+	if strings.ContainsAny(v, scannerBreaks) || v == mergeKey {
 		return quoted(v)
 	}
 	n := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v}
@@ -471,7 +476,9 @@ func literalNode(l *ast.Literal) *yaml.Node {
 	case ast.LitInt:
 		return intNode(l.IntVal)
 	case ast.LitFloat:
-		if numberRe.MatchString(l.Raw) {
+		// The .bot's spelling when YAML reads it as the same number — the
+		// reader refuses any other (a leading 0: `01.5`).
+		if botNumberRe.MatchString(l.Raw) {
 			return floatNode(l.Raw)
 		}
 		return floatNode(strconv.FormatFloat(l.FloatVal, 'f', -1, 64))
