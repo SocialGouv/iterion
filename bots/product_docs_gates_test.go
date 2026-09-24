@@ -114,12 +114,15 @@ func requireGitPython(t *testing.T) {
 	}
 }
 
-// newSourceRepo builds a throwaway git repository standing in for one of the
-// product's source repos, carrying a user-facing i18n catalog (functional
-// signal) and a credential file (which must never survive into the clone).
-func newSourceRepo(t *testing.T) string {
+// seedSourceRepo fills dir with a throwaway git repository standing in for one
+// of the product's source repos, carrying a user-facing i18n catalog
+// (functional signal) and a credential file (which must never survive into the
+// clone).
+func seedSourceRepo(t *testing.T, dir string) string {
 	t.Helper()
-	dir := t.TempDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitIn(t, dir, "init", "-q", "-b", "main")
 	writeFile(t, dir, "locales/fr.json", `{"submit":"Envoyer","status":"En instruction"}`+"\n")
 	writeFile(t, dir, ".env", "SECRET_KEY=never-read-me\n")
@@ -127,6 +130,26 @@ func newSourceRepo(t *testing.T) string {
 	gitIn(t, dir, "add", "-A")
 	gitIn(t, dir, "commit", "-q", "-m", "seed")
 	return dir
+}
+
+// newSourceRepo stands a source repository OUTSIDE any workspace — the shape a
+// catalog may name but no longer reach.
+func newSourceRepo(t *testing.T) string {
+	t.Helper()
+	return seedSourceRepo(t, t.TempDir())
+}
+
+// localSourceRel is where the fixtures stand a source repository that the
+// catalog names by the FILESYSTEM. A value on disk is a local source whichever
+// key carries it — `url` or `path` — so it is confined to the docs workspace,
+// and a fixture standing one outside would exercise the refusal and nothing
+// else.
+const localSourceRel = "vendor/src"
+
+// newLocalSource seeds that repository inside ws and returns its absolute path.
+func newLocalSource(t *testing.T, ws string) string {
+	t.Helper()
+	return seedSourceRepo(t, filepath.Join(ws, localSourceRel))
 }
 
 type ingestOut struct {
@@ -191,11 +214,13 @@ func ingestCommand(t *testing.T, ws, catalog, product, scratch string) string {
 func TestProductDocsCatalogIngest(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	scratch := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
-	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	source := newLocalSource(t, ws)
+	// A local source the workspace holds but that is NOT a repository: a
+	// visible `degraded` entry, never a silent absence.
+	missing := filepath.Join(ws, "vendor", "does-not-exist")
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\n"+
 			"docs:\n"+
@@ -236,7 +261,7 @@ func TestProductDocsCatalogIngest(t *testing.T) {
 	if okEntry == nil || badEntry == nil {
 		t.Fatalf("inventory does not carry one ok + one degraded entry: %+v", got.Inventory)
 	}
-	if note, _ := badEntry["note"].(string); !strings.Contains(note, "clone failed") {
+	if note, _ := badEntry["note"].(string); !strings.Contains(note, "is not a git repository") {
 		t.Fatalf("degraded entry does not say WHY it is degraded: %q", note)
 	}
 
@@ -281,13 +306,16 @@ func TestProductDocsCatalogIngest(t *testing.T) {
 func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
+	// The RELATIVE form of a local source: a url that resolves on disk is the
+	// same filesystem read as a path, and takes the same confinement.
+	source := localSourceRel
 
 	newWS := func(t *testing.T) (string, string) {
 		t.Helper()
 		ws := t.TempDir()
 		scratch := t.TempDir()
 		gitIn(t, ws, "init", "-q", "-b", "main")
+		newLocalSource(t, ws)
 		writeFile(t, ws, "documentation_produits/demo/README.md", "# Demo\n")
 		gitIn(t, ws, "add", "-A")
 		gitIn(t, ws, "commit", "-q", "-m", "seed")
@@ -509,10 +537,10 @@ func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
 func TestProductDocsSourceStampIsScopedToTheProduct(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	scratch := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
 	for _, id := range []string{"alpha", "beta"} {
 		catalogFixture(t, ws, "catalog/"+id,
 			"id: "+id+"\ndocs:\n  product_dir: documentation_produits/"+id+"\n"+
@@ -563,11 +591,10 @@ func TestProductDocsSourceStampIsScopedToTheProduct(t *testing.T) {
 func TestProductDocsCatalogIngestSourceDelta(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
-	firstSHA := strings.TrimSpace(gitIn(t, source, "rev-parse", "HEAD"))
-
 	ws := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
+	firstSHA := strings.TrimSpace(gitIn(t, source, "rev-parse", "HEAD"))
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\n"+
 			"docs:\n  product_dir: docs/demo\n"+
@@ -959,10 +986,10 @@ func TestProductDocsPageLint(t *testing.T) {
 func TestProductDocsDeterministicPassConverges(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	scratch := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\n"+
 			"docs:\n"+
@@ -1535,10 +1562,10 @@ func TestProductDocsInventoryStripsInlineURLCredentials(t *testing.T) {
 func TestProductDocsCatalogIngestRefusesCollidingIDs(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
 	scratch := t.TempDir()
+	source := newLocalSource(t, ws)
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n"+
 			"  - id: a/b\n    url: "+source+"\n"+
@@ -1560,10 +1587,10 @@ func TestProductDocsCatalogIngestRefusesCollidingIDs(t *testing.T) {
 func TestProductDocsSourceStampRecordsFullSHA(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
 	scratch := t.TempDir()
+	source := newLocalSource(t, ws)
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n  - id: demo-src\n    url: "+source+"\n",
 		`{"id":"demo","name":"Demo","product_dir":"docs/demo","repos":[{"id":"demo-src","url":"`+source+`"}]}`)
@@ -2468,6 +2495,113 @@ func TestProductDocsCatalogIngestRefusesASymlinkedLocalPath(t *testing.T) {
 	}
 }
 
+// TestProductDocsCatalogIngestConfinesAURLThatNamesTheFilesystem: `url` and
+// `path` are two spellings of ONE thing once the value is on disk. `url` is
+// read FIRST, so a containment rule written on `path` alone is a rule an
+// attacker only has to not write: a catalog naming an out-of-workspace
+// repository by `url` read it with the forge credential in the environment and
+// handed its contents to the campaign as source material.
+func TestProductDocsCatalogIngestConfinesAURLThatNamesTheFilesystem(t *testing.T) {
+	requireGitPython(t)
+	outside := newSourceRepo(t)
+	for _, tc := range []struct{ name, url, want string }{
+		{"an absolute path", outside, "escapes the docs workspace"},
+		{"a file:// url", "file://" + outside, "escapes the docs workspace"},
+		{"a file:// url carrying a host", "file://forge.invalid/repo.git", "carrying a host"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := t.TempDir()
+			scratch := t.TempDir()
+			gitIn(t, ws, "init", "-q", "-b", "main")
+			catalogFixture(t, ws, "catalog/demo",
+				"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    url: \""+tc.url+"\"\n",
+				`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","url":"`+tc.url+`"}]}`+"\n")
+			writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+			gitIn(t, ws, "add", "-A")
+			gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+			var got ingestOut
+			runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+			if got.OKCount != 0 || got.Degraded != 1 {
+				t.Fatalf("a url naming a tree outside the workspace was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+			}
+			if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, tc.want) {
+				t.Fatalf("the refusal does not name its cause %q: %q", tc.want, note)
+			}
+			if _, err := os.Stat(filepath.Join(scratch, "sources", "demo", "locales", "fr.json")); err == nil {
+				t.Fatalf("the out-of-workspace repository reached the scratch dir anyway")
+			}
+		})
+	}
+
+	// ...and the SAME url, naming a repository the workspace holds, takes the
+	// local decision: no forge, no network, no credential.
+	t.Run("a url inside the workspace is read as a local source", func(t *testing.T) {
+		ws := t.TempDir()
+		scratch := t.TempDir()
+		gitIn(t, ws, "init", "-q", "-b", "main")
+		inside := newLocalSource(t, ws)
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    url: "+inside+"\n",
+			`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","url":"`+inside+`"}]}`+"\n")
+		writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+		var got ingestOut
+		runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+		if got.OKCount != 1 {
+			t.Fatalf("inventory = %d ok / %d degraded, want 1/0: %s", got.OKCount, got.Degraded, got.Log)
+		}
+		if local, _ := got.Inventory[0]["local"].(bool); !local {
+			t.Fatalf("a url naming a repository ON DISK took the FORGE decision — the credential environment and the hardlinked clone come with it: %+v", got.Inventory[0])
+		}
+	})
+}
+
+// TestProductDocsCatalogIngestRefusesADelegatedObjectStore: a repository
+// DELEGATES its object store through objects/info/alternates, and a clone
+// serves the UNION — so a repository sitting inside the workspace hands over
+// the contents of one that is not, and confining the path confines nothing.
+// `--no-local` does not close it either: upload-pack serves the alternates all
+// the same.
+func TestProductDocsCatalogIngestRefusesADelegatedObjectStore(t *testing.T) {
+	requireGitPython(t)
+	outside := t.TempDir()
+	gitIn(t, outside, "init", "-q", "-b", "main")
+	writeFile(t, outside, "secret-notes.md", "# not for the campaign\n")
+	gitIn(t, outside, "add", "-A")
+	gitIn(t, outside, "commit", "-q", "-m", "seed")
+	outsideHead := strings.TrimSpace(gitIn(t, outside, "rev-parse", "HEAD"))
+
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	mirror := filepath.Join(ws, "mirror.git")
+	gitIn(t, ws, "init", "-q", "--bare", "-b", "main", mirror)
+	writeFile(t, mirror, "objects/info/alternates", filepath.Join(outside, ".git", "objects")+"\n")
+	gitIn(t, mirror, "update-ref", "refs/heads/main", outsideHead)
+
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \"mirror.git\"\n",
+		`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"mirror.git"}]}`+"\n")
+	writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OKCount != 0 || got.Degraded != 1 {
+		t.Fatalf("a repository delegating its objects outside the workspace was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+	}
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "reads its git objects from OUTSIDE the docs workspace") {
+		t.Fatalf("the refusal does not name its cause: %q", note)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "sources", "demo", "secret-notes.md")); err == nil {
+		t.Fatalf("the delegated store put an out-of-workspace tree into the scratch dir anyway")
+	}
+}
+
 // TestProductDocsCoverageGateInertWithoutANet is the NON-REGRESSION contract.
 // A product with no golden-master net must get the bot it had before this gate
 // existed: nothing certified, nothing refused, an EMPTY log (a log is what
@@ -2666,16 +2800,19 @@ func TestProductDocsCatalogIngestRefusesAnUnsafeLocalPath(t *testing.T) {
 // reports nothing found rather than guessing.
 func TestProductDocsCatalogIngestFindsTheNetInASourceClone(t *testing.T) {
 	requireGitPython(t)
-	source := newSourceRepo(t)
-	writeFile(t, source, ".golden-master/corpus.json", coverageCorpus)
-	writeFile(t, source, ".golden-master/feature-coverage.json", coverageInventory)
-	gitIn(t, source, "add", "-A")
-	gitIn(t, source, "commit", "-q", "-m", "net")
-
-	newWS := func(t *testing.T) (string, string) {
+	// The docs repo carries no net of its own; the SOURCE does. `wholeNet`
+	// false commits the corpus alone — half a net is no net.
+	newWS := func(t *testing.T, wholeNet bool) (string, string) {
 		t.Helper()
 		ws := t.TempDir()
 		gitIn(t, ws, "init", "-q", "-b", "main")
+		source := newLocalSource(t, ws)
+		writeFile(t, source, ".golden-master/corpus.json", coverageCorpus)
+		if wholeNet {
+			writeFile(t, source, ".golden-master/feature-coverage.json", coverageInventory)
+		}
+		gitIn(t, source, "add", "-A")
+		gitIn(t, source, "commit", "-q", "-m", "net")
 		catalogFixture(t, ws, "catalog/demo",
 			"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo-src\n    url: "+source+"\n",
 			`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
@@ -2685,7 +2822,7 @@ func TestProductDocsCatalogIngestFindsTheNetInASourceClone(t *testing.T) {
 		return ws, t.TempDir()
 	}
 
-	ws, scratch := newWS(t)
+	ws, scratch := newWS(t, true)
 	var got ingestOut
 	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
 	if got.OraclePath != filepath.Join(scratch, "sources", "demo-src", ".golden-master") {
@@ -2694,12 +2831,7 @@ func TestProductDocsCatalogIngestFindsTheNetInASourceClone(t *testing.T) {
 
 	// Half a net is no net: the gate arms on BOTH artifacts or on neither,
 	// because a corpus with no inventory certifies nothing.
-	if err := os.Remove(filepath.Join(source, ".golden-master/feature-coverage.json")); err != nil {
-		t.Fatal(err)
-	}
-	gitIn(t, source, "add", "-A")
-	gitIn(t, source, "commit", "-q", "-m", "half a net")
-	ws, scratch = newWS(t)
+	ws, scratch = newWS(t, false)
 	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
 	if got.OraclePath != "" {
 		t.Fatalf("oracle_path = %q with only half a net, want empty", got.OraclePath)

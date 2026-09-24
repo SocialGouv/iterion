@@ -209,10 +209,26 @@ repos:
 `path` is the form a **campaign** generates to document **its own**
 repository: the source is cloned over the filesystem — no forge, no
 network, no credential — and then redacted and read exactly like any
-other source. It is confined to the workspace and must be the root of a
-repository; an absolute path, a `..` escape or a plain directory is a
-named `degraded` entry, never a tree nobody chose to expose. Precedence
-is `url` > `path` > `github_repo` > `gitlab_path`.
+other source. Precedence is `url` > `path` > `github_repo` >
+`gitlab_path`, and the inventory reports which decision each entry took
+(`local: true` = read from the filesystem).
+
+**A source that names the FILESYSTEM takes ONE decision, whichever key
+carries it.** A `url` whose value is an absolute path, a `file://` url or
+a relative value that resolves on disk is a local source under another
+name — it is read with the same containment, the same credential-free
+environment and the same clone mode as `path`. The catalog is repo
+content, so that containment is:
+
+- confined to the workspace (`.` = the workspace itself); an absolute
+  path under `path`, a `..` escape, a symlink out, or a value outside the
+  workspace under `url` is a named `degraded` entry;
+- the root of a repository, never a plain directory;
+- no **delegated object store**: a repository whose git dir, object
+  directory or `objects/info/alternates` resolves outside the workspace
+  is refused. A clone serves the union of those stores, so confining the
+  path alone confines nothing — and `--no-local` does not change that,
+  since `upload-pack` serves the alternates too.
 
 A `.json` catalog needs no dependency at all. A YAML catalog is parsed
 with PyYAML when the interpreter has it, otherwise with `yq` (declared

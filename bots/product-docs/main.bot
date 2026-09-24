@@ -1403,6 +1403,88 @@ def redact(reason):
         msg = msg.replace(token, '<redacted>')
     return msg[:400]
 
+## ONE decision for every source that names the FILESYSTEM, whichever catalog
+## key carried it. A url and a path are two spellings of the same thing once
+## the value is on disk, so they take the same containment, the same
+## credential-free environment and the same clone mode -- two doors onto the
+## filesystem is one door too many, since the stricter one only has to not be
+## written.
+FS_SCHEME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://')
+SCP_LIKE_RE = re.compile(r'^[^/]+@[^/]+:')
+
+def filesystem_target(value):
+    ## (on-disk path, refusal). An empty path with no refusal means the value
+    ## names a FORGE and travels the network path with the forge credential.
+    if value.startswith('file://'):
+        rest = value[len('file://'):]
+        ## file://<host>/<path> is a local url this node cannot confine: the
+        ## host decides what the path means. A named refusal beats a guess
+        ## about which tree it would open.
+        if not rest.startswith('/'):
+            return '', 'url refused: a file:// url carrying a host names no path this node can confine to the docs workspace'
+        return rest, ''
+    if FS_SCHEME_RE.match(value) or SCP_LIKE_RE.match(value):
+        return '', ''
+    if os.path.isabs(value):
+        return value, ''
+    ## A RELATIVE url is a forge shorthand unless it is really there: a
+    ## relative url that resolves on disk is the same filesystem read as
+    ## the path key, under another name.
+    if os.path.exists(os.path.join(ws, value)):
+        return value, ''
+    return '', ''
+
+def confine_local(raw, key, shown):
+    ## (clone source, refusal). realpath, not normpath: normpath does not
+    ## resolve symlinks, so a symlink COMMITTED in the docs repo and named by
+    ## the catalog walks straight past a textual containment check -- and the
+    ## catalog is repo content, hostile-grade by this node own rule.
+    ws_n = os.path.realpath(ws)
+    cand = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(ws_n, raw))
+    if cand != ws_n and not cand.startswith(ws_n.rstrip('/') + '/'):
+        return '', key + ' refused: ' + shown + ' escapes the docs workspace -- a source read from the filesystem is read from the workspace, never from a tree nobody chose to expose'
+    ## --show-toplevel and not --git-dir: git walks UP to the nearest
+    ## enclosing repository, so ANY subdirectory of the workspace answers and
+    ## the guard would pass a path git clone then refuses. A named refusal
+    ## here beats a clone error two steps later.
+    rc, top, _ = run_git(['-C', cand, 'rev-parse', '--show-toplevel'], timeout=60, env=plain_env)
+    rcb, bare, _ = run_git(['-C', cand, 'rev-parse', '--is-bare-repository'], timeout=60, env=plain_env)
+    is_root = (rc == 0 and os.path.realpath(top.strip()) == os.path.realpath(cand)) or (rcb == 0 and bare.strip() == 'true')
+    if not is_root:
+        return '', key + ' ' + shown + ' is not a git repository -- a local source is cloned, so it must be the ROOT of one'
+    ## A repository may DELEGATE its object store: objects/info/alternates
+    ## names other stores and a clone serves the UNION of them, so a
+    ## repository sitting inside the workspace hands over the contents of one
+    ## that is not. Containment on the path alone stops at the path.
+    ## --no-local does not close it either -- upload-pack serves the
+    ## alternates all the same -- so the delegation itself is refused.
+    stores = []
+    rc, gd, _ = run_git(['-C', cand, 'rev-parse', '--git-dir'], timeout=60, env=plain_env)
+    if rc == 0 and gd.strip():
+        stores.append(os.path.join(cand, gd.strip()))
+    rc, od, _ = run_git(['-C', cand, 'rev-parse', '--git-path', 'objects'], timeout=60, env=plain_env)
+    obj_dir = os.path.join(cand, od.strip()) if rc == 0 and od.strip() else ''
+    if obj_dir:
+        stores.append(obj_dir)
+    rc, alt, _ = run_git(['-C', cand, 'rev-parse', '--git-path', 'objects/info/alternates'], timeout=60, env=plain_env)
+    alt_file = os.path.join(cand, alt.strip()) if rc == 0 and alt.strip() else ''
+    if alt_file and os.path.isfile(alt_file):
+        try:
+            with open(alt_file, encoding='utf-8', errors='replace') as fh:
+                for entry_line in fh:
+                    entry_line = entry_line.strip()
+                    if not entry_line or entry_line.startswith('#'):
+                        continue
+                    ## An alternates line is relative to the OBJECT directory.
+                    stores.append(entry_line if os.path.isabs(entry_line) else os.path.join(obj_dir or cand, entry_line))
+        except OSError as exc:
+            return '', key + ' refused: ' + shown + ' declares an unreadable objects/info/alternates -- ' + redact(str(exc))
+    for store in stores:
+        real = os.path.realpath(store)
+        if real != ws_n and not real.startswith(ws_n.rstrip('/') + '/'):
+            return '', key + ' refused: ' + shown + ' reads its git objects from OUTSIDE the docs workspace (' + real + ') -- a clone serves them, so confining the path alone confines nothing'
+    return cand, ''
+
 gitlab_block = entry.get('gitlab') if isinstance(entry.get('gitlab'), dict) else {}
 gitlab_host = str(gitlab_block.get('host') or '').strip().rstrip('/')
 
@@ -1474,44 +1556,39 @@ for raw in repos:
     is_local = False
     if explicit:
         ## Same for the url, plus the remote-HELPER form (ext::<cmd>),
-        ## which git executes outright. Ordinary local paths stay
-        ## legal: an on-disk mirror is a legitimate source.
+        ## which git executes outright.
         if explicit.startswith('-') or '::' in explicit:
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'url refused: an option-shaped or remote-helper (ext::) url is an execution primitive, not a repository'})
             continue
-        url = explicit
+        ## A url whose value names the FILESYSTEM is a local source wearing
+        ## another key: it takes the SAME decision as path -- one containment
+        ## rule, one credential-free environment, one clone mode. Two doors
+        ## onto the filesystem is one door too many, since the stricter one
+        ## only has to not be written.
+        target, why = filesystem_target(explicit)
+        if why:
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': why})
+            continue
+        if target:
+            cand, refusal = confine_local(target, 'url', explicit)
+            if refusal:
+                inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': refusal})
+                continue
+            url, is_local = cand, True
+        else:
+            url = explicit
     elif local:
         ## A repository ALREADY ON DISK, named by a path RELATIVE to the
         ## workspace -- a lone dot being the workspace itself. This is how a
         ## campaign documents its OWN repository: no forge, no network,
         ## no credential, and the clone is still redacted and read
-        ## read-only like any other source. The path is confined to the
-        ## workspace because the catalog is repo content (hostile-grade):
-        ## an absolute path or a dot-dot escape would read a tree nobody
-        ## chose to expose.
+        ## read-only like any other source.
         if os.path.isabs(local):
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path refused: a source path is RELATIVE to the docs workspace, never absolute'})
             continue
-        ## realpath, not normpath: normpath does not resolve symlinks, so a
-        ## symlink COMMITTED in the docs repo and named by the catalog
-        ## walks straight past a textual containment check -- and the
-        ## catalog is repo content, hostile-grade by this node's own rule.
-        ## That is the same tree nobody chose to expose the absolute and
-        ## dot-dot refusals exist to keep out.
-        ws_n = os.path.realpath(ws)
-        cand = os.path.realpath(os.path.join(ws_n, local))
-        if cand != ws_n and not cand.startswith(ws_n.rstrip('/') + '/'):
-            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path refused: ' + local + ' escapes the docs workspace'})
-            continue
-        ## --show-toplevel and not --git-dir: git walks UP to the nearest
-        ## enclosing repository, so ANY subdirectory of the workspace
-        ## answers and the guard would pass a path git clone then refuses.
-        ## A named refusal here beats a clone error two steps later.
-        rc, top, _ = run_git(['-C', cand, 'rev-parse', '--show-toplevel'], timeout=60, env=plain_env)
-        rcb, bare, _ = run_git(['-C', cand, 'rev-parse', '--is-bare-repository'], timeout=60, env=plain_env)
-        is_root = (rc == 0 and os.path.realpath(top.strip()) == os.path.realpath(cand)) or (rcb == 0 and bare.strip() == 'true')
-        if not is_root:
-            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path ' + local + ' is not a git repository -- a local source is cloned, so it must be the ROOT of one'})
+        cand, refusal = confine_local(local, 'path', local)
+        if refusal:
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': refusal})
             continue
         url = cand
         is_local = True
@@ -1607,7 +1684,11 @@ for raw in repos:
     ## worktree, readable with one git show. Dropping it is what makes
     ## the redaction true rather than cosmetic.
     shutil.rmtree(os.path.join(dest, '.git'), ignore_errors=True)
-    inventory.append({'id': rid, 'status': 'ok', 'path': dest, 'head': head, 'url': strip_creds(url), 'changed_files': changed[:500], 'note': note})
+    ## The local flag is the DECISION this entry took, not a spelling: a source
+    ## whose value named the filesystem was confined to the workspace, cloned
+    ## over it with no forge, no network and no credential. Reported so the
+    ## choice is visible to the operator and to the tests that pin it.
+    inventory.append({'id': rid, 'status': 'ok', 'local': is_local, 'path': dest, 'head': head, 'url': strip_creds(url), 'changed_files': changed[:500], 'note': note})
 
 ok = [e for e in inventory if e['status'] == 'ok']
 degraded = [e for e in inventory if e['status'] != 'ok']

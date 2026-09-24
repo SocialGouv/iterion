@@ -1,8 +1,8 @@
 name: product-docs
 display_name: Prody
 icon: 🧭
-version: 1.2.0
-## 1.2.0 — EXHAUSTIVENESS IS A GATE, not the agent's word. A new
+version: 1.3.0
+## 1.3.0 — EXHAUSTIVENESS IS A GATE, not the agent's word. A new
 ## deterministic node, `coverage_check`, reads the product's
 ## golden-master net — `<oracle_dir>/feature-coverage.json` (covered
 ## features with the corpus entries that exercise them, exclusions with
@@ -32,6 +32,17 @@ version: 1.2.0
 ## itself), cloned locally with no forge, no network and no credential,
 ## then redacted like any other source. That is how a campaign
 ## documents its OWN repository.
+## SOURCE CONFINEMENT, one decision point. A source that names the
+## FILESYSTEM is confined to the workspace whichever key carries it:
+## `url` is read first, and an absolute path, a `file://` url or a
+## relative value that resolves on disk is a local source under another
+## name — same containment, same credential-free environment, same clone
+## mode as `path`. A repository whose git dir, object directory or
+## `objects/info/alternates` resolves outside the workspace is refused
+## too: a clone serves the union of those stores, so confining the path
+## alone confines nothing (`--no-local` does not change that — upload-pack
+## serves the alternates as well). The inventory reports the decision each
+## entry took (`local`).
 ## 1.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (50 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.
