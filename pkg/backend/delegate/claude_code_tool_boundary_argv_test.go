@@ -1,14 +1,17 @@
 package delegate
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -20,9 +23,20 @@ import (
 // an option — an ultracode --append-system-prompt runs to 13 lines — are
 // flattened first, or one spawn would be counted as fourteen), so a test can assert on
 // BOTH passes of one Execute.
+//
+// It answers only once it has read the user message. The SDK writes its
+// initialize control request first whenever the session carries a hook, and
+// every claude_code first pass does: a stand-in answering after one line
+// exits while the user message is still on its way, that write fails with
+// EPIPE, and Execute reports a transient failure before the formatting pass
+// (#1694).
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
-case "$*" in *--input-format*) read -r _ ;; esac
+case "$*" in *--input-format*)
+	while read -r line; do
+		case "$line" in *'"type":"user"'*) break ;; esac
+	done ;;
+esac
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"s1","model":"fake","tools":[],"mcp_servers":[]}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"","num_turns":1,"duration_ms":1,"duration_api_ms":1,"session_id":"s1"}'
 `
@@ -421,5 +435,45 @@ func TestTheGatedFormattingWithholdingSparesTheToolThePassNeeds(t *testing.T) {
 			t.Errorf("gatedFormattingWithheld repeats %q", name)
 		}
 		seen[name] = true
+	}
+}
+
+// The stand-in reads the whole request before it answers — pinned without
+// timing luck: the user message goes out after the stand-in has had ample time
+// to answer and exit, which is the order a slow writer produces under -race.
+func TestTheStandInCLIReadsTheWholeRequestBeforeAnswering(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "claude")
+	if err := os.WriteFile(script, []byte(fakeClaudeArgv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ARGV_LOG", filepath.Join(dir, "argv.log"))
+
+	cmd := exec.Command(script, "--input-format", "stream-json")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(stdin, `{"type":"control_request","request":{"subtype":"initialize"}}`+"\n"); err != nil {
+		t.Fatalf("writing the initialize request: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := io.WriteString(stdin, `{"message":{"content":"x","role":"user"},"type":"user"}`+"\n"); err != nil {
+		t.Fatalf("the user message, written after the initialize request, failed: %v — the stand-in answered "+
+			"before it had read the whole request", err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("stand-in: %v (output %q)", err, out.String())
+	}
+	if !strings.Contains(out.String(), `"type":"result"`) {
+		t.Fatalf("the stand-in answered no result: %q", out.String())
 	}
 }
