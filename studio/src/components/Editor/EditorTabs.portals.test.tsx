@@ -161,10 +161,15 @@ describe("a tab whose validation turns red", () => {
     await waitFor(() => expect(useUIStore.getState().diagnosticsPanelOpen).toBe(true));
   });
 
-  it("does not open it over the tab on screen when it is a hidden one", async () => {
-    const { b } = await mountBoth();
+  it("waits while its tab is hidden, and opens it when the tab is shown", async () => {
+    const { b, view } = await mountBoth();
     act(() => b.store.getState().setDiagnostics(["e1"]));
     await new Promise((r) => setTimeout(r, 50));
     expect(useUIStore.getState().diagnosticsPanelOpen).toBe(false);
+
+    loc.search = "?file=bots%2Fb.bot";
+    view.rerender(tree());
+    await waitFor(() => expect(useTabsStore.getState().activeEditorTabId).toBe(b.id));
+    await waitFor(() => expect(useUIStore.getState().diagnosticsPanelOpen).toBe(true));
   });
 });

@@ -1,17 +1,18 @@
-// Whether the editor route is what the app shows. EditorTabsView raises it
-// while it is mounted — it is mounted only on that route — so an app-level
+// The editor tab the app shows, or null. EditorTabsView publishes it: it
+// alone decides what the editor route shows — the welcome pane (no tab), or
+// the active tab when that tab is one of the current project's. An app-level
 // command aimed at "the editor" (the desktop's and the workspace shell's
-// Edit → Undo) can tell the editor on screen from an editor tab left behind
-// while the author is on another page.
-let mounted = 0;
+// Edit → Undo) acts on that tab, and on nothing when the author is on another
+// page or the editor shows its welcome pane.
+let onScreen: string | null = null;
 
-export function markEditorOnScreen(): () => void {
-  mounted += 1;
+export function markEditorTabOnScreen(tabId: string | null): () => void {
+  onScreen = tabId;
   return () => {
-    mounted -= 1;
+    if (onScreen === tabId) onScreen = null;
   };
 }
 
-export function editorOnScreen(): boolean {
-  return mounted > 0;
+export function editorTabOnScreen(): string | null {
+  return onScreen;
 }
