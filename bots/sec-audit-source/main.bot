@@ -46,7 +46,14 @@ vars:
   ## collision policy lets the target checkout's own file win. A name the
   ## bundle does not ship has no file here, and the "not covered" path is
   ## what reports it.
-  bundle_skills_dir:   string = "${BUNDLE_SKILLS_DIR}"
+  ## Constrained absolute so a launch-time override cannot make it empty or
+  ## relative: every reader joins a skill NAME onto it, and a relative join
+  ## resolves against the node's cwd, which is the checkout. The gate reads
+  ## the EXPANDED value, so it refuses "" and "some/dir" while admitting the
+  ## literal a studio form re-sends unmodified. The second branch is what the
+  ## compile-time default check (C161) reads — it compares the LITERAL text,
+  ## never the expansion, so a bare "^/" would refuse this very default.
+  bundle_skills_dir:   string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
   scope_notes:         string = ""
   severity_threshold:  string = "low"
   ## Per-run scanner output (JSON envelopes + shard plumbing). Pure
@@ -2990,6 +2997,7 @@ def _norm_langs(_raw):
     return _out
 langs = _norm_langs(os.environ.get('LANGS', '[]') or '[]')
 skills = os.environ.get('SKILLS_DIR', ''); scan_dir = os.environ['SCAN_DIR']; ws = os.environ['WORKSPACE_DIR']
+if not os.path.isabs(skills): sys.exit('run_lang_scanners: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (skills,))
 env = dict(os.environ); env['SCAN_DIR'] = scan_dir; env['WORKSPACE_DIR'] = ws
 sub = []; paths = {}; errs = []
 for lang in langs:
@@ -4170,6 +4178,7 @@ def _norm_langs(_raw):
     return _out
 _langs = _norm_langs(os.environ.get('LANGS', '[]') or '[]')
 _skills_dir = os.environ.get('SKILLS_DIR', '')
+if not os.path.isabs(_skills_dir): sys.exit('scan_health: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (_skills_dir,))
 LANG = []
 # _lang_outputs maps each SKILL-BACKED detected language (one we ship a
 # lang-<id>.md for, i.e. one we CLAIM to SAST-scan) to its declared output
@@ -5575,6 +5584,7 @@ if not isinstance(finding, dict):
     finding = {}
 ws = os.environ['WS']
 skills = os.environ['SKILLS']
+if not os.path.isabs(skills): sys.exit('reproduce_rung: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (skills,))
 scanner = (finding.get('scanner') or '').strip()
 matcher = (finding.get('matcher') or '').strip()
 fpath = (finding.get('file') or '').strip()

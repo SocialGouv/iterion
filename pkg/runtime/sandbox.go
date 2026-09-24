@@ -2195,7 +2195,19 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	}
 	copyBased := sharedSandboxIsCopyBased(shared.Run)
 	pushed := 0
+	ownedPruned := false
 	if refresher, ok := shared.Run.(sandbox.WorkspaceFileRefresher); ok {
+		// The write-through seam writes files and removes none, and the
+		// container this child is moving into already holds the PARENT's
+		// engine-owned skills copy. Left in place, a name only the parent's
+		// bundle ships would answer for this child too — and the copy's whole
+		// property is that a name its own bundle does not ship has no file in
+		// it. The host-side reset cannot reach a copied workspace, so the
+		// directory is emptied HERE, before the child's is written.
+		if err := pruneOwnedSkillsInSharedSandbox(ctx, shared.Run, shared.WorkspaceFolder); err != nil {
+			return devboxCleanup, err
+		}
+		ownedPruned = true
 		pushed = writeThroughMirroredSkills(ctx, e.workDir, refresher, e.logger)
 	}
 	// What the child does NOT get in a shared sandbox, said once, in the
@@ -2229,6 +2241,7 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	if err := emitForSandbox(store.EventSandboxShared, map[string]any{
 		"adopted": true, "driver": shared.Run.Driver(), "workspace": shared.WorkspaceFolder,
 		"parent_run": e.parentRunID, "copy_based": copyBased, "skills_written_through": pushed,
+		"owned_skills_pruned":   ownedPruned,
 		"file_secrets_declared": fileSecrets, "devbox_declared": devboxDeclared,
 		"board_endpoint_inherited": shared.BoardEndpoint != "", "ask_user_inherited": shared.AskUserEndpoint != "",
 		"attachments_mounted": false,

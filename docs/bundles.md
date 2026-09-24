@@ -289,6 +289,23 @@ for collision, devbox and pause/resume rules.
    tell the two apart. A name the bundle does not ship has no file in
    the owned copy, which is what makes "this name is not covered"
    observable to the reader.
+
+   `${BUNDLE_SKILLS_DIR}` is **absolute or nothing**: a reader joins a
+   skill name onto it, and an empty or relative value would resolve
+   against the node's own working directory — the checkout. The engine
+   refuses a run whose workspace it cannot name absolutely rather than
+   expand to nothing, and a bot declaring the var should constrain it,
+   e.g. `[matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"]`. The second
+   branch is required, not decoration: the launch gate reads the
+   EXPANDED value, but the compile-time default check (C161) compares
+   the **literal** default text, so a bare `^/` refuses
+   `"${BUNDLE_SKILLS_DIR}"` itself.
+
+   In a **shared sandbox** (a child adopting its parent's live one) the
+   directory is emptied in the container before the child's copy is
+   written through: the write-through seam adds files and removes none,
+   so a name only the parent's bundle ships would otherwise answer for
+   the child.
 2. **Prompts** in `prompts/*.md` are merged into the AST `prompts:`
    table **before** static validation runs, so node-level
    `system:`/`user:` references against bundle filenames type-check.

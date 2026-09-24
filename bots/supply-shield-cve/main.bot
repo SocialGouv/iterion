@@ -78,7 +78,14 @@ vars:
   ## collision policy lets the target checkout's own file win. A name the
   ## bundle does not ship has no file here, and the "not covered" path is
   ## what reports it.
-  bundle_skills_dir:   string = "${BUNDLE_SKILLS_DIR}"
+  ## Constrained absolute so a launch-time override cannot make it empty or
+  ## relative: every reader joins a skill NAME onto it, and a relative join
+  ## resolves against the node's cwd, which is the checkout. The gate reads
+  ## the EXPANDED value, so it refuses "" and "some/dir" while admitting the
+  ## literal a studio form re-sends unmodified. The second branch is what the
+  ## compile-time default check (C161) reads — it compares the LITERAL text,
+  ## never the expansion, so a bare "^/" would refuse this very default.
+  bundle_skills_dir:   string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
   severity_threshold:  string = "medium"
   scope_notes:         string = ""
   ## diff | full. diff = only newly added/upgraded deps between base..head
@@ -494,6 +501,7 @@ base  = (os.environ.get('BASE_REF') or '').strip()
 head  = (os.environ.get('HEAD_REF') or 'HEAD').strip()
 ws    = os.environ.get('WORKSPACE_DIR') or '.'
 skills= os.environ.get('SKILLS_DIR') or ''
+if not os.path.isabs(skills): sys.exit('diff_scope: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (skills,))
 
 def git(args):
     try:
@@ -714,6 +722,7 @@ for it in items:
     if e and e not in ecos:
         ecos.append(e)
 scan_dir = os.environ['SCAN_DIR']; ws = os.environ['WORKSPACE_DIR']; skills = os.environ.get('SKILLS_DIR', '')
+if not os.path.isabs(skills): sys.exit('run_eco_heuristics: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (skills,))
 env = dict(os.environ); env['SCAN_DIR'] = scan_dir; env['WORKSPACE_DIR'] = ws
 errors = []
 for e in ecos:

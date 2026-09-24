@@ -70,7 +70,14 @@ vars:
   ## collision policy lets the target checkout's own file win. A name the
   ## bundle does not ship has no file here, and the "not covered" path is
   ## what reports it.
-  bundle_skills_dir: string = "${BUNDLE_SKILLS_DIR}"
+  ## Constrained absolute so a launch-time override cannot make it empty or
+  ## relative: every reader joins a skill NAME onto it, and a relative join
+  ## resolves against the node's cwd, which is the checkout. The gate reads
+  ## the EXPANDED value, so it refuses "" and "some/dir" while admitting the
+  ## literal a studio form re-sends unmodified. The second branch is what the
+  ## compile-time default check (C161) reads — it compares the LITERAL text,
+  ## never the expansion, so a bare "^/" would refuse this very default.
+  bundle_skills_dir: string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
 
   ## Free-form context the operator can pass at run time. Empty
   ## by default — when empty, the prompt blocks render an empty
@@ -4295,7 +4302,9 @@ except Exception:
 def emit(d):
     print(json.dumps(d)); sys.exit(0)
 def lookup(name):
-    p = os.path.join(os.environ.get('SKILLS', ''), 'package-managers.md')
+    _sk = os.environ.get('SKILLS', '')
+    if not os.path.isabs(_sk): sys.exit('family pkgmgr lookup: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (_sk,))
+    p = os.path.join(_sk, 'package-managers.md')
     try:
         t = open(p, encoding='utf-8').read()
     except Exception:
@@ -4353,7 +4362,9 @@ fam = os.environ.get('FAMILY', '')
 def emit(d):
     print(json.dumps(d)); sys.exit(0)
 def lookup(name):
-    p = os.path.join(os.environ.get('SKILLS', ''), 'package-managers.md')
+    _sk = os.environ.get('SKILLS', '')
+    if not os.path.isabs(_sk): sys.exit('family pkgmgr lookup: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (_sk,))
+    p = os.path.join(_sk, 'package-managers.md')
     try:
         t = open(p, encoding='utf-8').read()
     except Exception:
@@ -4478,7 +4489,9 @@ os.chdir(ws)
 pm = os.environ.get('PKG_MGR', '').strip().lower()
 fam = os.environ.get('FAMILY', '')
 def lookup(name):
-    p = os.path.join(os.environ.get('SKILLS', ''), 'package-managers.md')
+    _sk = os.environ.get('SKILLS', '')
+    if not os.path.isabs(_sk): sys.exit('family pkgmgr lookup: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (_sk,))
+    p = os.path.join(_sk, 'package-managers.md')
     try:
         t = open(p, encoding='utf-8').read()
     except Exception:
