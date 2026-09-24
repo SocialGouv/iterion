@@ -433,7 +433,8 @@ lines, `--exec` too), then `iterion fmt --to bot x.bot.yaml` writes `x.bot`,
 which is what you commit and run. Three rules the `.bot` does not have:
 quote a value that holds `: ` or ` #`, or starts with `{`, `[`, `!` or
 another character YAML reserves (a `{{…}}` template unquoted is a YAML
-mapping); write each edge as one `.bot` edge line — quoted whole in single
+mapping) — in single quotes, as double quotes read backslash escapes
+(`"\t"` is a tab); write each edge as one `.bot` edge line — quoted whole in single
 quotes when it holds `: `, the `.bot`'s double quotes inside, a `'` written
 twice; write numbers as digits without a leading 0 (YAML reads `010` as
 the octal 8, `0x10` and `1e2` otherwise: refused). Keys and value forms:
