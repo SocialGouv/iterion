@@ -360,6 +360,10 @@ schema probe_state:
   ## one document. Computed and never compared, it would be a promise this
   ## schema made and nothing kept.
   fingerprint: string
+  ## The engine gave the run no bundle-owned skills directory. Its own refusal
+  ## and its own code: the repository is fine, the engine running the bundle
+  ## is the thing to change.
+  skills_missing: bool
 
 ## The declared entry. ok=false is the NAMED refusal: the brief is the only
 ## place the objectives of a campaign can come from.
@@ -558,7 +562,8 @@ tool workspace_probe:
     ws = {{vars.workspace_dir}}
     skills_dir = {{vars.bundle_skills_dir}}
 
-    out = {"ok": False, "code": "", "reason": "", "base_sha": "", "fingerprint": ""}
+    out = {"ok": False, "code": "", "reason": "", "base_sha": "", "fingerprint": "",
+           "skills_missing": False}
 
     def refuse(code, reason):
         out["code"] = code
@@ -637,22 +642,28 @@ tool workspace_probe:
         parts.extend("tag:%s" % line for line in sorted(tags.stdout.splitlines()) if line.strip())
     # The digest is taken over the ENGINE-OWNED copy: fingerprinting the
     # workspace mirror would record what the audited repository put there.
-    if not skills_dir:
+    # Empty OR absent. An engine that predates the owned copy leaves the
+    # reference unexpanded or empty; either way there is no directory, and
+    # every node after this one would refuse later with a message about its
+    # own symptom (no manifest shape, no profile) instead of this cause.
+    if not skills_dir or not os.path.isdir(skills_dir):
+        out["skills_missing"] = True
         refuse("BUNDLE_SKILLS_UNAVAILABLE",
                "the engine gave this run no bundle-owned skills directory (${BUNDLE_SKILLS_DIR} "
-               "is empty). This bundle EXECUTES blocks read out of its skills and takes its "
+               "is %r). This bundle EXECUTES blocks read out of its skills and takes its "
                "measurement scale from one of them; reading them from the workspace instead would "
-               "read whatever the repository under assessment put there.")
-    if os.path.isdir(skills_dir):
-        for name in sorted(os.listdir(skills_dir)):
-            if not name.endswith(".md"):
-                continue
-            try:
-                with open(os.path.join(skills_dir, name), "rb") as handle:
-                    digest = hashlib.sha256(handle.read()).hexdigest()
-            except OSError as exc:
-                refuse("WORKSPACE_NOT_A_REPO", "cannot read the bundle skill %s: %s" % (name, exc))
-            parts.append("skill:%s:%s" % (name, digest))
+               "read whatever the repository under assessment put there. The engine that runs "
+               "this bundle must provide the owned copy." % skills_dir)
+    for name in sorted(os.listdir(skills_dir)):
+        if not name.endswith(".md"):
+            continue
+        try:
+            with open(os.path.join(skills_dir, name), "rb") as handle:
+                digest = hashlib.sha256(handle.read()).hexdigest()
+        except OSError as exc:
+            out["skills_missing"] = True
+            refuse("BUNDLE_SKILLS_UNAVAILABLE", "cannot read the bundle skill %s: %s" % (name, exc))
+        parts.append("skill:%s:%s" % (name, digest))
 
     out["ok"] = True
     out["base_sha"] = base_sha
@@ -663,6 +674,12 @@ tool workspace_probe:
 fail workspace_not_a_repo:
   description: "the launch has no repository to assess"
   code: WORKSPACE_NOT_A_REPO
+  message: "{{outputs.workspace_probe.reason}}"
+  resumable: false
+
+fail bundle_skills_unavailable:
+  description: "the engine gave the run no bundle-owned skills directory"
+  code: BUNDLE_SKILLS_UNAVAILABLE
   message: "{{outputs.workspace_probe.reason}}"
   resumable: false
 
@@ -3577,7 +3594,6 @@ tool commit:
     ws = {{vars.workspace_dir}}
     plan_rel = {{vars.plan_path}}
     survey_rel = {{vars.survey_path}}
-    out_rel = {{vars.out_dir}}
     skills_dir = {{vars.bundle_skills_dir}}
     documents = {{input.documents}}
     plan_documents = {{input.plan_documents}}
@@ -3636,48 +3652,60 @@ tool commit:
                     parts.append("skill:%s:%s" % (name, hashlib.sha256(handle.read()).hexdigest()))
         return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
-    if entry_fingerprint:
-        head_before = git("rev-parse", "HEAD")
-        if head_before.returncode != 0:
-            refuse("COMMIT_FAILED", "cannot resolve HEAD before committing: %s"
-                   % (head_before.stderr or "").strip()[-200:])
-        current = fingerprint_now(head_before.stdout.strip())
-        if current != entry_fingerprint:
-            refuse("COMMIT_FAILED",
-                   "the inputs moved under this run: the fingerprint taken at the probe (%s) is not "
-                   "the one the tree, its tags and this bundle's skills carry now (%s). Every figure "
-                   "about to land was measured against the first; landing them would publish two "
-                   "states as one document."
-                   % (entry_fingerprint[:12], current[:12]))
+    # No fingerprint is a refusal, never a skipped check: the comparison below
+    # is the only thing standing between a moved tree and a document that
+    # publishes two states as one, and a value that failed to travel would
+    # otherwise switch it off without a word.
+    if not entry_fingerprint:
+        refuse("COMMIT_FAILED",
+               "no input fingerprint reached the commit. It is taken at the probe and compared "
+               "here, seconds before the figures land; without it nothing can say the tree they "
+               "were measured on is the tree they are about to be committed to.")
+    head_before = git("rev-parse", "HEAD")
+    if head_before.returncode != 0:
+        refuse("COMMIT_FAILED", "cannot resolve HEAD before committing: %s"
+               % (head_before.stderr or "").strip()[-200:])
+    current = fingerprint_now(head_before.stdout.strip())
+    if current != entry_fingerprint:
+        refuse("COMMIT_FAILED",
+               "the inputs moved under this run: the fingerprint taken at the probe (%s) is not "
+               "the one the tree, its tags and this bundle's skills carry now (%s). Every figure "
+               "about to land was measured against the first; landing them would publish two "
+               "states as one document."
+               % (entry_fingerprint[:12], current[:12]))
 
     outcomes_rel = os.path.join(os.path.dirname(plan_rel), "outcomes.json")
-    # EXPLICIT PATHS, never `git add -A`. The workspace may carry anything a
-    # previous node or the operator left in it; a commit that swept it up would
-    # publish work this run neither produced nor reviewed, under a message that
-    # does not describe it.
-    wanted = [plan_rel, outcomes_rel, survey_rel, out_rel]
-    present = [path for path in wanted if os.path.exists(os.path.join(ws, path))]
-    if plan_rel not in present:
-        refuse("COMMIT_FAILED", "the contract at %s is not on disk; there is nothing to land" % plan_rel)
 
-    # EVERY ARTEFACT THIS RUN PRODUCED, BY NAME. The document paths come from
-    # the nodes that WROTE them, not from a list repeated here: a name repeated
-    # in two places is a name that drifts, and the check would then certify the
-    # copy rather than the file.
+    # EVERY ARTEFACT THIS RUN PRODUCED, BY NAME — and nothing else. The document
+    # paths come from the nodes that WROTE them, not from a list repeated here: a
+    # name repeated in two places is a name that drifts, and the check would
+    # then certify the copy rather than the file. The same list is what is
+    # staged and committed: a directory pathspec would sweep up whatever else
+    # sits under the output directory — a previous node's scratch, the
+    # operator's notes — and publish it under a message that does not describe
+    # it.
     def relative(path):
         path = str(path or "")
         if not path:
             return ""
-        return os.path.relpath(path, ws) if os.path.isabs(path) else path
+        return os.path.relpath(path, ws) if os.path.isabs(path) else os.path.normpath(path)
 
     expected = [plan_rel, outcomes_rel, survey_rel]
     for entry in list(documents or []) + list(plan_documents or []):
         rel = relative(entry)
         if rel:
             expected.append(rel)
-    expected = sorted(set(path for path in expected if path))
+    expected = sorted(set(os.path.normpath(path) for path in expected if path))
+    outside = [path for path in expected if os.path.isabs(path) or path == ".." or path.startswith("../")]
+    if outside:
+        refuse("COMMIT_FAILED",
+               "%d artefact(s) this run reported writing lie outside the workspace: %s. What this "
+               "bot publishes lands in the repository it assessed, or nowhere."
+               % (len(outside), ", ".join(outside)))
+    if plan_rel not in expected or not os.path.isfile(os.path.join(ws, plan_rel)):
+        refuse("COMMIT_FAILED", "the contract at %s is not on disk; there is nothing to land" % plan_rel)
 
-    absent = [path for path in expected if not os.path.exists(os.path.join(ws, path))]
+    absent = [path for path in expected if not os.path.isfile(os.path.join(ws, path))]
     if absent:
         refuse("COMMIT_FAILED",
                "%d artefact(s) this run reported writing are not on disk: %s. A node's report is a "
@@ -3698,18 +3726,20 @@ tool commit:
                "branch without it. Add an exception for them, or point the output somewhere the "
                "repository keeps." % (len(ignored), ", ".join(ignored)))
 
-    added = git("add", "--", *present)
+    # The pathspec IS the artefact list: what is staged, and what is committed.
+    pathspec = list(expected)
+    added = git("add", "--", *pathspec)
     if added.returncode != 0:
         refuse("COMMIT_FAILED", "git add refused %s: %s"
-               % (", ".join(present), (added.stderr or "").strip()[-400:]))
+               % (", ".join(pathspec), (added.stderr or "").strip()[-400:]))
 
-    staged = git("diff", "--cached", "--name-only")
+    staged = git("diff", "--cached", "--name-only", "--", *pathspec)
     names = [line for line in staged.stdout.splitlines() if line.strip()]
     if not names:
         refuse("COMMIT_FAILED",
                "nothing was staged from %s. An assessment whose documents never landed produced a "
                "log line: the tree is the deliverable, and a run that finishes with an unchanged "
-               "tree has written nothing anyone can read." % ", ".join(present))
+               "tree has written nothing anyone can read." % ", ".join(expected))
 
     message = ("chore(assessment): the programme contract and its assessment\n\n"
                "Written by the assessment bot from the declared brief and a survey re-verified "
@@ -3721,7 +3751,7 @@ tool commit:
     # the operator's work in flight — under a message that does not describe
     # it, which is exactly what the explicit `git add` above exists to prevent.
     committed = git("-c", "user.name=iterion", "-c", "user.email=iterion@localhost",
-                    "-c", "commit.gpgsign=false", "commit", "-m", message, "--", *present)
+                    "-c", "commit.gpgsign=false", "commit", "-m", message, "--", *pathspec)
     if committed.returncode != 0:
         refuse("COMMIT_FAILED", "git commit refused: %s"
                % ((committed.stderr or committed.stdout or "").strip()[-400:]))
@@ -3730,18 +3760,10 @@ tool commit:
     if head.returncode != 0:
         refuse("COMMIT_FAILED", "cannot read HEAD after committing: %s" % (head.stderr or "").strip()[-200:])
 
-    # What was ASKED to land, verified as having landed. A report that the
-    # commit succeeded is a claim about a command; this is a read of the tree.
-    landed = git("show", "--stat", "--name-only", "--format=", "HEAD")
-    landed_names = {line for line in landed.stdout.splitlines() if line.strip()}
-    unlanded = [path for path in expected if path not in landed_names]
-    if unlanded:
-        refuse("COMMIT_FAILED",
-               "the commit %s does not carry %d of the artefacts this run produced: %s. Finished is "
-               "not `git commit` returning zero — it is each named deliverable being IN the commit, "
-               "and a written-but-unlanded document reads as landed in every report downstream."
-               % (head.stdout.strip()[:12], len(unlanded), ", ".join(unlanded)))
-    dirty = git("status", "--porcelain", "--", *present)
+    # Anything still dirty under the artefacts is a document that was written
+    # and did not land as written. Untracked files are asked for explicitly: the
+    # repository's own configuration can hide them from a bare status.
+    dirty = git("status", "--porcelain", "--untracked-files=all", "--", *expected)
     residue = [line for line in dirty.stdout.splitlines() if line.strip()]
     if residue:
         refuse("COMMIT_FAILED",
@@ -3749,10 +3771,36 @@ tool commit:
                "commit: %s. A written-but-uncommitted artefact reads as landed in every report "
                "downstream." % (len(residue), "; ".join(residue[:6])))
 
+    # LANDED means the tree HEAD names carries each artefact WITH THE CONTENT ON
+    # DISK — read from the tree, not from what the commit happened to change. A
+    # changed-files list refuses an artefact identical to the one already
+    # committed (it lands by being there), and it cannot see a hook that moved
+    # HEAD after the commit returned zero.
+    def blob_at_head(path):
+        found = git("rev-parse", "--verify", "--quiet", "HEAD:%s" % path)
+        return found.stdout.strip() if found.returncode == 0 else ""
+
+    def blob_on_disk(path):
+        hashed = git("hash-object", "--", path)
+        return hashed.stdout.strip() if hashed.returncode == 0 else ""
+
+    unlanded = []
+    for path in expected:
+        at_head = blob_at_head(path)
+        if not at_head or at_head != blob_on_disk(path):
+            unlanded.append(path)
+    if unlanded:
+        refuse("COMMIT_FAILED",
+               "the commit %s does not carry %d of the artefacts this run produced, as written: %s. "
+               "Finished is not `git commit` returning zero — it is each named deliverable being IN "
+               "the tree the branch names, and a written-but-unlanded document reads as landed in "
+               "every report downstream."
+               % (head.stdout.strip()[:12], len(unlanded), ", ".join(unlanded)))
+
     out["ok"] = True
     out["commit"] = head.stdout.strip()
-    out["files"] = len(landed_names)
-    out["reason"] = "assessment committed at %s: %d file(s)" % (out["commit"][:12], len(landed_names))
+    out["files"] = len(expected)
+    out["reason"] = "assessment committed at %s: %d file(s)" % (out["commit"][:12], len(expected))
     print(json.dumps(out))
 
 fail commit_failed:
@@ -3777,6 +3825,7 @@ workflow assessment:
     threshold: 0.9
     preserve_recent: 8
 
+  workspace_probe -> bundle_skills_unavailable when skills_missing
   workspace_probe -> workspace_not_a_repo when not ok
   workspace_probe -> brief_read when ok
 

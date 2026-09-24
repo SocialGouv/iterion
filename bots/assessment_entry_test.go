@@ -19,8 +19,14 @@ import (
 // A run with no declared brief publishes a programme it invented, which is
 // indistinguishable on the page from one somebody agreed to.
 
+// probe runs the entry node the way the engine sets a run up: the
+// engine-owned skills copy always exists — it is reset and refilled on every
+// mirror pass, even for a run with no bundle.
 func probe(t *testing.T, ws string) map[string]any {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Join(ws, ".claude", "iterion-skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	out, exit, stderr := assessmentRun(t, "workspace_probe",
 		map[string]string{"{{vars.workspace_dir}}": ws,
 			"{{vars.bundle_skills_dir}}": filepath.Join(ws, ".claude", "iterion-skills")}, nil)
@@ -96,6 +102,33 @@ func TestAssessmentWorkspaceProbe(t *testing.T) {
 		}
 		if code := assessmentString(t, out, "code"); code != "BUNDLE_SKILLS_UNAVAILABLE" {
 			t.Fatalf("code = %q, want BUNDLE_SKILLS_UNAVAILABLE", code)
+		}
+		if !assessmentBool(t, out, "skills_missing") {
+			t.Fatal("the refusal does not route to its own fail node: skills_missing is false, so the " +
+				"operator is told the workspace is not a repository")
+		}
+	})
+
+	// An engine that predates the owned copy leaves the reference unexpanded
+	// or pointing nowhere. Refused HERE, by its cause: past the probe, each node
+	// would refuse with its own symptom — no manifest shape, no profile.
+	t.Run("an owned skills directory that is not there is a named refusal", func(t *testing.T) {
+		dir, _ := synthRepo(t, map[string]string{"README.md": "# fixture\n"})
+		out, exit, stderr := assessmentRun(t, "workspace_probe",
+			map[string]string{"{{vars.workspace_dir}}": dir,
+				"{{vars.bundle_skills_dir}}": filepath.Join(dir, ".claude", "no-such-directory")}, nil)
+		if exit != 0 {
+			t.Fatalf("workspace_probe exited %d: %s", exit, stderr)
+		}
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a skills directory that does not exist was accepted — the floor would then " +
+				"refuse for want of a manifest shape, naming a symptom instead of the cause")
+		}
+		if code := assessmentString(t, out, "code"); code != "BUNDLE_SKILLS_UNAVAILABLE" {
+			t.Fatalf("code = %q, want BUNDLE_SKILLS_UNAVAILABLE", code)
+		}
+		if !assessmentBool(t, out, "skills_missing") {
+			t.Fatal("skills_missing is false: the refusal routes to the wrong fail node")
 		}
 	})
 
