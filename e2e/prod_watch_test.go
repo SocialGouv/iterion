@@ -149,9 +149,11 @@ type pwHarness struct {
 	srv                                  *httptest.Server
 	callMu                               sync.Mutex
 	lokiCalls                            []url.Values
-	served                               []pwServed   // every Loki call as the fake answered it (under callMu)
-	failLokiFrom                         atomic.Int64 // Loki calls numbered from here (1-based) answer 500…
-	failLokiCount                        atomic.Int64 // …for this many consecutive calls (the node retries a 5xx once)
+	served                               []pwServed        // every Loki call as the fake answered it (under callMu)
+	failLokiFrom                         atomic.Int64      // Loki calls numbered from here (1-based) answer 500…
+	failLokiCount                        atomic.Int64      // …for this many consecutive calls (the node retries a 5xx once)
+	lokiBody                             atomic.Value      // map[string]any answered verbatim with HTTP 200 (a proxy answering garbage)
+	stderrs                              map[string]string // what each node of the last h.tick wrote on stderr
 	sinkMu                               sync.Mutex
 	sinkBodies                           []string
 	sinkHits                             atomic.Int64
@@ -185,6 +187,10 @@ func newPWHarness(t *testing.T) *pwHarness {
 		if from := h.failLokiFrom.Load(); from > 0 && n >= from && n < from+h.failLokiCount.Load() {
 			h.recordServed(pwServed{Query: q.Get("query"), Failed: true})
 			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if b, ok := h.lokiBody.Load().(map[string]any); ok && b != nil {
+			_ = json.NewEncoder(w).Encode(b)
 			return
 		}
 		start, _ := strconv.ParseInt(q.Get("start"), 10, 64)
@@ -358,6 +364,7 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000,
 	}
 	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}
+	h.stderrs = map[string]string{}
 	run := func(id string, inputs map[string]any) map[string]any {
 		t.Helper()
 		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, id).Script, inputs, vars, secrets))
@@ -365,6 +372,7 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 			t.Fatalf("%s failed: %v\nstderr: %s", id, err, stderr)
 		}
 		outs[id] = out
+		h.stderrs[id] = stderr
 		return out
 	}
 	plan := run("plan", nil)
@@ -931,6 +939,7 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 		{"a health probe severity that is a number", "unknown severity", func(cfg map[string]any) { cfg["probes"].([]map[string]any)[0]["severity"] = 3 }},
 		{"a sink threshold that is a number", "min_severity", func(cfg map[string]any) { cfg["sinks"].([]map[string]any)[0]["min_severity"] = 3 }},
 		{"a health probe URL that is a number", "url", func(cfg map[string]any) { cfg["probes"].([]map[string]any)[0]["url"] = 8080 }},
+		{"a Grafana URL that does not parse", "base_url", func(cfg map[string]any) { cfg["grafana"].(map[string]any)["base_url"] = "https://graf[ana.example" }},
 	} {
 		h.writeConfig(t, c.mod)
 		if _, stderr, err := plan(h.tokenFile); err == nil || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, c.want) {
@@ -968,7 +977,9 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	// Same floor on the bootstrap window: negative would put the first
 	// window's start after its end.
 	h.writeConfig(t, func(cfg map[string]any) { cfg["loki"].(map[string]any)["bootstrap_window_minutes"] = -3 })
-	_ = os.RemoveAll(filepath.Join(h.ws, ".prod-watch"))
+	if _, err := os.Stat(filepath.Join(h.ws, ".prod-watch")); !os.IsNotExist(err) {
+		t.Fatalf("the bootstrap window is a first tick's, read with no state: %v", err)
+	}
 	out, stderr, err = plan(h.tokenFile)
 	if err != nil {
 		t.Fatalf("plan: %v %s", err, stderr)
@@ -2672,10 +2683,13 @@ func hoursAgo(h float64) string {
 }
 
 // incident is a record as decide writes it for the harness's default config:
-// its source is the default template query, health probe or metric probe.
+// its sources are the default template query, health probe or metric probe.
 func incident(kind, sev string, alerted bool, lastNotifiedH, lastSeenH float64) map[string]any {
-	source := map[string]any{"loki": "errors", "probe": "api", "prom": "restarts", "prom_no_data": "restarts"}[kind]
-	return map[string]any{"fp": "", "kind": kind, "source": source, "severity": sev, "title_key": "probe_down", "title_arg": "x", "detail_key": "probe_detail",
+	var sources []any
+	if src, ok := map[string]string{"loki": "errors", "probe": "api", "prom": "restarts", "prom_no_data": "restarts", "leak": "errors"}[kind]; ok {
+		sources = []any{src}
+	}
+	return map[string]any{"fp": "", "kind": kind, "sources": sources, "severity": sev, "title_key": "probe_down", "title_arg": "x", "detail_key": "probe_detail",
 		"fields": map[string]any{}, "first_seen": hoursAgo(lastSeenH + 1), "last_seen": hoursAgo(lastSeenH), "count": 3,
 		"alerted": alerted, "last_notified": map[bool]any{true: hoursAgo(lastNotifiedH), false: nil}[alerted], "quiet_noted": false}
 }
@@ -2748,7 +2762,7 @@ func TestProdWatch_DecideLifecycle(t *testing.T) {
 		h := newPWHarness(t)
 		st := base()
 		old := incident("probe", "high", true, 100, 100) // due for a quiet note: its probe answers OK
-		old["source"] = "old"
+		old["sources"] = []any{"old"}
 		st["incidents"] = map[string]any{
 			"probe:old": old,
 			"prom:cpu":  incident("prom", "medium", true, 1, 0.1), // about to escalate to high

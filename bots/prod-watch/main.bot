@@ -359,6 +359,7 @@ tool plan:
   language: py
   script: |
     import json, os, sys, time, datetime
+    from urllib.parse import urlsplit
     ws = {{vars.workspace_dir}}
     cfg_path = {{vars.config_path}}
     mode = {{vars.mode}}
@@ -436,6 +437,12 @@ tool plan:
     if uses_grafana:
         if not grafana.get('base_url'):
             raise SystemExit('prod-watch: loki queries / prometheus probes are configured but config.grafana.base_url is missing')
+        try:
+            parts = urlsplit(grafana['base_url']) if isinstance(grafana['base_url'], str) else None
+        except ValueError:
+            parts = None
+        if not parts or parts.scheme not in ('http', 'https') or not parts.hostname:
+            raise SystemExit('prod-watch: config.grafana.base_url is not an http(s) URL with a host, got ' + repr(grafana['base_url'])[:80])
         if queries and not grafana.get('loki_uid'):
             raise SystemExit('prod-watch: loki queries are configured but config.grafana.loki_uid is missing')
         if norm_probes and not grafana.get('prometheus_uid'):
@@ -524,7 +531,7 @@ tool plan:
     ## never a traceback. An ABSENT key reads as empty; a PRESENT one has
     ## its shape, null included (the bot writes null for `halt` only). What
     ## a node needs is typed — the containers, what decide computes with
-    ## (generation, count, kind, severity, source, the dates retention
+    ## (generation, count, kind, severity, sources, the dates retention
     ## reads) and what notify renders through a lookup (title_key,
     ## detail_key, fields, first_seen); a value no node breaks on is left
     ## alone, since a check stricter than its writer bricks the watchdog on
@@ -555,9 +562,11 @@ tool plan:
         where = 'incidents[' + repr(ifp)[:40] + ']'
         if not isinstance(rec, dict):
             refuse_state(where, rec, 'an object')
-        for f in ('kind', 'severity', 'title_key', 'detail_key', 'source'):
+        for f in ('kind', 'severity', 'title_key', 'detail_key'):
             if rec.get(f) is not None and not isinstance(rec[f], str):
                 refuse_state(where + '.' + f, rec[f], 'a string')
+        if rec.get('sources') is not None and (not isinstance(rec['sources'], list) or not all(isinstance(x, str) for x in rec['sources'])):
+            refuse_state(where + '.sources', rec['sources'], 'a list of names')
         for f in ('first_seen', 'last_seen'):
             if rec.get(f) is not None and not is_iso(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
@@ -831,6 +840,18 @@ tool poll_loki:
     class CredentialRefused(Exception):
         pass
 
+    class LaneError(Exception):
+        pass
+
+    def lane_error(e):
+        ## What an exception says about an upstream answer can quote it — a
+        ## value that did not parse, a line where a number belongs, a header
+        ## holding the token: only the lane's own messages and the
+        ## transport's travel; anything else is named by its type.
+        if isinstance(e, (CredentialRefused, LaneError, OSError)):
+            return type(e).__name__ + ': ' + str(e)[:200]
+        return type(e).__name__ + ': the answer did not parse (its text is withheld)'
+
     ## What the lane needs from its environment — a usable token, a Grafana
     ## host resolving to an allowed address — is checked once: a failure is
     ## reported on every query or probe of the lane (a Loki cursor stays),
@@ -844,9 +865,13 @@ tool poll_loki:
         if not token:
             raise CredentialRefused('the grafana_token secret is not bound or empty -- bind a service-account token (Viewer) '
                                     'to the secret name grafana_token')
+        if not (token.isascii() and token.isprintable()) or ' ' in token:
+            ## Never quoted: the text is the secret, or holds it.
+            raise CredentialRefused('the grafana_token secret is not one token on one line (whitespace or a control '
+                                    'character inside) -- bind the token alone')
         try:
             _validate_host(origin.hostname or '')
-        except OSError as e:
+        except (OSError, ValueError) as e:
             raise OSError('Grafana host ' + repr(origin.hostname) + ': ' + str(e)) from None
     except Exception as e:
         setup_exc = e
@@ -879,6 +904,11 @@ tool poll_loki:
             except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
                 last = e
         raise last
+
+    def word(v):
+        ## An upstream enum (a status) travels; any other text is withheld.
+        v = str(v if v is not None else '')
+        return v if 0 < len(v) <= 40 and v.isascii() and v.replace('_', '').isalnum() else '(withheld)'
 
     BAND_CAP = 4000
     total, truncated_any, errors, per_query, ok_count = 0, False, [], {}, 0
@@ -960,6 +990,17 @@ tool poll_loki:
                                        frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
                                        overlap_from_ns=str(inherited_from), skipped_overlap=0)
                 continue
+            if frm == to and setup_exc is not None:
+                ## Nothing to read — but the lane cannot be used: that is
+                ## the query's error (its health must not read OK), and the
+                ## cursor stays where it was.
+                err = lane_error(setup_exc)
+                errors.append({'query': name, 'error': err})
+                band, bbase = encode(band_prev)
+                per_query[name] = dict(meta, lines=0, truncated=False, error=err, covered_to_ns=str(prev_to),
+                                       frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
+                                       overlap_from_ns=str(inherited_from), skipped_overlap=0)
+                continue
             if frm == to:
                 ## A zero-width window (a bootstrap of 0 minutes, or a window
                 ## floor at `to`) is fully covered: nothing to read, the
@@ -996,7 +1037,7 @@ tool poll_loki:
                     data = get('/api/datasources/proxy/uid/' + uid + '/loki/api/v1/query_range',
                                {'query': logql, 'start': str(start), 'end': str(to), 'limit': str(limit), 'direction': 'forward'})
                     if data.get('status') != 'success':
-                        raise ValueError('Loki answered status ' + repr(data.get('status')))
+                        raise LaneError('Loki answered status ' + word(data.get('status')))
                     entries = []
                     for stream in ((data.get('data') or {}).get('result') or []):
                         labels = stream.get('stream') or {}
@@ -1034,7 +1075,7 @@ tool poll_loki:
                         ## drains across ticks, max_lines new lines a tick.
                         allowance = max_lines + seen_at.get(start, 0)
                         if page_limit >= allowance:
-                            raise ValueError('a group of lines at one timestamp (' + str(start) + ') did not fit a page of ' +
+                            raise LaneError('a group of lines at one timestamp (' + str(start) + ') did not fit a page of ' +
                                              str(allowance) + ' -- raise max_lines')
                         page_limit = min(page_limit * 2, allowance)
                         continue
@@ -1051,7 +1092,7 @@ tool poll_loki:
             except SystemExit:
                 raise
             except Exception as e:
-                err = type(e).__name__ + ': ' + str(e)[:200]
+                err = lane_error(e)
                 errors.append({'query': name, 'error': err})
             if err:
                 ## The high-water mark does not move on a failed walk; the
@@ -1161,6 +1202,18 @@ tool poll_prom:
     class CredentialRefused(Exception):
         pass
 
+    class LaneError(Exception):
+        pass
+
+    def lane_error(e):
+        ## What an exception says about an upstream answer can quote it — a
+        ## value that did not parse, a line where a number belongs, a header
+        ## holding the token: only the lane's own messages and the
+        ## transport's travel; anything else is named by its type.
+        if isinstance(e, (CredentialRefused, LaneError, OSError)):
+            return type(e).__name__ + ': ' + str(e)[:200]
+        return type(e).__name__ + ': the answer did not parse (its text is withheld)'
+
     ## What the lane needs from its environment — a usable token, a Grafana
     ## host resolving to an allowed address — is checked once: a failure is
     ## reported on every query or probe of the lane (a Loki cursor stays),
@@ -1174,9 +1227,13 @@ tool poll_prom:
         if not token:
             raise CredentialRefused('the grafana_token secret is not bound or empty -- bind a service-account token (Viewer) '
                                     'to the secret name grafana_token')
+        if not (token.isascii() and token.isprintable()) or ' ' in token:
+            ## Never quoted: the text is the secret, or holds it.
+            raise CredentialRefused('the grafana_token secret is not one token on one line (whitespace or a control '
+                                    'character inside) -- bind the token alone')
         try:
             _validate_host(origin.hostname or '')
-        except OSError as e:
+        except (OSError, ValueError) as e:
             raise OSError('Grafana host ' + repr(origin.hostname) + ': ' + str(e)) from None
     except Exception as e:
         setup_exc = e
@@ -1229,7 +1286,7 @@ tool poll_prom:
             if data.get('status') != 'success':
                 ## The error TEXT may quote label values — personal data in a
                 ## label set: only the status and the error type travel.
-                raise ValueError('Prometheus answered status ' + word(data.get('status')) + ' (' + word(data.get('errorType')) + ')')
+                raise LaneError('Prometheus answered status ' + word(data.get('status')) + ' (' + word(data.get('errorType')) + ')')
             res['warnings'] = [str(w)[:200] for w in (data.get('warnings') or [])][:5]
             d = data.get('data') or {}
             rtype = d.get('resultType')
@@ -1243,7 +1300,7 @@ tool poll_prom:
                     except (TypeError, ValueError):
                         pass
             else:
-                raise ValueError('unsupported resultType ' + word(rtype) + ' (use an instant vector or scalar query)')
+                raise LaneError('unsupported resultType ' + word(rtype) + ' (use an instant vector or scalar query)')
             samples = [v for v in samples if not (math.isnan(v) or math.isinf(v))]
             if not samples:
                 res['state'] = 'no_data'
@@ -1255,7 +1312,7 @@ tool poll_prom:
         except SystemExit:
             raise
         except Exception as e:
-            res['error'] = type(e).__name__ + ': ' + str(e)[:200]
+            res['error'] = lane_error(e)
             errors.append({'probe': p['id'], 'error': res['error']})
         results.append(res)
     ## Every probe failing is the LANE failing — reported like one probe:
@@ -1403,7 +1460,12 @@ tool leak_scan:
                     x -= 9
             total += x
         return total % 10 == 0
-    CARD_CONTEXT = re.compile(r'(?i)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
+    ## Every class is bounded in ASCII (`a`): a value glued to a letter of
+    ## another script, an accented letter or an emoji is still found (under
+    ## Unicode rules those are word characters and `\b` would not hold),
+    ## and IGNORECASE folds ASCII letters only — it would also let `İ` into
+    ## [A-Z], which NFKC keeps and no base-36 digit is.
+    CARD_CONTEXT = re.compile(r'(?ai)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
     def iin_ok(d):
         ## The issuer prefix of a real card network: Visa 4, Mastercard
         ## 51-55 and 2221-2720, Amex 34/37, JCB 3528-3589, Discover
@@ -1458,20 +1520,27 @@ tool leak_scan:
     ## identifiers, then contact data.
     CLASSES = [
         ('private_key', re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,4000}?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----'), None),
-        ('jwt', re.compile(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'), None),
-        ('bearer', re.compile(r'(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}'), None),
-        ('cloud_or_forge_token', re.compile(r'\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'), None),
-        ('secret_kv', re.compile(r'(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|token)\s*[=:]\s*[\'"]?([^\s\'"&,;<>]{6,})'), None),
+        ('jwt', re.compile(r'(?a)\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'), None),
+        ('bearer', re.compile(r'(?ai)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{16,}'), None),
+        ('cloud_or_forge_token', re.compile(r'(?a)\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'), None),
+        ## A secret by its key: a secret word that starts a name part — snake,
+        ## kebab, dotted or quoted (`DB_PASSWORD=`, `"api_key": "…"`) — or a
+        ## camelCase part (`dbPassword:`), then `=` or `:`; or a command-line
+        ## flag (`--password …`). The value is redacted, the key kept. A word
+        ## the name goes on after (`total_tokens`, `PASSWORD_FILE`) is not a
+        ## secret key.
+        ('secret_kv', re.compile(
+            r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
+            r'|(?<=[a-z])(?:Password|Passwd|Pwd|Secret|Token|ApiKey|AccessKey|PrivateKey))[\'"]?\s*[=:]\s*[\'"]?([^\s\'"&,;<>]{6,})'
+            r'|(?<![A-Za-z0-9-])--?(?i:password|passwd|pwd|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'), None),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
-        ## ASCII only (`a`): under IGNORECASE alone, [A-Z] also matches `İ`,
-        ## which NFKC keeps and no base-36 digit is.
         ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
         ## Bare, or grouped under ONE repeated separator of any kind; a run
         ## that continues past the match with the same separator is a row
         ## of numbers, not a card.
         ('card', re.compile(r'(?<!\d)(?:\d{15,19}|\d{1,6}(?:([^A-Za-z0-9\n])\d{1,6})(?:\1\d{1,6}){1,8})(?!\d|\.\d|\1\d)'), lambda m: card_ok(m)),
         ('num', None, None),
-        ('email', re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
+        ('email', re.compile(r'(?a)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
         ('phone_fr', re.compile(r'(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
     ]
     def mask(cls, value):
@@ -1514,14 +1583,26 @@ tool leak_scan:
                 continue
             def repl(m):
                 if validate is not None and not validate(m):
+                    if cls != 'iban':
+                        return m.group(0)
+                    ## An IBAN followed by a word: the optional groups ran on
+                    ## into it. The longest space-bounded prefix that
+                    ## validates is the IBAN.
+                    parts = m.group(0).split(' ')
+                    for k in range(len(parts) - 1, 0, -1):
+                        head = ' '.join(parts[:k])
+                        if iban_ok(head):
+                            note(cls, head, q, stream, ts)
+                            return '[REDACTED:' + cls + ']' + m.group(0)[len(head):]
                     return m.group(0)
-                value = m.group(1) if (cls == 'secret_kv' and m.lastindex) else m.group(0)
+                g = m.lastindex if cls == 'secret_kv' else None   # the value group of whichever form matched
+                value = m.group(g) if g else m.group(0)
                 if MARKER.fullmatch(value):
                     ## A marker left by an earlier class is not a second value.
                     return m.group(0)
                 note(cls, value, q, stream, ts)
                 if cls == 'secret_kv':
-                    return m.group(0)[:m.start(1) - m.start(0)] + '[REDACTED:' + cls + ']'
+                    return m.group(0)[:m.start(g) - m.start(0)] + '[REDACTED:' + cls + ']'
                 return '[REDACTED:' + cls + ']'
             out = rx.sub(repl, out)
         return out
@@ -1593,8 +1674,10 @@ tool leak_scan:
         sample = scrubbed[:300]
         t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0, 'count_live': 0,
                                        'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set(),
-                                       'first_ts_live': '', 'sample_live': '', 'streams_live': set(), 'query_live': ''})
+                                       'first_ts_live': '', 'sample_live': '', 'streams_live': set(), 'query_live': '',
+                                       'queries': set(), 'queries_live': set()})
         t['count'] += 1
+        t['queries'].update(tqs)
         ## A line read while its query's first window is still being read —
         ## below the end of that window, the history boundary — is history,
         ## not news, whichever query returned it; the template counts its
@@ -1602,6 +1685,7 @@ tool leak_scan:
         ## streams, so a live alert never shows history.
         live_qs = [x for x in tqs if int(ts) >= history_to(x)]
         if live_qs:
+            t['queries_live'].update(live_qs)
             t['count_live'] += 1
             if not t['first_ts_live'] or ts < t['first_ts_live']:
                 t['first_ts_live'] = ts
@@ -1619,6 +1703,8 @@ tool leak_scan:
     for t in templates.values():
         t['streams'] = sorted(t['streams'])[:6]
         t['streams_live'] = sorted(t['streams_live'])[:6]
+        t['queries'] = sorted(t['queries'])
+        t['queries_live'] = sorted(t['queries_live'])
         tpl_list.append(t)
     ## The live templates first: history must never crowd a live alert out
     ## of the list, and a cut list is partial coverage — decide learns it.
@@ -1744,18 +1830,18 @@ tool decide:
     cands = []
     for r in http_results:
         if not r.get('ok'):
-            cands.append({'fp': 'probe:' + r['id'], 'kind': 'probe', 'source': r['id'], 'severity': r.get('severity') or 'critical',
+            cands.append({'fp': 'probe:' + r['id'], 'kind': 'probe', 'sources': [r['id']], 'severity': r.get('severity') or 'critical',
                           'title_key': 'probe_down', 'title_arg': r['id'], 'detail_key': 'probe_detail',
                           'fields': {'url': r.get('url'), 'status': r.get('status'), 'ms': r.get('ms'), 'expected': r.get('expected')},
                           'evidence': {'error': r.get('error')}, 'lane': 'probes', 'tick_count': 1})
     for r in prom_results:
         if r.get('state') == 'breached':
-            cands.append({'fp': 'prom:' + r['id'], 'kind': 'prom', 'source': r['id'], 'severity': r.get('severity') or 'high',
+            cands.append({'fp': 'prom:' + r['id'], 'kind': 'prom', 'sources': [r['id']], 'severity': r.get('severity') or 'high',
                           'title_key': 'prom_breached', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
                           'fields': {'title': r.get('title') or r['id'], 'value': r.get('value'), 'op': r.get('op'), 'threshold': r.get('threshold')},
                           'evidence': {'warnings': r.get('warnings') or []}, 'lane': 'prometheus', 'tick_count': 1})
         elif r.get('state') == 'no_data':
-            cands.append({'fp': 'prom:' + r['id'] + ':no_data', 'kind': 'prom_no_data', 'source': r['id'], 'severity': 'medium',
+            cands.append({'fp': 'prom:' + r['id'] + ':no_data', 'kind': 'prom_no_data', 'sources': [r['id']], 'severity': 'medium',
                           'title_key': 'prom_no_data', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
                           'fields': {'title': r.get('title') or r['id'], 'value': 'no data', 'op': r.get('op'), 'threshold': r.get('threshold')},
                           'evidence': {'warnings': r.get('warnings') or []}, 'lane': 'prometheus', 'tick_count': 1})
@@ -1767,7 +1853,7 @@ tool decide:
             raise SystemExit('prod-watch: a template without count_live in the signals -- a scan from another version of the bot; relaunch the tick')
         cnt = int(t.get('count_live') or 0)
         live = cnt > 0
-        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'source': (t.get('query_live') if live else t.get('query')),
+        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'sources': list((t.get('queries_live') if live else t.get('queries')) or []),
                       'last_ts': t.get('last_ts'), 'severity': 'high' if cnt >= 50 else 'medium',
                       'title_key': 'loki_template', 'title_arg': (t.get('template') or '')[:120], 'detail_key': 'loki_detail',
                       'fields': {'count': cnt, 'first': ns_to_iso((t.get('first_ts_live') if live else t.get('first_ts')) or 0),
@@ -1776,7 +1862,8 @@ tool decide:
                                    'query': (t.get('query_live') if live else t.get('query'))},
                       'lane': 'loki', 'tick_count': cnt})
     for f in (signals.get('leak') or []):
-        cands.append({'fp': 'leak:' + f['class'], 'kind': 'leak', 'severity': f.get('severity') or 'high',
+        cands.append({'fp': 'leak:' + f['class'], 'kind': 'leak', 'sources': sorted({str(x.get('query')) for x in (f.get('sources') or []) if x.get('query')}),
+                      'severity': f.get('severity') or 'high',
                       'title_key': 'leak', 'title_arg': f['class'], 'detail_key': 'leak_detail',
                       'fields': {'count': f.get('count'), 'class': f['class'], 'distinct': f.get('distinct'),
                                  'sources': ', '.join(s.get('stream') or s.get('query') or '?' for s in (f.get('sources') or [])[:4]) or '-'},
@@ -1802,7 +1889,7 @@ tool decide:
             continue
         seen_fps.add(fp)
         rec = dict(prev or {})
-        rec.update({'fp': fp, 'kind': c['kind'], 'source': c.get('source'), 'severity': c['severity'], 'title_key': c['title_key'],
+        rec.update({'fp': fp, 'kind': c['kind'], 'sources': c.get('sources') or [], 'severity': c['severity'], 'title_key': c['title_key'],
                     'title_arg': c['title_arg'], 'detail_key': c['detail_key'], 'fields': c['fields'],
                     'last_seen': now_iso, 'count': int((prev or {}).get('count') or 0) + int(c['tick_count'] or 0),
                     'quiet_noted': False})
@@ -1877,10 +1964,11 @@ tool decide:
             ## The lane that would observe it did not observe everything
             ## (or is no longer configured): nothing is concluded.
             continue
-        if rec.get('kind') != 'leak' and rec.get('source') not in sources.get(lane, ()):
-            ## Its own source — the probe, or the query that last counted
-            ## the template — left the config: nothing looks at it any
-            ## more, nothing is concluded; retention forgets it.
+        if not any(src in sources.get(lane, ()) for src in (rec.get('sources') or [])):
+            ## Every source that saw it — its probe, the queries that last
+            ## counted its template or found its leak — left the config:
+            ## nothing looks at it any more, nothing is concluded; retention
+            ## forgets it.
             continue
         if rec.get('alerted') and gone_h >= quiet_h and not rec.get('quiet_noted'):
             ## The note is STAGED here and stamped only once it is posted
@@ -1923,16 +2011,17 @@ tool decide:
             stale.append({'source': source, 'hours': int(a) if a < 10 ** 6 else -1, 'last_ok': last_ok, 'error': h.get('last_error') or ''})
             h['last_warned'] = now_iso
 
-    ## ── coverage note, once per kind and interval ─────────────────
-    ## A kind of partiality: a query entering a gap (lines skipped — named,
-    ## it is a loss), the lane errors by lane and kind (digits folded before
-    ## any cut: an inverted window carries fresh timestamps every tick, and
-    ## a number gaining a digit must not move what a cut keeps; the source
-    ## left out: queries or probes failing in turn with one error are one
-    ## kind), a truncation or a cut appearing (queries truncated in turn are
-    ## one kind — truncation loses nothing, the next tick reads on). Each
-    ## kind is said once, then again only after renotify_hours: a lane
-    ## flapping between failure and health does not re-post it every tick.
+    ## ── coverage note, once per component and interval ────────────
+    ## A tick's partiality is made of components: a query's gap (lines
+    ## skipped — named, it is a loss), a lane's error kind (digits folded
+    ## before any cut: an inverted window carries fresh timestamps every
+    ## tick, and a number gaining a digit must not move what a cut keeps;
+    ## the source left out: queries or probes failing in turn with one error
+    ## are one kind), a truncation (queries truncated in turn are one — it
+    ## loses nothing, the next tick reads on), a cut. The note posts when a
+    ## component is new or its last mention is older than renotify_hours,
+    ## whatever the combination: a lane flapping, or kinds coming and going
+    ## together, never re-post it every tick.
     coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors) else 'full'
     lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
                                    for e in (loki_errors + prom_errors)))[:600]
@@ -1948,14 +2037,14 @@ tool decide:
         reasons.append('template list cut: ' + str(signals.get('templates_total') or '?') +
                        ' templates, the 200 with the most live lines kept')
     coverage_reasons = '; '.join(reasons)[:600]
-    error_kinds = '; '.join(sorted({lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160]
-                                    for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors)) for e in errs}))[:600]
-    coverage_key = '|'.join([error_kinds, ','.join(gapped),
-                             'truncated' if truncated_qs else '', 'cut' if signals.get('templates_cut') else ''])
+    components = sorted({lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160]
+                         for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors)) for e in errs})
+    components += ['gap: ' + q for q in gapped] + (['truncated'] if truncated_qs else []) + (['cut'] if signals.get('templates_cut') else [])
     posted_kinds = {k: v for k, v in (state.get('coverage_posted') or {}).items() if age_h(v) < renotify_h}
-    coverage_note = coverage == 'partial' and coverage_key not in posted_kinds
+    coverage_note = coverage == 'partial' and any(c not in posted_kinds for c in components)
     if coverage_note:
-        posted_kinds[coverage_key] = now_iso
+        for c in components:
+            posted_kinds[c] = now_iso
     state['coverage_posted'] = posted_kinds
 
     ## ── priority, cap, staging ────────────────────────────────────
@@ -2071,6 +2160,7 @@ tool notify:
   language: py
   script: |
     import json, os, re, sys, urllib.request
+    from urllib.parse import urlsplit
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     alerts = {{input.alerts}} or []
     overflow = int({{input.overflow_count}} or 0)
@@ -2188,16 +2278,28 @@ tool notify:
         raise SystemExit('prod-watch: webhook name(s) [' + ', '.join(missing) + '] not found in the bound `webhooks` secret (JSON map name -> url)')
     delivered, failures, targets = 0, [], []
     msgs_ok, required_failed = set(), []
-    for idx, s, p in payloads:
-        req = urllib.request.Request(whmap[s['webhook']], data=json.dumps(p).encode('utf-8'),
-                                     headers={'Content-Type': 'application/json', 'User-Agent': 'prod-watch (iterion)'}, method='POST')
+    def usable(url):
+        ## A webhook URL is a secret (its path is the key): it must be one
+        ## printable http(s) URL with a host before any use — a failure
+        ## names the webhook, never quotes the URL.
         try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+        except ValueError:
+            return False
+        return bool(parts and parts.scheme in ('http', 'https') and parts.hostname and url.isascii() and url.isprintable() and ' ' not in url)
+    for idx, s, p in payloads:
+        url = whmap[s['webhook']]
+        try:
+            if not usable(url):
+                raise ValueError('the URL of this webhook in the webhooks secret is not one http(s) URL')
+            req = urllib.request.Request(url, data=json.dumps(p).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json', 'User-Agent': 'prod-watch (iterion)'}, method='POST')
             with urllib.request.urlopen(req, timeout=20):
                 delivered += 1
                 msgs_ok.add(idx)
                 targets.append(str(s['webhook']) + '->' + str(p['channel'] or 'default'))
         except Exception as e:
-            failures.append(str(s['webhook']) + ': ' + type(e).__name__ + ': ' + str(e)[:200])
+            failures.append(str(s['webhook']) + ': ' + type(e).__name__ + ': ' + str(e).replace(str(url), '<the webhook URL>')[:200])
             if s.get('required', True):
                 required_failed.append(str(s['webhook']))
     if delivered == 0:

@@ -86,10 +86,15 @@ overrides).
 ## The secrets
 
 - `webhooks` — JSON map name → incoming-webhook URL, identical to
-  feed-watch's. Read only by the deterministic notify step.
+  feed-watch's. Read only by the deterministic notify step. Each URL must
+  be one http(s) URL with a host; a malformed one fails that sink's
+  delivery, named by the webhook — a URL is never quoted (its path is the
+  key).
 - `grafana_token` — a Grafana service-account token. Read only by the two
-  proxy lanes; never into a prompt. A configured Grafana whose token is
-  unbound, blank or refused is a lane error on every query and probe,
+  proxy lanes; never into a prompt; one token on one line (whitespace or
+  a control character inside is refused, never quoted). A configured
+  Grafana whose token is unbound, blank, malformed or refused is a lane
+  error on every query and probe,
   named in the coverage note: the health probes still report (with no
   other lane configured, the tick is refused, naming it).
 - `forge_token` — the ops repository's push credential on cloud runners
@@ -193,11 +198,12 @@ managed secret under the name `forge_token` (see vuln-watch's
   last line read, the next tick reads on), but absence of a finding
   proves nothing for that tick. A **gap does skip lines**: the cursor
   fell out of the max window and the lines in between are never read —
-  raise `max_lines` or the cadence (or `max_window_minutes`). Each kind of
-  partiality (a query entering a gap, a lane error of one kind, a
+  raise `max_lines` or the cadence (or `max_window_minutes`). Each
+  component of the partiality (a query's gap, a lane's error kind, a
   truncation, a cut) is said once, then again only after
-  `renotify_hours`: queries or probes failing in turn with the same
-  error, or a lane flapping, do not re-post it every tick.
+  `renotify_hours`, whatever the combination: queries or probes failing
+  in turn with the same error, or a lane flapping, do not re-post it
+  every tick.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

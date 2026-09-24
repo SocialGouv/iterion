@@ -67,9 +67,10 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   never concluded on; an incident unseen for `forget_after_days` is
   forgotten whatever the lane observed (retention, not a conclusion — if
   its pattern comes back later, it is posted again as new); an incident
-  whose own source left the config (its probe removed, or the query that
-  last counted its template) is concluded nothing either — nothing looks
-  at it any more — and retention forgets it. The run goes on with its
+  every source of which left the config (its probe removed, every query
+  that last counted its template or found its leak removed) is concluded
+  nothing either — nothing looks at it any more — and retention forgets
+  it; while one of them is configured, it is observed as usual. The run goes on with its
   other lanes (decide refuses a tick only when EVERY configured lane
   failed, naming the errors) and the lane's health is not refreshed while
   a query fails, so a query dark for good surfaces as a silent source
@@ -100,16 +101,19 @@ The only node that opens `loki_raw.jsonl`. For every line, in this order
 |---|---|---|
 | `private_key` | PEM private-key block | `[REDACTED:private_key]` |
 | `jwt` | three base64url segments starting `eyJ` | `[REDACTED:jwt]` |
-| `bearer` | `Bearer <token>` | `[REDACTED:bearer]` |
+| `bearer` | `Bearer <token>` or `Basic <credentials>` | `[REDACTED:bearer]` |
 | `cloud_or_forge_token` | AWS `AKIA…`, GitLab `glpat-`/`glrt-`, Grafana `glsa_`, Sentry `sntry…`, Anthropic `sk-ant-`, OpenAI `sk-…`, Slack `xox…`, GitHub `ghp_`/`github_pat_` | `[REDACTED:cloud_or_forge_token]` |
-| `secret_kv` | `password=…`, `token: …`, `api_key=…` (the value only) | key kept, value replaced |
+| `secret_kv` | a secret word that starts a name part — snake, kebab, dotted, quoted or camelCase: `password=…`, `DB_PASSWORD=…`, `"api_key": "…"`, `dbPassword: …` — or a flag `--password …` (the value only; `total_tokens=…`, `PASSWORD_FILE=…` are not secret keys) | key kept, value replaced |
 | `nir` | 13 digits + 2-digit key, **key validated** (Corsica 2A/2B handled) | `[REDACTED:nir]` |
 | `iban` | country code + check digits + BBAN, **mod-97 validated** | `[REDACTED:iban]` |
 | `card` | 15–19 digits, **Luhn-validated**, the issuer prefix a card network's (Visa, Mastercard, Amex, JCB, Discover, Diners, UnionPay, Maestro), and either grouped like a card (4-4-4-4 with a 1–3 digit tail for 17–19 digits, or the Amex 4-6-5, under one repeated separator of any kind) or preceded by a card word within 40 chars | `[REDACTED:card]` |
 | `email` | RFC-lite address | `[REDACTED:email]` |
 | `phone_fr` | French national or `+33` number | `[REDACTED:phone_fr]` |
 
-Lines are NFKC-normalised first, so full-width digits are seen. The
+Lines are NFKC-normalised first, so full-width digits are seen, and every
+class is bounded in ASCII: a value glued to a letter of another script, an
+accented letter, punctuation or an emoji is still found; an IBAN followed
+by a word is found too (the longest valid prefix). The
 detection is **heuristic**: validators narrow the false positives (a
 timestamp is not an IBAN; a digit run is a card only with a card's own
 grouping or a card word next to it, since Luhn alone is a coin flip on
@@ -120,7 +124,11 @@ non-alphanumeric separators (mixed or not — a timestamp glued to other
 numbers by separators is masked with them), that no class claimed is
 masked as `<num>` before the contact classes run (a PAN in pairs is not a
 phone number) and therefore in every sample. Outside that boundary, by
-design: digits joined by letters (`4111x1111x1111x1111`) match no class. This slice reports every class at severity `high`; the
+design: digits joined by letters (`4111x1111x1111x1111`) match no class,
+a token glued to ASCII letters, digits or `_` (`keyAKIA…`, `x_AKIA…`)
+reads as part of an identifier and goes unfound, as does a secret word
+glued to a letter before it (`xpassword=…`); `x_password=…` and an email
+glued so are still found. This slice reports every class at severity `high`; the
 policy slice adds per-class `critical` with keyword context and the
 circuit-breaker.
 
@@ -158,8 +166,10 @@ scalar) are folded by `agg` (default `max`) and compared with `op` to
 - `no_data` — the query matched no series or only NaN: **not** healthy —
   the metric may not exist on this cluster (posted as a `medium`
   incident so a mis-wired preset is noticed);
-- `error` — the API failed (a lane error, in the coverage note — its
-  status and error type only: an error text may quote label values). The tick
+- `error` — the API failed (a lane error, in the coverage note). A lane
+  error quotes only the lane's own message or the transport's: an answer
+  that does not parse — a value that is text, an error text that may quote
+  label values — is named by its type, its text withheld. The tick
   is still reported when another probe answered; while any probe errors,
   nothing is concluded about the lane's incidents (no "not observed any
   more") and its health is not refreshed. Every probe failing is the lane
@@ -196,10 +206,10 @@ occurrence count, and — for a log template — the redacted sample as a
 quote. Notes (`:warning:`) announce an overflow, a silent source (its
 last error quoted), or a partial-coverage tick (a Loki query truncated,
 gapped or failed, a Prometheus probe failed, a cut template list) — each
-KIND of partiality once, then again only after `renotify_hours` (a query
-entering a gap, a lane error of one kind — queries or probes failing in
-turn with the same error are one kind —, a truncation or a cut
-appearing), with its reasons quoted: the gaps first — they lose lines —
+COMPONENT of the partiality once, then again only after `renotify_hours`,
+whatever the combination (a query's gap, a lane's error kind — queries or
+probes failing in turn with the same error are one kind, the same error on
+two lanes two —, a truncation, a cut), with its reasons quoted: the gaps first — they lose lines —
 then the lane errors, the truncated queries, a cut template list. So a
 query dark for good, a lane flapping, or a flood that outruns
 `max_lines` until the cursor falls out of the max window, says why once,
