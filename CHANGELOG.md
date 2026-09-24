@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.197.2](https://github.com/SocialGouv/iterion/compare/v3.197.1...v3.197.2) (2026-09-24)
+
+### Bug Fixes
+
+* **runtime,bots:** read `iterion:` skill data blocks from an engine-owned copy ([#1797](https://github.com/SocialGouv/iterion/issues/1797)) ([84b62b2](https://github.com/SocialGouv/iterion/commit/84b62b2761c168f16b701b3f8dbecdeb9b208889))
+
+    <details><summary>why</summary>
+
+    A tool node that parses a machine-readable `iterion:` block out of a skill read it from `<workspace>/.claude/skills/`. That directory applies the workspace-wins collision policy, and the workspace is a checkout of the repository under audit: the checkout could both replace a shipped skill and supply a name the bundle never ships, and either was read as the bundle's. Five bots parse such blocks (`scanners`, `heuristics`, `lockfiles`, `reattack`, `pkgmgr`) across eleven read sites, and one of…
+
+    </details>
+
 ## [3.197.1](https://github.com/SocialGouv/iterion/compare/v3.197.0...v3.197.1) (2026-09-23)
 
 ### Bug Fixes
