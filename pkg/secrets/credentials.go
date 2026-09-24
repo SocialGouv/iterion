@@ -149,15 +149,20 @@ const (
 // instrument naming one vendor and one bill), then the Anthropic API key,
 // then the OAuth forfait.
 //
-// It exists because that order was restated at four sites that must never
+// It exists because that order was restated at three sites that must never
 // disagree — the delegate that builds the CLI env, the usage meter that
-// charges a refusal, the spend ledger that names what a route spent, and the
-// sandbox seam that decides a forfait may not displace a BYOK key. Drift
-// there fails nothing loudly: a reading is charged to a credential the run
-// did not spend, and the evidence-based skip then parks the healthy key and
-// keeps the frozen one. Adding a provider to this wire means adding it HERE,
-// once; the delegate's own precedence is held to this list by
+// charges a refusal, and the spend ledger that names what a route spent.
+// Drift there fails nothing loudly: a reading is charged to a credential the
+// run did not spend, and the evidence-based skip then parks the healthy key
+// and keeps the frozen one. Adding a provider to this wire means adding it
+// HERE, once; the delegate's own precedence is held to this list by
 // TestDefaultPrecedenceFollowsAnthropicWireSlotOrder.
+//
+// It is the claude_code delegate's precedence, where every facade key
+// reroutes the CLI. claw names its provider in the model spec instead, so its
+// sandbox seam keeps its own list of the keys its anthropic provider spends
+// (model.clawAnthropicProviderSlots) — a facade with a claw provider of its
+// own funds no `anthropic/…` node.
 var AnthropicWireSlotOrder = []string{
 	string(ProviderZAI),
 	string(ProviderMoonshot),

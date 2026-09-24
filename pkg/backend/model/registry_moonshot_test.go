@@ -2,9 +2,11 @@ package model
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -116,27 +118,55 @@ func TestRegistry_MoonshotProviderWithKey(t *testing.T) {
 	}
 }
 
-// The sandbox seam: a BYOK key on this wire is the tenant's explicit
-// instrument, so a resolved forfait must not displace it inside the
-// container — and every facade key byokEnvVar forwards must be shadowed when
-// the forfait DOES win, or the ambient one authenticates in its place.
-func TestAnthropicWireSandboxSeam_HonoursEveryFacade(t *testing.T) {
+// clawAnthropicProviderSlots decides the sandbox forfait crossing, so it must
+// name exactly the keys claw's anthropic provider SPENDS — asked of the real
+// env factory, one slot of the anthropic wire at a time, rather than read back
+// from the list. A slot the factory spends but the list omits lets a forfait
+// displace the tenant's own key; a slot the list names but the factory never
+// reads keeps the forfait out of every anthropic node of a tenant holding it,
+// and the platform's ambient key serves them instead.
+func TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends(t *testing.T) {
 	for _, slot := range secrets.AnthropicWireSlotOrder {
 		if secrets.OAuthKind(slot).Valid() {
 			continue
 		}
-		creds := secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.Provider(slot): "k"}}
-		if !heldAnthropicWireAPIKey(creds) {
-			t.Errorf("heldAnthropicWireAPIKey missed slot %q — a forfait would displace the tenant's own key", slot)
-		}
+		t.Run(slot, func(t *testing.T) {
+			envVar := byokEnvVar[secrets.Provider(slot)]
+			if envVar == "" {
+				t.Fatalf("slot %q has no byokEnvVar — it cannot cross the sandbox seam at all", slot)
+			}
+			for _, k := range []string{
+				"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+				"ZAI_API_KEY", "MOONSHOT_API_KEY", "MOONSHOT_BASE_URL",
+				"ITERION_FORBID_SUBSCRIPTION_OAUTH",
+			} {
+				t.Setenv(k, "")
+			}
+			// No forfait on disk: the factory's last resort must not answer.
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+			key := "key-for-" + slot
+			t.Setenv(envVar, key)
+
+			client, err := NewRegistry().Resolve("anthropic/claude-haiku-4-5")
+			if err != nil {
+				t.Fatalf("Resolve(anthropic/…): %v", err)
+			}
+			cc, ok := client.(*api.Client)
+			if !ok {
+				t.Fatalf("anthropic factory returned %T, want *api.Client", client)
+			}
+			spends := cc.APIKey == key || cc.OAuthToken == key
+			listed := slices.Contains(clawAnthropicProviderSlots, secrets.Provider(slot))
+			if spends != listed {
+				t.Errorf("with only %s set, the anthropic factory spends it: %v; clawAnthropicProviderSlots lists %q: %v — the forfait crossing decides on the wrong keys",
+					envVar, spends, slot, listed)
+			}
+			if listed && envVar != "ANTHROPIC_API_KEY" && !slices.Contains(anthropicWireShadowEnv(), envVar) {
+				t.Errorf("anthropicWireShadowEnv() = %v, missing %q — that ambient value would outrank the forfait in the container", anthropicWireShadowEnv(), envVar)
+			}
+		})
 	}
 	if heldAnthropicWireAPIKey(secrets.Credentials{}) {
 		t.Error("heldAnthropicWireAPIKey reported a key on empty credentials")
-	}
-	shadows := strings.Join(anthropicWireShadowEnv(), " ")
-	for _, want := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY", "MOONSHOT_API_KEY"} {
-		if !strings.Contains(shadows, want) {
-			t.Errorf("anthropicWireShadowEnv() = %v, missing %q — that ambient value would outrank the forfait in the container", shadows, want)
-		}
 	}
 }

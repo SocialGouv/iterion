@@ -1364,14 +1364,14 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 	// against the platform account, and does so invisibly, because the ambient
 	// key works.
 	//
-	// Two limits, both deliberate: a BYOK key on this wire — the Anthropic one
-	// or either facade — is the tenant's own explicit instrument and keeps
+	// Two limits, both deliberate: a BYOK key claw's anthropic provider would
+	// spend — the Anthropic one, or z.ai's, which the env factory synthesises
+	// onto z.ai's base URL — is the tenant's own explicit instrument and keeps
 	// precedence (otherwise the same run would spend a different one depending
 	// on whether it happened to be sandboxed); and a redirected wire is a
 	// destination the operator chose, so a bearer carrying the whole Claude
-	// account does not travel there. The BYOK slots are walked from
-	// secrets.AnthropicWireSlotOrder so a provider added to the wire cannot be
-	// displaced here while keeping precedence everywhere else.
+	// account does not travel there. clawAnthropicProviderSlots says which keys
+	// those are.
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
 		!heldAnthropicWireAPIKey(creds) &&
 		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
@@ -1394,14 +1394,32 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 	return nil
 }
 
-// heldAnthropicWireAPIKey reports whether the run carries a BYOK API key on
-// the anthropic wire — the Anthropic one or any facade.
+// clawAnthropicProviderSlots are the BYOK slots whose key claw's `anthropic`
+// provider spends: the Anthropic key, and z.ai's, which the registry's env
+// factory reads when no Anthropic credential precedes it and points at z.ai's
+// base URL. They are the keys that outrank the forfait inside the container,
+// and so the only ones that decide the forfait crossing.
+//
+// NOT every slot of secrets.AnthropicWireSlotOrder. That list is the claude_code
+// delegate's precedence, where each facade key reroutes the CLI. claw names
+// its provider in the model spec instead, and a facade with a provider of its
+// own — moonshot, reached as `moonshot/…` — funds no `anthropic/…` node: the
+// env factory never reads its key. Counting it here kept a tenant's forfait
+// out of its sandboxed anthropic nodes whenever the tenant also held a
+// Moonshot key, so the platform's ambient Anthropic key served them; and
+// listing its variable as a shadow deleted the key a moonshot node needs.
+// TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends holds this list to
+// the factory.
+var clawAnthropicProviderSlots = []secrets.Provider{
+	secrets.ProviderAnthropic,
+	secrets.ProviderZAI,
+}
+
+// heldAnthropicWireAPIKey reports whether the run carries a BYOK key claw's
+// anthropic provider would spend (clawAnthropicProviderSlots).
 func heldAnthropicWireAPIKey(creds secrets.Credentials) bool {
-	for _, slot := range secrets.AnthropicWireSlotOrder {
-		if secrets.OAuthKind(slot).Valid() {
-			continue
-		}
-		if creds.APIKeys[secrets.Provider(slot)] != "" {
+	for _, slot := range clawAnthropicProviderSlots {
+		if creds.APIKeys[slot] != "" {
 			return true
 		}
 	}
@@ -1409,14 +1427,13 @@ func heldAnthropicWireAPIKey(creds secrets.Credentials) bool {
 }
 
 // anthropicWireShadowEnv names the ambient variables that would outrank the
-// forfait inside the container: the two Anthropic-flavoured ones the CLI
-// reads directly, plus every facade key byokEnvVar forwards. Derived from
-// the slot order rather than listed, so a facade added to the wire cannot
-// keep shadowing the forfait from a list nobody updated.
+// forfait inside the container: the two Anthropic-flavoured ones the env
+// factory reads directly, plus the forwarded key of every other slot it
+// spends.
 func anthropicWireShadowEnv() []string {
 	shadows := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
-	for _, slot := range secrets.AnthropicWireSlotOrder {
-		if name := byokEnvVar[secrets.Provider(slot)]; name != "" && name != "ANTHROPIC_API_KEY" {
+	for _, slot := range clawAnthropicProviderSlots {
+		if name := byokEnvVar[slot]; name != "" && name != "ANTHROPIC_API_KEY" {
 			shadows = append(shadows, name)
 		}
 	}
