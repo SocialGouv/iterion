@@ -366,6 +366,19 @@ tool phase_zero:
                    "later anyway. Commit or clean first."
                    % (len(dirty), "; ".join(dirty[:5])))
 
+        # Every reader of the contract after this point needs yq: this node
+        # when a contract is there, net_gate for where the net lives, and
+        # preflight after the whole phase. Without it, whatever the children
+        # built would be refused hours later, so it is refused here, first —
+        # whether or not a contract exists yet.
+        yq = find_yq()
+        if not yq:
+            refuse("yq is not on PATH and not in the workspace devbox profile. "
+                   "Phase 0 reads the contract at %s to decide what to build "
+                   "and where the net lives, and preflight reads it after: "
+                   "without yq every child would run only to be refused. "
+                   "Provide yq, or launch with phase_zero: false." % plan_rel)
+
         # "The contract is there" means it reads, not that a file of that
         # name exists: an unparseable plan is not a programme, and the child
         # that writes plans is exactly who repairs it.
@@ -374,12 +387,6 @@ tool phase_zero:
         if not os.path.isfile(plan_abs):
             reason = "no programme contract at %s" % plan_rel
         else:
-            yq = find_yq()
-            if not yq:
-                refuse("yq is not on PATH and not in the workspace devbox "
-                       "profile, so the contract at %s cannot be read — and "
-                       "whether the assessment child is needed cannot be "
-                       "decided." % plan_rel)
             raw = subprocess.run([yq, "-o=json", plan_abs], capture_output=True,
                                  text=True, timeout=60)
             if raw.returncode != 0:

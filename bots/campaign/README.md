@@ -250,11 +250,12 @@ phase 0 committed.
   contract from a brief; with neither, there is nothing to derive it
   from, and inventing lots is the one thing no bot here may do. Write the
   brief, write the contract, or launch with `phase_zero: false`.
-- **`yq` unavailable while a contract file exists** → refuse. Whether the
-  contract *reads* cannot be decided without it, and a guess would either
-  skip the child that repairs an unparseable plan or overwrite a good one.
-  `net_gate` refuses the same way: without the contract it cannot know
-  where the net lives.
+- **`yq` unavailable** → refuse, contract or not. Whether a contract
+  *reads* cannot be decided without it — a guess would either skip the
+  child that repairs an unparseable plan or overwrite a good one — and
+  every later reader needs it: `net_gate` for where the net lives,
+  `preflight` after the whole phase. Without it the children would run only
+  to be refused.
 - **a net outside the workspace, or a contract-chosen entry point that is
   absent** → refuse, at `net_gate`, before the golden-master child starts.
   The children resolve the net inside the workspace, and that child writes

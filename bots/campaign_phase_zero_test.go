@@ -337,7 +337,8 @@ func TestCampaignPhaseZeroRefusesWorkInFlight(t *testing.T) {
 // yq, whether that contract READS cannot be decided. Guessing either way
 // costs something real — skipping the child that repairs an unparseable
 // plan, or running one that overwrites a good one — so the node refuses,
-// the way preflight already refuses for the same missing tool.
+// the way preflight already refuses for the same missing tool. With no
+// contract yet it refuses too: every later reader of the contract needs yq.
 func TestCampaignPhaseZeroRefusesWithoutYq(t *testing.T) {
 	requireModernizeTools(t)
 	ws, git := phaseZeroRepo(t)
@@ -368,6 +369,31 @@ func TestCampaignPhaseZeroRefusesWithoutYq(t *testing.T) {
 	exit, out, _ = runPhaseZeroNode(t, "phase_zero", subs, "")
 	if exit != 0 || out.RunAssessment {
 		t.Fatalf("with yq back: exit = %d, run_assessment = %v; want 0/false (notice %q)", exit, out.RunAssessment, out.Notice)
+	}
+
+	// No contract yet, a brief: nothing to read HERE, but net_gate reads the
+	// contract the child writes and preflight reads it after. Without yq the
+	// assessment child would run only to be refused, so phase 0 refuses first.
+	ws2, git2 := phaseZeroRepo(t)
+	writeUnder(t, ws2, ".modernize/brief.yaml", "goal: x\n")
+	git2("add", ".modernize/brief.yaml")
+	git2("commit", "-qm", "brief")
+	subs2 := map[string]string{
+		"{{vars.workspace_dir}}": strconv.Quote(ws2),
+		"{{vars.phase_zero}}":    "true",
+		"{{vars.plan_path}}":     strconv.Quote(".modernize/plan.yaml"),
+		"{{vars.brief_path}}":    strconv.Quote(".modernize/brief.yaml"),
+	}
+	exit, out, stderr = runPhaseZeroNode(t, "phase_zero", subs2, restrictedPATH(t, "git", "python3"))
+	if exit != 1 || out.RunAssessment {
+		t.Fatalf("no contract, no yq: exit = %d, run_assessment = %v; want 1/false — the child would be refused at net_gate (notice %q)", exit, out.RunAssessment, out.Notice)
+	}
+	if !strings.Contains(out.Notice, "yq is not on PATH") || !strings.Contains(stderr, "yq is not on PATH") {
+		t.Errorf("the refusal must name yq on both channels: notice %q, stderr %q", out.Notice, stderr)
+	}
+	exit, out, _ = runPhaseZeroNode(t, "phase_zero", subs2, "")
+	if exit != 0 || !out.RunAssessment {
+		t.Fatalf("no contract, yq back: exit = %d, run_assessment = %v; want 0/true (notice %q)", exit, out.RunAssessment, out.Notice)
 	}
 }
 
