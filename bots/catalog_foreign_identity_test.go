@@ -36,8 +36,19 @@ import (
 // named in prose. Those have no shape to match, and pretending otherwise would
 // put a green tick next to a question nobody answered.
 
-// hostRe captures the host of a URL, a scp-form git remote, or an ssh remote.
-var hostRe = regexp.MustCompile(`(?:https?://|git@|ssh://git@)([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{2,24})`)
+// hostRe captures the host of a URL or of an ssh/git remote written with a
+// user. `git://` and `git+ssh://` are here because a forge that serves them
+// carries an identity exactly as much as one that serves https.
+var hostRe = regexp.MustCompile(
+	`(?:https?://|git://|git\+ssh://|ssh://[A-Za-z0-9._-]+@|ssh://|[A-Za-z0-9._-]+@)([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{2,24})`)
+
+// scpRe captures the scp-form git remote written WITHOUT a user —
+// `forge.internal.acme.fr:team/app.git`, which is what a clone line copied out
+// of a forge's UI looks like. The `.git` suffix is required: a bare
+// `host:path` shape is indistinguishable from a filename and a line number,
+// and a guard that flagged those would be worked around within a day.
+var scpRe = regexp.MustCompile(
+	"(?:^|[\\s\"'`(<])([A-Za-z0-9][A-Za-z0-9._-]*\\.[A-Za-z]{2,24}):[A-Za-z0-9._~/-]+\\.git\\b")
 
 // emailDomainRe captures the domain of an email address.
 var emailDomainRe = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,24})\b`)
@@ -86,6 +97,99 @@ var catalogHostAllowlist = map[string]string{
 	"golden-master.iterion": "the synthetic committer identity of a bot's own commits",
 	"iterion.local":         "the synthetic committer identity of a bot's own commits",
 	"noreply.local":         "the synthetic committer identity of a bot's own commits",
+
+	// ── everything below entered with the scope, and each one is a review
+	// decision taken once: "is this host public infrastructure, or is it
+	// somebody's?" They are grouped by what they are, not by where they sit.
+
+	// THIS PROJECT'S OWN platform, already public in the documentation it
+	// documents. They are named here rather than matched by a suffix rule: a
+	// suffix would admit a subdomain nobody reviewed.
+	"socialgouv.github.io":                                  "this project's own public documentation site",
+	"social.gouv.fr":                                        "the organisation this project belongs to",
+	"iterion.cloud":                                         "this project's own public service",
+	"iterion.fabrique.social.gouv.fr":                       "this project's own deployment, named in its runbooks",
+	"buildd.bko.fabrique.social.gouv.fr":                    "this project's own build host, named in its runbooks",
+	"sentry2.fabrique.social.gouv.fr":                       "this project's own error-reporting host, named in its runbooks",
+	"iterion-app-boite-a-idees.ovh.fabrique.social.gouv.fr": "this project's own demo deployment, named in a runbook",
+	"evil.fabrique.social.gouv.fr":                          "a deliberately hostile URL in a security doc's worked example",
+
+	// Model providers and agent runtimes the bots talk to or document.
+	"api.anthropic.com":     "the model provider's public API",
+	"console.anthropic.com": "the model provider's public console",
+	"platform.claude.com":   "the model provider's public platform",
+	"code.claude.com":       "the public documentation of an agent runtime",
+	"claude.ai":             "the model provider's public product page",
+	"api.openai.com":        "a model provider's public API",
+	"auth.openai.com":       "a model provider's public auth endpoint",
+	"developers.openai.com": "a model provider's public developer documentation",
+	"api.x.ai":              "a model provider's public API",
+	"api.z.ai":              "a model provider's public API",
+	"models.dev":            "a public model index a backend reads",
+	"huggingface.co":        "a public model hub",
+	"opencode.ai":           "a public agent runtime named in a comparison",
+	"pi.dev":                "the public site of an execution backend named in an ADR",
+
+	// Public documentation of the tools and platforms this project uses.
+	"go.dev":                     "the Go project's public site",
+	"kubernetes.io":              "the public Kubernetes documentation",
+	"keda.sh":                    "the public documentation of an autoscaler a chart depends on",
+	"velero.io":                  "the public documentation of a backup tool named in a runbook",
+	"nats-io.github.io":          "the public chart repository of a message broker a chart depends on",
+	"direnv.net":                 "the public site of a shell tool the developer setup names",
+	"www.jetify.com":             "the public site of the devbox toolchain",
+	"registry.npmjs.org":         "the public npm registry",
+	"deb.nodesource.com":         "a public Debian package repository named in a setup script",
+	"s3.amazonaws.com":           "a public object-store endpoint form in a configuration example",
+	"docs.github.com":            "GitHub's public documentation",
+	"docs.gitlab.com":            "GitLab's public documentation",
+	"docs.gravatar.com":          "a public avatar service's documentation",
+	"users.noreply.github.com":   "GitHub's own no-reply mail domain",
+	"wails.io":                   "the public site of a desktop toolkit the desktop build uses",
+	"cdn.prod.website-files.com": "a public CDN serving a logo named in a comparison's asset list",
+
+	// Standards and references cited in documentation.
+	"www.w3.org":       "a public standards body",
+	"json-schema.org":  "the public JSON Schema specification",
+	"publicsuffix.org": "the public suffix list",
+	"man7.org":         "public manual pages cited in a runbook",
+	"arxiv.org":        "a public preprint server cited in a document",
+
+	// Competing products named in a published comparison. Naming a competitor's
+	// PUBLIC documentation is the point of a comparison; none of these is
+	// anybody's private infrastructure.
+	"n8n.io":                     "a competing product's public site, named in a comparison",
+	"docs.n8n.io":                "a competing product's public documentation",
+	"zapier.com":                 "a competing product's public site, named in a comparison",
+	"help.zapier.com":            "a competing product's public help site",
+	"community.zapier.com":       "a competing product's public community site",
+	"www.make.com":               "a competing product's public site, named in a comparison",
+	"help.make.com":              "a competing product's public help site",
+	"apps.make.com":              "a competing product's public app directory",
+	"crewai.com":                 "a competing product's public site, named in a comparison",
+	"www.crewai.com":             "a competing product's public site, named in a comparison",
+	"docs.crewai.com":            "a competing product's public documentation",
+	"enterprise-docs.crewai.com": "a competing product's public documentation",
+	"dify.ai":                    "a competing product's public site, named in a comparison",
+	"docs.dify.ai":               "a competing product's public documentation",
+	"flowiseai.com":              "a competing product's public site, named in a comparison",
+	"docs.flowiseai.com":         "a competing product's public documentation",
+	"www.langchain.com":          "a competing product's public site, named in a comparison",
+	"docs.langchain.com":         "a competing product's public documentation",
+	"www.activepieces.com":       "a competing product's public site, named in a comparison",
+	"www.windmill.dev":           "a competing product's public site, named in a comparison",
+
+	// Placeholders and local names that resolve to nobody.
+	"host.docker.internal":    "the container runtime's own name for the host, in a configuration example",
+	"tempo.observability":     "an in-cluster service name in a configuration example",
+	"our.host":                "a placeholder hostname in a worked example",
+	"jira-mcas.atlassian.net": "a placeholder tenant in a ticket-tracker example",
+
+	// File NAMES that parse as hostnames and are not. They reach the allowlist
+	// by the same door as everything else: a review decision, taken once, with
+	// the reason written down.
+	"iterion-author.v1.schema": "a versioned schema FILE NAME under docs/references, not a host",
+	"iterion-author.v2.schema": "a versioned schema FILE NAME under docs/references, not a host",
 }
 
 type foreignHost struct {
@@ -93,8 +197,60 @@ type foreignHost struct {
 	line       int
 }
 
-// catalogFiles is the set this guard judges: the files of bots/ and examples/
-// that are IN THE COMMIT, read from git rather than from the checkout.
+// pathSegmentHostRe matches a path segment that IS a hostname: at least three
+// labels, the last of them alphabetic. Two dots is the threshold that keeps
+// `docker-compose.override.yml` and `values.ovh-prod.yaml` out — one dot is
+// how a file names a variant, two is how a host names a subdomain. What gets
+// through anyway is a review decision like any other: the allowlist carries it.
+var pathSegmentHostRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+\.[A-Za-z]{2,24}$`)
+
+// hostSegments returns the segments of a path that are themselves hostnames,
+// one trailing extension stripped.
+func hostSegments(path string) []string {
+	var found []string
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == "" || segment == ".." {
+			continue
+		}
+		candidate := segment
+		if dot := strings.LastIndex(segment, "."); dot > 0 {
+			candidate = segment[:dot]
+		}
+		if pathSegmentHostRe.MatchString(candidate) {
+			found = append(found, strings.ToLower(candidate))
+		}
+	}
+	return found
+}
+
+// permittedHost is the ONE decision procedure, used by every caller. A second
+// copy would drift and exempt something nobody meant to exempt.
+func permittedHost(host string) bool {
+	if _, ok := catalogHostAllowlist[host]; ok {
+		return true
+	}
+	for _, suffix := range reservedSuffixes {
+		if host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// catalogScope is every tracked path this guard judges: the whole surface a
+// working session touches and then publishes. `bots/` and `examples/` were the
+// original set, and they are the smallest half of it — a hostname copied out
+// of a session lands just as easily in an ADR, a runbook, a chart value, a CI
+// step or a shell script, and each of those ships to the same public
+// repository.
+//
+// `:(glob)*.md` is the ROOT markdown only: `*.md` as a plain pathspec would
+// sweep in `vendor/`, where several hundred third-party READMEs name several
+// hundred hosts nobody here chose.
+var catalogScope = []string{"bots", "examples", "docs", "skills", "scripts", "charts", "ci", ":(glob)*.md"}
+
+// catalogFiles is the set this guard judges: the tracked files of
+// catalogScope, read from git rather than from the checkout.
 //
 // The distinction is not pedantry, it is the finding that made this function
 // exist. A working directory carries `.devbox/` profiles, `__pycache__/`
@@ -104,7 +260,7 @@ type foreignHost struct {
 // A guard whose verdict moves with the directory it runs in certifies nothing.
 func catalogFiles(t *testing.T) []string {
 	t.Helper()
-	return trackedFilesIn(t, "..", "bots", "examples")
+	return trackedFilesIn(t, "..", catalogScope...)
 }
 
 // trackedFilesIn lists the files git TRACKS under the named subdirectories of
@@ -147,25 +303,28 @@ func scanForeignHosts(t *testing.T, files []string, skip func(path string) bool)
 		if readErr != nil {
 			t.Fatalf("read %s: %v", path, readErr)
 		}
-		for index, line := range strings.Split(string(body), "\n") {
+		// THE NAME IS CONTENT TOO. A file called `forge.internal.acme.fr.json`
+		// carries the identity in the one place a scan of bodies never looks,
+		// and a directory named after a forge carries it for every file under
+		// it. The URL, scp and email shapes apply to the path as line 0;
+		// hostSegments adds the shape a path has and a line of prose does not
+		// — a segment that IS a hostname.
+		for _, host := range hostSegments(path) {
+			if !permittedHost(host) {
+				found = append(found, foreignHost{file: path, host: host, line: 0})
+			}
+		}
+		lines := append([]string{filepath.ToSlash(path)}, strings.Split(string(body), "\n")...)
+		for index, line := range lines {
 			hosts := hostRe.FindAllStringSubmatch(line, -1)
 			hosts = append(hosts, emailDomainRe.FindAllStringSubmatch(line, -1)...)
+			hosts = append(hosts, scpRe.FindAllStringSubmatch(line, -1)...)
 			for _, match := range hosts {
 				host := strings.ToLower(strings.TrimSuffix(match[1], "."))
-				if _, ok := catalogHostAllowlist[host]; ok {
+				if permittedHost(host) {
 					continue
 				}
-				reserved := false
-				for _, suffix := range reservedSuffixes {
-					if host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix) {
-						reserved = true
-						break
-					}
-				}
-				if reserved {
-					continue
-				}
-				found = append(found, foreignHost{file: path, host: host, line: index + 1})
+				found = append(found, foreignHost{file: path, host: host, line: index})
 			}
 		}
 	}
@@ -196,10 +355,16 @@ func TestCatalogNamesNoForeignInfrastructure(t *testing.T) {
 func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 	dir := t.TempDir()
 	fixtures := map[string]string{
-		"a-skill.md":  "Clone it with `git clone git@forge.internal.acme-industries.fr:team/app.git`.\n",
-		"a-bot.bot":   "  url: string = \"https://gitlab.private-customer.example.fr/group/repo\"\n",
-		"a-test.go":   "\tconst author = \"operator@private-customer.fr\"\n",
-		"innocent.md": "See https://github.com/SocialGouv/iterion and mail t@example.invalid.\n",
+		"a-skill.md": "Clone it with `git clone git@forge.internal.acme-industries.fr:team/app.git`.\n",
+		"a-bot.bot":  "  url: string = \"https://gitlab.private-customer.example.fr/group/repo\"\n",
+		"a-test.go":  "\tconst author = \"operator@private-customer.fr\"\n",
+		// The shapes the first version of this guard did not see.
+		"a-runbook.md": "Mirror it: `git clone git://mirror.private-customer-two.fr/team/app.git`.\n",
+		"a-script.sh":  "git remote add upstream scm.private-customer-three.fr:team/app.git\n",
+		"a-chart.yaml": "  repository: ssh://deploy@registry.private-customer-four.fr/charts\n",
+		// And the one place a scan of file BODIES never looks.
+		"forge.private-customer-five.fr.json": "nothing in the body at all\n",
+		"innocent.md":                         "See https://github.com/SocialGouv/iterion and mail t@example.invalid.\n",
 	}
 	for name, body := range fixtures {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -225,11 +390,62 @@ func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 		"forge.internal.acme-industries.fr",
 		"gitlab.private-customer.example.fr",
 		"private-customer.fr",
+		"mirror.private-customer-two.fr",
+		"scm.private-customer-three.fr",
+		"registry.private-customer-four.fr",
+		"forge.private-customer-five.fr",
 	} {
 		if !caught[host] {
 			t.Errorf("the guard did NOT catch %q — it would let a third party's infrastructure "+
 				"ship in the public catalog", host)
 		}
+	}
+}
+
+// THE SCOPE IS WHAT THE GUARD IS WORTH. It judged `bots/` and `examples/`
+// only, which is the smallest half of what a working session touches and
+// publishes: an ADR, a runbook, a chart value, a CI step and a shell script
+// all ship to the same public repository, and a hostname copied out of a
+// session lands in one of those as easily as in a fixture.
+//
+// A scope that silently covered nothing would make every test here green, so
+// each declared directory is required to contribute a file.
+func TestCatalogIdentityScopeCoversEveryPublishedSurface(t *testing.T) {
+	files := catalogFiles(t)
+	for _, want := range catalogScope {
+		if strings.HasPrefix(want, ":(glob)") {
+			continue
+		}
+		found := false
+		for _, path := range files {
+			if strings.Contains(filepath.ToSlash(path), "/"+want+"/") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("the guard declares it judges %q and git lists no tracked file under it — "+
+				"a scope that covers nothing makes every assertion here green for free", want)
+		}
+	}
+	// The root markdown, which is the one entry the loop above skips: its
+	// pathspec exists precisely so `vendor/` does not come with it.
+	rootMarkdown, vendored := false, false
+	for _, path := range files {
+		rel := strings.TrimPrefix(filepath.ToSlash(path), "../")
+		if !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".md") {
+			rootMarkdown = true
+		}
+		if strings.HasPrefix(rel, "vendor/") {
+			vendored = true
+		}
+	}
+	if !rootMarkdown {
+		t.Error("no root markdown is judged — README, SECURITY and the changelog publish hostnames too")
+	}
+	if vendored {
+		t.Error("the scope swept in vendor/, where several hundred third-party READMEs name " +
+			"several hundred hosts nobody here chose — the allowlist would become a copy of the internet")
 	}
 }
 
