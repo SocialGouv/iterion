@@ -253,8 +253,9 @@ size, and `.modernize/plan.yaml` itself.
 It holds NO knowledge of any language, build tool or runtime. An
 always-on agnostic floor measures what any git tree carries; everything
 stack-specific is declared in the bundle's `stack-*.md` skills, executed
-by ONE adaptive agent, and verified by a deterministic coverage gate that
-derives its expectations from those same skill blocks. Adding a stack is
+by a deterministic node for the stacks ONE adaptive agent names, and
+verified by a coverage gate that derives its expectations from those same
+skill blocks. Adding a stack is
 dropping a skill file — no DSL edit.
 
 Two properties are load-bearing and both are gates, never prose. Every

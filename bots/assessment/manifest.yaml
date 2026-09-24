@@ -1,7 +1,15 @@
 name: assessment
 display_name: Assessy
 icon: 🧭
-version: 0.1.1
+version: 0.1.2
+## 0.1.2 — the extractors read under the bundle's neutralised git
+## environment with `core.quotePath=false`;
+## the measurement profile (now 1.1.0) declares only the canonical exclusion
+## the tool applies and refuses a non-numeric scale; an extractor output the
+## runner named is counted or refused; the sweep predicate is a whole command
+## run alone on the input tree, and the gate probe runs in an empty home;
+## "landed" is read from the tree HEAD names, and the commit is exactly the
+## artefact list; an absent bundle-owned skills directory is refused at entry.
 ## 0.1.1 — the machine-readable `iterion:` blocks this bundle EXECUTES (the
 ## extractor scripts of each `stack-<id>.md`) and the measurement profile the
 ## published letter is a ratio against are read from the engine-owned copy of
@@ -24,8 +32,9 @@ description: |
   It holds NO knowledge of any language, build tool or runtime. An
   always-on agnostic floor measures what any git tree carries; everything
   stack-specific is declared in the bundle's `stack-*.md` skills, executed
-  by ONE adaptive agent, and verified by a deterministic coverage gate that
-  derives its expectations from those same skill blocks. Adding a stack is
+  by a deterministic node for the stacks ONE adaptive agent names, and
+  verified by a coverage gate that derives its expectations from those same
+  skill blocks. Adding a stack is
   dropping a skill file — no DSL edit.
 
   Two properties are load-bearing and both are gates, never prose. Every

@@ -13,7 +13,7 @@
 | `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 1 · 2 | 0.1.2 |
 | `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 1 · 6 | 0.4.0 |
 | `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 1 · 0 | 0.1.3 |
-| `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 1 · 8 | 0.1.1 |
+| `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 1 · 8 | 0.1.2 |
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 1 · 6 | 0.1.3 |
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1 · 3 | 1.9.1 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 1 · 0 | 0.1.2 |

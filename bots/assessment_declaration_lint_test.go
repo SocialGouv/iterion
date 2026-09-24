@@ -328,8 +328,24 @@ func TestAssessmentDeclarationLintDeduplicatesADeployableOnItsIdentity(t *testin
 		if assessmentBool(t, out, "ok") {
 			t.Fatal("a deployable declaring no identity was accepted — it can only be deduplicated by path")
 		}
-		if !strings.Contains(assessmentString(t, out, "reason"), "identity") {
+		// ITS refusal, not the shape check beside it: an empty identity fails
+		// the shape too, and a test that only asked for the word "identity"
+		// could not tell the two guards apart.
+		if !strings.Contains(assessmentString(t, out, "reason"), "declares no `identity`") {
 			t.Errorf("the refusal does not name the missing field: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	t.Run("an identity that is not a key", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(append([]map[string]any{}, base...),
+			map[string]any{"id": "alpha-image", "kind": "deployable", "identity": "the alpha service",
+				"path": "deploy/Dockerfile"}))
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("an identity written as prose was accepted — two spellings of one service would " +
+				"not compare equal, and the dedup key would count it twice")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "lower-case words joined by dashes") {
+			t.Errorf("the refusal does not say what an identity looks like: %s", assessmentString(t, out, "reason"))
 		}
 	})
 }

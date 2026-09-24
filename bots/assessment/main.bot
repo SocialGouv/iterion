@@ -6,9 +6,9 @@
 ## The bot knows NOTHING about any language, build tool or runtime. An
 ## always-on agnostic floor measures what any git tree carries; every
 ## stack-specific extractor is declared in a `stack-<id>.md` skill, run
-## by ONE adaptive agent, and checked by a coverage gate that derives
-## its expectations from those SAME skill blocks. Adding a stack is
-## dropping a skill file.
+## by a deterministic node for the stacks ONE adaptive agent names, and
+## checked by a coverage gate that derives its expectations from those
+## SAME skill blocks. Adding a stack is dropping a skill file.
 ##
 ## TWO PROPERTIES ARE LOAD-BEARING, and both are gates rather than
 ## prose:
@@ -1162,10 +1162,10 @@ schema survey_input:
   listing: string
   brief_summary: string
 
-## survey — the one adaptive step. It detects the stacks, reads the matching
-## `stack-<id>` skill, runs the DETERMINISTIC extractors that skill declares,
-## and returns the declarations. It does not count: an agent's count is an
-## opinion with a number in it.
+## survey — the one adaptive step. It detects the stacks and returns the
+## declarations; the DETERMINISTIC extractors the matching `stack-<id>` skills
+## declare are run by `run_extractors`, not by it. It does not count: an
+## agent's count is an opinion with a number in it.
 agent survey:
   backend: "${ITERION_ASSESSMENT_SURVEY_BACKEND:-claude_code}"
   model: "${ITERION_ASSESSMENT_SURVEY_MODEL:-anthropic/claude-opus-4-5}"
@@ -2801,9 +2801,11 @@ tool render:
         "",
         "- **No effort projection.** Hours per class of lot are calibrated on a MEASURED campaign; "
         "at a first assessment there is none, and a projection would invent its own input.",
-        "- **Omission is not detectable here.** Every declaration was re-verified in the tree and "
-        "the partition is complete over the top-level entries, but an artefact nobody declared has "
-        "no declaration to refuse. %s carried this measurement." % facts.get("survey.declarations", ""),
+        "- **Omission is bounded here, not detected.** Every declaration was re-verified in the "
+        "tree and every top-level entry is claimed by a perimeter declaration, but an artefact "
+        "nobody declared has no declaration to refuse, and the perimeter is the survey's to draw: "
+        "%s. Read the size with that figure beside it; %s carried this measurement."
+        % (facts.get("perimeter.exclusion_rate", ""), facts.get("survey.declarations", "")),
         "",
     ]
 
