@@ -1,4 +1,4 @@
-import { errorMessage } from "@/lib/errorHints";
+import { errorMessage, toastError } from "@/lib/errorHints";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
@@ -27,6 +27,7 @@ export default function CanvasEmpty() {
   const toggleLibraryPanel = useUIStore((s) => s.toggleLibraryPanel);
   const libraryExpanded = useUIStore((s) => s.libraryExpanded);
   const setFilePickerOpen = useUIStore((s) => s.setFilePickerOpen);
+  const addToast = useUIStore((s) => s.addToast);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const hasUnsavedWork = useDocumentStore((s) => s.hasUnsavedWork);
   const { confirm, dialog: discardDialog } = useConfirm();
@@ -67,9 +68,11 @@ export default function CanvasEmpty() {
       // Anything but "applied" leaves the list open: a refusal has said why,
       // and the author may pick again.
       if ((await openExampleIntoStore(name, documentStore)) === "applied") setExamplesOpen(false);
-    } catch {
-      // The server returns useful errors; the modal stays open so the
-      // user can try another example.
+    } catch (err) {
+      // What went wrong, said: a known kind of failure by its hint, anything
+      // else — the deadline included — in its own words. The list stays open
+      // so the author can try another example.
+      toastError(addToast, err, "Open failed");
     }
   };
 

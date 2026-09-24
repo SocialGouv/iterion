@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { createEmptyDocument } from "@/lib/defaults";
 import { getOrCreateDocumentStore } from "@/store/document";
+import { replaceDocumentNow } from "@/lib/replaceDocument";
 import { useTabsStore } from "@/store/tabs";
+import { useUIStore } from "@/store/ui";
 import * as client from "@/api/client";
 
 import RecentFilesPanel from "./RecentFilesPanel";
@@ -39,6 +41,11 @@ vi.mock("@/components/Catalog/BotCatalogDialog", () => ({
 }));
 
 afterEach(cleanup);
+beforeEach(() => {
+  window.history.replaceState({}, "", "/");
+  useUIStore.setState({ toasts: [] });
+});
+const toasts = () => useUIStore.getState().toasts.map((t) => t.message).join(" | ");
 
 describe("RecentFilesPanel — launching a first-class bot from Home", () => {
   // Regression guard for the "can't Run a bot until you save" friction:
@@ -101,10 +108,12 @@ describe("RecentFilesPanel — an example that fails to load", () => {
   }
   const tabExists = (id: string) => useTabsStore.getState().tabs.some((t) => t.id === id);
 
-  it("closes the new tab when nobody touched it", async () => {
+  it("closes the new tab when nobody touched it, and says why", async () => {
     const { tabId, fail } = await openFailing();
     await act(async () => fail(new Error("boom")));
     expect(tabExists(tabId)).toBe(false);
+    expect(toasts()).toContain("Failed to open example: boom");
+    expect(window.location.pathname).toBe("/");
   });
 
   it("keeps the new tab the author had started editing", async () => {
@@ -116,5 +125,77 @@ describe("RecentFilesPanel — an example that fails to load", () => {
     await act(async () => fail(new Error("boom")));
     expect(tabExists(tabId)).toBe(true);
     expect(store.getState().document?.comments?.[0]?.text).toBe("typed meanwhile");
+    expect(toasts()).toContain("Failed to open example — the tab you had started editing is kept: boom");
+    // The toast speaks of that tab: the author is taken to it.
+    expect(window.location.pathname).toBe("/editor");
+  });
+});
+
+describe("RecentFilesPanel — an example whose answer the author's edits refused", () => {
+  // Edits need the editor: the tab kept with them, and the toast that says
+  // the example was not opened, are both about the editor — the author is
+  // taken there, wherever the panel was.
+  it("keeps the tab the author edited, and takes the author to it", async () => {
+    type Example = Awaited<ReturnType<typeof client.loadExample>>;
+    let land!: (v: Example) => void;
+    vi.mocked(client.loadExample).mockReturnValueOnce(new Promise<Example>((r) => (land = r)));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <RecentFilesPanel />
+      </QueryClientProvider>,
+    );
+    const before = useTabsStore.getState().activeEditorTabId;
+    fireEvent.click(await screen.findByText("Featurly"));
+    await waitFor(() => expect(useTabsStore.getState().activeEditorTabId).not.toBe(before));
+    const tabId = useTabsStore.getState().activeEditorTabId;
+    if (!tabId) throw new Error("the example opened no tab");
+    const store = getOrCreateDocumentStore(tabId);
+    act(() => {
+      store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "typed meanwhile" }] });
+    });
+
+    await act(async () =>
+      land({ source: "agent a:\n  system: hi\n", document: createEmptyDocument(), diagnostics: [] }),
+    );
+    expect(store.getState().document?.comments?.[0]?.text).toBe("typed meanwhile");
+    expect(toasts()).toContain("was not opened");
+    expect(window.location.pathname).toBe("/editor");
+  });
+});
+
+describe("RecentFilesPanel — an example a newer request in its tab superseded", () => {
+  // That request is the author's, made from wherever they are: the panel
+  // leaves them there, and says nothing about the dropped answer.
+  it("does not take the author anywhere", async () => {
+    type Example = Awaited<ReturnType<typeof client.loadExample>>;
+    let land!: (v: Example) => void;
+    vi.mocked(client.loadExample).mockReturnValueOnce(new Promise<Example>((r) => (land = r)));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <RecentFilesPanel />
+      </QueryClientProvider>,
+    );
+    const before = useTabsStore.getState().activeEditorTabId;
+    fireEvent.click(await screen.findByText("Featurly"));
+    await waitFor(() => expect(useTabsStore.getState().activeEditorTabId).not.toBe(before));
+    const tabId = useTabsStore.getState().activeEditorTabId;
+    if (!tabId) throw new Error("the example opened no tab");
+    const store = getOrCreateDocumentStore(tabId);
+    act(() =>
+      replaceDocumentNow(store, (s) => {
+        s.setDocument(createEmptyDocument());
+        s.setCurrentFilePath(null);
+        s.markSaved();
+      }),
+    );
+    window.history.pushState({}, "", "/runs");
+
+    await act(async () =>
+      land({ source: "agent a:\n  system: hi\n", document: createEmptyDocument(), diagnostics: [] }),
+    );
+    expect(window.location.pathname).toBe("/runs");
+    expect(toasts()).toBe("");
   });
 });

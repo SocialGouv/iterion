@@ -57,3 +57,29 @@ describe("Start blank, while an example is still loading", () => {
     expect(useUIStore.getState().toasts.map((t) => t.message).join(" ")).not.toContain("was opening");
   });
 });
+
+describe("an example that fails to load from the empty canvas", () => {
+  it("says why, and leaves the list open for another pick", async () => {
+    useUIStore.setState({ toasts: [] });
+    api.listExampleEntries.mockResolvedValue([{ name: "x/main.bot" }]);
+    api.loadExample.mockRejectedValueOnce(new Error("the example is being rewritten by another process"));
+    const store = createDocumentStore();
+    store.getState().setDocument(createEmptyDocument());
+    store.getState().markSaved();
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <DocumentStoreProvider store={store}>
+          <CanvasEmpty />
+        </DocumentStoreProvider>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByText("Examples"));
+    fireEvent.click(await screen.findByText("main.bot"));
+    await waitFor(() =>
+      expect(useUIStore.getState().toasts.map((t) => t.message).join(" | ")).toContain(
+        "Open failed: the example is being rewritten by another process",
+      ),
+    );
+    expect(screen.getByText("main.bot")).toBeTruthy();
+  });
+});

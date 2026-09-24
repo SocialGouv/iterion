@@ -9,7 +9,7 @@ vi.mock("@/api/client", () => api);
 import { createEmptyDocument } from "@/lib/defaults";
 import { createDocumentStore, type DocumentStore } from "@/store/document";
 import { applyOpenedFile } from "@/lib/openedFile";
-import { replaceDocument } from "@/lib/replaceDocument";
+import { REPLACE_DEADLINE_MS, replaceDocument } from "@/lib/replaceDocument";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
@@ -330,6 +330,28 @@ describe("useDocumentSaveAs", () => {
     expect(store.getState().document?.comments?.[0]?.text).toBe("RELOADED");
     expect(store.getState().currentSource).toBe("reloaded\n");
     expect(store.getState().isDirty()).toBe(false);
+  });
+
+  it("is available again once an Open the server never answers has passed its deadline", async () => {
+    const store = documentStore();
+    store.setState({ currentFilePath: "bots/demo/main.bot" });
+    vi.useFakeTimers();
+    try {
+      const hung = replaceDocument(store, "bots/hung.bot", () => new Promise<never>(() => {}), () => {}).catch(
+        (err: unknown) => err,
+      );
+      render(<Harness store={store} />);
+      fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+      expect(useUIStore.getState().toasts.map((t) => t.message).join(" ")).toContain(
+        "A file is still opening in this tab",
+      );
+      await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+      expect(await hung).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    expect(await screen.findByRole("button", { name: "Save" })).toBeTruthy();
   });
 
   it("does not open a filesystem Save As dialog in cloud mode", async () => {

@@ -40,7 +40,7 @@ vi.mock("@/store/ui", () => ({
 import { editorDraftKey } from "@/hooks/useDraftBot";
 import { createEmptyDocument } from "@/lib/defaults";
 import { applyOpenedFile } from "@/lib/openedFile";
-import { replaceDocument } from "@/lib/replaceDocument";
+import { REPLACE_DEADLINE_MS, replaceDocument } from "@/lib/replaceDocument";
 import { getOrCreateDocumentStore, stampEditor, stampHolds } from "@/store/document";
 import { useTabsStore } from "@/store/tabs";
 
@@ -318,6 +318,27 @@ describe("an open draft tab follows its conversation", () => {
     });
     expect(await outcome).toBe("applied");
     expect(store.getState().currentFilePath).toBe("bots/q.bot");
+  });
+
+  it("takes a draft waiting behind an Open the server never answers, once its deadline has passed", async () => {
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-dl" }, "Draft");
+    mount(id, "run-dl");
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+    const store = getOrCreateDocumentStore(id);
+    const hung = replaceDocument(store, "bots/hung.bot", () => new Promise<never>(() => {}), () => {}).catch(
+      (err: unknown) => err,
+    );
+
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-dl");
+    expect(sourceOf(id)).toBe("v1");
+
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    expect(await hung).toBeInstanceOf(Error);
+    await settle();
+    expect(sourceOf(id)).toBe("v2");
   });
 
   it("keeps the canvas when a later poll finds nothing", async () => {

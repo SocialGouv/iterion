@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ReplaceDeadlineError } from "./replaceDocument";
 
 import { errorHint, errorMessage, toastError } from "./errorHints";
 
@@ -85,4 +86,19 @@ describe("toastError", () => {
     toastError(addToast, "weird unmatched error", "Install failed");
     expect(calls).toEqual(["Install failed: weird unmatched error"]);
   });
+});
+
+describe("a replacement's deadline", () => {
+  // The label inside it is a name, and a name can contain anything a rule
+  // matches on: the sentence is said as it is.
+  it.each(["bots/forbidden-words/main.bot", "bots/aborted-runs/main.bot", "bots/http-500/main.bot"])(
+    "is said verbatim for %s",
+    (label) => {
+      const err = new ReplaceDeadlineError(label);
+      expect(errorHint(err)).toBeNull();
+      const shown: string[] = [];
+      toastError((message) => shown.push(message), err, "Open failed");
+      expect(shown).toEqual([`Open failed: ${err.message}`]);
+    },
+  );
 });

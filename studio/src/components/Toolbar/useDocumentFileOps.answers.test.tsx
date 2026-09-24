@@ -35,8 +35,10 @@ vi.mock("@/lib/iterMonacoCompletion", () => ({ registerIterCompletionProvider: v
 
 import { createEmptyDocument } from "@/lib/defaults";
 import { applyOpenedFile } from "@/lib/openedFile";
+import { REPLACE_DEADLINE_MS } from "@/lib/replaceDocument";
 import { DocumentStoreProvider, createDocumentStore } from "@/store/document";
 import SourceView from "@/components/SourceView/SourceView";
+import { useRecentsStore } from "@/store/recents";
 import { useUIStore } from "@/store/ui";
 import { useDocumentFileOps } from "./useDocumentFileOps";
 
@@ -65,6 +67,7 @@ function Toolbarish() {
       <button onClick={() => void ops.handlePickFile("file", "bots/a.bot")}>Open A</button>
       <button onClick={() => void ops.handlePickFile("file", "bots/b.bot")}>Open B</button>
       <button onClick={() => void ops.handlePickFile("file", "bots/gone.bot")}>Open gone</button>
+      <button onClick={() => void ops.handlePickFile("file", "bots/http-404-triage/main.bot")}>Open 404</button>
       <button onClick={() => void ops.handleValidate()}>Validate</button>
       <button onClick={() => void ops.handleSave()}>Save</button>
       <input
@@ -178,6 +181,7 @@ describe("an answer that lands after the author worked", () => {
     const file = new File(["dsl: 2\n"], "imported.bot", { type: "text/plain" });
     fireEvent.change(screen.getByLabelText("import"), { target: { files: [file] } });
     await waitFor(() => expect(api.parseSource).toHaveBeenCalledTimes(1));
+    expect(api.parseSource).toHaveBeenCalledWith("dsl: 2\n", { signal: expect.any(AbortSignal) });
     act(() => {
       store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "canvas edit" }] });
     });
@@ -416,4 +420,67 @@ describe("an Apply in flight, then an Open the author confirmed", () => {
       api.openFile.mockReset();
     });
   }
+});
+
+describe("an Open the server never answers", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("ends at its deadline and says so; the tab keeps what it showed", async () => {
+    const store = tab("bots/start.bot");
+    vi.useFakeTimers();
+    api.openFile.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: "Open A" }));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(store.getState()._pendingIntent).not.toBeNull();
+
+    const request = api.openFile.mock.calls[0]?.[1] as { signal?: AbortSignal } | undefined;
+    expect(request?.signal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    vi.useRealTimers();
+    await waitFor(() =>
+      expect(toasts()).toContain(
+        `Open failed: The server did not answer the request for bots/a.bot within ${REPLACE_DEADLINE_MS / 1000} s; nothing was replaced.`,
+      ),
+    );
+    expect(request?.signal?.aborted).toBe(true);
+    expect(store.getState()._pendingIntent).toBeNull();
+    expect(store.getState().currentFilePath).toBe("bots/start.bot");
+  });
+});
+
+describe("an Open the author repeated while the first never answered", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("says nothing when the first one's deadline passes: the second spoke for the author", async () => {
+    const store = tab("bots/start.bot");
+    vi.useFakeTimers();
+    api.openFile.mockReturnValueOnce(new Promise(() => {})).mockResolvedValueOnce(opened("bots/a.bot", "A"));
+    fireEvent.click(screen.getByRole("button", { name: "Open A" }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    fireEvent.click(screen.getByRole("button", { name: "Open A" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getState().currentFilePath).toBe("bots/a.bot");
+
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    expect(toasts()).not.toContain("Open failed");
+    expect(store.getState()._pendingIntent).toBeNull();
+  });
+});
+
+describe("an Open that never answers, of a file whose name reads like a diagnosis", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("says the deadline, and keeps the file among the recents", async () => {
+    tab("bots/start.bot");
+    useRecentsStore.getState().pushRecent("bots/a.bot");
+    const recentsBefore = JSON.stringify(useRecentsStore.getState().recents);
+    vi.useFakeTimers();
+    api.openFile.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: "Open 404" }));
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS + 10);
+    expect(toasts()).toContain("Open failed: The server did not answer the request for bots/http-404-triage/main.bot");
+    expect(toasts()).not.toContain("Removed missing file");
+    expect(JSON.stringify(useRecentsStore.getState().recents)).toBe(recentsBefore);
+  });
 });

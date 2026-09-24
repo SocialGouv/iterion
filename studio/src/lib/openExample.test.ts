@@ -37,6 +37,9 @@ describe("openExampleIntoStore", () => {
     await openExampleIntoStore("x/main.bot", store);
     expect(store.getState().currentFilePath).toBe("examples/x/main.bot");
     expect(store.getState().unit).toEqual(unit);
+    // The request carries the replacement's signal: it is aborted if the
+    // server does not answer in time.
+    expect(loadExample).toHaveBeenCalledWith("x/main.bot", { signal: expect.any(AbortSignal) });
   });
 
   it("keeps the path of an example that does not parse, and marks it a salvage", async () => {

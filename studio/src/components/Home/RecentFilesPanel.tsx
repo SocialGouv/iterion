@@ -16,7 +16,7 @@ import { useRecentsStore } from "@/store/recents";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 import { useConfirm } from "@/hooks/useConfirm";
-import { errorMessage } from "@/lib/errorHints";
+import { errorMessage, toastError } from "@/lib/errorHints";
 import { basename } from "@/lib/format";
 import { botIdentity } from "@/lib/personas";
 import { Button, IconButton, InlineBanner } from "@/components/ui";
@@ -110,14 +110,22 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
       // else.
       const created = stampEditor(store.getState());
       try {
-        if ((await openExampleIntoStore(name, store)) === "applied") setLocation("/editor");
-      } catch {
+        // Applied or refused, the tab is kept — the example in it, or the work
+        // the author typed into it while the example loaded — and what is said
+        // about it speaks of the editor: that is where the author goes. Not
+        // when a newer request in that tab superseded it: that request is the
+        // author's, made from wherever they are.
+        if ((await openExampleIntoStore(name, store)) !== "superseded") setLocation("/editor");
+      } catch (err) {
         const holds = stampHolds(created, store.getState());
         if (holds.path && holds.generation && holds.source) {
           useTabsStore.getState().closeTab(tabId);
-          addToast("Failed to open example", "error");
+          toastError(addToast, err, "Failed to open example");
         } else {
-          addToast("Failed to open example — the tab you had started editing is kept.", "error", { persistent: true });
+          toastError(addToast, err, "Failed to open example — the tab you had started editing is kept", {
+            persistent: true,
+          });
+          setLocation("/editor");
         }
       } finally {
         setBusy(false);

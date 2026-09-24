@@ -32,7 +32,7 @@ import { createEmptyDocument } from "@/lib/defaults";
 import { writeAssistantActionPolicy } from "@/lib/chatDock/assistantActions";
 import { captureActiveEditorDocument } from "@/lib/chatDock/editorSession";
 import { applyOpenedFile } from "@/lib/openedFile";
-import { replaceDocument } from "@/lib/replaceDocument";
+import { REPLACE_DEADLINE_MS, replaceDocument } from "@/lib/replaceDocument";
 import { getOrCreateDocumentStore } from "@/store/document";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
@@ -196,6 +196,26 @@ describe("an assistant proposal whose validation an Open overtook, when that Ope
     await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
     expect(screen.queryByText(/changed while the proposal was being validated/)).toBeNull();
     fireEvent.click(apply);
+    await waitFor(() => expect(store.getState().document?.workflows?.[0]?.name).toBe("changed"));
+  });
+});
+
+describe("an assistant proposal waiting behind an Open the server never answers", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("applies once that Open's deadline has passed", async () => {
+    const store = await captureProposalTab("explicit");
+    vi.useFakeTimers();
+    const hung = replaceDocument(store, "bots/hung.bot", () => new Promise<never>(() => {}), () => {}).catch(
+      (err: unknown) => err,
+    );
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(api.parseSource).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    expect(await hung).toBeInstanceOf(Error);
+    vi.useRealTimers();
     await waitFor(() => expect(store.getState().document?.workflows?.[0]?.name).toBe("changed"));
   });
 });

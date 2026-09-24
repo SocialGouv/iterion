@@ -37,7 +37,7 @@ vi.mock("@/api/ws", () => ({ fileWatcher: ws.fileWatcher }));
 import { createEmptyDocument } from "@/lib/defaults";
 import { DocumentStoreProvider, createDocumentStore, type DocumentStore } from "@/store/document";
 import { useFileWatcher } from "./useFileWatcher";
-import { replaceDocument } from "@/lib/replaceDocument";
+import { REPLACE_DEADLINE_MS, replaceDocument } from "@/lib/replaceDocument";
 import { applyOpenedFile } from "@/lib/openedFile";
 import { useUIStore } from "@/store/ui";
 
@@ -61,6 +61,9 @@ function mount(store: DocumentStore) {
     </DocumentStoreProvider>,
   );
 }
+
+// Longer than the watcher's 500 ms debounce.
+const RELOAD_WINDOW_MS = 700;
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -352,6 +355,7 @@ describe("the manual reload keeps what it was offered for", () => {
     api.openFile.mockReturnValue(new Promise((r) => (land = r)));
     act(() => reload.onClick());
     await waitFor(() => expect(api.openFile).toHaveBeenCalledTimes(1));
+    expect(api.openFile).toHaveBeenCalledWith("bots/demo/main.bot", { signal: expect.any(AbortSignal) });
     act(() => store.getState().setSourceBuffer({ ...cleanEdit, text: "typed during the fetch" }));
 
     await act(async () =>
@@ -767,5 +771,68 @@ describe("offers from two tabs", () => {
     for (const offer of offers) await act(async () => offer.action?.onClick());
     expect(one.getState().document?.comments?.[0]?.text).toBe("bots/x.bot FRESH");
     expect(two.getState().document?.comments?.[0]?.text).toBe("bots/x.bot FRESH");
+  });
+});
+
+describe("an event waiting behind an Open the server never answers", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("is reloaded once that Open's deadline has passed", async () => {
+    vi.useFakeTimers();
+    const store = boundStore();
+    mount(store);
+    const hung = replaceDocument(store, "bots/other.bot", () => new Promise<never>(() => {}), () => {}).catch(
+      (err: unknown) => err,
+    );
+    ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
+    await vi.advanceTimersByTimeAsync(RELOAD_WINDOW_MS);
+    expect(api.openFile).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    expect(await hung).toBeInstanceOf(Error);
+    await vi.advanceTimersByTimeAsync(RELOAD_WINDOW_MS);
+    expect(api.openFile).toHaveBeenCalledWith("bots/demo/main.bot");
+  });
+});
+
+describe("a manual reload that never answers, superseded by an Open of the same file", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("offers nothing when its deadline passes: the Open spoke for the author", async () => {
+    const store = boundStore();
+    store.getState().setSourceBuffer({
+      path: "bots/demo/main.bot",
+      rel: null,
+      text: "rendered",
+      base: "rendered",
+      doc: null,
+      session: 1,
+    });
+    mount(store);
+    ws.emit({ type: "file_modified", path: "bots/demo/main.bot" });
+    await waitFor(() =>
+      expect(useUIStore.getState().toasts.map((t) => t.message)).toContain("bots/demo/main.bot changed externally"),
+    );
+    const shown = useUIStore.getState().toasts;
+    const reload = shown[shown.length - 1]?.action;
+    if (!reload) throw new Error("no reload was offered");
+
+    vi.useFakeTimers();
+    api.openFile.mockReturnValueOnce(new Promise(() => {}));
+    act(() => reload.onClick());
+    act(() => useUIStore.setState({ toasts: [] }));
+    const fresh = {
+      source: "FRESH\n",
+      document: { ...createEmptyDocument(), comments: [{ text: "FRESH" }] },
+      diagnostics: [],
+      path: "bots/demo/main.bot",
+    };
+    expect(
+      await replaceDocument(store, "main.bot", async () => fresh, (r, st) => applyOpenedFile(r as never, st)),
+    ).toBe("applied");
+    act(() => store.getState().addComment({ text: "the author's edit" }));
+
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    expect(useUIStore.getState().toasts.map((t) => t.message).join(" | ")).not.toContain("Failed to reload");
   });
 });

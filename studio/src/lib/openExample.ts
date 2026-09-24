@@ -21,7 +21,7 @@ import { replaceDocument, type ReplaceOutcome } from "@/lib/replaceDocument";
  * Throws if the load fails; callers decide how to surface that.
  */
 export async function openExampleIntoStore(name: string, store: DocumentStore): Promise<ReplaceOutcome> {
-  return replaceDocument(store, name, () => api.loadExample(name), (result, s) => {
+  return replaceDocument(store, name, (signal) => api.loadExample(name, { signal }), (result, s) => {
     s.setDocument(result.document);
     s.setDiagnostics(result.diagnostics);
     s.setCurrentSource(result.source);

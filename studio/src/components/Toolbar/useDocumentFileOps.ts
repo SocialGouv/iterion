@@ -66,7 +66,7 @@ export interface UseDocumentFileOpsResult {
   handleRemoveWorkflow: () => void;
 }
 import { applyOpenedFile } from "@/lib/openedFile";
-import { replaceDocument, replaceDocumentNow } from "@/lib/replaceDocument";
+import { ReplaceDeadlineError, replaceDocument, replaceDocumentNow } from "@/lib/replaceDocument";
 import { offerReload } from "@/lib/reloadOffer";
 import { stampEditor, stampHolds } from "@/store/document";
 
@@ -134,7 +134,7 @@ export function useDocumentFileOps({
       setLoading(true);
       try {
         if (kind === "file") {
-          await replaceDocument(documentStore, path, () => api.openFile(path), (result, s) => {
+          await replaceDocument(documentStore, path, (signal) => api.openFile(path, { signal }), (result, s) => {
             applyOpenedFile(result, s);
             if (result.path) pushRecent(result.path);
           });
@@ -154,12 +154,12 @@ export function useDocumentFileOps({
         // picker opens, the dead row is gone — instead of the user
         // having to manually click the trash icon on every stale row.
         const message = errorMessage(err) ?? "";
-        const isMissing = /file not found|no such file|404/i.test(message);
+        const isMissing = !(err instanceof ReplaceDeadlineError) && /file not found|no such file|404/i.test(message);
         if (kind === "file" && isMissing) {
           removeRecent(path);
           addToast(`Removed missing file from recents: ${path}`, "warning");
         } else {
-          addToast("Open failed", "error");
+          toastError(addToast, err, "Open failed");
         }
       } finally {
         setLoading(false);
@@ -188,9 +188,9 @@ export function useDocumentFileOps({
         await replaceDocument(
           documentStore,
           file.name,
-          async () => {
+          async (signal) => {
             const text = await file.text();
-            return { text, result: await api.parseSource(text) };
+            return { text, result: await api.parseSource(text, { signal }) };
           },
           ({ text, result }, s) => {
             s.setDiagnostics(result.diagnostics);

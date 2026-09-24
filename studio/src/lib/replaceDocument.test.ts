@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createEmptyDocument } from "@/lib/defaults";
 import { createDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 
-import { replaceDocument, replaceDocumentNow } from "./replaceDocument";
+import { REPLACE_DEADLINE_MS, replaceDocument, replaceDocumentNow } from "./replaceDocument";
 
 // The one path every explicit replacement takes once its confirm is
 // answered. What it certifies is the moment the ANSWER lands, not the click.
@@ -150,5 +150,81 @@ describe("the applied-replacement count", () => {
     expect(await pending).toBe("refused");
     await expect(replaceDocument(store, "d.bot", async () => Promise.reject(new Error("404")), applyPath)).rejects.toThrow();
     expect(store.getState()._replaced).toBe(at + 2);
+  });
+});
+
+describe("a load the server never answers", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("is still waited for just before the deadline, then ends it: aborted, nothing replaced, said", async () => {
+    vi.useFakeTimers();
+    const store = openStore();
+    let signal: AbortSignal | undefined;
+    const outcome = replaceDocument(
+      store,
+      "bots/b.bot",
+      (s) => {
+        signal = s;
+        return new Promise<string>(() => {});
+      },
+      applyPath,
+    );
+    const failed = outcome.catch((err: unknown) => err);
+
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS - 1);
+    expect(store.getState()._pendingIntent).not.toBeNull();
+    expect(signal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const err = await failed;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(
+      `The server did not answer the request for bots/b.bot within ${REPLACE_DEADLINE_MS / 1000} s; nothing was replaced.`,
+    );
+    expect(store.getState()._pendingIntent).toBeNull();
+    expect(signal?.aborted).toBe(true);
+    expect(store.getState().currentFilePath).toBe("bots/a.bot");
+  });
+
+  it("never applies an answer that arrives after the deadline", async () => {
+    vi.useFakeTimers();
+    const store = openStore();
+    const late = deferred<string>();
+    const outcome = replaceDocument(store, "bots/b.bot", () => late.promise, applyPath);
+    const failed = outcome.catch((err: unknown) => err);
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    expect(await failed).toBeInstanceOf(Error);
+    const replaced = store.getState()._replaced;
+
+    late.resolve("bots/b.bot");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getState().currentFilePath).toBe("bots/a.bot");
+    expect(store.getState()._replaced).toBe(replaced);
+  });
+});
+
+describe("a request a newer one superseded", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("is dropped quietly at its deadline when its load never answers", async () => {
+    vi.useFakeTimers();
+    const store = openStore();
+    const older = replaceDocument(store, "bots/b.bot", () => new Promise<string>(() => {}), applyPath);
+    // The author asks again, and this one answers.
+    expect(await replaceDocument(store, "bots/b.bot", async () => "bots/b.bot", applyPath)).toBe("applied");
+    await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
+    expect(await older).toBe("superseded");
+    expect(useUIStore.getState().toasts).toHaveLength(0);
+    expect(store.getState().currentFilePath).toBe("bots/b.bot");
+  });
+
+  it("is dropped quietly when File → New superseded it and its load then fails", async () => {
+    const store = openStore();
+    const failing = deferred<string>();
+    const older = replaceDocument(store, "bots/b.bot", () => failing.promise, applyPath);
+    replaceDocumentNow(store, (s) => s.setCurrentFilePath(null));
+    failing.reject(new Error("500: the server fell over"));
+    expect(await older).toBe("superseded");
+    expect(store.getState().currentFilePath).toBeNull();
   });
 });

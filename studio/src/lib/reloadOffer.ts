@@ -57,7 +57,7 @@ export function offerReload(store: DocumentStore, path: string, message: string)
           offerReload(store, path, message);
           return;
         }
-        replaceDocument(store, name, () => api.openFile(path), (result, st) => applyOpenedFile(result, st), {
+        replaceDocument(store, name, (signal) => api.openFile(path, { signal }), (result, st) => applyOpenedFile(result, st), {
           onRefused: () => offerReload(store, path, message),
         }).catch((err) => {
           console.error("Failed to reload file:", err);
