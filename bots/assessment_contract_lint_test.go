@@ -72,6 +72,13 @@ const goodOutcomes = `{"outcomes": [
    "arbitration": ""}
 ]}`
 
+// gateProbeWall is the per-command wall the gate probe gets in these tests. It
+// is short on purpose: a command that hits it leaves its gate UNPROVEN rather
+// than refused, so a low wall can only make the lint more permissive — it
+// cannot manufacture a refusal, and it makes the timeout path observable in a
+// second instead of two minutes.
+const gateProbeWall = "3"
+
 // contractRepo writes a contract (and its outcomes) into a throwaway
 // repository and returns the workspace.
 func contractRepo(t *testing.T, contract, outcomes string) string {
@@ -112,7 +119,10 @@ func lintContractAgainst(t *testing.T, contract, outcomes, brief string) map[str
 	out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 		"{{vars.workspace_dir}}": dir,
 		"{{vars.plan_path}}":     ".modernize/plan.yaml",
-	}, map[string]string{"{{input.brief}}": briefJSON(t, brief)})
+	}, map[string]string{
+		"{{input.brief}}":               briefJSON(t, brief),
+		"{{vars.gate_probe_timeout_s}}": gateProbeWall,
+	})
 	if exit != 0 {
 		t.Fatalf("contract_lint exited %d: %s", exit, stderr)
 	}
@@ -289,7 +299,8 @@ func TestAssessmentContractLintNeverAcceptsWhatPlanReadRefuses(t *testing.T) {
 			lintOut, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 				"{{vars.workspace_dir}}": dir,
 				"{{vars.plan_path}}":     ".modernize/plan.yaml",
-			}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief)})
+			}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief),
+				"{{vars.gate_probe_timeout_s}}": gateProbeWall})
 			if exit != 0 {
 				t.Fatalf("contract_lint exited %d: %s", exit, stderr)
 			}
@@ -356,7 +367,8 @@ func TestAssessmentProducedContractIsAcceptedByBothReaders(t *testing.T) {
 	lint, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 		"{{vars.workspace_dir}}": dir,
 		"{{vars.plan_path}}":     ".modernize/plan.yaml",
-	}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief)})
+	}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief),
+		"{{vars.gate_probe_timeout_s}}": gateProbeWall})
 	if exit != 0 {
 		t.Fatalf("contract_lint exited %d: %s", exit, stderr)
 	}
@@ -623,4 +635,131 @@ func TestAssessmentContractLintChecksTheContractAgainstTheBrief(t *testing.T) {
 			t.Errorf("the refusal does not say the brief forbids it: %s", assessmentString(t, out, "reason"))
 		}
 	})
+}
+
+// A GATE NOBODY SAW FAIL IS NOT A GATE PROVEN. A timeout and a failed spawn
+// are both "not green", which is why neither refuses the lot — but neither is
+// an observed verdict either, and counting them let a contract whose gates all
+// hang report `gates_proven_red == lots` while nothing had been seen.
+func TestAssessmentGatesProvenRedCountsOnlyObservedFailures(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+
+	t.Run("a gate that hangs is not counted as proven", func(t *testing.T) {
+		// Longer than the probe's per-command wall, and the lot is not refused
+		// for it: only gates seen to PASS are refused.
+		hanging := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+			`      - "sleep 60"`, 1)
+		if hanging == aGoodContract {
+			t.Fatal("the mutation did not apply")
+		}
+		out := lintContract(t, hanging, goodOutcomes)
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("a gate that timed out was refused; a timeout is not a gate seen to pass: %s",
+				assessmentString(t, out, "reason"))
+		}
+		if out["gates_proven_red"] != float64(1) {
+			t.Fatalf("gates_proven_red = %v, want 1 — the hanging lot was counted as a gate "+
+				"somebody saw fail", out["gates_proven_red"])
+		}
+	})
+
+	t.Run("a gate whose command does not exist is not counted as proven", func(t *testing.T) {
+		absent := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+			`      - "a-command-that-is-on-no-path"`, 1)
+		out := lintContract(t, absent, goodOutcomes)
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("a gate invoking an absent binary was refused: %s", assessmentString(t, out, "reason"))
+		}
+		// bash reports 127, which IS an observed exit status: the gate bit.
+		if out["gates_proven_red"] != float64(2) {
+			t.Fatalf("gates_proven_red = %v, want 2", out["gates_proven_red"])
+		}
+	})
+}
+
+// THE PROBE RUNS AGENT-WRITTEN SHELL, so it runs it in an allowlisted
+// environment. Those commands come from a repository this bundle's own prompts
+// declare untrusted, and they run before any human has read the contract:
+// inheriting the process environment would hand every credential the run
+// carries to the first command that echoes one.
+func TestAssessmentGateProbeDoesNotInheritTheRunsEnvironment(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	t.Setenv("ITERION_A_SECRET_THE_RUN_CARRIES", "a-value-no-gate-may-see")
+
+	leaking := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+		`      - "test -z \"$ITERION_A_SECRET_THE_RUN_CARRIES\""`, 1)
+	if leaking == aGoodContract {
+		t.Fatal("the mutation did not apply")
+	}
+	// The gate passes iff the variable is ABSENT from the probe environment —
+	// and a gate that passes on the input tree is refused. So a refusal here
+	// means the secret did not travel.
+	out := lintContract(t, leaking, goodOutcomes)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("the gate saw the run's own environment variable — every credential the run " +
+			"carries was handed to an agent-written command")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "ALREADY PASSES") {
+		t.Errorf("the refusal is not the one that proves the variable was absent: %s",
+			assessmentString(t, out, "reason"))
+	}
+}
+
+// A MALFORMED PROFILE IS A TYPED REFUSAL, not a traceback. An operator profile
+// is a file somebody wrote; every shape below used to reach an uncaught
+// exception, and a node that exits non-zero with no JSON replaces its own
+// verdict with the engine's generic tool failure.
+func TestAssessmentMalformedProfileRefusesInsteadOfCrashing(t *testing.T) {
+	requireAssessmentTools(t)
+	profile, err := os.ReadFile(filepath.Join("assessment", "skills", "measurement-profile.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, from, to string }{
+		{"a metric with no key", `{"key": "systems", "label": "distinct systems the application talks to", "discrete": true}`,
+			`{"label": "distinct systems the application talks to", "discrete": true}`},
+		{"no usable metric at all", `"metrics": [`, `"metrics": [] , "unused": [`},
+		{"empty bands", `"bands": ["XS", "S", "M", "L", "XL", "XXL"]`, `"bands": []`},
+		{"a thresholds ladder one rung short", `"thresholds": [0.5, 1.0, 2.0, 4.0, 8.0]`,
+			`"thresholds": [0.5, 1.0, 2.0, 4.0]`},
+		{"thresholds that are not a list", `"thresholds": [0.5, 1.0, 2.0, 4.0, 8.0]`, `"thresholds": 5`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := strings.Replace(string(profile), tc.from, tc.to, 1)
+			if mutated == string(profile) {
+				t.Fatal("the mutation did not apply")
+			}
+			ws := t.TempDir()
+			writeSkills(t, bundleSkills(ws), map[string]string{"measurement-profile.md": mutated})
+			scratch := t.TempDir()
+			out, exit, stderr := assessmentRun(t, "measure", map[string]string{
+				"{{vars.workspace_dir}}":     ws,
+				"{{vars.scratch_dir}}":       scratch,
+				"{{vars.profile_path}}":      "",
+				"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+				"{{input.base_sha}}":         "deadbeefdeadbeef",
+				"{{input.survey_path}}": writeSurvey(t, t.TempDir(), "deadbeefdeadbeef",
+					[]map[string]any{{"id": "synth", "evidence": "a", "supported": true}}, inDomainSurvey(2)),
+				"{{input.floor_path}}": writeFloor(t, scratch, floorLines(20000)),
+			}, map[string]string{
+				"{{input.extractor_outputs}}":  "[]",
+				"{{input.stacks_unsupported}}": "[]",
+				"{{input.stacks_covered}}":     "[]",
+				"{{input.coverage_degraded}}":  "false",
+				"{{input.coverage_missing}}":   "[]",
+				"{{input.stacks_errored}}":     "[]",
+			})
+			if exit != 0 {
+				t.Fatalf("measure exited %d with no verdict — the operator is handed the engine's "+
+					"generic tool failure instead of MEASUREMENT_REFUSED: %s", exit, stderr)
+			}
+			if assessmentBool(t, out, "ok") {
+				t.Fatalf("a profile with %s published a letter", tc.name)
+			}
+			if code := assessmentString(t, out, "code"); code != "MEASUREMENT_REFUSED" {
+				t.Fatalf("code = %q, want MEASUREMENT_REFUSED", code)
+			}
+		})
+	}
 }

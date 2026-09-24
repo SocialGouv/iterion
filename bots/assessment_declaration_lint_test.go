@@ -280,11 +280,11 @@ func TestAssessmentDeclarationLintPartitionsOnlyOnThePartitionKinds(t *testing.T
 func TestAssessmentDeclarationLintDeduplicatesADeployableOnItsIdentity(t *testing.T) {
 	requireAssessmentTools(t)
 	dir, sha := synthRepo(t, map[string]string{
-		"src/app/handler.txt":  "route alpha\n",
-		"deploy/Dockerfile":    "FROM scratch\n# service: alpha\n",
-		"deploy/compose.yaml":  "services:\n  alpha: {}\n  beta: {}\n",
+		"src/app/handler.txt":   "route alpha\n",
+		"deploy/Dockerfile":     "FROM scratch\n# service: alpha\n",
+		"deploy/compose.yaml":   "services:\n  alpha: {}\n  beta: {}\n",
 		"deploy/chart/app.yaml": "kind: Deployment\nname: alpha\n",
-		"README.md":            "# fixture\n",
+		"README.md":             "# fixture\n",
 	})
 	base := []map[string]any{
 		{"id": "src-tree", "kind": "first_party", "path": "src"},
@@ -370,6 +370,49 @@ func TestAssessmentDeclarationLintRefusesAnEntrypointWithNoCount(t *testing.T) {
 			"id": "app-routes", "kind": "entrypoint", "count": 12, "path": "src/app/handler.txt"}))
 		if !assessmentBool(t, out, "ok") {
 			t.Fatalf("an entrypoint declaring its count was refused: %s", assessmentString(t, out, "reason"))
+		}
+	})
+}
+
+// GIT C-QUOTES NON-ASCII PATHS. `ls-tree --name-only` emits
+// `"src/caf\303\251.go"` for any name carrying a byte >= 0x80, and the
+// neutralised environment every node here uses keeps that default. The quoted
+// spelling then matches no declaration, and the partition gains a phantom
+// top-level entry (`"src`) that nothing can ever claim — so the run dies with
+// DECLARATIONS_REFUSED on a repository that is perfectly well surveyed.
+//
+// The same read in the floor fails silently instead: the quoted keys never
+// match a first-party prefix, and the lines of every accented file drop out of
+// the published count.
+func TestAssessmentReadsAccentedPathsAsThemselves(t *testing.T) {
+	requireAssessmentTools(t)
+	dir, sha := synthRepo(t, map[string]string{
+		"src/café.txt":       "accented\n",
+		"src/naïve/main.txt": "accented directory\n",
+		"src/plain.txt":      "plain\n",
+		"README.md":          "# fixture\n",
+	})
+
+	t.Run("the declaration lint accepts a survey of an accented tree", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, []map[string]any{
+			{"id": "src-tree", "kind": "first_party", "path": "src"},
+			{"id": "repo-docs", "kind": "excluded", "path": "README.md", "note": "documentation"},
+		})
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("a complete survey of a tree holding an accented filename was refused: %s",
+				assessmentString(t, out, "reason"))
+		}
+	})
+
+	t.Run("a declaration citing the accented path is verified", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, []map[string]any{
+			{"id": "src-tree", "kind": "first_party", "path": "src"},
+			{"id": "repo-docs", "kind": "excluded", "path": "README.md", "note": "documentation"},
+			{"id": "accented-entry", "kind": "entrypoint", "count": 1, "path": "src/café.txt"},
+		})
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("a declaration citing an accented path was refused — the lint is reading the "+
+				"C-quoted spelling: %s", assessmentString(t, out, "reason"))
 		}
 	})
 }

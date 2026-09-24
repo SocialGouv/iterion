@@ -532,7 +532,7 @@ that does not mean anything.
   job, gate to gate, under a behavioural net. Do NOT expect an effort
   projection from it: hours per class of lot are calibrated on a measured
   campaign, and the first assessment has none.
-- **Vars**: `brief_path` (string), `bundle_skills_dir` (string), `out_dir` (string), `plan_path` (string), `profile_path` (string), `scratch_dir` (string), `survey_path` (string), `workspace_dir` (string)
+- **Vars**: `brief_path` (string), `bundle_skills_dir` (string), `gate_probe_timeout_s` (string), `out_dir` (string), `plan_path` (string), `profile_path` (string), `scratch_dir` (string), `survey_path` (string), `workspace_dir` (string)
 - **Path**: `bots/assessment/main.bot`
 
 ### `bmady` — Bmady

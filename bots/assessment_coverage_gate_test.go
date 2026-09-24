@@ -777,3 +777,90 @@ func TestAssessmentFloorTakesItsManifestShapesFromTheSkills(t *testing.T) {
 		}
 	})
 }
+
+// The lines of an accented file must reach the published count. The floor's
+// failure here is SILENT: a C-quoted key matches no first-party prefix in
+// `measure`, so the file simply is not counted and nothing goes red.
+func TestAssessmentFloorCountsAccentedPaths(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := t.TempDir()
+	writeSkills(t, bundleSkills(ws), map[string]string{
+		"assessment-survey.md": mustRead(t, filepath.Join("assessment", "skills", "assessment-survey.md")),
+	})
+	for path, body := range map[string]string{
+		"src/café.txt": "one\ntwo\nthree\n", "src/plain.txt": "one\n", "go.mod": "module x\n",
+	} {
+		full := filepath.Join(ws, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sha := commitAll(t, ws)
+
+	out, exit, stderr := assessmentRun(t, "inventory_floor", map[string]string{
+		"{{vars.workspace_dir}}":     ws,
+		"{{vars.scratch_dir}}":       t.TempDir(),
+		"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+		"{{input.base_sha}}":         sha,
+	}, nil)
+	if exit != 0 {
+		t.Fatalf("inventory_floor exited %d: %s", exit, stderr)
+	}
+	body, err := os.ReadFile(assessmentString(t, out, "floor_path"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var floor map[string]any
+	if err := json.Unmarshal(body, &floor); err != nil {
+		t.Fatal(err)
+	}
+	perPath, _ := floor["lines_by_path"].(map[string]any)
+	if _, ok := perPath["src/café.txt"]; !ok {
+		t.Fatalf("the floor recorded the accented file under a C-quoted key, so `measure` will "+
+			"never match it against the declared perimeter and its lines drop out in silence: %v",
+			keysOf(perPath))
+	}
+}
+
+// NO EXECUTABLE COMES OUT OF THE ASSESSED REPOSITORY. The interpreter lookup
+// used to fall back on `<workspace>/.devbox/nix/profile/default/bin/<name>` —
+// the audited checkout's own devbox profile — and then RAN it with the run's
+// environment. That is the defect this bundle refuses for the skills
+// themselves, left open for the binary that executes them.
+func TestAssessmentInterpreterIsNeverTakenFromTheAssessedRepository(t *testing.T) {
+	requireAssessmentTools(t)
+	skill := strings.Replace(aStackSkill, `"interpreter":"python3"`,
+		`"interpreter":"assessment-planted-interpreter"`, 1)
+	if skill == aStackSkill {
+		t.Fatal("the mutation did not apply")
+	}
+	ws := stackWorkspace(t, map[string]string{"stack-synth.md": skill})
+
+	// What a repository under assessment can commit: an executable at exactly
+	// the path the fallback probed.
+	planted := filepath.Join(ws, ".devbox", "nix", "profile", "default", "bin")
+	if err := os.MkdirAll(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(ws, "the-planted-binary-ran")
+	body := "#!/bin/sh\ntouch " + marker + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(planted, "assessment-planted-interpreter"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runExtractors(t, ws, t.TempDir(), []map[string]any{
+		{"id": "synth", "evidence": "a", "supported": true}})
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the runner executed a binary committed by the repository under assessment, with " +
+			"this run's environment")
+	}
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("an interpreter absent from PATH resolved anyway")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "on no PATH") {
+		t.Errorf("the refusal does not say where it looked: %s", assessmentString(t, out, "reason"))
+	}
+}
