@@ -88,8 +88,10 @@ overrides).
 - `webhooks` — JSON map name → incoming-webhook URL, identical to
   feed-watch's. Read only by the deterministic notify step.
 - `grafana_token` — a Grafana service-account token. Read only by the two
-  proxy lanes; never into a prompt. A configured Grafana with no bound
-  token FAILS the run at `plan` (never a zero-signal façade).
+  proxy lanes; never into a prompt. A configured Grafana whose token is
+  unbound, blank or refused is a lane error on every query and probe,
+  named in the coverage note: the health probes still report (with no
+  other lane configured, the tick is refused, naming it).
 - `forge_token` — the ops repository's push credential on cloud runners
   (`state_commit=true`); local runs authenticate through the host.
 
@@ -166,15 +168,18 @@ managed secret under the name `forge_token` (see vuln-watch's
 
 ## Troubleshooting
 
-- **Run failed at `plan`: "config names a Grafana instance but the
-  grafana_token secret is not bound"** — bind the secret (cloud: team
-  secret named `grafana_token`; local: `iterion secret set grafana_token`).
+- **"CredentialRefused: the grafana_token secret is not bound or empty"**
+  in a coverage note — bind the secret (cloud: team secret named
+  `grafana_token`; local: `iterion secret set grafana_token`).
 - **"CredentialRefused: Grafana refused the token (HTTP 401/403)"** in a
   coverage note — the service account lacks datasource query rights, or
-  the token expired. The Loki and Prometheus lanes fail, the health
-  probes still report. The Loki cursors do not move meanwhile: fix the
-  token within `max_window_minutes` and nothing is skipped (later, the
-  lines in between are a declared gap). With no health probe configured,
+  the token expired. **"OSError: Grafana host '…'"** — the Grafana host
+  does not resolve (or resolves to an address the guard refuses). In each
+  case the Loki and Prometheus lanes fail and the health probes still
+  report. The Loki cursors do not move meanwhile: fix it within
+  `max_window_minutes` minus `overlap_seconds` of the last good tick and
+  nothing is skipped; past that, the window opens at its floor and the
+  stretch below it is a declared gap. With no health probe configured,
   the run fails instead ("every configured lane failed"), naming it.
 - **A `no_data` incident on a metric probe** — the query matched no
   series on this cluster: the metric name or labels are wrong for this
@@ -188,9 +193,11 @@ managed secret under the name `forge_token` (see vuln-watch's
   last line read, the next tick reads on), but absence of a finding
   proves nothing for that tick. A **gap does skip lines**: the cursor
   fell out of the max window and the lines in between are never read —
-  raise `max_lines` or the cadence (or `max_window_minutes`). The note
-  repeats when the kind of partiality changes (a query entering a gap, a
-  different error, a truncation or a cut appearing), not every tick.
+  raise `max_lines` or the cadence (or `max_window_minutes`). Each kind of
+  partiality (a query entering a gap, a lane error of one kind, a
+  truncation, a cut) is said once, then again only after
+  `renotify_hours`: queries or probes failing in turn with the same
+  error, or a lane flapping, do not re-post it every tick.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

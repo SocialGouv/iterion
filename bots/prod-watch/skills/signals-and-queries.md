@@ -66,15 +66,18 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
   query, and with no template query configured template incidents are
   never concluded on; an incident unseen for `forget_after_days` is
   forgotten whatever the lane observed (retention, not a conclusion — if
-  its pattern comes back later, it is posted again as new); the run goes
-  on with
-  its other
-  lanes (decide refuses a tick only when EVERY configured lane failed) and
-  the lane's health is not refreshed while a query fails, so a query dark
-  for good surfaces as a silent source after `source_stale_hours`, with
-  its error. A refused token (401/403) is such a failure — on every query
-  and probe of both Grafana lanes, named in the coverage note — never the
-  run's death: the health probes still report.
+  its pattern comes back later, it is posted again as new); an incident
+  whose own source left the config (its probe removed, or the query that
+  last counted its template) is concluded nothing either — nothing looks
+  at it any more — and retention forgets it. The run goes on with its
+  other lanes (decide refuses a tick only when EVERY configured lane
+  failed, naming the errors) and the lane's health is not refreshed while
+  a query fails, so a query dark for good surfaces as a silent source
+  after `source_stale_hours`, with its error. A Grafana the lanes cannot
+  use — a token refused (401/403), blank or unbound, a host that does not
+  resolve — is such a failure, on every query and probe of both Grafana
+  lanes, named in the coverage note: the health probes still report
+  while another lane answers.
 
 The persisted cursor is `cursors.loki.<query>` in `state.json`:
 `covered_to_ns` (the high-water mark, never moving backwards),
@@ -155,7 +158,8 @@ scalar) are folded by `agg` (default `max`) and compared with `op` to
 - `no_data` — the query matched no series or only NaN: **not** healthy —
   the metric may not exist on this cluster (posted as a `medium`
   incident so a mis-wired preset is noticed);
-- `error` — the API failed (a lane error, in the coverage note). The tick
+- `error` — the API failed (a lane error, in the coverage note — its
+  status and error type only: an error text may quote label values). The tick
   is still reported when another probe answered; while any probe errors,
   nothing is concluded about the lane's incidents (no "not observed any
   more") and its health is not refreshed. Every probe failing is the lane
@@ -190,10 +194,13 @@ Messages carry a marker (`PRODUCTION ALERT` / `ESCALATED` / `STILL OPEN`
 the incident title, the detail line, severity, first-seen date and the
 occurrence count, and — for a log template — the redacted sample as a
 quote. Notes (`:warning:`) announce an overflow, a silent source (its
-last error quoted), or a partial-coverage tick — once per change in the
-KIND of partiality (a query entering a gap, a different lane error, a
-truncation or a cut appearing; queries truncated in turn are one kind),
-with its reasons quoted: the gaps first — they lose lines — then the
-lane errors, the truncated queries, a cut template list. So a query dark
-for good, or a flood that outruns `max_lines` until the cursor falls out
-of the max window, says why once, instead of every tick or never.
+last error quoted), or a partial-coverage tick (a Loki query truncated,
+gapped or failed, a Prometheus probe failed, a cut template list) — each
+KIND of partiality once, then again only after `renotify_hours` (a query
+entering a gap, a lane error of one kind — queries or probes failing in
+turn with the same error are one kind —, a truncation or a cut
+appearing), with its reasons quoted: the gaps first — they lose lines —
+then the lane errors, the truncated queries, a cut template list. So a
+query dark for good, a lane flapping, or a flood that outruns
+`max_lines` until the cursor falls out of the max window, says why once,
+instead of every tick or never.

@@ -1238,6 +1238,8 @@ func TestProdWatch_ForeignStateContainersAreRefusedByName(t *testing.T) {
 		{"an incident's title key is a list", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"title_key":["x"]}},"health":{}}`, ".title_key"},
 		{"an incident's detail key is a number", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"detail_key":5}},"health":{}}`, ".detail_key"},
 		{"an incident's first sighting is a number", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"first_seen":5}},"health":{}}`, ".first_seen"},
+		{"an incident's source is a list", `{"version":1,"generation":1,"cursors":{},"incidents":{"loki:a":{"source":["errors"]}},"health":{}}`, ".source"},
+		{"the posted coverage kinds are a list", `{"version":1,"generation":1,"cursors":{},"incidents":{},"health":{},"coverage_posted":[]}`, "coverage_posted"},
 	}
 	for _, c := range cases {
 		c := c
@@ -1519,7 +1521,7 @@ func TestProdWatch_ConfigTitleIsTextOrRefusedByName(t *testing.T) {
 				{"id": "restarts", "title": title, "query": "restarts-q", "op": ">", "threshold": 0, "severity": "high"}}}
 		}
 	}
-	for _, title := range []any{5, 99.9} {
+	for _, title := range []any{5, 99.9, 0} {
 		h := newPWHarness(t)
 		h.writeConfig(t, probe(title))
 		h.prom.Store(map[string]pwProm{"restarts-q": {Value: "3"}})
@@ -1546,10 +1548,12 @@ func TestProdWatch_ConfigTitleIsTextOrRefusedByName(t *testing.T) {
 
 // TestProdWatch_EveryStateTheBotWritesIsAccepted: the whole chain over
 // random configs (probe lists or maps, numeric ids and titles, severities
-// in any case, a sink channel written as text, a number or not at all) and
-// random production conditions — Prometheus failing in part or entirely,
-// the health URL down, the Grafana token refused, lines with and without
-// personal data — fourteen ticks per seed (PW_CHAIN_SEEDS, default 4): no
+// in any case, a sink channel and username written as text, a number or not
+// at all, an icon or none) and random production conditions — Prometheus
+// failing in part or entirely, the health URL down, the Grafana token
+// refused, blank or unbound, the Grafana host not resolving, lines with and
+// without personal data — against a sink that refuses a non-text field like
+// Mattermost does, fourteen ticks per seed (PW_CHAIN_SEEDS, default 4): no
 // node fails, so each tick's plan accepted the state the previous tick
 // wrote, no lane's failure killed the tick and every delivery was consumed.
 func TestProdWatch_EveryStateTheBotWritesIsAccepted(t *testing.T) {
@@ -1566,25 +1570,36 @@ func TestProdWatch_EveryStateTheBotWritesIsAccepted(t *testing.T) {
 			h := newPWHarness(t)
 			titles := []any{"Pod restarts", 5, 99.9, nil}
 			sevs := []string{"high", "MEDIUM", "Critical", "low"}
-			h.writeConfig(t, func(cfg map[string]any) {
-				restarts := map[string]any{"query": "restarts-q", "op": ">", "threshold": 0, "severity": sevs[rnd.Intn(4)]}
-				if title := titles[rnd.Intn(4)]; title != nil {
-					restarts["title"] = title
+			restarts := map[string]any{"query": "restarts-q", "op": ">", "threshold": 0, "severity": sevs[rnd.Intn(4)]}
+			if title := titles[rnd.Intn(4)]; title != nil {
+				restarts["title"] = title
+			}
+			latency := map[string]any{"query": "lat-q", "op": ">=", "threshold": 1.5, "severity": sevs[rnd.Intn(4)], "title": titles[rnd.Intn(3)]}
+			var probes any = map[string]any{"restarts": restarts, "latency": latency}
+			if rnd.Intn(2) == 0 {
+				restarts["id"], latency["id"] = "restarts", 7
+				probes = []any{restarts, latency}
+			}
+			health := []map[string]any{{"id": 42, "url": h.srv.URL + "/health", "expect_status": 200, "severity": sevs[rnd.Intn(4)]}}
+			sink := map[string]any{"webhook": "w1", "min_severity": sevs[rnd.Intn(4)]}
+			for _, field := range []string{"channel", "username"} {
+				if v := []any{"ops", 2024, nil}[rnd.Intn(3)]; v != nil {
+					sink[field] = v
 				}
-				latency := map[string]any{"query": "lat-q", "op": ">=", "threshold": 1.5, "severity": sevs[rnd.Intn(4)], "title": titles[rnd.Intn(3)]}
-				if rnd.Intn(2) == 0 {
-					cfg["prometheus"] = map[string]any{"probes": map[string]any{"restarts": restarts, "latency": latency}}
-				} else {
-					restarts["id"], latency["id"] = "restarts", 7
-					cfg["prometheus"] = map[string]any{"probes": []any{restarts, latency}}
-				}
-				cfg["probes"] = []map[string]any{{"id": 42, "url": h.srv.URL + "/health", "expect_status": 200, "severity": sevs[rnd.Intn(4)]}}
-				sink := map[string]any{"webhook": "w1", "min_severity": sevs[rnd.Intn(4)]}
-				if channel := []any{"ops", 2024, nil}[rnd.Intn(3)]; channel != nil {
-					sink["channel"] = channel
-				}
-				cfg["sinks"] = []map[string]any{sink}
-			})
+			}
+			if rnd.Intn(2) == 0 {
+				sink["icon_emoji"] = ":eye:"
+			}
+			configure := func(unresolvable bool) {
+				h.writeConfig(t, func(cfg map[string]any) {
+					cfg["prometheus"] = map[string]any{"probes": probes}
+					cfg["probes"] = health
+					cfg["sinks"] = []map[string]any{sink}
+					if unresolvable {
+						cfg["grafana"].(map[string]any)["base_url"] = "http://grafana.invalid"
+					}
+				})
+			}
 			words := []string{"alpha", "beta", "gamma", "delta", "omega", "kappa", "sigma", "tau"}
 			var lines []pwLine
 			for k := 0; k < 14; k++ {
@@ -1603,13 +1618,19 @@ func TestProdWatch_EveryStateTheBotWritesIsAccepted(t *testing.T) {
 				}
 				h.prom.Store(pm)
 				h.healthStatus.Store([]int64{200, 200, 503}[rnd.Intn(3)])
-				token := pwToken
-				if rnd.Intn(5) == 0 {
-					token = "glsa_refused"
+				switch rnd.Intn(8) {
+				case 0:
+					_ = os.WriteFile(h.tokenFile, []byte("glsa_refused\n"), 0o600)
+				case 1:
+					_ = os.WriteFile(h.tokenFile, []byte("\n"), 0o600)
+				case 2:
+					_ = os.Remove(h.tokenFile)
+				default:
+					if err := os.WriteFile(h.tokenFile, []byte(pwToken+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
-				if err := os.WriteFile(h.tokenFile, []byte(token+"\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configure(rnd.Intn(6) == 0)
 				for i, n := 0, rnd.Intn(30); i < n; i++ {
 					w := words[rnd.Intn(len(words))]
 					line := "ERROR " + w + " failed for job " + strconv.Itoa(rnd.Intn(1000))
@@ -1749,6 +1770,10 @@ func TestProdWatch_PrometheusOutageStillDeliversTheHealthProbe(t *testing.T) {
 	if r := pwCoverageReasons(outs["decide"]); !strings.Contains(r, "restarts: ") {
 		t.Fatalf("the coverage note names the failed probe: %q", r)
 	}
+	b, err := os.ReadFile(outs["decide"]["tick_file"].(string))
+	if err != nil || !strings.Contains(string(b), `"coverage": "partial"`) {
+		t.Fatalf("the tick record says the coverage was partial: %s %v", b, err)
+	}
 }
 
 // TestProdWatch_PrometheusLaneReportsWhatAnswered: on a Prometheus-only
@@ -1768,6 +1793,11 @@ func TestProdWatch_PrometheusLaneReportsWhatAnswered(t *testing.T) {
 	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "3"}, "lat-q": {Status: 500}})
 	if got := strings.Join(alertsOf(t, h.tick(t, wf, false)), ","); got != "prom:new:high" {
 		t.Fatalf("the probe that answered posts its breach: %v", got)
+	}
+	// "no data" is an answer: every probe answering it reports the tick.
+	h.prom.Store(map[string]pwProm{"restarts-q": {NoData: true}, "lat-q": {NoData: true}})
+	if got := strings.Join(alertsOf(t, h.tick(t, wf, false)), ","); got != "prom_no_data:new:medium,prom_no_data:new:medium" {
+		t.Fatalf("probes answering no data report the tick: %v", got)
 	}
 	failed := func(id string) map[string]any {
 		return map[string]any{"id": id, "title": id, "state": "error", "value": nil, "error": "HTTPError: HTTP Error 500: Internal Server Error"}
@@ -1924,30 +1954,46 @@ func TestProdWatch_NotifyRendersAnyFieldName(t *testing.T) {
 }
 
 // TestProdWatch_ForeignValuesNoConsumerReadsRunATick: values plan does not
-// type — no node needs their type — run a whole tick: a number where the
-// bot writes text, strings where it writes booleans, dates that are not
-// dates on the health records and a cursor's clock, unknown kinds of
-// coverage keys.
+// type — no node needs their type — run whole ticks through notify and
+// commit_state: a number where the bot writes text, strings where it writes
+// booleans, dates that are not dates on a health record and a cursor's
+// clock, coverage bookkeeping of another shape. The foreign incident
+// reaches the quiet note, the foreign health record the stale note.
 func TestProdWatch_ForeignValuesNoConsumerReadsRunATick(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
-	h.writeConfig(t, lokiTwoQueries(1000, 60))
-	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "0"}})
+	h.tick(t, wf, false)
 	st := h.state(t)
-	inc := incident("loki", "medium", true, 1, 1)
-	for k, v := range map[string]any{"title_arg": 5, "alerted": "yes", "quiet_noted": "no", "last_notified": "", "fp": 7, "prev_severity": []any{1}} {
+	inc := incident("loki", "medium", true, 49, 49)
+	for k, v := range map[string]any{"title_key": "loki_template", "detail_key": "loki_detail", "source": "errors", "title_arg": 5, "alerted": "yes",
+		"quiet_noted": 0, "last_notified": "", "fp": 7, "prev_severity": []any{1}} {
 		inc[k] = v
 	}
 	st["incidents"] = map[string]any{"loki:foreign": inc}
-	st["health"] = map[string]any{"loki": map[string]any{"last_ok": "x", "last_warned": 3, "last_error": map[string]any{}}}
+	st["health"] = map[string]any{"prometheus": map[string]any{"last_ok": "x", "last_warned": 3, "last_error": []any{1}}}
+	st["coverage_posted"] = map[string]any{"a kind": 5}
 	st["last_coverage"], st["last_coverage_key"] = 5, []any{}
 	cur := st["cursors"].(map[string]any)["loki"].(map[string]any)
 	for q := range cur {
 		cur[q].(map[string]any)["at"] = 123
 	}
 	h.setState(t, st)
-	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	h.prom.Store(map[string]pwProm{"restarts-q": {Status: 500}}) // the lane fails: its health record is not refreshed
+	outs := h.tick(t, wf, false)
+	if !strings.Contains(strings.Join(pwQuietFPs(outs), ","), "loki:foreign") {
+		t.Fatalf("the foreign incident reaches the quiet note: %v", pwQuietFPs(outs))
+	}
+	stale := false
+	for _, s := range outs["decide"]["stale_sources"].([]any) {
+		if s.(map[string]any)["source"] == "prometheus" {
+			stale = true
+		}
+	}
+	if !stale {
+		t.Fatalf("the foreign health record reaches the stale note: %v", outs["decide"]["stale_sources"])
+	}
 }
 
 // TestProdWatch_FarAheadCursorIsReportedNotClamped: a cursor more than a
@@ -1978,16 +2024,19 @@ func TestProdWatch_FarAheadCursorIsReportedNotClamped(t *testing.T) {
 	}
 }
 
-// TestProdWatch_SinkNamesAreText: a sink's channel written as a number is
-// its name — the alert is delivered and the tick consumed once, never
-// re-posted every tick; a webhook name or a channel of another type is
-// refused by name at the config.
+// TestProdWatch_SinkNamesAreText: a sink's channel or username written as a
+// number is its name — against a sink that refuses a non-text field like
+// Mattermost does, the alert is delivered and the tick consumed once, never
+// re-posted every tick; a sink with no channel sends none; a webhook name,
+// a channel, a username or an icon of another type is refused by name at
+// the config.
 func TestProdWatch_SinkNamesAreText(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
 	h.writeConfig(t, func(cfg map[string]any) {
-		cfg["sinks"] = []map[string]any{{"webhook": "w1", "channel": 2024, "min_severity": "low"}}
+		cfg["sinks"] = []map[string]any{{"webhook": "w1", "channel": 2024, "username": 5, "icon_emoji": ":warning:", "min_severity": "low"},
+			{"webhook": "w1", "min_severity": "low"}}
 	})
 	h.healthStatus.Store(503)
 	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "0"}})
@@ -1998,8 +2047,12 @@ func TestProdWatch_SinkNamesAreText(t *testing.T) {
 			t.Fatalf("tick %d: a delivered tick is consumed: %v", k, outs["notify"])
 		}
 		if k == 0 {
-			if m := outs["notify"]["messages"].([]any); len(m) == 0 || m[0].(map[string]any)["channel"] != "2024" {
-				t.Fatalf("the channel travels as its name: %v", m)
+			channels := map[any]bool{}
+			for _, m := range outs["notify"]["messages"].([]any) {
+				channels[m.(map[string]any)["channel"]] = true
+			}
+			if !channels["2024"] || !channels[""] || len(channels) != 2 {
+				t.Fatalf("the channel travels as its name, and a sink without one sends none: %v", channels)
 			}
 		}
 		posted = append(posted, alertsOf(t, outs)...)
@@ -2007,12 +2060,322 @@ func TestProdWatch_SinkNamesAreText(t *testing.T) {
 	if strings.Join(posted, ",") != "probe:new:critical" {
 		t.Fatalf("the alert posts once over three ticks: %v", posted)
 	}
-	for _, sink := range []map[string]any{{"webhook": []any{"w1"}}, {"webhook": "w1", "channel": map[string]any{"name": "ops"}}, {"webhook": "w1", "channel": true}} {
+	for _, sink := range []map[string]any{{"webhook": []any{"w1"}}, {"webhook": "w1", "channel": map[string]any{"name": "ops"}}, {"webhook": "w1", "channel": true},
+		{"webhook": "w1", "username": []any{"Argus"}}, {"webhook": "w1", "icon_emoji": 5}, {"webhook": "w1", "icon_emoji": true}} {
 		bad := newPWHarness(t)
 		bad.writeConfig(t, func(cfg map[string]any) { cfg["sinks"] = []map[string]any{sink} })
 		_, stderr, err := runPyWhole(t, bad.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, cursorVars(bad, 60, 0, 5000), map[string]string{"grafana_token": bad.tokenFile}))
 		if err == nil || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, "sink") {
 			t.Fatalf("sink %v: plan refuses it by name: %v %s", sink, err, stderr)
+		}
+	}
+}
+
+// TestProdWatch_NoLineCrashesTheScan: each redaction class's shape with a
+// hostile character inserted at, or substituted for, every position — the
+// non-ASCII letters Python folds into [A-Z] under IGNORECASE (İ ı ſ K),
+// Unicode digits NFKC keeps, a combining mark, invisible and bidi controls,
+// exotic spaces, an emoji — and an ordinary Turkish line: the scan reads
+// them all and exits cleanly, so no log line can blind a tick; an IBAN
+// glued to a non-ASCII letter is still one.
+func TestProdWatch_NoLineCrashesTheScan(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	shapes := []string{"FR76 3000 6000 0112 3456 7890 189", "fr7630006000011234567890189", "GB82 WEST 1234 5698 7654 32", "1 85 03 75 123 456 41",
+		"4111 1111 1111 1111", "4012888888881881", "jean.dupont@example.org", "06 12 34 56 78", "+33 6 12 34 56 78",
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abcdefghijk", "Bearer abcdefghijklmnopqrstuvwxyz", "password=hunter2hunter2"}
+	hostile := []string{"İ", "ı", "ſ", "\u212a", "٣", "३", "１", "²", "\u0307", "\u200d", "\u200f", "\u00a0", "\u3000", "\u00ad", "🙂", "𝚤"}
+	lines := []string{"ERROR SİPARİŞ İD12345678901234 başarısız"}
+	for _, s := range shapes {
+		r := []rune(s)
+		for _, x := range hostile {
+			for i := 0; i <= len(r); i++ {
+				lines = append(lines, "ERROR account "+string(r[:i])+x+string(r[i:])+" refused")
+				if i < len(r) {
+					lines = append(lines, "ERROR account "+string(r[:i])+x+string(r[i+1:])+" refused")
+				}
+			}
+		}
+	}
+	scan := func(name string, lines []string) (map[string]any, string, error) {
+		raw := filepath.Join(h.scratch, name+".jsonl")
+		var buf strings.Builder
+		base := nsAgo(time.Minute)
+		for i, l := range lines {
+			b, _ := json.Marshal(map[string]any{"q": "errors", "ts": strconv.FormatInt(base+int64(i), 10), "line": l, "stream": map[string]string{"container": "api"}})
+			buf.Write(b)
+			buf.WriteString("\n")
+		}
+		if err := os.WriteFile(raw, []byte(buf.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+			"raw_file": raw, "per_query": map[string]any{"errors": map[string]any{}}, "app": map[string]any{"name": "demo"},
+			"scratch_dir": filepath.Join(h.scratch, name)}, nil, nil))
+	}
+	out, stderr, err := scan("hostile", lines)
+	if err != nil || strings.Contains(stderr, "Traceback") {
+		t.Fatalf("no line crashes the scan (%d lines): %v\n%s", len(lines), err, stderr)
+	}
+	if out["lines_scanned"] != float64(len(lines)) {
+		t.Fatalf("every line is scanned: %v of %d", out["lines_scanned"], len(lines))
+	}
+	out, stderr, err = scan("glued", []string{"ERROR compte éFR76 3000 6000 0112 3456 7890 189 refusé"})
+	if err != nil || !strings.Contains(fmt.Sprint(out["leak_findings"]), "class:iban") {
+		t.Fatalf("an IBAN glued to a non-ASCII letter is still an IBAN: %v %v %s", out["leak_findings"], err, stderr)
+	}
+}
+
+// TestProdWatch_GrafanaSetupFailureIsALaneError: every way the Grafana
+// lanes cannot start — a host that does not resolve, a token file holding
+// only a newline, a token secret not bound at all — fails those lanes and
+// not the tick: production down still posts the health probe's critical,
+// and the coverage note names the cause on each Grafana lane. A Loki-only
+// config reports the cause on every query (decide then refuses the tick,
+// naming it).
+func TestProdWatch_GrafanaSetupFailureIsALaneError(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for _, c := range []struct {
+		name, cause string
+		setup       func(t *testing.T, h *pwHarness)
+	}{
+		{"host does not resolve", "grafana.invalid", func(t *testing.T, h *pwHarness) {
+			h.writeConfig(t, func(cfg map[string]any) { cfg["grafana"].(map[string]any)["base_url"] = "http://grafana.invalid" })
+		}},
+		{"token file holds a newline", "not bound or empty", func(t *testing.T, h *pwHarness) {
+			if err := os.WriteFile(h.tokenFile, []byte("\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"token secret not bound", "not bound or empty", func(t *testing.T, h *pwHarness) {
+			if err := os.Remove(h.tokenFile); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.healthStatus.Store(503)
+			c.setup(t, h)
+			outs := h.tick(t, wf, false)
+			if got := strings.Join(alertsOf(t, outs), ","); !strings.Contains(got, "probe:new:critical") {
+				t.Fatalf("the health probe's alert is posted: %v", got)
+			}
+			if r := pwCoverageReasons(outs["decide"]); !strings.Contains(r, "errors: ") || !strings.Contains(r, "restarts: ") || !strings.Contains(r, c.cause) {
+				t.Fatalf("the coverage note names the cause on each Grafana lane: %q", r)
+			}
+			for q, info := range outs["poll_loki"]["per_query"].(map[string]any) {
+				if e := fmt.Sprint(info.(map[string]any)["error"]); !strings.Contains(e, c.cause) {
+					t.Fatalf("Loki query %s reports the cause: %q", q, e)
+				}
+			}
+			for _, e := range outs["poll_prom"]["errors"].([]any) {
+				if m := e.(map[string]any); !strings.Contains(fmt.Sprint(m["error"]), c.cause) {
+					t.Fatalf("Prometheus probe %v reports the cause, before any request: %q", m["probe"], m["error"])
+				}
+			}
+			lokiOnlyH := newPWHarness(t)
+			lokiOnlyH.writeConfig(t, lokiTwoQueries(1000, 60))
+			c.setup(t, lokiOnlyH)
+			if c.name == "host does not resolve" {
+				lokiOnlyH.writeConfig(t, func(cfg map[string]any) {
+					lokiTwoQueries(1000, 60)(cfg)
+					cfg["grafana"].(map[string]any)["base_url"] = "http://grafana.invalid"
+				})
+			}
+			secrets := map[string]string{"grafana_token": lokiOnlyH.tokenFile}
+			plan, stderr, err := runPyWhole(t, lokiOnlyH.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, cursorVars(lokiOnlyH, 60, 0, 5000), secrets))
+			if err != nil {
+				t.Fatalf("plan refuses nothing here (the lanes report it): %v %s", err, stderr)
+			}
+			loki, stderr, err := runPyWhole(t, lokiOnlyH.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{"grafana": plan["grafana"], "loki": plan["loki"],
+				"timeout_secs": 5, "scratch_dir": lokiOnlyH.scratch, "allow_private": true}, nil, secrets))
+			if err != nil || loki["ok"] != false {
+				t.Fatalf("poll_loki reports the cause, it does not die: %v %v %s", err, loki, stderr)
+			}
+			for q, info := range loki["per_query"].(map[string]any) {
+				if e := fmt.Sprint(info.(map[string]any)["error"]); !strings.Contains(e, c.cause) {
+					t.Fatalf("query %s names the cause: %q", q, e)
+				}
+			}
+		})
+	}
+}
+
+// TestProdWatch_CoverageNoteSaysEachKindOncePerInterval: sources failing in
+// turn with the same error, or a lane flapping between failure and health,
+// are one kind of partiality: the note posts once, and the same kind posts
+// again only after renotify_hours.
+func TestProdWatch_CoverageNoteSaysEachKindOncePerInterval(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	state := map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{"loki": map[string]any{}}, "incidents": map[string]any{}, "health": map[string]any{}}
+	failing := func(ids ...string) []any {
+		e := []any{}
+		for _, id := range ids {
+			e = append(e, map[string]any{"probe": id, "error": "HTTPError: HTTP Error 500: Internal Server Error"})
+		}
+		return e
+	}
+	tick := func(errs []any) bool {
+		out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "full"}, state, map[string]any{
+			"prom_ok": len(errs) == 0, "prom_errors": errs, "loki_per_query": map[string]any{}, "lanes": map[string]any{"loki": false, "prometheus": true, "probes": true}})
+		if err != nil {
+			t.Fatalf("decide: %v %s", err, stderr)
+		}
+		state = pwStateNext(t, out)
+		return pwCoverageReasons(out) != ""
+	}
+	var notes []bool
+	for _, errs := range [][]any{failing("restarts"), failing("latency"), failing("restarts"), nil, failing("latency"), nil, failing("restarts", "latency")} {
+		notes = append(notes, tick(errs))
+	}
+	if fmt.Sprint(notes) != "[true false false false false false false]" {
+		t.Fatalf("probes failing in turn, and a flapping lane, are one kind — one note: %v", notes)
+	}
+	posted := state["coverage_posted"].(map[string]any)
+	for k := range posted {
+		posted[k] = hoursAgo(25)
+	}
+	if !tick(failing("restarts")) {
+		t.Fatalf("the same kind posts again after renotify_hours: %v", state["coverage_posted"])
+	}
+}
+
+// TestProdWatch_RemovedSourceConcludesNothing: an incident whose own source
+// left the config — a Prometheus probe, a health probe, the query a
+// template was last counted by — is not concluded "not observed any more":
+// nothing looks at it any more, retention forgets it. Incidents whose
+// source is configured and observed still get their note.
+func TestProdWatch_RemovedSourceConcludesNothing(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	inc := func(kind, source string) map[string]any {
+		r := incident(kind, "high", true, 49, 49)
+		r["source"] = source
+		return r
+	}
+	state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "health": map[string]any{},
+		"incidents": map[string]any{"prom:gone": inc("prom", "gone"), "prom:live": inc("prom", "live"), "probe:gone-api": inc("probe", "gone-api"),
+			"probe:api": inc("probe", "api"), "loki:tgone": inc("loki", "removed-q"), "loki:tlive": inc("loki", "errors")}}
+	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, state, map[string]any{
+		"prom_results": []any{map[string]any{"id": "live", "title": "live", "state": "healthy", "value": 0.1, "op": ">", "threshold": 1.0}},
+		"http_results": []any{map[string]any{"id": "api", "url": "https://app.example/health", "ok": true, "status": 200}}})
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, stderr)
+	}
+	quiet := map[string]bool{}
+	for _, a := range out["alerts"].([]any) {
+		if m := a.(map[string]any); m["state"] == "quiet" {
+			quiet[fmt.Sprint(m["fingerprint"])] = true
+		}
+	}
+	if !quiet["prom:live"] || !quiet["probe:api"] || !quiet["loki:tlive"] {
+		t.Fatalf("an incident whose source is configured and observed gets its note: %v", quiet)
+	}
+	if quiet["prom:gone"] || quiet["probe:gone-api"] || quiet["loki:tgone"] {
+		t.Fatalf("nothing is concluded about an incident whose source left the config: %v", quiet)
+	}
+}
+
+// TestProdWatch_PrometheusErrorBodyStaysOut: a backend answering a failed
+// query with HTTP 200 and an error text that quotes a label value (an email
+// here) — the text reaches neither the coverage note, the state nor the
+// lane's output: the lane error names the status and the error type only.
+func TestProdWatch_PrometheusErrorBodyStaysOut(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.prom.Store(map[string]pwProm{"restarts-q": {Body: map[string]any{"status": "error", "errorType": "bad_data",
+		"error": `found duplicate series for the match group {user="jean.dupont@example.org"}`}}})
+	outs := h.tick(t, wf, false)
+	r := pwCoverageReasons(outs["decide"])
+	if !strings.Contains(r, "bad_data") || strings.Contains(r, "jean.dupont") {
+		t.Fatalf("the note names the error type, never the body: %q", r)
+	}
+	if st, _ := os.ReadFile(filepath.Join(h.ws, ".prod-watch", "state.json")); strings.Contains(string(st), "jean.dupont") {
+		t.Fatalf("the state never holds the body: %s", st)
+	}
+	if strings.Contains(fmt.Sprint(outs["poll_prom"]), "jean.dupont") {
+		t.Fatalf("the lane's output never holds the body: %v", outs["poll_prom"])
+	}
+}
+
+// TestProdWatch_RefusalHorizonIsTheMaxWindowMinusTheOverlap: after a good
+// tick, a refused token leaves the Loki cursor where the next window opens
+// (the mark minus the overlap); once the token is back, a refusal shorter
+// than max_window_minutes minus overlap_seconds skipped nothing, a longer
+// one leaves a declared gap. Elapsed time is simulated with the ingest lag.
+func TestProdWatch_RefusalHorizonIsTheMaxWindowMinusTheOverlap(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for _, c := range []struct {
+		elapsed int
+		gap     bool
+	}{{200, false}, {290, true}} { // max window 300 s, overlap 60 s: the horizon is 240 s
+		c := c
+		t.Run(fmt.Sprintf("refused for %ds", c.elapsed), func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, lokiTwoQueries(1000, 60))
+			h.lines.Store([]pwLine{{TS: nsAgo(time.Duration(c.elapsed+30) * time.Second), Line: "ERROR warmup", Container: "api", Q: "errors-q"}})
+			h.cursorTick(t, wf, cursorVars(h, 5, c.elapsed, 5000))
+			if err := os.WriteFile(h.tokenFile, []byte("\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A health lane is configured: the tick is reported, the Loki lane failed.
+			refused := h.cursorTickWith(t, wf, cursorVars(h, 5, c.elapsed, 5000), map[string]any{"lanes": map[string]any{"loki": true, "prometheus": false, "probes": true}})
+			if e := fmt.Sprint(refused["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)["error"]); !strings.Contains(e, "not bound or empty") {
+				t.Fatalf("the refused tick reports the token: %q", e)
+			}
+			if err := os.WriteFile(h.tokenFile, []byte(pwToken+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			back := h.cursorTick(t, wf, cursorVars(h, 5, 0, 5000))
+			if got := back["poll_loki"]["per_query"].(map[string]any)["errors"].(map[string]any)["gap"]; got != c.gap {
+				t.Fatalf("after %ds of refusal (horizon 240s) gap=%v, want %v", c.elapsed, got, c.gap)
+			}
+		})
+	}
+}
+
+// TestProdWatch_AnIncidentTheBotOpenedIsQuietedByItsSource: the normal
+// path — incidents the bot opened itself (a health probe down, a metric
+// breached, a new error pattern) carry their source, so once each source
+// answers healthy and quiet_after_hours pass, each gets its "not observed
+// any more" note.
+func TestProdWatch_AnIncidentTheBotOpenedIsQuietedByItsSource(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.healthStatus.Store(503)
+	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "3"}})
+	h.tick(t, wf, false) // bootstrap: the probe down and the breach are posted
+	h.lines.Store([]pwLine{{TS: time.Now().UnixNano(), Line: "ERROR payment gateway refused the card", Container: "api", Q: "errors-q"}})
+	if got := strings.Join(alertsOf(t, h.tick(t, wf, false)), ","); !strings.Contains(got, "loki:new") {
+		t.Fatalf("the new error pattern is posted: %v", got)
+	}
+	h.healthStatus.Store(200)
+	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "0"}})
+	st := h.state(t)
+	for fp, rec := range st["incidents"].(map[string]any) {
+		r := rec.(map[string]any)
+		if r["source"] == nil {
+			t.Fatalf("incident %s carries its source: %v", fp, r)
+		}
+		r["last_seen"] = hoursAgo(49)
+	}
+	h.setState(t, st)
+	quiet := strings.Join(pwQuietFPs(h.tick(t, wf, false)), ",")
+	for _, fp := range []string{"probe:api", "prom:restarts", pwTemplateFP("ERROR payment gateway refused the card")} {
+		if !strings.Contains(quiet, fp) {
+			t.Fatalf("%s gets its note once its source answers and quiet_after_hours passed: %v", fp, quiet)
 		}
 	}
 }

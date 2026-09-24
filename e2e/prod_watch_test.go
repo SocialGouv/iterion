@@ -135,6 +135,7 @@ type pwProm struct {
 	Value    string
 	NoData   bool
 	Warnings []string
+	Body     map[string]any // answered verbatim with HTTP 200: a backend that reports errors in a 200 body
 }
 
 // pwHarness is one hermetic deployment: a workspace with a config, a fake
@@ -239,6 +240,10 @@ func newPWHarness(t *testing.T) *pwHarness {
 			w.WriteHeader(p.Status)
 			return
 		}
+		if p.Body != nil {
+			_ = json.NewEncoder(w).Encode(p.Body)
+			return
+		}
 		result := []map[string]any{}
 		if !p.NoData {
 			result = append(result, map[string]any{"metric": map[string]string{"job": "x"}, "value": []any{float64(time.Now().Unix()), p.Value}})
@@ -263,10 +268,20 @@ func newPWHarness(t *testing.T) *pwHarness {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/hook", func(w http.ResponseWriter, r *http.Request) {
+		// Mattermost decodes an incoming webhook into string fields and
+		// answers 400 when a field has another type: the fake refuses what
+		// the real sink refuses.
 		var body struct {
-			Text string `json:"text"`
+			Text      string `json:"text"`
+			Channel   string `json:"channel"`
+			Username  string `json:"username"`
+			IconEmoji string `json:"icon_emoji"`
+			IconURL   string `json:"icon_url"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "Unable to parse the incoming webhook data: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		h.sinkHits.Add(1)
 		h.sinkMu.Lock()
 		h.sinkBodies = append(h.sinkBodies, body.Text)
@@ -890,8 +905,10 @@ func TestProdWatch_DeliverySemantics(t *testing.T) {
 }
 
 // TestProdWatch_PlanGuards: config problems fail at plan, before any
-// network work; a configured Grafana without a token refuses; a halt in the
-// state is reported as halted (the workflow routes it to the typed fail).
+// network work, each refused by name (a severity or a URL that is not text
+// included); the Grafana token is the lanes' business — plan accepts a
+// secret left unbound, the lanes report it; a halt in the state is reported
+// as halted (the workflow routes it to the typed fail).
 func TestProdWatch_PlanGuards(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -901,9 +918,26 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	plan := func(secretPath string) (map[string]any, string, error) {
 		return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, map[string]string{"grafana_token": secretPath}))
 	}
-	if _, stderr, err := plan(""); err == nil || !strings.Contains(stderr, "grafana_token") {
-		t.Fatalf("Grafana configured without a bound token must refuse at plan: %v %s", err, stderr)
+	if _, stderr, err := plan(""); err != nil {
+		t.Fatalf("an unbound token is a lane error, not plan's refusal: %v %s", err, stderr)
 	}
+	for _, c := range []struct {
+		name, want string
+		mod        func(cfg map[string]any)
+	}{
+		{"a probe severity that is a number", "unknown severity", func(cfg map[string]any) {
+			cfg["prometheus"].(map[string]any)["probes"].([]map[string]any)[0]["severity"] = 3
+		}},
+		{"a health probe severity that is a number", "unknown severity", func(cfg map[string]any) { cfg["probes"].([]map[string]any)[0]["severity"] = 3 }},
+		{"a sink threshold that is a number", "min_severity", func(cfg map[string]any) { cfg["sinks"].([]map[string]any)[0]["min_severity"] = 3 }},
+		{"a health probe URL that is a number", "url", func(cfg map[string]any) { cfg["probes"].([]map[string]any)[0]["url"] = 8080 }},
+	} {
+		h.writeConfig(t, c.mod)
+		if _, stderr, err := plan(h.tokenFile); err == nil || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, c.want) {
+			t.Fatalf("%s: plan refuses it by name (%q): %v %s", c.name, c.want, err, stderr)
+		}
+	}
+	h.writeConfig(t, nil)
 	out, stderr, err := plan(h.tokenFile)
 	if err != nil || out["halted"] != false {
 		t.Fatalf("plan: %v %s %v", err, stderr, out)
@@ -2637,8 +2671,11 @@ func hoursAgo(h float64) string {
 	return time.Now().UTC().Add(-time.Duration(h * float64(time.Hour))).Format("2006-01-02T15:04:05+00:00")
 }
 
+// incident is a record as decide writes it for the harness's default config:
+// its source is the default template query, health probe or metric probe.
 func incident(kind, sev string, alerted bool, lastNotifiedH, lastSeenH float64) map[string]any {
-	return map[string]any{"fp": "", "kind": kind, "severity": sev, "title_key": "probe_down", "title_arg": "x", "detail_key": "probe_detail",
+	source := map[string]any{"loki": "errors", "probe": "api", "prom": "restarts", "prom_no_data": "restarts"}[kind]
+	return map[string]any{"fp": "", "kind": kind, "source": source, "severity": sev, "title_key": "probe_down", "title_arg": "x", "detail_key": "probe_detail",
 		"fields": map[string]any{}, "first_seen": hoursAgo(lastSeenH + 1), "last_seen": hoursAgo(lastSeenH), "count": 3,
 		"alerted": alerted, "last_notified": map[bool]any{true: hoursAgo(lastNotifiedH), false: nil}[alerted], "quiet_noted": false}
 }
@@ -2710,12 +2747,15 @@ func TestProdWatch_DecideLifecycle(t *testing.T) {
 	t.Run("the cap defers: a cut quiet note and a cut escalation both re-fire next tick", func(t *testing.T) {
 		h := newPWHarness(t)
 		st := base()
+		old := incident("probe", "high", true, 100, 100) // due for a quiet note: its probe answers OK
+		old["source"] = "old"
 		st["incidents"] = map[string]any{
-			"probe:old": incident("probe", "high", true, 100, 100), // due for a quiet note
-			"prom:cpu":  incident("prom", "medium", true, 1, 0.1),  // about to escalate to high
+			"probe:old": old,
+			"prom:cpu":  incident("prom", "medium", true, 1, 0.1), // about to escalate to high
 		}
 		prom := []map[string]any{{"id": "cpu", "title": "cpu", "state": "breached", "value": 2, "op": ">", "threshold": 1, "severity": "high", "warnings": []any{}}}
-		out, _, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probeDown, "prom_results": prom, "max_alerts": 1})
+		probes := append([]map[string]any{{"id": "old", "url": "u2", "ok": true, "status": 200, "ms": 5, "error": "", "expected": 200, "severity": "high"}}, probeDown...)
+		out, _, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probes, "prom_results": prom, "max_alerts": 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2732,7 +2772,7 @@ func TestProdWatch_DecideLifecycle(t *testing.T) {
 		// Persist what decide staged and tick again with the cap open.
 		sb, _ := json.Marshal(pwStateNext(t, out))
 		_ = os.WriteFile(filepath.Join(h.ws, ".prod-watch", "state.json"), sb, 0o644)
-		out, _, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probeDown, "prom_results": prom, "max_alerts": 20})
+		out, _, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probes, "prom_results": prom, "max_alerts": 20})
 		if err != nil {
 			t.Fatal(err)
 		}
