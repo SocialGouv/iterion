@@ -1,7 +1,13 @@
 name: assessment
 display_name: Assessy
 icon: 🧭
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — the machine-readable `iterion:` blocks this bundle EXECUTES (the
+## extractor scripts of each `stack-<id>.md`) and the measurement profile the
+## published letter is a ratio against are read from the engine-owned copy of
+## the bundle's skills (`${BUNDLE_SKILLS_DIR}`) rather than from
+## `<workspace>/.claude/skills/`, which the repository under assessment can
+## write. An empty value is a named refusal, never a fall back.
 ## 0.1.0 — phase 1 of the assessment: the agnostic inventory floor, the
 ## skill-guided per-stack extractors, the declaration lint, the versioned
 ## measurement profile, the rendered state-of-the-repository and plan

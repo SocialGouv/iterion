@@ -22,7 +22,8 @@ import (
 func probe(t *testing.T, ws string) map[string]any {
 	t.Helper()
 	out, exit, stderr := assessmentRun(t, "workspace_probe",
-		map[string]string{"{{vars.workspace_dir}}": ws}, nil)
+		map[string]string{"{{vars.workspace_dir}}": ws,
+			"{{vars.bundle_skills_dir}}": filepath.Join(ws, ".claude", "iterion-skills")}, nil)
 	if exit != 0 {
 		t.Fatalf("workspace_probe exited %d: %s", exit, stderr)
 	}
@@ -47,22 +48,54 @@ func TestAssessmentWorkspaceProbe(t *testing.T) {
 		}
 	})
 
-	t.Run("the fingerprint moves when the inputs move", func(t *testing.T) {
+	t.Run("the fingerprint moves with the BUNDLE's skills and not the checkout's", func(t *testing.T) {
 		dir, _ := synthRepo(t, map[string]string{"README.md": "# fixture\n"})
 		before := assessmentString(t, probe(t, dir), "fingerprint")
 
-		// A skill edited between two passes changes what the extractors DO.
-		// A fingerprint blind to that would certify two different runs alike.
-		skills := filepath.Join(dir, ".claude", "skills")
-		if err := os.MkdirAll(skills, 0o755); err != nil {
+		// What the repository under assessment puts in the workspace mirror is
+		// not an input to this bot: the blocks it executes come from the
+		// engine-owned copy. A fingerprint that moved here would be recording
+		// the audited tree's edits as the bundle's.
+		checkout := filepath.Join(dir, ".claude", "skills")
+		if err := os.MkdirAll(checkout, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(skills, "stack-x.md"), []byte("v1"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(checkout, "stack-x.md"), []byte("supplied by the checkout"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if assessmentString(t, probe(t, dir), "fingerprint") != before {
+			t.Fatal("the fingerprint moved when the CHECKOUT's skills mirror changed — the probe is " +
+				"fingerprinting the repository under assessment as though it were the bundle")
+		}
+
+		// A skill edited between two passes changes what the extractors DO.
+		// A fingerprint blind to that would certify two different runs alike.
+		bundle := filepath.Join(dir, ".claude", "iterion-skills")
+		if err := os.MkdirAll(bundle, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bundle, "stack-x.md"), []byte("v1"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		after := assessmentString(t, probe(t, dir), "fingerprint")
 		if before == after {
-			t.Fatal("the fingerprint did not move when a mirrored extractor skill appeared — it is not fingerprinting the inputs it claims to")
+			t.Fatal("the fingerprint did not move when a bundle extractor skill appeared — it is not fingerprinting the inputs it claims to")
+		}
+	})
+
+	t.Run("no bundle-owned skills directory is a named refusal", func(t *testing.T) {
+		dir, _ := synthRepo(t, map[string]string{"README.md": "# fixture\n"})
+		out, exit, stderr := assessmentRun(t, "workspace_probe",
+			map[string]string{"{{vars.workspace_dir}}": dir, "{{vars.bundle_skills_dir}}": ""}, nil)
+		if exit != 0 {
+			t.Fatalf("workspace_probe exited %d: %s", exit, stderr)
+		}
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a run with no engine-owned skills directory was accepted — every later node " +
+				"would read the blocks it executes from the repository under assessment")
+		}
+		if code := assessmentString(t, out, "code"); code != "BUNDLE_SKILLS_UNAVAILABLE" {
+			t.Fatalf("code = %q, want BUNDLE_SKILLS_UNAVAILABLE", code)
 		}
 	})
 

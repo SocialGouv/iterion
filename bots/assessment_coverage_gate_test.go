@@ -50,21 +50,55 @@ const aSilentStackSkill = "---\nname: stack-silent\ndescription: synthetic fixtu
 	"\n```\n"
 
 // stackWorkspace lays out a workspace the way the runtime does: the bundle's
-// skills mirrored under .claude/skills.
+// skills in the ENGINE-OWNED copy the engine resets and refills on every
+// mirror pass, and the workspace-wins mirror beside it carrying the audited
+// repository's own version of the same names.
+//
+// The second half is not decoration. It is what makes the tests below able to
+// tell which directory a node read: a fixture with only one copy passes
+// whichever one it reads.
 func stackWorkspace(t *testing.T, skills map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
-	skillsDir := filepath.Join(dir, ".claude", "skills")
-	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+	writeSkills(t, bundleSkills(dir), skills)
+	hostile := map[string]string{}
+	for name := range skills {
+		hostile[name] = aRepositorySuppliedSkill
+	}
+	writeSkills(t, filepath.Join(dir, ".claude", "skills"), hostile)
+	return dir
+}
+
+// bundleSkills is the engine-owned copy: `${BUNDLE_SKILLS_DIR}`.
+func bundleSkills(workspace string) string {
+	return filepath.Join(workspace, ".claude", "iterion-skills")
+}
+
+func writeSkills(t *testing.T, dir string, skills map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for name, body := range skills {
-		if err := os.WriteFile(filepath.Join(skillsDir, name), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return dir
 }
+
+// aRepositorySuppliedSkill is what an audited checkout can put under the name
+// of a skill this bundle ships: a different extractor set, a different script.
+// Nothing in it is hostile — it only has to be DIFFERENT, so that a node
+// reading it instead of the bundle's copy is visible.
+const aRepositorySuppliedSkill = "---\nname: stack-synth\ndescription: supplied by the checkout\n---\n\n" +
+	"<!-- iterion:extractors\n" +
+	`[{"id":"counts","output":"supplied-by-the-checkout.json","emits":["entrypoints"],"interpreter":"python3"}]` +
+	"\n-->\n\n" +
+	"<!-- iterion:script counts -->\n\n" +
+	"```python\n" +
+	"import json\n" +
+	`print(json.dumps({"stack": "synth", "extractor": "counts", "facts": {"entrypoints": 9999}}))` +
+	"\n```\n"
 
 func runExtractors(t *testing.T, ws, scratch string, stacks []map[string]any) map[string]any {
 	t.Helper()
@@ -82,7 +116,7 @@ func runExtractorsAt(t *testing.T, ws, scratch string, stacks []map[string]any, 
 	}
 	out, exit, stderr := assessmentRun(t, "run_extractors",
 		map[string]string{"{{vars.workspace_dir}}": ws, "{{vars.scratch_dir}}": scratch,
-			"{{input.base_sha}}": sha},
+			"{{vars.bundle_skills_dir}}": bundleSkills(ws), "{{input.base_sha}}": sha},
 		map[string]string{"{{input.stacks}}": string(raw)})
 	if exit != 0 {
 		t.Fatalf("run_extractors exited %d: %s", exit, stderr)
@@ -101,7 +135,7 @@ func runHealth(t *testing.T, ws, scratch, surveyPath string, extract map[string]
 	errors, _ := json.Marshal(errs)
 	out, exit, stderr := assessmentRun(t, "inventory_health",
 		map[string]string{"{{vars.workspace_dir}}": ws, "{{vars.scratch_dir}}": scratch,
-			"{{input.survey_path}}": surveyPath},
+			"{{vars.bundle_skills_dir}}": bundleSkills(ws), "{{input.survey_path}}": surveyPath},
 		map[string]string{"{{input.outputs}}": string(outputs),
 			"{{input.unsupported}}": string(unsupported),
 			"{{input.errors}}":      string(errors)})
@@ -480,5 +514,136 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 					name, fromTheCheckout)
 			}
 		}
+	}
+}
+
+// THE BLOCKS THIS BUNDLE EXECUTES COME FROM THE BUNDLE. The workspace is a
+// checkout of the repository under assessment, and `<workspace>/.claude/skills`
+// applies the workspace-wins collision policy: a skill read there may be the
+// bundle's or the audited repository's, and nothing read back tells the two
+// apart. This bot RUNS the script a skill anchors and takes the measurement
+// SCALE from another, so both go through the engine-owned copy.
+//
+// The fixture carries both directories with the same file names — a fixture
+// with one copy passes whichever one is read.
+func TestAssessmentSkillBlocksComeFromTheBundleNotTheCheckout(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := stackWorkspace(t, map[string]string{"stack-synth.md": aStackSkill})
+	scratch := t.TempDir()
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+
+	out := runExtractors(t, ws, scratch, stacks)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("the runner refused: %s", assessmentString(t, out, "reason"))
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "synth-counts.json")); err != nil {
+		t.Fatalf("the BUNDLE's declared output was not produced: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "supplied-by-the-checkout.json")); err == nil {
+		t.Fatal("the runner produced the output the CHECKOUT's copy of the skill declares — it " +
+			"executed a script the repository under assessment supplied, with this run's environment")
+	}
+
+	// The coverage gate derives its expectations from the same blocks, read
+	// independently. Read from the checkout they would be the checkout's.
+	survey := writeSurvey(t, t.TempDir(), "deadbeef", stacks, nil)
+	health := runHealth(t, ws, scratch, survey, out)
+	if !assessmentBool(t, health, "ok") {
+		t.Fatalf("the gate's expectations do not match what the runner produced from the bundle: %s",
+			assessmentString(t, health, "reason"))
+	}
+
+	// And with no engine-owned copy at all, neither node falls back.
+	t.Run("no bundle copy is a refusal, never a fall back to the workspace", func(t *testing.T) {
+		outNoBundle, exit, stderr := assessmentRun(t, "run_extractors",
+			map[string]string{"{{vars.workspace_dir}}": ws, "{{vars.scratch_dir}}": t.TempDir(),
+				"{{vars.bundle_skills_dir}}": "", "{{input.base_sha}}": "deadbeef"},
+			map[string]string{"{{input.stacks}}": `[{"id":"synth","evidence":"a","supported":true}]`})
+		if exit != 0 {
+			t.Fatalf("run_extractors exited %d: %s", exit, stderr)
+		}
+		if assessmentBool(t, outNoBundle, "ok") {
+			t.Fatal("the runner ran with no engine-owned skills directory — it read the workspace")
+		}
+	})
+}
+
+// The SCALE is a bundle artefact too. A measurement profile the audited
+// repository supplies would move the published letter under the bundle's own
+// profile name, and a letter is only meaningful as a ratio to the anchor of
+// the profile it names.
+func TestAssessmentMeasurementProfileComesFromTheBundle(t *testing.T) {
+	requireAssessmentTools(t)
+	profile, err := os.ReadFile(filepath.Join("assessment", "skills", "measurement-profile.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	writeSkills(t, bundleSkills(ws), map[string]string{"measurement-profile.md": string(profile)})
+	// The audited checkout's own copy, under the same name, with an anchor a
+	// hundredth of the bundle's: every repository would size two bands up.
+	writeSkills(t, filepath.Join(ws, ".claude", "skills"), map[string]string{
+		"measurement-profile.md": strings.Replace(string(profile),
+			`"first_party_lines": 20000`, `"first_party_lines": 200`, 1)})
+
+	scratch := t.TempDir()
+	floor := writeFloor(t, scratch, floorLines(20000))
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+	survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, inDomainSurvey(2))
+	out := measure(t, ws, scratch, survey, floor)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("measure refused: %s", assessmentString(t, out, "reason"))
+	}
+	if index, _ := out["index"].(float64); index > 1.0 {
+		t.Fatalf("index = %v: the measurement took its anchor from the checkout's profile, and "+
+			"published the letter under the bundle's profile name", index)
+	}
+}
+
+// An operator MAY supply their own profile — that is a launch-time decision.
+// It may not wear the bundle's identity: a letter computed against another
+// anchor, published as `public-default`, is quoted and compared as one nobody
+// computed.
+func TestAssessmentAnOperatorProfileMayNotWearTheBundlesName(t *testing.T) {
+	requireAssessmentTools(t)
+	profile, err := os.ReadFile(filepath.Join("assessment", "skills", "measurement-profile.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	writeSkills(t, bundleSkills(ws), map[string]string{"measurement-profile.md": string(profile)})
+	if err := os.WriteFile(filepath.Join(ws, "mine.md"),
+		[]byte(strings.Replace(string(profile), `"first_party_lines": 20000`, `"first_party_lines": 200`, 1)),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	scratch := t.TempDir()
+	floor := writeFloor(t, scratch, floorLines(20000))
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+	survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, inDomainSurvey(2))
+	out, exit, stderr := assessmentRun(t, "measure", map[string]string{
+		"{{vars.workspace_dir}}":     ws,
+		"{{vars.scratch_dir}}":       scratch,
+		"{{vars.profile_path}}":      "mine.md",
+		"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+		"{{input.base_sha}}":         "deadbeefdeadbeef",
+		"{{input.survey_path}}":      survey,
+		"{{input.floor_path}}":       floor,
+	}, map[string]string{
+		"{{input.extractor_outputs}}":  "[]",
+		"{{input.stacks_unsupported}}": "[]",
+		"{{input.stacks_covered}}":     "[]",
+		"{{input.coverage_degraded}}":  "false",
+		"{{input.coverage_missing}}":   "[]",
+	})
+	if exit != 0 {
+		t.Fatalf("measure exited %d: %s", exit, stderr)
+	}
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a supplied profile published its letter under the bundle's own profile identity")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "own id") {
+		t.Errorf("the refusal does not say what to do: %s", assessmentString(t, out, "reason"))
 	}
 }

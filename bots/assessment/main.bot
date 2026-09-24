@@ -59,6 +59,20 @@ vars:
   ## intermediate evidence, not a deliverable: what lands in the target
   ## repository is the survey, the contract and the documents.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/assessment"
+  ## Where this bundle reads the machine-readable `iterion:` blocks it
+  ## EXECUTES — the extractor scripts of each `stack-<id>.md`, and the
+  ## measurement profile the published letter comes from. The engine resets
+  ## this directory and refills it from the bundle on every mirror pass, so it
+  ## carries the bundle's bytes under only the names the bundle ships.
+  ##
+  ## It is NOT `<workspace>/.claude/skills/`. The workspace is a checkout of
+  ## the repository under ASSESSMENT: that directory's collision policy lets
+  ## the checkout's own file win, so a skill read there may be the bundle's or
+  ## the audited repository's and nothing read back can tell them apart — for
+  ## a block this bot runs as a command, and for the profile that fixes the
+  ## scale it publishes a letter against. An empty value is a refusal, never a
+  ## fall back to the workspace: falling back is the defect.
+  bundle_skills_dir: string = "${BUNDLE_SKILLS_DIR}"
 
 ## ─── Prompts ───────────────────────────────────────────────────────
 
@@ -493,7 +507,7 @@ tool workspace_probe:
     import sys
 
     ws = {{vars.workspace_dir}}
-    skills_dir = os.path.join(ws, ".claude", "skills")
+    skills_dir = {{vars.bundle_skills_dir}}
 
     out = {"ok": False, "code": "", "reason": "", "base_sha": "", "fingerprint": ""}
 
@@ -572,6 +586,14 @@ tool workspace_probe:
     tags = git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/tags/", timeout=180)
     if tags.returncode == 0:
         parts.extend("tag:%s" % line for line in sorted(tags.stdout.splitlines()) if line.strip())
+    # The digest is taken over the ENGINE-OWNED copy: fingerprinting the
+    # workspace mirror would record what the audited repository put there.
+    if not skills_dir:
+        refuse("BUNDLE_SKILLS_UNAVAILABLE",
+               "the engine gave this run no bundle-owned skills directory (${BUNDLE_SKILLS_DIR} "
+               "is empty). This bundle EXECUTES blocks read out of its skills and takes its "
+               "measurement scale from one of them; reading them from the workspace instead would "
+               "read whatever the repository under assessment put there.")
     if os.path.isdir(skills_dir):
         for name in sorted(os.listdir(skills_dir)):
             if not name.endswith(".md"):
@@ -580,7 +602,7 @@ tool workspace_probe:
                 with open(os.path.join(skills_dir, name), "rb") as handle:
                     digest = hashlib.sha256(handle.read()).hexdigest()
             except OSError as exc:
-                refuse("WORKSPACE_NOT_A_REPO", "cannot read the mirrored skill %s: %s" % (name, exc))
+                refuse("WORKSPACE_NOT_A_REPO", "cannot read the bundle skill %s: %s" % (name, exc))
             parts.append("skill:%s:%s" % (name, digest))
 
     out["ok"] = True
@@ -1175,7 +1197,7 @@ tool run_extractors:
     scratch = {{vars.scratch_dir}}
     stacks = {{input.stacks}}
     base_sha = {{input.base_sha}}
-    skills_dir = os.path.join(ws, ".claude", "skills")
+    skills_dir = {{vars.bundle_skills_dir}}
 
     out = {"ok": False, "code": "", "reason": "", "ran": [], "outputs": {},
            "unsupported": [], "errors": []}
@@ -1220,6 +1242,12 @@ tool run_extractors:
     except OSError as exc:
         refuse("EXTRACTORS_FAILED", "cannot create the scratch directory %s: %s" % (scratch, exc))
 
+    if not skills_dir or not os.path.isdir(skills_dir):
+        refuse("EXTRACTORS_FAILED",
+               "the bundle-owned skills directory (%r) is not there. This node RUNS the script a "
+               "skill anchors; reading those skills from the workspace instead would run a script "
+               "the repository under assessment supplied, with this run's environment."
+               % skills_dir)
     if not base_sha:
         refuse("EXTRACTORS_FAILED",
                "no pinned commit was handed to the extractor runner. Every skill in this bundle "
@@ -1389,7 +1417,7 @@ tool inventory_health:
     produced = {{input.outputs}}
     unsupported = {{input.unsupported}}
     errors = {{input.errors}}
-    skills_dir = os.path.join(ws, ".claude", "skills")
+    skills_dir = {{vars.bundle_skills_dir}}
 
     out = {"ok": False, "code": "", "reason": "", "healthy": False, "degraded": False,
            "stacks_detected": [], "stacks_covered": [], "stacks_unsupported": [], "missing": [],
@@ -1405,7 +1433,16 @@ tool inventory_health:
     # The expectations are read from the SKILLS, not from the runner's report.
     # A gate that believed the runner would agree with a runner that parsed
     # nothing and ran nothing — the exact façade this gate exists to refuse.
+    # And from the ENGINE-OWNED copy of them, for the same reason the runner
+    # reads it there: a gate whose expectations the audited repository can
+    # write agrees with whatever that repository wanted.
     BLOCK = re.compile(r"<!--\s*iterion:extractors(.*?)-->", re.S)
+
+    if not skills_dir or not os.path.isdir(skills_dir):
+        refuse("COVERAGE_VOID",
+               "the bundle-owned skills directory (%r) is not there, so this gate has no "
+               "expectations to derive. Deriving them from the workspace copy would take them "
+               "from the repository under assessment." % skills_dir)
 
     def declared_outputs(stack_id):
         path = os.path.join(skills_dir, "stack-%s.md" % stack_id)
@@ -1830,7 +1867,7 @@ tool measure:
     coverage_degraded = {{input.coverage_degraded}}
     coverage_missing = {{input.coverage_missing}}
     profile_rel = {{vars.profile_path}}
-    skills_dir = os.path.join(ws, ".claude", "skills")
+    skills_dir = {{vars.bundle_skills_dir}}
 
     out = {"ok": False, "code": "", "reason": "", "profile_id": "", "profile_version": "",
            "in_domain": False, "size": "", "index": 0.0, "facts": "", "facts_path": ""}
@@ -1858,8 +1895,19 @@ tool measure:
     # whose anchor could move under an unchanged version would publish two
     # incomparable letters under one name.
     PROFILE_BLOCK = re.compile(r"<!--\s*iterion:profile(.*?)-->", re.S)
-    profile_path = os.path.join(ws, profile_rel) if profile_rel else \
-        os.path.join(skills_dir, "measurement-profile.md")
+    if not skills_dir or not os.path.isdir(skills_dir):
+        refuse("MEASUREMENT_REFUSED",
+               "the bundle-owned skills directory (%r) is not there, so the default measurement "
+               "profile cannot be read from it. Reading it from the workspace would take the "
+               "SCALE this bot publishes a letter against from the repository being sized."
+               % skills_dir)
+    bundled_profile = os.path.join(skills_dir, "measurement-profile.md")
+    # An OPERATOR may supply their own profile, and that is a launch-time
+    # decision. It still lives in the workspace, so it is read as the
+    # operator's assertion and published under ITS OWN name — a profile that is
+    # not the bundle's may not wear the bundle's identity, or a letter computed
+    # against another scale would be quoted as `public-default`.
+    profile_path = os.path.join(ws, profile_rel) if profile_rel else bundled_profile
     try:
         found = PROFILE_BLOCK.search(open(profile_path, encoding="utf-8").read())
     except OSError as exc:
@@ -1878,6 +1926,19 @@ tool measure:
             refuse("MEASUREMENT_REFUSED", "the profile in %s declares no %r" % (profile_path, key))
     out["profile_id"] = str(profile["id"])
     out["profile_version"] = str(profile["version"])
+    if profile_rel:
+        bundled_id = ""
+        try:
+            bundled = PROFILE_BLOCK.search(open(bundled_profile, encoding="utf-8").read())
+            bundled_id = str(json.loads(bundled.group(1))["id"]) if bundled else ""
+        except (OSError, ValueError, KeyError):
+            bundled_id = ""
+        if bundled_id and out["profile_id"] == bundled_id:
+            refuse("MEASUREMENT_REFUSED",
+                   "the profile supplied at %s declares the identity %r, which is this bundle's "
+                   "own. A letter is a ratio to THAT profile's anchor; published under the "
+                   "bundle's name it would be quoted, compared and trusted as a letter nobody "
+                   "computed. Give the profile its own id." % (profile_path, out["profile_id"]))
     metric_keys = [m["key"] for m in profile["metrics"] if isinstance(m, dict) and m.get("key")]
     discrete = [m["key"] for m in profile["metrics"] if isinstance(m, dict) and m.get("discrete")]
     labels = {m["key"]: m.get("label", m["key"]) for m in profile["metrics"] if isinstance(m, dict)}

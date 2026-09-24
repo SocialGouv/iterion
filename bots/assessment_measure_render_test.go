@@ -63,9 +63,10 @@ func measureWithCoverage(t *testing.T, ws, scratch, surveyPath, floorPath,
 	unsupported, covered, degraded string) map[string]any {
 	t.Helper()
 	out, exit, stderr := assessmentRun(t, "measure", map[string]string{
-		"{{vars.workspace_dir}}": ws,
-		"{{vars.scratch_dir}}":   scratch,
-		"{{vars.profile_path}}":  "",
+		"{{vars.workspace_dir}}":     ws,
+		"{{vars.scratch_dir}}":       scratch,
+		"{{vars.profile_path}}":      "",
+		"{{vars.bundle_skills_dir}}": bundleSkills(ws),
 		"{{input.base_sha}}":     "deadbeefdeadbeef",
 		"{{input.survey_path}}":  surveyPath,
 		"{{input.floor_path}}":   floorPath,
