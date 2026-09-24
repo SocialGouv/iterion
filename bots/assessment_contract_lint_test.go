@@ -724,36 +724,28 @@ func TestAssessmentMalformedProfileRefusesInsteadOfCrashing(t *testing.T) {
 		{"a thresholds ladder one rung short", `"thresholds": [0.5, 1.0, 2.0, 4.0, 8.0]`,
 			`"thresholds": [0.5, 1.0, 2.0, 4.0]`},
 		{"thresholds that are not a list", `"thresholds": [0.5, 1.0, 2.0, 4.0, 8.0]`, `"thresholds": 5`},
+		// Quoted numbers pass a truthiness test and reach arithmetic: the
+		// discrete spread adds one to the anchor, the band compares the index
+		// with each threshold, the domain compares the lines with its floor.
+		{"a quoted anchor on a discrete metric", `"entrypoints": 40,`, `"entrypoints": "40",`},
+		{"a boolean anchor", `"systems": 4`, `"systems": true`},
+		{"a quoted threshold", `"thresholds": [0.5, 1.0, 2.0, 4.0, 8.0]`,
+			`"thresholds": [0.5, 1.0, "2.0", 4.0, 8.0]`},
+		{"a quoted first-party floor", `"min_first_party_lines": 2000`, `"min_first_party_lines": "2000"`},
+		{"a zero anchor", `"deployables": 2,`, `"deployables": 0,`},
+		// A canonical exclusion the tool has no mechanism for would be
+		// advertised beside the letter and applied by nobody.
+		{"a canonical exclusion nothing applies", `"canonical_exclusions": [`,
+			`"canonical_exclusions": [{"kind": "vendored", "why": "third-party code"}, `},
+		{"canonical exclusions in an unreadable shape", `"canonical_exclusions": [`,
+			`"canonical_exclusions": ["generated", `},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mutated := strings.Replace(string(profile), tc.from, tc.to, 1)
 			if mutated == string(profile) {
 				t.Fatal("the mutation did not apply")
 			}
-			ws := t.TempDir()
-			writeSkills(t, bundleSkills(ws), map[string]string{"measurement-profile.md": mutated})
-			scratch := t.TempDir()
-			out, exit, stderr := assessmentRun(t, "measure", map[string]string{
-				"{{vars.workspace_dir}}":     ws,
-				"{{vars.scratch_dir}}":       scratch,
-				"{{vars.profile_path}}":      "",
-				"{{vars.bundle_skills_dir}}": bundleSkills(ws),
-				"{{input.base_sha}}":         "deadbeefdeadbeef",
-				"{{input.survey_path}}": writeSurvey(t, t.TempDir(), "deadbeefdeadbeef",
-					[]map[string]any{{"id": "synth", "evidence": "a", "supported": true}}, inDomainSurvey(2)),
-				"{{input.floor_path}}": writeFloor(t, scratch, floorLines(20000)),
-			}, map[string]string{
-				"{{input.extractor_outputs}}":  "[]",
-				"{{input.stacks_unsupported}}": "[]",
-				"{{input.stacks_covered}}":     "[]",
-				"{{input.coverage_degraded}}":  "false",
-				"{{input.coverage_missing}}":   "[]",
-				"{{input.stacks_errored}}":     "[]",
-			})
-			if exit != 0 {
-				t.Fatalf("measure exited %d with no verdict — the operator is handed the engine's "+
-					"generic tool failure instead of MEASUREMENT_REFUSED: %s", exit, stderr)
-			}
+			out := measureUnderProfile(t, mutated)
 			if assessmentBool(t, out, "ok") {
 				t.Fatalf("a profile with %s published a letter", tc.name)
 			}
@@ -762,4 +754,45 @@ func TestAssessmentMalformedProfileRefusesInsteadOfCrashing(t *testing.T) {
 			}
 		})
 	}
+
+	// The control, on the same bench: the profile the bundle ships passes every
+	// one of these checks. A check that refused it would be refusing the scale
+	// itself, and every case above would be red for that reason instead.
+	t.Run("the shipped profile is accepted", func(t *testing.T) {
+		out := measureUnderProfile(t, string(profile))
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("the bundle's own profile was refused: %s", assessmentString(t, out, "reason"))
+		}
+	})
+}
+
+// measureUnderProfile runs the measurement over an in-domain survey with the
+// given profile as the bundle's own copy.
+func measureUnderProfile(t *testing.T, profile string) map[string]any {
+	t.Helper()
+	ws := t.TempDir()
+	writeSkills(t, bundleSkills(ws), map[string]string{"measurement-profile.md": profile})
+	scratch := t.TempDir()
+	out, exit, stderr := assessmentRun(t, "measure", map[string]string{
+		"{{vars.workspace_dir}}":     ws,
+		"{{vars.scratch_dir}}":       scratch,
+		"{{vars.profile_path}}":      "",
+		"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+		"{{input.base_sha}}":         "deadbeefdeadbeef",
+		"{{input.survey_path}}": writeSurvey(t, t.TempDir(), "deadbeefdeadbeef",
+			[]map[string]any{{"id": "synth", "evidence": "a", "supported": true}}, inDomainSurvey(2)),
+		"{{input.floor_path}}": writeFloor(t, scratch, floorLines(20000)),
+	}, map[string]string{
+		"{{input.extractor_outputs}}":  "[]",
+		"{{input.stacks_unsupported}}": "[]",
+		"{{input.stacks_covered}}":     "[]",
+		"{{input.coverage_degraded}}":  "false",
+		"{{input.coverage_missing}}":   "[]",
+		"{{input.stacks_errored}}":     "[]",
+	})
+	if exit != 0 {
+		t.Fatalf("measure exited %d with no verdict — the operator is handed the engine's "+
+			"generic tool failure instead of MEASUREMENT_REFUSED: %s", exit, stderr)
+	}
+	return out
 }

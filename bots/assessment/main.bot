@@ -2116,6 +2116,60 @@ tool measure:
                "the profile in %s must declare a non-empty `bands` list and exactly one fewer "
                "`thresholds`. A mismatch truncates the ladder in silence and publishes a letter "
                "off a scale shorter than the one it names." % profile_path)
+
+    # NUMBERS, not merely present or truthy. The index DIVIDES by every anchor
+    # value and shifts the discrete ones by one; the band COMPARES the index
+    # with every threshold; the domain compares the lines with its floor. A
+    # quoted number in somebody's YAML passes a truthiness test and then exits
+    # with a TypeError — a traceback instead of this node's typed refusal.
+    def number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    for index, metric in enumerate(profile["metrics"]):
+        key = metric["key"]
+        if not number(profile["anchor"].get(key)) or profile["anchor"][key] <= 0:
+            refuse("MEASUREMENT_REFUSED",
+                   "the anchor of the profile in %s declares %r as %r. The index is a ratio to "
+                   "it, so it must be a number above zero, or the scale has no meaning on that axis."
+                   % (profile_path, key, profile["anchor"].get(key)))
+    for position, threshold in enumerate(profile["thresholds"]):
+        if not number(threshold):
+            refuse("MEASUREMENT_REFUSED",
+                   "thresholds[%d] of the profile in %s is %r, which is not a number: the band is "
+                   "the index compared with it." % (position, profile_path, threshold))
+    if "min_first_party_lines" in profile["domain"] and \
+            not number(profile["domain"]["min_first_party_lines"]):
+        refuse("MEASUREMENT_REFUSED",
+               "the domain of the profile in %s declares a first-party floor of %r, which is not "
+               "a number of lines." % (profile_path, profile["domain"]["min_first_party_lines"]))
+
+    # EVERY CANONICAL EXCLUSION HAS A MECHANISM HERE, or the profile is
+    # refused. A canonical exclusion is what never counts as first-party
+    # WHATEVER THE SURVEY DECLARES, so it must be recognised by this tool on
+    # its own; one the tool has no way to recognise would be advertised beside
+    # the letter and applied only where a survey happened to declare it.
+    # `generated` is the one kind a file declares about itself, and the floor
+    # recognises it from the header. Vendored code, lock files, data and tests
+    # are the SURVEY's to declare — a stack's knowledge, which this workflow
+    # does not carry.
+    APPLIED_CANONICAL = ("generated",)
+    canonical_declared = profile.get("canonical_exclusions")
+    if canonical_declared is None:
+        canonical_declared = []
+    if not isinstance(canonical_declared, list) or not all(
+            isinstance(x, dict) and str(x.get("kind") or "").strip() for x in canonical_declared):
+        refuse("MEASUREMENT_REFUSED",
+               "the profile in %s declares `canonical_exclusions` in an unreadable shape: a list of "
+               "mappings, each with a `kind`, is required." % profile_path)
+    unapplied = sorted({str(x["kind"]).strip() for x in canonical_declared} - set(APPLIED_CANONICAL))
+    if unapplied:
+        refuse("MEASUREMENT_REFUSED",
+               "the profile in %s declares the canonical exclusion(s) %s, and this bot has no "
+               "mechanism that recognises them independently of the survey (it applies: %s). A "
+               "declared exclusion nobody applies inflates every figure that follows it while the "
+               "document says it was taken out. Declare such subtrees `excluded` in the survey, "
+               "or remove the kind from the profile's canonical list."
+               % (profile_path, ", ".join(unapplied), ", ".join(APPLIED_CANONICAL)))
     out["profile_id"] = str(profile["id"])
     out["profile_version"] = str(profile["version"])
     if profile_rel:
@@ -2161,8 +2215,7 @@ tool measure:
     # has to apply it.
     lines_by_path = floor.get("lines_by_path") or {}
     generated = set(floor.get("generated") or [])
-    canonical = {str(x.get("kind")) for x in (profile.get("canonical_exclusions") or [])
-                 if isinstance(x, dict) and x.get("kind")}
+    canonical = {str(x["kind"]).strip() for x in canonical_declared}
     if "generated" in canonical and not isinstance(floor.get("generated"), list):
         refuse("MEASUREMENT_REFUSED",
                "the profile %s declares a canonical `generated` exclusion and the floor measurement "
@@ -2277,11 +2330,6 @@ tool measure:
     floor_lines = domain.get("min_first_party_lines") or 0
     if floor_lines and measured.get("first_party_lines", 0) < floor_lines:
         out_of_domain.append("first-party source is below the profile's floor of %d lines" % floor_lines)
-    for key in metric_keys:
-        if not anchor.get(key):
-            refuse("MEASUREMENT_REFUSED",
-                   "the anchor of profile %s is zero on %r: no ratio is possible, so the scale "
-                   "has no meaning on that axis." % (out["profile_id"], key))
 
     def geometric_index(values):
         product = 1.0

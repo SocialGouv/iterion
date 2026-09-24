@@ -19,7 +19,7 @@ profile is a false quotation.
 | part | what it decides |
 |---|---|
 | **metrics** | which four quantities describe amplitude, and in what UNIT |
-| **canonical exclusions** | what never counts as first-party, whatever a survey declares |
+| **canonical exclusions** | what the TOOL never counts as first-party, whatever a survey declares |
 | **domain** | the repositories the letter means anything for |
 | **anchor** | the reference the ratios are taken against |
 | **thresholds** | where one band ends and the next begins |
@@ -78,6 +78,25 @@ routes laid out one per file and forty routes in one file are the same
 repository, and a metric that answers 40 or 1 depending on the layout is two
 scales under one name.
 
+## What the tool excludes, and what the survey excludes
+
+A **canonical exclusion** is applied by the measurement itself, whatever the
+survey declares — so it must be something the tool can recognise on its own,
+in any language. There is one: a file that declares itself **generated** in
+its own header (`Code generated … DO NOT EDIT`, `@generated`). The floor
+recognises it while it reads the bodies, and the measurement subtracts it from
+the first-party count.
+
+Vendored code, lock files, fixtures and datasets, and tests are excluded too,
+but by the **survey**: recognising them is a stack's knowledge, which the
+workflow does not carry. The partition makes the survey classify every
+top-level entry `first_party`, `tests` or `excluded`, a subtree deeper down is
+carved out with an `excluded` or `tests` declaration inside a first-party one,
+and the **exclusion rate** published beside the band says how much of the
+tree the survey left out. A profile that listed those kinds as canonical would
+advertise an exclusion nothing applies; the measurement refuses a canonical
+kind it has no mechanism for.
+
 ## The anchor is synthetic
 
 The anchor below is a **convention**, not a measured project. Its four values
@@ -89,19 +108,15 @@ project of that shape exists or is typical.
 <!-- iterion:profile
 {
   "id": "public-default",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "metrics": [
-    {"key": "first_party_lines", "label": "first-party lines of source (tests, data and vendored code excluded)", "discrete": false},
+    {"key": "first_party_lines", "label": "first-party lines of source (the survey's tests and exclusions, and self-declared generated files, left out)", "discrete": false},
     {"key": "entrypoints", "label": "entrypoints, counted in route registrations", "discrete": true},
     {"key": "deployables", "label": "deployed artefacts", "discrete": true},
     {"key": "systems", "label": "distinct systems the application talks to", "discrete": true}
   ],
   "canonical_exclusions": [
-    {"kind": "vendored", "why": "third-party source carried in the tree is not written here"},
-    {"kind": "generated", "why": "a file declaring itself generated in its own header is not first-party"},
-    {"kind": "locked", "why": "a lock file is a resolved graph, not source"},
-    {"kind": "data", "why": "fixtures and datasets are inputs, not source"},
-    {"kind": "tests", "why": "counted as tests, never as source"}
+    {"kind": "generated", "why": "a file declaring itself generated in its own header is not first-party"}
   ],
   "domain": {
     "all_metrics_positive": true,
