@@ -247,20 +247,17 @@ func (b *schemaBuilder) root() obj {
 			"description": "Fragments under the bot's lib/ directory (`lib/<file>.bot`), resolved from the document's directory, as `import` lines do in a .bot.",
 		},
 	}
-	for _, name := range []string{"vars", "presets", "attachments", "secrets"} {
+	for _, name := range authorBlockKinds {
 		if k, ok := b.lookup(name); ok {
 			props[name] = b.kindSchema(k)
 		}
 	}
-	for _, m := range []struct{ kind, key string }{
-		{"prompt", "prompts"}, {"schema", "schemas"}, {"cursor", "cursors"},
-		{"supervisor", "supervisors"}, {"mcp_server", "mcp_servers"}, {"contract", "contracts"},
-	} {
-		k, ok := b.lookup(m.kind)
+	for _, m := range authorNamedDeclarations {
+		k, ok := b.lookup(m.Kind)
 		if !ok {
 			continue
 		}
-		props[m.key] = obj{
+		props[m.Key] = obj{
 			"type":                 "object",
 			"propertyNames":        obj{"pattern": identPattern},
 			"additionalProperties": b.kindSchema(k),
