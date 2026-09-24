@@ -129,9 +129,9 @@ silence:
 | cause | what it catches |
 |---|---|
 | `PHANTOM_DOC` | a documented screen the net never saw: a cited corpus entry that does not exist, an inventory id nobody inventoried, a path that is neither a declared route nor a corpus entry path, a query parameter the corpus never observes on that path |
-| `GAP` | a covered feature no line documents — **one** line must carry its identifier **and** one of its own entries |
-| `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, with prose (a bare identifier or a `TODO` is silence under a label) |
-| `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) naming no reference **in its heading line itself** — a reference in the chapter body does not anchor it — and not declaring that it restitutes none |
+| `GAP` | a covered feature no line documents — **one** line must carry its identifier **and** one of its own entries, **and** that line or its paragraph must READ: prose outside the references, `coverage_min_prose` characters of it. Co-presence is an index row, and an index restitutes nothing |
+| `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, with prose of its **own** (a bare identifier or a `TODO` is silence under a label; a row of dots is length without words; one sentence cannot answer for two holes, and the prose has to share vocabulary with the reason the net records) |
+| `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) naming no reference **in its heading line itself** — a reference in the chapter body does not anchor it — and not declaring that it restitutes none; plus the ceiling, `coverage_max_anchorless`, on how many chapters may declare it at all |
 | `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, an empty route table |
 
 That last row is the point of the design, not a detail: a guard written
@@ -162,22 +162,48 @@ Three things the gate deliberately does not assume:
   `coverage_no_anchor_marker`), not French literals. `page_lint` exempts
   exactly the declared marker from its `html_comments` rule, so the two
   gates can never order the campaign to add and to remove the same
-  characters.
+  characters. The exemption is scoped twice over: it applies to that one
+  rule and to a comment that *is* the token (a marker declared
+  `password` never silences the secret scan), and it is armed by the
+  **net**, not by the var — with no net there is no second gate to
+  contradict, and `page_lint` is byte for byte, value for value, the
+  node it was before this gate existed.
 - **The anchor vocabulary.** Inventory identifiers are recognised by the
   prefixes the inventory itself uses and corpus ids by the shape the
   corpus itself uses. `001` is one campaign's convention, not a rule.
-  A resemblance only becomes a **citation** on a line that is already
-  citing references — otherwise a three-digit net would make every inline
-  `404` a blocking refusal, and since this gate is a convergence term the
-  campaign would be told to delete reader-facing prose to go green. A
-  product whose pages carry look-alike tokens declares
-  `coverage_entry_id_pattern` and the inference stops entirely.
+
+  Two questions, kept apart. **Co-location** — is this token on a line
+  that is already citing? — decides whether a resemblance is a citation
+  to *credit*. It does **not** decide whether a token must be
+  *verified*: an inventory-prefixed token (`items.detail`) claims to
+  name a feature wherever it sits and is checked everywhere, and so is
+  a token matching a declared `coverage_entry_id_pattern`. Only an
+  **ambiguous inferred** vocabulary falls back to the citing line: a
+  corpus numbering its entries with bare digits shares its whole
+  vocabulary with ordinary prose (an inline `404`, a count of `250`),
+  and since this gate is a convergence term the campaign would be told
+  to delete reader-facing text to go green. That fallback is a visible
+  degradation — `entry_ids_degraded`, named in the log — and
+  **declaring `coverage_entry_id_pattern` is recommended for any net
+  with numeric identifiers**: it ends the ambiguity and every citation
+  is then checked wherever it sits.
 - **A catch-all route.** A route made only of placeholders (`/{slug}`,
   `/**`) matches every path and proves none: for a path only such a
   route covers, the corpus reference is the only evidence. The rule cuts
   both ways — a *cited* path made only of placeholders is refused too,
   since a citation is read as a pattern and a lone `` `/**` `` would
-  otherwise match every corpus entry while restituting nothing.
+  otherwise match every corpus entry while restituting nothing. So is a
+  cited **tail wildcard**: `` `/dashboard/**` `` carries one literal
+  segment, clears the placeholders-only rule, and claims every screen
+  below it.
+- **The exclusions chapter title.** The declared token matches the
+  **whole** heading, anchored, the way `page_lint` matches its own
+  chrome headings. As a substring, an insurance product's
+  reader-facing "Les exclusions de garantie" opened the chapter of
+  documented holes.
+- **Where the route table lives.** `coverage_routes_file` is read from
+  inside the net directory; an absolute path or a `..` escape is a
+  refusal, like `oracle_dir`.
 
 **The route table is a degradation, and a loud one.** golden-master
 states its routes through `config.json`'s `routes_probe` — a command it
@@ -190,6 +216,31 @@ matches no corpus entry path is named a `PHANTOM_DOC` with the
 degradation attached. Lifting it takes one artifact on the
 golden-master side — the `routes_probe` stdout committed as
 `<oracle_dir>/routes.txt`.
+
+**The escape hatch has a ceiling.** The anchor refusal *names* the
+marker that satisfies it, so an agent reading `fail_log` can answer
+every complaint by marking the chapter — an exception with no ceiling
+is the rule. `coverage_max_anchorless` (default **0**) caps how many
+chapters may declare they restitute nothing; above it the declarations
+are themselves the refusal, and each marked chapter is printed whether
+the run is red or green. The chapter that **opens** the declared
+exclusions chapter is anchored by its role: it needs no marker and
+spends nothing.
+
+The counts are not private to the gate either. `counts_line` —
+features documented, exclusions named, chapters declared anchorless and
+the ceiling in force — is an output field, so it rides the run events,
+and `finalize_mr` quotes it verbatim in a **Couverture** section of the
+PR body. A declaration nobody ever reads is free, which is exactly what
+it must not be.
+
+**The net itself is read as given.** Nothing here proves the net's
+*own* gate ever ran on it. When neither `verify-oracle.sh` nor
+`REPORT.md` sits beside the two artifacts, the gate says so
+(`net_unproven`) the way it says `routes_degraded` — and even when they
+do, their presence is a trace, not a verdict: neither file is stamped
+with the commit it judged. The ask on the golden-master side is one
+artifact carrying that stamp, alongside the `routes_probe` output.
 
 What it does **not** judge is the prose. That stays with its reader.
 
@@ -284,12 +335,13 @@ computed is **never** reported as an empty one.
 | `extra_forbidden_headings` | `""` | Extra heading titles a published page must never carry |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
 | `oracle_dir` | `.golden-master` | Where the golden-master net lives, looked up in the workspace then in each source clone. Both `feature-coverage.json` and `corpus.json` present ⇒ `coverage_check` is armed; empty disables the lookup |
-| `coverage_exclusions_heading` | `exclusions` | Token a heading must carry to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive substring) |
-| `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token; empty disables the escape hatch |
-| `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir`, in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
-| `coverage_entry_id_pattern` | `""` | Regex a code span must match to be read as a corpus entry id. Empty infers it from the shape the corpus itself uses; declaring it stops the inference and makes the check exact |
-| `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page names an exclusion |
-| `coverage_min_prose` | `60` | Minimum prose characters on the line that names an exclusion |
+| `coverage_exclusions_heading` | `exclusions` | Title a heading must carry, WHOLE and anchored, to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive) |
+| `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token, and only when a net is present; empty disables the escape hatch |
+| `coverage_max_anchorless` | `0` | Ceiling on the chapters that may declare they restitute nothing. The exclusions chapter is anchored by its role and never counts |
+| `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
+| `coverage_entry_id_pattern` | `""` | Regex a code span must match to be read as a corpus entry id. Empty infers it from the shape the corpus itself uses. **Recommended for any net with numeric identifiers**: declaring it ends the ambiguity and every citation is verified wherever it sits |
+| `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page documents a feature or names an exclusion |
+| `coverage_min_prose` | `60` | Minimum prose characters, outside the references, on the line naming an exclusion and in the paragraph documenting a feature |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/product-docs` | Out-of-tree scratch: the source clones + the promises ledger |
 | `max_passes` | `4` | Continuation-loop cap: the loop back to `scan_hints` is taken at most this many times, so a run makes up to `max_passes + 1` campaign passes |

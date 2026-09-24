@@ -2,6 +2,7 @@ package bots
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -786,9 +787,20 @@ type lintOut struct {
 
 func lintCommand(t *testing.T, ws, productDir, rules, extra string) string {
 	t.Helper()
+	// A net is present by default: that is what arms the marker exemption.
+	return lintCommandWithNet(t, ws, productDir, rules, extra, filepath.Join(ws, ".golden-master"))
+}
+
+// lintCommandWithNet exposes the one input that decides whether the anchorless
+// marker is exempt at all. The exemption exists only to stop this gate
+// contradicting coverage_check, and coverage_check is armed by a NET — so an
+// empty oracle_path must give back the node as it was before either existed.
+func lintCommandWithNet(t *testing.T, ws, productDir, rules, extra, oraclePath string) string {
+	t.Helper()
 	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "page_lint"), map[string]string{
 		"vars.workspace_dir":             ws,
 		"input.product_dir":              productDir,
+		"input.oracle_path":              oraclePath,
 		"vars.lint_rules":                rules,
 		"vars.extra_forbidden_headings":  extra,
 		"vars.coverage_no_anchor_marker": defaultNoAnchorMarker,
@@ -1870,21 +1882,31 @@ print('ok')
 // three-digit entry ids, which is one campaign's convention.
 
 type coverageOut struct {
-	OK          bool             `json:"coverage_ok"`
-	NetPresent  bool             `json:"net_present"`
-	Causes      []map[string]any `json:"causes"`
-	CauseCount  int              `json:"cause_count"`
-	Total       int              `json:"features_total"`
-	Documented  int              `json:"features_documented"`
-	Exclusions  int              `json:"exclusions_total"`
-	Named       int              `json:"exclusions_named"`
-	Chapters    int              `json:"chapters"`
-	Anchorless  int              `json:"chapters_unanchored_declared"`
-	RoutesTotal int              `json:"routes_declared"`
-	Degraded    bool             `json:"routes_degraded"`
-	OracleUsed  string           `json:"oracle_dir_used"`
-	Log         string           `json:"log"`
+	OK               bool             `json:"coverage_ok"`
+	NetPresent       bool             `json:"net_present"`
+	Causes           []map[string]any `json:"causes"`
+	CauseCount       int              `json:"cause_count"`
+	Total            int              `json:"features_total"`
+	Documented       int              `json:"features_documented"`
+	Exclusions       int              `json:"exclusions_total"`
+	Named            int              `json:"exclusions_named"`
+	Chapters         int              `json:"chapters"`
+	Anchorless       int              `json:"chapters_unanchored_declared"`
+	AnchorlessMax    int              `json:"chapters_anchorless_max"`
+	EntryIDsDegraded bool             `json:"entry_ids_degraded"`
+	NetUnproven      bool             `json:"net_unproven"`
+	CountsLine       string           `json:"counts_line"`
+	RoutesTotal      int              `json:"routes_declared"`
+	Degraded         bool             `json:"routes_degraded"`
+	OracleUsed       string           `json:"oracle_dir_used"`
+	Log              string           `json:"log"`
 }
+
+// fixtureAnchorlessCeiling is what the SHARED fixtures need: the method
+// chapter they carry declares it restitutes nothing, and two tests add one of
+// their own. The production default is 0 — an escape hatch with no ceiling is
+// the rule — and TestProductDocsCoverageGateCapsAnchorlessChapters pins it.
+const fixtureAnchorlessCeiling = "3"
 
 func coverageCommand(t *testing.T, ws, productDir, oraclePath string) string {
 	t.Helper()
@@ -1897,6 +1919,11 @@ func coverageCommand(t *testing.T, ws, productDir, oraclePath string) string {
 // inference with an exact rule).
 func coverageCommandWith(t *testing.T, ws, productDir, oraclePath, exclToken, entryPattern string) string {
 	t.Helper()
+	return coverageCommandCapped(t, ws, productDir, oraclePath, exclToken, entryPattern, fixtureAnchorlessCeiling)
+}
+
+func coverageCommandCapped(t *testing.T, ws, productDir, oraclePath, exclToken, entryPattern, maxAnchorless string) string {
+	t.Helper()
 	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "coverage_check"), map[string]string{
 		"vars.workspace_dir":               ws,
 		"input.product_dir":                productDir,
@@ -1907,6 +1934,7 @@ func coverageCommandWith(t *testing.T, ws, productDir, oraclePath, exclToken, en
 		"vars.coverage_entry_id_pattern":   entryPattern,
 		"vars.coverage_placeholders":       defaultPlaceholders,
 		"vars.coverage_min_prose":          "60",
+		"vars.coverage_max_anchorless":     maxAnchorless,
 	})
 }
 
@@ -1950,14 +1978,15 @@ const (
 		"\n" +
 		"## One item — `/dashboard/items/{id}` (`039`)\n" +
 		"\n" +
-		"`items.detail` (`039`) shows one item in full.\n" +
+		"`items.detail` (`039`) shows one item in full: every field the manager\n" +
+		"filled in, the history of its changes and the actions still open to them.\n" +
 		"\n" +
 		"## How this page was built <!--no-anchor-->\n" +
 		"\n" +
 		"A method chapter observes nothing and says so.\n"
 	coverageExclusionsPage = "# What this documentation does not cover\n" +
 		"\n" +
-		"## Exclusions <!--no-anchor-->\n" +
+		"## Exclusions\n" +
 		"\n" +
 		"- `menu.logout` — signing out tears the session down without showing a " +
 		"screen of its own, so the net never captures it and this documentation " +
@@ -2021,8 +2050,8 @@ func TestProductDocsCoverageGateBlessesAnExhaustiveDocumentation(t *testing.T) {
 	if got.Degraded || got.RoutesTotal != 4 {
 		t.Fatalf("routes: degraded=%v declared=%d, want false and 4 (the comment line is not a route)", got.Degraded, got.RoutesTotal)
 	}
-	if got.Anchorless != 2 {
-		t.Fatalf("declared-anchorless chapters = %d, want 2 — the gate must PRINT the chapters hiding behind the marker", got.Anchorless)
+	if got.Anchorless != 1 {
+		t.Fatalf("declared-anchorless chapters = %d, want 1 — the exclusions chapter is anchored by its ROLE and needs no marker, the method chapter is the one that declares", got.Anchorless)
 	}
 	if !strings.Contains(got.Log, "chapter declared anchorless") {
 		t.Fatalf("the log does not name the chapters that declared themselves anchorless:\n%s", got.Log)
@@ -2058,8 +2087,8 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			want: "GAP -- items.detail",
 			sabotage: func(t *testing.T, ws string) {
 				mutate(t, ws, "docs/demo/README.md",
-					"`items.detail` (`039`) shows one item in full.",
-					"`items.detail` shows one item in full.\nIts reference is `039`.")
+					"`items.detail` (`039`) shows one item in full:",
+					"`items.detail` shows one item in full:\nIts reference is `039`,")
 			},
 		},
 		{
@@ -2097,7 +2126,7 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			name: "CONCEALED_EXCLUSION: named outside the declared exclusions chapter",
 			want: "CONCEALED_EXCLUSION -- menu.logout",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions <!--no-anchor-->",
+				mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions",
 					"## Good to know <!--no-anchor-->")
 			},
 		},
@@ -2112,8 +2141,8 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			name: "PHANTOM_DOC: an inventory id nobody inventoried",
 			want: "the id items.invented is cited and IS NOT in the inventory",
 			sabotage: func(t *testing.T, ws string) {
-				mutate(t, ws, "docs/demo/README.md", "shows one item in full.",
-					"shows one item in full, and so does `items.invented`.")
+				mutate(t, ws, "docs/demo/README.md", "the actions still open to them.",
+					"the actions still open to them, and so does `items.invented`.")
 			},
 		},
 		{
@@ -2239,6 +2268,262 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 	}
 }
 
+// TestProductDocsCoverageGateRefusesAnIndexTable: CO-PRESENCE IS NOT
+// DOCUMENTATION. The gap rule asked for one line carrying a feature id AND one
+// of its entries — two code spans on one line. A table pairing every feature
+// with its entry satisfies that, restitutes nothing, and converges.
+func TestProductDocsCoverageGateRefusesAnIndexTable(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// Every feature, every entry, every path — and not one sentence.
+	writeFile(t, ws, "docs/demo/README.md", "# The product\n"+
+		"\n"+
+		"## Index — `/` (`001`)\n"+
+		"\n"+
+		"| feature | entry | path |\n"+
+		"|---|---|---|\n"+
+		"| `home.landing` | `001` | `/` |\n"+
+		"| `items.list` | `026` | `/dashboard/items` |\n"+
+		"| `items.list.paging` | `027` | `/dashboard/items?page=2` |\n"+
+		"| `items.detail` | `039` | `/dashboard/items/{id}` |\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a table of anchors was blessed as an exhaustive documentation:\n%s", got.Log)
+	}
+	for _, name := range []string{"home.landing", "items.list", "items.list.paging", "items.detail"} {
+		if !strings.Contains(got.Log, "GAP -- "+name+": the covered feature is CITED but not documented") {
+			t.Fatalf("the refusal does not name %s as cited-but-undocumented:\n%s", name, got.Log)
+		}
+	}
+	// ...and the intact fixture, whose chapters carry real sentences, is not
+	// caught by the same rule.
+	if got := runCoverage(t, newCoverageFixture(t)); !got.OK {
+		t.Fatalf("the prose requirement fired on a documentation that reads:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateVerifiesAnInventedReferenceAnywhere: co-location
+// answers "is this token a citation to CREDIT?", not "must this token be
+// VERIFIED?". Conflating the two let three invented screens through, one per
+// sentence, because no line cited anything else.
+func TestProductDocsCoverageGateVerifiesAnInventedReferenceAnywhere(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/more.md", "# More screens "+defaultNoAnchorMarker+"\n"+
+		"\n"+
+		"The reporting screen `items.reporting` shows the month as the manager left it.\n"+
+		"\n"+
+		"The export screen `items.exporting` writes the year to a file for the auditor.\n"+
+		"\n"+
+		"The archive screen `items.archiving` hides what nobody consults any more.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("three invented screens, one per sentence, were blessed:\n%s", got.Log)
+	}
+	for _, name := range []string{"items.reporting", "items.exporting", "items.archiving"} {
+		if !strings.Contains(got.Log, "the id "+name+" is cited and IS NOT in the inventory") {
+			t.Fatalf("the invented reference %s was not verified on its own line:\n%s", name, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateCapsAnchorlessChapters: the anchor refusal NAMES
+// the marker that satisfies it, so an agent reading `fail_log` answers every
+// complaint by marking the chapter. An exception with no ceiling is the rule.
+func TestProductDocsCoverageGateCapsAnchorlessChapters(t *testing.T) {
+	requireGitPython(t)
+	run := func(ws, cap string) coverageOut {
+		t.Helper()
+		var got coverageOut
+		runJSON(t, coverageCommandCapped(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+			defaultExclusionsToken, "", cap), &got)
+		return got
+	}
+	ws := newCoverageFixture(t)
+	// The shipped fixture declares ONE anchorless chapter (its method
+	// chapter). At the production default it is one too many.
+	got := run(ws, "0")
+	if got.OK {
+		t.Fatalf("the declared ceiling of 0 let a chapter through:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "DECLARE they restitute no reference and the ceiling is 0") {
+		t.Fatalf("the refusal does not name the ceiling:\n%s", got.Log)
+	}
+	if got := run(ws, "1"); !got.OK {
+		t.Fatalf("a ceiling raised deliberately to 1 still refused one declaration:\n%s", got.Log)
+	}
+	// The exclusions chapter is anchored by its ROLE and spends nothing.
+	if got.Anchorless != 1 || got.AnchorlessMax != 0 {
+		t.Fatalf("counts = %d declared / ceiling %d, want 1 and 0", got.Anchorless, got.AnchorlessMax)
+	}
+	// Marking one more chapter costs: at the same ceiling it is refused.
+	mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
+		"## One item "+defaultNoAnchorMarker)
+	if got := run(ws, "1"); got.OK {
+		t.Fatalf("a second declaration was free at a ceiling of 1:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateRefusesACopiedExclusionProse: `min_prose` is a
+// length, and a length is an orthography anyone reaches — one generic sentence
+// copied under every id cleared it. The net already carries the reason, so the
+// page has to say what the net says, and say it once per hole.
+func TestProductDocsCoverageGateRefusesACopiedExclusionProse(t *testing.T) {
+	requireGitPython(t)
+	newTwoHoleFixture := func(t *testing.T) string {
+		t.Helper()
+		ws := newCoverageFixture(t)
+		writeFile(t, ws, ".golden-master/feature-coverage.json", strings.Replace(coverageInventory,
+			`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"}`,
+			`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"},
+  {"feature": "menu.language",
+   "reason": "the language switch changes no served content, so the corpus captures nothing"}`, 1))
+		return ws
+	}
+	// A sentence long enough, and entirely its own: accepted.
+	ws := newTwoHoleFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- `menu.logout` — signing out tears the session down without showing a screen "+
+		"of its own, so the net never captures it.\n"+
+		"- `menu.language` — the language switch changes no served content, so the corpus "+
+		"captures nothing of it either.\n")
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("two exclusions, each with its own prose, were refused:\n%s", got.Log)
+	}
+	// ONE sentence for both: it describes neither.
+	ws = newTwoHoleFixture(t)
+	// One sentence that genuinely overlaps BOTH recorded reasons: it clears
+	// the lexical check and is refused for what it is — a template.
+	shared := " — this screen sits outside the perimeter: the corpus captures nothing of " +
+		"it, and the session teardown it triggers changes nothing either.\n"
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- `menu.logout`"+shared+
+		"- `menu.language`"+shared)
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("one sentence answered for two different holes:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "named with the SAME prose as") {
+		t.Fatalf("the refusal does not name the cause:\n%s", got.Log)
+	}
+	// A row of dots reaches any length, and says nothing.
+	ws = newTwoHoleFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- `menu.logout` — "+strings.Repeat(".", 70)+"\n"+
+		"- `menu.language` — "+strings.Repeat("-_", 40)+"\n")
+	got = runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a row of punctuation passed for written prose:\n%s", got.Log)
+	}
+	// Prose of its own, but saying nothing the net says: still concealed.
+	ws = newTwoHoleFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- `menu.logout` — pour mémoire, rien de particulier à signaler ici pour ce point précis.\n"+
+		"- `menu.language` — the language switch changes no served content, so the corpus "+
+		"captures nothing of it either.\n")
+	got = runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout") {
+		t.Fatalf("prose that shares not one word with the recorded reason was accepted:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateMatchesTheWholeExclusionsTitle: the declared token
+// was matched as a SUBSTRING. On an insurance product a chapter called "Les
+// exclusions de garantie" — reader-facing content — opened the chapter of
+// documented holes, and an id named under it counted as declared.
+func TestProductDocsCoverageGateMatchesTheWholeExclusionsTitle(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions", "## Les exclusions de garantie")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a chapter merely CONTAINING the declared token opened the exclusions chapter:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout") {
+		t.Fatalf("the gate is red without the expected cause:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateRefusesACitedTailWildcard: a cited path is read as
+// a PATTERN. `/dashboard/**` carries one literal segment, so it clears the
+// placeholders-only rule while claiming every screen below it.
+func TestProductDocsCoverageGateRefusesACitedTailWildcard(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — `/dashboard/items/{id}` (`039`)",
+		"## One item — `/dashboard/**` (`039`)")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a cited tail wildcard claimed every screen below it and passed:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "carries a TAIL WILDCARD") {
+		t.Fatalf("the refusal does not name the cause:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateConfinesTheRoutesFile: `coverage_routes_file` is
+// read from INSIDE the net, like `oracle_dir` — and the repair is a launch
+// var, outside the writeable set, so it stops the run.
+func TestProductDocsCoverageGateConfinesTheRoutesFile(t *testing.T) {
+	requireGitPython(t)
+	outside := filepath.Join(t.TempDir(), "routes.txt")
+	if err := os.WriteFile(outside, []byte(coverageRoutes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{outside, "../routes.txt"} {
+		ws := newCoverageFixture(t)
+		cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "coverage_check"), map[string]string{
+			"vars.workspace_dir":               ws,
+			"input.product_dir":                "docs/demo",
+			"input.oracle_path":                filepath.Join(ws, ".golden-master"),
+			"vars.coverage_exclusions_heading": defaultExclusionsToken,
+			"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
+			"vars.coverage_routes_file":        bad,
+			"vars.coverage_entry_id_pattern":   "",
+			"vars.coverage_placeholders":       defaultPlaceholders,
+			"vars.coverage_min_prose":          "60",
+			"vars.coverage_max_anchorless":     fixtureAnchorlessCeiling,
+		})
+		runExpectingFailure(t, cmd, "absolute path or a dot-dot escape")
+	}
+}
+
+// TestProductDocsCoverageGateSaysTheNetIsUnproven: Prody reads the inventory as
+// given. Nothing here proves the net's OWN gate ever ran on it, and a
+// degradation nobody can see is a degradation nobody pays for.
+func TestProductDocsCoverageGateSaysTheNetIsUnproven(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	got := runCoverage(t, ws)
+	if !got.NetUnproven || !strings.Contains(got.Log, "carries NO trace of its own gate") {
+		t.Fatalf("a net with no rite emission beside it was read as proven: net_unproven=%v\n%s", got.NetUnproven, got.Log)
+	}
+	// The emissions a rite leaves behind are that trace — never a verdict, and
+	// the gate stays green either way: this is telemetry, not a refusal.
+	writeFile(t, ws, ".golden-master/verify-oracle.sh", "#!/bin/sh\nexit 0\n")
+	got = runCoverage(t, ws)
+	if got.NetUnproven {
+		t.Fatalf("the rite runner beside the net was not seen:\n%s", got.Log)
+	}
+	if !got.OK {
+		t.Fatalf("the proof telemetry turned into a refusal:\n%s", got.Log)
+	}
+}
+
 // TestProductDocsCoverageGateReadsAnAbsentExclusionsKeyAsEmpty: a product that
 // excludes NOTHING writes no `exclusions` key, and the net producer reads an
 // absent key as an empty list (`coverage.get(key) or []`). Refusing it made
@@ -2355,7 +2640,7 @@ func TestProductDocsCoverageGateFoldsTheDeclaredToken(t *testing.T) {
 	}
 	// An accented token against an accented heading: both sides folded.
 	ws := newCoverageFixture(t)
-	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions ", "## Périmètre exclu ")
+	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions", "## Périmètre exclu")
 	var got coverageOut
 	runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "PÉRIMÈTRE EXCLU", ""), &got)
 	if !got.OK {
@@ -2375,10 +2660,15 @@ func TestProductDocsCoverageGateDoesNotRefuseOrdinaryProse(t *testing.T) {
 	writeFile(t, ws, "docs/demo/faq.md",
 		"# Questions "+defaultNoAnchorMarker+"\n\n"+
 			"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
-			"The server answers `404` and the list shows `250` rows at most; `items.json` is never exposed.\n")
+			"The server answers `404` and the list shows `250` rows at most.\n")
 	got := runCoverage(t, ws)
 	if !got.OK {
 		t.Fatalf("ordinary prose was read as a citation — the campaign would be told to delete it:\n%s", got.Log)
+	}
+	// The fallback is a DEGRADATION and says so: a three-digit vocabulary is
+	// one ordinary prose shares, and `coverage_entry_id_pattern` ends it.
+	if !got.EntryIDsDegraded || !strings.Contains(got.Log, "BARE DIGITS") {
+		t.Fatalf("the narrowed entry check is invisible: entry_ids_degraded=%v\n%s", got.EntryIDsDegraded, got.Log)
 	}
 	// The same token ON A CITING LINE is a citation, and is still refused.
 	mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page (`404`)")
@@ -2707,14 +2997,22 @@ func TestProductDocsCoverageGateReadsItsVocabularyFromTheNet(t *testing.T) {
 	writeFile(t, ws, ".golden-master/feature-coverage.json",
 		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}], "exclusions": []}`)
 	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — `/checkout/pay` (`checkout-pay`)\n\n"+
-		"`payment/card` is the only means of payment, recorded as `checkout-pay`.\n")
+		"`payment/card` (`checkout-pay`) is the only means of payment a customer may\n"+
+		"use, and the order is confirmed on that same screen without a further step.\n")
 	got := runCoverage(t, ws)
 	if !got.OK {
 		t.Fatalf("the gate did not read the net's own vocabulary:\n%s", got.Log)
 	}
-	// And a token with the SAME shape as a real entry id, which the corpus
-	// does not carry, is still caught: the shape is derived, not assumed.
-	mutate(t, ws, "docs/demo/p.md", "recorded as `checkout-pay`.", "recorded as `checkout-pay` and `checkout-ref`.")
+	// This vocabulary is DISTINCTIVE — nothing in prose looks like
+	// `checkout-pay` — so the entry check is not degraded and a citation is
+	// verified wherever it sits.
+	if got.EntryIDsDegraded {
+		t.Fatalf("a distinctive corpus vocabulary was read as ambiguous:\n%s", got.Log)
+	}
+	// A token with the SAME shape as a real entry id, which the corpus does
+	// not carry, is caught — on a line citing NOTHING else, because the
+	// vocabulary leaves no room for doubt.
+	writeFile(t, ws, "docs/demo/q.md", "# Refunds\n\nThe refund screen is recorded as `checkout-ref` and nothing else.\n")
 	got = runCoverage(t, ws)
 	if got.OK || !strings.Contains(got.Log, "the entry checkout-ref is cited and DOES NOT EXIST") {
 		t.Fatalf("an entry-shaped citation the corpus does not carry slipped through:\n%s", got.Log)
@@ -2740,6 +3038,71 @@ func TestProductDocsPageLintToleratesTheDeclaredMarker(t *testing.T) {
 	runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
 	if got.LintOK {
 		t.Fatalf("the exemption widened into a licence: a genuine working note survived the lint")
+	}
+	// The marker and a genuine note on the SAME line: the exemption is the
+	// comment that IS the token, not the line that carries one.
+	writeFile(t, ws, "docs/demo/p.md", "# Method\n\n## How this was built "+defaultNoAnchorMarker+
+		" <!-- ask the product team -->\n\nNothing observed here.\n")
+	runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
+	if got.LintOK {
+		t.Fatalf("a working note rode along on the marker's line: %+v", got.Violations)
+	}
+}
+
+// TestProductDocsPageLintMarkerIsNotASwitchOnEveryRule: the declared token used
+// to be stripped from every line BEFORE any rule read it, which made the token
+// a switch on all of them — a marker declared as an opening HTML comment put
+// out `html_comments`, one declared as `password` put out the secret scan. The
+// exemption belongs to the rule it exists for, and to nothing else.
+func TestProductDocsPageLintMarkerIsNotASwitchOnEveryRule(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, "docs/demo/p.md", "# Access\n\npassword: hunter2-9f3a81bc\n\n"+
+		"<!-- ask the product team about this one -->\n")
+	for _, marker := range []string{"<!--", "password", "hunter2-9f3a81bc"} {
+		t.Run(marker, func(t *testing.T) {
+			cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "page_lint"), map[string]string{
+				"vars.workspace_dir":             ws,
+				"input.product_dir":              "docs/demo",
+				"input.oracle_path":              filepath.Join(ws, ".golden-master"),
+				"vars.lint_rules":                allLintRules,
+				"vars.extra_forbidden_headings":  "",
+				"vars.coverage_no_anchor_marker": marker,
+			})
+			var got lintOut
+			runJSON(t, cmd, &got)
+			if got.LintOK {
+				t.Fatalf("a declared marker %q disabled a rule it has nothing to do with", marker)
+			}
+			rules := map[string]bool{}
+			for _, v := range got.Violations {
+				rules[fmt.Sprint(v["rule"])] = true
+			}
+			if !rules["secret_material"] || !rules["html_comments"] {
+				t.Fatalf("declaring %q silenced a rule: violations = %+v", marker, got.Violations)
+			}
+		})
+	}
+}
+
+// TestProductDocsPageLintMarkerExemptionIsArmedByTheNet: "without a net the
+// graph is unchanged" was true of the fail_log EXPRESSION and false of the
+// VALUE — `lint_ok` went from false to true on the same page, because the
+// exemption rode on a var rather than on the net that justifies it. The graph
+// test stubs `page_lint`, so only the real node can see this.
+func TestProductDocsPageLintMarkerExemptionIsArmedByTheNet(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, "docs/demo/p.md", "# Method\n\n## How this was built "+defaultNoAnchorMarker+
+		"\n\nNothing observed here.\n")
+	var got lintOut
+	runJSON(t, lintCommandWithNet(t, ws, "docs/demo", allLintRules, "", filepath.Join(ws, ".golden-master")), &got)
+	if !got.LintOK {
+		t.Fatalf("with a net, the marker coverage_check requires was called a working note: %+v", got.Violations)
+	}
+	runJSON(t, lintCommandWithNet(t, ws, "docs/demo", allLintRules, "", ""), &got)
+	if got.LintOK {
+		t.Fatalf("with NO net there is no gate to contradict, so the marker is a working note again — the node must be the one it was: %+v", got.Violations)
 	}
 }
 
