@@ -87,19 +87,19 @@ func measureWithCoverage(t *testing.T, ws, scratch, surveyPath, floorPath,
 func inDomainSurvey(deployables int) []map[string]any {
 	declarations := []map[string]any{
 		{"id": "src-tree", "kind": "first_party", "path": "src"},
-		{"id": "relational-store", "kind": "system", "path": "config/store.ini"},
-		{"id": "queue-broker", "kind": "system", "path": "config/broker.ini"},
-	}
-	for i := 0; i < 30; i++ {
-		declarations = append(declarations, map[string]any{
-			"id":   "entry-" + string(rune('a'+i%26)) + string(rune('a'+i/26)),
-			"kind": "entrypoint", "path": "src/routes.txt",
-		})
+		{"id": "relational-store", "kind": "system", "identity": "relational-store",
+			"path": "config/store.ini"},
+		{"id": "queue-broker", "kind": "system", "identity": "queue-broker",
+			"path": "config/broker.ini"},
+		// Thirty route registrations, declared as the count they are: the same
+		// unit the extractors emit and the profile's anchor is written in.
+		{"id": "http-surface", "kind": "entrypoint", "count": 30, "path": "src/routes.txt"},
 	}
 	for i := 0; i < deployables; i++ {
 		declarations = append(declarations, map[string]any{
 			"id": "service-" + string(rune('a'+i)), "kind": "deployable",
-			"path": "deploy/service-" + string(rune('a'+i)) + ".yaml",
+			"identity": "service-" + string(rune('a'+i)),
+			"path":     "deploy/service-" + string(rune('a'+i)) + ".yaml",
 		})
 	}
 	return declarations
@@ -151,8 +151,10 @@ func TestAssessmentSizePublishesItsProfileOrNoLetterAtAll(t *testing.T) {
 		// apply.
 		declarations := []map[string]any{
 			{"id": "src-tree", "kind": "first_party", "path": "src"},
-			{"id": "relational-store", "kind": "system", "path": "config/store.ini"},
-			{"id": "service-a", "kind": "deployable", "path": "deploy/service-a.yaml"},
+			{"id": "relational-store", "kind": "system", "identity": "relational-store",
+				"path": "config/store.ini"},
+			{"id": "service-a", "kind": "deployable", "identity": "service-a",
+				"path": "deploy/service-a.yaml"},
 		}
 		survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, declarations)
 		out := measure(t, ws, scratch, survey, floor)
@@ -294,5 +296,79 @@ func TestAssessmentPublishedCoverageIsTheUnionNotTheAgentsFlag(t *testing.T) {
 	}
 	if !strings.Contains(facts, "stack.coverage — the coverage of this measurement is DEGRADED") {
 		t.Errorf("the coverage gate's `degraded` verdict never reaches the document:\n%s", facts)
+	}
+}
+
+// TWO SCALES UNDER ONE METRIC. The anchor is written in route registrations
+// and every extractor emits them; a declaration standing for one FILE answered
+// 40 or 1 for the same forty routes depending on the layout, and the two
+// numbers land in different bands.
+//
+// The declaration carries the count now, so the layout cannot move the letter.
+func TestAssessmentEntrypointsAreCountedInOneUnit(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	scratch := t.TempDir()
+	floor := writeFloor(t, scratch, floorLines(20000))
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+
+	base := []map[string]any{
+		{"id": "src-tree", "kind": "first_party", "path": "src"},
+		{"id": "relational-store", "kind": "system", "identity": "relational-store", "path": "config/store.ini"},
+		{"id": "queue-broker", "kind": "system", "identity": "queue-broker", "path": "config/broker.ini"},
+		{"id": "service-a", "kind": "deployable", "identity": "service-a", "path": "deploy/a.yaml"},
+		{"id": "service-b", "kind": "deployable", "identity": "service-b", "path": "deploy/b.yaml"},
+	}
+
+	// Forty routes in one file.
+	oneFile := append(append([]map[string]any{}, base...), map[string]any{
+		"id": "http-surface", "kind": "entrypoint", "count": 40, "path": "src/routes.txt"})
+	// The same forty routes, laid out four files of ten.
+	fourFiles := append([]map[string]any{}, base...)
+	for i, name := range []string{"alpha", "beta", "gamma", "delta"} {
+		fourFiles = append(fourFiles, map[string]any{
+			"id": "http-" + name, "kind": "entrypoint", "count": 10,
+			"path": "src/routes-" + string(rune('a'+i)) + ".txt"})
+	}
+
+	compact := measure(t, ws, scratch, writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, oneFile), floor)
+	spread := measure(t, ws, scratch, writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, fourFiles), floor)
+
+	if compact["index"] != spread["index"] {
+		t.Fatalf("the same forty routes measured %v laid out in one file and %v in four — the "+
+			"metric is in files on one side and in registrations on the other",
+			compact["index"], spread["index"])
+	}
+	if !strings.Contains(assessmentString(t, compact, "facts"), "route registrations") {
+		t.Errorf("the published metric does not say what unit it is in:\n%s",
+			assessmentString(t, compact, "facts"))
+	}
+}
+
+// THE EXCLUSION RATE IS A FACT. The partition makes a survey account for every
+// top-level entry; it does not make the account honest, and the cheapest route
+// to a smaller project is a larger `excluded`. A reader who sees the rate can
+// ask why; a reader who sees a band alone cannot.
+func TestAssessmentPublishesWhatThePerimeterLeftOut(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	scratch := t.TempDir()
+	lines := floorLines(20000)
+	lines["vendor/dep.txt"] = 60000
+	floor := writeFloor(t, scratch, lines)
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+
+	declarations := append(inDomainSurvey(2), map[string]any{
+		"id": "vendored", "kind": "excluded", "path": "vendor", "note": "vendored"})
+	out := measure(t, ws, scratch, writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, declarations), floor)
+	facts := assessmentString(t, out, "facts")
+	if !strings.Contains(facts, "perimeter.exclusion_rate") {
+		t.Fatalf("the measurement publishes no exclusion rate:\n%s", facts)
+	}
+	if !strings.Contains(facts, "75%") {
+		t.Errorf("the exclusion rate is not the measured one (60000 of 80000 lines):\n%s", facts)
+	}
+	if !strings.Contains(facts, "`vendor`") {
+		t.Errorf("the largest exclusion is not named:\n%s", facts)
 	}
 }

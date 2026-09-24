@@ -18,7 +18,7 @@ profile is a false quotation.
 
 | part | what it decides |
 |---|---|
-| **metrics** | which four quantities describe amplitude |
+| **metrics** | which four quantities describe amplitude, and in what UNIT |
 | **canonical exclusions** | what never counts as first-party, whatever a survey declares |
 | **domain** | the repositories the letter means anything for |
 | **anchor** | the reference the ratios are taken against |
@@ -53,13 +53,30 @@ and it must not be read as "small".
 
 ## Uncertainty is published with the letter
 
-Two of the four metrics are small discrete counts, where one declaration
-either way is a plausible disagreement between two careful surveys. The
+Three of the four metrics are discrete counts, where one either way is a
+plausible disagreement between two careful surveys; lines of source is the
+only one a walk settles on its own. The
 assessment therefore recomputes the index with ±1 applied to each discrete
 count, on the project side and on the anchor side, and publishes the **set of
 bands** those variants land in. When that set has more than one member, the
 repository sits on a boundary and the letter should be read as the range, not
 as the point.
+
+## Two metrics are counted as THINGS, one is counted in registrations
+
+`deployables` and `systems` are counted by distinct **identity**, never by the
+file that proves them: one service described by a container file, a compose
+entry and a chart is ONE deployable with three proofs, and counted by path it
+is three with nothing in the tree to contradict the count. A survey therefore
+declares the name of the service or the system, and the lint deduplicates on
+that name.
+
+`entrypoints` is counted in **route registrations** — what every extractor in
+this bundle emits, and what the anchor below is expressed in. A declaration
+says how many its artefact exposes rather than standing for one file: forty
+routes laid out one per file and forty routes in one file are the same
+repository, and a metric that answers 40 or 1 depending on the layout is two
+scales under one name.
 
 ## The anchor is synthetic
 
@@ -75,7 +92,7 @@ project of that shape exists or is typical.
   "version": "1.0.0",
   "metrics": [
     {"key": "first_party_lines", "label": "first-party lines of source (tests, data and vendored code excluded)", "discrete": false},
-    {"key": "entrypoints", "label": "declared entrypoints", "discrete": false},
+    {"key": "entrypoints", "label": "entrypoints, counted in route registrations", "discrete": true},
     {"key": "deployables", "label": "deployed artefacts", "discrete": true},
     {"key": "systems", "label": "distinct systems the application talks to", "discrete": true}
   ],

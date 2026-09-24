@@ -131,6 +131,18 @@ prompt survey_user:
   unique. When two candidate entries describe the same artefact, declare it
   ONCE.
 
+  Two kinds carry the UNIT they are counted in, and the lint refuses one that
+  does not. A `deployable` and a `system` carry `identity` — the name of the
+  service or the system — and are deduplicated on it, so one service proved by
+  three files is one. An `entrypoint` carries `count`, how many ways in that
+  artefact exposes, in route registrations: the unit every extractor here
+  emits and the unit the size profile's anchor is written in.
+
+  Every top-level entry of the tree is claimed by a `first_party`, `excluded`
+  or `tests` declaration whose `path` IS that entry. Nothing else partitions:
+  an entrypoint inside a subtree is evidence about one artefact, never an
+  account of the subtree.
+
   `notes` — one short paragraph for a human reader: what you could not
   establish, and why. Not a summary of the counts.
 
@@ -1545,6 +1557,19 @@ tool declaration_lint:
     # carries files (a licence, a readme) that are entries like any other.
     DIRECTORY_KINDS = ("first_party", "tests")
     PARTITION_KINDS = ("first_party", "excluded", "tests")
+    # A DECLARATION CARRIES THE UNIT OF THE METRIC IT FEEDS. Two kinds are
+    # counted as things rather than as paths, and a path is the wrong key for
+    # both:
+    #   - a service described by its Dockerfile, its compose file and its
+    #     chart is ONE deployable with three proofs. Keyed by path it is three,
+    #     and nothing in the tree contradicts the count;
+    #   - an entrypoint declaration covers a file, while every extractor in
+    #     this bundle counts ROUTE REGISTRATIONS. Forty routes in one file is
+    #     forty or one depending on the layout, and the profile's anchor is in
+    #     registrations. Two scales under one metric is not an uncertainty, it
+    #     is two different numbers.
+    IDENTITY_KINDS = ("deployable", "system")
+    COUNT_KINDS = ("entrypoint",)
     ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
     def emit():
@@ -1606,7 +1631,7 @@ tool declaration_lint:
         return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else None
 
     # ── every declaration, re-verified at the pinned commit ────────────
-    seen_ids, by_identity = {}, {}
+    seen_ids, by_identity, verified_ids = {}, {}, set()
     for index, declaration in enumerate(declarations):
         if not isinstance(declaration, dict):
             reject("declarations[%d]" % index, "not a mapping")
@@ -1659,24 +1684,54 @@ tool declaration_lint:
                 reject(declaration_id, "pattern matches nothing in %r at %s — a declaration whose "
                                        "evidence is not there is a claim" % (path, base_sha[:12]))
                 continue
-        # Two declarations of the same KIND over the same PATH are one artefact
-        # counted twice. Measured on this bundle's own fixture: four such
-        # declarations of one deployable, tree untouched, move the published
-        # index from 0.658 to 0.931 — a third of the way up the scale.
-        identity = (kind, path)
+        # The unit the kind is counted in, declared rather than inferred.
+        name = str(declaration.get("identity") or "").strip()
+        if kind in IDENTITY_KINDS:
+            if not name:
+                reject(declaration_id, "declares no `identity`. A %s is counted as a THING, not as "
+                                       "a path: the same service described by three files is one "
+                                       "%s with three proofs, and keyed by path it is three."
+                       % (kind, kind))
+                continue
+            if not ID_RE.match(name.lower()):
+                reject(declaration_id, "identity %r must be lower-case words joined by dashes — it "
+                                       "is the key two declarations are compared on" % name)
+                continue
+        count = declaration.get("count")
+        if kind in COUNT_KINDS:
+            if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+                reject(declaration_id, "declares `count: %r`. An %s declaration must say HOW MANY "
+                                       "entrypoints its artefact exposes: every extractor in this "
+                                       "bundle counts route registrations, and a declaration "
+                                       "counted as one file would put two scales under one metric."
+                       % (count, kind))
+                continue
+        elif count is not None:
+            reject(declaration_id, "declares `count` on a %s, which is not counted that way" % kind)
+            continue
+
+        # Two declarations of one artefact are that artefact counted twice.
+        # Measured on this bundle's own fixture: four such declarations of one
+        # deployable, tree untouched, move the published index from 0.658 to
+        # 0.931 — a third of the way up the scale. The key is the IDENTITY
+        # where the kind has one, and the path otherwise: one compose file
+        # legitimately declares two services, and one service legitimately
+        # carries three proofs.
+        identity = (kind, name.lower()) if kind in IDENTITY_KINDS else (kind, path)
         if identity in by_identity:
-            reject(declaration_id, "declares the same %s at %r as %r; one artefact, one declaration"
-                   % (kind, path, by_identity[identity]))
+            reject(declaration_id, "declares the same %s (%s) as %r; one artefact, one declaration"
+                   % (kind, name or path, by_identity[identity]))
             continue
         by_identity[identity] = declaration_id
+        verified_ids.add(declaration_id)
         out["verified"] += 1
 
     # ── the partition: no subtree claimed twice ────────────────────────
-    subtrees = [(d.get("id"), d.get("kind"), str(d.get("path") or "").strip().strip("/"))
-                for d in declarations
-                if isinstance(d, dict) and d.get("kind") in PARTITION_KINDS
-                and str(d.get("path") or "").strip().strip("/") in directories
-                and d.get("id") in seen_ids]
+    partition = [(d.get("id"), d.get("kind"), str(d.get("path") or "").strip().strip("/"))
+                 for d in declarations
+                 if isinstance(d, dict) and d.get("kind") in PARTITION_KINDS
+                 and d.get("id") in verified_ids]
+    subtrees = [entry for entry in partition if entry[2] in directories]
     for outer_id, outer_kind, outer in subtrees:
         for inner_id, inner_kind, inner in subtrees:
             if outer_id == inner_id or not outer:
@@ -1698,19 +1753,21 @@ tool declaration_lint:
     # handle on it is completeness of the PARTITION: every top-level entry of
     # the tree must be accounted for by some declaration, so the survey has to
     # have looked at the whole tree once.
-    claimed = set()
-    for _, _, path in subtrees:
-        claimed.add(path.split("/", 1)[0] if path else "")
-    for declaration in declarations:
-        if isinstance(declaration, dict) and declaration.get("id") in seen_ids:
-            path = str(declaration.get("path") or "").strip().strip("/")
-            if path:
-                claimed.add(path.split("/", 1)[0])
+    # Only a PARTITION kind partitions, and only at the top level. Counting
+    # any declaration as coverage let one `entrypoint` on `src/app/routes.go`
+    # account for the whole of `src/`: everything else under it could then go
+    # undeclared, and omission is the one failure with no declaration to
+    # refuse. Measured on this bundle's fixture: dropping the perimeter that
+    # way moves the published band on an untouched tree.
+    claimed = {path for _, _, path in partition if path and "/" not in path}
     top_level = sorted({path.split("/", 1)[0] for path in files})
     residue = [entry for entry in top_level if entry not in claimed]
     if residue:
-        reject("partition", "%d top-level entr%s accounted for by no declaration: %s. Declare each "
-                            "one first_party, tests or excluded — an entry nobody claimed is the "
+        reject("partition", "%d top-level entr%s accounted for by no first_party, tests or excluded "
+                            "declaration: %s. A declaration of another kind — an entrypoint, a "
+                            "deployable — is evidence about one artefact, never an account of the "
+                            "subtree it sits in; and a declaration DEEPER than the top level "
+                            "accounts for itself, not for its root. An entry nobody claimed is the "
                             "omission no lint can catch once the document is written."
                % (len(residue), "y is" if len(residue) == 1 else "ies are",
                   ", ".join(repr(entry) for entry in residue[:10])))
@@ -1845,7 +1902,7 @@ tool measure:
     GENERATED = re.compile(r"(?i)(?:^|\n).{0,40}(?:code generated .{0,40}do not edit|@generated|"
                            r"generated by .{0,60}do not edit|this file is auto-?generated)")
     lines_by_path = floor.get("lines_by_path") or {}
-    counted, generated_skipped = {}, []
+    counted = {}
     for path, count in lines_by_path.items():
         if not under(path, first_party):
             continue
@@ -1853,6 +1910,19 @@ tool measure:
             continue
         counted[path] = count
     first_party_lines = sum(counted.values())
+
+    # WHAT THE PERIMETER LEFT OUT, published as a number. The partition makes
+    # the survey account for every top-level entry; it does not make the
+    # account honest, and the cheapest way to a smaller project is a larger
+    # `excluded`. The rate is the handle: a reader who sees 80 % of the tree
+    # excluded asks why, and a reader who sees a band alone cannot.
+    tree_lines = sum(lines_by_path.values())
+    excluded_by_root = []
+    for root in sorted(set(excluded) | set(tests)):
+        under_root = sum(n for path, n in lines_by_path.items() if under(path, [root]))
+        if under_root:
+            excluded_by_root.append((root, under_root))
+    excluded_by_root.sort(key=lambda pair: (-pair[1], pair[0]))
 
     # ── the per-stack facts ────────────────────────────────────────────
     #
@@ -1888,22 +1958,32 @@ tool measure:
             if isinstance(facts_block.get("declared_versions"), list):
                 extracted["declared_versions"].extend(facts_block["declared_versions"])
 
-    declared_deployables = [d for d in declarations if isinstance(d, dict) and d.get("kind") == "deployable"]
-    declared_entrypoints = [d for d in declarations if isinstance(d, dict) and d.get("kind") == "entrypoint"]
-    systems = [d for d in declarations if isinstance(d, dict) and d.get("kind") == "system"]
+    # Counted in the unit each kind declares: deployables and systems by
+    # distinct IDENTITY (one service described by three files is one), and
+    # entrypoints by the count each declaration carries — the same unit the
+    # extractors emit, which is route registrations.
+    def identities(kind):
+        return {str(d.get("identity") or "").strip().lower()
+                for d in declarations if isinstance(d, dict) and d.get("kind") == kind
+                and str(d.get("identity") or "").strip()}
+
+    declared_entrypoints = [d for d in declarations
+                            if isinstance(d, dict) and d.get("kind") == "entrypoint"
+                            and isinstance(d.get("count"), int) and not isinstance(d.get("count"), bool)]
 
     sources = {}
-    deployables = len(declared_deployables)
-    sources["deployables"] = "declared"
+    deployables = len(identities("deployable"))
+    sources["deployables"] = "declared, by distinct identity"
     if not deployables:
         deployables = extracted["deployables"]
         sources["deployables"] = "extracted"
-    entrypoints = len(declared_entrypoints)
-    sources["entrypoints"] = "declared"
+    entrypoints = sum(d["count"] for d in declared_entrypoints)
+    sources["entrypoints"] = "declared, in route registrations"
     if not entrypoints:
         entrypoints = extracted["entrypoints"]
-        sources["entrypoints"] = "extracted"
-    sources["systems"] = "declared"
+        sources["entrypoints"] = "extracted, in route registrations"
+    systems = identities("system")
+    sources["systems"] = "declared, by distinct identity"
     sources["first_party_lines"] = "declared perimeter over the floor"
 
     measured = {
@@ -2010,6 +2090,15 @@ tool measure:
                                                sources["deployables"])
     facts["metric.systems"] = plural(measured["systems"], "distinct system the application talks to")
     facts["survey.declarations"] = plural(len(declarations), "declaration")
+    facts["perimeter.exclusion_rate"] = (
+        "%s of the tree's %s lie outside the counted perimeter (%.0f%%)"
+        % (plural(tree_lines - first_party_lines, "line"), plural(tree_lines, "line"),
+           100.0 * (tree_lines - first_party_lines) / tree_lines)
+        if tree_lines else "the tree carries no line-counted file")
+    facts["perimeter.excluded_roots"] = (
+        "the largest exclusions are " +
+        ", ".join("`%s` (%s)" % (root, plural(n, "line")) for root, n in excluded_by_root[:5])
+        ) if excluded_by_root else "no subtree was excluded or declared tests"
     facts["survey.first_party_subtrees"] = plural(len(first_party), "first-party subtree")
     facts["survey.excluded_subtrees"] = plural(len(excluded), "excluded subtree")
     facts["survey.tests_subtrees"] = plural(len(tests), "test subtree")
@@ -2234,6 +2323,8 @@ tool render:
         "| continuous integration | %s |" % facts.get("floor.ci", ""),
         "| declared toolchain versions | %s |" % facts.get("stack.declared_versions", ""),
         "| literal secret shapes | %s |" % facts.get("floor.secret_shapes", ""),
+        "| outside the counted perimeter | %s |" % facts.get("perimeter.exclusion_rate", ""),
+        "| what was excluded | %s |" % facts.get("perimeter.excluded_roots", ""),
         "| stacks detected | %s |" % facts.get("stack.detected", ""),
         "| stacks NOT covered by an extractor | %s |" % facts.get("stack.unsupported", ""),
         "| coverage of this measurement | %s |" % facts.get("stack.coverage", ""),

@@ -57,8 +57,8 @@ func wholeSurvey() []map[string]any {
 		{"id": "deploy-manifests", "kind": "excluded", "path": "deploy", "note": "deployment descriptors"},
 		{"id": "repo-docs", "kind": "excluded", "path": "README.md", "note": "documentation"},
 		{"id": "repo-config", "kind": "excluded", "path": "config", "note": "configuration"},
-		{"id": "service-alpha", "kind": "deployable", "path": "deploy/service.yaml", "pattern": "kind: Deployment"},
-		{"id": "relational-store", "kind": "system", "path": "config/datastore.ini", "pattern": "engine\\s*="},
+		{"id": "service-alpha", "kind": "deployable", "identity": "alpha", "path": "deploy/service.yaml", "pattern": "kind: Deployment"},
+		{"id": "relational-store", "kind": "system", "identity": "relational-store", "path": "config/datastore.ini", "pattern": "engine\\s*="},
 	}
 }
 
@@ -83,7 +83,7 @@ func TestAssessmentDeclarationLintRefusesTheSameArtefactDeclaredTwice(t *testing
 	declarations := wholeSurvey()
 	for _, suffix := range []string{"bis", "ter", "quater"} {
 		declarations = append(declarations, map[string]any{
-			"id": "service-alpha-" + suffix, "kind": "deployable",
+			"id": "service-alpha-" + suffix, "kind": "deployable", "identity": "alpha",
 			"path": "deploy/service.yaml", "pattern": "kind: Deployment",
 		})
 	}
@@ -103,7 +103,8 @@ func TestAssessmentDeclarationLintRefusesADuplicateID(t *testing.T) {
 	requireAssessmentTools(t)
 	dir, sha := declarationFixture(t)
 	declarations := append(wholeSurvey(), map[string]any{
-		"id": "service-alpha", "kind": "system", "path": "config/datastore.ini",
+		"id": "service-alpha", "kind": "system", "identity": "another-store",
+		"path": "config/datastore.ini",
 	})
 	out := lintDeclarations(t, dir, sha, declarations)
 	if assessmentBool(t, out, "ok") {
@@ -123,7 +124,8 @@ func TestAssessmentDeclarationLintRefusesEvidenceThatIsNotThere(t *testing.T) {
 
 	t.Run("a path that does not exist", func(t *testing.T) {
 		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
-			"id": "phantom-service", "kind": "deployable", "path": "deploy/absent.yaml",
+			"id": "phantom-service", "kind": "deployable", "identity": "phantom",
+			"path": "deploy/absent.yaml",
 		}))
 		if assessmentBool(t, out, "ok") {
 			t.Fatal("a deployable whose file is not in the tree was accepted")
@@ -135,8 +137,8 @@ func TestAssessmentDeclarationLintRefusesEvidenceThatIsNotThere(t *testing.T) {
 
 	t.Run("a pattern that matches nothing", func(t *testing.T) {
 		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
-			"id": "phantom-queue", "kind": "system", "path": "config/datastore.ini",
-			"pattern": "broker\\s*=",
+			"id": "phantom-queue", "kind": "system", "identity": "phantom-queue",
+			"path": "config/datastore.ini", "pattern": "broker\\s*=",
 		}))
 		if assessmentBool(t, out, "ok") {
 			t.Fatal("a system whose pattern matches nothing in its own evidence was accepted")
@@ -224,4 +226,150 @@ func TestAssessmentDeclarationLintRefusesAnUnknownKind(t *testing.T) {
 	if assessmentBool(t, out, "ok") {
 		t.Fatal("a declaration of an unknown kind was accepted — every reader would skip it silently")
 	}
+}
+
+// OMISSION IS A LEVER, and the partition is the only handle on it. A
+// declaration of any kind used to mark its top-level root as accounted for, so
+// ONE `entrypoint` on a file inside `src/` rendered the whole of `src/`
+// claimed: everything else under it could go undeclared, and nothing would go
+// red. Only the three kinds that partition may account for an entry, and only
+// at the top level.
+func TestAssessmentDeclarationLintPartitionsOnlyOnThePartitionKinds(t *testing.T) {
+	requireAssessmentTools(t)
+	dir, sha := declarationFixture(t)
+
+	t.Run("an entrypoint does not account for the subtree it sits in", func(t *testing.T) {
+		partial := []map[string]any{}
+		for _, declaration := range wholeSurvey() {
+			if declaration["id"] == "src-app" {
+				continue // the whole of src/, never claimed by a partition kind
+			}
+			partial = append(partial, declaration)
+		}
+		partial = append(partial, map[string]any{
+			"id": "app-routes", "kind": "entrypoint", "count": 2, "path": "src/app/handler.txt",
+		})
+		out := lintDeclarations(t, dir, sha, partial)
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("one entrypoint inside src/ accounted for the whole of src/ — every other " +
+				"file under it could go undeclared and the published size would shrink in silence")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "src") {
+			t.Errorf("the refusal does not name the unclaimed subtree: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	t.Run("a partition declaration deeper than the top level accounts for itself", func(t *testing.T) {
+		partial := []map[string]any{}
+		for _, declaration := range wholeSurvey() {
+			if declaration["id"] == "src-app" {
+				declaration = map[string]any{"id": "src-app", "kind": "first_party", "path": "src/app"}
+			}
+			partial = append(partial, declaration)
+		}
+		out := lintDeclarations(t, dir, sha, partial)
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("first_party on src/app accounted for all of src/ — src/worker is outside every declaration")
+		}
+	})
+}
+
+// IDENTITY IS THE KEY, not the path. A service described by its container
+// file, its compose entry and its chart is ONE deployable with three proofs;
+// counted by path it is three, and every consistency check stays green.
+func TestAssessmentDeclarationLintDeduplicatesADeployableOnItsIdentity(t *testing.T) {
+	requireAssessmentTools(t)
+	dir, sha := synthRepo(t, map[string]string{
+		"src/app/handler.txt":  "route alpha\n",
+		"deploy/Dockerfile":    "FROM scratch\n# service: alpha\n",
+		"deploy/compose.yaml":  "services:\n  alpha: {}\n  beta: {}\n",
+		"deploy/chart/app.yaml": "kind: Deployment\nname: alpha\n",
+		"README.md":            "# fixture\n",
+	})
+	base := []map[string]any{
+		{"id": "src-tree", "kind": "first_party", "path": "src"},
+		{"id": "repo-docs", "kind": "excluded", "path": "README.md", "note": "documentation"},
+		{"id": "deploy-dir", "kind": "excluded", "path": "deploy", "note": "deployment descriptors"},
+	}
+
+	t.Run("three proofs of one service are one declaration too many", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(append([]map[string]any{}, base...),
+			map[string]any{"id": "alpha-image", "kind": "deployable", "identity": "alpha",
+				"path": "deploy/Dockerfile"},
+			map[string]any{"id": "alpha-compose", "kind": "deployable", "identity": "alpha",
+				"path": "deploy/compose.yaml"},
+			map[string]any{"id": "alpha-chart", "kind": "deployable", "identity": "alpha",
+				"path": "deploy/chart/app.yaml"}))
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("one service proved by three files counted as three deployables — a 41% lift " +
+				"on that metric with the tree untouched")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "one artefact, one declaration") {
+			t.Errorf("the refusal does not say why: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	// And the legitimate case stays legal: one file declaring two services.
+	t.Run("two services in one file are two declarations", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(append([]map[string]any{}, base...),
+			map[string]any{"id": "svc-alpha", "kind": "deployable", "identity": "alpha",
+				"path": "deploy/compose.yaml", "pattern": "alpha"},
+			map[string]any{"id": "svc-beta", "kind": "deployable", "identity": "beta",
+				"path": "deploy/compose.yaml", "pattern": "beta"}))
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("one compose file declaring two services was refused: %s",
+				assessmentString(t, out, "reason"))
+		}
+	})
+
+	t.Run("a deployable with no identity has no key to be compared on", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(append([]map[string]any{}, base...),
+			map[string]any{"id": "alpha-image", "kind": "deployable", "path": "deploy/Dockerfile"}))
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a deployable declaring no identity was accepted — it can only be deduplicated by path")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "identity") {
+			t.Errorf("the refusal does not name the missing field: %s", assessmentString(t, out, "reason"))
+		}
+	})
+}
+
+// An entrypoint declaration must say HOW MANY. Every extractor in this bundle
+// counts route registrations and the profile's anchor is written in them; a
+// declaration standing for one FILE answers 40 or 1 for the same forty routes
+// depending on the layout.
+func TestAssessmentDeclarationLintRefusesAnEntrypointWithNoCount(t *testing.T) {
+	requireAssessmentTools(t)
+	dir, sha := declarationFixture(t)
+
+	for _, tc := range []struct {
+		name string
+		decl map[string]any
+	}{
+		{"no count at all", map[string]any{
+			"id": "app-routes", "kind": "entrypoint", "path": "src/app/handler.txt"}},
+		{"a count of zero", map[string]any{
+			"id": "app-routes", "kind": "entrypoint", "count": 0, "path": "src/app/handler.txt"}},
+		{"a count that is not a number", map[string]any{
+			"id": "app-routes", "kind": "entrypoint", "count": "several", "path": "src/app/handler.txt"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := lintDeclarations(t, dir, sha, append(wholeSurvey(), tc.decl))
+			if assessmentBool(t, out, "ok") {
+				t.Fatal("an entrypoint declaration carrying no usable count was accepted — the " +
+					"metric would be in files while the anchor is in route registrations")
+			}
+			if !strings.Contains(assessmentString(t, out, "reason"), "count") {
+				t.Errorf("the refusal does not name the count: %s", assessmentString(t, out, "reason"))
+			}
+		})
+	}
+
+	t.Run("a declared count is accepted", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
+			"id": "app-routes", "kind": "entrypoint", "count": 12, "path": "src/app/handler.txt"}))
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("an entrypoint declaring its count was refused: %s", assessmentString(t, out, "reason"))
+		}
+	})
 }

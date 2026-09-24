@@ -44,7 +44,8 @@ describes a smaller project than the one in front of you.
   ],
   "declarations": [
     {"id": "<canonical id>", "kind": "<kind>", "path": "<path in the tree>",
-     "pattern": "<optional regexp>", "note": "<one line>"}
+     "identity": "<the thing's own name — deployable and system only>",
+     "count": 0, "pattern": "<optional regexp>", "note": "<one line>"}
   ],
   "notes": "<one paragraph: what you could not establish, and why>"
 }
@@ -61,17 +62,41 @@ repository.
 
 | kind | what it declares | evidence the lint re-verifies |
 |---|---|---|
-| `deployable` | one artefact that is deployed and runs on its own | `path` exists at the pinned commit; `pattern` matches inside it when given |
-| `system` | one distinct system the application talks to — a datastore, a broker, an external service | `path` exists; `pattern` matches |
+| `deployable` | one artefact that is deployed and runs on its own | `path` exists at the pinned commit; `pattern` matches inside it when given; `identity` names the SERVICE |
+| `system` | one distinct system the application talks to — a datastore, a broker, an external service | `path` exists; `pattern` matches; `identity` names the SYSTEM |
 | `first_party` | a subtree that IS the product's own source | `path` is a directory in the tree |
 | `excluded` | anything that is NOT first-party — vendored, generated, locked, data, fixtures, documentation | `path` is a file OR a directory in the tree, and `note` says which of those it is |
 | `tests` | a subtree that holds tests | `path` is a directory in the tree |
-| `entrypoint` | a declared way in — an HTTP surface, a CLI, a scheduled job, a queue consumer | `path` exists; `pattern` matches when the count comes from a pattern |
+| `entrypoint` | the ways in that one artefact exposes — HTTP routes, CLI commands, scheduled jobs, queue consumers | `path` exists; `pattern` matches when given; `count` says HOW MANY |
 
-**Every top-level entry of the tree must be claimed** by one of `first_party`,
-`excluded` or `tests` — files at the repository root included. The lint refuses
-a survey that leaves one unclaimed, and the reason is in the next section: it
-is the only mechanical handle anybody has on omission.
+**Every top-level entry of the tree must be claimed** by a `first_party`,
+`excluded` or `tests` declaration whose `path` IS that entry — files at the
+repository root included. Only those three kinds partition, and only at the top
+level: an `entrypoint` inside `src/` is evidence about one artefact, never an
+account of `src/`, and a `first_party` on `src/app` accounts for `src/app` and
+not for its root. The lint refuses a survey that leaves one unclaimed, and the
+reason is in the next section: it is the only mechanical handle anybody has on
+omission.
+
+**The exclusion rate is published.** The document states how many of the tree's
+lines fall outside the counted perimeter, and names the largest exclusions.
+Excluding is legitimate and often right; excluding quietly is how a repository
+gets smaller without changing.
+
+## Two kinds are counted as THINGS, one in registrations
+
+`deployable` and `system` are deduplicated on `identity`, not on `path`. One
+service described by a container file, a compose entry and a chart is ONE
+deployable with three proofs — keyed by path it is three, and nothing in the
+tree contradicts the count. Declare each proof you like; give them the same
+`identity` and they are one. Conversely, one compose file legitimately declares
+two services: same path, two identities, two declarations.
+
+`entrypoint` carries `count` — how many ways in that artefact exposes, in the
+same unit every extractor here emits, which is route registrations. Forty
+routes laid out one per file and forty routes in one file are the same
+repository; a metric that answers 40 or 1 depending on the layout is two scales
+under one name, and the size profile's anchor is expressed in registrations.
 
 `id` is lower-case, dash-separated, stable, and unique across the whole list.
 Stable means: the same repository surveyed twice yields the same id for the
