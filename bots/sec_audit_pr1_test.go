@@ -266,6 +266,7 @@ func TestScanHealthMinGenericIgnoresDeepsec(t *testing.T) {
 			"{{vars.min_generic_scanners}}": "2",
 			"{{input.langs}}":               "[]",
 			"{{vars.workspace_dir}}":        dir,
+			"{{vars.bundle_skills_dir}}":    filepath.Join(dir, ".claude", "iterion-skills"),
 			"{{vars.enable_deepsec}}":       "true",
 			"{{vars.deepsec_out}}":          filepath.Join(scanDir, "deepsec.json"),
 			"{{input.deepsec_paths}}":       shellQuote(string(pathsJSON)),

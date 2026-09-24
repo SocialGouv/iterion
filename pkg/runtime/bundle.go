@@ -345,6 +345,14 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, tier skillTier, logg
 // two apart. The workspace is a checkout of an untrusted repository, so nothing
 // read back from it can establish that distinction; only the mirror knows.
 func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) ([]string, error) {
+	// The engine-owned copy of the same skills, first and unconditionally: it
+	// is reset even for a run with no bundle, so a directory of that name
+	// committed by the checkout is never read as the engine's own. This is
+	// the single site — every mirror caller (Run, resumeRebuildState,
+	// resumeFromFailure) goes through here. See owned_skills.go.
+	if err := materializeOwnedSkills(workDir, b, logger); err != nil {
+		return nil, err
+	}
 	if b == nil || b.SkillsDir == "" || workDir == "" {
 		return nil, nil
 	}

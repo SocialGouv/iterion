@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterruntime "github.com/SocialGouv/iterion/pkg/runtime"
 )
 
 func writeRaw(path, body string) error {
@@ -49,11 +50,13 @@ func runScanHealth(t *testing.T, scanDir, minGeneric, langs, workspaceDir string
 	cmd = strings.ReplaceAll(cmd, "{{vars.min_generic_scanners}}", minGeneric)
 	// Per-language expected outputs are no longer hardcoded: scan_health
 	// derives them from the detected langs ({{input.langs}}) crossed with the
-	// `iterion:scanners` blocks in {{vars.workspace_dir}}/.claude/skills/lang-*.md.
+	// `iterion:scanners` blocks in ${BUNDLE_SKILLS_DIR}/lang-*.md — the
+	// engine's own copy of the bundle, not the checkout's .claude/skills/.
 	// Substitute both so the gate resolves the same LANG file set it would at
 	// runtime.
 	cmd = strings.ReplaceAll(cmd, "{{input.langs}}", langs)
 	cmd = strings.ReplaceAll(cmd, "{{vars.workspace_dir}}", workspaceDir)
+	cmd = strings.ReplaceAll(cmd, "{{vars.bundle_skills_dir}}", iterruntime.OwnedSkillsDir(workspaceDir))
 	// The deepsec trio pinned OFF: enable_deepsec is false by default, and it
 	// gates the other two, whose values this node never reads when it is
 	// false. So this gate measures the generic + language layers, which is
@@ -77,15 +80,16 @@ func runScanHealth(t *testing.T, scanDir, minGeneric, langs, workspaceDir string
 	return res, runErr != nil, stderr.String()
 }
 
-// setupScanHealthWorkspace builds a workspace whose .claude/skills/ holds the
-// real bundle lang-{go,js,python}.md skills, so scan_health derives the same
-// per-language expected outputs (gosec.json, go-semgrep.json, js.json,
+// setupScanHealthWorkspace builds a workspace whose engine-owned skills copy
+// holds the real bundle lang-{go,js,python}.md skills, so scan_health derives
+// the same per-language expected outputs (gosec.json, go-semgrep.json, js.json,
 // py-semgrep.json, bandit.json) it would at runtime — no hardcoded file list
-// duplicated in the test. Returns the workspace dir to pass as workspaceDir.
+// duplicated in the test. The path comes from the engine rather than being
+// respelled here. Returns the workspace dir to pass as workspaceDir.
 func setupScanHealthWorkspace(t *testing.T) string {
 	t.Helper()
 	ws := t.TempDir()
-	skillsDir := filepath.Join(ws, ".claude", "skills")
+	skillsDir := iterruntime.OwnedSkillsDir(ws)
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		t.Fatalf("mkdir skills: %v", err)
 	}

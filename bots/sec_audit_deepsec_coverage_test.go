@@ -959,6 +959,7 @@ func runDeepsecNodeAgent(t *testing.T, dir, runID, agent, model, deepsecStub str
 	for ref, val := range map[string]string{
 		"{{vars.scan_dir}}":              scanDir,
 		"{{vars.workspace_dir}}":         ws,
+		"{{vars.bundle_skills_dir}}":     filepath.Join(ws, ".claude", "iterion-skills"),
 		"{{vars.deepsec_out}}":           out,
 		"{{vars.deepsec_concurrency}}":   "1",
 		"{{vars.deepsec_process_limit}}": "0",

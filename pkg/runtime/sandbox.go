@@ -2239,7 +2239,9 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 }
 
 // writeThroughMirroredSkills pushes what the run mirrored into the host
-// workdir's .claude/ for its agents — bundle/plugin/library skills,
+// workdir's .claude/ for its agents — bundle/plugin/library skills, the
+// engine-owned copy of the bundle's skills (owned_skills.go, what a tool
+// node parsing an `iterion:` block reads),
 // plugin commands and agents, the merged hooks settings — into a copy-based
 // sandbox through the driver's write-through seam. The parent's own files
 // are already in its copy (rewriting them is idempotent: the host mirror
@@ -2269,7 +2271,7 @@ func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher s
 		}
 		n++
 	}
-	for _, sub := range []string{"skills", "commands", "agents"} {
+	for _, sub := range []string{"skills", "commands", "agents", ownedSkillsDirName} {
 		root := filepath.Join(workDir, ".claude", sub)
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {

@@ -472,6 +472,7 @@ func TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry(t *testing.T) {
 		for ref, val := range map[string]string{
 			"{{vars.scan_dir}}":              scanDir,
 			"{{vars.workspace_dir}}":         ws,
+			"{{vars.bundle_skills_dir}}":     filepath.Join(ws, ".claude", "iterion-skills"),
 			"{{vars.deepsec_out}}":           custom,
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
@@ -529,6 +530,7 @@ func TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry(t *testing.T) {
 		for ref, val := range map[string]string{
 			"{{vars.scan_dir}}":              scanDir,
 			"{{vars.workspace_dir}}":         ws,
+			"{{vars.bundle_skills_dir}}":     filepath.Join(ws, ".claude", "iterion-skills"),
 			"{{vars.deepsec_out}}":           external,
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
@@ -588,6 +590,7 @@ func TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry(t *testing.T) {
 		for ref, val := range map[string]string{
 			"{{vars.scan_dir}}":              scanDir,
 			"{{vars.workspace_dir}}":         ws,
+			"{{vars.bundle_skills_dir}}":     filepath.Join(ws, ".claude", "iterion-skills"),
 			"{{vars.deepsec_out}}":           filepath.Join(scanDir, "deepsec.json"),
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
@@ -643,6 +646,7 @@ func TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry(t *testing.T) {
 		for ref, val := range map[string]string{
 			"{{vars.scan_dir}}":              scanDir,
 			"{{vars.workspace_dir}}":         ws,
+			"{{vars.bundle_skills_dir}}":     filepath.Join(ws, ".claude", "iterion-skills"),
 			"{{vars.deepsec_out}}":           filepath.Join(scanDir, "deepsec.json"),
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
@@ -713,6 +717,7 @@ func runScanHealthBody(t *testing.T, files map[string]string, minGeneric string,
 		"{{vars.min_generic_scanners}}": minGeneric,
 		"{{input.langs}}":               "[]",
 		"{{vars.workspace_dir}}":        dir,
+		"{{vars.bundle_skills_dir}}":    filepath.Join(dir, ".claude", "iterion-skills"),
 		"{{vars.enable_deepsec}}":       "true",
 		"{{vars.deepsec_out}}":          dsOut(scanDir, deepsecOut),
 		"{{input.deepsec_paths}}":       shellQuote(string(pathsJSON)),

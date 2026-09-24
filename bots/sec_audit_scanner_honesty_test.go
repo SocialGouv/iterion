@@ -102,8 +102,9 @@ func TestGenericScannerDropsAFailedToolsOutput(t *testing.T) {
 			// The node resolves its files through the scan_dir its edge carries
 			// from compute scan_dir_resolve, which keys the scratch on the run.
 			// scanDir here IS one pass's directory.
-			"{{input.scan_dir}}":     scanDir,
-			"{{vars.workspace_dir}}": ws,
+			"{{input.scan_dir}}":         scanDir,
+			"{{vars.workspace_dir}}":     ws,
+			"{{vars.bundle_skills_dir}}": filepath.Join(ws, ".claude", "iterion-skills"),
 		} {
 			out = strings.ReplaceAll(out, ref, val)
 		}
@@ -198,6 +199,7 @@ func TestDeepsecDropsAnUnusableExport(t *testing.T) {
 		for ref, val := range map[string]string{
 			"{{vars.scan_dir}}":              scanDir,
 			"{{vars.workspace_dir}}":         ws,
+			"{{vars.bundle_skills_dir}}":     filepath.Join(ws, ".claude", "iterion-skills"),
 			"{{vars.deepsec_out}}":           base,
 			"{{vars.deepsec_concurrency}}":   "1",
 			"{{vars.deepsec_process_limit}}": "0",
@@ -304,6 +306,7 @@ func TestScanHealthReddensWhenAScannerOutputIsGone(t *testing.T) {
 			"{{vars.min_generic_scanners}}": "2",
 			"{{input.langs}}":               "[]",
 			"{{vars.workspace_dir}}":        dir,
+			"{{vars.bundle_skills_dir}}":    filepath.Join(dir, ".claude", "iterion-skills"),
 			"{{vars.enable_deepsec}}":       "true",
 			"{{vars.deepsec_out}}":          filepath.Join(scanDir, "deepsec.json"),
 			// Shell-quoted, because the runtime shell-escapes every ref it

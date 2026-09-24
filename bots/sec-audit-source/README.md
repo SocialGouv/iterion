@@ -200,6 +200,12 @@ skill's `iterion:scanners` block and runs the commands, and
 `scan_health` reads the same block to verify per-language coverage.
 No per-language boolean, no new node. Pure composition.
 
+Both read it from `${BUNDLE_SKILLS_DIR}`, the engine's own copy of this
+bundle's `skills/` — never from `<workspace>/.claude/skills/`, which the
+audited checkout writes. A language `detect_tech` reports that this
+bundle ships no `lang-<id>.md` for is therefore not covered, and
+`scan_health` reports it as `langs_detected` minus `langs_covered`.
+
 ## See also
 
 - [sec-audit-deps](../sec-audit-deps/) — sibling bundle for supply-chain malware.
