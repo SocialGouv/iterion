@@ -54,20 +54,29 @@ import (
 const ownedSkillsDirName = "iterion-skills"
 
 // OwnedSkillsDir returns the engine-owned bundle-skills directory for a
-// workspace. It answers "" — never a relative path — when workDir is empty or
-// itself relative.
+// workspace: an ABSOLUTE path, or "".
 //
-// An ABSOLUTE answer or none is the whole contract, and the reason is what a
-// reader does with the value: `os.path.join(dir, "lang-python.md")` on an
-// empty or relative dir yields a path resolved against the reader's cwd, which
-// IS the checkout. A value that degrades quietly into the untrusted tree is
-// the defect this directory exists to remove, so the degraded value is not
-// produced at all and materializeOwnedSkills refuses the run instead.
+// That is the whole contract, and the reason is what a reader does with the
+// value: `os.path.join(dir, "lang-python.md")` on an empty or relative dir
+// yields a path resolved against the reader's own working directory, which IS
+// the checkout. A value that degrades quietly into the untrusted tree is the
+// defect this directory exists to remove.
+//
+// A relative workDir is RESOLVED rather than refused — every caller that hands
+// the engine one (a dispatcher spec, a dry run, a subbot request, an external
+// embedder of WithWorkDir) means it against the process's own directory, which
+// is what filepath.Abs reads. Refusing it would turn a working run into a hard
+// stop for no gain: the contract is that the answer is absolute, not that the
+// caller spelled it that way.
 func OwnedSkillsDir(workDir string) string {
-	if workDir == "" || !filepath.IsAbs(workDir) {
+	if workDir == "" {
 		return ""
 	}
-	return filepath.Join(workDir, ".claude", ownedSkillsDirName)
+	abs, err := filepath.Abs(workDir)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(abs, ".claude", ownedSkillsDirName)
 }
 
 // ownedSkillsContainerDir returns the same directory as seen from inside a
@@ -125,15 +134,22 @@ const ownedSkillsPruneTimeout = 30 * time.Second
 //
 // I/O failure is fatal, as it is for the mirror: a run whose bot declares
 // skills it could not lay down must not report success without them. So is a
-// workspace that is not an absolute path: ${BUNDLE_SKILLS_DIR} would then
-// expand to nothing, every reader would resolve its skill name against its own
-// cwd — the checkout — and the run would audit the repository using whatever
-// the repository put there. A run that cannot name the directory is refused
-// here rather than allowed to read the wrong one.
+// named workspace this process cannot resolve to an absolute path:
+// ${BUNDLE_SKILLS_DIR} would expand to nothing, every reader would resolve its
+// skill name against its own working directory — the checkout — and the run
+// would audit the repository using whatever the repository put there.
+//
+// An EMPTY workDir keeps its historical no-op: there is no workspace, so there
+// is no directory of that name to reset and nothing to copy into. The
+// expansion is empty there too, and what refuses it is the reader's own guard,
+// by name.
 func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) error {
+	if workDir == "" {
+		return nil
+	}
 	dir := OwnedSkillsDir(workDir)
 	if dir == "" {
-		return fmt.Errorf("runtime/bundle: the run's workspace %q is not an absolute path, so the engine-owned skills copy has no home and ${BUNDLE_SKILLS_DIR} would expand to nothing", workDir)
+		return fmt.Errorf("runtime/bundle: the run's workspace %q cannot be resolved to an absolute path, so the engine-owned skills copy has no home and ${BUNDLE_SKILLS_DIR} would expand to nothing", workDir)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("runtime/bundle: reset owned skills dir %s: %w", dir, err)

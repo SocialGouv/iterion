@@ -292,9 +292,10 @@ for collision, devbox and pause/resume rules.
 
    `${BUNDLE_SKILLS_DIR}` is **absolute or nothing**: a reader joins a
    skill name onto it, and an empty or relative value would resolve
-   against the node's own working directory — the checkout. The engine
-   refuses a run whose workspace it cannot name absolutely rather than
-   expand to nothing, and a bot declaring the var should constrain it,
+   against the node's own working directory — the checkout. A relative
+   workspace is resolved against the process directory rather than
+   refused; one the process cannot resolve at all fails the run. A bot
+   declaring the var should constrain it,
    e.g. `[matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"]`. The second
    branch is required, not decoration: the launch gate reads the
    EXPANDED value, but the compile-time default check (C161) compares
@@ -305,7 +306,11 @@ for collision, devbox and pause/resume rules.
    directory is emptied in the container before the child's copy is
    written through: the write-through seam adds files and removes none,
    so a name only the parent's bundle ships would otherwise answer for
-   the child.
+   the child. Both halves fail closed — a file of the owned copy that
+   does not land aborts the adoption, because a reader finding no entry
+   for a name reports it as not covered. A file outside that copy keeps
+   the seam's ordinary behaviour: a skill the agent cannot read is a
+   degraded run, not a dead one.
 2. **Prompts** in `prompts/*.md` are merged into the AST `prompts:`
    table **before** static validation runs, so node-level
    `system:`/`user:` references against bundle filenames type-check.

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,34 +23,58 @@ import (
 // value resolves against the node's working directory — the checkout. The
 // engine never produces such a value and refuses the run instead.
 func TestOwnedSkillsDirIsAbsoluteOrNothing(t *testing.T) {
-	for _, workDir := range []string{"", ".", "relative/dir"} {
-		if got := OwnedSkillsDir(workDir); got != "" {
-			t.Errorf("OwnedSkillsDir(%q) = %q, want \"\": a non-absolute answer resolves against the reader's cwd", workDir, got)
+	// A relative workDir is RESOLVED, not refused: the caller means it against
+	// the process's own directory, and the contract is that the ANSWER is
+	// absolute, not that the caller spelled it that way.
+	for _, workDir := range []string{".", "relative/dir"} {
+		got := OwnedSkillsDir(workDir)
+		if !filepath.IsAbs(got) {
+			t.Errorf("OwnedSkillsDir(%q) = %q, want an absolute path", workDir, got)
+		}
+		if !strings.HasSuffix(got, filepath.Join(".claude", ownedSkillsDirName)) {
+			t.Errorf("OwnedSkillsDir(%q) = %q, want it to end at the owned dir", workDir, got)
 		}
 	}
+	if got := OwnedSkillsDir(""); got != "" {
+		t.Errorf("OwnedSkillsDir(\"\") = %q, want \"\": there is no workspace to hold one", got)
+	}
+	// The container side has no process directory to resolve against, so a
+	// relative pathname there is nothing.
 	for _, ws := range []string{"", "workspace", "./workspace"} {
 		if got := ownedSkillsContainerDir(ws); got != "" {
 			t.Errorf("ownedSkillsContainerDir(%q) = %q, want \"\"", ws, got)
 		}
 	}
 	abs := t.TempDir()
-	if got := OwnedSkillsDir(abs); !filepath.IsAbs(got) {
-		t.Fatalf("OwnedSkillsDir(%q) = %q, want an absolute path", abs, got)
+	if got := OwnedSkillsDir(abs); got != filepath.Join(abs, ".claude", ownedSkillsDirName) {
+		t.Fatalf("OwnedSkillsDir(%q) = %q", abs, got)
 	}
 }
 
-// A run whose workspace cannot be named absolutely is refused at the mirror,
-// where the failure is fatal — not allowed to proceed with an expansion that
-// would send every reader to its own working directory.
-func TestMirrorRefusesARunWithNoAbsoluteWorkspace(t *testing.T) {
-	for _, workDir := range []string{"", "relative/dir"} {
-		_, err := mirrorBundleSkills(workDir, nil, nil)
-		if err == nil {
-			t.Fatalf("workDir %q: mirror accepted a workspace it cannot name", workDir)
-		}
-		if !strings.Contains(err.Error(), "BUNDLE_SKILLS_DIR") || !strings.Contains(err.Error(), "absolute") {
-			t.Fatalf("workDir %q: refusal does not name what is wrong: %v", workDir, err)
-		}
+// An empty workspace keeps the mirror's historical no-op — there is no tree to
+// hold the directory, and the reader's own guard is what refuses the empty
+// expansion, by name. A relative one is resolved, not refused: a dispatcher
+// spec, a dry run or a subbot request handing the engine one must keep working.
+func TestMirrorAcceptsAnEmptyOrRelativeWorkspace(t *testing.T) {
+	if _, err := mirrorBundleSkills("", nil, nil); err != nil {
+		t.Fatalf("an empty workspace is a no-op, not a refusal: %v", err)
+	}
+	dir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	b := newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock})
+	if _, err := mirrorBundleSkills("sub/ws", b, nil); err != nil {
+		t.Fatalf("a relative workspace was refused: %v", err)
+	}
+	// Resolved against the process directory, and the bundle landed there.
+	if _, err := os.Stat(filepath.Join(dir, "sub", "ws", ".claude", ownedSkillsDirName, "lang-python.md")); err != nil {
+		t.Fatalf("the owned copy did not land under the resolved workspace: %v", err)
 	}
 }
 
@@ -277,4 +302,76 @@ func TestAdoptionRefusesAnUnlocatableSharedWorkspace(t *testing.T) {
 	if !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("refusal does not name what is wrong: %v", err)
 	}
+}
+
+// failingPodRun refuses to write files under the engine-owned copy. The prune
+// already emptied it in the container, so a refill that gave up quietly would
+// leave the child with no data blocks at all — and a reader that finds no
+// entry for a name reports it NOT COVERED, which is a security verdict
+// downgraded in silence. Adoption must fail closed at both halves.
+type failingPodRun struct {
+	*podFakeRun
+	refuse string
+}
+
+func (f *failingPodRun) RefreshWorkspaceFile(ctx context.Context, rel string, value []byte) error {
+	if strings.Contains(rel, f.refuse) {
+		return fmt.Errorf("simulated write-through failure for %s", rel)
+	}
+	return f.podFakeRun.RefreshWorkspaceFile(ctx, rel, value)
+}
+
+func TestAdoptionFailsWhenTheOwnedCopyCannotLand(t *testing.T) {
+	st := tmpStore(t)
+	ctx := context.Background()
+	pod := t.TempDir()
+	workDir := t.TempDir()
+	if _, err := mirrorBundleSkills(workDir, newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock}), nil); err != nil {
+		t.Fatal(err)
+	}
+	fake := &failingPodRun{podFakeRun: &podFakeRun{pod: pod}, refuse: ownedSkillsDirName}
+	ex := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
+	e := New(&ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}}, st, ex,
+		WithWorkDir(workDir),
+		WithParentRunID("run-parent"),
+		WithSharedSandbox(&SharedSandbox{Run: fake, WorkspaceFolder: pod}),
+	)
+	if _, err := st.CreateRun(ctx, "run-child", "child", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.startSandbox(ctx, "run-child", workDir, "", nil)
+	if err == nil {
+		t.Fatal("adoption proceeded with an owned copy that never landed")
+	}
+	if !strings.Contains(err.Error(), "not covered") {
+		t.Fatalf("refusal does not name the consequence: %v", err)
+	}
+}
+
+// A file OUTSIDE the owned copy keeps the documented behaviour: a skill the
+// agent cannot read is a degraded run, not a dead one. The two classes must
+// not be collapsed into one rule by a later edit.
+func TestAdoptionToleratesAFailedAgentSkillWriteThrough(t *testing.T) {
+	st := tmpStore(t)
+	ctx := context.Background()
+	pod := t.TempDir()
+	workDir := t.TempDir()
+	if _, err := mirrorBundleSkills(workDir, newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock}), nil); err != nil {
+		t.Fatal(err)
+	}
+	fake := &failingPodRun{podFakeRun: &podFakeRun{pod: pod}, refuse: "lang-python/SKILL.md"}
+	ex := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
+	e := New(&ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}}, st, ex,
+		WithWorkDir(workDir),
+		WithParentRunID("run-parent"),
+		WithSharedSandbox(&SharedSandbox{Run: fake, WorkspaceFolder: pod}),
+	)
+	if _, err := st.CreateRun(ctx, "run-child", "child", nil); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := e.startSandbox(ctx, "run-child", workDir, "", nil)
+	if err != nil {
+		t.Fatalf("an agent-facing skill that did not land must degrade, not kill: %v", err)
+	}
+	cleanup()
 }
