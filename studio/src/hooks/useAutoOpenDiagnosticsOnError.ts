@@ -24,10 +24,12 @@ export function useAutoOpenDiagnosticsOnError(active = true): void {
   const prevErrorCountRef = useRef(errorCount);
 
   useEffect(() => {
-    const prev = prevErrorCountRef.current;
     // The panel is app-wide: a tab behind another does not open it over the
-    // one on screen.
-    if (active && prev === 0 && errorCount > 0) {
+    // one on screen. Its edge waits — read against the count it last saw on
+    // screen — so a tab that turned red while hidden opens it when shown.
+    if (!active) return;
+    const prev = prevErrorCountRef.current;
+    if (prev === 0 && errorCount > 0) {
       openDiagnosticsPanel();
     }
     prevErrorCountRef.current = errorCount;

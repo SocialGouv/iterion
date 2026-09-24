@@ -159,12 +159,11 @@ export default function Canvas() {
     }
   }, [activeWorkflowName, fitView]);
 
-  // URL-driven node centering ("Open in editor" from a run). The
-  // EditorView puts the target ir_node_id into the UI store; we wait
-  // for it to appear in React Flow's node set (the layout pass needs
-  // a tick) before calling fitView, then clear the request so a later
-  // navigation doesn't re-trigger. The request is this tab's own, and it
-  // waits while the tab is hidden: a hidden canvas cannot be measured.
+  // Node centring: a deep link ("Open in editor" from a run), a duplicate or
+  // a paste puts the node's id in this tab's selection store. One layout
+  // tick later the canvas fits the node if it is there, and clears the
+  // request either way, so a later navigation doesn't re-trigger it. The
+  // request waits while the tab is hidden: a hidden canvas cannot be measured.
   useEffect(() => {
     if (!active || !pendingFitNodeId) return;
     const t = setTimeout(() => {

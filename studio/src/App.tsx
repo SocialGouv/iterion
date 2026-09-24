@@ -86,20 +86,16 @@ import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { signInURL } from "@/auth/returnTo";
 import { setUnauthorizedHandler } from "@/api/client";
 import { getOrCreateDocumentStore } from "@/store/document";
-import { useTabsStore } from "@/store/tabs";
-import { editorOnScreen } from "@/components/Editor/editorOnScreen";
+import { editorTabOnScreen } from "@/components/Editor/editorOnScreen";
 import { useServerInfoStore } from "@/store/serverInfo";
 
 // activeEditorDocStore looks up the document store of the editor tab on
-// screen. Null when the editor is not what the app shows — the active tab
-// of an editor left for another page is not on screen — or when no editor
-// tab is active: the menu's Undo / Redo then do nothing rather than change a
-// document the author cannot see.
+// screen. Null when no editor tab is on screen — another page, or the
+// editor's welcome pane: the menu's Undo / Redo then do nothing rather than
+// change a document the author cannot see.
 function activeEditorDocStore() {
-  if (!editorOnScreen()) return null;
-  const { activeEditorTabId } = useTabsStore.getState();
-  if (!activeEditorTabId) return null;
-  return getOrCreateDocumentStore(activeEditorTabId);
+  const tabId = editorTabOnScreen();
+  return tabId ? getOrCreateDocumentStore(tabId) : null;
 }
 
 export default function App() {

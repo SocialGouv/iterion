@@ -25,6 +25,7 @@ vi.mock("@/hooks/useDesktop", () => ({ useDesktop: () => ({ ready: true, isDeskt
 // The tab's own content is not what this is about: the editor route is on
 // screen once the tabs view is.
 vi.mock("@/components/shared/EditorTabHost", () => ({ default: () => <div data-testid="editor-tab" /> }));
+vi.mock("@/components/Home/RecentFilesPanel", () => ({ default: () => <div>recent files</div> }));
 
 import App from "@/App";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -97,6 +98,27 @@ describe("Edit → Undo from the menu", () => {
     await shellMenu("undo");
     expect(marks(store)).toBe("A,e1");
     await shellMenu("redo");
+    expect(marks(store)).toBe("A,e1,e2");
+  });
+});
+
+describe("Edit → Undo from the menu, on the editor's welcome pane", () => {
+  // The link names a file another project's tab is on: that tab becomes the
+  // active one, but it is not the current project's, so the editor shows its
+  // welcome pane — and the menu has no tab on screen to act on.
+  it("does nothing to another project's tab", async () => {
+    useTabsStore.getState().setCurrentProjectKey("/p1");
+    const store = editedTab();
+    useTabsStore.getState().setCurrentProjectKey("/p2");
+    window.history.replaceState({}, "", "/editor?file=bots%2Fa.bot");
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>,
+    );
+    await screen.findByText("The same workflows, visually.", undefined, { timeout: 5000 });
+    expect(screen.queryAllByTestId("editor-tab")).toHaveLength(0);
+    await shellMenu("undo");
     expect(marks(store)).toBe("A,e1,e2");
   });
 });

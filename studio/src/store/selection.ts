@@ -8,9 +8,10 @@ interface SelectionState {
   selectedEdgeId: string | null;
   copiedNodeId: string | null;
   // One-shot request to centre the canvas on a node — set by a deep link
-  // ("Open in editor" from a run) or a duplicate, taken by this tab's canvas
-  // once the node is laid out, then cleared. Per tab: the request is about
-  // this tab's document, and a canvas in another tab never takes it.
+  // ("Open in editor" from a run), a duplicate or a paste. This tab's canvas
+  // looks for the node one layout tick later, fits it if it is there, and
+  // clears the request either way. Per tab: the request is about this tab's
+  // document, and a canvas in another tab never takes it.
   pendingFitNodeId: string | null;
   setPendingFitNodeId: (id: string | null) => void;
   setSelectedNode: (id: string | null) => void;

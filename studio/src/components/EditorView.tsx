@@ -32,10 +32,10 @@ interface EditorViewProps {
   // Whether this editor tab is the visible one. EditorTabsView keeps
   // inactive tabs mounted with display:none. Provided to the subtree twice:
   // `useEditorTabActive` for what acts on something global (the Toolbar's
-  // shortcuts and picker, the canvas's shortcut, Arrange / Fit-view slot and
-  // centring, and its refit on return), and `HiddenSubtreeContext` for the
-  // UI kit's portals, which render nothing while the tab is hidden.
-  // Defaults to true for tests that render it alone.
+  // shortcuts, the canvas's shortcut, Arrange / Fit-view slot and centring,
+  // and its refit on return), and `HiddenSubtreeContext` for the UI kit's
+  // portals (the file picker among them), which render nothing while the tab
+  // is hidden. Defaults to true for tests that render it alone.
   active?: boolean;
 }
 

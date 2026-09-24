@@ -675,10 +675,10 @@ describe("an event about the very file an Open is bringing in", () => {
       (r, st) => applyOpenedFile(r as never, st),
     );
     ws.emit({ type: "file_deleted", path: "bots/b.bot" });
-    expect(useUIStore.getState().toasts.map((t) => t.message)).not.toContain("Current file was deleted externally");
+    expect(useUIStore.getState().toasts.map((t) => t.message)).not.toContain("bots/b.bot was deleted externally");
     await act(async () => landOpen(b("B")));
     expect(await outcome).toBe("applied");
-    expect(useUIStore.getState().toasts.map((t) => t.message)).toContain("Current file was deleted externally");
+    expect(useUIStore.getState().toasts.map((t) => t.message)).toContain("bots/b.bot was deleted externally");
   });
 });
 
@@ -834,5 +834,23 @@ describe("a manual reload that never answers, superseded by an Open of the same 
 
     await vi.advanceTimersByTimeAsync(REPLACE_DEADLINE_MS);
     expect(useUIStore.getState().toasts.map((t) => t.message).join(" | ")).not.toContain("Failed to reload");
+  });
+});
+
+describe("a deletion seen by two tabs", () => {
+  it("names the file in each tab's message", async () => {
+    const onFile = (path: string) => {
+      const store = createDocumentStore();
+      store.getState().setDocument(createEmptyDocument());
+      store.getState().setCurrentFilePath(path);
+      store.getState().markSaved();
+      return store;
+    };
+    mount(onFile("bots/a.bot"));
+    mount(onFile("bots/b.bot"));
+    ws.emit({ type: "file_deleted", path: "bots/a.bot" });
+    ws.emit({ type: "file_deleted", path: "bots/b.bot" });
+    const shown = useUIStore.getState().toasts.map((t) => t.message).sort();
+    expect(shown).toEqual(["bots/a.bot was deleted externally", "bots/b.bot was deleted externally"]);
   });
 });
