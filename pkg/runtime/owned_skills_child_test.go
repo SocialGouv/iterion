@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -393,4 +395,116 @@ func TestWriteThroughReportsAnUnreadablePartOfTheOwnedCopy(t *testing.T) {
 	if _, err := writeThroughMirroredSkills(context.Background(), t.TempDir(), pod, nil); err != nil {
 		t.Fatalf("a run whose bundle ships no skills was refused: %v", err)
 	}
+}
+
+// Two children of one parent, launched together on the same workspace and the
+// same live copy-based sandbox, never hold the engine-owned copy at once.
+//
+// That is what makes save-and-restore the right shape here rather than a
+// per-run subdirectory: a child resets the copy in the pod for itself, so a
+// sibling acting meanwhile would empty the copy the first is reading. The
+// serialisation is the borrowed resource scope — the child holds its
+// workspace's resource writer until its restore has finished — and it is
+// pinned for a sandboxless child by TestChildResourcesSerializeSharedWorkspace.
+// This is the same claim for the adopted copy-based sandbox, where the reset
+// happens in the pod.
+//
+// The barrier is not synctest's: adoption really execs `sh` in the fake pod,
+// and a bubble requires every goroutine to be durably blocked. The sibling is
+// given a real chance instead — the test waits for its run doc, then a second
+// of wall clock — and what settles the verdict is CONTENT: the parked child
+// re-reads its own copy, which a sibling that had gone ahead would have
+// replaced with its own.
+func TestSiblingChildrenNeverHoldTheOwnedCopyAtOnce(t *testing.T) {
+	work := t.TempDir()
+	parent := runParentWithOwnedCopy(t, work)
+	pod := &resourceCopyRun{sharedFakeRun: &sharedFakeRun{}, root: copyOfWorkspace(t, work)}
+
+	firstIn := make(chan struct{})
+	siblingLaunched := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var secondEntered atomic.Bool
+
+	// Each child ships a name of its own, so the copy a node reads names the
+	// run that wrote it.
+	launch := func(name, ownSkill, ownBytes string) <-chan error {
+		done := make(chan error, 1)
+		ex := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
+		var child *Engine
+		readOwn := func(when string) error {
+			got, err := readOwnedCopy(ex.sandbox, child.varExpandFn()("BUNDLE_SKILLS_DIR"))
+			if err != nil {
+				return fmt.Errorf("%s %s: the copy is unreadable: %w", name, when, err)
+			}
+			if len(got) != 2 || got[ownSkill] != ownBytes || got[sharedNameSkill] != ownBytes {
+				return fmt.Errorf("%s %s: reads %s, want its own %s and %s — a sibling replaced the copy it is reading",
+					name, when, describeCopy(got), ownSkill, sharedNameSkill)
+			}
+			return nil
+		}
+		ex.on("before", func(map[string]any) (map[string]any, error) {
+			if name == "second" {
+				secondEntered.Store(true)
+				// Held INSIDE the node: a sibling that got here while the
+				// first child is parked has reset and refilled the copy in
+				// the pod, and must still be holding it when the first reads.
+				// Its own scope's restore would otherwise put the first
+				// child's copy back and hide the overlap.
+				<-releaseSecond
+				return map[string]any{}, readOwn("entering")
+			}
+			close(firstIn)
+			<-siblingLaunched
+			if err := readOwn("while the sibling waits"); err != nil {
+				return nil, err
+			}
+			<-releaseFirst
+			return map[string]any{}, readOwn("before handing the scope over")
+		})
+		child = New(resourceWorkflow(""), parent.store, ex,
+			WithWorkDir(work),
+			WithBundle(ownedCopyBundle(t, map[string]string{ownSkill: ownBytes, sharedNameSkill: ownBytes})),
+			WithParentRunID("parent"),
+			WithSharedSandbox(&SharedSandbox{Run: pod, WorkspaceFolder: pod.root}))
+		go func() { done <- child.Run(context.Background(), name, nil) }()
+		return done
+	}
+
+	first := launch("first", "lang-firstonly.md", "# first child\n")
+	<-firstIn
+	second := launch("second", "lang-secondonly.md", "# second child\n")
+
+	// A condition, not a tick: the sibling's run doc exists, so its Run is
+	// under way and the resource writer is the only thing left in its path.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if r, err := parent.store.LoadRun(context.Background(), "second"); err == nil && r != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the sibling's run never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Then a real chance to act. Without the scope it takes milliseconds.
+	time.Sleep(time.Second)
+	if secondEntered.Load() {
+		t.Error("both children were inside the shared workspace at once")
+	}
+	close(siblingLaunched)
+	close(releaseFirst)
+	close(releaseSecond)
+
+	if err := <-first; err != nil {
+		t.Fatalf("first child: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("second child: %v", err)
+	}
+	if !secondEntered.Load() {
+		t.Fatal("the sibling never ran, so this test proved nothing about sharing")
+	}
+	assertParentCopy(t, nil, parent.varExpandFn()("BUNDLE_SKILLS_DIR"), "on the host")
+	assertParentCopy(t, pod, ownedSkillsContainerDir(pod.root), "in the sandbox")
 }
