@@ -44,9 +44,9 @@ var (
 )
 
 // claimLoopbackPort records a port as taken by this process, reporting
-// whether the claim is the first. Deliberately never released: a port handed
-// to a daemon stays in use for that daemon's whole life, and the ephemeral
-// range is far larger than any test run's appetite.
+// whether the claim is the first. reserveLoopbackPort never releases what it
+// claims: a port handed to a daemon stays in use for that daemon's whole life,
+// and the ephemeral range is far larger than any test run's appetite.
 func claimLoopbackPort(port int) bool {
 	claimedPortsMu.Lock()
 	defer claimedPortsMu.Unlock()
@@ -55,4 +55,13 @@ func claimLoopbackPort(port int) bool {
 	}
 	claimedPorts[port] = true
 	return true
+}
+
+// releaseLoopbackPort drops one claim. Only for a claim its caller made and
+// never handed on — a probe of the claim set itself; a port given to a daemon
+// is never released.
+func releaseLoopbackPort(port int) {
+	claimedPortsMu.Lock()
+	defer claimedPortsMu.Unlock()
+	delete(claimedPorts, port)
 }

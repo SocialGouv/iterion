@@ -134,7 +134,7 @@ func (b *SharedBudget) GracedRemainingDuration(ratio float64) (remaining time.Du
 		return 0, false
 	}
 	ceiling := time.Duration(float64(b.maxDuration) * (1 + ratio))
-	return ceiling - time.Since(b.startedAt), true
+	return ceiling - b.elapsed(), true
 }
 
 // capIsImposed reports whether any of this budget's limits was clamped
