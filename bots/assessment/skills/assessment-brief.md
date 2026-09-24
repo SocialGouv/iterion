@@ -50,6 +50,12 @@ targets:
   - component: "<the name used in the repository>"
     current: "<version in the tree, as declared where it is declared>"
     target: "<the decided version>"
+    ## Whether this target crosses a MAJOR. Leave it out when `current` and
+    ## `target` both begin with a number — the lint derives it. State it when
+    ## they do not: whether a major is crossed decides whether the sweep record
+    ## is mandatory, and a target the lint can neither read nor be told about
+    ## is REFUSED rather than assumed not to cross.
+    crosses_major: false
     series: ["<the intermediate steps, in order, when the path is imposed>"]
     decided_by: "<who signed this>"
     decided_on: "2026-01-31"
@@ -66,9 +72,15 @@ support_policy:
 permitted_changes:
   - "dependency majors, when the behaviour net stays green"
   - "the build tool and its layout"
+## A forbidden change may be a sentence, or a sentence with a PATTERN. The
+## pattern is the mechanism: the contract lint refuses a lot whose title or
+## intent matches it. A bare sentence is only matched verbatim against the
+## lot's prose, which catches a drafter copying your wording and nothing else —
+## write the pattern for anything you need actually enforced.
 forbidden_changes:
-  - "the public API surface of the <name> module"
   - "anything observable by the <name> client before its own migration"
+  - statement: "the public API surface of the <name> module"
+    pattern: "public (API|interface)|<name> module"
 
 ## Decisions already taken. Anything NOT here is an open question, and the
 ## assessment writes it into the contract as a PROPOSAL with an id — never as
@@ -82,6 +94,19 @@ decisions:
 ## Who arbitrates what the assessment cannot decide.
 owner: "<role or name>"
 ```
+
+## What each target and goal is used FOR, by the gate rather than by a reader
+##
+## - a `goals[].id` is a KEY: every outcome of the produced contract names the
+##   goal it answers, and the lint refuses one that answers nothing declared
+##   here;
+## - a `targets[].component` is a KEY too: every lot that advances a decided
+##   target names it in `brief_targets`, the lint refuses a target no lot
+##   carries, and a target crossing a major must be carried by a lot with
+##   `crosses_major: true`.
+##
+## Both mean a name written loosely here becomes a refusal later. Spell a
+## component the way the contract will spell it.
 
 Only `version`, `objective`, `goals` and `owner` are required. Every other
 block may be absent — and its absence has a consequence the assessment states
