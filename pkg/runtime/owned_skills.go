@@ -2,17 +2,13 @@
 package runtime
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
-	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // ownedSkillsDirName is the directory under <workDir>/.claude/ holding the
@@ -89,40 +85,6 @@ func ownedSkillsContainerDir(containerWorkspace string) string {
 	return path.Join(containerWorkspace, ".claude", ownedSkillsDirName)
 }
 
-// pruneOwnedSkillsInSharedSandbox empties the engine-owned skills copy inside
-// a sandbox this run is ADOPTING from its parent, so the parent's names cannot
-// answer for the child.
-//
-// Only copy-based drivers need it, and only they call it: a bind-mount driver
-// shares the host inode the host-side reset already emptied, while a copied
-// workspace keeps whatever the parent wrote and the write-through seam adds
-// files without ever removing one.
-//
-// It fails CLOSED. A prune that did not happen leaves a child reading another
-// bundle's data blocks and reporting the languages they cover as covered — a
-// wrong verdict is worse here than a refused run, and the message says which.
-func pruneOwnedSkillsInSharedSandbox(ctx context.Context, run sandbox.Run, containerWorkspace string) error {
-	dir := ownedSkillsContainerDir(containerWorkspace)
-	if dir == "" {
-		return fmt.Errorf("runtime/bundle: the shared sandbox reports workspace %q, which is not an absolute path, so the parent's engine-owned skills copy cannot be located and emptied", containerWorkspace)
-	}
-	pruneCtx, cancel := context.WithTimeout(ctx, ownedSkillsPruneTimeout)
-	defer cancel()
-	res, err := run.Exec(pruneCtx, []string{"rm", "-rf", "--", dir}, sandbox.ExecOpts{})
-	if err != nil {
-		return fmt.Errorf("runtime/bundle: empty the parent's engine-owned skills copy at %s: %w", dir, err)
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("runtime/bundle: empty the parent's engine-owned skills copy at %s: exited %d: %s",
-			dir, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
-	}
-	return nil
-}
-
-// ownedSkillsPruneTimeout bounds the one exec above: a single rm in a live
-// container, not a workload.
-const ownedSkillsPruneTimeout = 30 * time.Second
-
 // materializeOwnedSkills resets <workDir>/.claude/iterion-skills/ and refills
 // it from the bundle's skills directory.
 //
@@ -143,6 +105,12 @@ const ownedSkillsPruneTimeout = 30 * time.Second
 // is no directory of that name to reset and nothing to copy into. The
 // expansion is empty there too, and what refuses it is the reader's own guard,
 // by name.
+//
+// A child running in place resets its PARENT's copy here. The directory is
+// one of childResourcePaths, so the child's scope saves it first and restores
+// it on every exit; in an adopted copy-based sandbox, where this host-side
+// reset cannot reach, the same list drives the reset in the copy, the refill
+// and the restore.
 func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) error {
 	if workDir == "" {
 		return nil

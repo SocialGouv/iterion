@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
@@ -102,7 +103,7 @@ func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName st
 	defer cancel()
 	err = runScript(cctx, `set -eu
 `+assertWorkspaceRoot+`mkdir -p "$2"
-for name in skills commands agents settings.json; do
+for name in `+childResourceWords()+`; do
  if test -e "$1/$name" || test -L "$1/$name"; then cp -a "$1/$name" "$2/$name"; fi
 done`)
 	if err != nil {
@@ -112,7 +113,7 @@ done`)
 		ctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
 		defer cancel()
 		return runScript(ctx, `set -eu
-`+assertWorkspaceRoot+`for name in skills commands agents settings.json; do
+`+assertWorkspaceRoot+`for name in `+childResourceWords()+`; do
  rm -rf "$1/$name"
  if test -e "$2/$name" || test -L "$2/$name"; then mkdir -p "$1"; cp -a "$2/$name" "$1/$name"; fi
 done
@@ -120,12 +121,36 @@ rm -rf "$2"`)
 	}, nil
 }
 
+// childResourceWords renders childResourcePaths as shell words, so the scripts
+// run inside a sandbox act on exactly the entries the host-side snapshot saves.
+func childResourceWords() string {
+	words := make([]string, len(childResourcePaths))
+	for i, name := range childResourcePaths {
+		words[i] = shellquote.Quote(name)
+	}
+	return strings.Join(words, " ")
+}
+
 // The copy must receive the complete effective child tree. Merely overwriting
-// files leaves parent-only files behind when a child replaces a directory skill.
-// beginRunResources already saved the original copy for restoration on all exits.
+// files leaves parent-only files behind when a child replaces a directory skill
+// — and for the engine-owned skills copy, a name only the parent's bundle ships
+// would answer for the child. beginRunResources already saved the original copy
+// for restoration on all exits, an aborted adoption included.
+//
+// A copy-based adoption with no borrowed scope is refused rather than skipped:
+// nothing would have saved the parent's entries, so resetting them destroys
+// them and leaving them lets the parent's names answer for the child. Every
+// child that adopts runs in place and opens that scope (Run and Resume both
+// call beginRunResources before startSandbox); this states the precondition
+// instead of trusting it.
 func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
-	if e.resourceScope == nil || !e.resourceScope.borrowed || !sharedSandboxIsCopyBased(e.sharedSandbox.Run) {
+	if e.sharedSandbox == nil || !sharedSandboxIsCopyBased(e.sharedSandbox.Run) {
 		return nil
+	}
+	if e.resourceScope == nil || !e.resourceScope.borrowed {
+		return fmt.Errorf("runtime: adopting the parent's copy-based sandbox (%s) needs a borrowed resource scope, and this run holds none: "+
+			"the parent's .claude entries (%s) would be replaced in the sandbox with no saved copy to restore",
+			e.sharedSandbox.Run.Driver(), strings.Join(childResourcePaths, ", "))
 	}
 	ctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
@@ -134,7 +159,7 @@ func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
 		return err
 	}
 	res, err := e.sharedSandbox.Run.Exec(ctx, []string{"sh", "-c", `set -eu
-` + assertWorkspaceRoot + `for name in skills commands agents settings.json; do rm -rf "$1/$name"; done`,
+` + assertWorkspaceRoot + `for name in ` + childResourceWords() + `; do rm -rf "$1/$name"; done`,
 		"sh", root, "", workspace}, sandbox.ExecOpts{})
 	if err != nil {
 		return err

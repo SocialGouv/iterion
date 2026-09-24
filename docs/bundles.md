@@ -302,15 +302,22 @@ for collision, devbox and pause/resume rules.
    the **literal** default text, so a bare `^/` refuses
    `"${BUNDLE_SKILLS_DIR}"` itself.
 
-   In a **shared sandbox** (a child adopting its parent's live one) the
-   directory is emptied in the container before the child's copy is
-   written through: the write-through seam adds files and removes none,
-   so a name only the parent's bundle ships would otherwise answer for
-   the child. Both halves fail closed — a file of the owned copy that
-   does not land aborts the adoption, because a reader finding no entry
-   for a name reports it as not covered. A file outside that copy keeps
-   the seam's ordinary behaviour: a skill the agent cannot read is a
-   degraded run, not a dead one.
+   A **child** running in its parent's workspace borrows the directory
+   the way it borrows `.claude/skills`, `commands`, `agents` and
+   `settings.json`: one list names all five. The child's scope saves the
+   parent's copy before the child's mirror replaces it and restores it
+   on every exit — success, failure, or an adoption that aborted — so
+   the parent reads its own bundle's names and bytes once the child
+   returns. Children sharing a workspace take that scope one at a time.
+   In a **shared copy-based sandbox** (a child adopting its parent's
+   live pod) the same list drives the reset in the pod, before the
+   child's copy is written through: the write-through seam adds files
+   and removes none, so a name only the parent's bundle ships would
+   otherwise answer for the child. Both halves fail closed — a file of
+   the owned copy that does not land aborts the adoption, because a
+   reader finding no entry for a name reports it as not covered. A file
+   outside that copy keeps the seam's ordinary behaviour: a skill the
+   agent cannot read is a degraded run, not a dead one.
 2. **Prompts** in `prompts/*.md` are merged into the AST `prompts:`
    table **before** static validation runs, so node-level
    `system:`/`user:` references against bundle filenames type-check.
