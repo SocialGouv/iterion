@@ -664,10 +664,12 @@ prompt p_one:
 prompt p_two:
   uses {{input.b}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -685,6 +687,7 @@ workflow w:
 schema out:
   ok: bool
 agent one:
+  backend: "claude_code"
   input: in
   output: out
 workflow w:
@@ -704,6 +707,7 @@ prompt sys:
 prompt usr:
   go
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   system: sys
@@ -725,6 +729,7 @@ schema out:
 prompt usr:
   build skipped {{!input.a}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -747,9 +752,11 @@ prompt p_one:
 prompt p_two:
   review {{input.a}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -771,9 +778,11 @@ prompt p_one:
 prompt p_two:
   review the change
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   output: out
   user: p_two
 workflow w:
@@ -796,9 +805,11 @@ prompt p_one:
 prompt p_two:
   review {{input.ctx.ok}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   output: out
   user: p_two
 workflow w:
@@ -816,9 +827,11 @@ workflow w:
 prompt p_one:
   go
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   output: out
 workflow w:
   entry: one
@@ -841,9 +854,11 @@ prompt p_one:
 prompt p_two:
   review {{input.ctx.ok}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -868,9 +883,11 @@ prompt p_one:
 prompt p_two:
   review {{input.finding.file}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -893,9 +910,11 @@ prompt p_one:
 prompt p_two:
   review {{input.finding.file}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -919,9 +938,11 @@ prompt p_one:
 prompt p_two:
   transcribe {{input.upload.path}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -944,9 +965,11 @@ prompt p_one:
 prompt p_two:
   transcribe {{input.upload.name}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -967,9 +990,11 @@ prompt p_one:
 prompt p_two:
   review {{input.ctx.ok}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   output: out
   user: p_two
 workflow w:
@@ -994,10 +1019,12 @@ prompt p_one:
 prompt p_two:
   check
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   output: out
   user: p_two
 workflow w:
@@ -1023,9 +1050,11 @@ prompt p_one:
 prompt p_two:
   review {{input.a}} {{input.finding.file}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent two:
+  backend: "claude_code"
   input: in
   output: out
   user: p_two
@@ -1058,6 +1087,9 @@ workflow w:
 			wantMiss: nil,
 		},
 		{
+			// The model pins nothing about the route, which the node inherits;
+			// it keeps the fixture compiling on a host with no credential to
+			// detect (C018 reads the node's own fields only).
 			name: "images: count on a node that inherits a codex default_backend",
 			src: `schema in:
   frame: string
@@ -1066,6 +1098,7 @@ schema out:
 prompt usr:
   continue the sequence
 agent one:
+  model: "gpt-5.5"
   input: in
   output: out
   images: ["{{input.frame}}"]
@@ -1250,6 +1283,7 @@ schema out:
 prompt usr:
   {{input.name.len}} {{input.finding.file}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1270,6 +1304,7 @@ schema out:
 prompt usr:
   transcribe {{input.upload.path}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1290,6 +1325,7 @@ schema out:
 prompt usr:
   transcribe {{input.upload.name}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1310,6 +1346,7 @@ schema out:
 prompt usr:
   first {{input.items.0}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1328,6 +1365,7 @@ schema out:
 prompt usr:
   all {{input.items}} first {{input.items.0}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1346,6 +1384,7 @@ schema out:
 prompt usr:
   all {{input.f.a}} first {{input.f.a.0}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1364,6 +1403,7 @@ schema out:
 prompt usr:
   file {{input.f.a.b}} first {{input.f.a.0}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1384,6 +1424,7 @@ schema out:
 prompt usr:
   file {{input.f.a.c}} first {{input.f.a.b.0}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1405,6 +1446,7 @@ schema out:
 prompt usr:
   {{input.a}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1478,16 +1520,20 @@ prompt p_two:
 prompt p_plan:
   judge {{input.plan}}
 agent one:
+  backend: "claude_code"
   output: out
   user: p_one
 agent rev:
+  backend: "claude_code"
   input: review_input
   output: out
   user: p_rev
 agent two:
+  backend: "claude_code"
   output: out
   user: p_two
 agent plan_rev:
+  backend: "claude_code"
   input: plan_review_input
   output: out
   user: p_plan
@@ -1505,6 +1551,7 @@ schema out:
 prompt usr:
   {{input.a}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1525,6 +1572,7 @@ schema out:
 prompt usr:
   {{input.a}}
 agent one:
+  backend: "claude_code"
   input: in
   output: out
   user: usr
@@ -1541,6 +1589,7 @@ workflow w:
 	uncompilable := write("uncompilable/main.bot", `schema out:
   ok: bool
 agent one:
+  backend: "claude_code"
   input: nowhere
   output: out
 workflow w:
