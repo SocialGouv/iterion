@@ -289,7 +289,8 @@ func credEnvToOpts(env map[string]string) []claudesdk.Option {
 // Drop policy (forks only — a bare resume from the same daemon process
 // is always same-provider continuation, so signatures are trustworthy):
 //
-//   - parent fingerprint set AND differs from current → drop.
+//   - parent fingerprint set AND names another route than current
+//     (sameSessionRoute) → drop.
 //   - parent fingerprint EMPTY (legacy output produced by a binary
 //     that predates the stamp, or by a daemon restarted across a
 //     provider switch) → drop conservatively. The alternative —
@@ -314,11 +315,29 @@ func shouldDropSessionFork(task Task, currentFingerprint string) (bool, string) 
 	if task.SessionFingerprint == "" {
 		return true, "parent session has no recorded provider fingerprint (legacy output or pre-stamp binary) — starting fresh to avoid cross-provider thinking-block 400s"
 	}
-	if currentFingerprint != "" && task.SessionFingerprint != currentFingerprint {
+	if currentFingerprint != "" && !sameSessionRoute(task.SessionFingerprint, currentFingerprint) {
 		return true, fmt.Sprintf("parent session was built on %q but current provider is %q (signed thinking blocks would 400 on cross-provider reuse)",
 			task.SessionFingerprint, currentFingerprint)
 	}
 	return false, ""
+}
+
+// sameSessionRoute reports whether two provider fingerprints name the same
+// route for session reuse. Equal labels do. So does a facade label with no
+// slot against one with a slot, on the same rendered base URL: the slot-less
+// form names no credential — it is what a binary that predates the slot stamp
+// persisted, and what an ambient base URL renders — so it cannot contradict a
+// slot, and before the stamp both rendered the same string. Without this, every
+// facade session persisted before the stamp would be dropped on its first fork
+// after an upgrade. Two DIFFERENT slots on one base URL are two vendors behind
+// one gateway, and stay apart.
+func sameSessionRoute(a, b string) bool {
+	if a == b {
+		return true
+	}
+	slotA, baseA, okA := splitFacadeLabel(a)
+	slotB, baseB, okB := splitFacadeLabel(b)
+	return okA && okB && baseA == baseB && (slotA == "" || slotB == "")
 }
 
 // providerFingerprint derives a stable identifier for the routing
@@ -796,17 +815,28 @@ func AnthropicWireFacadeSlot(source string) string {
 	case PiUsageSourceMoonshot:
 		return string(secrets.ProviderMoonshot)
 	}
-	rest, ok := strings.CutPrefix(source, facadeSourcePrefix)
+	slot, _, _ := splitFacadeLabel(source)
+	return slot
+}
+
+// splitFacadeLabel parses a facade routing label into the slot that built it
+// and the rendered base URL: "facade:<slot>:<base>" → (slot, base, true), the
+// slot-less "facade:<base>" → ("", base, true), anything else → ok=false. The
+// one parser for providerFingerprint's facade shape, so the meter and the
+// session-fork guard cannot read it two ways.
+func splitFacadeLabel(label string) (slot, base string, ok bool) {
+	rest, ok := strings.CutPrefix(label, facadeSourcePrefix)
 	if !ok {
-		return ""
+		return "", "", false
 	}
 	// facadeEnvFor is the one place that knows which slots are facades:
-	// asking it beats a third list of the same two names.
-	slot, _, ok := strings.Cut(rest, ":")
-	if !ok || facadeEnvFor(slot, "") == nil {
-		return ""
+	// asking it beats a third list of the same two names. A base URL's
+	// scheme ("https") is not one, which is what keeps the slot-less form
+	// from reading as a slot.
+	if head, tail, cut := strings.Cut(rest, ":"); cut && facadeEnvFor(head, "") != nil {
+		return head, tail, true
 	}
-	return slot
+	return "", rest, true
 }
 
 // UsageMeterBackendForProvider names the meter backend a provider's refusals

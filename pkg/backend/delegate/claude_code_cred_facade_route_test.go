@@ -124,3 +124,46 @@ func TestAnthropicCredEnv_ZAIShortcutStandsDownOnACloudProviderSwitch(t *testing
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be present-and-empty on the z.ai route: present=%v val=%q", present, v)
 	}
 }
+
+// The facade label gained a slot segment. A session persisted by a binary
+// that predates it carries "facade:<base>", and the fork guard compares that
+// against today's "facade:<slot>:<base>" — so a strict equality would drop
+// the first fork of every in-flight facade session after an upgrade. The
+// parent labels here are what the previous binary wrote; the current ones
+// come from the real renderer, so the bench follows the renderer if it
+// changes.
+func TestShouldDropSessionFork_FacadeLabelAcrossTheSlotStamp(t *testing.T) {
+	resetClaudeCredEnv(t)
+	zaiNow := providerFingerprint(zaiEnv("zai-key"))
+	moonshotNow := providerFingerprint(moonshotEnv("moonshot-key"))
+	fork := func(parent string) Task { return Task{ForkSession: true, SessionFingerprint: parent} }
+
+	keep := []struct{ name, parent, current string }{
+		{"pre_stamp_zai_session_on_zai", "facade:" + secrets.ZAIDefaultBaseURL, zaiNow},
+		{"pre_stamp_moonshot_session_on_moonshot", "facade:" + secrets.MoonshotDefaultBaseURL, moonshotNow},
+		// An ambient base URL renders slot-less today too.
+		{"stamped_parent_on_unstamped_ambient_route", zaiNow, "facade:" + secrets.ZAIDefaultBaseURL},
+		{"same_stamped_route", zaiNow, zaiNow},
+	}
+	for _, tc := range keep {
+		if drop, reason := shouldDropSessionFork(fork(tc.parent), tc.current); drop {
+			t.Errorf("%s: fork dropped (%s) — parent %q and current %q are one route", tc.name, reason, tc.parent, tc.current)
+		}
+	}
+
+	t.Setenv("ANTHROPIC_BASE_URL", "https://gateway.internal/anthropic")
+	t.Setenv("MOONSHOT_BASE_URL", "https://gateway.internal/anthropic")
+	zaiGw, moonshotGw := providerFingerprint(zaiEnv("zai-key")), providerFingerprint(moonshotEnv("moonshot-key"))
+	drop := []struct{ name, parent, current string }{
+		// Two vendors behind one gateway: the slot is what tells them apart.
+		{"two_slots_one_gateway", zaiGw, moonshotGw},
+		{"pre_stamp_label_other_base", "facade:" + secrets.ZAIDefaultBaseURL, moonshotNow},
+		{"anthropic_direct_to_facade", "anthropic-direct", zaiNow},
+		{"facade_to_anthropic_oauth", zaiNow, "anthropic-oauth"},
+	}
+	for _, tc := range drop {
+		if dropped, _ := shouldDropSessionFork(fork(tc.parent), tc.current); !dropped {
+			t.Errorf("%s: fork kept — parent %q and current %q are different providers (signed thinking blocks would 400)", tc.name, tc.parent, tc.current)
+		}
+	}
+}
