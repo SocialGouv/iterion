@@ -104,6 +104,23 @@ func contractRepo(t *testing.T, contract, outcomes string) string {
 	return dir
 }
 
+// lintContractIn runs the lint over a workspace the caller prepared.
+func lintContractIn(t *testing.T, dir, brief string) map[string]any {
+	t.Helper()
+	out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
+		"{{vars.workspace_dir}}": dir,
+		"{{vars.scratch_dir}}":   t.TempDir(),
+		"{{vars.plan_path}}":     ".modernize/plan.yaml",
+	}, map[string]string{
+		"{{input.brief}}":               briefJSON(t, brief),
+		"{{vars.gate_probe_timeout_s}}": gateProbeWall,
+	})
+	if exit != 0 {
+		t.Fatalf("contract_lint exited %d: %s", exit, stderr)
+	}
+	return out
+}
+
 func lintContract(t *testing.T, contract, outcomes string) map[string]any {
 	t.Helper()
 	return lintContractAgainst(t, contract, outcomes, aGoodBrief)
@@ -115,18 +132,7 @@ func lintContract(t *testing.T, contract, outcomes string) map[string]any {
 // would refuse would prove the lint against a document no run can hand it.
 func lintContractAgainst(t *testing.T, contract, outcomes, brief string) map[string]any {
 	t.Helper()
-	dir := contractRepo(t, contract, outcomes)
-	out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
-		"{{vars.workspace_dir}}": dir,
-		"{{vars.plan_path}}":     ".modernize/plan.yaml",
-	}, map[string]string{
-		"{{input.brief}}":               briefJSON(t, brief),
-		"{{vars.gate_probe_timeout_s}}": gateProbeWall,
-	})
-	if exit != 0 {
-		t.Fatalf("contract_lint exited %d: %s", exit, stderr)
-	}
-	return out
+	return lintContractIn(t, contractRepo(t, contract, outcomes), brief)
 }
 
 // briefJSON reads a brief through the bundle's own brief_read and returns the
@@ -298,6 +304,7 @@ func TestAssessmentContractLintNeverAcceptsWhatPlanReadRefuses(t *testing.T) {
 
 			lintOut, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 				"{{vars.workspace_dir}}": dir,
+				"{{vars.scratch_dir}}":   t.TempDir(),
 				"{{vars.plan_path}}":     ".modernize/plan.yaml",
 			}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief),
 				"{{vars.gate_probe_timeout_s}}": gateProbeWall})
@@ -366,6 +373,7 @@ func TestAssessmentProducedContractIsAcceptedByBothReaders(t *testing.T) {
 
 	lint, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 		"{{vars.workspace_dir}}": dir,
+		"{{vars.scratch_dir}}":   t.TempDir(),
 		"{{vars.plan_path}}":     ".modernize/plan.yaml",
 	}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief),
 		"{{vars.gate_probe_timeout_s}}": gateProbeWall})
@@ -457,6 +465,13 @@ func TestAssessmentContractLintRefusesASweepMentionedButNeverTested(t *testing.T
 		{"the path only echoed", `      - "echo see .modernize/sweeps/L2.md"`},
 		{"another lot's record tested", `      - "test -s .modernize/sweeps/L1.md"`},
 		{"the directory tested, not the record", `      - "test -d .modernize/sweeps/"`},
+		// The predicate's own text, inside a command that cannot fail on it.
+		{"the predicate neutralised by an or", `      - "test -s .modernize/sweeps/L2.md || true"`},
+		{"the predicate in a trailing comment", `      - "bash ci/build.sh # test -s .modernize/sweeps/L2.md"`},
+		{"a string test on the path", `      - "test -n .modernize/sweeps/L2.md"`},
+		// An existence test admits an EMPTY record: the lot could touch the
+		// file and cross the gate with nothing written in it.
+		{"an existence test that admits an empty record", `      - "test -f .modernize/sweeps/L2.md"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			contract := strings.Replace(aGoodContract,
@@ -470,6 +485,74 @@ func TestAssessmentContractLintRefusesASweepMentionedButNeverTested(t *testing.T
 			}
 			if !strings.Contains(assessmentString(t, out, "reason"), "sweep record") {
 				t.Errorf("the refusal does not name the sweep record: %s", assessmentString(t, out, "reason"))
+			}
+		})
+	}
+}
+
+// The neighbours that ARE the predicate, on the same bench: the bracket form,
+// and the path quoted. A rule that refused them would be refusing the record.
+func TestAssessmentContractLintAcceptsTheSweepPredicateInItsTwoForms(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	for _, gate := range []string{
+		`      - "[ -s .modernize/sweeps/L2.md ]"`,
+		`      - "test -s '.modernize/sweeps/L2.md'"`,
+	} {
+		contract := strings.Replace(aGoodContract, `      - "test -s .modernize/sweeps/L2.md"`, gate, 1)
+		if contract == aGoodContract {
+			t.Fatal("the mutation did not apply")
+		}
+		out := lintContract(t, contract, goodOutcomes)
+		if !assessmentBool(t, out, "ok") {
+			t.Errorf("the sweep predicate written %s was refused: %s", gate, assessmentString(t, out, "reason"))
+		}
+	}
+}
+
+// THE RECORD IS WRITTEN BY THE LOT. A record already on the input tree makes
+// the predicate green before the sweep has run, and a gate red on the input
+// tree ONLY because the record is absent turns green the moment one is
+// written, whatever the lot did to the code. Both are the vacuous gate again,
+// with the sweep record as its disguise.
+func TestAssessmentContractLintRefusesASweepThatCannotTellTheLotApart(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+
+	t.Run("a record already on the input tree", func(t *testing.T) {
+		dir := contractRepo(t, aGoodContract, goodOutcomes)
+		record := filepath.Join(dir, ".modernize", "sweeps", "L2.md")
+		if err := os.MkdirAll(filepath.Dir(record), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(record, []byte("# a sweep nobody ran for this lot\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := lintContractIn(t, dir, aGoodBrief)
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a sweep record present before the lot begins was accepted as the lot's due diligence")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "already exists") {
+			t.Errorf("the refusal does not say the record predates the lot: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	for _, tc := range []struct{ name, gate, wants string }{
+		{"the record is the whole gate", `      - "test -s .modernize/sweeps/L2.md"`, "nothing else"},
+		{"the rest of the gate already passes",
+			"      - \"test -s .modernize/sweeps/L2.md\"\n      - \"test -f .modernize/plan.yaml\"",
+			"ALREADY PASSES"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contract := strings.Replace(aGoodContract,
+				"      - \"test -s .modernize/sweeps/L2.md\"\n      - \"bash ci/build.sh\"\n", tc.gate+"\n", 1)
+			if contract == aGoodContract {
+				t.Fatal("the mutation did not apply")
+			}
+			out := lintContract(t, contract, goodOutcomes)
+			if assessmentBool(t, out, "ok") {
+				t.Fatalf("a crossing lot whose gate only the sweep record keeps red was accepted (%s)", tc.gate)
+			}
+			if !strings.Contains(assessmentString(t, out, "reason"), tc.wants) {
+				t.Errorf("the refusal does not say why (%q): %s", tc.wants, assessmentString(t, out, "reason"))
 			}
 		})
 	}
@@ -701,6 +784,36 @@ func TestAssessmentGateProbeDoesNotInheritTheRunsEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(assessmentString(t, out, "reason"), "ALREADY PASSES") {
 		t.Errorf("the refusal is not the one that proves the variable was absent: %s",
+			assessmentString(t, out, "reason"))
+	}
+}
+
+// THE PROBE'S HOME IS AN EMPTY ONE. A variable allowlist keeps the run's
+// credentials out of the gate commands' environment and does nothing about
+// the credential FILES under the operator's home, one `cat ~/...` away from an
+// agent-written command that runs before anyone has read the contract.
+func TestAssessmentGateProbeRunsInAnEmptyHome(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "operator-credential"), []byte("not for a gate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	// Green iff the probe HAS a home and it is not the operator's — and a gate
+	// green on the input tree is refused. So the refusal is the proof.
+	probing := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+		`      - "test -d \"$HOME\" && test ! -e \"$HOME/operator-credential\""`, 1)
+	if probing == aGoodContract {
+		t.Fatal("the mutation did not apply")
+	}
+	out := lintContract(t, probing, goodOutcomes)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("the gate probe ran in the operator's home — every credential file under it was one " +
+			"agent-written command away")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "ALREADY PASSES") {
+		t.Errorf("the refusal is not the one that proves the home was empty: %s",
 			assessmentString(t, out, "reason"))
 	}
 }

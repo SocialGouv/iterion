@@ -184,11 +184,18 @@ The contract makes the record inspectable rather than optional — such a lot's
       - "…the commands that decide the lot itself"
 ```
 
-The path must be the operand of a FILE PREDICATE naming this lot's own
-record — `test -s .modernize/sweeps/<lot-id>.md`, or `[ -s … ]`. A command
-that merely contains the path in its text (an `echo`, a comment, a `grep` over
-something else) satisfies a substring search and proves nothing about the
-file; the lint requires the predicate.
+One command of the gate IS the predicate over this lot's own record, alone on
+its line: `test -s .modernize/sweeps/<lot-id>.md`, or
+`[ -s .modernize/sweeps/<lot-id>.md ]` (the path may be quoted). A command that
+carries it among other words — an `|| true`, a trailing comment, an `echo` —
+or that tests another condition proves nothing about the file, so the whole
+command is what is compared.
+
+The record is written BY THE LOT. The lint runs the predicate on the tree the
+programme starts from and refuses a record that is already there. And the rest
+of the gate must decide the lot's own work: the gate is judged with the
+predicate set aside, because a gate red only for want of the record turns
+green the moment one is written, whatever the lot did to the code.
 
 The gate checks the record EXISTS; it does not read its content. That is
 deliberate and it is the same division as everywhere else in this file: the

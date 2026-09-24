@@ -260,7 +260,7 @@ prompt plan_draft_system:
   what crossing a major actually costs, and `assessment-survey` for the
   perimeter you are working from.
 
-  Five rules the contract lint enforces, and it walks EVERY lot, not just the
+  Eight rules the contract lint enforces, and it walks EVERY lot, not just the
   first:
 
   1. A lot declares an `exit_gate` — a list of single-line shell commands,
@@ -278,10 +278,12 @@ prompt plan_draft_system:
      The dependency order is where the compatibility knowledge lives, and it
      is the one thing no tree states.
   4. A lot that crosses a MAJOR of anything with semantics sets
-     `crosses_major: true` and its gate carries a FILE PREDICATE over its own
-     sweep record (`test -s .modernize/sweeps/<lot id>.md`) — mentioning the
-     path in some other command proves nothing about the file. A lot that must
-     not change observable behaviour sets `rebaseline_allowed: false`.
+     `crosses_major: true`, and one command of its gate IS the predicate over
+     its own sweep record, alone on its line:
+     `test -s .modernize/sweeps/<lot id>.md`. The record is written by the lot,
+     so it must not exist yet, and the REST of the gate must decide the lot's
+     own work — a gate kept red only by the missing record is refused. A lot
+     that must not change observable behaviour sets `rebaseline_allowed: false`.
   5. Every lot that advances a target the brief DECIDED lists it in
      `brief_targets: ["<component, exactly as the brief spells it>"]`. Every
      decided target is carried by at least one lot, and a target the brief
@@ -2959,11 +2961,13 @@ tool contract_lint:
     import shutil
     import subprocess
     import sys
+    import tempfile
     import time
 
     null = None; true = True; false = False  # JSON-literal shim for missing refs
 
     ws = {{vars.workspace_dir}}
+    scratch = {{vars.scratch_dir}}
     plan_rel = {{vars.plan_path}}
     plan_path = os.path.join(ws, plan_rel)
     brief = {{input.brief}}
@@ -2991,13 +2995,20 @@ tool contract_lint:
     VACUOUS_HEADS = ("true", ":", "exit", "echo", "printf", "/bin/true")
 
     def SWEEP_PREDICATE(lot_id):
-        # The sweep record must be the OPERAND OF A FILE PREDICATE naming this
-        # lot. `echo .modernize/sweeps/<id>.md` carries the substring and tests
-        # nothing; `test -s` carries the fact.
-        return re.compile(r"(?:\btest\s+|\[\[?\s+)-[a-zA-Z]+\s+[\"']?\.modernize/sweeps/%s\.md\b"
-                          % re.escape(lot_id))
+        # The sweep record is certified by ONE WHOLE COMMAND of the gate, and it
+        # is this one: `test -s <record>` or `[ -s <record> ]`, nothing before it
+        # and nothing after it. A search INSIDE a command is an enumeration of
+        # spellings — `test -s <record> || true`, a trailing `# test -s <record>`,
+        # `test -n <record>` all carry the predicate's text and test nothing.
+        record = re.escape(".modernize/sweeps/%s.md" % lot_id)
+        operand = r"(?:%s|\"%s\"|'%s')" % (record, record, record)
+        return re.compile(r"(?:test\s+-s\s+%s|\[\s+-s\s+%s\s+\])" % (operand, operand))
 
     gate_probes = []
+    # The sweep predicate of each crossing lot, run ALONE on the input tree
+    # below: the record must not exist before the lot runs, or the predicate
+    # is green before the sweep and certifies nothing after it.
+    sweep_probes = []
 
     def refuse(code, reason):
         out["code"] = code
@@ -3234,13 +3245,29 @@ tool contract_lint:
                     reject(where, "its gate declares %r, which cannot fail. A command that exits 0 "
                                   "whatever the tree holds proves the lot was done in exactly the "
                                   "same way it proves it was not." % command)
-            if lot.get("crosses_major") and not any(SWEEP_PREDICATE(lot_id).search(c) for c in commands):
-                reject(where, "crosses a major but its gate does not test THIS lot's sweep record "
-                              "(`test -s .modernize/sweeps/%s.md`). A command that merely mentions "
-                              "the sweeps directory in its text proves nothing about the file: the "
-                              "gate must carry a file predicate over that path." % lot_id)
+            if lot.get("crosses_major"):
+                predicates = [c for c in commands if SWEEP_PREDICATE(lot_id).fullmatch(c)]
+                if not predicates:
+                    reject(where, "crosses a major but no command of its gate IS the predicate over "
+                                  "this lot's sweep record — `test -s .modernize/sweeps/%s.md`, alone "
+                                  "on its line. A command that contains it among other words (an "
+                                  "`|| true`, a comment, an `echo`) or tests another condition "
+                                  "proves nothing about the file." % lot_id)
+                else:
+                    sweep_probes.append((lot_id, where, predicates[0]))
+            # The gate the probe judges is the lot's OWN work: the sweep record
+            # proves a file was written, and a gate red on the input tree only
+            # because that record is absent turns green the moment one is
+            # written, whatever the lot did to the code.
+            substantive = [c for c in commands
+                           if not (lot.get("crosses_major") and SWEEP_PREDICATE(lot_id).fullmatch(c))]
             if commands and not any("\n" in c for c in commands):
-                gate_probes.append((lot_id, where, commands))
+                if not substantive:
+                    reject(where, "its gate is its sweep record and nothing else. The record proves a "
+                                  "file was written; nothing in the gate decides whether the lot's own "
+                                  "work was done, so the programme would advance on the record alone.")
+                else:
+                    gate_probes.append((lot_id, where, substantive))
 
         depends = lot.get("depends_on")
         if depends is None:
@@ -3319,9 +3346,23 @@ tool contract_lint:
     # process environment would hand every credential the run carries to the
     # first command that echoes it. What a gate legitimately needs is a shell,
     # a PATH and a home.
-    probe_env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "SHELL", "TERM")
+    #
+    # And the home is AN EMPTY ONE, made for the probe. The operator's home
+    # holds credential FILES — an ssh key, a cloud profile, a CLI token — and a
+    # variable allowlist does nothing about a `cat ~/...` in a gate. An absolute
+    # path still reaches the filesystem the node can read: this removes the
+    # default route to it, not the filesystem.
+    probe_env = {key: os.environ[key] for key in ("PATH", "LANG", "SHELL", "TERM")
                  if key in os.environ}
     probe_env.setdefault("PATH", "/usr/bin:/bin")
+    try:
+        os.makedirs(scratch, exist_ok=True)
+        probe_env["HOME"] = tempfile.mkdtemp(prefix="gate-probe-home-", dir=scratch)
+    except OSError as exc:
+        refuse("CONTRACT_REFUSED",
+               "cannot create an empty home for the gate probe under %s: %s. The probe runs "
+               "agent-written commands, and it does not run them in the operator's home."
+               % (scratch, exc))
     probe_env["LC_ALL"] = "C"
     probe_env["TZ"] = "UTC"
     probe_env["GIT_TERMINAL_PROMPT"] = "0"
@@ -3361,6 +3402,23 @@ tool contract_lint:
             # neither is a gate anybody SAW fail, and counting them would let a
             # contract whose gates all hang report itself fully proven.
             out["gates_proven_red"] += 1
+
+    # The sweep predicate, ALONE: a record already on the input tree satisfies
+    # it before the sweep has run, and the lot's due diligence is then certified
+    # by a file nobody wrote for it.
+    for lot_id, where, predicate in sweep_probes:
+        try:
+            present = subprocess.run(["bash", "-c", predicate], cwd=ws, env=probe_env,
+                                     capture_output=True, timeout=GATE_PROBE_TIMEOUT_S).returncode == 0
+        except (OSError, subprocess.SubprocessError) as exc:
+            reject(where, "its sweep predicate (%s) could not be run on the input tree: %s"
+                   % (predicate, exc))
+            continue
+        if present:
+            reject(where, "its sweep record already exists on the tree the programme starts from "
+                          "(`%s` passes before the lot begins). The predicate cannot tell the sweep "
+                          "done from not done; the record is written by the lot, not before it."
+                   % predicate)
 
     # ── the outcomes, beside the contract ──────────────────────────────
     outcomes_path = os.path.join(os.path.dirname(plan_path), "outcomes.json")
