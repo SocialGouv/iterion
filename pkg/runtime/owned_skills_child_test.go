@@ -508,3 +508,70 @@ func TestSiblingChildrenNeverHoldTheOwnedCopyAtOnce(t *testing.T) {
 	assertParentCopy(t, nil, parent.varExpandFn()("BUNDLE_SKILLS_DIR"), "on the host")
 	assertParentCopy(t, pod, ownedSkillsContainerDir(pod.root), "in the sandbox")
 }
+
+// The reset removes the engine-owned copy recursively on every pass, and
+// `.claude` is a path the checkout supplies. Committed as a symlink out of the
+// workspace, it aimed that removal at a directory the engine never created —
+// measured, before the guard: the file below was gone and the mirror said
+// nothing. A workspace REACHED through a symlink stays legitimate.
+//
+// Everything this test can reach lives under its own t.TempDir().
+func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
+	t.Run("out of the workspace: refused, nothing removed", func(t *testing.T) {
+		outside := t.TempDir()
+		theirs := filepath.Join(outside, ownedSkillsDirName, "not-ours.md")
+		if err := os.MkdirAll(filepath.Dir(theirs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(theirs, []byte("a directory the engine never created\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		work := t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(work, ".claude")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil)
+		// What the guard is FOR, asserted before the shape of the refusal, so
+		// this is the line that speaks when the guard goes.
+		if _, statErr := os.Stat(theirs); statErr != nil {
+			t.Errorf("the reset removed a directory outside the workspace: %v", statErr)
+		}
+		if err == nil {
+			t.Fatal("the mirror accepted a .claude pointing out of the workspace")
+		}
+		if !strings.Contains(err.Error(), "outside the run workspace") {
+			t.Fatalf("the refusal does not name what is wrong: %v", err)
+		}
+	})
+
+	t.Run("workspace reached through a symlink: accepted", func(t *testing.T) {
+		real := t.TempDir()
+		link := filepath.Join(t.TempDir(), "workspace-link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mirrorBundleSkills(link, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil); err != nil {
+			t.Fatalf("a workspace reached through a symlink was refused: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(real, ".claude", ownedSkillsDirName, sharedNameSkill)); err != nil {
+			t.Fatalf("the owned copy did not land in the workspace the link names: %v", err)
+		}
+	})
+
+	t.Run("a link inside the workspace: accepted", func(t *testing.T) {
+		work := t.TempDir()
+		inside := filepath.Join(work, "config")
+		if err := os.MkdirAll(inside, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(inside, filepath.Join(work, ".claude")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil); err != nil {
+			t.Fatalf("a .claude resolving inside the workspace was refused: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(inside, ownedSkillsDirName, sharedNameSkill)); err != nil {
+			t.Fatalf("the owned copy did not land: %v", err)
+		}
+	})
+}

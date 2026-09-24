@@ -302,6 +302,13 @@ for collision, devbox and pause/resume rules.
    the **literal** default text, so a bare `^/` refuses
    `"${BUNDLE_SKILLS_DIR}"` itself.
 
+   The reset removes the directory recursively, and `.claude` is a path
+   the checkout supplies: the engine resolves it and refuses the run
+   when it lands outside the workspace, rather than removing a
+   directory the workspace only points at. A workspace REACHED through
+   a symlink is untouched by that rule — both sides resolve to the same
+   tree.
+
    A **child** running in its parent's workspace borrows the directory
    the way it borrows `.claude/skills`, `commands`, `agents` and
    `settings.json`: one list names all five. The child's scope saves the

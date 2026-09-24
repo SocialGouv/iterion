@@ -2,10 +2,13 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -75,6 +78,43 @@ func OwnedSkillsDir(workDir string) string {
 	return filepath.Join(abs, ".claude", ownedSkillsDirName)
 }
 
+// refuseAnOwnedCopyOutsideTheWorkspace refuses a reset that would leave the
+// run's own tree.
+//
+// The directory is removed recursively on every mirror pass, and `.claude` is a
+// path the CHECKOUT supplies: committed as a symlink to somewhere else, it aims
+// that removal at a directory the engine never created, at a pathname the
+// repository under audit chose. Measured before this guard existed: a `.claude`
+// linked out of the workspace had `<target>/iterion-skills` removed with the
+// mirror reporting success.
+//
+// So the rule every destructive step here follows — resolve the symlinks,
+// require the target strictly under the tree we own, then act. A workspace
+// REACHED through a symlink is fine: both sides resolve to the same tree. What
+// is refused is a `.claude` resolving out of it, and the run stops rather than
+// reading an owned copy it may not reset.
+func refuseAnOwnedCopyOutsideTheWorkspace(dir string) error {
+	claudeDir := filepath.Dir(dir)
+	resolved, err := filepath.EvalSymlinks(claudeDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Nothing there yet; the mirror creates a real directory.
+			return nil
+		}
+		return fmt.Errorf("runtime/bundle: resolve %s before resetting the engine-owned skills copy: %w", claudeDir, err)
+	}
+	workDir := filepath.Dir(claudeDir)
+	root, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		return fmt.Errorf("runtime/bundle: resolve the run workspace %s before resetting the engine-owned skills copy: %w", workDir, err)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("runtime/bundle: %s resolves to %s, outside the run workspace %s — the engine-owned skills copy is removed and rewritten on every pass, and the engine does not remove a directory its workspace only points at (a checkout can commit that link)", claudeDir, resolved, root)
+	}
+	return nil
+}
+
 // ownedSkillsContainerDir returns the same directory as seen from inside a
 // sandbox, where the workspace is bound (or copied) at another pathname. Same
 // contract as OwnedSkillsDir: absolute, or nothing.
@@ -118,6 +158,9 @@ func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Lo
 	dir := OwnedSkillsDir(workDir)
 	if dir == "" {
 		return fmt.Errorf("runtime/bundle: the run's workspace %q cannot be resolved to an absolute path, so the engine-owned skills copy has no home and ${BUNDLE_SKILLS_DIR} would expand to nothing", workDir)
+	}
+	if err := refuseAnOwnedCopyOutsideTheWorkspace(dir); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("runtime/bundle: reset owned skills dir %s: %w", dir, err)
