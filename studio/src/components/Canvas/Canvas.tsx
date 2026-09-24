@@ -111,7 +111,9 @@ export default function Canvas({ active = true }: CanvasProps) {
   // focused element except text inputs.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [, setLocation] = useLocation();
+  // Only the tab on screen: every open tab has its own Canvas.
   useEffect(() => {
+    if (!active) return;
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
         const target = e.target as HTMLElement | null;
@@ -127,7 +129,7 @@ export default function Canvas({ active = true }: CanvasProps) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [active]);
 
   // Schema role dialog state (for existing schema drops without relation)
   const [schemaRoleDialog, setSchemaRoleDialog] = useState<{
@@ -163,9 +165,10 @@ export default function Canvas({ active = true }: CanvasProps) {
   // EditorView puts the target ir_node_id into the UI store; we wait
   // for it to appear in React Flow's node set (the layout pass needs
   // a tick) before calling fitView, then clear the request so a later
-  // navigation doesn't re-trigger.
+  // navigation doesn't re-trigger. Taken by the tab on screen only: a hidden
+  // tab's canvas holding a node of the same name would take it and clear it.
   useEffect(() => {
-    if (!pendingFitNodeId) return;
+    if (!active || !pendingFitNodeId) return;
     const t = setTimeout(() => {
       const exists = getNodes().some((n) => n.id === pendingFitNodeId);
       if (exists) {
@@ -174,7 +177,7 @@ export default function Canvas({ active = true }: CanvasProps) {
       setPendingFitNodeId(null);
     }, DEBOUNCE_LAYOUT_SETTLE_MS);
     return () => clearTimeout(t);
-  }, [pendingFitNodeId, fitView, getNodes, setPendingFitNodeId]);
+  }, [active, pendingFitNodeId, fitView, getNodes, setPendingFitNodeId]);
 
   // Save/restore viewport when entering/leaving sub-node detail view
   const prevSubViewRef = useRef<string | null>(null);
@@ -295,13 +298,14 @@ export default function Canvas({ active = true }: CanvasProps) {
 
   // Expose Arrange / Fit-view to the top-level Toolbar (which sits
   // outside the ReactFlowProvider subtree and can't call useReactFlow
-  // directly). The setter is stable across renders, so this effect
-  // re-runs only when the handlers themselves change.
+  // directly). One slot for the whole app, so only the tab on screen
+  // fills it: a hidden tab's canvas re-registering would take the buttons.
   const setCanvasActions = useUIStore((s) => s.setCanvasActions);
   useEffect(() => {
+    if (!active) return;
     setCanvasActions({ arrange: handleArrange, fitView: handleFitView });
     return () => setCanvasActions(null);
-  }, [setCanvasActions, handleArrange, handleFitView]);
+  }, [active, setCanvasActions, handleArrange, handleFitView]);
 
   const { confirm, dialog } = useConfirm();
 

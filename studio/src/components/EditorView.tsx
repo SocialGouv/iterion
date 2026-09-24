@@ -25,14 +25,16 @@ import {
 } from "@/lib/chatDock/pageContext";
 import { findNodeDecl } from "@/lib/defaults";
 import { useTabsStore } from "@/store/tabs";
+import { EditorTabActiveContext } from "@/components/Editor/editorTabActive";
 
 interface EditorViewProps {
   // Whether this editor tab is currently the visible one. EditorTabsView
   // keeps inactive tabs mounted with display:none; the Canvas uses this
   // to refit its viewport when the tab regains visibility (React Flow
-  // measured at 0×0 while hidden otherwise renders blank on return).
-  // Defaults to true so a standalone EditorView (deep-link fallback,
-  // tests) behaves exactly as before.
+  // measured at 0×0 while hidden otherwise renders blank on return), and
+  // the subtree reads it (`useEditorTabActive`) before acting on anything
+  // global. Defaults to true so a standalone EditorView (deep-link
+  // fallback, tests) behaves exactly as before.
   active?: boolean;
 }
 
@@ -267,6 +269,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const leftWidth = libraryExpanded || inSubNodeView ? 280 : 64;
 
   return (
+    <EditorTabActiveContext.Provider value={active}>
     <ReactFlowProvider>
       <div className="h-full w-full overflow-hidden flex flex-col">
         {bannerRunId && (
@@ -385,5 +388,6 @@ export default function EditorView({ active = true }: EditorViewProps) {
       </DesktopOnlyNotice>
       </div>
     </ReactFlowProvider>
+    </EditorTabActiveContext.Provider>
   );
 }
