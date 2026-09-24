@@ -8,14 +8,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-// THE AGENTS THAT ONLY READ HOLD NO SHELL. `readonly: true` is honoured by
+// NO AGENT OF THIS BUNDLE HOLDS A SHELL. `readonly: true` is honoured by
 // the codex and pi backends and ignored by claude_code, which runs with
 // bypassPermissions: a node that declared the flag and a shell held an
-// unlocked shell on a checkout of an untrusted repository. What carries the
+// unlocked shell on a checkout of an untrusted repository. The drafting agent
+// writes two files and needs no shell to do it. What carries the
 // property is the TOOL SET, so the tool set is what is pinned — an allowlist
 // of canonical tools, because a shell has many spellings (`bash`, `shell`,
 // `run_command`, …) and a denylist would enumerate them.
-func TestAssessmentReadingAgentsHoldNoShell(t *testing.T) {
+func TestAssessmentAgentsHoldNoShell(t *testing.T) {
 	pr := parseBotUnit("assessment/main.bot")
 	if pr.File == nil {
 		t.Fatal("parse produced no File")
@@ -24,13 +25,26 @@ func TestAssessmentReadingAgentsHoldNoShell(t *testing.T) {
 	if compiled.Workflow == nil {
 		t.Fatal("compile produced no Workflow")
 	}
-	for node, allowed := range map[string][]string{
+	allowlists := map[string][]string{
 		// Names stacks and a perimeter from what it reads; run_extractors is
 		// the node that executes anything.
 		"survey": {"read", "glob", "grep", "skill"},
 		// Writes judgement prose into its structured output, nothing to disk.
 		"judgement": {"skill"},
-	} {
+		// Writes two files — the contract and its outcomes — and runs none of
+		// the gates it writes: contract_lint does, in a bounded environment.
+		"plan_draft": {"read", "glob", "grep", "skill", "write", "edit"},
+	}
+	// EVERY agent of the bundle is classified here: an agent added later with
+	// no entry would be the one holding a shell nobody decided to give it.
+	for id, node := range compiled.Workflow.Nodes {
+		if _, isAgent := node.(*ir.AgentNode); isAgent {
+			if _, classified := allowlists[id]; !classified {
+				t.Errorf("agent %q has no tool allowlist here — decide what it may hold, and write it down", id)
+			}
+		}
+	}
+	for node, allowed := range allowlists {
 		agent, ok := compiled.Workflow.Nodes[node].(*ir.AgentNode)
 		if !ok {
 			t.Fatalf("%s is %T, want *ir.AgentNode", node, compiled.Workflow.Nodes[node])

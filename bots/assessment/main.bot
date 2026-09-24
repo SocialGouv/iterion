@@ -2959,6 +2959,11 @@ agent plan_draft:
   system: plan_draft_system
   user: plan_draft_user
   skills: ["plan-contract", "upgrade-archetypes", "assessment-survey"]
+  ## Readers and two writers, NO SHELL. It reads a repository its own prompt
+  ## calls untrusted and writes two files; on claude_code nothing but this
+  ## list bounds it. Its gates are RUN by contract_lint, in an allowlisted
+  ## environment and an empty home — never by the agent that wrote them.
+  tools: [read_file, glob, grep, skill, write_file, edit_file]
   tool_max_steps: 200
 
 ## contract_lint — the shared validator, over EVERY lot: types, enumerations,

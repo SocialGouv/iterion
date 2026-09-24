@@ -12,7 +12,8 @@ version: 0.1.2
 ## artefact list; an absent bundle-owned skills directory is refused at entry;
 ## the target repository's devbox.json is not provisioned (`repo_devbox: off`),
 ## so the assessed repository does not choose the interpreter the bundle's
-## tool nodes run under; a gate that writes to the tree it checks is refused.
+## tool nodes run under; a gate that writes to the tree it checks is refused;
+## no agent of the bundle holds a shell.
 ## 0.1.1 — the machine-readable `iterion:` blocks this bundle EXECUTES (the
 ## extractor scripts of each `stack-<id>.md`) and the measurement profile the
 ## published letter is a ratio against are read from the engine-owned copy of
