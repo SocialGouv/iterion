@@ -259,7 +259,10 @@ phase 0 committed.
 - **a net outside the workspace, or a contract-chosen entry point that is
   absent** → refuse, at `net_gate`, before the golden-master child starts.
   The children resolve the net inside the workspace, and that child writes
-  its entry point at `<dir>/verify-oracle.sh` only.
+  its entry point at `<dir>/verify-oracle.sh` only. Containment is
+  *resolved*, not spelled: the contract is repository content, and a
+  symlink committed in the tree would otherwise carry the net out of the
+  repository the campaign supervises.
 - **a child that committed nothing**, or whose artefact is not in the
   commit, or which left it uncommitted → refuse, naming the child. The
   supervisor reads what a run landed from git; a page or a contract that

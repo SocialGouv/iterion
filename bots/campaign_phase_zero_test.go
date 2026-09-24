@@ -722,6 +722,42 @@ func TestCampaignNetLocationIsTheContracts(t *testing.T) {
 		})
 	}
 
+	// The contract is repository content, so the containment is resolved,
+	// not spelled: a symlink committed in the tree would otherwise carry the
+	// net out of the repository the campaign supervises. Both directions on
+	// the same bench — the escaping link refuses, its legitimate twin inside
+	// the workspace decides normally.
+	t.Run("a symlinked oracle.dir escaping the workspace: refused, naming where it resolves", func(t *testing.T) {
+		ws, _ := netRepo(t, netContract("  dir: .gm\n"))
+		outside := t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(ws, ".gm")); err != nil {
+			t.Fatal(err)
+		}
+		exit, out, stderr := runNetGate(t, ws)
+		if exit != 1 {
+			t.Fatalf("exit = %d, want 1 (notice %q)", exit, out.Notice)
+		}
+		for _, ch := range []string{out.Notice, stderr} {
+			if !strings.Contains(ch, "resolves through a symlink to") || !strings.Contains(ch, outside) {
+				t.Errorf("channel = %q, want the refusal to name where %s resolves", ch, outside)
+			}
+		}
+	})
+
+	t.Run("a symlinked oracle.dir INSIDE the workspace: decided normally", func(t *testing.T) {
+		ws, _ := netRepo(t, netContract("  dir: .gm\n"))
+		if err := os.MkdirAll(filepath.Join(ws, "quality", "net"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(ws, "quality", "net"), filepath.Join(ws, ".gm")); err != nil {
+			t.Fatal(err)
+		}
+		exit, out, stderr := runNetGate(t, ws)
+		if exit != 0 || !out.RunNet || out.OracleDir != ".gm" {
+			t.Fatalf("exit = %d, run_net = %v, oracle_dir = %q; want 0/true/.gm — a link inside the workspace is not an escape (notice %q, stderr %q)", exit, out.RunNet, out.OracleDir, out.Notice, stderr)
+		}
+	})
+
 	t.Run("a contract that does not read: refused rather than guessed", func(t *testing.T) {
 		ws, _ := netRepo(t, "lots: [\n  - id: L1\n")
 		exit, out, stderr := runNetGate(t, ws)

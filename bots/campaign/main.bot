@@ -566,6 +566,11 @@ tool net_gate:
     # Phase 0 hands this directory to two children that resolve it inside
     # the workspace. Outside it, one would build where the other never
     # looks — so it is refused here, by name, before either is launched.
+    # realpath and not normpath: the contract is repository content, and a
+    # SYMLINK committed in the tree walks straight past a textual check —
+    # the net would then be built, and judged, outside the repository the
+    # campaign supervises.
+    ws_real = os.path.realpath(ws)
     for rel in (oracle_rel, verify_rel):
         if os.path.isabs(rel) or ".." in os.path.normpath(rel).split(os.sep):
             refuse("the contract at %s puts the net at %s, outside the "
@@ -573,6 +578,13 @@ tool net_gate:
                    "that resolve it inside the workspace; name a directory in "
                    "the repository, or launch with phase_zero: false."
                    % (plan_rel, rel))
+        real = os.path.realpath(os.path.join(ws, rel))
+        if real != ws_real and not real.startswith(ws_real.rstrip(os.sep) + os.sep):
+            refuse("the contract at %s puts the net at %s, which resolves "
+                   "through a symlink to %s — outside the workspace. Phase 0 "
+                   "hands the net's location to child bots that resolve it "
+                   "inside the workspace; name a directory in the repository, "
+                   "or launch with phase_zero: false." % (plan_rel, rel, real))
     out["oracle_dir"] = oracle_rel
     out["verify_path"] = verify_rel
 
