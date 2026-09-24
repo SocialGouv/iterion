@@ -2,13 +2,17 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // ownedSkillsDirName is the directory under <workDir>/.claude/ holding the
@@ -50,22 +54,65 @@ import (
 const ownedSkillsDirName = "iterion-skills"
 
 // OwnedSkillsDir returns the engine-owned bundle-skills directory for a
-// workspace, or "" when no workspace is known.
+// workspace. It answers "" — never a relative path — when workDir is empty or
+// itself relative.
+//
+// An ABSOLUTE answer or none is the whole contract, and the reason is what a
+// reader does with the value: `os.path.join(dir, "lang-python.md")` on an
+// empty or relative dir yields a path resolved against the reader's cwd, which
+// IS the checkout. A value that degrades quietly into the untrusted tree is
+// the defect this directory exists to remove, so the degraded value is not
+// produced at all and materializeOwnedSkills refuses the run instead.
 func OwnedSkillsDir(workDir string) string {
-	if workDir == "" {
+	if workDir == "" || !filepath.IsAbs(workDir) {
 		return ""
 	}
 	return filepath.Join(workDir, ".claude", ownedSkillsDirName)
 }
 
 // ownedSkillsContainerDir returns the same directory as seen from inside a
-// sandbox, where the workspace is bound (or copied) at another pathname.
+// sandbox, where the workspace is bound (or copied) at another pathname. Same
+// contract as OwnedSkillsDir: absolute, or nothing.
 func ownedSkillsContainerDir(containerWorkspace string) string {
-	if containerWorkspace == "" {
+	if containerWorkspace == "" || !path.IsAbs(containerWorkspace) {
 		return ""
 	}
 	return path.Join(containerWorkspace, ".claude", ownedSkillsDirName)
 }
+
+// pruneOwnedSkillsInSharedSandbox empties the engine-owned skills copy inside
+// a sandbox this run is ADOPTING from its parent, so the parent's names cannot
+// answer for the child.
+//
+// Only copy-based drivers need it, and only they call it: a bind-mount driver
+// shares the host inode the host-side reset already emptied, while a copied
+// workspace keeps whatever the parent wrote and the write-through seam adds
+// files without ever removing one.
+//
+// It fails CLOSED. A prune that did not happen leaves a child reading another
+// bundle's data blocks and reporting the languages they cover as covered — a
+// wrong verdict is worse here than a refused run, and the message says which.
+func pruneOwnedSkillsInSharedSandbox(ctx context.Context, run sandbox.Run, containerWorkspace string) error {
+	dir := ownedSkillsContainerDir(containerWorkspace)
+	if dir == "" {
+		return fmt.Errorf("runtime/bundle: the shared sandbox reports workspace %q, which is not an absolute path, so the parent's engine-owned skills copy cannot be located and emptied", containerWorkspace)
+	}
+	pruneCtx, cancel := context.WithTimeout(ctx, ownedSkillsPruneTimeout)
+	defer cancel()
+	res, err := run.Exec(pruneCtx, []string{"rm", "-rf", "--", dir}, sandbox.ExecOpts{})
+	if err != nil {
+		return fmt.Errorf("runtime/bundle: empty the parent's engine-owned skills copy at %s: %w", dir, err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("runtime/bundle: empty the parent's engine-owned skills copy at %s: exited %d: %s",
+			dir, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	return nil
+}
+
+// ownedSkillsPruneTimeout bounds the one exec above: a single rm in a live
+// container, not a workload.
+const ownedSkillsPruneTimeout = 30 * time.Second
 
 // materializeOwnedSkills resets <workDir>/.claude/iterion-skills/ and refills
 // it from the bundle's skills directory.
@@ -77,11 +124,16 @@ func ownedSkillsContainerDir(containerWorkspace string) string {
 // name is not shipped" observable to the bots as a missing file.
 //
 // I/O failure is fatal, as it is for the mirror: a run whose bot declares
-// skills it could not lay down must not report success without them.
+// skills it could not lay down must not report success without them. So is a
+// workspace that is not an absolute path: ${BUNDLE_SKILLS_DIR} would then
+// expand to nothing, every reader would resolve its skill name against its own
+// cwd — the checkout — and the run would audit the repository using whatever
+// the repository put there. A run that cannot name the directory is refused
+// here rather than allowed to read the wrong one.
 func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) error {
 	dir := OwnedSkillsDir(workDir)
 	if dir == "" {
-		return nil
+		return fmt.Errorf("runtime/bundle: the run's workspace %q is not an absolute path, so the engine-owned skills copy has no home and ${BUNDLE_SKILLS_DIR} would expand to nothing", workDir)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("runtime/bundle: reset owned skills dir %s: %w", dir, err)

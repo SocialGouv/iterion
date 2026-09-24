@@ -5,6 +5,8 @@ version: 0.1.7
 ## 0.1.7 — the machine-readable `iterion:` data blocks are read from the
 ## engine-owned copy of the bundle's skills (`${BUNDLE_SKILLS_DIR}`) instead of
 ## `<workspace>/.claude/skills/`, which the audited checkout can write.
+## `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and re-checked by
+## each reader, so it can be neither empty nor relative.
 ## 0.1.5 — deepsec_agent declares its own charset (`[matching: ...]`), so an
 ## operator typo is refused at launch instead of degrading to the coverage
 ## value a missing deepsec binary produces (#1350). The node's own guard

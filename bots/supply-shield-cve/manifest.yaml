@@ -5,6 +5,8 @@ version: 0.1.3
 ## 0.1.3 — the machine-readable `iterion:` data blocks are read from the
 ## engine-owned copy of the bundle's skills (`${BUNDLE_SKILLS_DIR}`) instead of
 ## `<workspace>/.claude/skills/`, which the audited checkout can write.
+## `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and re-checked by
+## each reader, so it can be neither empty nor relative.
 ## 0.1.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (33 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.
