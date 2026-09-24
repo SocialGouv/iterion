@@ -30,12 +30,18 @@ vi.mock("@/api/client", () => ({
   parseSource: (...a: unknown[]) => parseSource(...a),
 }));
 vi.mock("@/components/EditorView", () => ({ default: () => <div /> }));
+const ui = vi.hoisted(() => ({ addToast: vi.fn() }));
 vi.mock("@/store/ui", () => ({
-  useUIStore: (sel: (s: unknown) => unknown) => sel({ addToast: vi.fn() }),
+  useUIStore: Object.assign((sel: (s: unknown) => unknown) => sel({ addToast: ui.addToast }), {
+    getState: () => ({ addToast: ui.addToast }),
+  }),
 }));
 
 import { editorDraftKey } from "@/hooks/useDraftBot";
-import { getOrCreateDocumentStore } from "@/store/document";
+import { createEmptyDocument } from "@/lib/defaults";
+import { applyOpenedFile } from "@/lib/openedFile";
+import { replaceDocument } from "@/lib/replaceDocument";
+import { getOrCreateDocumentStore, stampEditor, stampHolds } from "@/store/document";
 import { useTabsStore } from "@/store/tabs";
 
 import EditorTabHost from "./EditorTabHost";
@@ -109,6 +115,22 @@ describe("an open draft tab follows its conversation", () => {
     expect(sourceOf(id)).toBe("v2");
   });
 
+  it("counts a draft that lands as a replacement of what the tab held", async () => {
+    // A Save As still writing the previous draft must not bind its name to
+    // this one: it reads the applied-replacement count, which this moves.
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-2r" }, "Draft");
+    mount(id, "run-2r");
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+    const asked = stampEditor(getOrCreateDocumentStore(id).getState());
+
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-2r");
+    expect(sourceOf(id)).toBe("v2");
+    expect(stampHolds(asked, getOrCreateDocumentStore(id).getState()).replaced).toBe(false);
+  });
+
   it("refuses to clobber the operator's own edits", async () => {
     findDraftBotSource.mockResolvedValue("v1");
     const id = useTabsStore.getState().openTab("editor", { draft: "run-3" }, "Draft");
@@ -122,6 +144,180 @@ describe("an open draft tab follows its conversation", () => {
     findDraftBotSource.mockResolvedValue("v2");
     await turnLanded("run-3");
     expect(sourceOf(id)).toBe("mine");
+  });
+
+  it("refuses to clobber an edit made on the CANVAS", async () => {
+    // A canvas edit moves the document, not `currentSource`: a guard reading
+    // the source alone let the next draft replace it.
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-3c" }, "Draft");
+    mount(id, "run-3c");
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+
+    const store = getOrCreateDocumentStore(id);
+    store.getState().addAgent({
+      name: "mine",
+      model: "m",
+      input: "in",
+      output: "out",
+      system: "s",
+      user: "u",
+      session: "fresh",
+    });
+    const edited = store.getState().document;
+
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-3c");
+    expect(sourceOf(id)).toBe("v1");
+    expect(store.getState().document).toBe(edited);
+  });
+
+  it("refuses to clobber text typed in the Source view", async () => {
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-3s" }, "Draft");
+    mount(id, "run-3s");
+    await settle();
+    const store = getOrCreateDocumentStore(id);
+    store.getState().setSourceBuffer({
+      path: null,
+      rel: null,
+      text: "typed",
+      base: "v1",
+      doc: store.getState().document,
+      session: 1,
+    });
+    const before = store.getState().document;
+
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-3s");
+    expect(sourceOf(id)).toBe("v1");
+    expect(store.getState().document).toBe(before);
+  });
+
+  it("waits for an Open the author asked for, instead of landing and getting it refused", async () => {
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-p" }, "Draft");
+    mount(id, "run-p");
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+    const store = getOrCreateDocumentStore(id);
+    let land!: (v: unknown) => void;
+    const outcome = replaceDocument(
+      store,
+      "bots/q.bot",
+      () => new Promise((r) => (land = r)),
+      (r, st) => applyOpenedFile(r as never, st),
+    );
+
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-p");
+    expect(sourceOf(id)).toBe("v1");
+    // It waits: nothing of the new draft is even parsed while the Open loads.
+    expect(parseSource).not.toHaveBeenCalledWith("v2");
+
+    land({
+      source: "Q\n",
+      document: { ...createEmptyDocument(), comments: [{ text: "Q" }] },
+      diagnostics: [],
+      path: "bots/q.bot",
+    });
+    expect(await outcome).toBe("applied");
+    await settle();
+    expect(store.getState().currentFilePath).toBe("bots/q.bot");
+    expect(ui.addToast).not.toHaveBeenCalled();
+  });
+
+  it("takes a draft that arrived while an Open loaded, once that Open has failed", async () => {
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-pf" }, "Draft");
+    mount(id, "run-pf");
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+    const store = getOrCreateDocumentStore(id);
+    let failLoad!: (e: unknown) => void;
+    const outcome = replaceDocument(
+      store,
+      "bots/gone.bot",
+      () => new Promise((_, reject) => (failLoad = reject)),
+      () => {},
+    );
+
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-pf");
+    expect(sourceOf(id)).toBe("v1");
+
+    // Nothing replaced the draft: the conversation's newest one is due.
+    failLoad(new Error("404: file not found"));
+    await expect(outcome).rejects.toThrow("404");
+    await settle();
+    expect(sourceOf(id)).toBe("v2");
+  });
+
+  it("does not land a draft whose parse the author's Open overtook", async () => {
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-pp" }, "Draft");
+    mount(id, "run-pp");
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+    const store = getOrCreateDocumentStore(id);
+
+    let landParse!: (v: unknown) => void;
+    parseSource.mockReturnValueOnce(new Promise((r) => (landParse = r)));
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-pp");
+    expect(parseSource).toHaveBeenLastCalledWith("v2");
+    // The author asks for a file while that parse is in flight.
+    let failLoad!: (e: unknown) => void;
+    const outcome = replaceDocument(
+      store,
+      "bots/q.bot",
+      () => new Promise((_, reject) => (failLoad = reject)),
+      () => {},
+    );
+    landParse({ document: { source: "v2" }, diagnostics: [] });
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+    failLoad(new Error("404: file not found"));
+    await expect(outcome).rejects.toThrow("404");
+  });
+
+  it("does not land a draft whose parse answered in the tick the author's Open began", async () => {
+    // The answer is already queued when the Open starts, so it runs before
+    // the re-render that would cancel it: the check at the answer is what
+    // stops it.
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-pt" }, "Draft");
+    mount(id, "run-pt");
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+    const store = getOrCreateDocumentStore(id);
+
+    let landParse!: (v: unknown) => void;
+    parseSource.mockReturnValueOnce(new Promise((r) => (landParse = r)));
+    findDraftBotSource.mockResolvedValue("v2");
+    await turnLanded("run-pt");
+    expect(parseSource).toHaveBeenLastCalledWith("v2");
+
+    landParse({ document: { source: "v2" }, diagnostics: [] });
+    let land!: (v: unknown) => void;
+    const outcome = replaceDocument(
+      store,
+      "bots/q.bot",
+      () => new Promise((r) => (land = r)),
+      (r, st) => applyOpenedFile(r as never, st),
+    );
+    await settle();
+    expect(sourceOf(id)).toBe("v1");
+
+    land({
+      source: "Q\n",
+      document: { ...createEmptyDocument(), comments: [{ text: "Q" }] },
+      diagnostics: [],
+      path: "bots/q.bot",
+    });
+    expect(await outcome).toBe("applied");
+    expect(store.getState().currentFilePath).toBe("bots/q.bot");
   });
 
   it("keeps the canvas when a later poll finds nothing", async () => {

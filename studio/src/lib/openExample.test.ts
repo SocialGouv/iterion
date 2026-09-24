@@ -34,7 +34,7 @@ describe("openExampleIntoStore", () => {
       unit,
     });
     const store = createDocumentStore();
-    await openExampleIntoStore("x/main.bot", store.getState());
+    await openExampleIntoStore("x/main.bot", store);
     expect(store.getState().currentFilePath).toBe("examples/x/main.bot");
     expect(store.getState().unit).toEqual(unit);
   });
@@ -48,7 +48,7 @@ describe("openExampleIntoStore", () => {
       bindable: false,
     });
     const store = createDocumentStore();
-    await openExampleIntoStore("y/main.bot", store.getState());
+    await openExampleIntoStore("y/main.bot", store);
     // The editor is about that file: the watcher, the tab binding and the
     // validation scope all read the path. What is refused is the write.
     expect(store.getState().currentFilePath).toBe("catalog/y/main.bot");
@@ -68,7 +68,7 @@ describe("openExampleIntoStore", () => {
       bindable: false,
     });
     const store = createDocumentStore();
-    await openExampleIntoStore("z/main.bot", store.getState());
+    await openExampleIntoStore("z/main.bot", store);
     expect(store.getState().currentFilePath).toBe("bots/z/main.bot");
     expect(store.getState().salvaged).toBe(true);
   });
@@ -78,9 +78,27 @@ describe("openExampleIntoStore", () => {
     const store = createDocumentStore();
     store.getState().setCurrentFilePath("bots/old/main.bot");
     store.getState().setUnit({ root: "bots/old", main: "main.bot", revision: "r0", files: [] });
-    await openExampleIntoStore("feature-dev/main.bot", store.getState());
+    await openExampleIntoStore("feature-dev/main.bot", store);
     expect(store.getState().currentFilePath).toBe("bots/feature-dev/main.bot");
     expect(store.getState().salvaged).toBe(false);
     expect(store.getState().unit).toBeNull();
+  });
+});
+
+describe("openExampleIntoStore, answering after the author worked", () => {
+  it("does not land over edits made while the example loaded, and says why", async () => {
+    let land!: (v: unknown) => void;
+    loadExample.mockReturnValue(new Promise((r) => (land = r)));
+    const store = createDocumentStore();
+    store.getState().setCurrentFilePath("bots/mine.bot");
+    store.getState().markSaved();
+    const opening = openExampleIntoStore("x/main.bot", store);
+    const edited = { workflows: [], comments: [{ text: "typed meanwhile" }] } as unknown as IterDocument;
+    store.getState().setDocument(edited);
+
+    land({ source: "x\n", document, diagnostics: [], path: "examples/x/main.bot" });
+    expect(await opening).toBe("refused");
+    expect(store.getState().currentFilePath).toBe("bots/mine.bot");
+    expect(store.getState().document?.comments?.[0]?.text).toBe("typed meanwhile");
   });
 });

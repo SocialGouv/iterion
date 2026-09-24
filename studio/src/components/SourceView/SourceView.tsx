@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@/lib/monaco";
-import { unreachableSourceBuffer, useDocumentStore, useDocumentStoreInstance } from "@/store/document";
+import { newSourceSession, unreachableSourceBuffer, useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
 import { useUIStore } from "@/store/ui";
 import * as api from "@/api/client";
@@ -61,6 +61,7 @@ export default function SourceView() {
           text: sourceRef.current,
           base: sourceRef.current,
           doc: renderedRef.current?.doc ?? documentRef.current,
+          session: newSourceSession(),
         });
       } else {
         setSourceBuffer(null);
@@ -337,6 +338,34 @@ export default function SourceView() {
         now.document !== was.document
       );
     };
+    // The edit this Apply submits, taken before the parse is requested: its
+    // session and its text. The answer settles only that session — a
+    // Cancel, then an edit of another file, while the parse was in flight
+    // is a different session, and is left alone. Text typed within the
+    // session since stays in the editor, dirty against what was applied.
+    const submitted = {
+      session: documentStore.getState().sourceBuffer?.session,
+      text: source,
+      intent: documentStore.getState()._intent,
+    };
+    // Another document asked for since (an Open, New, an import): this text
+    // was about the one being replaced. Dropped quietly — the author's later
+    // request speaks for them — and the text stays in the buffer, so a
+    // replacement that fails or is refused loses nothing.
+    const superseded = () => documentStore.getState()._intent !== submitted.intent;
+    const closed = () => documentStore.getState().sourceBuffer?.session !== submitted.session;
+    const settle = (applied: IterDocument | null) => {
+      const held = documentStore.getState().sourceBuffer;
+      if (held && held.text !== submitted.text) {
+        // Base AND provenance, in the store together: a remount adopts both,
+        // and a buffer claiming the pre-apply document would be refused as
+        // stale on its next Apply although nothing but this view moved it.
+        baseRef.current = submitted.text;
+        setSourceBuffer({ ...held, base: submitted.text, doc: applied });
+        return;
+      }
+      setEditing(false);
+    };
     try {
       // A bot in several files is applied FILE BY FILE: the server
       // re-parses the unit with this one replaced and hands back the merged
@@ -379,8 +408,13 @@ export default function SourceView() {
         // apply a proposal. The render effect's generation cannot stand in
         // for this guard — it is bumped by the document change this very
         // Apply causes.
+        if (superseded()) return;
         if (moved()) {
           setParseError("The editor changed while this was applying. Nothing was applied.");
+          return;
+        }
+        if (closed()) {
+          setParseError("This edit was closed while it was applying. Nothing was applied.");
           return;
         }
         applyParsedSource(result, { setDocument, setSalvaged });
@@ -403,12 +437,17 @@ export default function SourceView() {
         // them run something that is not this bot.
         if (selected === unit.main) setCurrentSource(source);
         setParseError(null);
-        setEditing(false);
+        settle(applied);
         return;
       }
       const result = await api.parseSource(source);
+      if (superseded()) return;
       if (moved()) {
         setParseError("The editor changed while this was applying. Nothing was applied.");
+        return;
+      }
+      if (closed()) {
+        setParseError("This edit was closed while it was applying. Nothing was applied.");
         return;
       }
       // The way out of a salvage, and the only one: text that parses whole
@@ -428,7 +467,7 @@ export default function SourceView() {
       // author just typed — the loss, inside the way out of it.
       setCurrentSource(source);
       setParseError(null);
-      setEditing(false);
+      settle(documentStore.getState().document);
     } catch (err) {
       setParseError(err instanceof Error ? err.message : "Parse failed");
     }
@@ -449,6 +488,8 @@ export default function SourceView() {
     documentStore,
     document,
     rendered,
+    setSourceBuffer,
+    setEditing,
   ]);
 
   // Cancel takes the typed text, and there is no undo for it — the render
@@ -510,6 +551,27 @@ export default function SourceView() {
     if (!documentStore.getState().isSourceDirty()) setSourceBuffer(null);
     else if (editable) adopted.current = false;
   }, [editing, editable, stale, documentStore, setSourceBuffer]);
+
+  // The store holds the edit; this view mirrors it. An Apply answered by an
+  // instance of this view that has since unmounted settles the STORE —
+  // closing the buffer, or moving its base and provenance to what it
+  // applied — and a view shown again in between must follow, or every Apply
+  // after it is refused as stale.
+  const heldBuffer = useDocumentStore((s) => s.sourceBuffer);
+  useEffect(() => {
+    if (!editing) return;
+    if (!heldBuffer) {
+      // Closed from elsewhere: what this view last rendered no longer says
+      // what the document is, so Edit waits for a fresh render of it.
+      // Following an external store is what this rule leaves to effects.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setEditingState(false);
+      setRendered(null);
+      return;
+    }
+    if (heldBuffer.base !== baseRef.current) baseRef.current = heldBuffer.base;
+    if (rendered && heldBuffer.doc !== rendered.doc) setRendered({ key: rendered.key, doc: heldBuffer.doc });
+  }, [editing, heldBuffer, rendered]);
 
   return (
     <div className="h-full flex flex-col">
@@ -626,6 +688,7 @@ export default function SourceView() {
               text,
               base: baseRef.current,
               doc: renderedRef.current?.doc ?? documentRef.current,
+              session: documentStore.getState().sourceBuffer?.session ?? newSourceSession(),
             });
           }}
           options={{

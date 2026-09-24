@@ -203,6 +203,7 @@ describe("dropping the editor tab that holds typed text", () => {
       text: "a repair the author typed",
       base: "workflow w:\n  entry: a\n",
       doc: null,
+      session: 1,
     });
 
     // Rendered OUTSIDE any DocumentStoreProvider, as the sidebar and the tab
@@ -357,6 +358,7 @@ describe("the buffer when the view turns read-only under it", () => {
       text: "typed for the fragment",
       base: "the fragment as rendered",
       doc: null,
+      session: 1,
     });
     // The fragment is deleted from the bot. Nothing can select it again, so
     // the buffer could never be adopted — and holding it would stop this tab
@@ -386,6 +388,7 @@ describe("the buffer when the view turns read-only under it", () => {
       text: "typed for the fragment",
       base: "the fragment as rendered",
       doc: null,
+      session: 1,
     });
     expect(store.getState().hasUnsavedWork()).toBe(true);
     mount(store);
@@ -412,6 +415,7 @@ describe("the buffer when the view turns read-only under it", () => {
       text: "typed for the fragment",
       base: "the fragment as rendered",
       doc: null,
+      session: 1,
     });
     // `selected` is component state and does not survive the unmount, so a
     // remount lands on the main and the fragment's buffer was never adopted.

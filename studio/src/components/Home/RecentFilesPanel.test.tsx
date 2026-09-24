@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { createEmptyDocument } from "@/lib/defaults";
 import { getOrCreateDocumentStore } from "@/store/document";
 import { useTabsStore } from "@/store/tabs";
+import * as client from "@/api/client";
 
 import RecentFilesPanel from "./RecentFilesPanel";
 
@@ -71,5 +72,49 @@ describe("RecentFilesPanel — launching a first-class bot from Home", () => {
       // file badge reads as a named file rather than "Unsaved".
       expect(doc.isDirty()).toBe(false);
     });
+  });
+});
+
+describe("RecentFilesPanel — an example that fails to load", () => {
+  // The tab is created before the load and is active and editable at once:
+  // from the editor's home pane the author can be typing into it while the
+  // example loads.
+  async function openFailing() {
+    let fail!: (e: unknown) => void;
+    vi.mocked(client.loadExample).mockReturnValueOnce(
+      new Promise((_, reject) => {
+        fail = reject;
+      }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <RecentFilesPanel />
+      </QueryClientProvider>,
+    );
+    const before = useTabsStore.getState().activeEditorTabId;
+    fireEvent.click(await screen.findByText("Featurly"));
+    await waitFor(() => expect(useTabsStore.getState().activeEditorTabId).not.toBe(before));
+    const tabId = useTabsStore.getState().activeEditorTabId;
+    if (!tabId) throw new Error("the example opened no tab");
+    return { tabId, fail };
+  }
+  const tabExists = (id: string) => useTabsStore.getState().tabs.some((t) => t.id === id);
+
+  it("closes the new tab when nobody touched it", async () => {
+    const { tabId, fail } = await openFailing();
+    await act(async () => fail(new Error("boom")));
+    expect(tabExists(tabId)).toBe(false);
+  });
+
+  it("keeps the new tab the author had started editing", async () => {
+    const { tabId, fail } = await openFailing();
+    const store = getOrCreateDocumentStore(tabId);
+    act(() => {
+      store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "typed meanwhile" }] });
+    });
+    await act(async () => fail(new Error("boom")));
+    expect(tabExists(tabId)).toBe(true);
+    expect(store.getState().document?.comments?.[0]?.text).toBe("typed meanwhile");
   });
 });

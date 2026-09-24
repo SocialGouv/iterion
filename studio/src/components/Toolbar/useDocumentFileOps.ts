@@ -66,19 +66,19 @@ export interface UseDocumentFileOpsResult {
   handleRemoveWorkflow: () => void;
 }
 import { applyOpenedFile } from "@/lib/openedFile";
+import { replaceDocument, replaceDocumentNow } from "@/lib/replaceDocument";
+import { offerReload } from "@/lib/reloadOffer";
+import { stampEditor, stampHolds } from "@/store/document";
 
 export function useDocumentFileOps({
   confirm,
 }: UseDocumentFileOpsArgs): UseDocumentFileOpsResult {
   // Document/UI/recents stores — selected one-at-a-time so the hook
   // only re-runs when the slices it actually depends on change.
-  const setDocument = useDocumentStore((s) => s.setDocument);
   const documentStore = useDocumentStoreInstance();
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
-  const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
-  const setSalvaged = useDocumentStore((s) => s.setSalvaged);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const unit = useDocumentStore((s) => s.unit);
   const setUnit = useDocumentStore((s) => s.setUnit);
@@ -119,19 +119,14 @@ export function useDocumentFileOps({
 
   const handleNew = useCallback(async () => {
     if (!(await confirmDiscard())) return;
-    setDocument(createEmptyDocument());
-    setDiagnostics([], []);
-    setCurrentFilePath(null);
-    setCurrentSource(null);
-    markSaved();
-  }, [
-    setDocument,
-    setDiagnostics,
-    setCurrentFilePath,
-    setCurrentSource,
-    markSaved,
-    confirmDiscard,
-  ]);
+    replaceDocumentNow(documentStore, (s) => {
+      s.setDocument(createEmptyDocument());
+      s.setDiagnostics([], []);
+      s.setCurrentFilePath(null);
+      s.setCurrentSource(null);
+      s.markSaved();
+    });
+  }, [documentStore, confirmDiscard]);
 
   const handlePickFile = useCallback(
     async (kind: "file" | "example", path: string) => {
@@ -139,31 +134,16 @@ export function useDocumentFileOps({
       setLoading(true);
       try {
         if (kind === "file") {
-          const result = await api.openFile(path);
-          applyOpenedFile(result, {
-            setDocument,
-            setDiagnostics,
-            setCurrentSource,
-            setCurrentFilePath,
-            setSalvaged,
-            setUnit,
-            markSaved,
+          await replaceDocument(documentStore, path, () => api.openFile(path), (result, s) => {
+            applyOpenedFile(result, s);
+            if (result.path) pushRecent(result.path);
           });
-          if (result.path) pushRecent(result.path);
         } else {
           // The shared helper binds the path the server names for a file
           // inside the workspace, else bots/<name> (so Save works and Run
           // launches it by path), and keeps the example's source +
           // diagnostics. Same path as RecentFilesPanel and CanvasEmpty.
-          await openExampleIntoStore(path, {
-            setDocument,
-            setDiagnostics,
-            setCurrentSource,
-            setCurrentFilePath,
-            setSalvaged,
-            setUnit,
-            markSaved,
-          });
+          await openExampleIntoStore(path, documentStore);
         }
       } catch (err) {
         console.error("Open failed:", err);
@@ -185,19 +165,7 @@ export function useDocumentFileOps({
         setLoading(false);
       }
     },
-    [
-      setDocument,
-      setDiagnostics,
-      setCurrentFilePath,
-      setSalvaged,
-      setCurrentSource,
-      setUnit,
-      markSaved,
-      confirmDiscard,
-      pushRecent,
-      removeRecent,
-      addToast,
-    ],
+    [documentStore, confirmDiscard, pushRecent, removeRecent, addToast],
   );
 
   const handleImport = useCallback(
@@ -213,40 +181,51 @@ export function useDocumentFileOps({
         e.target.value = "";
         return;
       }
-      const text = await file.text();
       try {
-        const result = await api.parseSource(text);
-        setDiagnostics(result.diagnostics);
-        // The path first — it clears the salvage flag — then the document and
-        // the verdict together. Unbinding does NOT protect an import: Save As
-        // is the only write an unbound buffer offers, and it would put a file
-        // missing what the parser could not read under the name the author
-        // chose.
-        setCurrentFilePath(null);
-        applyParsedSource(result, { setDocument, setSalvaged });
-        // Imported files are off-disk; the original text is the source.
-        setCurrentSource(text);
+        // The file is read inside the load: the confirm was answered for the
+        // work present NOW, and an edit made while the file is read or
+        // parsed is work nobody was asked about.
+        await replaceDocument(
+          documentStore,
+          file.name,
+          async () => {
+            const text = await file.text();
+            return { text, result: await api.parseSource(text) };
+          },
+          ({ text, result }, s) => {
+            s.setDiagnostics(result.diagnostics);
+            // The path first — it clears the salvage flag — then the document
+            // and the verdict together. Unbinding does NOT protect an import:
+            // Save As is the only write an unbound buffer offers, and it would
+            // put a file missing what the parser could not read under the name
+            // the author chose.
+            s.setCurrentFilePath(null);
+            applyParsedSource(result, s);
+            // Imported files are off-disk; the original text is the source.
+            s.setCurrentSource(text);
+          },
+        );
       } catch (err) {
         console.error("Import failed:", err);
         toastError(addToast, err, "Import failed");
       }
       e.target.value = "";
     },
-    [
-      setDocument,
-      setDiagnostics,
-      setCurrentFilePath,
-      setCurrentSource,
-      setSalvaged,
-      confirmDiscard,
-      addToast,
-    ],
+    [documentStore, confirmDiscard, addToast],
   );
 
   const handleValidate = useCallback(async () => {
     if (!document) return;
+    // The diagnostics describe THIS document of THIS file: an answer that
+    // lands after either moved is about something no longer on screen.
+    const asked = stampEditor(documentStore.getState());
     try {
       const result = await api.validate(document, undefined, currentFilePath);
+      const holds = stampHolds(asked, documentStore.getState());
+      if (!holds.path || !holds.generation) {
+        addToast("The editor changed while validating, so the result was not shown. Validate again.", "warning");
+        return;
+      }
       setDiagnostics(result.diagnostics, result.warnings, result.issues);
       const errorCount = (result.diagnostics ?? []).length;
       const warnCount = (result.warnings ?? []).length;
@@ -264,7 +243,7 @@ export function useDocumentFileOps({
       console.error("Validation failed:", err);
       addToast(`Validation failed: ${errorMessage(err)}`, "error");
     }
-  }, [document, currentFilePath, setDiagnostics, addToast, openDiagnosticsPanel]);
+  }, [document, currentFilePath, documentStore, setDiagnostics, addToast, openDiagnosticsPanel]);
 
   const handleSave = useCallback(async () => {
     if (!document) return;
@@ -280,25 +259,37 @@ export function useDocumentFileOps({
     }
     if (currentFilePath) {
       const path = currentFilePath;
-      const generation = documentStore.getState()._generation;
+      const asked = stampEditor(documentStore.getState());
       try {
         // A bot in several files presents the revision it was opened at,
         // and keeps the one the save returns.
         const result = await api.saveFile(path, document, unit ? { revision: unit.revision } : undefined);
         pushRecent(path);
-        // The answer is about the file it wrote. A tab that has moved to
-        // another file meanwhile takes none of it — not this file's source,
-        // not its unit, not a "saved" mark over the other file's work.
+        // The answer is about the document it wrote. A tab that has moved to
+        // another file meanwhile — or reopened this same one, which is a new
+        // document under the same name — takes none of it: not this write's
+        // source, not its unit revision, not a "saved" mark over work it did
+        // not write. A replacement ASKED for and not applied (it failed, or
+        // was refused) left the written document on screen, and does not
+        // stop it being settled.
         const now = documentStore.getState();
-        if (now.currentFilePath !== path) {
-          addToast(`Saved ${path}`, "success");
+        const holds = stampHolds(asked, now);
+        if (!holds.path || !holds.replaced) {
+          // Reopened under the same name while the write was in flight: a
+          // reading taken before the write shows the file as it no longer
+          // is, marked saved, and the next save would write it back.
+          if (holds.path && now.currentSource !== result.source) {
+            offerReload(documentStore, path, `Saved ${path} — the tab was reopened meanwhile and does not show what was saved.`);
+          } else {
+            addToast(`Saved ${path}`, "success");
+          }
           return;
         }
         setCurrentSource(result.source);
         // The revision goes onto the unit as it is NOW: a per-file Apply
         // during the write may have changed its files.
         if (now.unit) setUnit({ ...now.unit, revision: result.revision ?? now.unit.revision });
-        const clean = now._generation === generation;
+        const clean = holds.generation;
         if (clean) markSaved();
         addToast(
           clean ? "Saved successfully" : "Saved, but newer editor changes remain unsaved",

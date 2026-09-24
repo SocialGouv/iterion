@@ -56,6 +56,7 @@ function storeWithOnlyASourceEdit(): DocumentStore {
     text: "a repair the author typed",
     base: "workflow w:\n  entry: a\n",
       doc: null,
+      session: 1,
     });
   return store;
 }
@@ -99,6 +100,7 @@ describe("a discard that would take an un-applied Source-view edit", () => {
       text: "workflow w:\n  entry: a\n",
       base: "workflow w:\n  entry: a\n",
       doc: null,
+      session: 1,
     });
     mount(store);
 

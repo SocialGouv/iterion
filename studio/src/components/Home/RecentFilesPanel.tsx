@@ -10,7 +10,7 @@ import {
 } from "@radix-ui/react-icons";
 
 import * as api from "@/api/client";
-import { getOrCreateDocumentStore } from "@/store/document";
+import { getOrCreateDocumentStore, stampEditor, stampHolds } from "@/store/document";
 import { openExampleIntoStore } from "@/lib/openExample";
 import { useRecentsStore } from "@/store/recents";
 import { useTabsStore } from "@/store/tabs";
@@ -103,12 +103,22 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
       // On failure, close
       // the empty tab so a load error doesn't strand an untitled tab.
       const tabId = useTabsStore.getState().newEditorTab(name);
+      const store = getOrCreateDocumentStore(tabId);
+      // The tab is active and editable at once — from the editor's home pane
+      // the author can be typing into it while the example loads. What it
+      // held when it was made is what a failure may throw away, and nothing
+      // else.
+      const created = stampEditor(store.getState());
       try {
-        await openExampleIntoStore(name, getOrCreateDocumentStore(tabId).getState());
-        setLocation("/editor");
+        if ((await openExampleIntoStore(name, store)) === "applied") setLocation("/editor");
       } catch {
-        useTabsStore.getState().closeTab(tabId);
-        addToast("Failed to open example", "error");
+        const holds = stampHolds(created, store.getState());
+        if (holds.path && holds.generation && holds.source) {
+          useTabsStore.getState().closeTab(tabId);
+          addToast("Failed to open example", "error");
+        } else {
+          addToast("Failed to open example — the tab you had started editing is kept.", "error", { persistent: true });
+        }
       } finally {
         setBusy(false);
       }

@@ -74,6 +74,57 @@ export interface SourceBuffer {
    *  the document moved under the text, and a re-adopted buffer that
    *  claimed the CURRENT document would lose exactly that refusal. */
   doc: IterDocument | null;
+  /** The edit session this text belongs to: opened when the view enters
+   *  edit mode, kept across keystrokes, adoption and remounts. An answer to
+   *  something this session asked (an Apply) settles only this session —
+   *  a Cancel and an edit of another file while it was in flight are a
+   *  different session, and are left alone. */
+  session: number;
+}
+
+let sourceSessions = 0;
+/** A fresh Source edit session id. */
+export function newSourceSession(): number {
+  sourceSessions += 1;
+  return sourceSessions;
+}
+
+/** What an answer was asked about: the tab's file, its content generation,
+ *  the author's last request to replace the document, the replacements
+ *  actually applied, and the Source buffer as it was — the object, which
+ *  every write replaces, so a keystroke since shows. Each site requires the
+ *  facts its answer depends on (`stampHolds`), and settles only while they
+ *  still hold. */
+export interface EditorStamp {
+  path: string | null;
+  generation: number;
+  intent: number;
+  replaced: number;
+  source: SourceBuffer | null;
+}
+
+export function stampEditor(s: DocumentState): EditorStamp {
+  return {
+    path: s.currentFilePath,
+    generation: s._generation,
+    intent: s._intent,
+    replaced: s._replaced,
+    source: s.sourceBuffer,
+  };
+}
+
+/** Which facts of `stamp` still hold for the store as it is now. The Source
+ *  buffer holds while it is the same object, or while it holds no un-applied
+ *  text: an editor opened and not typed in is nothing an answer could take. */
+export function stampHolds(stamp: EditorStamp, s: DocumentState) {
+  const buffer = s.sourceBuffer;
+  return {
+    path: s.currentFilePath === stamp.path,
+    generation: s._generation === stamp.generation,
+    intent: s._intent === stamp.intent,
+    replaced: s._replaced === stamp.replaced,
+    source: buffer === stamp.source || !buffer || buffer.text === buffer.base,
+  };
 }
 
 /** Why the Source view of a tab on `path`, with `unit`, can no longer show
@@ -104,7 +155,7 @@ export function unreachableSourceBuffer(
     : `${buffer.rel} is no longer one of this bot's files — the text you had not applied for it was discarded.`;
 }
 
-interface DocumentState {
+export interface DocumentState {
   document: IterDocument | null;
   diagnostics: string[];
   warnings: string[];
@@ -145,6 +196,25 @@ interface DocumentState {
   sourceBuffer: SourceBuffer | null;
   _generation: number;
   _savedGeneration: number;
+  /** The author's last request to REPLACE this tab's document (New, Open,
+   *  an example, Import, a manual reload): an answer applies only while the
+   *  intent it was asked under is still the latest. */
+  _intent: number;
+  /** The explicit replacement still waiting for its answer, or null. A
+   *  background write to the document (the watcher's automatic reload, the
+   *  assistant's reload-after-write and its applied proposals, a draft
+   *  following its conversation) stands down while one is pending: the
+   *  author's request wins, and a background answer landing first would
+   *  otherwise make it look as though the author had edited. */
+  _pendingIntent: number | null;
+  /** Moves whenever a replacement is APPLIED — asked for by the author or
+   *  not (an automatic reload, the assistant's reload, a draft landing, a
+   *  Save As binding a new name) — and never for one merely asked for,
+   *  which is what `_intent` tracks. A save's answer settles only the
+   *  document it wrote: an Open that failed or was refused while the save
+   *  was in flight left that document on screen, and must not stop it
+   *  being marked saved. Compared for equality only, never counted. */
+  _replaced: number;
 
   // Undo/redo
   _history: IterDocument[];
@@ -159,6 +229,13 @@ interface DocumentState {
   setUnit: (unit: UnitInfo | null) => void;
   setSourceBuffer: (buffer: SourceBuffer | null) => void;
   markSaved: () => void;
+  /** Starts an explicit replacement: returns its intent, now the latest and
+   *  the pending one. */
+  beginReplace: () => number;
+  /** Ends it: clears the pending intent if it is still this one. */
+  endReplace: (intent: number) => void;
+  /** Records that a replacement was applied (or the tab rebound). */
+  markReplaced: () => void;
   isDirty: () => boolean;
   /** The Source view's buffer holds text its render did not produce. */
   isSourceDirty: () => boolean;
@@ -358,6 +435,9 @@ export function createDocumentStore() {
   sourceBuffer: null,
   _generation: 0,
   _savedGeneration: 0,
+  _intent: 0,
+  _pendingIntent: null,
+  _replaced: 0,
   _history: [],
   _future: [],
 
@@ -381,6 +461,14 @@ export function createDocumentStore() {
   setUnit: (unit) => set({ unit }),
   setSourceBuffer: (sourceBuffer) => set({ sourceBuffer }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
+  beginReplace: () => {
+    const intent = get()._intent + 1;
+    set({ _intent: intent, _pendingIntent: intent });
+    return intent;
+  },
+  endReplace: (intent) =>
+    set((s) => (s._pendingIntent === intent ? { _pendingIntent: null } : s)),
+  markReplaced: () => set((s) => ({ _replaced: s._replaced + 1 })),
   isDirty: () => {
     const s = get();
     if (!s.document) return false;

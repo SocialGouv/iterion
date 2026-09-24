@@ -159,7 +159,7 @@ describe("a tab names the file it is about, salvage or not", () => {
       path: "catalog/one/main.bot",
       bindable: false,
     });
-    await openExampleIntoStore("one/main.bot", state(tabId));
+    await openExampleIntoStore("one/main.bot", getOrCreateDocumentStore(tabId));
     expect(state(tabId).salvaged).toBe(true);
     await waitFor(() => expect(paramsFileOf(tabId)).toBe("catalog/one/main.bot"));
 
@@ -187,7 +187,7 @@ describe("a tab names the file it is about, salvage or not", () => {
       diagnostics: ["one/main.bot:3:1: error [E001]: unexpected character"],
       bindable: false,
     });
-    await openExampleIntoStore("one/main.bot", state(tabId));
+    await openExampleIntoStore("one/main.bot", getOrCreateDocumentStore(tabId));
     await waitFor(() => expect(paramsFileOf(tabId)).toBe("bots/one/main.bot"));
 
     state(tabId).setCurrentSource("THE AUTHOR'S REPAIR");
