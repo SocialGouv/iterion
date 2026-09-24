@@ -452,6 +452,9 @@ schema lint_state:
   code: string
   reason: string
   verified: int
+  ## EVERY refusal, where `reason` carries the first six. A survey is repaired
+  ## by answering all of them at once: a list truncated to what fits in a
+  ## message costs one run per remaining refusal.
   refusals: json
 
 ## The measurement. `size` is the band, or the literal not-applicable when the
@@ -508,6 +511,9 @@ schema contract_state:
   ## counts contradict the contract beside it is the failure the whole bundle
   ## is shaped against.
   proposals: int
+  ## EVERY refusal, where `reason` carries the first six — for the same reason
+  ## the declaration lint keeps its own: a contract repaired six refusals at a
+  ## time is a contract redrafted as many times.
   refusals: json
   ## How many lots had their declared gate EXECUTED on the input tree and seen
   ## to fail. A gate that already passes before the lot starts certifies
