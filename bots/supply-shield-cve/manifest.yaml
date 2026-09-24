@@ -67,4 +67,9 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.141.0"
+  ## The floor `[matching: ...]` asks for (parser.VarMatchingSince, via
+  ## bundle's syntax-floor table): below it the engine does not know the
+  ## form and refuses the FILE as a parse error rather than the bundle as
+  ## an unmet requirement. C252 asks for it; `cmd/release-floors` moves it
+  ## at the cut.
+  iterion: ">= 3.186.0"
