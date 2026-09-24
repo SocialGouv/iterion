@@ -119,3 +119,61 @@ func TestAssessmentShippedProfileDeclaresEveryCountDiscrete(t *testing.T) {
 		}
 	}
 }
+
+// AN OUTPUT THE RUNNER NAMED IS READ, OR THE MEASUREMENT IS REFUSED. Skipping
+// one that cannot be counted publishes its stack at zero, and zero reads as a
+// fact about the repository when it is a fact about the run.
+func TestAssessmentMeasureRefusesANamedOutputItCannotCount(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef",
+		[]map[string]any{{"id": "synth", "evidence": "a", "supported": true}}, inDomainSurvey(2))
+
+	for _, tc := range []struct{ name, body string }{
+		{"not JSON", `{"stack": "synth", "facts": {"entrypoints": 3}`},
+		{"no facts mapping", `{"stack": "synth", "extractor": "routes", "facts": null}`},
+		{"a count that is a string", `{"stack": "synth", "facts": {"entrypoints": "12"}}`},
+		{"a count that is negative", `{"stack": "synth", "facts": {"deployables": -1}}`},
+		{"versions that are not a list", `{"stack": "synth", "facts": {"declared_versions": "1.2"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := t.TempDir()
+			floor := writeFloor(t, scratch, floorLines(20000))
+			output := filepath.Join(scratch, "synth-routes.json")
+			if err := os.WriteFile(output, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			named, err := json.Marshal([]map[string]string{{
+				"stack": "synth", "extractor": "routes", "output": "synth-routes.json", "path": output}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, exit, stderr := assessmentRun(t, "measure", map[string]string{
+				"{{vars.workspace_dir}}":     ws,
+				"{{vars.scratch_dir}}":       scratch,
+				"{{vars.profile_path}}":      "",
+				"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+				"{{input.base_sha}}":         "deadbeefdeadbeef",
+				"{{input.survey_path}}":      survey,
+				"{{input.floor_path}}":       floor,
+			}, map[string]string{
+				"{{input.extractor_outputs}}":  string(named),
+				"{{input.stacks_unsupported}}": "[]",
+				"{{input.stacks_covered}}":     `["synth"]`,
+				"{{input.coverage_degraded}}":  "false",
+				"{{input.coverage_missing}}":   "[]",
+				"{{input.stacks_errored}}":     "[]",
+			})
+			if exit != 0 {
+				t.Fatalf("measure exited %d with no verdict: %s", exit, stderr)
+			}
+			if assessmentBool(t, out, "ok") {
+				t.Fatalf("an extractor output the runner named and nobody could count was skipped: %s",
+					assessmentString(t, out, "reason"))
+			}
+			if !strings.Contains(assessmentString(t, out, "reason"), "synth-routes.json") {
+				t.Errorf("the refusal does not name the output: %s", assessmentString(t, out, "reason"))
+			}
+		})
+	}
+}

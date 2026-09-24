@@ -2265,20 +2265,40 @@ tool measure:
         if isinstance(entry, dict) and entry.get("path"):
             produced_paths.append((str(entry.get("output") or os.path.basename(str(entry["path"]))),
                                    str(entry["path"])))
+    # An output the runner NAMED is one it verified as JSON when it wrote it.
+    # One that cannot be read here, carries no `facts` mapping or a count that
+    # is not a count, is REFUSED rather than skipped: skipped, its stack is
+    # published at zero — a fact about the run, read as one about the
+    # repository.
     for name, path in sorted(set(produced_paths)):
-            try:
-                document = json.load(open(path, encoding="utf-8"))
-            except (OSError, ValueError):
+        try:
+            document = json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            refuse("MEASUREMENT_REFUSED",
+                   "the extractor output %s (%s), named by the runner, cannot be read: %s"
+                   % (name, path, exc))
+        facts_block = document.get("facts") if isinstance(document, dict) else None
+        if not isinstance(facts_block, dict):
+            refuse("MEASUREMENT_REFUSED",
+                   "the extractor output %s carries no `facts` mapping. Every extractor emits its "
+                   "counts under `facts`; one that does not is measured by nobody, and read here it "
+                   "would publish its stack at zero." % name)
+        for key in ("entrypoints", "deployables"):
+            value = facts_block.get(key)
+            if value is None:
                 continue
-            facts_block = document.get("facts") if isinstance(document, dict) else None
-            if not isinstance(facts_block, dict):
-                continue
-            extractor_files.append(name)
-            for key in ("entrypoints", "deployables"):
-                if isinstance(facts_block.get(key), int):
-                    extracted[key] += facts_block[key]
-            if isinstance(facts_block.get("declared_versions"), list):
-                extracted["declared_versions"].extend(facts_block["declared_versions"])
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                refuse("MEASUREMENT_REFUSED",
+                       "the extractor output %s declares %s = %r; a count is a non-negative integer."
+                       % (name, key, value))
+            extracted[key] += value
+        versions = facts_block.get("declared_versions")
+        if versions is not None and not isinstance(versions, list):
+            refuse("MEASUREMENT_REFUSED",
+                   "the extractor output %s declares `declared_versions` as a %s; a list is required."
+                   % (name, type(versions).__name__))
+        extracted["declared_versions"].extend(versions or [])
+        extractor_files.append(name)
 
     # Counted in the unit each kind declares: deployables and systems by
     # distinct IDENTITY (one service described by three files is one), and
