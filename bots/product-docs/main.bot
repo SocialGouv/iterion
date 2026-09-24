@@ -2650,6 +2650,7 @@ DELIM_RE = re.compile(r'^\s*[|]?\s*:?-+:?\s*(?:[|]\s*:?-+:?\s*)*[|]?\s*' + chr(3
 TEMPLATE_LINE_RE = re.compile(r'^\s*[{]%.*%[}]\s*' + chr(36))
 HTML_BLOCK_RE = re.compile(r'^ {0,3}</?(?:table|thead|tbody|tfoot|tr|td|th|caption|ul|ol|li|dl|dt|dd|div|p|details|summary|section|article|aside|header|footer|nav|figure|figcaption|blockquote|h[1-6])(?:[\s/>]|' + chr(36) + ')', re.I)
 TAG_RE = re.compile(r'</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>')
+YAML_LINE_RE = re.compile(r'^(?:\s|#|-\s|[A-Za-z0-9_][A-Za-z0-9_.-]*\s*:(?:\s|' + chr(36) + ')|-?' + chr(36) + ')')
 LINK_DEST_RE = re.compile(r'\]\([^)]*\)')
 def fold(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if not unicodedata.combining(c)).lower()
@@ -2663,7 +2664,20 @@ def page_blocks(rows):
     ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
     ## page, in order. content is the line without its quote markers.
     blocks, cur, mode, in_fence = [], None, '', False
-    for idx, (no, text) in enumerate(rows):
+    ## FRONT MATTER is page metadata no renderer shows: a first line of ---
+    ## up to the next --- (or ...), every line between reading as YAML. Read
+    ## as markdown, its closing line would underline the keys into a chapter
+    ## nobody can anchor. A block that does NOT read as YAML is shown to the
+    ## reader, and is read here like the rest of the page.
+    start = 0
+    if rows and rows[0][1].strip() == '---':
+        for j in range(1, len(rows)):
+            if rows[j][1].strip() in ('---', '...'):
+                if all(YAML_LINE_RE.match(t) for _n, t in rows[1:j]):
+                    start = j + 1
+                break
+    for idx in range(start, len(rows)):
+        no, text = rows[idx]
         if FENCE_RE.match(text):
             ## A fenced sample teaches its reader to paste something; it
             ## makes no claim about the product. A shell comment in it is not

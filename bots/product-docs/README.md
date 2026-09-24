@@ -193,7 +193,8 @@ What the gate deliberately does not assume:
   of non-blank lines. A table row (leading pipes or not), a list item, a
   line of block-level HTML and a heading are each read on their own; a
   quote marker, a thematic break and a `{% … %}` template line end the
-  block before them; an underlined title is a heading. Table pipes, HTML
+  block before them; an underlined title is a heading, and a page's
+  leading YAML front matter is metadata, not a chapter. Table pipes, HTML
   tags and link destinations are markup, not prose. A heading documents
   nothing: it labels and anchors a chapter. And a block that documents
   several features **shares** its prose between them — each needs its

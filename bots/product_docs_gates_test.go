@@ -2508,6 +2508,32 @@ func TestProductDocsCoverageGateCreditsABlockItsOwnProse(t *testing.T) {
 	}
 }
 
+// TestProductDocsCoverageGateReadsFrontMatterAsMetadata: a page may open on
+// YAML front matter, which GitBook and MkDocs read as page metadata and never
+// show. Read as markdown, its closing --- underlines the keys into a level-2
+// chapter no citation can anchor — a refusal the campaign could only answer
+// by deleting metadata. A block between two --- lines that does NOT read as
+// YAML is shown to the reader, so a citation in it is still verified.
+func TestProductDocsCoverageGateReadsFrontMatterAsMetadata(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "---\n"+
+		"description: What a manager and a visitor see, screen by screen.\n"+
+		"icon: book\n"+
+		"---\n"+coverageHome)
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("front matter was read as a chapter of the page:\n%s", got.Log)
+	}
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "---\n"+
+		"The archive screen "+ref("items.archiving")+" hides what nobody consults any more.\n"+
+		"---\n"+coverageHome)
+	got := runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "the reference items.archiving is CITED and") {
+		t.Fatalf("a block between two rules that is not YAML was skipped as metadata:\n%s", got.Log)
+	}
+}
+
 // TestProductDocsCoverageGateReadsAnExclusionOverItsBlock: the exclusion rule
 // measured its prose on the citing LINE, so a normally wrapped paragraph —
 // the reason said once, across two lines — was refused, and the refusal asked
