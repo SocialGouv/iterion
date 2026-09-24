@@ -28,6 +28,9 @@ type phaseZeroOut struct {
 	RunAssessment bool   `json:"run_assessment"`
 	RunNet        bool   `json:"run_net"`
 	HeadBefore    string `json:"head_before"`
+	OracleDir     string `json:"oracle_dir"`
+	VerifyPath    string `json:"verify_path"`
+	LedgerPath    string `json:"ledger_path"`
 	Mode          string `json:"mode"`
 	CatalogPath   string `json:"catalog_path"`
 	Notice        string `json:"notice"`
@@ -460,35 +463,68 @@ func TestCampaignPlanLandedReadsGitNotTheChild(t *testing.T) {
 	})
 }
 
-// TestCampaignNetGateDecidesOnTheVerifyScript falsifies the second skip in
-// both directions, on the artefact preflight itself looks for — and on a
-// non-default oracle_dir, so the decision is read from the var and not from
+// netContract is a programme contract whose `oracle:` block is exactly the
+// given YAML lines ("" = no oracle block at all).
+func netContract(oracle string) string {
+	c := "version: 1\n"
+	if oracle != "" {
+		c += "oracle:\n" + oracle
+	}
+	return c + "lots:\n  - id: L1\n    title: a lot\n    status: todo\n"
+}
+
+// netRepo is a throwaway repository carrying the given contract, committed:
+// both edges into net_gate guarantee a contract file, and phase 0 refuses a
+// tree carrying work in flight before it gets there.
+func netRepo(t *testing.T, contract string) (string, func(args ...string) string) {
+	t.Helper()
+	ws, git := phaseZeroRepo(t)
+	writeUnder(t, ws, ".modernize/plan.yaml", contract)
+	git("add", ".modernize/plan.yaml")
+	git("commit", "-qm", "contract")
+	return ws, git
+}
+
+func runNetGate(t *testing.T, ws string) (int, phaseZeroOut, string) {
+	t.Helper()
+	return runPhaseZeroNode(t, "net_gate", map[string]string{
+		"{{vars.workspace_dir}}": strconv.Quote(ws),
+		"{{vars.plan_path}}":     strconv.Quote(".modernize/plan.yaml"),
+	}, "")
+}
+
+// TestCampaignNetGateDecidesOnTheWholeNet falsifies the second skip in both
+// directions: the net is its three files, and each ONE of them missing
+// launches the child. It runs on the default location AND on one the
+// contract names, so the decision is read where the contract says, not from
 // a hard-coded `.golden-master`.
-func TestCampaignNetGateDecidesOnTheVerifyScript(t *testing.T) {
+func TestCampaignNetGateDecidesOnTheWholeNet(t *testing.T) {
 	requireModernizeTools(t)
 
-	for _, oracle := range []string{".golden-master", ".net"} {
-		oracle := oracle
-		t.Run("oracle_dir="+oracle, func(t *testing.T) {
-			ws, git := phaseZeroRepo(t)
+	for _, c := range []struct{ name, oracle, dir string }{
+		{"the contract names no oracle.dir", "", ".golden-master"},
+		{"the contract names oracle.dir .net", "  dir: .net\n", ".net"},
+	} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			ws, git := netRepo(t, netContract(c.oracle))
 			head := strings.TrimSpace(git("rev-parse", "HEAD"))
-			subs := map[string]string{
-				"{{vars.workspace_dir}}": strconv.Quote(ws),
-				"{{vars.oracle_dir}}":    strconv.Quote(oracle),
-			}
 
-			exit, out, stderr := runPhaseZeroNode(t, "net_gate", subs, "")
+			exit, out, stderr := runNetGate(t, ws)
 			if exit != 0 {
 				t.Fatalf("exit = %d, want 0 (stderr %q)", exit, stderr)
 			}
 			if !out.RunNet {
-				t.Errorf("run_net = false with no net at all under %s (notice %q)", oracle, out.Notice)
+				t.Errorf("run_net = false with no net at all under %s (notice %q)", c.dir, out.Notice)
 			}
-			if !strings.Contains(out.Notice, "golden-master RUN: the net at "+oracle+" is missing") {
+			if !strings.Contains(out.Notice, "golden-master RUN: the net at "+c.dir+" (") || !strings.Contains(out.Notice, "is missing") {
 				t.Errorf("notice = %q", out.Notice)
 			}
 			if out.HeadBefore != head {
 				t.Errorf("head_before = %q, want HEAD %q", out.HeadBefore, head)
+			}
+			if out.OracleDir != c.dir || out.VerifyPath != filepath.Join(c.dir, "verify-oracle.sh") {
+				t.Errorf("location = %q / %q, want %q and its verify-oracle.sh", out.OracleDir, out.VerifyPath, c.dir)
 			}
 
 			// A net is its three files, the same three net_landed requires.
@@ -499,37 +535,189 @@ func TestCampaignNetGateDecidesOnTheVerifyScript(t *testing.T) {
 			whole := []string{"verify-oracle.sh", "corpus.json", "feature-coverage.json"}
 			for _, missing := range whole {
 				for _, name := range whole {
-					path := filepath.Join(ws, oracle, name)
+					path := filepath.Join(ws, c.dir, name)
 					if name == missing {
 						if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 							t.Fatal(err)
 						}
 						continue
 					}
-					writeUnder(t, ws, filepath.Join(oracle, name), "x\n")
+					writeUnder(t, ws, filepath.Join(c.dir, name), "x\n")
 				}
-				_, out, _ := runPhaseZeroNode(t, "net_gate", subs, "")
+				_, out, _ := runNetGate(t, ws)
 				if !out.RunNet {
 					t.Errorf("a net without %s must not count as a net (notice %q)", missing, out.Notice)
 				}
-				if !strings.Contains(out.Notice, filepath.Join(oracle, missing)) {
+				if !strings.Contains(out.Notice, filepath.Join(c.dir, missing)) {
 					t.Errorf("notice = %q, want it to name the missing %s", out.Notice, missing)
 				}
 			}
 
 			for _, name := range whole {
-				writeUnder(t, ws, filepath.Join(oracle, name), "x\n")
+				writeUnder(t, ws, filepath.Join(c.dir, name), "x\n")
 			}
-			exit, out, _ = runPhaseZeroNode(t, "net_gate", subs, "")
+			exit, out, _ = runNetGate(t, ws)
 			if exit != 0 || out.RunNet {
 				t.Fatalf("exit = %d, run_net = %v with the whole net present; want 0/false (notice %q)", exit, out.RunNet, out.Notice)
 			}
-			if !strings.Contains(out.Notice, "golden-master SKIPPED: the net at "+oracle+" is complete") ||
-				!strings.Contains(out.Notice, filepath.Join(oracle, "feature-coverage.json")) {
+			if !strings.Contains(out.Notice, "golden-master SKIPPED: the net at "+c.dir+" (") ||
+				!strings.Contains(out.Notice, filepath.Join(c.dir, "feature-coverage.json")) {
 				t.Errorf("notice = %q, want it to name the artefacts that caused the skip", out.Notice)
 			}
 		})
 	}
+}
+
+// TestCampaignNetLocationIsTheContracts: phase 0 builds and judges the net
+// where the CONTRACT puts it, because that is where preflight — and every
+// lot after it — looks. A location from anywhere else would, on a contract
+// naming another directory, skip a net that is there or build one nobody
+// reads.
+func TestCampaignNetLocationIsTheContracts(t *testing.T) {
+	requireModernizeTools(t)
+
+	whole := func(t *testing.T, ws, dir string) {
+		t.Helper()
+		for _, name := range []string{"verify-oracle.sh", "corpus.json", "feature-coverage.json"} {
+			writeUnder(t, ws, filepath.Join(dir, name), "x\n")
+		}
+	}
+	gm := "  dir: .gm\n"
+
+	t.Run("the contract names .gm and the net is complete THERE: skipped", func(t *testing.T) {
+		ws, _ := netRepo(t, netContract(gm))
+		whole(t, ws, ".gm")
+		exit, out, stderr := runNetGate(t, ws)
+		if exit != 0 || out.RunNet {
+			t.Fatalf("exit = %d, run_net = %v; want 0/false — the net the contract names is complete (notice %q, stderr %q)", exit, out.RunNet, out.Notice, stderr)
+		}
+		if out.OracleDir != ".gm" || !strings.Contains(out.Notice, "named by the contract") {
+			t.Errorf("oracle_dir = %q, notice = %q; want .gm, attributed to the contract", out.OracleDir, out.Notice)
+		}
+	})
+
+	t.Run("the contract names .gm and the net is complete ELSEWHERE: the child builds at .gm", func(t *testing.T) {
+		ws, _ := netRepo(t, netContract(gm))
+		whole(t, ws, ".golden-master")
+		exit, out, _ := runNetGate(t, ws)
+		if exit != 0 || !out.RunNet {
+			t.Fatalf("exit = %d, run_net = %v; want 0/true — a net where the contract does not look is no net (notice %q)", exit, out.RunNet, out.Notice)
+		}
+		if out.OracleDir != ".gm" || !strings.Contains(out.Notice, filepath.Join(".gm", "verify-oracle.sh")) {
+			t.Errorf("oracle_dir = %q, notice = %q; want the child sent to .gm", out.OracleDir, out.Notice)
+		}
+	})
+
+	// The derivation must be preflight's, term for term: run BOTH real nodes
+	// on the same committed tree and compare what they conclude. This is the
+	// guard against the two copies drifting apart — preflight is not edited
+	// by phase 0, so the copy is the one that must follow.
+	for _, c := range []struct{ name, oracle, dir, verify string }{
+		{"no oracle block", "", ".golden-master", ".golden-master/verify-oracle.sh"},
+		{"an oracle block naming only refs_dir", "  refs_dir: .golden-master/refs\n", ".golden-master", ".golden-master/verify-oracle.sh"},
+		{"oracle.dir only", "  dir: .gm\n", ".gm", ".gm/verify-oracle.sh"},
+		{"oracle.dir and its own verify", "  dir: .gm\n  verify: .gm/run-net.sh\n", ".gm", ".gm/run-net.sh"},
+		{"oracle.verify only", "  verify: ci/verify-net.sh\n", ".golden-master", "ci/verify-net.sh"},
+		{"a nested directory", "  dir: quality/net\n", "quality/net", "quality/net/verify-oracle.sh"},
+	} {
+		c := c
+		t.Run("same location as preflight: "+c.name, func(t *testing.T) {
+			ws, git := netRepo(t, netContract(c.oracle))
+			writeUnder(t, ws, c.verify, "x\n")
+			writeUnder(t, ws, filepath.Join(c.dir, "corpus.json"), "x\n")
+			writeUnder(t, ws, filepath.Join(c.dir, "feature-coverage.json"), "x\n")
+			git("add", "-A")
+			git("commit", "-qm", "net")
+
+			exit, gate, stderr := runNetGate(t, ws)
+			if exit != 0 || gate.RunNet {
+				t.Fatalf("net_gate: exit = %d, run_net = %v; want 0/false (notice %q, stderr %q)", exit, gate.RunNet, gate.Notice, stderr)
+			}
+			exit, pre, stderr := runPhaseZeroNode(t, "preflight", map[string]string{
+				"{{vars.workspace_dir}}": strconv.Quote(ws),
+				"{{vars.plan_path}}":     strconv.Quote(".modernize/plan.yaml"),
+			}, "")
+			if exit != 0 {
+				t.Fatalf("preflight: exit = %d, want 0 on the same tree (notice %q, stderr %q)", exit, pre.Notice, stderr)
+			}
+			if gate.VerifyPath != pre.VerifyPath || gate.OracleDir != filepath.Dir(pre.LedgerPath) {
+				t.Errorf("net_gate says %q / %q, preflight says %q / %q — phase 0 would build a net preflight does not read",
+					gate.OracleDir, gate.VerifyPath, filepath.Dir(pre.LedgerPath), pre.VerifyPath)
+			}
+			if gate.OracleDir != c.dir || gate.VerifyPath != c.verify {
+				t.Errorf("location = %q / %q, want %q / %q", gate.OracleDir, gate.VerifyPath, c.dir, c.verify)
+			}
+		})
+	}
+
+	// The child writes its entry point at <dir>/verify-oracle.sh, never where
+	// a contract chooses. A contract naming another one that is absent asks
+	// for something no run of that child produces.
+	t.Run("a contract-chosen entry point that is absent: refused before the child is launched", func(t *testing.T) {
+		ws, _ := netRepo(t, netContract("  dir: .gm\n  verify: ci/verify-net.sh\n"))
+		exit, out, stderr := runNetGate(t, ws)
+		if exit != 1 {
+			t.Fatalf("exit = %d, want 1 (notice %q)", exit, out.Notice)
+		}
+		for _, ch := range []string{out.Notice, stderr} {
+			if !strings.Contains(ch, "names the net's entry point ci/verify-net.sh") || !strings.Contains(ch, ".gm/verify-oracle.sh") {
+				t.Errorf("channel = %q, want the refusal to name both entry points", ch)
+			}
+		}
+	})
+	t.Run("the same contract with that entry point committed: the child completes the rest", func(t *testing.T) {
+		ws, git := netRepo(t, netContract("  dir: .gm\n  verify: ci/verify-net.sh\n"))
+		writeUnder(t, ws, "ci/verify-net.sh", "x\n")
+		git("add", "ci/verify-net.sh")
+		git("commit", "-qm", "entry point")
+		exit, out, _ := runNetGate(t, ws)
+		if exit != 0 || !out.RunNet || out.VerifyPath != "ci/verify-net.sh" {
+			t.Fatalf("exit = %d, run_net = %v, verify = %q; want 0/true/ci/verify-net.sh (notice %q)", exit, out.RunNet, out.VerifyPath, out.Notice)
+		}
+	})
+
+	for _, c := range []struct{ name, oracle, named string }{
+		{"an absolute oracle.dir", "  dir: /srv/net\n", "/srv/net"},
+		{"an oracle.dir escaping the workspace", "  dir: ../net\n", "../net"},
+		{"an oracle.verify escaping the workspace", "  verify: ../verify.sh\n", "../verify.sh"},
+	} {
+		c := c
+		t.Run(c.name+": refused, by name", func(t *testing.T) {
+			ws, _ := netRepo(t, netContract(c.oracle))
+			exit, out, stderr := runNetGate(t, ws)
+			if exit != 1 {
+				t.Fatalf("exit = %d, want 1 (notice %q)", exit, out.Notice)
+			}
+			for _, ch := range []string{out.Notice, stderr} {
+				if !strings.Contains(ch, "puts the net at "+c.named+", outside the workspace") {
+					t.Errorf("channel = %q, want the refusal to name %s", ch, c.named)
+				}
+			}
+		})
+	}
+
+	t.Run("a contract that does not read: refused rather than guessed", func(t *testing.T) {
+		ws, _ := netRepo(t, "lots: [\n  - id: L1\n")
+		exit, out, stderr := runNetGate(t, ws)
+		if exit != 1 || !strings.Contains(out.Notice, "does not read as a mapping") || !strings.Contains(stderr, "does not read as a mapping") {
+			t.Fatalf("exit = %d, notice %q, stderr %q; want 1 and a named refusal on both channels", exit, out.Notice, stderr)
+		}
+	})
+
+	t.Run("no yq: refused, and the same tree with yq decides", func(t *testing.T) {
+		ws, _ := netRepo(t, netContract(gm))
+		subs := map[string]string{
+			"{{vars.workspace_dir}}": strconv.Quote(ws),
+			"{{vars.plan_path}}":     strconv.Quote(".modernize/plan.yaml"),
+		}
+		exit, out, stderr := runPhaseZeroNode(t, "net_gate", subs, restrictedPATH(t, "git", "python3"))
+		if exit != 1 || !strings.Contains(out.Notice, "yq is not on PATH") || !strings.Contains(stderr, "yq is not on PATH") {
+			t.Fatalf("exit = %d, notice %q, stderr %q; want 1 naming yq on both channels", exit, out.Notice, stderr)
+		}
+		if exit, out, _ := runPhaseZeroNode(t, "net_gate", subs, ""); exit != 0 || out.OracleDir != ".gm" {
+			t.Fatalf("with yq back: exit = %d, oracle_dir = %q; want 0/.gm (notice %q)", exit, out.OracleDir, out.Notice)
+		}
+	})
 }
 
 // TestCampaignNetLandedRequiresTheWholeNet falsifies the second landed
@@ -541,13 +729,18 @@ func TestCampaignNetLandedRequiresTheWholeNet(t *testing.T) {
 	requireModernizeTools(t)
 
 	const oracle = ".golden-master"
-	run := func(t *testing.T, ws, before string) (int, phaseZeroOut, string) {
+	runAt := func(t *testing.T, ws, before, dir, verify string) (int, phaseZeroOut, string) {
 		t.Helper()
 		return runPhaseZeroNode(t, "net_landed", map[string]string{
 			"{{vars.workspace_dir}}": strconv.Quote(ws),
-			"{{vars.oracle_dir}}":    strconv.Quote(oracle),
 			"{{input.before}}":       strconv.Quote(before),
+			"{{input.oracle_dir}}":   strconv.Quote(dir),
+			"{{input.verify_path}}":  strconv.Quote(verify),
 		}, "")
+	}
+	run := func(t *testing.T, ws, before string) (int, phaseZeroOut, string) {
+		t.Helper()
+		return runAt(t, ws, before, oracle, filepath.Join(oracle, "verify-oracle.sh"))
 	}
 	commitNet := func(t *testing.T, ws string, git func(...string) string, names ...string) {
 		t.Helper()
@@ -605,6 +798,39 @@ func TestCampaignNetLandedRequiresTheWholeNet(t *testing.T) {
 		})
 	}
 
+	// The location is net_gate's, carried on the edge: the gate judges the
+	// net where the child was TOLD to build it.
+	t.Run("told .gm, the net committed at .gm: accepted", func(t *testing.T) {
+		ws, git := phaseZeroRepo(t)
+		before := strings.TrimSpace(git("rev-parse", "HEAD"))
+		for _, n := range whole {
+			writeUnder(t, ws, filepath.Join(".gm", n), "x\n")
+			git("add", filepath.Join(".gm", n))
+		}
+		git("commit", "-qm", "net")
+		if exit, out, stderr := runAt(t, ws, before, ".gm", ".gm/verify-oracle.sh"); exit != 0 {
+			t.Fatalf("exit = %d, want 0 (notice %q, stderr %q)", exit, out.Notice, stderr)
+		}
+	})
+	t.Run("told .gm, the net committed at the default instead: refused", func(t *testing.T) {
+		ws, git := phaseZeroRepo(t)
+		before := strings.TrimSpace(git("rev-parse", "HEAD"))
+		commitNet(t, ws, git, whole...)
+		exit, out, _ := runAt(t, ws, before, ".gm", ".gm/verify-oracle.sh")
+		if exit != 1 || !strings.Contains(out.Notice, ".gm/corpus.json") {
+			t.Fatalf("exit = %d, notice = %q; want 1 naming the net where it was told to be", exit, out.Notice)
+		}
+	})
+	t.Run("no location on the edge: refused rather than guessed", func(t *testing.T) {
+		ws, git := phaseZeroRepo(t)
+		before := strings.TrimSpace(git("rev-parse", "HEAD"))
+		commitNet(t, ws, git, whole...)
+		exit, out, stderr := runAt(t, ws, before, "", "")
+		if exit != 1 || !strings.Contains(out.Notice, "received no net location") || !strings.Contains(stderr, "received no net location") {
+			t.Fatalf("exit = %d, notice = %q; want 1 and a named refusal on both channels", exit, out.Notice)
+		}
+	})
+
 	t.Run("the whole net committed, then something left dirty: refused", func(t *testing.T) {
 		ws, git := phaseZeroRepo(t)
 		before := strings.TrimSpace(git("rev-parse", "HEAD"))
@@ -658,12 +884,9 @@ func TestCampaignDocsGateWritesTheCatalogOutOfTree(t *testing.T) {
 		// The catalog carries the frozen shape, read back through yq —
 		// not through a string match on what the node wrote.
 		//
-		// This asserts the PRODUCER only. `repos[].path` is the docs
-		// child's local-source form and its resolver does not read it yet
-		// (it reads url / github_repo / gitlab_path, and records anything
-		// else `degraded`); the key is being added on that bot's own
-		// branch. So a green here is not a working integration — the merge
-		// order is, and phase 0 ships off until it holds.
+		// This asserts the PRODUCER only: a green here is not a working
+		// integration. TestCampaignPhaseZeroChildrenReadWhatTheyAreHanded
+		// feeds this catalog to the docs child's own catalog_ingest.
 		raw, err := exec.Command("yq", "-o=json", out.CatalogPath).Output()
 		if err != nil {
 			t.Fatalf("the generated catalog does not parse: %v", err)
@@ -935,19 +1158,38 @@ func TestCampaignPhaseZeroTopology(t *testing.T) {
 	}
 
 	// The base sha the landed checks measure against travels on the edge,
-	// captured by the graph before the child ran — never re-read after.
-	for _, e := range []struct{ from, ref string }{
-		{"assessment", "{{outputs.phase_zero.head_before}}"},
-		{"golden_master", "{{outputs.net_gate.head_before}}"},
+	// captured by the graph before the child ran — never re-read after. So
+	// does the net's location: derived once, by net_gate, from the contract.
+	for _, e := range []struct{ from, key, ref string }{
+		{"assessment", "before", "{{outputs.phase_zero.head_before}}"},
+		{"golden_master", "before", "{{outputs.net_gate.head_before}}"},
+		{"golden_master", "oracle_dir", "{{outputs.net_gate.oracle_dir}}"},
+		{"golden_master", "verify_path", "{{outputs.net_gate.verify_path}}"},
 	} {
-		if !edgeCarries(wf, e.from, "before", e.ref) {
-			t.Errorf("the edge out of %s does not carry before: %s", e.from, e.ref)
+		if !edgeCarries(wf, e.from, e.key, e.ref) {
+			t.Errorf("the edge out of %s does not carry %s: %s", e.from, e.key, e.ref)
 		}
+	}
+	for _, child := range []string{"golden_master", "product_docs"} {
+		sb, _ := wf.Nodes[child].(*ir.SubbotNode)
+		if sb == nil {
+			continue
+		}
+		for _, m := range sb.With {
+			if m.Key == "oracle_dir" && m.Raw != "{{outputs.net_gate.oracle_dir}}" {
+				t.Errorf("%s is handed oracle_dir %q, want net_gate's derivation — the net lives where the contract says", child, m.Raw)
+			}
+		}
+	}
+	// A var would be a second source for the net's location, and a campaign
+	// setting it would build a net preflight never reads.
+	if wf.Vars["oracle_dir"] != nil {
+		t.Errorf("oracle_dir is a var again: the net's location is the contract's to say")
 	}
 
 	// Every new var has a default: a campaign that declared phase 0 without
 	// one would refuse to launch rather than skip it.
-	for _, name := range []string{"phase_zero", "brief_path", "oracle_dir", "docs_dir", "docs_product_id", "scratch_dir"} {
+	for _, name := range []string{"phase_zero", "brief_path", "docs_dir", "docs_product_id", "scratch_dir"} {
 		v := wf.Vars[name]
 		if v == nil {
 			t.Errorf("var %q is not declared", name)
@@ -959,6 +1201,127 @@ func TestCampaignPhaseZeroTopology(t *testing.T) {
 	}
 	if wf.Vars["docs_dir"] != nil && wf.Vars["docs_dir"].Default != "docs/client" {
 		t.Errorf("docs_dir default = %v, want docs/client", wf.Vars["docs_dir"].Default)
+	}
+}
+
+// TestCampaignPhaseZeroChildrenReadWhatTheyAreHanded holds phase 0 against
+// its REAL children, not against the shape it was built to. Two failures pass
+// every test that looks at the producer alone: a `with:` key the child does not
+// declare is dropped without a word, and a catalog source the docs child
+// cannot resolve is recorded `degraded` — the campaign would then document a
+// product from nothing. So every key is checked against the child's declared
+// vars, and the catalog docs_gate writes is fed to the docs child's own
+// catalog_ingest.
+//
+// The docs child's half of the interface is its `oracle_dir` var and its
+// local-source catalog form (`repos[].path`), which arrive together. While the
+// docs child in this tree declares no `oracle_dir`, the one thing that may hold
+// is that phase 0 defaults OFF — and that is asserted, so the day either side
+// moves alone this test reddens instead of a campaign.
+func TestCampaignPhaseZeroChildrenReadWhatTheyAreHanded(t *testing.T) {
+	requireModernizeTools(t)
+
+	campy := compileBot(t, "campaign")
+	docs := compileBot(t, "product-docs")
+	if campy == nil || docs == nil {
+		t.Fatal("campaign or product-docs did not compile")
+	}
+	docsReady := docs.Vars["oracle_dir"] != nil
+	phaseZeroOnByDefault := campy.Vars["phase_zero"] != nil && campy.Vars["phase_zero"].Default == true
+
+	for node, bundle := range map[string]string{
+		"assessment":    "assessment",
+		"golden_master": "golden-master",
+		"product_docs":  "product-docs",
+	} {
+		sb, ok := campy.Nodes[node].(*ir.SubbotNode)
+		if !ok {
+			t.Errorf("%s is %T, want a subbot node", node, campy.Nodes[node])
+			continue
+		}
+		child := compileBot(t, bundle)
+		if child == nil {
+			t.Errorf("%s does not compile", bundle)
+			continue
+		}
+		for _, m := range sb.With {
+			if child.Vars[m.Key] != nil {
+				continue
+			}
+			if node == "product_docs" && m.Key == "oracle_dir" && !docsReady && !phaseZeroOnByDefault {
+				continue
+			}
+			t.Errorf("%s hands %s a %q it does not declare: the value is dropped without a word", node, bundle, m.Key)
+		}
+	}
+
+	// The catalog and the net, end to end: net_gate derives where the net
+	// lives from the contract, docs_gate writes the catalog, and the docs
+	// child reads both — with the values phase 0 hands over, not literals.
+	// The contract names a non-default directory so a child that ignored the
+	// handed value and fell back to its own default could not pass.
+	const docsDir = "docs/client"
+	ws, git := netRepo(t, netContract("  dir: .gm\n"))
+	for _, name := range []string{"verify-oracle.sh", "corpus.json", "feature-coverage.json"} {
+		writeUnder(t, ws, filepath.Join(".gm", name), "{}\n")
+	}
+	git("add", ".gm")
+	git("commit", "-qm", "net")
+	exit, net, stderr := runNetGate(t, ws)
+	if exit != 0 || net.OracleDir != ".gm" {
+		t.Fatalf("net_gate: exit = %d, oracle_dir = %q; want 0/.gm (notice %q, stderr %q)", exit, net.OracleDir, net.Notice, stderr)
+	}
+	exit, gate, stderr := runPhaseZeroNode(t, "docs_gate", map[string]string{
+		"{{vars.workspace_dir}}":   strconv.Quote(ws),
+		"{{vars.docs_dir}}":        strconv.Quote(docsDir),
+		"{{vars.docs_product_id}}": strconv.Quote("product"),
+		"{{vars.scratch_dir}}":     strconv.Quote(filepath.Join(t.TempDir(), "campaign")),
+	}, "")
+	if exit != 0 {
+		t.Fatalf("docs_gate: exit = %d (notice %q, stderr %q)", exit, gate.Notice, stderr)
+	}
+	secretGlobs, _ := docs.Vars["secret_globs"].Default.(string)
+	// Every var catalog_ingest reads, at the value the run gives it: the four
+	// phase 0 hands over, the child's own defaults for the rest. A superset —
+	// resolveCommand fails on a ref left behind, not on one unused.
+	cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "catalog_ingest"), map[string]string{
+		"vars.workspace_dir": ws,
+		"vars.catalog_path":  gate.CatalogPath,
+		"vars.product_id":    "product",
+		"vars.oracle_dir":    net.OracleDir,
+		"vars.scratch_dir":   filepath.Join(t.TempDir(), "product-docs"),
+		"vars.clone_depth":   strconv.FormatInt(docs.Vars["clone_depth"].Default.(int64), 10),
+		"vars.secret_globs":  secretGlobs,
+	})
+	var got struct {
+		ProductDir string           `json:"product_dir"`
+		Inventory  []map[string]any `json:"inventory"`
+		OKCount    int              `json:"ok_count"`
+		OraclePath string           `json:"oracle_path"`
+		Log        string           `json:"log"`
+	}
+	runJSON(t, cmd, &got)
+	if got.ProductDir != docsDir {
+		t.Errorf("the docs child resolved product_dir %q from the generated catalog, want %q", got.ProductDir, docsDir)
+	}
+
+	if !docsReady {
+		if phaseZeroOnByDefault {
+			t.Fatalf("phase_zero defaults ON while the docs child declares no oracle_dir and reads the generated catalog as: %s", got.Log)
+		}
+		t.Logf("the docs child declares no oracle_dir: its half of the interface is not in this tree, and phase 0 defaults OFF (catalog read as: %s)", got.Log)
+		return
+	}
+	if len(got.Inventory) != 1 || got.OKCount != 1 {
+		t.Fatalf("the docs child read %d source(s), %d ok, from the generated catalog; want exactly this checkout, ok (%s)", len(got.Inventory), got.OKCount, got.Log)
+	}
+	if e := got.Inventory[0]; e["status"] != "ok" || e["local"] != true {
+		t.Errorf("source entry = %v, want status ok and local — this checkout, read from disk without a forge", e)
+	}
+	wantNet, _ := filepath.EvalSymlinks(filepath.Join(ws, net.OracleDir))
+	gotNet, _ := filepath.EvalSymlinks(got.OraclePath)
+	if got.OraclePath == "" || gotNet != wantNet {
+		t.Errorf("the docs child found its net at %q, want %q — the exhaustiveness gate would not arm (%s)", got.OraclePath, wantNet, got.Log)
 	}
 }
 

@@ -639,7 +639,7 @@ last word on what came out.
   the net (run golden-master directly), or to decide WHAT to modernise
   without writing it down — the programme starts as a human brief, and this
   bot's whole authority over it is measuring whether it advances.
-- **Vars**: `brief_path` (string), `docs_dir` (string), `docs_product_id` (string), `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `oracle_dir` (string), `phase_zero` (bool), `plan_path` (string), `scratch_dir` (string), `stagnation_stop` (int), `workspace_dir` (string)
+- **Vars**: `brief_path` (string), `docs_dir` (string), `docs_product_id` (string), `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `phase_zero` (bool), `plan_path` (string), `scratch_dir` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
 
 ### `copilot` — Copi

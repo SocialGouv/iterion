@@ -6,7 +6,9 @@ version: 0.2.0
 ## bots run before `preflight` (unchanged) — assessment writes the contract,
 ## golden-master builds the net, product-docs writes the product
 ## documentation — each skipped on the ARTEFACT that makes it unnecessary,
-## each verified in git afterwards. The wall clock moves 48h → 72h to hold
+## each verified in git afterwards. Where the net lives is read from the
+## contract, as preflight reads it, and handed to both children that touch
+## it — never a var of its own. The wall clock moves 48h → 72h to hold
 ## the bootstrap without spending it out of the programme. `phase_zero`
 ## ships OFF: the docs child declares `worktree: auto` and the engine runs
 ## such a child in the parent's tree only under a sandbox, so a local run

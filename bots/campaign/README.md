@@ -51,15 +51,28 @@ phase_zero ─▶ assessment ─▶ golden_master ─▶ product_docs ─▶ pre
 
 The order is not a preference: neither child has anything to work from
 until the contract is written, and documentation cannot be shown to cover
-a product against an inventory that does not exist yet — which is why
-`oracle_dir` is handed to the docs child. That last half is the **end
-state**: the docs child reads no net today, and the var it needs is being
-added on its own branch (see *Where this is waiting on a sibling* below).
+a product against an inventory that does not exist yet — which is why the
+net's location is handed to the docs child, whose exhaustiveness gate reads
+the net's feature inventory and corpus there (see *What phase 0 needs from
+its children* below).
+
+**Where the net lives is the contract's to say.** `net_gate` reads
+`oracle.dir` and `oracle.verify` from the contract exactly as `preflight`
+does — `.golden-master` and its `verify-oracle.sh` when the contract names
+none — and hands that one derivation to the golden-master child, to
+`net_landed` and to the docs child. It is deliberately not a var: preflight
+is where the campaign looks for the net once phase 0 is over, and a second
+source for the same path would let phase 0 build a net nobody reads. Two
+contracts are refused before any child starts: one that puts the net
+outside the workspace, and one naming an entry point (`oracle.verify`) that
+is absent — the golden-master child writes its entry point at
+`<dir>/verify-oracle.sh` and nowhere else, so launching it could not
+satisfy preflight.
 
 | child | source | skipped when | landed when |
 |---|---|---|---|
 | `assessment` | `../assessment/main.bot` | `plan_path` exists **and parses** | `plan_path` committed, HEAD moved |
-| `golden_master` | `../golden-master/main.bot` | `verify-oracle.sh`, `corpus.json` **and** `feature-coverage.json` are all under `<oracle_dir>` | the same three committed, HEAD moved |
+| `golden_master` | `../golden-master/main.bot` | the contract's entry point, `corpus.json` **and** `feature-coverage.json` are all where the contract puts the net | the same three committed, HEAD moved |
 | `product_docs` | `../product-docs/main.bot` | never — always launched, `full` or `incremental` | at least one `*.md` committed under `docs_dir` |
 
 Three properties hold the phase to the rest of the bot's doctrine:
@@ -75,9 +88,9 @@ Three properties hold the phase to the rest of the bot's doctrine:
   applies to its lots. Anything else REFUSES, naming the child.
 - **`preflight` still has the last word.** Phase 0 produces; preflight
   judges. It re-reads the contract, re-derives the net's location **from
-  that contract**, and refuses on a dirty tree. A contract pointing the
-  oracle somewhere other than `oracle_dir` fails there, loudly, rather
-  than being silently overridden.
+  that contract** — the derivation `net_gate` copies term for term, and a
+  test runs both nodes on the same trees to keep the copy honest — and
+  refuses on a dirty tree.
 
 `product_docs` never gets the HEAD-moved test: it runs on every campaign,
 and an incremental pass over documentation nothing changed is entitled to
@@ -102,25 +115,24 @@ naming this checkout as its one local source: a catalog written into the
 workspace would be the uncommitted change preflight then refuses.
 
 `phase_zero: false` cuts the whole phase: the campaign enters at
-`preflight`, exactly as it did before. **That is the default today** — see
-below.
+`preflight`, exactly as it did before. **That is the default** — see below.
 
-### Where this is waiting on a sibling
+### What phase 0 needs from its children
 
-Phase 0 is built, falsified and off by default. Three things have to land
-before the default flips to `true`:
+Phase 0 is off by default. Two things outside this bundle decide when it
+can default on:
 
-| what | why it blocks | measured |
+| what | why | what holds it |
 |---|---|---|
-| the engine's subbot/worktree condition | `pkg/runtime/engine_run.go` runs a `worktree: auto` child in the parent's tree only when the parent holds a **sandbox**. The docs child declares `worktree: auto`, so a plain local `iterion run` gives it a worktree of its own, it finalises its pages onto a branch, and `docs_landed` refuses — on a product with no pages yet. On one that arrived documented, that gate sees the pages that were already there and can only SAY so. | the condition reads `e.sharedSandbox != nil && e.sharedSandbox.Run != nil` while its own comment says "a subbot child in its parent's sandbox" |
-| the docs child's local-source key | the generated catalog names its one source with `repos[].path`. Until the child's resolver reads it, the entry is recorded `degraded` and the campaign documents a product from nothing. | `grep -c 'path' …/product-docs` resolver: `url`, `github_repo`, `gitlab_path` only |
-| the docs child's `oracle_dir` var | the coverage half of the ordering rationale. An undeclared key is dropped in silence. | `grep -cE 'oracle_dir\|feature-coverage\|corpus\.json' bots/product-docs/main.bot` → `0` |
+| the engine's subbot/worktree condition | `pkg/runtime/engine_run.go` runs a `worktree: auto` child in the parent's tree only when the parent holds a **sandbox**. The docs child declares `worktree: auto`, so a plain local `iterion run` gives it a worktree of its own, it finalises its pages onto a branch, and `docs_landed` refuses — on a product with no pages yet. On one that arrived documented, that gate sees the pages that were already there and can only SAY so. A sandboxed run does not hit this. | the default: the condition reads `e.sharedSandbox != nil && e.sharedSandbox.Run != nil` while its own comment says "a subbot child in its parent's sandbox" |
+| the docs child's interface: its local-source catalog form (`repos[].path`) and its `oracle_dir` var | a docs child without the first records the generated catalog's one source `degraded` and documents the product **from nothing**; without the second it drops the net's location without a word, and its exhaustiveness gate never arms. Phase 0 cannot see either at run time — `docs_landed` accepts committed pages, whatever they were written from. | `TestCampaignPhaseZeroChildrenReadWhatTheyAreHanded` feeds the catalog phase 0 generates to the docs child's own `catalog_ingest`. While the docs child declares no `oracle_dir`, it asserts phase 0 defaults **off**; once it does, it asserts the source is read locally and the net found where the contract put it. |
 
-Until then, a campaign that turns phase 0 on gets a **named refusal**
-rather than a silent half-run on a product with no documentation yet — and
-on one that already has some, a notice that says the gate could not tell.
-Judging children in git instead of believing them is the point; saying
-exactly what that proves is the other half of it.
+So `--var phase_zero=true` is safe where the catalogue's docs child reads
+that interface; on a local, non-sandboxed run, the first row still makes a
+product with no pages yet a **named refusal** rather than a silent
+half-run, and one that already has pages a notice that says the gate could
+not tell. Judging children in git instead of believing them is the point;
+saying exactly what that proves is the other half of it.
 
 ## What a campaign iteration does
 
@@ -162,7 +174,6 @@ exactly what that proves is the other half of it.
 | `workspace_dir`, `plan_path` | `${PROJECT_DIR}`, `.modernize/plan.yaml` | Where the programme lives. |
 | `phase_zero` | `false` | **The phase-0 switch.** `false` enters at `preflight`, which refuses whichever prerequisite is missing — the campaign exactly as it ran before. Off by default until the three siblings below land; `--var phase_zero=true` turns it on. |
 | `brief_path` | `.modernize/brief.yaml` | The written brief the assessment child turns into the contract. Missing it, when the contract has to be written, is a **refusal**: a plan is never guessed. |
-| `oracle_dir` | `.golden-master` | Where phase 0 **builds** the net. Once the contract exists, `preflight` reads the net's location from the **contract**. |
 | `docs_dir` | `docs/client` | Where the docs child writes the product documentation, in the target repo. |
 | `docs_product_id` | `product` | The id the generated catalog gives the product and its single repo. Any stable slug does — the catalog is this bot's own. |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/campaign` | Out-of-tree home of that generated catalog. |
@@ -209,9 +220,9 @@ request is a `iterion:rebaseline-request` block whose `id` has no matching
 - Ledger act/verdict blocks and re-recorded references — steward commits,
   clearly labelled `gm(rebaseline): …`.
 
-Phase 0's artefacts — `plan_path`, the net under `oracle_dir`, the pages
-under `docs_dir` — are written and committed by the **children**, not by
-this bot. It only checks they are there, in git.
+Phase 0's artefacts — `plan_path`, the net where the contract puts it, the
+pages under `docs_dir` — are written and committed by the **children**, not
+by this bot. It only checks they are there, in git.
 
 ## What it refuses at preflight
 
@@ -242,6 +253,12 @@ phase 0 committed.
 - **`yq` unavailable while a contract file exists** → refuse. Whether the
   contract *reads* cannot be decided without it, and a guess would either
   skip the child that repairs an unparseable plan or overwrite a good one.
+  `net_gate` refuses the same way: without the contract it cannot know
+  where the net lives.
+- **a net outside the workspace, or a contract-chosen entry point that is
+  absent** → refuse, at `net_gate`, before the golden-master child starts.
+  The children resolve the net inside the workspace, and that child writes
+  its entry point at `<dir>/verify-oracle.sh` only.
 - **a child that committed nothing**, or whose artefact is not in the
   commit, or which left it uncommitted → refuse, naming the child. The
   supervisor reads what a run landed from git; a page or a contract that

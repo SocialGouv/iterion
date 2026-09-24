@@ -86,11 +86,11 @@ vars:
   ## a worktree of its own, finalises its pages onto a branch, and
   ## `docs_landed` refuses — every time, on a product with no pages yet;
   ## on one that arrived documented that gate can only SAY it could not
-  ## tell the two apart. Defaulting ON would
-  ## break the repositories that already have a contract and a net and used
-  ## to run straight through. Turn it on with `--var phase_zero=true`
-  ## (sandboxed runs are unaffected); the default flips back the day that
-  ## condition asks "is this a subbot child" instead.
+  ## tell the two apart. Defaulting ON would break the repositories that
+  ## already have a contract and a net and used to run straight through.
+  ## Turn it on with `--var phase_zero=true` (a sandboxed run does not hit
+  ## this gap); the default flips the day that condition asks "is this a
+  ## subbot child" instead.
   ##
   ## false starts the campaign exactly where it started before, at
   ## preflight, which refuses whatever prerequisite is missing.
@@ -100,11 +100,10 @@ vars:
   ## refusal preflight makes and for the same reason: a campaign supervises
   ## a written programme, and a plan is never guessed.
   brief_path: string = ".modernize/brief.yaml"
-  ## Where phase 0 BUILDS the net. Once the contract exists, `preflight`
-  ## reads the net's location from the CONTRACT (`oracle.dir`,
-  ## `oracle.verify`); a contract naming somewhere else refuses there,
-  ## loudly, rather than being silently overridden here.
-  oracle_dir: string = ".golden-master"
+  ## The net's location is deliberately NOT a var. Phase 0 reads it from the
+  ## contract (`oracle.dir`, `oracle.verify`) the way preflight does, because
+  ## preflight is where the campaign looks for the net afterwards: a second
+  ## source for the same path would let phase 0 build a net nobody reads.
   ## The product documentation the docs child writes, in the target repo.
   docs_dir: string = "docs/client"
   ## The id the generated catalog gives the product and its single repo. It
@@ -149,10 +148,19 @@ schema phase_zero_state:
   head_before: string
   notice: string
 
+## The net's location, derived ONCE from the contract and handed to every
+## node and child that touches the net after this one.
 schema net_state:
   run_net: bool
   head_before: string
+  oracle_dir: string
+  verify_path: string
   notice: string
+
+schema net_landed_input:
+  before: string
+  oracle_dir: string
+  verify_path: string
 
 schema docs_state:
   mode: string
@@ -251,9 +259,11 @@ schema review_ack:
 ## The order is not a preference. Neither child has anything to work from
 ## until the contract is written, and documentation cannot be shown to
 ## cover a product against an inventory that does not exist yet — which is
-## why `oracle_dir` is handed to the docs child. That last half is the
-## END STATE: the docs child reads no net TODAY, and the var it needs to
-## is being added on its own branch, so the key is inert until that lands.
+## why the net's location is handed to the docs child, whose exhaustiveness
+## gate reads the net's feature inventory and corpus there. A docs child
+## that declares no `oracle_dir` drops the key without a word;
+## TestCampaignPhaseZeroChildrenReadWhatTheyAreHanded holds phase 0 OFF by
+## default for as long as the catalogue's docs child is one of those.
 ##
 ## Nothing here weakens preflight. Phase 0 produces artefacts; preflight
 ## still refuses the campaign if what came out is not what a supervisor can
@@ -462,10 +472,14 @@ tool plan_landed:
                      % (plan_rel, head[:12]))
     print(json.dumps(out))
 
-## net_gate — the second skip decision, on the net's own entry point.
+## net_gate — the second skip decision, and the one place phase 0 learns
+## WHERE the net lives.
 ##
-## `verify-oracle.sh` is the artefact preflight looks for, so it is the
-## artefact this decision reads. Nothing else would be the same question.
+## The location is the contract's to say (`oracle.dir`, `oracle.verify`),
+## read the way preflight reads it: preflight is where the campaign looks
+## for the net once phase 0 is over, so a location derived any other way
+## would build a net nobody reads. Every node and child after this one
+## receives the location from here — one derivation, carried, never redone.
 tool net_gate:
   output: net_state
   language: py
@@ -476,9 +490,10 @@ tool net_gate:
     import sys
 
     ws = {{vars.workspace_dir}}
-    oracle_rel = {{vars.oracle_dir}}
+    plan_rel = {{vars.plan_path}}
 
-    out = {"run_net": False, "head_before": "", "notice": ""}
+    out = {"run_net": False, "head_before": "", "oracle_dir": "",
+           "verify_path": "", "notice": ""}
 
     def refuse(notice):
         out["notice"] = notice
@@ -486,11 +501,73 @@ tool net_gate:
         sys.stderr.write("campaign: %s\n" % notice)
         raise SystemExit(1)
 
+    # Same lookup as preflight: the bundle's devbox.json says which yq should
+    # serve, not that the environment was realised for this node.
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
     rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
                          capture_output=True, text=True, timeout=30)
     if rev.returncode != 0:
         refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
     out["head_before"] = rev.stdout.strip()
+
+    # Both edges into this node guarantee a contract FILE — the skip that
+    # found one parsing, or the child that just committed one. It is still
+    # parsed here rather than believed, as preflight parses it.
+    yq = find_yq()
+    if not yq:
+        refuse("yq is not on PATH and not in the workspace devbox profile, so "
+               "the contract at %s cannot be read — and where the net lives "
+               "cannot be decided." % plan_rel)
+    raw = subprocess.run([yq, "-o=json", os.path.join(ws, plan_rel)],
+                         capture_output=True, text=True, timeout=60)
+    plan = None
+    if raw.returncode == 0:
+        try:
+            plan = json.loads(raw.stdout)
+        except ValueError:
+            plan = None
+    if not isinstance(plan, dict):
+        refuse("the contract at %s does not read as a mapping (%s), so where "
+               "the net lives cannot be taken from it."
+               % (plan_rel, " ".join(raw.stderr.split())[-200:] or "not a mapping"))
+
+    # preflight's derivation, term for term: `oracle.dir`, else the
+    # default; `oracle.verify`, else the entry point inside that directory.
+    oracle = plan.get("oracle") or {}
+    if not isinstance(oracle, dict):
+        refuse("the contract at %s carries an `oracle` that is not a mapping, "
+               "so where the net lives cannot be taken from it." % plan_rel)
+    oracle_rel = oracle.get("dir") or ".golden-master"
+    default_verify = os.path.join(oracle_rel, "verify-oracle.sh") \
+        if isinstance(oracle_rel, str) else ""
+    verify_rel = oracle.get("verify") or default_verify
+    if not isinstance(oracle_rel, str) or not isinstance(verify_rel, str):
+        refuse("the contract at %s names the net with a non-string "
+               "`oracle.dir` or `oracle.verify`." % plan_rel)
+    origin = ("named by the contract" if oracle.get("dir")
+              else "the default: the contract names no oracle.dir")
+
+    # Phase 0 hands this directory to two children that resolve it inside
+    # the workspace. Outside it, one would build where the other never
+    # looks — so it is refused here, by name, before either is launched.
+    for rel in (oracle_rel, verify_rel):
+        if os.path.isabs(rel) or ".." in os.path.normpath(rel).split(os.sep):
+            refuse("the contract at %s puts the net at %s, outside the "
+                   "workspace. Phase 0 hands the net's location to child bots "
+                   "that resolve it inside the workspace; name a directory in "
+                   "the repository, or launch with phase_zero: false."
+                   % (plan_rel, rel))
+    out["oracle_dir"] = oracle_rel
+    out["verify_path"] = verify_rel
 
     # The SAME three files net_landed requires, for the same reason: a net
     # is its entry point, the corpus it compares, and the feature inventory
@@ -498,17 +575,29 @@ tool net_gate:
     # aborted run's leftover script stand in for a net — skipping the child
     # that would repair it, and handing the campaign exactly the partial
     # net net_landed refuses on the other side of the branch.
-    required = [os.path.join(oracle_rel, name) for name in
-                ("verify-oracle.sh", "corpus.json", "feature-coverage.json")]
+    required = [verify_rel, os.path.join(oracle_rel, "corpus.json"),
+                os.path.join(oracle_rel, "feature-coverage.json")]
     missing = [rel for rel in required
                if not os.path.isfile(os.path.join(ws, rel))]
     if not missing:
-        out["notice"] = ("golden-master SKIPPED: the net at %s is complete "
-                         "(%s)." % (oracle_rel, ", ".join(required)))
+        out["notice"] = ("golden-master SKIPPED: the net at %s (%s) is "
+                         "complete (%s)." % (oracle_rel, origin,
+                                             ", ".join(required)))
+    elif (verify_rel in missing
+          and os.path.normpath(verify_rel) != os.path.normpath(default_verify)):
+        # The child writes its entry point at <dir>/verify-oracle.sh and
+        # nowhere else: a contract naming another one that is not there asks
+        # for something no run of it produces, and preflight refuses on it.
+        refuse("the contract at %s names the net's entry point %s, which is "
+               "missing — and the golden-master child writes its entry point "
+               "at %s, never where a contract chooses. Launching it would "
+               "spend its run on a net preflight still refuses. Commit %s, or "
+               "drop `oracle.verify` from the contract."
+               % (plan_rel, verify_rel, default_verify, verify_rel))
     else:
         out["run_net"] = True
-        out["notice"] = ("golden-master RUN: the net at %s is missing %s."
-                         % (oracle_rel, ", ".join(missing)))
+        out["notice"] = ("golden-master RUN: the net at %s (%s) is missing %s."
+                         % (oracle_rel, origin, ", ".join(missing)))
 
     print(json.dumps(out))
 
@@ -517,14 +606,14 @@ subbot golden_master:
   source: "../golden-master/main.bot"
   with {
     workspace_dir: "{{vars.workspace_dir}}",
-    oracle_dir:    "{{vars.oracle_dir}}"
+    oracle_dir:    "{{outputs.net_gate.oracle_dir}}"
   }
 
 ## net_landed — the net, verified in git, by the three files that make it
 ## one: the entry point CI runs, the corpus it compares, and the feature
 ## inventory the docs child's gate reads next.
 tool net_landed:
-  input: landed_input
+  input: net_landed_input
   output: landed_state
   language: py
   script: |
@@ -534,8 +623,11 @@ tool net_landed:
     import sys
 
     ws = {{vars.workspace_dir}}
-    oracle_rel = {{vars.oracle_dir}}
     before = {{input.before}}
+    # net_gate's derivation, carried on the edge: this node judges the net
+    # where the child was told to build it, not where it would guess.
+    oracle_rel = {{input.oracle_dir}}
+    verify_rel = {{input.verify_path}}
 
     out = {"notice": ""}
 
@@ -549,8 +641,13 @@ tool net_landed:
         return subprocess.run(["git", "-C", ws] + list(args),
                               capture_output=True, text=True, timeout=timeout)
 
-    required = [os.path.join(oracle_rel, name) for name in
-                ("verify-oracle.sh", "corpus.json", "feature-coverage.json")]
+    if not str(oracle_rel).strip() or not str(verify_rel).strip():
+        refuse("net_landed received no net location (oracle_dir %r, "
+               "verify_path %r): the edge from golden_master must carry "
+               "net_gate's derivation." % (oracle_rel, verify_rel))
+
+    required = [verify_rel, os.path.join(oracle_rel, "corpus.json"),
+                os.path.join(oracle_rel, "feature-coverage.json")]
 
     rev = git("rev-parse", "HEAD", timeout=30)
     if rev.returncode != 0:
@@ -570,7 +667,7 @@ tool net_landed:
                "against a partial net would report them done against nothing."
                % (head[:12], ", ".join(missing)))
 
-    st = git("status", "--porcelain", "--", oracle_rel)
+    st = git("status", "--porcelain", "--", oracle_rel, verify_rel)
     if st.returncode != 0:
         refuse("cannot read git status for %s: %s" % (oracle_rel, st.stderr[-400:]))
     if st.stdout.strip():
@@ -589,12 +686,13 @@ tool net_landed:
 ## The catalog is generated OUT OF TREE, in the run's scratch: a file
 ## written into the workspace would be an uncommitted change preflight then
 ## refuses. It names one source by `repos[].path` — this very checkout —
-## so the child reads the product from disk and reaches no forge. That key
-## is the docs child's LOCAL-SOURCE form, added on its own branch: until
-## that lands, its resolver reads only `url`, `github_repo` and
-## `gitlab_path`, and records this entry `degraded`. Merge order is the
-## guard; `url` is deliberately not used instead, because the local form
-## clones with the forge credentials stripped and `url` does not.
+## so the child reads the product from disk and reaches no forge: the docs
+## child's LOCAL-SOURCE form, which clones with the forge credentials
+## stripped. A docs child without that form records the entry `degraded`
+## and documents the product from nothing, which is why the generated
+## catalog is fed to the real child's catalog_ingest in
+## TestCampaignPhaseZeroChildrenReadWhatTheyAreHanded rather than only
+## compared to the shape it was built to.
 tool docs_gate:
   output: docs_state
   language: py
@@ -667,19 +765,18 @@ tool docs_gate:
 ## documentation. Its own gate decides convergence; this graph only checks
 ## that what it claims to have written is in git.
 ##
-## `oracle_dir` is handed over so the child can prove its coverage against
-## the net's inventory. The child declares no such var TODAY — the one
-## adding it is in flight on its own branch — and an undeclared key is
-## dropped in silence, so this is the interface being built to, not a
-## capability already in the tree. Same merge order as the catalog's
-## local-source key.
+## `oracle_dir` is net_gate's derivation — where the contract puts the net
+## — so the child proves its coverage against the net preflight will read,
+## not against its own default. An undeclared key would be dropped without
+## a word; the test named above checks every key this graph hands a child
+## against that child's declared vars.
 subbot product_docs:
   source: "../product-docs/main.bot"
   with {
     workspace_dir: "{{vars.workspace_dir}}",
     catalog_path:  "{{outputs.docs_gate.catalog_path}}",
     product_id:    "{{vars.docs_product_id}}",
-    oracle_dir:    "{{vars.oracle_dir}}",
+    oracle_dir:    "{{outputs.net_gate.oracle_dir}}",
     mode:          "{{outputs.docs_gate.mode}}"
   }
 
@@ -1713,7 +1810,9 @@ workflow campaign:
   net_gate -> docs_gate
 
   golden_master -> net_landed with {
-    before: "{{outputs.net_gate.head_before}}"
+    before:      "{{outputs.net_gate.head_before}}",
+    oracle_dir:  "{{outputs.net_gate.oracle_dir}}",
+    verify_path: "{{outputs.net_gate.verify_path}}"
   }
   net_landed -> docs_gate
 
