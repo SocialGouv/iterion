@@ -52,7 +52,8 @@ import (
 // What the renderer cannot know is the SHAPE a value has at runtime, so the
 // marker is given that shape (inputFields, markerInput). It follows how the
 // value arrives, not only what the schema declares: a mapping that passes a
-// value through keeps its type, any other delivers a string. A `file` value is
+// value through keeps its type, any other delivers a string, and where routes
+// disagree the narrowest shape holds. A `file` value is
 // the upload descriptor, with its fixed keys; a typed value takes the shape of
 // the node's own drills, because what it holds is data — a drill into a key
 // the real value may lack still counts, the one limit of a static check; a
@@ -200,10 +201,12 @@ type inputField struct {
 // `{{…}}` passes the value through with its type, whatever the field
 // declares — a whole output reaches a `string` field as a map — while every
 // other mapping delivers a string (ir.MappingArrivesAsText, the runtime's own
-// resolveMapping decision). A value no mapping writes, and any value on the
-// entry node, which the run's inputs reach unmapped, keeps its declared type.
-// Where several routes reach one key the widest shape is taken: any of them
-// may be the one that runs.
+// resolveMapping decision). On the entry node the run's launch value is one
+// more route, typed as declared. Where several routes write one key the
+// NARROWEST shape is taken: the guard must hold on whichever route runs, so a
+// drill counts only when every route delivers a value it can walk. A key no
+// edge writes keeps its declared shape — whether it holds anything at all is
+// the read-side guard's question (TestCatalogInputReadsAreMappedByAnIncomingEdge).
 func inputFields(t *testing.T, w *ir.Workflow, node, schemaName string) []inputField {
 	t.Helper()
 	declared := map[string]types.FieldType{}
@@ -223,7 +226,7 @@ func inputFields(t *testing.T, w *ir.Workflow, node, schemaName string) []inputF
 			}
 		}
 	}
-	mapped, typed := map[string]bool{}, map[string]bool{}
+	mapped, text := map[string]bool{}, map[string]bool{}
 	var undeclared []string
 	for _, e := range w.Edges {
 		if e == nil || e.To != node {
@@ -237,8 +240,8 @@ func inputFields(t *testing.T, w *ir.Workflow, node, schemaName string) []inputF
 				undeclared = append(undeclared, dm.Key)
 			}
 			mapped[dm.Key] = true
-			if !ir.MappingArrivesAsText(dm) {
-				typed[dm.Key] = true
+			if ir.MappingArrivesAsText(dm) {
+				text[dm.Key] = true
 			}
 		}
 	}
@@ -248,14 +251,17 @@ func inputFields(t *testing.T, w *ir.Workflow, node, schemaName string) []inputF
 	fields := make([]inputField, 0, len(names))
 	for _, name := range names {
 		ft, isDeclared := declared[name]
-		shape := shapeText
+		launched := isDeclared && node == w.Entry
+		var shape valueShape
 		switch {
-		case typed[name] && isDeclared && ft == types.FieldTypeFile:
-			shape = shapeFile
-		case typed[name]:
-			shape = shapeData
-		case isDeclared && (!mapped[name] || node == w.Entry):
+		case !mapped[name]:
 			shape = declaredShape(ft)
+		case text[name] || (launched && declaredShape(ft) == shapeText):
+			shape = shapeText
+		case isDeclared && ft == types.FieldTypeFile:
+			shape = shapeFile
+		default:
+			shape = shapeData
 		}
 		fields = append(fields, inputField{name: name, declared: isDeclared, shape: shape})
 	}
@@ -900,7 +906,9 @@ workflow w:
 			wantMiss: []string{"finding"},
 		},
 		{
-			name: "a field one route delivers typed can be drilled, whatever the other routes deliver",
+			// The text route writes a string, and the drill stays verbatim there:
+			// the value reaches the model on one route out of two.
+			name: "a drill counts only if every route delivers the value typed",
 			src: `schema in:
   finding: json
 schema out:
@@ -925,7 +933,7 @@ workflow w:
   two -> done
 `,
 			node:     "two",
-			wantMiss: nil,
+			wantMiss: []string{"finding"},
 		},
 		{
 			name: "a file field every route delivers as text is a path string, and a drill into it stays verbatim",
@@ -1007,9 +1015,9 @@ workflow w:
 			wantUndeclared: []string{"ctx"},
 		},
 		{
-			// The run's inputs reach the entry node unmapped, typed as
-			// launched: the back-edge's text is one route among two.
-			name: "on the entry node a declared json field keeps its type, whatever a back-edge delivers",
+			// The launch value is typed as declared, but the back-edge
+			// delivers text: on re-entry the drill stays verbatim.
+			name: "on the entry node the launch value is one route: a back-edge delivering text makes a drill miss",
 			src: `schema in:
   finding: json
 schema out:
@@ -1033,7 +1041,7 @@ workflow w:
   two -> one when not ok as again(2) with { finding: "retry {{outputs.two.ok}}" }
   two -> done
 `,
-			wantMiss: nil,
+			wantMiss: []string{"finding"},
 		},
 		{
 			// Whether such a field holds anything at all is the read-side
@@ -1065,6 +1073,90 @@ workflow w:
 `,
 			node:     "two",
 			wantMiss: nil,
+		},
+		{
+			name: "a whole-value render counts on every route, text or typed",
+			src: `schema in:
+  finding: json
+schema out:
+  ok: bool
+prompt p_one:
+  go
+prompt p_two:
+  review {{input.finding}}
+agent one:
+  backend: "claude_code"
+  output: out
+  user: p_one
+agent two:
+  backend: "claude_code"
+  input: in
+  output: out
+  user: p_two
+workflow w:
+  entry: one
+  one -> two when ok with { finding: "{{outputs.one}}" }
+  one -> two when not ok with { finding: "see {{outputs.one.ok}}" }
+  two -> done
+`,
+			node:     "two",
+			wantMiss: nil,
+		},
+		{
+			name: "on the entry node a drill counts when the launch value and every back-edge are typed",
+			src: `schema in:
+  finding: json
+schema out:
+  ok: bool
+prompt p_one:
+  review {{input.finding.file}}
+prompt p_two:
+  check
+agent one:
+  backend: "claude_code"
+  input: in
+  output: out
+  user: p_one
+agent two:
+  backend: "claude_code"
+  output: out
+  user: p_two
+workflow w:
+  entry: one
+  one -> two
+  two -> one when not ok as again(2) with { finding: "{{outputs.two}}" }
+  two -> done
+`,
+			wantMiss: nil,
+		},
+		{
+			// A back-edge passing a map through does not change what the run
+			// launched: a `string`, which a drill does not walk.
+			name: "on the entry node a string launch value makes a drill miss, even when a back-edge delivers it typed",
+			src: `schema in:
+  ctx: string
+schema out:
+  ok: bool
+prompt p_one:
+  review {{input.ctx.ok}}
+prompt p_two:
+  check
+agent one:
+  backend: "claude_code"
+  input: in
+  output: out
+  user: p_one
+agent two:
+  backend: "claude_code"
+  output: out
+  user: p_two
+workflow w:
+  entry: one
+  one -> two
+  two -> one when not ok as again(2) with { ctx: "{{outputs.two}}" }
+  two -> done
+`,
+			wantMiss: []string{"ctx"},
 		},
 		{
 			name: "a field consumed by images: counts",
