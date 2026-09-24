@@ -132,7 +132,7 @@ silence:
 | `GAP` | a covered feature no block documents — **one** line must **cite** its identifier **and** one of its own entries, **and** the block carrying it (a paragraph, a list item, a table row) must READ: prose outside the citations, `coverage_min_prose` characters of it **for each** feature that block documents. Co-presence is an index row, a neighbour's prose is not the row's own, and a heading documents nothing |
 | `CONCEALED_EXCLUSION` | an exclusion the pages do not name *as* one, under the declared exclusions chapter, in a block of prose of its **own** (a bare identifier or a `TODO` is silence under a label; a row of dots is length without words; one paragraph cannot answer for two holes, and the prose has to share vocabulary with the reason the net records) |
 | `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) citing no reference **in its heading line itself** — a citation in the chapter body does not anchor it — and not declaring that it restitutes none; plus the ceiling, `coverage_max_anchorless`, on how many chapters may declare it at all |
-| `NET_UNREADABLE` | the material cannot be judged: absent or unparsable artifacts, an inventory that contradicts itself, and **every emptiness** — no page, no feature, no corpus entry, an empty route table |
+| `NET_UNREADABLE` | the material cannot be judged: absent, unparsable or not-an-object artifacts, an inventory that contradicts itself, a declared hole with no chapter title to name it under, and **every emptiness** — no page, no feature, no corpus entry, an empty route table |
 
 That last row is the point of the design, not a detail: a guard written
 `if collection and …` is *disabled* exactly when the collection is
@@ -355,7 +355,7 @@ computed is **never** reported as an empty one.
 | `extra_forbidden_headings` | `""` | Extra heading titles a published page must never carry |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
 | `oracle_dir` | `.golden-master` | Where the golden-master net lives, looked up in the workspace then in each source clone. Both `feature-coverage.json` and `corpus.json` present ⇒ `coverage_check` is armed; empty disables the lookup |
-| `coverage_exclusions_heading` | `exclusions` | Title a heading must carry, WHOLE and anchored, to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive) |
+| `coverage_exclusions_heading` | `exclusions` | Title a heading must carry, WHOLE and anchored, to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive). Empty while the net declares a hole stops the run: no page could ever name one |
 | `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token, and only when a net is present; empty disables the escape hatch |
 | `coverage_max_anchorless` | `2` | Ceiling on the chapters that may declare they restitute nothing. The anchor refusal offers the marker only while headroom remains. The exclusions chapter is anchored by its role and never counts |
 | `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |

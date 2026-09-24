@@ -2910,6 +2910,60 @@ func TestProductDocsCoverageGateSaysTheNetIsUnproven(t *testing.T) {
 	}
 }
 
+// TestProductDocsCoverageGateNamesANetThatIsNotAnObject: both artifacts are
+// read for their keys, so a top-level JSON array answered `.get` with an
+// AttributeError — a Python traceback where the doctrine promises a named
+// cause. The shape is decided at the ONE door both files come through.
+func TestProductDocsCoverageGateNamesANetThatIsNotAnObject(t *testing.T) {
+	requireGitPython(t)
+	for _, tc := range []struct{ name, file, body string }{
+		{"the inventory is an array", ".golden-master/feature-coverage.json",
+			`[{"feature": "home.landing", "entries": ["001"]}]`},
+		{"the corpus is an array", ".golden-master/corpus.json",
+			`[{"id": "001", "path": "/"}]`},
+		{"the inventory is a string", ".golden-master/feature-coverage.json", `"nothing here"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			writeFile(t, ws, tc.file, tc.body)
+			runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+				"and not an object -- this file is read for its keys")
+		})
+	}
+}
+
+// TestProductDocsCoverageGateNeedsAChapterTitleForItsHoles: the declared
+// exclusions title is the only way a page can name a hole, so an empty one
+// refuses every exclusion the net declares — and the repair is a launch var
+// `scope_check` forbids the campaign to write, so the run burns every pass
+// rewriting prose that was never the problem. With no hole declared the rule
+// has no subject, and the gate judges the rest of the documentation as usual.
+func TestProductDocsCoverageGateNeedsAChapterTitleForItsHoles(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	runExpectingFailure(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), ""),
+		"the chapter title that would name them is not declared")
+	// A net that declares no hole: the same empty token judges the rest.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", `{"features": [
+  {"feature": "home.landing", "entries": ["001"]},
+  {"feature": "items.list", "entries": ["026"]},
+  {"feature": "items.list.paging", "entries": ["027"]},
+  {"feature": "items.detail", "entries": ["039"]}
+ ]}`)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"Everything the application serves is described in the pages beside this one.\n")
+	var got coverageOut
+	runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), ""), &got)
+	if !got.OK {
+		t.Fatalf("a net with no hole to declare was refused over a token nothing needs:\n%s", got.Log)
+	}
+	if got.Documented != 4 {
+		t.Fatalf("features documented = %d, want 4 — the rest of the gate stopped judging", got.Documented)
+	}
+}
+
 // TestProductDocsCoverageGateReadsAnAbsentExclusionsKeyAsEmpty: a product that
 // excludes NOTHING writes no `exclusions` key, and the net producer reads an
 // absent key as an empty list (`coverage.get(key) or []`). Refusing it made

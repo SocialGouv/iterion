@@ -226,7 +226,10 @@ vars:
   ##     chapter under which an exclusion counts as NAMED must BE: the
   ##     WHOLE title, compared case- and accent-insensitively, never a
   ##     substring (a reader-facing chapter merely CONTAINING the token
-  ##     would otherwise open the chapter of documented holes)
+  ##     would otherwise open the chapter of documented holes). It is the
+  ##     ONLY way a page can name a hole, so leaving it empty while the
+  ##     net declares one STOPS the run by name rather than refusing
+  ##     every hole for a repair this run may not make
   ##   coverage_no_anchor_marker — what a chapter carries to declare it
   ##     restitutes no reference at all. page_lint exempts exactly this
   ##     token from its html_comments rule, so the two gates cannot
@@ -2372,8 +2375,10 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 ##                         PHANTOM_DOC; the gate PRINTS the chapters
 ##                         that carry the declared marker, so hiding
 ##                         one behind it only denounces itself.
-##   NET_UNREADABLE      — the material cannot be judged: absent or
-##                         unparsable artifacts, an inventory that
+##   NET_UNREADABLE      — the material cannot be judged: absent,
+##                         unparsable or not-an-object artifacts, a
+##                         declared hole with no title to name it
+##                         under, an inventory that
 ##                         contradicts itself, and EVERY emptiness —
 ##                         no page, no feature, no corpus entry, no
 ##                         `exclusions` key, an empty route table. A
@@ -2444,15 +2449,24 @@ def refuse(cause, where, detail, outside=False):
     ## pre-flight refusal below.
     causes.append({'cause': cause, 'where': where, 'detail': detail, 'outside': outside})
 def load(path, what):
+    ## ONE door for both artifacts, and it hands back an OBJECT or nothing.
+    ## Every reader below asks a parsed document for a key; a JSON array, a
+    ## string or a number answers that with an AttributeError and a traceback
+    ## -- a crash where the doctrine promises a named cause. The shape of the
+    ## top level is decided here, once, rather than at each of its readers.
     if not os.path.isfile(path):
         refuse('NET_UNREADABLE', path, what + ': file absent', True)
         return None
     try:
         with open(path, encoding='utf-8') as fh:
-            return json.load(fh)
+            doc = json.load(fh)
     except (OSError, ValueError) as exc:
         refuse('NET_UNREADABLE', path, what + ': unreadable JSON -- ' + ' '.join(str(exc).split())[:200], True)
         return None
+    if not isinstance(doc, dict):
+        refuse('NET_UNREADABLE', path, what + ': the top-level JSON is a ' + type(doc).__name__ + ' and not an object -- this file is read for its keys, and a document that has none cannot be judged: a refusal, not a traceback', True)
+        return None
+    return doc
 cov = load(os.path.join(oracle, 'feature-coverage.json'), 'the inventory feature-coverage.json')
 corpus = load(os.path.join(oracle, 'corpus.json'), 'the corpus corpus.json')
 features, exclusions, entries = None, None, None
@@ -2521,6 +2535,15 @@ for i, x in enumerate(exclusions):
         refuse('NET_UNREADABLE', name, 'EMPTY reason in the inventory -- the net no longer declares why this hole exists', True)
 for name in sorted(set(feature_names) & set(exclusion_reasons)):
     refuse('NET_UNREADABLE', name, 'BOTH covered and excluded -- the inventory contradicts itself', True)
+## A HOLE THE PAGES CANNOT NAME. The declared chapter title is the ONLY way an
+## exclusion counts as named, so an empty one refuses every hole the net
+## declares, for a repair -- a launch var -- the campaign is forbidden to make:
+## it would burn every pass rewriting prose that was never the problem. This
+## is not the disabled-guard trap the node refuses elsewhere: what the
+## condition reads is the TOKEN, and with no hole declared the rule has no
+## subject at all, nothing being skipped in silence.
+if exclusion_reasons and not excl_token:
+    refuse('NET_UNREADABLE', 'coverage_exclusions_heading', 'the net declares ' + str(len(exclusion_reasons)) + ' exclusion(s) and the chapter title that would name them is not declared -- with no title no page can ever name a hole, and every one of them would be refused as concealed: a refusal, not an order the campaign cannot obey', True)
 corpus_ids = set()
 entry_paths = {}
 for e in entries:

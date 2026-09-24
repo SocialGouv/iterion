@@ -72,6 +72,10 @@ version: 1.3.0
 ## rule: the exemption is the html_comments rule, for a comment that IS
 ## the token, and it is armed by the NET rather than by the var — with
 ## no net the node is the one it was, value included.
+## A net artifact whose top-level JSON is not an OBJECT is named at the
+## one door both files come through, instead of answering a key lookup
+## with a traceback; and an empty `coverage_exclusions_heading` while the
+## net declares a hole stops the run, since no page could ever name one.
 ## PRE-FLIGHT vs CONVERGENCE. A cause whose repair lies OUTSIDE the
 ## writeable set (`<product_dir>/**/*.md`) — the net, a launch var, the
 ## catalog — stops the run by name instead of riding `fail_log`: left as
