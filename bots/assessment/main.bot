@@ -217,21 +217,36 @@ prompt plan_draft_system:
   first:
 
   1. A lot declares an `exit_gate` — a list of single-line shell commands,
-     each of which must exit 0 on the tree the lot leaves behind. A lot
-     without a gate is refused: an unverifiable lot is indistinguishable from
-     one that was never done.
-  2. `status` is `todo` on every lot you write. `done` is the execution
-     gate's word and never yours; `blocked` is the worker's.
+     each of which must exit 0 on the tree the lot leaves behind AND must FAIL
+     on the tree it starts from. The lint runs every gate before the programme
+     begins and refuses one that is already green: a gate that passes before
+     the work cannot tell the work apart from its absence. A lot without a
+     gate is refused too — an unverifiable lot is indistinguishable from one
+     that was never done.
+  2. `status` is `todo` on every lot you write, without exception. `done` is
+     the execution gate's word; `blocked` is the worker's word for a lot it
+     tried and could not finish. A contract that opens with either declares a
+     run that never happened.
   3. `depends_on` names lots that exist, and the graph it forms is acyclic.
      The dependency order is where the compatibility knowledge lives, and it
      is the one thing no tree states.
   4. A lot that crosses a MAJOR of anything with semantics sets
-     `crosses_major: true` and its gate requires the sweep record. A lot that
-     must not change observable behaviour sets `rebaseline_allowed: false`.
-  5. EVERY decision that the declared brief does not resolve is written as a
+     `crosses_major: true` and its gate carries a FILE PREDICATE over its own
+     sweep record (`test -s .modernize/sweeps/<lot id>.md`) — mentioning the
+     path in some other command proves nothing about the file. A lot that must
+     not change observable behaviour sets `rebaseline_allowed: false`.
+  5. Every lot that advances a target the brief DECIDED lists it in
+     `brief_targets: ["<component, exactly as the brief spells it>"]`. Every
+     decided target is carried by at least one lot, and a target the brief
+     takes across a major is carried by a lot with `crosses_major: true`.
+  6. Each outcome names the brief goal it answers, in `goal_id`. An outcome
+     that answers no declared goal is an objective you gave yourself.
+  7. EVERY decision that the declared brief does not resolve is written as a
      PROPOSAL, with its own identifier, in the `proposals` block — never as a
-     settled lot. A review that can be skipped does not become the authority
-     on the business.
+     settled lot, and never under an identifier a lot also uses. A review that
+     can be skipped does not become the authority on the business.
+  8. Nothing you write may announce work the brief's `forbidden_changes`
+     forbids.
 
   Write the contract so that a human who never opens this bot can audit the
   programme by reading it.
@@ -257,13 +272,15 @@ prompt plan_draft_user:
   1. `{{vars.plan_path}}` — the programme contract, in the shape the
      `plan-contract` skill gives. Every lot: `id`, `title`, `status: todo`,
      `rebaseline_allowed`, `crosses_major`, `depends_on`, `intent`,
-     `exit_gate`. Write each lot as a block item whose FIRST line is
-     `- id: <id>` and whose keys sit at one column — the execution gate edits
-     exactly that shape, and a flow mapping cannot be edited by it.
+     `exit_gate`, and `brief_targets` on every lot that advances a decided
+     target. Write each lot as a block item whose FIRST line is `- id: <id>`
+     and whose keys sit at one column — the execution gate edits exactly that
+     shape, and a flow mapping cannot be edited by it.
   2. The `outcomes` file beside it, named in the `plan-contract` skill: what
-     the programme OWES, each with a `check` command that exits 0 if and only
-     if the outcome is met. A programme whose lots are exhausted while an
-     outcome is neither met nor arbitrated has not converged.
+     the programme OWES, each with the `goal_id` of the brief goal it answers
+     and a `check` command that exits 0 if and only if the outcome is met. A
+     programme whose lots are exhausted while an outcome is neither met nor
+     arbitrated has not converged.
 
   Add, at the head of the contract, a `proposals:` block listing every
   decision you could not resolve from the brief, each
@@ -412,6 +429,17 @@ schema contract_state:
   reason: string
   lots: int
   refusals: json
+  ## How many lots had their declared gate EXECUTED on the input tree and seen
+  ## to fail. A gate that already passes before the lot starts certifies
+  ## nothing after it, so this count is the one that says the contract is
+  ## verifiable — `lots` alone never did.
+  gates_proven_red: int
+
+## What contract_lint needs that the contract does not carry: the declared
+## brief. Without it the lint can check a contract against ITSELF — internally
+## consistent and free to contradict every decision somebody took.
+schema contract_input:
+  brief: json
 
 ## The commit that lands the assessment. A run whose documents never landed
 ## produced nothing: the tree is the deliverable.
@@ -2237,6 +2265,7 @@ agent plan_draft:
 ## test, so the two can never disagree about a contract.
 tool contract_lint:
   description: "Validate the whole contract, every lot"
+  input: contract_input
   output: contract_state
   language: py
   script: |
@@ -2246,15 +2275,45 @@ tool contract_lint:
     import shutil
     import subprocess
     import sys
+    import time
+
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
 
     ws = {{vars.workspace_dir}}
     plan_rel = {{vars.plan_path}}
     plan_path = os.path.join(ws, plan_rel)
+    brief = {{input.brief}}
+    if not isinstance(brief, dict):
+        brief = {}
 
-    out = {"ok": False, "code": "", "reason": "", "lots": 0, "refusals": []}
+    out = {"ok": False, "code": "", "reason": "", "lots": 0, "refusals": [],
+           "gates_proven_red": 0}
 
+    # A contract this bot has just WRITTEN carries `todo` and nothing else.
+    # `done` is the execution gate's word, `blocked` is the worker's, and both
+    # describe a run that has not happened: a lot drafted under either declares
+    # a state nobody reached.
+    DRAFT_STATUS = "todo"
     STATUSES = ("todo", "blocked", "done")
     MAX_TIMEOUT = 86400
+    # The wall on PROVING the gates. Each command is given its own slice and
+    # the whole probe a budget: a contract whose gates are a full build must
+    # not turn the lint into the build.
+    GATE_PROBE_TIMEOUT_S = 120
+    GATE_PROBE_BUDGET_S = 900
+
+    # The heads of a command that exits 0 whatever the tree holds. Listed for
+    # the message they produce, never as the mechanism: see the probe below.
+    VACUOUS_HEADS = ("true", ":", "exit", "echo", "printf", "/bin/true")
+
+    def SWEEP_PREDICATE(lot_id):
+        # The sweep record must be the OPERAND OF A FILE PREDICATE naming this
+        # lot. `echo .modernize/sweeps/<id>.md` carries the substring and tests
+        # nothing; `test -s` carries the fact.
+        return re.compile(r"(?:\btest\s+|\[\[?\s+)-[a-zA-Z]+\s+[\"']?\.modernize/sweeps/%s\.md\b"
+                          % re.escape(lot_id))
+
+    gate_probes = []
 
     def refuse(code, reason):
         out["code"] = code
@@ -2347,6 +2406,47 @@ tool contract_lint:
         if not str(proposal.get("question") or "").strip():
             reject("proposals[%s]" % proposal_id, "no question; a proposal with no question cannot be arbitrated")
 
+    # ── what the declared brief fixes ──────────────────────────────────
+    brief_goal_ids = {str(g.get("id") or "").strip()
+                      for g in (brief.get("goals") or []) if isinstance(g, dict) and g.get("id")}
+
+    def major_of(value):
+        found = re.match(r"\s*v?(\d+)(?:\D|$)", str(value or ""))
+        return int(found.group(1)) if found else None
+
+    def normalise(text):
+        return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+
+    brief_targets, brief_current, brief_target, brief_components = [], {}, {}, set()
+    for entry in (brief.get("targets") or []):
+        if not isinstance(entry, dict):
+            continue
+        component = str(entry.get("component") or "").strip()
+        if not component:
+            continue
+        brief_components.add(component)
+        brief_current[component] = entry.get("current")
+        brief_target[component] = entry.get("target")
+        # Explicit beats derived; derived beats guessed; and a target that
+        # supports neither is a REFUSAL rather than a default, because the
+        # default would be the cheap one.
+        if isinstance(entry.get("crosses_major"), bool):
+            crossing = entry["crosses_major"]
+        else:
+            here, there = major_of(entry.get("current")), major_of(entry.get("target"))
+            crossing = (here != there) if (here is not None and there is not None) else None
+        brief_targets.append((component, crossing))
+
+    brief_forbidden = []
+    for entry in (brief.get("forbidden_changes") or []):
+        if isinstance(entry, dict):
+            brief_forbidden.append({"statement": str(entry.get("statement") or ""),
+                                    "pattern": entry.get("pattern"),
+                                    "normalised": normalise(entry.get("statement") or "")})
+        elif isinstance(entry, str):
+            brief_forbidden.append({"statement": entry, "pattern": None,
+                                    "normalised": normalise(entry)})
+
     # ── every lot, and it IS every lot ─────────────────────────────────
     #
     # The execution bot's own reader validates the ONE lot it selected. A cycle,
@@ -2374,6 +2474,16 @@ tool contract_lint:
     if duplicates:
         reject("lots", "duplicate lot id(s) %s — an id is a key, and the reader would take the "
                        "first while the verifier takes the last" % ", ".join(duplicates))
+
+    # A proposal and a lot under ONE id: the two editors of this contract — the
+    # execution gate writing `status: done`, and whoever answers the proposal —
+    # both anchor on the first `- id:` line that matches, and only one of them
+    # gets the block it meant.
+    collisions = sorted(proposal_ids.intersection(ids))
+    if collisions:
+        reject("proposals", "id(s) %s name both a proposal and a lot. The two are edited by "
+                            "different hands and anchored by the same line; whichever is written "
+                            "first is what both hands find." % ", ".join(collisions))
 
     # Same regexes as the execution gate's editor, on purpose: a lot whose
     # `status` line that editor cannot locate would be refused AFTER
@@ -2407,6 +2517,11 @@ tool contract_lint:
             reject(where, "status is `done`. That word belongs to the execution gate, which writes "
                           "it after a verdict went green; a contract drafted with a lot already "
                           "done declares work nobody proved.")
+        elif status != DRAFT_STATUS:
+            reject(where, "status is %r on a contract nobody has executed yet. Every lot of a "
+                          "freshly drafted programme is `%s`: `blocked` is the WORKER's word for a "
+                          "lot it tried and could not finish, so a contract that opens with one "
+                          "declares a run that never happened." % (status, DRAFT_STATUS))
         if not str(lot.get("title") or "").strip():
             reject(where, "no title")
         if not str(lot.get("intent") or "").strip():
@@ -2432,10 +2547,23 @@ tool contract_lint:
             if any("\n" in c for c in commands):
                 reject(where, "declares a multi-line exit_gate command. Each command must be a "
                               "single line; put multi-line logic in a script file and invoke it.")
-            if lot.get("crosses_major") and not any(".modernize/sweeps/" in c for c in commands):
-                reject(where, "crosses a major but its gate does not require the sweep record "
-                              "(`test -s .modernize/sweeps/%s.md`). The mechanical layer proves the "
-                              "record was produced; without it the due diligence is optional." % lot_id)
+            # A WRITING COMFORT, not the guarantee. It names the four shapes a
+            # vacuous gate is usually spelled with, and an adversary has an
+            # infinite supply of further spellings — which is why the guarantee
+            # below EXECUTES the gate instead of reading it.
+            for command in commands:
+                head = command.split()[0] if command.split() else ""
+                if command.startswith("#") or head in VACUOUS_HEADS:
+                    reject(where, "its gate declares %r, which cannot fail. A command that exits 0 "
+                                  "whatever the tree holds proves the lot was done in exactly the "
+                                  "same way it proves it was not." % command)
+            if lot.get("crosses_major") and not any(SWEEP_PREDICATE(lot_id).search(c) for c in commands):
+                reject(where, "crosses a major but its gate does not test THIS lot's sweep record "
+                              "(`test -s .modernize/sweeps/%s.md`). A command that merely mentions "
+                              "the sweeps directory in its text proves nothing about the file: the "
+                              "gate must carry a file predicate over that path." % lot_id)
+            if commands and not any("\n" in c for c in commands):
+                gate_probes.append((lot_id, where, commands))
 
         depends = lot.get("depends_on")
         if depends is None:
@@ -2444,12 +2572,23 @@ tool contract_lint:
             reject(where, "depends_on must be a list of lot ids; got %r" % depends)
         else:
             for dependency in depends:
-                if dependency not in by_id:
+                if dependency == lot_id:
+                    reject(where, "depends on itself")
+                elif dependency not in by_id:
                     reject(where, "depends on %r, which no lot declares. The execution bot skips a "
                                   "lot whose dependencies are unmet — an unknown id is a lot that "
                                   "can never become ready." % dependency)
-                if dependency == lot_id:
-                    reject(where, "depends on itself")
+                # A dependency on a lot that is not `todo` is SATISFIED by both
+                # readers: the execution bot treats a `blocked` lot as
+                # unavailable for work and as a met dependency at the same
+                # time, so the lot behind it starts on a foundation nobody
+                # built. It is refused HERE because the contract is written
+                # here — the executor discovers it three runs downstream.
+                elif by_id[dependency].get("status") != DRAFT_STATUS:
+                    reject(where, "depends on %r, whose status is %r. A dependency that is not `%s` "
+                                  "counts as MET by the readers and as not-done by the tree: this "
+                                  "lot would start on work nobody did."
+                           % (dependency, by_id[dependency].get("status"), DRAFT_STATUS))
 
         shape = block_shape(lot_id)
         if shape:
@@ -2482,6 +2621,56 @@ tool contract_lint:
         colour[node] = "done"
     for lot_id in list(by_id):
         visit(lot_id, [])
+
+    # ── the gates, EXECUTED on the tree the programme starts from ──────
+    #
+    # This is the guarantee, and the reason the head-word list above is only a
+    # comfort. A gate is a claim about the tree a lot LEAVES; the one thing
+    # that can be checked before the lot runs is that it does not already hold.
+    # A gate green on the input tree will be green whatever the lot does — it
+    # is a `true` with more words, and no enumeration of spellings finds them
+    # all. Running it finds them all by construction.
+    #
+    # These are commands the execution bot will run on this same tree anyway;
+    # running each one once here is the same trust, taken earlier. Anything
+    # that is not a clean exit 0 — a failure, a timeout, a missing
+    # interpreter — leaves the gate unproven-green, which is the conservative
+    # direction: this node refuses only gates it SAW pass.
+    probe_env = dict(os.environ)
+    probe_env["LC_ALL"] = "C"
+    probe_env["TZ"] = "UTC"
+    probe_env["GIT_TERMINAL_PROMPT"] = "0"
+    probe_spent = 0.0
+    for lot_id, where, commands in gate_probes:
+        if probe_spent >= GATE_PROBE_BUDGET_S:
+            reject(where, "its gate was never proven to bite: the probe budget of %ds was spent "
+                          "before this lot. A gate nobody saw fail is a gate nobody has reason to "
+                          "trust — split the programme or shorten the gates."
+                   % GATE_PROBE_BUDGET_S)
+            continue
+        all_green, verdicts = True, []
+        for command in commands:
+            started = time.time()
+            try:
+                run = subprocess.run(["bash", "-c", command], cwd=ws, env=probe_env,
+                                     capture_output=True, timeout=GATE_PROBE_TIMEOUT_S)
+                code = run.returncode
+            except subprocess.TimeoutExpired:
+                code = "timeout"
+            except (OSError, subprocess.SubprocessError) as exc:
+                code = "did not run: %s" % exc
+            probe_spent += time.time() - started
+            verdicts.append("%s -> %s" % (command, code))
+            if code != 0:
+                all_green = False
+                break
+        if all_green:
+            reject(where, "its gate ALREADY PASSES on the tree the programme starts from (%s). A "
+                          "gate that is green before the lot begins is green after it whatever the "
+                          "lot did: it cannot tell the work apart from its absence."
+                   % "; ".join(verdicts))
+        else:
+            out["gates_proven_red"] += 1
 
     # ── the outcomes, beside the contract ──────────────────────────────
     outcomes_path = os.path.join(os.path.dirname(plan_path), "outcomes.json")
@@ -2519,6 +2708,86 @@ tool contract_lint:
                     reject("outcomes[%s]" % outcome_id,
                            "no `check`. An outcome closes by a command that exits 0, or by a "
                            "written arbitration — never by a claim, and never by silence.")
+                # An outcome answers a GOAL somebody wrote down. One that
+                # answers nothing in the brief is an objective this bot gave
+                # itself, and a programme converges on it exactly as
+                # convincingly as on an agreed one.
+                goal_id = str(outcome.get("goal_id") or "").strip()
+                if not goal_id:
+                    reject("outcomes[%s]" % outcome_id,
+                           "names no `goal_id`. An outcome is what the programme OWES, and it owes "
+                           "it to a goal the brief declares; one that answers no declared goal is "
+                           "an objective the drafter gave itself.")
+                elif goal_id not in brief_goal_ids:
+                    reject("outcomes[%s]" % outcome_id,
+                           "names goal %r, which the declared brief does not carry (it declares %s). "
+                           "The brief is where the objectives of a campaign come from."
+                           % (goal_id, ", ".join(sorted(brief_goal_ids)) or "none"))
+
+    # ── the contract against the DECLARED BRIEF ────────────────────────
+    #
+    # Without this the lint checks a contract against ITSELF: internally
+    # consistent, and free to contradict every decision somebody took. The
+    # brief is the only place a target version, a support horizon or a
+    # forbidden change can come from — no tree states a fact that is future or
+    # external.
+    #
+    # A lot names the brief targets it advances (`brief_targets`) rather than
+    # the lint guessing from its prose: the fact travels WITH the lot, written
+    # by the drafter who knows it, instead of being reconstructed by a reader
+    # matching words.
+    for component, crossing in brief_targets:
+        named = [lot_id for lot_id, lot in by_id.items()
+                 if component in [str(t).strip() for t in (lot.get("brief_targets") or [])
+                                  if isinstance(t, str)]]
+        if crossing is None:
+            reject("brief.targets[%s]" % component,
+                   "the brief's target for %r states neither a parseable version pair (%r -> %r) "
+                   "nor an explicit `crosses_major`. Whether a major is crossed decides whether "
+                   "the sweep record is mandatory, and it is not a thing to infer."
+                   % (component, brief_current.get(component), brief_target.get(component)))
+            continue
+        if not named:
+            reject("brief.targets[%s]" % component,
+                   "no lot declares `brief_targets: [%r]`. A decided target that no lot carries is "
+                   "a decision the programme silently drops." % component)
+            continue
+        if crossing and not any(by_id[lot_id].get("crosses_major") is True for lot_id in named):
+            reject("brief.targets[%s]" % component,
+                   "the brief takes %r across a major (%s -> %s) and the lot(s) carrying it (%s) "
+                   "declare `crosses_major: false`. The flag is what makes the sweep record "
+                   "mandatory, so a crossing declared away is due diligence declared away."
+                   % (component, brief_current.get(component), brief_target.get(component),
+                      ", ".join(sorted(named))))
+
+    for lot_id, lot in by_id.items():
+        for declared in (lot.get("brief_targets") or []):
+            if isinstance(declared, str) and declared.strip() and declared.strip() not in brief_components:
+                reject("lots[%s]" % lot_id,
+                       "declares `brief_targets: [%r]`, which the brief does not declare (%s)"
+                       % (declared.strip(), ", ".join(sorted(brief_components)) or "no target"))
+        prose = "%s\n%s" % (lot.get("title") or "", lot.get("intent") or "")
+        for forbidden in brief_forbidden:
+            pattern = forbidden.get("pattern")
+            if pattern:
+                try:
+                    compiled = re.compile(str(pattern), re.I)
+                except re.error as exc:
+                    reject("brief.forbidden_changes", "pattern %r does not compile: %s" % (pattern, exc))
+                    continue
+                if compiled.search(prose):
+                    reject("lots[%s]" % lot_id,
+                           "announces work the brief FORBIDS (%r, matched by its declared pattern "
+                           "%r). A lot may not undo a decision the brief took."
+                           % (forbidden.get("statement"), pattern))
+            elif forbidden.get("normalised") and forbidden["normalised"] in normalise(prose):
+                # The textual half is a COMFORT: it catches the drafter that
+                # copies the brief's own wording, and nothing else. A forbidden
+                # change that must be enforced carries a `pattern`; this branch
+                # cannot be made to converge by widening it.
+                reject("lots[%s]" % lot_id,
+                       "announces, in the brief's own words, work the brief FORBIDS (%r)"
+                       % forbidden.get("statement"))
 
     if out["refusals"]:
         out["code"] = "CONTRACT_REFUSED"
@@ -2737,7 +3006,12 @@ workflow assessment:
     stacks:        "{{outputs.survey_write.stacks}}"
   }
 
-  plan_draft -> contract_lint
+  ## The brief travels INTO the lint. Without it the lint checks the contract
+  ## against itself: internally consistent, and free to contradict every
+  ## decision somebody took.
+  plan_draft -> contract_lint with {
+    brief: "{{outputs.brief_read.brief}}"
+  }
 
   contract_lint -> contract_refused when not ok
   contract_lint -> render_plan when ok with {

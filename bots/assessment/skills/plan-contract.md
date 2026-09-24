@@ -35,6 +35,7 @@ lots:
     rebaseline_allowed: false
     crosses_major: false         # true -> the upgrade-archetypes sweep is due
     depends_on: []
+    brief_targets: []            # the brief components this lot advances
     intent: |
       What may change, and what may not. Read by the agent working the lot.
     exit_gate:
@@ -106,6 +107,22 @@ write them to be:
 A lot with no `exit_gate` is refused rather than assumed to pass. An
 unverifiable lot is indistinguishable from one that was never done.
 
+### A gate is proven by FAILING first
+
+A gate makes a claim about the tree the lot LEAVES. The one half of that claim
+checkable before the lot runs is that the gate does not ALREADY hold — and
+that half is the one that catches every vacuous gate at once. `true`, `:`,
+`exit 0`, `echo done`, a bare comment, a `test` over a path that is always
+there: each is green on the input tree, and each will be just as green on the
+output tree whatever the lot did.
+
+So the whole-contract lint that validates a drafted programme RUNS every gate
+on the tree the programme starts from and refuses a lot whose gate passes
+there. No list of forbidden spellings is maintained — the spellings are
+infinite and the execution is not. (The lint does keep a short list of the
+usual four, for the message it produces; it is a convenience, not the
+mechanism.)
+
 ### Narrowing has a cost, and it is paid later
 
 The third bullet is the dangerous one, so it comes with an obligation. Every
@@ -167,6 +184,12 @@ The contract makes the record inspectable rather than optional — such a lot's
       - "…the commands that decide the lot itself"
 ```
 
+The path must be the operand of a FILE PREDICATE naming this lot's own
+record — `test -s .modernize/sweeps/<lot-id>.md`, or `[ -s … ]`. A command
+that merely contains the path in its text (an `echo`, a comment, a `grep` over
+something else) satisfies a substring search and proves nothing about the
+file; the lint requires the predicate.
+
 The gate checks the record EXISTS; it does not read its content. That is
 deliberate and it is the same division as everywhere else in this file: the
 mechanical layer proves an artefact was produced and committed, the reviewer
@@ -174,6 +197,18 @@ judges what it says, and the behavioural net remains the only party that can
 prove the sweep missed nothing it watches. A sweep record that says "class not
 instantiated in this stack, because X" is a legitimate record; an absent one is
 a lot that skipped a due diligence its own contract named.
+
+## `brief_targets`
+
+The components of the declared brief a lot advances, spelled exactly as the
+brief spells them. It exists because the alternative is a reader matching words
+in prose: the fact travels WITH the lot, written by the drafter who knows it.
+
+The assessment's whole-contract lint reads the brief beside the contract and
+requires three things of it — every decided target is carried by at least one
+lot, a target the brief takes across a major is carried by a lot with
+`crosses_major: true`, and a `brief_targets` entry names a component the brief
+declares. The execution bot ignores the field: it never sees a brief.
 
 ## The shape of a lot block is part of the contract
 
@@ -283,12 +318,18 @@ CONJUNCTION TERM of programme convergence. They live in
 ```json
 {"outcomes": [
   {"id": "engine-target",
+   "goal_id": "supported-engine",
    "states": "the served stack runs on the second engine, oracle green there",
    "check": "GM_ENGINE=pg GM_CONFIG=config-pg.json bash ci/oracle-gate.sh",
    "arbitration": ""}
 ]}
 ```
 
+- `goal_id` names the goal of the declared brief this outcome answers. An
+  outcome answering no declared goal is an objective the drafter gave itself,
+  and a programme converges on one exactly as convincingly as on an agreed
+  one. Required by the assessment's whole-contract lint, which has the brief
+  in hand; the execution bot never sees a brief and cannot check it.
 - `check` runs on HEAD and exits 0 iff the outcome is MET. Like every gate,
   it is a command, never a claim.
 - `arbitration` is the ONLY other way an outcome closes: a written, dated

@@ -106,9 +106,9 @@ goals:
     statement: "the application runs on a runtime under active support"
     rationale: "support for the current one ends on the date below"
 targets:
-  - component: "the build tool"
-    current: "the series in the tree"
-    target: "the decided series"
+  - component: "the runtime"
+    current: "2.9"
+    target: "5.1"
     decided_by: "the platform group"
     decided_on: "2026-01-31"
 permitted_changes:
