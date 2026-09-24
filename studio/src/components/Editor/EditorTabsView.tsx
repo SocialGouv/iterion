@@ -11,6 +11,7 @@ import {
   selectEditorTabs,
   useTabsStore,
 } from "@/store/tabs";
+import { markEditorOnScreen } from "./editorOnScreen";
 
 // EditorTabsView is the /editor route. It hosts an inner tab strip
 // listing every open editor tab (one per .bot file) and renders all
@@ -34,6 +35,9 @@ export default function EditorTabsView() {
   // "Maximum update depth exceeded" via the getSnapshot caching rule).
   const tabs = useTabsStore(useShallow(selectEditorTabs));
   const activeTabId = useTabsStore((s) => s.activeEditorTabId);
+  // The editor is on screen while this view is mounted: app-level commands
+  // aimed at the editor (Edit → Undo from the desktop or the shell menu) read it.
+  useEffect(() => markEditorOnScreen(), []);
 
   // Assign, don't merely open: see the invariant note below.
   const ensureActive = (id: string) => {

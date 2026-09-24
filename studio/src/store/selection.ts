@@ -7,6 +7,12 @@ interface SelectionState {
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
   copiedNodeId: string | null;
+  // One-shot request to centre the canvas on a node — set by a deep link
+  // ("Open in editor" from a run) or a duplicate, taken by this tab's canvas
+  // once the node is laid out, then cleared. Per tab: the request is about
+  // this tab's document, and a canvas in another tab never takes it.
+  pendingFitNodeId: string | null;
+  setPendingFitNodeId: (id: string | null) => void;
   setSelectedNode: (id: string | null) => void;
   setSelectedEdge: (id: string | null) => void;
   clearSelection: () => void;
@@ -29,6 +35,8 @@ export function createSelectionStore() {
     selectedNodeId: null,
     selectedEdgeId: null,
     copiedNodeId: null,
+    pendingFitNodeId: null,
+    setPendingFitNodeId: (id) => set({ pendingFitNodeId: id }),
     setSelectedNode: (id) => {
       clearEditingItem();
       set({ selectedNodeId: id, selectedEdgeId: null });

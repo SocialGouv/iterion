@@ -33,6 +33,7 @@ vi.mock("@/components/shared/CommandPalette", () => ({
 // that takes the request is the one that records it.
 const probe = vi.hoisted(() => ({
   fits: [] as string[],
+  centred: [] as string[],
   requested: null as string | null,
   Tag: null as unknown as React.Context<string>,
 }));
@@ -51,6 +52,8 @@ vi.mock("@xyflow/react", async (importOriginal) => {
           getNodes: () => (probe.requested ? [{ id: probe.requested }] : rf.getNodes()),
           fitView: (...args: Parameters<typeof rf.fitView>) => {
             probe.fits.push(tag);
+            const target = args[0]?.nodes?.[0]?.id;
+            if (target) probe.centred.push(`${tag}:${target}`);
             return rf.fitView(...args);
           },
         }),
@@ -61,6 +64,8 @@ vi.mock("@xyflow/react", async (importOriginal) => {
 });
 
 import { ReactFlowProvider } from "@xyflow/react";
+import { EditorTabActiveContext } from "@/components/Editor/editorTabActive";
+import { HiddenSubtreeContext } from "@/components/ui/hiddenSubtree";
 import { createEmptyDocument } from "@/lib/defaults";
 import { DocumentStoreProvider, createDocumentStore } from "@/store/document";
 import { SelectionStoreProvider, createSelectionStore } from "@/store/selection";
@@ -77,25 +82,39 @@ beforeAll(() => {
 });
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-const stores = new Map<string, ReturnType<typeof createDocumentStore>>();
-
-function canvasTab(tag: string, active: boolean) {
-  let store = stores.get(tag);
-  if (!store) {
-    store = createDocumentStore();
-    store.getState().setDocument(createEmptyDocument());
-    stores.set(tag, store);
+const stores = new Map<
+  string,
+  { doc: ReturnType<typeof createDocumentStore>; sel: ReturnType<typeof createSelectionStore> }
+>();
+function storesOf(tag: string) {
+  let entry = stores.get(tag);
+  if (!entry) {
+    const doc = createDocumentStore();
+    doc.getState().setDocument(createEmptyDocument());
+    entry = { doc, sel: createSelectionStore() };
+    stores.set(tag, entry);
   }
+  return entry;
+}
+
+// A tab as EditorView renders it: the canvas under the tab's own stores, and
+// the two things EditorView says about the tab — on screen or not.
+function canvasTab(tag: string, active: boolean) {
+  const { doc, sel } = storesOf(tag);
   return (
     <div key={tag} data-testid={`tab-${tag}`} className={active ? "block" : "hidden"}>
       <probe.Tag.Provider value={tag}>
-        <DocumentStoreProvider store={store}>
-          <SelectionStoreProvider store={createSelectionStore()}>
-            <ReactFlowProvider>
-              <Canvas active={active} />
-            </ReactFlowProvider>
-          </SelectionStoreProvider>
-        </DocumentStoreProvider>
+        <EditorTabActiveContext.Provider value={active}>
+          <HiddenSubtreeContext.Provider value={!active}>
+            <DocumentStoreProvider store={doc}>
+              <SelectionStoreProvider store={sel}>
+                <ReactFlowProvider>
+                  <Canvas />
+                </ReactFlowProvider>
+              </SelectionStoreProvider>
+            </DocumentStoreProvider>
+          </HiddenSubtreeContext.Provider>
+        </EditorTabActiveContext.Provider>
       </probe.Tag.Provider>
     </div>
   );
@@ -113,9 +132,10 @@ const fitViaSlot = () => {
 };
 
 beforeEach(() => {
-  useUIStore.setState({ canvasActions: { arrange: null, fitView: null }, pendingFitNodeId: null });
+  useUIStore.setState({ canvasActions: { arrange: null, fitView: null } });
   stores.clear();
   probe.fits.length = 0;
+  probe.centred.length = 0;
   probe.requested = null;
 });
 afterEach(cleanup);
@@ -153,14 +173,33 @@ describe("the Arrange / Fit-view slot with two canvases mounted", () => {
 });
 
 describe("a request to centre a node, with two canvases mounted", () => {
-  it("is taken by the canvas on screen", async () => {
-    render(tabs(["b", false], ["a", true]));
-    probe.requested = "agent_1";
-    act(() => useUIStore.getState().setPendingFitNodeId("agent_1"));
-    await act(async () => {
+  const settle = () =>
+    act(async () => {
       await new Promise((r) => setTimeout(r, 400));
     });
-    expect(probe.fits).toEqual(["a"]);
-    expect(useUIStore.getState().pendingFitNodeId).toBeNull();
+
+  it("is taken by the canvas of the tab it was made in, never by another's", async () => {
+    render(tabs(["b", true], ["a", false]));
+    // b holds a node of the same name: the request is still a's.
+    probe.requested = "agent_1";
+    act(() => storesOf("a").sel.getState().setPendingFitNodeId("agent_1"));
+    await settle();
+    expect(probe.centred).toEqual([]);
+    expect(storesOf("a").sel.getState().pendingFitNodeId).toBe("agent_1");
+  });
+
+  it("waits while its tab is hidden, and is taken when the tab is shown again", async () => {
+    const view = render(tabs(["a", true], ["b", false]));
+    probe.requested = "agent_1";
+    act(() => storesOf("a").sel.getState().setPendingFitNodeId("agent_1"));
+    // The author switches tabs before the canvas takes it.
+    view.rerender(tabs(["a", false], ["b", true]));
+    await settle();
+    expect(probe.centred).toEqual([]);
+
+    view.rerender(tabs(["a", true], ["b", false]));
+    await settle();
+    expect(probe.centred).toEqual(["a:agent_1"]);
+    expect(storesOf("a").sel.getState().pendingFitNodeId).toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useHiddenSubtree } from "./hiddenSubtree";
 
 export interface ComboboxOption<T = string> {
   /** Stable value used for selection comparison and `onChange`. */
@@ -70,6 +71,7 @@ export function Combobox<T = string>({
   freeSolo = false,
   onQueryChange,
 }: Props<T>) {
+  const hidden = useHiddenSubtree();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [focusIdx, setFocusIdx] = useState(-1);
@@ -198,6 +200,7 @@ export function Combobox<T = string>({
           <span className="text-fg-subtle text-caption">▾</span>
         </button>
       </RP.Trigger>
+      {!hidden && (
       <RP.Portal>
         <RP.Content
           role="listbox"
@@ -304,6 +307,7 @@ export function Combobox<T = string>({
           </ul>
         </RP.Content>
       </RP.Portal>
+      )}
     </RP.Root>
   );
 }
