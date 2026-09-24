@@ -1379,14 +1379,41 @@ tool run_extractors:
                "one they would measure the checkout, and the document would say `measured at "
                "commit` over a number taken somewhere else.")
 
+    # The SAME neutralised git environment every other node of this bundle
+    # reads the tree under, handed to every extractor a skill ships. An ambient
+    # GIT_DIR points `git -C <ws>` at another object store, and the operator's
+    # own config decides what git prints: without this the floor and the lint
+    # would read the tree under one configuration and the extractors under
+    # another, in the same run.
     env = dict(os.environ)
+    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"):
+        env.pop(key, None)
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["LC_ALL"] = "C"
+    env["TZ"] = "UTC"
+    # `core.quotePath=false` travels in the ENVIRONMENT, so it reaches every git
+    # call of every script a skill ships, including one added later: git
+    # C-quotes a name carrying a byte >= 0x80, and the quoted spelling matches
+    # no suffix and no basename — an accented file drops out of an extractor's
+    # list with no error at all. APPENDED after what is already declared: the
+    # engine passes its own entries (safe.directory, commit.gpgsign) through
+    # this same channel, and writing slot 0 would erase one of them.
+    raw_count = env.get("GIT_CONFIG_COUNT", "0") or "0"
+    if not raw_count.isdigit():
+        refuse("EXTRACTORS_FAILED",
+               "GIT_CONFIG_COUNT=%r is not a count, so there is no slot to append this runner's "
+               "git configuration to without guessing which entries the engine declared." % raw_count)
+    slot = int(raw_count)
+    env["GIT_CONFIG_KEY_%d" % slot] = "core.quotePath"
+    env["GIT_CONFIG_VALUE_%d" % slot] = "false"
+    env["GIT_CONFIG_COUNT"] = str(slot + 1)
     env["WORKSPACE_DIR"] = ws
     env["SCRATCH_DIR"] = scratch
     env["BASE_SHA"] = base_sha
-    env["LC_ALL"] = "C"
-    env["TZ"] = "UTC"
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["GIT_TERMINAL_PROMPT"] = "0"
 
     # An interpreter a skill declares and this bundle does not provision is a
     # PACKAGING defect, not a property of the target repository — and the

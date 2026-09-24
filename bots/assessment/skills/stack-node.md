@@ -15,7 +15,10 @@ exit code, because a script that exits 0 and writes nothing is a silent
 coverage gap.
 
 Every script receives `WORKSPACE_DIR`, `SCRATCH_DIR` and `BASE_SHA` in its
-environment and runs with the workspace as its working directory. It reads the
+environment and runs with the workspace as its working directory. The runner
+hands it the git environment every node of the bundle reads under: no ambient
+`GIT_DIR`, no global or system configuration, and `core.quotePath=false`, so a
+path carrying a non-ASCII byte is listed as itself rather than C-quoted. It reads the
 tree through GIT OBJECTS at `BASE_SHA` — `git ls-tree`, `git show <sha>:<path>`
 — and never through the checkout, where an installed `node_modules` or a build
 output would be counted as the repository's own.
