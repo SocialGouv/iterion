@@ -666,6 +666,15 @@ func SourceBackendName(name string) string {
 	return sourceBackend.name(name)
 }
 
+// SourceNodeBackendName is the source reading of a node's route, for a host
+// outside this package: the node's own `backend:` wins, and only an absent or
+// `auto` one falls through to the workflow's `default_backend:` — each field
+// read as SourceBackendName reads it. "" means the source does not decide the
+// route.
+func SourceNodeBackendName(nodeBackend, workflowDefault string) string {
+	return effectiveNodeBackend(nodeBackend, workflowDefault)
+}
+
 // effectiveNodeBackend is the compile-time reading of a node's route.
 //
 // Copied from validateCommand rather than validateProviders, which
