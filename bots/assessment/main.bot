@@ -366,11 +366,22 @@ schema health_state:
   code: string
   reason: string
   healthy: bool
+  ## Not one of these is decoration. `degraded` and `missing` travel on to the
+  ## measurement and into the published document: a gap the gate saw and the
+  ## document did not mention is a gap nobody downstream can act on.
   degraded: bool
   stacks_detected: json
   stacks_covered: json
+  ## The UNION of what the runner could not cover and what the agent declared
+  ## unsupported. Either source alone publishes a smaller gap than the one
+  ## that exists.
   stacks_unsupported: json
   missing: json
+  stacks_errored: json
+  ## The agent and the runner disagreeing about whether a stack is covered.
+  ## Routed to its own refusal: one of them is wrong, and the document would
+  ## read as if neither were.
+  divergent: bool
 
 ## The declaration lint's verdict. Not one field here is an opinion.
 schema lint_state:
@@ -1096,6 +1107,14 @@ tool survey_write:
         survey_path, len(stacks), len(declarations))
     print(json.dumps(out))
 
+## survey_unreadable — survey_write's own refusal. It routed through
+## `declarations_refused` before, whose message reads the declaration lint's
+## field: an operator was shown the verdict of a node that had not run.
+fail survey_unreadable:
+  description: "the survey could not be materialised"
+  code: SURVEY_UNREADABLE
+  message: "{{outputs.survey_write.reason}}"
+
 ## What the extractor runner did. `unsupported` is a RESULT — a stack nobody
 ## shipped a skill for — and it is distinct from zero: a stack measured at
 ## zero and a stack never measured read the same in a table, and only one of
@@ -1111,6 +1130,11 @@ schema extract_state:
 
 schema extract_input:
   stacks: json
+  ## The commit every extractor must read AT. Without it a script falls back
+  ## on the checkout, which carries build output, caches and whatever a
+  ## previous node left behind — none of it in the commit this assessment
+  ## claims to describe.
+  base_sha: string
 
 ## run_extractors — the per-stack layer, and it contains no language. It reads
 ## the `iterion:extractors` block of `stack-<id>.md` for each stack the survey
@@ -1129,6 +1153,7 @@ tool run_extractors:
     import json
     import os
     import re
+    import shutil
     import subprocess
     import sys
 
@@ -1137,6 +1162,7 @@ tool run_extractors:
     ws = {{vars.workspace_dir}}
     scratch = {{vars.scratch_dir}}
     stacks = {{input.stacks}}
+    base_sha = {{input.base_sha}}
     skills_dir = os.path.join(ws, ".claude", "skills")
 
     out = {"ok": False, "code": "", "reason": "", "ran": [], "outputs": {},
@@ -1182,12 +1208,34 @@ tool run_extractors:
     except OSError as exc:
         refuse("EXTRACTORS_FAILED", "cannot create the scratch directory %s: %s" % (scratch, exc))
 
+    if not base_sha:
+        refuse("EXTRACTORS_FAILED",
+               "no pinned commit was handed to the extractor runner. Every skill in this bundle "
+               "declares that its scripts receive BASE_SHA and read the tree AT it; with an empty "
+               "one they would measure the checkout, and the document would say `measured at "
+               "commit` over a number taken somewhere else.")
+
     env = dict(os.environ)
     env["WORKSPACE_DIR"] = ws
     env["SCRATCH_DIR"] = scratch
-    env["BASE_SHA"] = ""
+    env["BASE_SHA"] = base_sha
     env["LC_ALL"] = "C"
     env["TZ"] = "UTC"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    # An interpreter a skill declares and this bundle does not provision is a
+    # PACKAGING defect, not a property of the target repository — and the
+    # symptom it produces otherwise (no output) is indistinguishable from a
+    # coverage void, which would send the reader to the wrong file entirely.
+    def interpreter_path(name):
+        found = shutil.which(name, path=env.get("PATH"))
+        if found:
+            return found
+        candidate = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        return ""
 
     covered = 0
     for stack in stacks if isinstance(stacks, list) else []:
@@ -1225,6 +1273,15 @@ tool run_extractors:
             if not extractor_id or not output_name:
                 out["errors"].append({"stack": stack_id, "error": "an extractor declares no id or no output"})
                 continue
+            resolved = interpreter_path(interpreter)
+            if not resolved:
+                refuse("EXTRACTORS_FAILED",
+                       "stack-%s.md declares extractor %r under the interpreter %r, which is on no "
+                       "PATH and in no devbox profile of this bundle. A skill this bundle SHIPS "
+                       "names a tool this bundle must provision: add it to "
+                       "bots/assessment/devbox.json. Left alone it produces no output, which reads "
+                       "downstream as a coverage void — a fact about the repository rather than "
+                       "about the packaging." % (stack_id, extractor_id, interpreter))
             body = script_of(text, extractor_id)
             if body is None:
                 out["errors"].append({"stack": stack_id, "extractor": extractor_id,
@@ -1242,7 +1299,7 @@ tool run_extractors:
                                       "error": "cannot write the extractor script: %s" % exc})
                 continue
             try:
-                run = subprocess.run([interpreter, script_path], cwd=ws, env=env,
+                run = subprocess.run([resolved, script_path], cwd=ws, env=env,
                                      capture_output=True, timeout=900)
             except (OSError, subprocess.SubprocessError) as exc:
                 out["errors"].append({"stack": stack_id, "extractor": extractor_id,
@@ -1282,10 +1339,19 @@ tool run_extractors:
         len(out["ran"]), covered, len(out["unsupported"]), len(out["errors"]))
     print(json.dumps(out))
 
+## extractors_failed — the runner's own refusal. It used to route through
+## `coverage_void`, whose message reads another node's field: an operator was
+## handed the coverage gate's verdict about a gate that never ran.
+fail extractors_failed:
+  description: "the extractor runner could not run the skills this bundle ships"
+  code: EXTRACTORS_FAILED
+  message: "{{outputs.run_extractors.reason}}"
+
 schema health_input:
   survey_path: string
   outputs: json
   unsupported: json
+  errors: json
 
 ## inventory_health — the coverage gate. Its expectations come from the SAME
 ## `iterion:extractors` blocks the runner executed, filtered to the stacks the
@@ -1310,10 +1376,12 @@ tool inventory_health:
     survey_path = {{input.survey_path}}
     produced = {{input.outputs}}
     unsupported = {{input.unsupported}}
+    errors = {{input.errors}}
     skills_dir = os.path.join(ws, ".claude", "skills")
 
     out = {"ok": False, "code": "", "reason": "", "healthy": False, "degraded": False,
-           "stacks_detected": [], "stacks_covered": [], "stacks_unsupported": [], "missing": []}
+           "stacks_detected": [], "stacks_covered": [], "stacks_unsupported": [], "missing": [],
+           "stacks_errored": [], "divergent": False}
 
     def refuse(code, reason):
         out["code"] = code
@@ -1350,8 +1418,16 @@ tool inventory_health:
 
     detected = [str(s.get("id")) for s in survey.get("stacks") or [] if isinstance(s, dict) and s.get("id")]
     out["stacks_detected"] = detected
-    out["stacks_unsupported"] = unsupported if isinstance(unsupported, list) else []
+    # The agent's own verdict, kept apart from the runner's. They are two
+    # independent readings of the same question, and the point of having two is
+    # that they can disagree.
+    declared_unsupported = {str(s.get("id")) for s in survey.get("stacks") or []
+                            if isinstance(s, dict) and s.get("id") and not s.get("supported", True)}
+    runner_unsupported = {str(entry.get("stack")) for entry in (unsupported or [])
+                          if isinstance(entry, dict) and entry.get("stack")}
     produced = produced if isinstance(produced, dict) else {}
+    out["stacks_errored"] = sorted({str(e.get("stack")) for e in (errors or [])
+                                    if isinstance(e, dict) and e.get("stack")})
 
     void, covered = [], []
     for stack_id in detected:
@@ -1375,6 +1451,36 @@ tool inventory_health:
             void.append(stack_id)
     out["stacks_covered"] = covered
 
+    # THE UNION, published as one list. Either source alone names a smaller gap
+    # than the one that exists: the runner cannot know a stack the agent could
+    # not cover conceptually, and the agent cannot know which skills this
+    # bundle ships.
+    out["stacks_unsupported"] = sorted(
+        [{"stack": stack, "reason": "declared unsupported by the survey"}
+         for stack in sorted(declared_unsupported - runner_unsupported)] +
+        [entry for entry in (unsupported or []) if isinstance(entry, dict) and entry.get("stack")],
+        key=lambda entry: str(entry.get("stack")))
+
+    # A DISAGREEMENT is a refusal, not an average. One of the two readings is
+    # wrong; publishing either silently means the document reads as though
+    # neither were. The dangerous direction — the agent claiming coverage the
+    # bundle does not have — and its mirror are both named, because a stack
+    # reported uncovered while its extractors ran publishes a gap that is not
+    # there and sends a reader to write a skill that exists.
+    claimed_covered = declared_unsupported.intersection(covered)
+    claimed_supported = runner_unsupported.difference(declared_unsupported)
+    if claimed_covered or claimed_supported:
+        out["divergent"] = True
+        refuse("COVERAGE_DIVERGENCE",
+               "the survey and the extractor runner disagree about %s. %s%sOne of the two is "
+               "wrong about what this bundle measures, and a document written over either alone "
+               "reads as though neither were."
+               % (", ".join(sorted(claimed_covered | claimed_supported)),
+                  ("The survey declared %s unsupported, and this bundle ran their extractors. "
+                   % ", ".join(sorted(claimed_covered))) if claimed_covered else "",
+                  ("The survey declared %s supported, and this bundle has no extractor for them. "
+                   % ", ".join(sorted(claimed_supported))) if claimed_supported else ""))
+
     if void:
         refuse("COVERAGE_VOID",
                "stack(s) %s are covered by a skill in this bundle and produced NONE of their "
@@ -1385,15 +1491,25 @@ tool inventory_health:
                                            for m in out["missing"][:8])))
 
     out["ok"] = True
-    out["degraded"] = bool(out["missing"]) or bool(out["stacks_unsupported"])
+    out["degraded"] = bool(out["missing"]) or bool(out["stacks_unsupported"]) or bool(out["stacks_errored"])
     out["healthy"] = not out["degraded"]
-    out["reason"] = "%d stack(s) detected, %d covered, %d unsupported, %d output(s) missing" % (
-        len(detected), len(covered), len(out["stacks_unsupported"]), len(out["missing"]))
+    out["reason"] = "%d stack(s) detected, %d covered, %d unsupported, %d output(s) missing, %d errored" % (
+        len(detected), len(covered), len(out["stacks_unsupported"]), len(out["missing"]),
+        len(out["stacks_errored"]))
     print(json.dumps(out))
 
 fail coverage_void:
   description: "a detected stack produced none of its declared extractor outputs"
   code: COVERAGE_VOID
+  message: "{{outputs.inventory_health.reason}}"
+
+## coverage_divergence — the agent and the runner read the same question two
+## ways. Its own code because it asks for a different repair: one of the two
+## readings is wrong, and which one decides whether a skill is missing or a
+## declaration is.
+fail coverage_divergence:
+  description: "the survey and the extractor runner disagree about what is covered"
+  code: COVERAGE_DIVERGENCE
   message: "{{outputs.inventory_health.reason}}"
 
 schema lint_input:
@@ -1616,6 +1732,17 @@ schema measure_input:
   base_sha: string
   survey_path: string
   floor_path: string
+  ## The extractor artefacts THIS pass produced, by path. The scratch
+  ## directory survives a resume, so reading everything in it sums a previous
+  ## pass's numbers into this one's.
+  extractor_outputs: json
+  ## What the coverage gate established, carried forward rather than
+  ## recomputed from the agent's flags: the document publishes the gap the
+  ## deterministic layer saw, not the one the survey admitted to.
+  stacks_unsupported: json
+  stacks_covered: json
+  coverage_degraded: bool
+  coverage_missing: json
 
 ## measure — the published measurement, computed deterministically over the
 ## declared perimeter. It reads the measurement profile: metrics, canonical
@@ -1633,11 +1760,18 @@ tool measure:
     import re
     import sys
 
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+
     ws = {{vars.workspace_dir}}
     scratch = {{vars.scratch_dir}}
     base_sha = {{input.base_sha}}
     survey_path = {{input.survey_path}}
     floor_path = {{input.floor_path}}
+    extractor_outputs = {{input.extractor_outputs}}
+    stacks_unsupported = {{input.stacks_unsupported}}
+    stacks_covered = {{input.stacks_covered}}
+    coverage_degraded = {{input.coverage_degraded}}
+    coverage_missing = {{input.coverage_missing}}
     profile_rel = {{vars.profile_path}}
     skills_dir = os.path.join(ws, ".claude", "skills")
 
@@ -1727,14 +1861,21 @@ tool measure:
     # declaration. They are never summed: an artefact counted by both would be
     # counted twice, and that is the failure this whole bundle is shaped
     # against.
+    #
+    # The artefacts THIS pass produced, named by the runner. Walking the
+    # scratch directory instead would sum a previous pass's outputs into this
+    # one's: the directory survives a resume, and a stack dropped from the
+    # survey between two passes leaves its numbers behind.
     extracted = {"entrypoints": 0, "deployables": 0, "declared_versions": []}
     extractor_files = []
-    if os.path.isdir(scratch):
-        for name in sorted(os.listdir(scratch)):
-            if not name.endswith(".json") or name == "floor.json" or name == "facts.json":
-                continue
+    produced_paths = []
+    for entry in (extractor_outputs or []):
+        if isinstance(entry, dict) and entry.get("path"):
+            produced_paths.append((str(entry.get("output") or os.path.basename(str(entry["path"]))),
+                                   str(entry["path"])))
+    for name, path in sorted(set(produced_paths)):
             try:
-                document = json.load(open(os.path.join(scratch, name), encoding="utf-8"))
+                document = json.load(open(path, encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             facts_block = document.get("facts") if isinstance(document, dict) else None
@@ -1872,11 +2013,32 @@ tool measure:
     facts["survey.first_party_subtrees"] = plural(len(first_party), "first-party subtree")
     facts["survey.excluded_subtrees"] = plural(len(excluded), "excluded subtree")
     facts["survey.tests_subtrees"] = plural(len(tests), "test subtree")
-    facts["stack.detected"] = ", ".join(sorted({str(s.get("id")) for s in survey.get("stacks") or []
-                                                if isinstance(s, dict) and s.get("id")})) or "none"
-    facts["stack.unsupported"] = ", ".join(sorted({str(s.get("id")) for s in survey.get("stacks") or []
-                                                   if isinstance(s, dict) and not s.get("supported", True)})) \
-        or "none"
+    facts["stack.detected"] = "the stack(s) %s" % (
+        ", ".join(sorted({str(s.get("id")) for s in survey.get("stacks") or []
+                          if isinstance(s, dict) and s.get("id")})) or "none")
+    # THE UNION, and the coverage gate's half of it is the half that matters:
+    # the agent's flag says what it believed, the runner's list says which
+    # skills this bundle actually ships. A document published over the flag
+    # alone reads "none not covered" on a repository whose whole stack this
+    # bundle has no extractor for.
+    uncovered = {str(s.get("id")) for s in survey.get("stacks") or []
+                 if isinstance(s, dict) and s.get("id") and not s.get("supported", True)}
+    uncovered |= {str(entry.get("stack")) for entry in (stacks_unsupported or [])
+                  if isinstance(entry, dict) and entry.get("stack")}
+    facts["stack.unsupported"] = ("the stack(s) %s, which no extractor in this bundle measures"
+                                  % ", ".join(sorted(uncovered))) if uncovered else \
+        "no detected stack is left without an extractor"
+    covered_ids = sorted({str(i) for i in (stacks_covered or []) if i})
+    facts["stack.covered"] = ("the stack(s) %s, measured by an extractor this bundle ships"
+                              % ", ".join(covered_ids)) if covered_ids else \
+        "no stack was measured by an extractor"
+    missing_outputs = [m for m in (coverage_missing or []) if isinstance(m, dict)]
+    facts["stack.coverage"] = (
+        "the coverage of this measurement is DEGRADED: %s%s"
+        % (("%s left unmeasured" % ", ".join(sorted(uncovered))) if uncovered else "no stack left unmeasured",
+           ("; %s declared extractor output(s) did not land" % len(missing_outputs))
+           if missing_outputs else "")) if coverage_degraded else \
+        "every detected stack was measured by an extractor this bundle ships"
     facts["stack.extractor_outputs"] = plural(len(extractor_files), "extractor output")
     versions = ["%s %s" % (v.get("component"), v.get("version"))
                 for v in extracted["declared_versions"] if isinstance(v, dict) and v.get("version")]
@@ -2074,6 +2236,7 @@ tool render:
         "| literal secret shapes | %s |" % facts.get("floor.secret_shapes", ""),
         "| stacks detected | %s |" % facts.get("stack.detected", ""),
         "| stacks NOT covered by an extractor | %s |" % facts.get("stack.unsupported", ""),
+        "| coverage of this measurement | %s |" % facts.get("stack.coverage", ""),
         "",
         "## Size",
         "",
@@ -2960,18 +3123,24 @@ workflow assessment:
     notes:        "{{outputs.survey.notes}}"
   }
 
-  survey_write -> declarations_refused when not ok
+  survey_write -> survey_unreadable when not ok
   survey_write -> run_extractors when ok with {
-    stacks: "{{outputs.survey_write.stacks}}"
+    stacks:   "{{outputs.survey_write.stacks}}",
+    base_sha: "{{outputs.workspace_probe.base_sha}}"
   }
 
-  run_extractors -> coverage_void when not ok
+  run_extractors -> extractors_failed when not ok
   run_extractors -> inventory_health when ok with {
     survey_path: "{{outputs.survey_write.survey_path}}",
     outputs:     "{{outputs.run_extractors.outputs}}",
-    unsupported: "{{outputs.run_extractors.unsupported}}"
+    unsupported: "{{outputs.run_extractors.unsupported}}",
+    errors:      "{{outputs.run_extractors.errors}}"
   }
 
+  ## Divergence first, and it is never true alongside a plain void: the two ask
+  ## for different repairs, and one code for both sends the operator to write a
+  ## skill that already exists.
+  inventory_health -> coverage_divergence when divergent
   inventory_health -> coverage_void when not ok
   inventory_health -> declaration_lint when ok with {
     base_sha:    "{{outputs.workspace_probe.base_sha}}",
@@ -2980,9 +3149,14 @@ workflow assessment:
 
   declaration_lint -> declarations_refused when not ok
   declaration_lint -> measure when ok with {
-    base_sha:    "{{outputs.workspace_probe.base_sha}}",
-    survey_path: "{{outputs.survey_write.survey_path}}",
-    floor_path:  "{{outputs.inventory_floor.floor_path}}"
+    base_sha:           "{{outputs.workspace_probe.base_sha}}",
+    survey_path:        "{{outputs.survey_write.survey_path}}",
+    floor_path:         "{{outputs.inventory_floor.floor_path}}",
+    extractor_outputs:  "{{outputs.run_extractors.ran}}",
+    stacks_unsupported: "{{outputs.inventory_health.stacks_unsupported}}",
+    stacks_covered:     "{{outputs.inventory_health.stacks_covered}}",
+    coverage_degraded:  "{{outputs.inventory_health.degraded}}",
+    coverage_missing:   "{{outputs.inventory_health.missing}}"
   }
 
   measure -> measurement_refused when not ok

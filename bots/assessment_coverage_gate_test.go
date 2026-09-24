@@ -68,12 +68,21 @@ func stackWorkspace(t *testing.T, skills map[string]string) string {
 
 func runExtractors(t *testing.T, ws, scratch string, stacks []map[string]any) map[string]any {
 	t.Helper()
+	return runExtractorsAt(t, ws, scratch, stacks, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+}
+
+// runExtractorsAt pins the pass to a commit, the way the workflow does: the
+// skills declare that their scripts read the tree AT $BASE_SHA, and an
+// extractor handed an empty one would measure the checkout.
+func runExtractorsAt(t *testing.T, ws, scratch string, stacks []map[string]any, sha string) map[string]any {
+	t.Helper()
 	raw, err := json.Marshal(stacks)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, exit, stderr := assessmentRun(t, "run_extractors",
-		map[string]string{"{{vars.workspace_dir}}": ws, "{{vars.scratch_dir}}": scratch},
+		map[string]string{"{{vars.workspace_dir}}": ws, "{{vars.scratch_dir}}": scratch,
+			"{{input.base_sha}}": sha},
 		map[string]string{"{{input.stacks}}": string(raw)})
 	if exit != 0 {
 		t.Fatalf("run_extractors exited %d: %s", exit, stderr)
@@ -85,11 +94,17 @@ func runHealth(t *testing.T, ws, scratch, surveyPath string, extract map[string]
 	t.Helper()
 	outputs, _ := json.Marshal(extract["outputs"])
 	unsupported, _ := json.Marshal(extract["unsupported"])
+	errs := extract["errors"]
+	if errs == nil {
+		errs = []any{}
+	}
+	errors, _ := json.Marshal(errs)
 	out, exit, stderr := assessmentRun(t, "inventory_health",
 		map[string]string{"{{vars.workspace_dir}}": ws, "{{vars.scratch_dir}}": scratch,
 			"{{input.survey_path}}": surveyPath},
 		map[string]string{"{{input.outputs}}": string(outputs),
-			"{{input.unsupported}}": string(unsupported)})
+			"{{input.unsupported}}": string(unsupported),
+			"{{input.errors}}":      string(errors)})
 	if exit != 0 {
 		t.Fatalf("inventory_health exited %d: %s", exit, stderr)
 	}
@@ -245,10 +260,10 @@ func TestAssessmentShippedStackSkillsParseTheSameBothWays(t *testing.T) {
 	// works on a repository of the right shape is a coverage gap with a
 	// schedule.
 	ws := stackWorkspace(t, skills)
-	gitInitBare(t, ws)
+	sha := gitInitEmptyCommit(t, ws)
 	scratch := t.TempDir()
 
-	out := runExtractors(t, ws, scratch, stacks)
+	out := runExtractorsAt(t, ws, scratch, stacks, sha)
 	if errs, _ := out["errors"].([]any); len(errs) > 0 {
 		t.Fatalf("shipped extractors errored on an empty repository: %v", errs)
 	}
@@ -263,12 +278,207 @@ func TestAssessmentShippedStackSkillsParseTheSameBothWays(t *testing.T) {
 	}
 }
 
-// gitInitBare turns a directory into an empty git repository, so an extractor
-// that shells `git ls-files` has something to answer against.
-func gitInitBare(t *testing.T, dir string) {
+// gitInitEmptyCommit turns a directory into a git repository carrying ONE
+// empty commit, and returns its sha. The extractors read the tree at a pinned
+// commit, so a repository with no commit has nothing for them to read — and a
+// bundle-shipped extractor must still produce a readable artefact over an
+// empty tree.
+func gitInitEmptyCommit(t *testing.T, dir string) string {
 	t.Helper()
 	gittest.Run(t, dir, "init", "-q", "-b", "main")
 	gittest.Run(t, dir, "config", "user.email", "t@example.com")
 	gittest.Run(t, dir, "config", "user.name", "t")
 	gittest.Run(t, dir, "config", "commit.gpgsign", "false")
+	gittest.Run(t, dir, "commit", "-q", "--allow-empty", "-m", "empty")
+	return strings.TrimSpace(gittest.Run(t, dir, "rev-parse", "HEAD"))
+}
+
+// TWO READINGS OF ONE QUESTION, and the point of having two is that they can
+// disagree. The published gap used to come from the agent's flag alone: on a
+// repository whose whole stack this bundle has no extractor for, the document
+// read "stacks NOT covered: none" while the deterministic layer knew better.
+func TestAssessmentCoverageDivergenceIsRefusedNotAveraged(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := stackWorkspace(t, map[string]string{"stack-synth.md": aStackSkill})
+
+	t.Run("the survey claims coverage this bundle does not have", func(t *testing.T) {
+		scratch := t.TempDir()
+		stacks := []map[string]any{
+			{"id": "synth", "evidence": "a", "supported": true},
+			// No stack-elsewhere.md ships here, and the survey says otherwise.
+			{"id": "elsewhere", "evidence": "b", "supported": true},
+		}
+		out := runExtractors(t, ws, scratch, stacks)
+		survey := writeSurvey(t, t.TempDir(), "deadbeef", stacks, nil)
+		health := runHealth(t, ws, scratch, survey, out)
+		if assessmentBool(t, health, "ok") {
+			t.Fatal("the survey declared a stack SUPPORTED that this bundle has no extractor for, and the gate agreed with both")
+		}
+		if !assessmentBool(t, health, "divergent") {
+			t.Fatal("the disagreement was not routed as one — it would reach the same fail node as a plain coverage void")
+		}
+		if code := assessmentString(t, health, "code"); code != "COVERAGE_DIVERGENCE" {
+			t.Fatalf("code = %q, want COVERAGE_DIVERGENCE", code)
+		}
+		if !strings.Contains(assessmentString(t, health, "reason"), "elsewhere") {
+			t.Errorf("the refusal does not name the stack: %s", assessmentString(t, health, "reason"))
+		}
+	})
+
+	t.Run("the survey writes off a stack this bundle measured", func(t *testing.T) {
+		scratch := t.TempDir()
+		stacks := []map[string]any{
+			{"id": "synth", "evidence": "a", "supported": false, "reason": "believed uncovered"},
+		}
+		out := runExtractors(t, ws, scratch, stacks)
+		survey := writeSurvey(t, t.TempDir(), "deadbeef", stacks, nil)
+		health := runHealth(t, ws, scratch, survey, out)
+		if assessmentBool(t, health, "ok") {
+			t.Fatal("a stack declared unsupported, whose extractors this bundle ran, was accepted — the document would publish a gap that is not there")
+		}
+		if code := assessmentString(t, health, "code"); code != "COVERAGE_DIVERGENCE" {
+			t.Fatalf("code = %q, want COVERAGE_DIVERGENCE", code)
+		}
+	})
+
+	// The control: the two agree, and the union is what gets published.
+	t.Run("the two agree and the union is published", func(t *testing.T) {
+		scratch := t.TempDir()
+		stacks := []map[string]any{
+			{"id": "synth", "evidence": "a", "supported": true},
+			{"id": "elsewhere", "evidence": "b", "supported": false, "reason": "no extractor skill in this bundle"},
+		}
+		out := runExtractors(t, ws, scratch, stacks)
+		survey := writeSurvey(t, t.TempDir(), "deadbeef", stacks, nil)
+		health := runHealth(t, ws, scratch, survey, out)
+		if !assessmentBool(t, health, "ok") {
+			t.Fatalf("the gate refused two readings that agree: %s", assessmentString(t, health, "reason"))
+		}
+		if assessmentBool(t, health, "divergent") {
+			t.Fatal("two readings that agree were reported as divergent")
+		}
+		union, _ := health["stacks_unsupported"].([]any)
+		if len(union) != 1 {
+			t.Fatalf("stacks_unsupported = %v, want the one stack neither side covers", health["stacks_unsupported"])
+		}
+	})
+}
+
+// An interpreter a shipped skill declares and this bundle does not provision
+// is a PACKAGING defect. Left unnamed it produces no output, which reads
+// downstream as a coverage void — a fact about the repository rather than
+// about the bundle, and the operator is sent to the wrong file.
+func TestAssessmentUnprovisionedInterpreterIsNamed(t *testing.T) {
+	requireAssessmentTools(t)
+	skill := strings.Replace(aStackSkill, `"interpreter":"python3"`,
+		`"interpreter":"an-interpreter-nobody-installed"`, 1)
+	if skill == aStackSkill {
+		t.Fatal("the mutation did not apply")
+	}
+	ws := stackWorkspace(t, map[string]string{"stack-synth.md": skill})
+	out := runExtractors(t, ws, t.TempDir(), []map[string]any{
+		{"id": "synth", "evidence": "a", "supported": true}})
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a skill declaring an interpreter this bundle does not ship ran to a silent zero")
+	}
+	reason := assessmentString(t, out, "reason")
+	if !strings.Contains(reason, "an-interpreter-nobody-installed") {
+		t.Errorf("the refusal does not name the interpreter: %s", reason)
+	}
+	if !strings.Contains(reason, "devbox.json") {
+		t.Errorf("the refusal does not say where to provision it: %s", reason)
+	}
+}
+
+// The pin is not decoration: an extractor handed no commit measures the
+// CHECKOUT, and the document says "measured at commit" over it.
+func TestAssessmentExtractorsRefuseAnUnpinnedPass(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := stackWorkspace(t, map[string]string{"stack-synth.md": aStackSkill})
+	out := runExtractorsAt(t, ws, t.TempDir(),
+		[]map[string]any{{"id": "synth", "evidence": "a", "supported": true}}, "")
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("the extractor runner measured with no pinned commit — it would read the checkout")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "pinned commit") {
+		t.Errorf("the refusal does not name the missing pin: %s", assessmentString(t, out, "reason"))
+	}
+}
+
+// THE EXTRACTORS MEASURE THE COMMIT. Every skill in this bundle says its
+// scripts read the tree at `$BASE_SHA`, and the rendered document says
+// "measured at commit"; a script reading the checkout instead counts build
+// output, an installed dependency tree and whatever a previous node left
+// behind — none of which is in the commit it claims to describe.
+//
+// Proven in BOTH directions on a throwaway repository: the pinned pass does
+// not see the working tree's edit, and it does see what the commit holds.
+func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
+	requireAssessmentTools(t)
+	skills := map[string]string{}
+	for _, name := range []string{"stack-go.md", "stack-node.md"} {
+		body, err := os.ReadFile(filepath.Join("assessment", "skills", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		skills[name] = string(body)
+	}
+	ws := stackWorkspace(t, skills)
+	gittest.Run(t, ws, "init", "-q", "-b", "main")
+	gittest.Run(t, ws, "config", "user.email", "t@example.com")
+	gittest.Run(t, ws, "config", "user.name", "t")
+	gittest.Run(t, ws, "config", "commit.gpgsign", "false")
+
+	write := func(rel, body string) {
+		full := filepath.Join(ws, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.test/app\n\ngo 1.21\n")
+	write("package.json", `{"name": "app", "engines": {"node": "20.0.0"}}`)
+	gittest.Run(t, ws, "add", "go.mod", "package.json")
+	gittest.Run(t, ws, "commit", "-qm", "the commit under assessment")
+	sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+
+	// What a checkout accumulates and a commit never holds: an edit in flight,
+	// and an installed dependency tree carrying its own manifests.
+	write("go.mod", "module example.test/app\n\ngo 9.99\n")
+	write("node_modules/left-pad/package.json", `{"name": "left-pad", "engines": {"node": "0.1.0"}}`)
+	write("vendored-build/go.mod", "module example.test/build\n\ngo 8.88\n")
+
+	scratch := t.TempDir()
+	out := runExtractorsAt(t, ws, scratch, []map[string]any{
+		{"id": "go", "evidence": "go.mod", "supported": true},
+		{"id": "node", "evidence": "package.json", "supported": true},
+	}, sha)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("the shipped extractors refused a pinned pass: %s", assessmentString(t, out, "reason"))
+	}
+	if errs, _ := out["errors"].([]any); len(errs) > 0 {
+		t.Fatalf("the shipped extractors errored on a pinned pass: %v", errs)
+	}
+
+	for name, wantVersion := range map[string]string{
+		"go-modules.json": "1.21", "node-packages.json": "20.0.0",
+	} {
+		body, err := os.ReadFile(filepath.Join(scratch, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		text := string(body)
+		if !strings.Contains(text, wantVersion) {
+			t.Errorf("%s does not carry the version the COMMIT declares (%s):\n%s", name, wantVersion, text)
+		}
+		for _, fromTheCheckout := range []string{"9.99", "8.88", "0.1.0", "left-pad"} {
+			if strings.Contains(text, fromTheCheckout) {
+				t.Errorf("%s carries %q, which exists only in the working directory — the "+
+					"extractor is measuring the checkout, and the document says `measured at commit`",
+					name, fromTheCheckout)
+			}
+		}
+	}
 }

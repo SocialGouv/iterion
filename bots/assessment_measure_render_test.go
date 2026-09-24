@@ -53,6 +53,15 @@ func writeFloor(t *testing.T, scratch string, lines map[string]int) string {
 
 func measure(t *testing.T, ws, scratch, surveyPath, floorPath string) map[string]any {
 	t.Helper()
+	return measureWithCoverage(t, ws, scratch, surveyPath, floorPath, "[]", "[]", "false")
+}
+
+// measureWithCoverage hands the measurement what the coverage gate
+// established, the way the workflow does. The published gap is the
+// deterministic layer's, never the agent's flag alone.
+func measureWithCoverage(t *testing.T, ws, scratch, surveyPath, floorPath,
+	unsupported, covered, degraded string) map[string]any {
+	t.Helper()
 	out, exit, stderr := assessmentRun(t, "measure", map[string]string{
 		"{{vars.workspace_dir}}": ws,
 		"{{vars.scratch_dir}}":   scratch,
@@ -60,7 +69,13 @@ func measure(t *testing.T, ws, scratch, surveyPath, floorPath string) map[string
 		"{{input.base_sha}}":     "deadbeefdeadbeef",
 		"{{input.survey_path}}":  surveyPath,
 		"{{input.floor_path}}":   floorPath,
-	}, nil)
+	}, map[string]string{
+		"{{input.extractor_outputs}}":  "[]",
+		"{{input.stacks_unsupported}}": unsupported,
+		"{{input.stacks_covered}}":     covered,
+		"{{input.coverage_degraded}}":  degraded,
+		"{{input.coverage_missing}}":   "[]",
+	})
 	if exit != 0 {
 		t.Fatalf("measure exited %d: %s", exit, stderr)
 	}
@@ -247,4 +262,37 @@ func TestAssessmentRenderRefusesAFactNobodyMeasured(t *testing.T) {
 			t.Errorf("code = %q, want RENDER_REFUSED", assessmentString(t, out, "code"))
 		}
 	})
+}
+
+// The published gap is the UNION of what the runner could not cover and what
+// the survey declared. Either alone is smaller than the gap that exists: the
+// agent does not know which skills this bundle ships, and the runner does not
+// know a stack the agent could not cover conceptually.
+//
+// The measured consequence: a survey that declares every stack supported
+// published "stacks NOT covered: none" while the deterministic layer knew its
+// whole stack had no extractor.
+func TestAssessmentPublishedCoverageIsTheUnionNotTheAgentsFlag(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	scratch := t.TempDir()
+	floor := writeFloor(t, scratch, floorLines(20000))
+	// The agent's flag says everything is fine.
+	stacks := []map[string]any{{"id": "confident", "evidence": "a", "supported": true}}
+	survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, inDomainSurvey(2))
+
+	// The deterministic layer knows there is no extractor for it.
+	out := measureWithCoverage(t, ws, scratch, survey, floor,
+		`[{"stack": "confident", "reason": "no stack-confident.md in this bundle"}]`, `[]`, "true")
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("measure refused: %s", assessmentString(t, out, "reason"))
+	}
+	facts := assessmentString(t, out, "facts")
+	if !strings.Contains(facts, "confident") {
+		t.Fatalf("the published gap does not name the stack the runner could not cover — it is "+
+			"reading the agent's flag:\n%s", facts)
+	}
+	if !strings.Contains(facts, "stack.coverage — the coverage of this measurement is DEGRADED") {
+		t.Errorf("the coverage gate's `degraded` verdict never reaches the document:\n%s", facts)
+	}
 }

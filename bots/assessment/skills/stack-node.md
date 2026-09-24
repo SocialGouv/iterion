@@ -15,7 +15,10 @@ exit code, because a script that exits 0 and writes nothing is a silent
 coverage gap.
 
 Every script receives `WORKSPACE_DIR`, `SCRATCH_DIR` and `BASE_SHA` in its
-environment and runs with the workspace as its working directory.
+environment and runs with the workspace as its working directory. It reads the
+tree through GIT OBJECTS at `BASE_SHA` — `git ls-tree`, `git show <sha>:<path>`
+— and never through the checkout, where an installed `node_modules` or a build
+output would be counted as the repository's own.
 
 ## What each extractor is responsible for
 
@@ -55,17 +58,36 @@ Adding a framework to the pattern set is an edit HERE, never to the workflow.
 <!-- iterion:script packages -->
 
 ```python
-import json, os, subprocess
+import json, os, re, subprocess
 
 ws = os.environ["WORKSPACE_DIR"]
-listed = subprocess.run(["git", "-C", ws, "ls-files", "--", "package.json", "*/package.json"],
-                        capture_output=True, text=True, timeout=120)
-manifests = [m for m in sorted(set(listed.stdout.split())) if "node_modules/" not in m]
+sha = os.environ["BASE_SHA"]
+# The tree is read through GIT OBJECTS at the pinned commit, never through the
+# checkout: an installed `node_modules`, a build output or a lock file lying in
+# the working directory is in no commit, and counting it would make the
+# repository look like whatever was last run in it.
+ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL="C", TZ="UTC")
+
+def tree():
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--name-only", "--full-tree", sha],
+                            capture_output=True, text=True, env=ENV, timeout=300)
+    if listed.returncode != 0:
+        raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
+    return [p for p in listed.stdout.splitlines() if p]
+
+def blob(path):
+    shown = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (sha, path)],
+                           capture_output=True, env=ENV, timeout=120)
+    return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else ""
+
+def manifests():
+    return [p for p in tree() if os.path.basename(p) == "package.json" and "node_modules/" not in p]
+
 versions, rows = [], []
-for m in manifests:
+for m in sorted(manifests()):
     try:
-        data = json.load(open(os.path.join(ws, m), encoding="utf-8"))
-    except (ValueError, OSError) as exc:
+        data = json.loads(blob(m))
+    except ValueError as exc:
         rows.append({"manifest": m, "unreadable": str(exc)})
         continue
     engines = data.get("engines") or {}
@@ -95,17 +117,36 @@ print(json.dumps({
 <!-- iterion:script runnables -->
 
 ```python
-import json, os, subprocess
+import json, os, re, subprocess
 
 ws = os.environ["WORKSPACE_DIR"]
-listed = subprocess.run(["git", "-C", ws, "ls-files", "--", "package.json", "*/package.json"],
-                        capture_output=True, text=True, timeout=120)
-manifests = [m for m in sorted(set(listed.stdout.split())) if "node_modules/" not in m]
+sha = os.environ["BASE_SHA"]
+# The tree is read through GIT OBJECTS at the pinned commit, never through the
+# checkout: an installed `node_modules`, a build output or a lock file lying in
+# the working directory is in no commit, and counting it would make the
+# repository look like whatever was last run in it.
+ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL="C", TZ="UTC")
+
+def tree():
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--name-only", "--full-tree", sha],
+                            capture_output=True, text=True, env=ENV, timeout=300)
+    if listed.returncode != 0:
+        raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
+    return [p for p in listed.stdout.splitlines() if p]
+
+def blob(path):
+    shown = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (sha, path)],
+                           capture_output=True, env=ENV, timeout=120)
+    return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else ""
+
+def manifests():
+    return [p for p in tree() if os.path.basename(p) == "package.json" and "node_modules/" not in p]
+
 runnable = []
-for m in manifests:
+for m in sorted(manifests()):
     try:
-        data = json.load(open(os.path.join(ws, m), encoding="utf-8"))
-    except (ValueError, OSError):
+        data = json.loads(blob(m))
+    except ValueError:
         continue
     scripts = data.get("scripts") or {}
     has_start = isinstance(scripts, dict) and isinstance(scripts.get("start"), str)
@@ -127,21 +168,41 @@ print(json.dumps({
 import json, os, re, subprocess
 
 ws = os.environ["WORKSPACE_DIR"]
+sha = os.environ["BASE_SHA"]
+# The tree is read through GIT OBJECTS at the pinned commit, never through the
+# checkout: an installed `node_modules`, a build output or a lock file lying in
+# the working directory is in no commit, and counting it would make the
+# repository look like whatever was last run in it.
+ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL="C", TZ="UTC")
+
+def tree():
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--name-only", "--full-tree", sha],
+                            capture_output=True, text=True, env=ENV, timeout=300)
+    if listed.returncode != 0:
+        raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
+    return [p for p in listed.stdout.splitlines() if p]
+
+def blob(path):
+    shown = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (sha, path)],
+                           capture_output=True, env=ENV, timeout=120)
+    return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else ""
+
+def manifests():
+    return [p for p in tree() if os.path.basename(p) == "package.json" and "node_modules/" not in p]
+
 # The method-per-verb shape every common Node server framework shares, plus
 # the router-mount form. Matching the SHAPE rather than naming frameworks
 # keeps a new one an edit to this pattern instead of a release.
 ROUTE = re.compile(
     r"\b\w+\.(?:get|post|put|delete|patch|head|options|all|use|route|register)\s*\(\s*"
     r"(?:`|'|\")/")
-listed = subprocess.run(
-    ["git", "-C", ws, "ls-files", "--", "*.js", "*.mjs", "*.cjs", "*.ts", "*.tsx", "*.jsx"],
-    capture_output=True, text=True, timeout=300)
-files = [f for f in listed.stdout.split()
-         if "node_modules/" not in f and not f.endswith(".d.ts")
+SOURCE = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+files = [f for f in tree() if f.endswith(SOURCE)
+         and "node_modules/" not in f and not f.endswith(".d.ts")
          and ".min." not in os.path.basename(f)]
 total, hits = 0, []
 for f in files:
-    n = len(ROUTE.findall(open(os.path.join(ws, f), encoding="utf-8", errors="replace").read()))
+    n = len(ROUTE.findall(blob(f)))
     total += n
     if n:
         hits.append({"file": f, "count": n})
