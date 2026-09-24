@@ -67,9 +67,9 @@ func measureWithCoverage(t *testing.T, ws, scratch, surveyPath, floorPath,
 		"{{vars.scratch_dir}}":       scratch,
 		"{{vars.profile_path}}":      "",
 		"{{vars.bundle_skills_dir}}": bundleSkills(ws),
-		"{{input.base_sha}}":     "deadbeefdeadbeef",
-		"{{input.survey_path}}":  surveyPath,
-		"{{input.floor_path}}":   floorPath,
+		"{{input.base_sha}}":         "deadbeefdeadbeef",
+		"{{input.survey_path}}":      surveyPath,
+		"{{input.floor_path}}":       floorPath,
 	}, map[string]string{
 		"{{input.extractor_outputs}}":  "[]",
 		"{{input.stacks_unsupported}}": unsupported,
@@ -225,8 +225,8 @@ func TestAssessmentRenderRefusesAFactNobodyMeasured(t *testing.T) {
 			"{{vars.out_dir}}":          "docs/assessment",
 			"{{input.facts_path}}":      factsPath,
 			"{{input.state_judgement}}": state,
-			"{{input.plan_judgement}}":  "The programme is judged elsewhere.",
-			"{{input.open_questions}}":  "- who owns the datastore decision?",
+			"{{input.plan_judgement}}":  "The programme faces [[fact:stack.detected]].",
+			"{{input.open_questions}}":  "- who owns the [[fact:metric.systems]] decision?",
 		}, nil)
 		if exit != 0 {
 			t.Fatalf("render exited %d: %s", exit, stderr)
@@ -372,4 +372,130 @@ func TestAssessmentPublishesWhatThePerimeterLeftOut(t *testing.T) {
 	if !strings.Contains(facts, "`vendor`") {
 		t.Errorf("the largest exclusion is not named:\n%s", facts)
 	}
+}
+
+// renderJudgement runs the renderer over three judgement fields.
+func renderJudgement(t *testing.T, ws, factsPath, state, plan, questions string) map[string]any {
+	t.Helper()
+	out, exit, stderr := assessmentRun(t, "render", map[string]string{
+		"{{vars.workspace_dir}}":    ws,
+		"{{vars.out_dir}}":          "docs/assessment",
+		"{{input.facts_path}}":      factsPath,
+		"{{input.state_judgement}}": state,
+		"{{input.plan_judgement}}":  plan,
+		"{{input.open_questions}}":  questions,
+	}, nil)
+	if exit != 0 {
+		t.Fatalf("render exited %d: %s", exit, stderr)
+	}
+	return out
+}
+
+// SUBSTITUTING BY IDENTIFIER IS HALF THE MECHANISM. It keeps a figure the
+// agent invented out of the document; it does nothing about a figure TYPED
+// beside the placeholders, and "4 200 tests" or "98%" reads on the page
+// exactly like a measurement. And a fact that is a bare scalar can be given a
+// false context by the sentence built round it.
+func TestAssessmentRenderRefusesATypedFigureAndAMisusedFact(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	scratch := t.TempDir()
+	floor := writeFloor(t, scratch, floorLines(20000))
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+	survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, inDomainSurvey(2))
+	factsPath := assessmentString(t, measure(t, ws, scratch, survey, floor), "facts_path")
+
+	plan := "The order follows [[fact:metric.deployables]]."
+	questions := "- who arbitrates [[fact:metric.systems]]?"
+
+	for _, tc := range []struct{ name, state, wants string }{
+		{"a typed count", "The suite carries 4 200 tests today.", "measured by nobody"},
+		{"a typed proportion", "Roughly 98% of the surface is covered.", "measured by nobody"},
+		{"a typed version", "The runtime is on 2.9 and unsupported.", "measured by nobody"},
+
+		{"a block citing no fact at all",
+			"The repository is in reasonable shape and the risk is moderate.", "cite no measured fact"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderJudgement(t, ws, factsPath, tc.state, plan, questions)
+			if assessmentBool(t, out, "ok") {
+				t.Fatalf("published prose containing %s", tc.name)
+			}
+			if !strings.Contains(assessmentString(t, out, "reason"), tc.wants) {
+				t.Errorf("the refusal does not say why (%q): %s", tc.wants,
+					assessmentString(t, out, "reason"))
+			}
+			if code := assessmentString(t, out, "code"); code != "RENDER_REFUSED" {
+				t.Errorf("code = %q, want RENDER_REFUSED", code)
+			}
+		})
+	}
+
+	// The engine's own placeholder form. Its literal never appears in this
+	// file either: the harness substitutes a Python EXPRESSION, so the two
+	// braces only ever meet at run time — the same reason the renderer
+	// assembles its pattern from pieces.
+	t.Run("the engine's placeholder form is refused, not rendered", func(t *testing.T) {
+		out, exit, stderr := assessmentRun(t, "render", map[string]string{
+			"{{vars.workspace_dir}}":   ws,
+			"{{vars.out_dir}}":         "docs/assessment",
+			"{{input.facts_path}}":     factsPath,
+			"{{input.plan_judgement}}": plan,
+			"{{input.open_questions}}": questions,
+		}, map[string]string{
+			"{{input.state_judgement}}": `"The repository carries " + "{" + "{fact:metric.first_party_lines}}."`,
+		})
+		if exit != 0 {
+			t.Fatalf("render exited %d: %s", exit, stderr)
+		}
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a placeholder in the engine's own brace form was rendered as literal text " +
+				"into a signed document, with no identifier ever checked")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "not the form") {
+			t.Errorf("the refusal does not say what is wrong: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	// The legitimate shapes stay legal: a cross-reference, and an ordered list.
+	t.Run("a cross-reference and an ordered list are not figures", func(t *testing.T) {
+		out := renderJudgement(t, ws, factsPath,
+			"The measurements in [[ref:§2]] are what this reading rests on, and "+
+				"[[fact:metric.first_party_lines]] is the one that dominates.\n\n"+
+				"1. the perimeter\n2. the order\n", plan, questions)
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("a guard that refuses the legitimate case gets worked around: %s",
+				assessmentString(t, out, "reason"))
+		}
+		body, err := os.ReadFile(filepath.Join(ws, "docs", "assessment", "00-state-of-the-repository.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "§2") {
+			t.Errorf("the cross-reference did not render as its own text:\n%s", body)
+		}
+		if strings.Contains(string(body), "[[ref:") {
+			t.Error("a reference placeholder survived into the document")
+		}
+	})
+
+	// A FACT IN A FALSE CONTEXT. The size index used to substitute as a bare
+	// "1.25", so a sentence built round it published a measured number
+	// certifying something nobody measured. A fact that names itself cannot be
+	// borrowed that way.
+	t.Run("a fact carries its own noun", func(t *testing.T) {
+		out := renderJudgement(t, ws, factsPath,
+			"The scan found [[fact:size.index]] critical vulnerabilities.", plan, questions)
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("render refused prose citing a known fact: %s", assessmentString(t, out, "reason"))
+		}
+		body, err := os.ReadFile(filepath.Join(ws, "docs", "assessment", "00-state-of-the-repository.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "an index of") {
+			t.Fatalf("the index substituted as a bare scalar — the sentence round it decides what "+
+				"the number counts:\n%s", body)
+		}
+	})
 }

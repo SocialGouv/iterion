@@ -111,8 +111,9 @@ prompt survey_system:
   3. A stack you cannot cover is declared UNSUPPORTED, by name, with the
      reason. Unsupported is a first-class result; silence reads as zero, and
      zero reads as a clean repository.
-  4. You never edit a file. This step is a read of the tree; the workflow
-     materialises what you return.
+  4. You never edit a file, and you hold no shell to do it with. This step is
+     a read of the tree; the workflow materialises what you return, and the
+     workflow — not you — runs the extractors the skills declare.
 
 prompt survey_user:
   Repository: `{{vars.workspace_dir}}`, pinned at commit {{input.base_sha}}.
@@ -204,9 +205,23 @@ prompt judgement_user:
 
   {{input.survey_notes}}
 
-  Write judgement_output. Each field is markdown, and each may reference any
-  fact identifier above with the placeholder syntax the `assessment-report`
-  skill gives. No field may contain a digit that is not inside a placeholder.
+  Write judgement_output. Each field is markdown. Three rules the renderer
+  enforces a second after you stop, and each of them REFUSES rather than warns:
+
+  - Every measured value is inserted with the placeholder `[[fact:<id>]]`,
+    taking an identifier from the list above. An identifier nobody measured
+    stops the run.
+  - **No digit may appear outside a placeholder.** A number you type is a
+    number nobody measured, and on the page it reads exactly like one that
+    was. When you need to point at a section, write `[[ref:§2]]` — it renders
+    as its own text and is the only other way a digit reaches the page.
+  - Every field cites at least one fact. A judgement block states what the
+    measurements MEAN, so it names at least one of them.
+
+  A fact carries its own noun: `[[fact:size.index]]` renders "an index of
+  0.93", not "0.93". Write the sentence around what it says, and never
+  re-describe it — "[[fact:size.index]] critical findings" would publish a
+  measured number certifying something nobody measured.
 
   `state_judgement` — how this repository stands, read as a whole: what its
   measurements mean together, what they do not say, and the risk a reader
@@ -331,9 +346,11 @@ schema probe_state:
   reason: string
   base_sha: string
   ## The input fingerprint: the pinned commit, the object id of every tag,
-  ## and the version of each bundled extractor skill. Re-checked at resume,
-  ## so a run that continues over a moved tree says so instead of mixing two
-  ## trees into one document.
+  ## and the content of each bundled extractor skill. RE-TAKEN AND COMPARED
+  ## by the commit node, seconds before the figures land — so a run that
+  ## continued over a moved tree says so instead of publishing two states as
+  ## one document. Computed and never compared, it would be a promise this
+  ## schema made and nothing kept.
   fingerprint: string
 
 ## The declared entry. ok=false is the NAMED refusal: the brief is the only
@@ -366,9 +383,17 @@ schema floor_state:
   files: int
   commits: int
 
-## What the survey agent RETURNS. It writes nothing: the codex backend's
-## read-only lock forbids it, and a step that both measures and materialises
-## has no moment at which its output can be checked.
+## What the survey agent RETURNS. It writes nothing, and what makes that true
+## is the TOOL SET it is given — four readers and no shell. `readonly: true` is
+## declared beside them and is honoured by the codex and pi backends; the
+## claude_code backend does not read it (`Task.Readonly` reaches
+## `codex.go`/`pi.go` only, while `claude_code.go` sets `bypassPermissions`
+## unconditionally), so a node that held a shell under that flag would hold an
+## unlocked shell on a checkout of an untrusted repository. The flag stays —
+## it is real on two of three backends — but it is not what carries this
+## property. A step that both measures and materialises would also have no
+## moment at which its output could be checked, which is why survey_write
+## exists.
 schema survey_output:
   stacks: json
   declarations: json
@@ -477,6 +502,16 @@ schema contract_state:
 ## consistent and free to contradict every decision somebody took.
 schema contract_input:
   brief: json
+
+## What the commit must find IN the commit, named by the nodes that wrote it.
+## A list repeated here would drift from the writers, and the check would then
+## certify the copy rather than the file.
+schema commit_input:
+  documents: json
+  plan_documents: json
+  ## Taken at the probe, compared here: the promise the probe's schema makes is
+  ## kept a few seconds before the figures land, not written and dropped.
+  fingerprint: string
 
 ## The commit that lands the assessment. A run whose documents never landed
 ## produced nothing: the tree is the deliverable.
@@ -1037,7 +1072,12 @@ agent survey:
   system: survey_system
   user: survey_user
   skills: ["assessment-survey", "assessment-brief"]
-  tools: [bash, read_file, glob, grep, skill]
+  ## NO SHELL. The four readers are what this step needs — it names stacks and
+  ## a perimeter, it does not run extractors, and `run_extractors` is the node
+  ## that executes anything. `readonly: true` below is honoured by codex and pi
+  ## and ignored by claude_code, so the shell is removed rather than locked:
+  ## a property carried by a flag one backend drops is not carried.
+  tools: [read_file, glob, grep, skill]
   tool_max_steps: 120
   readonly: true
 
@@ -2124,7 +2164,12 @@ tool measure:
     def plural(n, one, many=None):
         return "%d %s" % (n, one if n == 1 else (many or one + "s"))
 
-    facts["repo.commit"] = base_sha[:12]
+    # EVERY FACT CARRIES ITS OWN SYNTAGM. A bare scalar substituted into prose
+    # takes the meaning of whatever surrounds it: `[[fact:size.index]]` under
+    # the old form rendered "1.25" and read "1.25 critical vulnerabilities" in
+    # a sentence the agent wrote around it — a measured number certifying a
+    # claim nobody measured. A fact that names itself cannot be borrowed.
+    facts["repo.commit"] = "the commit %s" % base_sha[:12]
     facts["floor.files"] = plural(floor.get("files", 0), "file")
     facts["floor.commits"] = plural(floor.get("commits", 0), "commit")
     facts["floor.commits_recent"] = plural(floor.get("commits_recent_180d", 0),
@@ -2192,21 +2237,24 @@ tool measure:
     facts["stack.extractor_outputs"] = plural(len(extractor_files), "extractor output")
     versions = ["%s %s" % (v.get("component"), v.get("version"))
                 for v in extracted["declared_versions"] if isinstance(v, dict) and v.get("version")]
-    facts["stack.declared_versions"] = ", ".join(sorted(set(versions))) or "none declared in the tree"
-    facts["profile.id"] = "%s v%s" % (out["profile_id"], out["profile_version"])
-    facts["profile.anchor"] = ", ".join("%s %s" % (labels.get(k, k), anchor[k]) for k in metric_keys)
-    facts["profile.domain"] = str(domain.get("statement") or "")
+    facts["stack.declared_versions"] = ("the toolchain versions the tree declares — %s"
+                                        % ", ".join(sorted(set(versions)))) if versions else \
+        "no toolchain version is declared anywhere in the tree"
+    facts["profile.id"] = "the measurement profile %s v%s" % (out["profile_id"], out["profile_version"])
+    facts["profile.anchor"] = "an anchor of %s" % ", ".join(
+        "%s %s" % (labels.get(k, k), anchor[k]) for k in metric_keys)
+    facts["profile.domain"] = "a domain of: %s" % str(domain.get("statement") or "")
     if out["in_domain"]:
-        facts["size.index"] = "%.2f" % out["index"]
-        facts["size.band"] = "%s, relative to profile %s v%s" % (out["size"], out["profile_id"],
-                                                                 out["profile_version"])
+        facts["size.index"] = "an index of %.2f" % out["index"]
+        facts["size.band"] = "a size of %s, relative to profile %s v%s" % (
+            out["size"], out["profile_id"], out["profile_version"])
         facts["size.uncertainty"] = ("the band is stable under a one-unit disagreement on either "
                                      "discrete count" if len(bands) == 1 else
                                      "a one-unit disagreement on either discrete count moves the band "
                                      "across %s" % ", ".join(bands))
     else:
-        facts["size.index"] = "not applicable"
-        facts["size.band"] = "not applicable — %s" % "; ".join(out_of_domain)
+        facts["size.index"] = "no index (the repository is outside the profile's domain)"
+        facts["size.band"] = "no size letter — %s" % "; ".join(out_of_domain)
         facts["size.uncertainty"] = ("no band is published, so there is nothing for an uncertainty "
                                      "to widen")
 
@@ -2319,8 +2367,46 @@ tool render:
     # saw it. (Writing the brace form even inside this comment is a C004 — the
     # resolver reads the script body whole.)
     PLACEHOLDER = re.compile(r"\[\[fact:([A-Za-z0-9_.-]+)\]\]")
+    # The ONE legitimate way a digit reaches the page without being a
+    # measurement: a cross-reference. It renders as its own text, and it is
+    # explicit, so the rule below has nothing to guess.
+    REFERENCE = re.compile(r"\[\[ref:([^\[\]\n]{1,60})\]\]")
+    # An ordered list is layout, not a quantity. Its marker is stripped before
+    # the digit rule reads the line; nothing else on the line is.
+    LIST_MARKER = re.compile(r"(?m)^(\s*)\d+[.)](\s)")
+    # The engine's own placeholder form, written by an agent that read the
+    # wrong syntax somewhere. It would render as literal text into a signed
+    # document, with no identifier ever checked. The pattern is assembled from
+    # pieces because the resolver reads THIS script body whole, and a literal
+    # of that shape here would be resolved before the node ever ran (C004).
+    BRACE = "{" + "{"
+    WRONG_FORM = re.compile(re.escape(BRACE) + r"\s*(?:fact|ref)\s*:")
 
-    unknown, used = [], set()
+    unknown, used, typed, silent, empty = [], set(), [], [], []
+
+    def audit(text, where):
+        # THE SECOND HALF OF THE MECHANISM. Substituting by identifier keeps an
+        # invented figure out of the document; it does nothing about a figure
+        # TYPED beside the placeholders, and "4 200 tests" or "98%" published
+        # under a signature is the same failure by another route. So digits are
+        # admitted only inside a placeholder, and a field that cites no fact at
+        # all is refused: prose with no measurement in it either says nothing
+        # measured, or says it by typing it.
+        if not isinstance(text, str) or not text.strip():
+            empty.append(where)
+            return
+        if WRONG_FORM.search(text):
+            typed.append({"where": where,
+                          "snippet": "a %sfact:…}} placeholder, which is not the form this "
+                                     "renderer substitutes: it is resolved long before this node "
+                                     "runs, so it would reach the document as literal text with no "
+                                     "identifier ever checked" % BRACE})
+        if not PLACEHOLDER.search(text):
+            silent.append(where)
+        residue = LIST_MARKER.sub(r"\1\2", PLACEHOLDER.sub(" ", REFERENCE.sub(" ", text)))
+        for line in residue.splitlines():
+            if re.search(r"\d", line):
+                typed.append({"where": where, "snippet": line.strip()[:120]})
 
     def substitute(text, where):
         if not isinstance(text, str):
@@ -2332,7 +2418,29 @@ tool render:
                 return match.group(0)
             used.add(key)
             return facts[key]
-        return PLACEHOLDER.sub(replace, text)
+        return REFERENCE.sub(lambda m: m.group(1), PLACEHOLDER.sub(replace, text))
+
+    for text, where in ((state_judgement, "state_judgement"), (plan_judgement, "plan_judgement"),
+                        (open_questions, "open_questions")):
+        audit(text, where)
+
+    if empty:
+        refuse("RENDER_REFUSED",
+               "%s carried no prose at all. An empty judgement block is not a document that says "
+               "little; it is a heading with nothing under it." % ", ".join(empty))
+    if typed:
+        refuse("RENDER_REFUSED",
+               "%d line(s) carry a figure that is not inside a fact placeholder: %s. Every measured "
+               "value is substituted by identifier — a number typed beside the placeholders was "
+               "measured by nobody, and reads on the page exactly like one that was. A legitimate "
+               "cross-reference is written [[ref:§2]]."
+               % (len(typed), "; ".join("%s: %r" % (t["where"], t["snippet"]) for t in typed[:6])))
+    if silent:
+        refuse("RENDER_REFUSED",
+               "%s cite no measured fact at all. A judgement block states what the measurements "
+               "MEAN, so it names at least one of them by identifier; one that names none either "
+               "says nothing about this repository, or says it in words that were never checked."
+               % ", ".join(silent))
 
     state_text = substitute(state_judgement, "state_judgement")
     plan_text = substitute(plan_judgement, "plan_judgement")
@@ -2392,9 +2500,9 @@ tool render:
         "",
         "## Size",
         "",
-        "**%s**" % facts.get("size.band", ""),
-        "",
-        "Index %s. %s" % (facts.get("size.index", ""), facts.get("size.uncertainty", "")),
+        "This repository measures **%s**, at %s. %s"
+        % (facts.get("size.band", ""), facts.get("size.index", ""),
+           facts.get("size.uncertainty", "")),
         "",
         "The size is a **convention attached to a measurement profile**, not a property of this "
         "repository. It is published as `%s v%s`, whose anchor is SYNTHETIC — %s — and whose "
@@ -2552,6 +2660,15 @@ fail render_refused:
   description: "the prose cited a fact the measurement never produced"
   code: RENDER_REFUSED
   message: "{{outputs.render.reason}}"
+
+## plan_render_refused — the programme document's own refusal. Routing it
+## through `render_refused` printed `outputs.render.reason`, which at that
+## point in the run holds render's SUCCESS line: an operator was handed
+## "state document rendered at …" as the reason a run failed.
+fail plan_render_refused:
+  description: "the programme document could not be written"
+  code: PLAN_RENDER_REFUSED
+  message: "{{outputs.render_plan.reason}}"
 
 schema plan_draft_input:
   facts: string
@@ -3127,18 +3244,26 @@ fail contract_refused:
 ## produced a log line.
 tool commit:
   description: "Commit the contract, the survey and the documents"
+  input: commit_input
   output: commit_state
   language: py
   script: |
+    import hashlib
     import json
     import os
     import subprocess
     import sys
 
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+
     ws = {{vars.workspace_dir}}
     plan_rel = {{vars.plan_path}}
     survey_rel = {{vars.survey_path}}
     out_rel = {{vars.out_dir}}
+    skills_dir = {{vars.bundle_skills_dir}}
+    documents = {{input.documents}}
+    plan_documents = {{input.plan_documents}}
+    entry_fingerprint = {{input.fingerprint}}
 
     out = {"ok": False, "code": "", "reason": "", "commit": "", "files": 0}
 
@@ -3149,11 +3274,17 @@ tool commit:
         print(json.dumps(out))
         raise SystemExit(0)
 
+    # The SAME neutralisation every other node in this bundle applies. This one
+    # used to leave GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM in place, so the
+    # operator's own includes, hooks path and attributes decided what a commit
+    # of this bundle's deliverable did.
     def git_env():
         env = dict(os.environ)
         for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"):
             env.pop(key, None)
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_SYSTEM"] = os.devnull
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["LC_ALL"] = "C"
@@ -3166,6 +3297,41 @@ tool commit:
         return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
                               text=True, env=ENV, timeout=kw.get("timeout", 300))
 
+    # ── the tree under this run is still the tree the run measured ─────
+    #
+    # The entry fingerprint is TAKEN at the probe and CONSUMED here, a few
+    # seconds before the commit that publishes the figures. Computing it and
+    # never comparing it would be a promise the schema made and nothing kept:
+    # every number about to land was measured at a commit, over tags, against
+    # skills, and a run that continued over a moved one would publish two
+    # states as though they were one.
+    def fingerprint_now(base_sha):
+        parts = ["commit:%s" % base_sha]
+        tags = git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/tags/", timeout=180)
+        if tags.returncode == 0:
+            parts.extend("tag:%s" % line for line in sorted(tags.stdout.splitlines()) if line.strip())
+        if skills_dir and os.path.isdir(skills_dir):
+            for name in sorted(os.listdir(skills_dir)):
+                if not name.endswith(".md"):
+                    continue
+                with open(os.path.join(skills_dir, name), "rb") as handle:
+                    parts.append("skill:%s:%s" % (name, hashlib.sha256(handle.read()).hexdigest()))
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+    if entry_fingerprint:
+        head_before = git("rev-parse", "HEAD")
+        if head_before.returncode != 0:
+            refuse("COMMIT_FAILED", "cannot resolve HEAD before committing: %s"
+                   % (head_before.stderr or "").strip()[-200:])
+        current = fingerprint_now(head_before.stdout.strip())
+        if current != entry_fingerprint:
+            refuse("COMMIT_FAILED",
+                   "the inputs moved under this run: the fingerprint taken at the probe (%s) is not "
+                   "the one the tree, its tags and this bundle's skills carry now (%s). Every figure "
+                   "about to land was measured against the first; landing them would publish two "
+                   "states as one document."
+                   % (entry_fingerprint[:12], current[:12]))
+
     outcomes_rel = os.path.join(os.path.dirname(plan_rel), "outcomes.json")
     # EXPLICIT PATHS, never `git add -A`. The workspace may carry anything a
     # previous node or the operator left in it; a commit that swept it up would
@@ -3175,6 +3341,44 @@ tool commit:
     present = [path for path in wanted if os.path.exists(os.path.join(ws, path))]
     if plan_rel not in present:
         refuse("COMMIT_FAILED", "the contract at %s is not on disk; there is nothing to land" % plan_rel)
+
+    # EVERY ARTEFACT THIS RUN PRODUCED, BY NAME. The document paths come from
+    # the nodes that WROTE them, not from a list repeated here: a name repeated
+    # in two places is a name that drifts, and the check would then certify the
+    # copy rather than the file.
+    def relative(path):
+        path = str(path or "")
+        if not path:
+            return ""
+        return os.path.relpath(path, ws) if os.path.isabs(path) else path
+
+    expected = [plan_rel, outcomes_rel, survey_rel]
+    for entry in list(documents or []) + list(plan_documents or []):
+        rel = relative(entry)
+        if rel:
+            expected.append(rel)
+    expected = sorted(set(path for path in expected if path))
+
+    absent = [path for path in expected if not os.path.exists(os.path.join(ws, path))]
+    if absent:
+        refuse("COMMIT_FAILED",
+               "%d artefact(s) this run reported writing are not on disk: %s. A node's report is a "
+               "pointer to a file; this is the file." % (len(absent), ", ".join(absent)))
+
+    # `git add` on an IGNORED path stages nothing. A repository whose
+    # .gitignore carries `*.md` — or `docs/` — leaves both rendered documents
+    # written and unlanded, and the branch then carries a contract with no
+    # assessment beside it while the run reads as finished.
+    ignored = []
+    for path in expected:
+        if git("check-ignore", "-q", "--no-index", "--", path).returncode == 0:
+            ignored.append(path)
+    if ignored:
+        refuse("COMMIT_FAILED",
+               "%d artefact(s) of this assessment are IGNORED by the repository's own ignore rules "
+               "and cannot be committed: %s. The run would finish with the document written and the "
+               "branch without it. Add an exception for them, or point the output somewhere the "
+               "repository keeps." % (len(ignored), ", ".join(ignored)))
 
     added = git("add", "--", *present)
     if added.returncode != 0:
@@ -3208,10 +3412,13 @@ tool commit:
     # commit succeeded is a claim about a command; this is a read of the tree.
     landed = git("show", "--stat", "--name-only", "--format=", "HEAD")
     landed_names = {line for line in landed.stdout.splitlines() if line.strip()}
-    if plan_rel not in landed_names:
+    unlanded = [path for path in expected if path not in landed_names]
+    if unlanded:
         refuse("COMMIT_FAILED",
-               "the commit %s does not carry %s. The contract is the deliverable; a commit without "
-               "it is a commit of everything else." % (head.stdout.strip()[:12], plan_rel))
+               "the commit %s does not carry %d of the artefacts this run produced: %s. Finished is "
+               "not `git commit` returning zero — it is each named deliverable being IN the commit, "
+               "and a written-but-unlanded document reads as landed in every report downstream."
+               % (head.stdout.strip()[:12], len(unlanded), ", ".join(unlanded)))
     dirty = git("status", "--porcelain", "--", *present)
     residue = [line for line in dirty.stdout.splitlines() if line.strip()]
     if residue:
@@ -3346,8 +3553,12 @@ workflow assessment:
     proposals:  "{{outputs.plan_draft.proposals}}"
   }
 
-  render_plan -> render_refused when not ok
-  render_plan -> commit when ok
+  render_plan -> plan_render_refused when not ok
+  render_plan -> commit when ok with {
+    documents:      "{{outputs.render.documents}}",
+    plan_documents: "{{outputs.render_plan.documents}}",
+    fingerprint:    "{{outputs.workspace_probe.fingerprint}}"
+  }
 
   commit -> commit_failed when not ok
   commit -> done when ok

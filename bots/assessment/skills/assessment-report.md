@@ -20,9 +20,20 @@ before you write. When you need to state something measured, you write the
 placeholder:
 
 ```
-The repository carries {{fact:floor.first_party_lines}} of first-party source,
-spread over {{fact:floor.first_party_files}}.
+The repository carries [[fact:metric.first_party_lines]], and it publishes
+[[fact:metric.entrypoints]].
 ```
+
+Double SQUARE brackets. The engine's own double-BRACE form is resolved long before
+this renderer sees the text, so a placeholder written that way would reach a
+signed document as literal characters with no identifier ever checked — the
+renderer refuses that shape by name.
+
+**A fact carries its own noun.** `[[fact:size.index]]` renders "an index of
+0.93", not "0.93". Write your sentence around what the fact says and never
+re-describe it: "[[fact:size.index]] critical findings" would publish a
+measured number certifying something nobody measured, and the substitution
+would look exactly as sound as a true one.
 
 The renderer substitutes each placeholder from the facts file. **An identifier
 the facts file does not carry is a refusal**: the run ends at `RENDER_REFUSED`
@@ -36,6 +47,23 @@ Two consequences worth stating plainly:
   something else, or say that it was not established.
 - If a fact exists but reads awkwardly in your sentence, rewrite the sentence.
   You may not retype the value to make it fit.
+
+## No digit outside a placeholder, and one explicit exception
+
+Substituting by identifier keeps a figure you invented out of the document. It
+does nothing at all about a figure you TYPE beside the placeholders, and "4 200
+tests" or "98% of the suite" reads on the page exactly like a measurement. So
+the renderer refuses any digit that is not inside a placeholder, and names the
+line.
+
+The one legitimate way a digit belongs to prose is a cross-reference. It has
+its own form: `[[ref:§2]]` renders as its own text. Nothing else is admitted —
+an ordered-list marker is layout and is ignored, a version number belongs to a
+fact, and a count in words belongs to a fact too.
+
+**Every field cites at least one fact.** A judgement block states what the
+measurements mean; one that names none of them either says nothing about this
+repository or says it in words nobody checked.
 
 ## Judgement is what is left, and it is marked
 
@@ -58,13 +86,17 @@ refusing digits. It does not work, and the reason generalises:
   version named in a quoted command, an identifier containing a number — all
   rejected, none a violation.
 
-Widening the pattern makes the second problem worse and never closes the
-first. So the mechanism is inverted: the renderer does not hunt for forbidden
-spellings, it simply cannot render an assertion that no identifier backs. A
-sentence saying "two majors behind" without a placeholder is still possible to
-write — and it is exactly the sentence a reviewer must strike, which is why it
-is named here rather than pretended away. A count in words is a count. Give it
-its identifier, or drop it.
+So a digit filter is not THE rule, and it was never going to be: the mechanism
+is the inverted one, and the renderer simply cannot render an assertion that no
+identifier backs.
+
+It is still half of it, though, and the half that closes a hole the other half
+leaves open — a typed number. The two are layered, and each is refused with its
+own message: a digit outside a placeholder, and an identifier nobody measured.
+What NEITHER catches is a count written in letters: "two majors behind", "a
+handful of routes", "almost no tests". It is named here rather than pretended
+away, because it is exactly the sentence a reviewer must strike. A count in
+words is a count. Give it its identifier, or drop it.
 
 ## The size letter never travels alone
 
