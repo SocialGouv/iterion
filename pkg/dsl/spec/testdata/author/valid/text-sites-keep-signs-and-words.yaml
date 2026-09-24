@@ -1,0 +1,18 @@
+# Where a value is text, it is the text it spells: a connector's
+# parameters keep a sign, and `true`/`false` are words there. The schema
+# takes what the converter reads.
+dsl: 2
+nodes:
+  - tool: comment
+    action: forgejo.issue.comment
+    connection: forge-main
+    timeout: 30s
+    params:
+      draft: true
+      offset: -10
+      ratio: -0.5
+workflow:
+  name: w
+  entry: comment
+  edges:
+    - comment -> done

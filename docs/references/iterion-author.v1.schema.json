@@ -1776,8 +1776,10 @@
               "type": "string"
             },
             {
-              "minimum": 0,
               "type": "number"
+            },
+            {
+              "type": "boolean"
             }
           ],
           "description": "Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266)"
@@ -1804,8 +1806,10 @@
               "type": "string"
             },
             {
-              "minimum": 0,
               "type": "number"
+            },
+            {
+              "type": "boolean"
             }
           ],
           "description": "Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266)"
@@ -1860,8 +1864,10 @@
             "type": "string"
           },
           {
-            "minimum": 0,
             "type": "number"
+          },
+          {
+            "type": "boolean"
           }
         ],
         "description": "The argument's value: a string, a bare word or a number, coerced by the operation's parameter type"

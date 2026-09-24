@@ -359,7 +359,9 @@ func (b *schemaBuilder) form(f Form, values []string, body string) obj {
 	case DottedIdent:
 		return obj{"type": "string", "pattern": dottedIdentPattern}
 	case StringOrNumber:
-		return obj{"anyOf": []any{obj{"type": "string"}, obj{"type": "number", "minimum": 0}}}
+		// The text the value spells (author.speller): a sign is kept and
+		// `true`/`false` are words, so the schema takes what the reader does.
+		return obj{"anyOf": []any{obj{"type": "string"}, obj{"type": "number"}, obj{"type": "boolean"}}}
 	case Int:
 		return obj{"type": "integer", "minimum": 0, "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag"}
 	case Number:
