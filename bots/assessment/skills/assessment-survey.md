@@ -121,6 +121,34 @@ carrying a count, a date or a version is never one.
   worth a great deal; an unstated one is worth less than nothing, because the
   document reads as complete.
 
+## The manifest shapes the floor looks for
+
+The agnostic floor hands you a listing, and part of that listing is the BUILD
+AND PACKAGING MANIFESTS it found near the root. What one of those looks like is
+stack knowledge, so it lives here and in the `stack-<id>.md` skills rather than
+in the workflow: the floor takes the union of every `iterion:manifests` block
+the bundle ships, and adding an ecosystem is editing a file, never the DSL.
+
+The block below is the ecosystem-agnostic half — container, orchestration and
+toolchain descriptors that say how a repository is built and shipped whatever
+it is written in. A stack skill adds the names its own ecosystem uses.
+
+If the listing shows no manifest at all on a repository that clearly builds
+something, that is an observation for `notes` and probably a missing block, not
+a repository that builds itself.
+
+<!-- iterion:manifests
+[
+  "Dockerfile", "Dockerfile.*", "*.dockerfile",
+  "docker-compose.yml", "docker-compose.yaml", "docker-compose.*.yml", "docker-compose.*.yaml",
+  "compose.yml", "compose.yaml",
+  "Chart.yaml", "Chart.yml",
+  "Makefile", "GNUmakefile", "CMakeLists.txt", "Taskfile.yml", "Taskfile.yaml", "justfile",
+  "devbox.json", "flake.nix", "shell.nix", "default.nix", ".tool-versions", "mise.toml", "asdf.toml",
+  "Procfile", "*.nomad", "*.tf"
+]
+-->
+
 ## The extractor block a `stack-<id>.md` carries
 
 A stack skill ends with a machine-readable block, plus one fenced script per

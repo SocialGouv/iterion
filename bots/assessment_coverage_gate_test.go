@@ -647,3 +647,132 @@ func TestAssessmentAnOperatorProfileMayNotWearTheBundlesName(t *testing.T) {
 		t.Errorf("the refusal does not say what to do: %s", assessmentString(t, out, "reason"))
 	}
 }
+
+// WHAT A BUILD MANIFEST LOOKS LIKE IS STACK KNOWLEDGE. The floor enumerated a
+// dozen ecosystems' manifest names in the workflow, which is the shape the
+// catalog's universality rule forbids: teaching this bot about a new ecosystem
+// would have been an edit to the DSL. The shapes are declared by the skills
+// now, and the floor takes the union.
+func TestAssessmentFloorTakesItsManifestShapesFromTheSkills(t *testing.T) {
+	requireAssessmentTools(t)
+
+	runFloor := func(t *testing.T, ws, scratch, sha string) map[string]any {
+		t.Helper()
+		out, exit, stderr := assessmentRun(t, "inventory_floor", map[string]string{
+			"{{vars.workspace_dir}}":     ws,
+			"{{vars.scratch_dir}}":       scratch,
+			"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+			"{{input.base_sha}}":         sha,
+		}, nil)
+		if exit != 0 {
+			t.Fatalf("inventory_floor exited %d: %s", exit, stderr)
+		}
+		return out
+	}
+
+	// An ecosystem the workflow has never heard of, taught by dropping a file.
+	const anEcosystemSkill = "---\nname: stack-invented\ndescription: synthetic fixture\n---\n\n" +
+		"<!-- iterion:manifests\n" + `["Brewfile.invented", "*.inventedproj"]` + "\n-->\n"
+
+	t.Run("a shape only a skill declares is listed", func(t *testing.T) {
+		ws := t.TempDir()
+		writeSkills(t, bundleSkills(ws), map[string]string{"stack-invented.md": anEcosystemSkill})
+		for path, body := range map[string]string{
+			"Brewfile.invented": "one\n", "app.inventedproj": "two\n", "notes.txt": "three\n",
+		} {
+			if err := os.WriteFile(filepath.Join(ws, path), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gittest.Run(t, ws, "init", "-q", "-b", "main")
+		gittest.Run(t, ws, "config", "user.email", "t@example.com")
+		gittest.Run(t, ws, "config", "user.name", "t")
+		gittest.Run(t, ws, "config", "commit.gpgsign", "false")
+		gittest.Run(t, ws, "add", "Brewfile.invented", "app.inventedproj", "notes.txt")
+		gittest.Run(t, ws, "commit", "-qm", "fixture")
+		sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+
+		out := runFloor(t, ws, t.TempDir(), sha)
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("the floor refused: %s", assessmentString(t, out, "reason"))
+		}
+		listing := assessmentString(t, out, "listing")
+		for _, want := range []string{"Brewfile.invented", "app.inventedproj"} {
+			if !strings.Contains(listing, want) {
+				t.Errorf("the listing handed to the survey does not carry %q, whose shape only a "+
+					"skill declares — the ecosystem would need a DSL edit:\n%s", want, listing)
+			}
+		}
+		// And only those: the manifest section of the listing is what the
+		// skills declare, not every file in the tree.
+		section := listing[strings.Index(listing, "BUILD / PACKAGING MANIFESTS"):]
+		if end := strings.Index(section, "\n\n"); end > 0 {
+			section = section[:end]
+		}
+		if strings.Contains(section, "notes.txt") {
+			t.Errorf("the floor listed a file no skill declares as a manifest:\n%s", section)
+		}
+	})
+
+	t.Run("no manifest block anywhere is a refusal, not an empty listing", func(t *testing.T) {
+		ws := t.TempDir()
+		writeSkills(t, bundleSkills(ws), map[string]string{
+			"stack-mute.md": "---\nname: stack-mute\ndescription: declares no shapes\n---\n"})
+		if err := os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gittest.Run(t, ws, "init", "-q", "-b", "main")
+		gittest.Run(t, ws, "config", "user.email", "t@example.com")
+		gittest.Run(t, ws, "config", "user.name", "t")
+		gittest.Run(t, ws, "config", "commit.gpgsign", "false")
+		gittest.Run(t, ws, "add", "go.mod")
+		gittest.Run(t, ws, "commit", "-qm", "fixture")
+		sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+
+		out := runFloor(t, ws, t.TempDir(), sha)
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a bundle declaring no manifest shape produced a listing with no manifest in " +
+				"it — the survey would read a repository that builds itself")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "defect in the bundle") {
+			t.Errorf("the refusal does not say whose defect it is: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	// And the shipped bundle covers what it claims to: the two stacks it ships
+	// skills for are both discoverable from the listing alone.
+	t.Run("the shipped skills declare the shapes their stacks are detected by", func(t *testing.T) {
+		skills := map[string]string{}
+		for _, name := range []string{"assessment-survey.md", "stack-go.md", "stack-node.md"} {
+			body, err := os.ReadFile(filepath.Join("assessment", "skills", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			skills[name] = string(body)
+		}
+		ws := t.TempDir()
+		writeSkills(t, bundleSkills(ws), skills)
+		for path, body := range map[string]string{
+			"go.mod": "module x\n", "package.json": "{}\n", "Dockerfile": "FROM scratch\n",
+		} {
+			if err := os.WriteFile(filepath.Join(ws, path), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gittest.Run(t, ws, "init", "-q", "-b", "main")
+		gittest.Run(t, ws, "config", "user.email", "t@example.com")
+		gittest.Run(t, ws, "config", "user.name", "t")
+		gittest.Run(t, ws, "config", "commit.gpgsign", "false")
+		gittest.Run(t, ws, "add", "go.mod", "package.json", "Dockerfile")
+		gittest.Run(t, ws, "commit", "-qm", "fixture")
+		sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+
+		listing := assessmentString(t, runFloor(t, ws, t.TempDir(), sha), "listing")
+		for _, want := range []string{"go.mod", "package.json", "Dockerfile"} {
+			if !strings.Contains(listing, want) {
+				t.Errorf("the bundle ships a skill for the stack %q proves and does not declare its "+
+					"shape:\n%s", want, listing)
+			}
+		}
+	})
+}

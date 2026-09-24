@@ -816,6 +816,7 @@ tool inventory_floor:
   output: floor_state
   language: py
   script: |
+    import fnmatch
     import json
     import os
     import re
@@ -825,6 +826,7 @@ tool inventory_floor:
     ws = {{vars.workspace_dir}}
     scratch = {{vars.scratch_dir}}
     base_sha = {{input.base_sha}}
+    skills_dir = {{vars.bundle_skills_dir}}
 
     out = {"ok": False, "code": "", "reason": "", "floor_path": "", "listing": "",
            "files": 0, "commits": 0}
@@ -982,12 +984,45 @@ tool inventory_floor:
     # ── the listing handed to the survey ───────────────────────────────
     top = sorted({(p.split("/", 1)[0] + "/") if "/" in p else p for p in (e["path"] for e in entries)})
     MANIFEST_DEPTH = 4
+    # WHAT A BUILD MANIFEST LOOKS LIKE IS STACK KNOWLEDGE, so it lives in the
+    # skills and not here. This file enumerated a dozen ecosystems' manifest
+    # names, which is the shape the catalog's universality rule forbids:
+    # teaching this bot about a new ecosystem would have been an edit to the
+    # DSL. Every bundled skill may declare an `iterion:manifests` block, and
+    # this floor takes the union of all of them — the agnostic set lives in
+    # `assessment-survey.md`, a stack's own additions in its `stack-<id>.md`,
+    # and adding an ecosystem is dropping or editing a file.
+    MANIFEST_BLOCK = re.compile(r"<!--\s*iterion:manifests(.*?)-->", re.S)
+    patterns, pattern_sources = [], []
+    if skills_dir and os.path.isdir(skills_dir):
+        for name in sorted(os.listdir(skills_dir)):
+            if not name.endswith(".md"):
+                continue
+            try:
+                found = MANIFEST_BLOCK.search(open(os.path.join(skills_dir, name), encoding="utf-8").read())
+            except OSError as exc:
+                refuse("FLOOR_FAILED", "cannot read the bundle skill %s: %s" % (name, exc))
+            if not found:
+                continue
+            try:
+                declared = json.loads(found.group(1))
+            except ValueError as exc:
+                refuse("FLOOR_FAILED", "the iterion:manifests block of %s is not JSON: %s" % (name, exc))
+            if not isinstance(declared, list) or not all(isinstance(g, str) for g in declared):
+                refuse("FLOOR_FAILED", "the iterion:manifests block of %s must be a list of "
+                                       "basename globs" % name)
+            patterns.extend(declared)
+            pattern_sources.append(name)
+    if not patterns:
+        refuse("FLOOR_FAILED",
+               "no bundled skill declares an `iterion:manifests` block, so the floor has no shape "
+               "of a build manifest to look for. The listing handed to the survey would carry none, "
+               "and a survey that sees no manifest reports a repository that builds itself. This is "
+               "a defect in the bundle, not in the repository: %s." % (skills_dir or "no skills directory"))
     manifests = sorted(e["path"] for e in entries
                        if e["path"].count("/") < MANIFEST_DEPTH
-                       and re.search(r"(?i)(^|/)(.*\.(?:mod|toml|gradle|gradle\.kts|cabal|nimble|gemspec|csproj|fsproj|sln|opam)|"
-                                     r"package\.json|composer\.json|pom\.xml|build\.sbt|mix\.exs|Gemfile|Rakefile|Makefile|"
-                                     r"CMakeLists\.txt|Dockerfile[^/]*|docker-compose[^/]*\.ya?ml|Chart\.yaml|Taskfile\.ya?ml|"
-                                     r"devbox\.json|flake\.nix|shell\.nix|\.tool-versions|requirements[^/]*\.txt)$", e["path"]))
+                       and any(fnmatch.fnmatch(os.path.basename(e["path"]).lower(), glob.lower())
+                               for glob in patterns))
     by_ext = {}
     for path, count in lines_by_path.items():
         name = os.path.basename(path)
@@ -998,7 +1033,8 @@ tool inventory_floor:
 
     listing = "\n".join(
         ["TOP-LEVEL ENTRIES (%d):" % len(top)] + top[:200] +
-        ["", "BUILD / PACKAGING MANIFESTS (depth < %d, %d):" % (MANIFEST_DEPTH, len(manifests))] + manifests[:200] +
+        ["", "BUILD / PACKAGING MANIFESTS (depth < %d, %d; shapes declared by %s):"
+         % (MANIFEST_DEPTH, len(manifests), ", ".join(pattern_sources))] + manifests[:200] +
         ["", "LINES BY EXTENSION (whole tree, before any declared exclusion):"] +
         ["  %-16s %6d file(s) %10d line(s)" % (ext, n, lines) for ext, (n, lines) in ranked[:40]] +
         ["", "CONTINUOUS INTEGRATION: %s" % (", ".join(ci_files[:20]) if ci_files else "no pipeline file found"),
@@ -1017,6 +1053,7 @@ tool inventory_floor:
         "by_extension": {ext: {"files": n, "lines": lines} for ext, (n, lines) in ranked},
         "top_level": top,
         "manifests": manifests,
+        "manifest_shapes_from": pattern_sources,
         "ci_files": ci_files,
         "ci_present": bool(ci_files),
         "commits": commits,

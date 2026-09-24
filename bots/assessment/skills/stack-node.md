@@ -45,6 +45,17 @@ lint will hold the perimeter to it.
 
 Adding a framework to the pattern set is an edit HERE, never to the workflow.
 
+## Manifest shapes
+
+What a Node.js repository names its build and packaging descriptors. The floor
+takes the union of every bundled skill's block, so this one adds Node's names
+to the agnostic set without the workflow learning any of them.
+
+<!-- iterion:manifests
+["package.json", "pnpm-workspace.yaml", "lerna.json", "turbo.json", "nx.json",
+ "tsconfig.json", "deno.json", "deno.jsonc"]
+-->
+
 ## Extractors
 
 <!-- iterion:extractors

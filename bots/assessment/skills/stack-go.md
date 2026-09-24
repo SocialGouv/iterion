@@ -49,6 +49,16 @@ quietly.
 Adding a router to the pattern set is an edit HERE. It is never an edit to the
 workflow, which reads the block below and knows nothing about Go.
 
+## Manifest shapes
+
+What a Go repository names its build and packaging descriptors. The floor takes
+the union of every bundled skill's block, so this one adds Go's names to the
+agnostic set without the workflow learning any of them.
+
+<!-- iterion:manifests
+["go.mod", "go.work", "go.sum"]
+-->
+
 ## Extractors
 
 <!-- iterion:extractors
