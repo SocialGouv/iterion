@@ -25,8 +25,8 @@ func TestAnthropicCredEnv_HintMoonshotForcesEvenWithAnthropicCtx(t *testing.T) {
 	if got["ANTHROPIC_BASE_URL"] != secrets.MoonshotDefaultBaseURL {
 		t.Errorf("ANTHROPIC_BASE_URL: got %q, want %q", got["ANTHROPIC_BASE_URL"], secrets.MoonshotDefaultBaseURL)
 	}
-	if _, present := got["ANTHROPIC_API_KEY"]; present {
-		t.Errorf("ANTHROPIC_API_KEY must not be set on a Moonshot route, got %q", got["ANTHROPIC_API_KEY"])
+	if v, present := got["ANTHROPIC_API_KEY"]; !present || v != "" {
+		t.Errorf("ANTHROPIC_API_KEY must be present-and-empty on a Moonshot route (an inherited value would ride along): present=%v val=%q", present, v)
 	}
 }
 

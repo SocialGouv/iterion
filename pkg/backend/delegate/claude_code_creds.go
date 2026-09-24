@@ -533,11 +533,7 @@ func zaiEnv(key string) map[string]string {
 	if baseURL == "" {
 		baseURL = secrets.ZAIDefaultBaseURL
 	}
-	return map[string]string{
-		"ANTHROPIC_BASE_URL":   baseURL,
-		"ANTHROPIC_AUTH_TOKEN": key,
-		FacadeSlotEnvKey:       string(secrets.ProviderZAI),
-	}
+	return facadeRouteEnv(secrets.ProviderZAI, baseURL, key)
 }
 
 // moonshotEnv is the ONE place a Moonshot key becomes CLI env, the twin of
@@ -555,11 +551,70 @@ func moonshotEnv(key string) map[string]string {
 	if baseURL == "" {
 		baseURL = secrets.MoonshotDefaultBaseURL
 	}
-	return map[string]string{
-		"ANTHROPIC_BASE_URL":   baseURL,
-		"ANTHROPIC_AUTH_TOKEN": key,
-		FacadeSlotEnvKey:       string(secrets.ProviderMoonshot),
+	return facadeRouteEnv(secrets.ProviderMoonshot, baseURL, key)
+}
+
+// facadeRouteEnv is the env of a FUNDED facade route: the vendor's endpoint,
+// its key, the slot stamp — and every Anthropic channel the spawned CLI could
+// otherwise inherit, cleared.
+//
+// Setting the facade's two variables is not enough on its own. The spawn
+// inherits the process env (host) or the container env (sandbox), and the
+// CLI's documented auth precedence puts the cloud-provider switches
+// (CLAUDE_CODE_USE_BEDROCK / _VERTEX / _FOUNDRY) ABOVE ANTHROPIC_AUTH_TOKEN: an
+// ambient switch sends a node pinned to a facade to that cloud account
+// instead, while its fingerprint still names the facade. ANTHROPIC_API_KEY and
+// CLAUDE_CODE_OAUTH_TOKEN rank below the facade token, but nothing makes the
+// CLI withhold them from the request it sends to the facade's gateway — a
+// host carrying an Anthropic key or forfait would hand it to another vendor.
+// The refusal (suppressAnthropicWireEnv) clears the same channels, from the
+// same function.
+func facadeRouteEnv(slot secrets.Provider, baseURL, key string) map[string]string {
+	env := clearedAnthropicChannels()
+	env["ANTHROPIC_BASE_URL"] = baseURL
+	env["ANTHROPIC_AUTH_TOKEN"] = key
+	env[FacadeSlotEnvKey] = string(slot)
+	return env
+}
+
+// clearedAnthropicChannels names the credential channels the CLI resolves on
+// its own besides the base-URL/auth-token pair — the Anthropic key, the forfait
+// token and the cloud-provider switches — each set to "", which mergeCmdEnv and
+// the sandbox exec both read as "unset the inherited value". The pair itself
+// is left to each caller: a facade route fills it, the refusal clears it.
+func clearedAnthropicChannels() map[string]string {
+	env := map[string]string{
+		"ANTHROPIC_API_KEY":       "",
+		"CLAUDE_CODE_OAUTH_TOKEN": "",
 	}
+	for _, k := range cloudProviderSwitches {
+		env[k] = ""
+	}
+	return env
+}
+
+// cloudProviderSwitches are the variables that boot the CLI into a cloud
+// provider's mode. They rank first in its auth precedence, above every token.
+var cloudProviderSwitches = []string{
+	"CLAUDE_CODE_USE_BEDROCK",
+	"CLAUDE_CODE_USE_VERTEX",
+	"CLAUDE_CODE_USE_FOUNDRY",
+}
+
+// ambientAnthropicAuthConfigured reports whether this process' env already
+// configures an Anthropic route of its own: a key, a token, or a
+// cloud-provider switch. The ZAI_API_KEY shortcut stands down when it does —
+// it auto-routes only a host with no Anthropic auth configured.
+func ambientAnthropicAuthConfigured() bool {
+	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
+		return true
+	}
+	for _, k := range cloudProviderSwitches {
+		if os.Getenv(k) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // facadeEnvFor builds the CLI env for one anthropic-wire facade slot, or nil
@@ -610,22 +665,17 @@ func facadeEnvFor(slot, key string) map[string]string {
 // provider for the same reason — a copy is where the next provider's set
 // goes stale.
 func suppressAnthropicWireEnv() map[string]string {
-	return map[string]string{
-		"ANTHROPIC_BASE_URL":      "",
-		"ANTHROPIC_AUTH_TOKEN":    "",
-		"ANTHROPIC_API_KEY":       "",
-		"CLAUDE_CODE_OAUTH_TOKEN": "",
-		"CLAUDE_CONFIG_DIR":       suppressedForfaitDir,
-		"CLAUDE_CODE_USE_BEDROCK": "",
-		"CLAUDE_CODE_USE_VERTEX":  "",
-		"CLAUDE_CODE_USE_FOUNDRY": "",
-		// Marker every iterion-internal reader of CLAUDE_CONFIG_DIR tests
-		// before treating it as a real OAuth forfait — providerFingerprint
-		// would otherwise render the poisoned dir as `anthropic-oauth` and
-		// persist it into the node's output map; SessionFilesRoot would
-		// write transcripts under the non-existent path. See R0a39d6.
-		ForfaitSuppressedEnvKey: "1",
-	}
+	env := clearedAnthropicChannels()
+	env["ANTHROPIC_BASE_URL"] = ""
+	env["ANTHROPIC_AUTH_TOKEN"] = ""
+	env["CLAUDE_CONFIG_DIR"] = suppressedForfaitDir
+	// Marker every iterion-internal reader of CLAUDE_CONFIG_DIR tests
+	// before treating it as a real OAuth forfait — providerFingerprint
+	// would otherwise render the poisoned dir as `anthropic-oauth` and
+	// persist it into the node's output map; SessionFilesRoot would
+	// write transcripts under the non-existent path. See R0a39d6.
+	env[ForfaitSuppressedEnvKey] = "1"
+	return env
 }
 
 // normalizeProviderHint folds a routing hint into the form the switches in
@@ -845,10 +895,12 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 		}
 	}
 	// Env-fallback: ZAI_API_KEY is the convenience knob for desktop
-	// users. Only honoured when no Anthropic-flavoured creds are
-	// already wired by env — ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
-	// from the inherited env stays authoritative.
-	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+	// users. Only honoured when no Anthropic route is already configured
+	// by env — ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN or a cloud-provider
+	// switch from the inherited env stays authoritative. The switches count
+	// because zaiEnv clears them: honouring the shortcut past one would
+	// turn a Bedrock/Vertex/Foundry host into a z.ai one.
+	if !ambientAnthropicAuthConfigured() {
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
 			return zaiEnv(zai)
 		}

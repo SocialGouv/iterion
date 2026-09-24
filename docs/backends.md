@@ -487,6 +487,15 @@ Known hints:
 | `openai` | Force OpenAI-direct (`OPENAI_API_KEY`), skipping `OPENAI_BASE_URL` overrides. |
 | `auto` / *(unset)* | Default process-env precedence. |
 
+Hints are matched case-insensitively (`Moonshot` is `moonshot`). A facade
+route — pinned by `zai` / `moonshot`, or chosen by the default precedence from
+a facade key — also clears the Anthropic credentials the Claude Code CLI would
+otherwise inherit from the process or container env: `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN` and the `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` /
+`_FOUNDRY` switches. The switches rank above `ANTHROPIC_AUTH_TOKEN` in the
+CLI's own precedence, and the other two would travel to the facade's gateway
+alongside its token.
+
 ### Fallback chain
 
 `provider:` accepts a single value **or** an ordered, comma-separated
@@ -1856,16 +1865,17 @@ ZAI_API_KEY=<bearer token from your z.ai dashboard>
 ```
 
 When iterion sees `ZAI_API_KEY` set AND no `ANTHROPIC_API_KEY` /
-`ANTHROPIC_AUTH_TOKEN` set, it automatically configures
+`ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY`
+set, it automatically configures
 `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` and
 `ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY` for both the spawned Claude Code
 subprocess (`backend: claude_code`) and the in-process claw provider
 factory (`backend: claw`). Restart iterion-desktop after editing the
 file so the launcher re-sources it.
 
-If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is also set, that
-takes precedence — the shortcut is intentionally "auto-route only
-when no Anthropic auth is configured". This lets a user keep a
+If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`, or a cloud-provider
+switch) is also set, that takes precedence — the shortcut is intentionally
+"auto-route only when no Anthropic auth is configured". This lets a user keep a
 fallback Anthropic key for some workflows without losing the z.ai
 default.
 
