@@ -1,14 +1,15 @@
-import { errorMessage } from "@/lib/errorHints";
+import { errorMessage, toastError } from "@/lib/errorHints";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { useConfirm } from "@/hooks/useConfirm";
-import { useDocumentStore } from "@/store/document";
+import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { createEmptyDocument } from "@/lib/defaults";
 import { Button, Dialog } from "@/components/ui";
 import { listExampleEntries } from "@/api/client";
 import { openExampleIntoStore } from "@/lib/openExample";
+import { replaceDocumentNow } from "@/lib/replaceDocument";
 import {
   FileIcon,
   RocketIcon,
@@ -22,16 +23,11 @@ import {
  * a blank slate. Offers three obvious next actions.
  */
 export default function CanvasEmpty() {
-  const setDocument = useDocumentStore((s) => s.setDocument);
-  const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
-  const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
-  const setSalvaged = useDocumentStore((s) => s.setSalvaged);
-  const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
-  const setUnit = useDocumentStore((s) => s.setUnit);
-  const markSaved = useDocumentStore((s) => s.markSaved);
+  const documentStore = useDocumentStoreInstance();
   const toggleLibraryPanel = useUIStore((s) => s.toggleLibraryPanel);
   const libraryExpanded = useUIStore((s) => s.libraryExpanded);
   const setFilePickerOpen = useUIStore((s) => s.setFilePickerOpen);
+  const addToast = useUIStore((s) => s.addToast);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const hasUnsavedWork = useDocumentStore((s) => s.hasUnsavedWork);
   const { confirm, dialog: discardDialog } = useConfirm();
@@ -54,10 +50,12 @@ export default function CanvasEmpty() {
 
   const handleStartBlank = async () => {
     if (!(await confirmDiscard())) return;
-    setDocument(createEmptyDocument());
-    setDiagnostics([], []);
-    setCurrentFilePath(null);
-    markSaved();
+    replaceDocumentNow(documentStore, (s) => {
+      s.setDocument(createEmptyDocument());
+      s.setDiagnostics([], []);
+      s.setCurrentFilePath(null);
+      s.markSaved();
+    });
   };
 
   const handleLoadExample = async (name: string) => {
@@ -67,19 +65,14 @@ export default function CanvasEmpty() {
       // bots/<name> (where a save lands) + keep the example's
       // source/diagnostics + markSaved. Same path as RecentFilesPanel and
       // Toolbar.handlePickFile.
-      await openExampleIntoStore(name, {
-        setDocument,
-        setDiagnostics,
-        setCurrentSource,
-        setCurrentFilePath,
-        setSalvaged,
-        setUnit,
-        markSaved,
-      });
-      setExamplesOpen(false);
-    } catch {
-      // The server returns useful errors; the modal stays open so the
-      // user can try another example.
+      // Anything but "applied" leaves the list open: a refusal has said why,
+      // and the author may pick again.
+      if ((await openExampleIntoStore(name, documentStore)) === "applied") setExamplesOpen(false);
+    } catch (err) {
+      // What went wrong, said: a known kind of failure by its hint, anything
+      // else — the deadline included — in its own words. The list stays open
+      // so the author can try another example.
+      toastError(addToast, err, "Open failed");
     }
   };
 

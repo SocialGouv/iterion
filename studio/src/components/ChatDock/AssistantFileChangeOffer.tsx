@@ -276,7 +276,11 @@ export default function AssistantFileChangeOffer({
       before._generation !== proposal.revision ||
       // The Source view's un-applied text is work this reload would take —
       // the measured loss of #1662, on the documented way out of a salvage.
-      before.hasUnsavedWork()
+      before.hasUnsavedWork() ||
+      // The author asked for another document (an Open still loading): that
+      // request wins, and a reload landing first would get its answer
+      // refused for edits nobody made.
+      before._pendingIntent !== null
     ) {
       warnReload("Authoring file changes were saved, but the open tab changed and was not reloaded.");
       return false;
@@ -291,7 +295,8 @@ export default function AssistantFileChangeOffer({
         !store ||
         store.currentFilePath !== path ||
         store._generation !== proposal.revision ||
-        store.hasUnsavedWork()
+        store.hasUnsavedWork() ||
+        store._pendingIntent !== null
       ) {
         warnReload("Authoring file changes were saved, but the open tab changed and was not reloaded.");
         return false;
