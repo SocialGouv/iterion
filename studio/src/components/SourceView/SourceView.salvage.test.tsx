@@ -7,7 +7,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ parseSource: vi.fn(), unparse: vi.fn() }));
-vi.mock("@/api/client", () => api);
+// The real module is kept and only the calls under test are stubbed: a
+// wholesale mock loses every other export (`parseBotSourceEditorPath`, which
+// the view reads to tell the local twin from the cloud one) and a hand-rolled
+// double of it would drift from the one production uses.
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/api/client")>()),
+  ...api,
+}));
 // Monaco does not run under jsdom; the editor is a textarea here, which is
 // enough to read what the view SHOWS and to drive Apply.
 vi.mock("@/lib/monaco", () => ({

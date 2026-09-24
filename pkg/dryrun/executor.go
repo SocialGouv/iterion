@@ -94,14 +94,13 @@ type Executor struct {
 	// pass takes are bounded by the program, not by its loops.
 	childMemos map[string]*childMemo
 
-	// toolSurface answers the engine's tool-surface seam, built once and
-	// lazily: the guard asks it per node, and a dry run that meets no
-	// agent/judge node never builds it at all.
-	toolSurfaceOnce sync.Once
-	toolSurface     *model.ClawExecutor
-
-	mu       sync.Mutex
-	vars     map[string]any
+	mu   sync.Mutex
+	vars map[string]any
+	// program answers the two seams the engine's admission reads — the tool
+	// surface and the backend — from the dry run's own vars. Guarded by mu,
+	// built on the first question and rebuilt after SetVars changes them;
+	// one handed out is never written again.
+	program  *model.ClawExecutor
 	workDir  string
 	executed []string
 	shaped   []string
@@ -257,6 +256,7 @@ func (x *Executor) SetVars(vars map[string]any) {
 	for k, v := range vars {
 		x.vars[k] = v
 	}
+	x.program = nil
 }
 
 // SetWorkDir receives the run's working directory (the engine's
@@ -780,19 +780,44 @@ func sortFindings(fs []Finding) {
 // judges the program; a run is judged again by the engine, against what that
 // run holds.
 func (x *Executor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string {
-	x.toolSurfaceOnce.Do(func() {
-		x.toolSurface = model.NewProgramExecutor(x.wf)
-	})
-	return x.toolSurface.EffectiveToolNames(node, mayEscalateToUltracode)
+	return x.programExecutor().EffectiveToolNames(node, mayEscalateToUltracode)
 }
 
-// The engine reaches the tool surface through an OPTIONAL type assertion, so an
-// executor that forgets the method still compiles as one — and the engine then
+// EffectiveBackendName answers the engine's backend seam for a dry run, from
+// the same program-only executor, given the dry run's vars — the launch values,
+// the defaults, and the value it invents for a var that has neither, as for the
+// rest of the program: the node's backend, else the workflow's, `{{vars.…}}`
+// resolved from those vars, and "" where the program names neither — the IR is
+// all there is, which is what the guard read before this seam was asked of a
+// dry run. An executor that
+// cannot answer is read at the worst case, so without it the dry run would
+// refuse fan-outs of agents and judges not marked `readonly:` wherever a node
+// declaring a write tool would be refused.
+func (x *Executor) EffectiveBackendName(node ir.Node) string {
+	return x.programExecutor().EffectiveBackendName(node)
+}
+
+func (x *Executor) programExecutor() *model.ClawExecutor {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.program == nil {
+		p := model.NewProgramExecutor(x.wf)
+		p.SetVars(x.vars)
+		x.program = p
+	}
+	return x.program
+}
+
+// The engine reaches both seams through OPTIONAL type assertions, so an
+// executor that forgets a method still compiles as one — and the engine then
 // reads it at the worst case: every agent and judge it runs that is not
 // `readonly:` counts as writing, and the simulation's parallel fan-outs of them
 // are refused. Asserted here, beside the implementation, so a rename breaks the
-// build rather than a verdict — and against the EXPORTED seam, not a structural
-// copy of it: a copy catches a rename and misses the seam gaining a term.
+// build rather than a verdict — and against the EXPORTED seams, not structural
+// copies: a copy catches a rename and misses the seam gaining a term.
 // pkg/runtime cannot assert it for us: dryrun imports it, not the other way
 // round.
-var _ runtime.EffectiveToolSurfaceResolver = (*Executor)(nil)
+var (
+	_ runtime.EffectiveToolSurfaceResolver = (*Executor)(nil)
+	_ runtime.EffectiveBackendResolver     = (*Executor)(nil)
+)

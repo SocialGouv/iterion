@@ -24,7 +24,14 @@ import type {
 import type { DiagnosticIssue } from "@/api/client";
 import { createEmptyDocument, getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
 import type { GroupAnnotation } from "@/lib/groups";
-import { groupToCommentText, groupNameFromComment, parseGroups } from "@/lib/groups";
+import {
+  documentComments,
+  documentGroups,
+  groupNameFromComment,
+  groupToCommentText,
+  mapDocumentComments,
+  parseGroups,
+} from "@/lib/groups";
 
 // Normalize a document from JSON (omitempty may leave arrays as undefined).
 function normalize(doc: IterDocument): IterDocument {
@@ -51,7 +58,104 @@ function normalize(doc: IterDocument): IterDocument {
 
 const MAX_HISTORY = 50;
 
-interface DocumentState {
+/** The Source view's open text edit, as the rest of the studio sees it.
+ *  `base` is the text the render produced; `text` is what the author has
+ *  since typed. They part exactly when there is work a discard would take. */
+export interface SourceBuffer {
+  /** The tab's file the buffer belongs to, and — for a bot in several files
+   *  — which file of its unit. They are what lets the view recognise its own
+   *  buffer when it mounts again. */
+  path: string | null;
+  rel: string | null;
+  text: string;
+  base: string;
+  /** The document the buffer was rendered FROM. Carried so that a view
+   *  re-adopting it restores the provenance too: an Apply is refused when
+   *  the document moved under the text, and a re-adopted buffer that
+   *  claimed the CURRENT document would lose exactly that refusal. */
+  doc: IterDocument | null;
+  /** The edit session this text belongs to: opened when the view enters
+   *  edit mode, kept across keystrokes, adoption and remounts. An answer to
+   *  something this session asked (an Apply) settles only this session —
+   *  a Cancel and an edit of another file while it was in flight are a
+   *  different session, and are left alone. */
+  session: number;
+}
+
+let sourceSessions = 0;
+/** A fresh Source edit session id. */
+export function newSourceSession(): number {
+  sourceSessions += 1;
+  return sourceSessions;
+}
+
+/** What an answer was asked about: the tab's file, its content generation,
+ *  the author's last request to replace the document, the replacements
+ *  actually applied, and the Source buffer as it was — the object, which
+ *  every write replaces, so a keystroke since shows. Each site requires the
+ *  facts its answer depends on (`stampHolds`), and settles only while they
+ *  still hold. */
+export interface EditorStamp {
+  path: string | null;
+  generation: number;
+  intent: number;
+  replaced: number;
+  source: SourceBuffer | null;
+}
+
+export function stampEditor(s: DocumentState): EditorStamp {
+  return {
+    path: s.currentFilePath,
+    generation: s._generation,
+    intent: s._intent,
+    replaced: s._replaced,
+    source: s.sourceBuffer,
+  };
+}
+
+/** Which facts of `stamp` still hold for the store as it is now. The Source
+ *  buffer holds while it is the same object, or while it holds no un-applied
+ *  text: an editor opened and not typed in is nothing an answer could take. */
+export function stampHolds(stamp: EditorStamp, s: DocumentState) {
+  const buffer = s.sourceBuffer;
+  return {
+    path: s.currentFilePath === stamp.path,
+    generation: s._generation === stamp.generation,
+    intent: s._intent === stamp.intent,
+    replaced: s._replaced === stamp.replaced,
+    source: buffer === stamp.source || !buffer || buffer.text === buffer.base,
+  };
+}
+
+/** Why the Source view of a tab on `path`, with `unit`, can no longer show
+ *  a held buffer — or null when it can. The view shows ONE file of a unit at
+ *  a time, or the whole file when there is no unit, so a buffer typed for
+ *  anything else can be neither adopted nor applied, and holding it keeps
+ *  the tab "unsaved" over text no surface can reach. The view's release and
+ *  Save As's carry both ask it, so they agree on which text is kept;
+ *  adoption asks the narrower question of which file the view is on now. */
+export function unreachableSourceBuffer(
+  buffer: SourceBuffer,
+  path: string | null,
+  unit: UnitInfo | null,
+): string | null {
+  if (buffer.path !== path) {
+    return `The text you had not applied for ${buffer.path ?? "a file this tab has left"} was discarded — this tab is on another file now.`;
+  }
+  if (!unit) {
+    return buffer.rel === null
+      ? null
+      : `${buffer.rel} is no longer one of this tab's files — the tab is a single file now, and the text you had not applied for it was discarded.`;
+  }
+  if (buffer.rel === null) {
+    return "This bot is in several files now, edited one file at a time — the text you had not applied to it as a single file was discarded.";
+  }
+  return unit.files.some((f) => f.rel === buffer.rel)
+    ? null
+    : `${buffer.rel} is no longer one of this bot's files — the text you had not applied for it was discarded.`;
+}
+
+export interface DocumentState {
   document: IterDocument | null;
   diagnostics: string[];
   warnings: string[];
@@ -81,15 +185,36 @@ interface DocumentState {
   // (its files and the revision a save must present); null otherwise.
   // Dropped whenever the current file changes: a unit belongs to a file.
   unit: UnitInfo | null;
-  // The Source view holds an open, un-applied text edit. Its buffer is
-  // local to that component, so `_generation` does not move and isDirty()
-  // cannot see it — and the file watcher reads isDirty() to decide whether
-  // to reload a file changed on disk. Without this the reload swaps the
-  // document AND the revision under the buffer, and the Apply that follows
-  // lands on top of whoever wrote the file.
-  sourceEditing: boolean;
+  // The Source view's open, un-applied text edit — the buffer itself, not a
+  // flag about it. It used to be component-local `useState`, so nothing
+  // outside could see it: `_generation` does not move while an author types
+  // there, `isDirty()` reported false, and every discard path — closing the
+  // tab, opening another file, the watcher's reload, the assistant's
+  // reload-after-write — took the text with no prompt and no undo (#1662).
+  // One value rather than a flag beside a buffer: "is an edit open" and "is
+  // it dirty" are read by different surfaces, and two fields would drift.
+  sourceBuffer: SourceBuffer | null;
   _generation: number;
   _savedGeneration: number;
+  /** The author's last request to REPLACE this tab's document (New, Open,
+   *  an example, Import, a manual reload): an answer applies only while the
+   *  intent it was asked under is still the latest. */
+  _intent: number;
+  /** The explicit replacement still waiting for its answer, or null. A
+   *  background write to the document (the watcher's automatic reload, the
+   *  assistant's reload-after-write and its applied proposals, a draft
+   *  following its conversation) stands down while one is pending: the
+   *  author's request wins, and a background answer landing first would
+   *  otherwise make it look as though the author had edited. */
+  _pendingIntent: number | null;
+  /** Moves whenever a replacement is APPLIED — asked for by the author or
+   *  not (an automatic reload, the assistant's reload, a draft landing, a
+   *  Save As binding a new name) — and never for one merely asked for,
+   *  which is what `_intent` tracks. A save's answer settles only the
+   *  document it wrote: an Open that failed or was refused while the save
+   *  was in flight left that document on screen, and must not stop it
+   *  being marked saved. Compared for equality only, never counted. */
+  _replaced: number;
 
   // Undo/redo
   _history: IterDocument[];
@@ -102,9 +227,21 @@ interface DocumentState {
   setSalvaged: (salvaged: boolean) => void;
   setCurrentSource: (source: string | null) => void;
   setUnit: (unit: UnitInfo | null) => void;
-  setSourceEditing: (editing: boolean) => void;
+  setSourceBuffer: (buffer: SourceBuffer | null) => void;
   markSaved: () => void;
+  /** Starts an explicit replacement: returns its intent, now the latest and
+   *  the pending one. */
+  beginReplace: () => number;
+  /** Ends it: clears the pending intent if it is still this one. */
+  endReplace: (intent: number) => void;
+  /** Records that a replacement was applied (or the tab rebound). */
+  markReplaced: () => void;
   isDirty: () => boolean;
+  /** The Source view's buffer holds text its render did not produce. */
+  isSourceDirty: () => boolean;
+  /** Unsaved work of ANY kind in this tab — the document, or the Source
+   *  view's un-applied text. What a discard path consults. */
+  hasUnsavedWork: () => boolean;
 
 
   // Undo/redo
@@ -221,21 +358,55 @@ function pushHistory(s: DocumentState): { _history: IterDocument[]; _future: Ite
   return { _history: history, _future: [], _generation: s._generation + 1 };
 }
 
-/** Remove a node from all @group comments. Drops groups that fall below 2 members. */
-function removeNodeFromGroups(comments: Comment[], nodeName: string): Comment[] {
-  return comments.flatMap((c) => {
-    if (!groupNameFromComment(c)) return [c];
+/** Drop a node from every @group comment of a document, wherever the comment
+ *  lives. A group that falls below 2 members dissolves. */
+function dropNodeFromGroups(doc: IterDocument, nodeName: string): IterDocument {
+  return mapDocumentComments(doc, (c) => {
+    if (!groupNameFromComment(c)) return c;
     const g = parseGroups([c])[0];
-    if (!g) return [c];
+    if (!g) return c;
     const remaining = g.nodeIds.filter((id) => id !== nodeName);
-    if (remaining.length < 2) return []; // dissolve group
-    return [{ ...c, text: groupToCommentText({ ...g, nodeIds: remaining }) }];
+    if (remaining.length < 2) return null; // dissolve group
+    return { ...c, text: groupToCommentText({ ...g, nodeIds: remaining }) };
   });
 }
 
-/** Rename a node in all @group comments. */
-function renameNodeInGroups(comments: Comment[], oldName: string, newName: string): Comment[] {
-  return comments.map((c) => {
+/** Rewrite the document's groups for a node that is being removed.
+ *
+ *  A group's comment is carried by whatever the author wrote it next to —
+ *  a declaration, an edge, the file's head. Removing a node takes its
+ *  declaration and every edge touching it, so a group whose comment happened
+ *  to sit there would go with them even though the members that are LEFT are
+ *  still on the canvas. The comparison is made against what the group would
+ *  have become had its carrier survived, and any group that is missing after
+ *  the removal is re-declared on the document's own comment list — where the
+ *  studio writes the groups it creates, and where the save puts it above the
+ *  `dsl:` header. Keyed on group NAMES, so it covers every carrier kind
+ *  without naming any of them. */
+function removeNodeFromGroups(before: IterDocument, after: IterDocument, nodeName: string): IterDocument {
+  const doc = dropNodeFromGroups(after, nodeName);
+  const kept = dropNodeFromGroups(before, nodeName);
+  const survivors = documentComments(kept).filter((c) => groupNameFromComment(c));
+  if (survivors.length === 0) return doc;
+  const present = new Set(documentGroups(doc).map((g) => g.name));
+  // The comment is re-declared with its `file` — a comment with none is
+  // written to the main, so dropping it would move the author's line out of
+  // the fragment they wrote it in and into main.bot, on a save they asked
+  // for one node of.
+  const orphaned = survivors.filter((c) => {
+    const name = groupNameFromComment(c);
+    return !!name && !present.has(name);
+  });
+  if (orphaned.length === 0) return doc;
+  return {
+    ...doc,
+    comments: [...doc.comments, ...orphaned.map((c) => ({ ...c, anchor: undefined, place: undefined }))],
+  };
+}
+
+/** Rename a node in every @group comment of the document, wherever it lives. */
+function renameNodeInGroups(doc: IterDocument, oldName: string, newName: string): IterDocument {
+  return mapDocumentComments(doc, (c) => {
     if (!groupNameFromComment(c)) return c;
     const g = parseGroups([c])[0];
     if (!g) return c;
@@ -261,9 +432,12 @@ export function createDocumentStore() {
   detached: false,
   currentSource: null,
   unit: null,
-  sourceEditing: false,
+  sourceBuffer: null,
   _generation: 0,
   _savedGeneration: 0,
+  _intent: 0,
+  _pendingIntent: null,
+  _replaced: 0,
   _history: [],
   _future: [],
 
@@ -281,16 +455,39 @@ export function createDocumentStore() {
   // about this one, so the flag is dropped with the unit. A null path here is
   // a detachment — told apart from a fresh store's null by `detached`.
   setCurrentFilePath: (currentFilePath) =>
-    set({ currentFilePath, unit: null, salvaged: false, sourceEditing: false, detached: currentFilePath === null }),
+    set({ currentFilePath, unit: null, salvaged: false, sourceBuffer: null, detached: currentFilePath === null }),
   setSalvaged: (salvaged) => set({ salvaged }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
-  setSourceEditing: (sourceEditing) => set({ sourceEditing }),
+  setSourceBuffer: (sourceBuffer) => set({ sourceBuffer }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
+  beginReplace: () => {
+    const intent = get()._intent + 1;
+    set({ _intent: intent, _pendingIntent: intent });
+    return intent;
+  },
+  endReplace: (intent) =>
+    set((s) => (s._pendingIntent === intent ? { _pendingIntent: null } : s)),
+  markReplaced: () => set((s) => ({ _replaced: s._replaced + 1 })),
   isDirty: () => {
     const s = get();
     if (!s.document) return false;
     return s._generation !== s._savedGeneration;
+  },
+  isSourceDirty: () => {
+    const b = get().sourceBuffer;
+    return !!b && b.text !== b.base;
+  },
+  // What every path that would DESTROY the author's work has to ask. Not
+  // `isDirty()` on its own: the document and the Source view's buffer hold
+  // unsaved work independently, and a reload, a tab close or a File → New
+  // takes both. The Source view's own prompts deliberately keep asking
+  // `isDirty()` instead — they ask whether the DOCUMENT holds something
+  // their text does not carry, and a buffer that saw itself would prompt on
+  // every Apply.
+  hasUnsavedWork: () => {
+    const s = get();
+    return s.isDirty() || s.isSourceDirty();
   },
 
   // Undo/redo
@@ -351,18 +548,25 @@ export function createDocumentStore() {
       if (!s.document) return s;
       const doc = s.document;
       return {
-        document: {
-          ...doc,
-          agents: doc.agents.filter((a) => a.name !== name),
-          judges: doc.judges.filter((j) => j.name !== name),
-          routers: doc.routers.filter((r) => r.name !== name),
-          humans: doc.humans.filter((h) => h.name !== name),
-          tools: doc.tools.filter((t) => t.name !== name),
-          computes: doc.computes.filter((c) => c.name !== name),
-          subbots: (doc.subbots ?? []).filter((sb) => sb.name !== name),
-          workflows: removeNodeEdges(doc, name),
-          comments: removeNodeFromGroups(doc.comments, name),
-        },
+        // The group rewrite runs LAST, over the document the removal
+        // leaves: a @group annotation carried by a declaration that is
+        // still there has to lose the node too, and one carried by the
+        // declaration just removed is gone with it.
+        document: removeNodeFromGroups(
+          doc,
+          {
+            ...doc,
+            agents: doc.agents.filter((a) => a.name !== name),
+            judges: doc.judges.filter((j) => j.name !== name),
+            routers: doc.routers.filter((r) => r.name !== name),
+            humans: doc.humans.filter((h) => h.name !== name),
+            tools: doc.tools.filter((t) => t.name !== name),
+            computes: doc.computes.filter((c) => c.name !== name),
+            subbots: (doc.subbots ?? []).filter((sb) => sb.name !== name),
+            workflows: removeNodeEdges(doc, name),
+          },
+          name,
+        ),
         ...pushHistory(s),
       };
     }),
@@ -379,18 +583,21 @@ export function createDocumentStore() {
       const renameIn = <T extends { name: string }>(arr: T[]) =>
         arr.map((item) => (item.name === oldName ? { ...item, name: newName } : item));
       return {
-        document: {
-          ...doc,
-          agents: renameIn(doc.agents),
-          judges: renameIn(doc.judges),
-          routers: renameIn(doc.routers),
-          humans: renameIn(doc.humans),
-          tools: renameIn(doc.tools),
-          computes: renameIn(doc.computes),
-          subbots: renameIn(doc.subbots ?? []),
-          workflows: updateWorkflowsEdges(doc, oldName, newName),
-          comments: renameNodeInGroups(doc.comments, oldName, newName),
-        },
+        document: renameNodeInGroups(
+          {
+            ...doc,
+            agents: renameIn(doc.agents),
+            judges: renameIn(doc.judges),
+            routers: renameIn(doc.routers),
+            humans: renameIn(doc.humans),
+            tools: renameIn(doc.tools),
+            computes: renameIn(doc.computes),
+            subbots: renameIn(doc.subbots ?? []),
+            workflows: updateWorkflowsEdges(doc, oldName, newName),
+          },
+          oldName,
+          newName,
+        ),
         ...pushHistory(s),
       };
     }),
@@ -411,7 +618,13 @@ export function createDocumentStore() {
     // Deep-clone with new name, copying nested arrays to avoid shared references
     const clone = { ...found.decl, name: newName };
     if ("tools" in clone && Array.isArray(clone.tools)) clone.tools = [...clone.tools];
-    if ("comments" in clone && Array.isArray(clone.comments)) clone.comments = [...clone.comments];
+    // The copy keeps the author's comments but NOT a @group annotation: a
+    // group names its members by id, so a verbatim copy declares a second
+    // group of the same name — two canvas nodes sharing one React Flow id,
+    // and the line written twice into the .bot on save.
+    if ("comments" in clone && Array.isArray(clone.comments)) {
+      clone.comments = (clone.comments as Comment[]).filter((c) => !groupNameFromComment(c));
+    }
     const kindToArray: Record<string, keyof IterDocument> = {
       agent: "agents", judge: "judges", router: "routers",
       human: "humans", tool: "tools", compute: "computes",
@@ -710,12 +923,16 @@ export function createDocumentStore() {
       return { document: normalize(mutator(s.document)), ...pushHistory(s) };
     }),
 
-  // Group operations — groups are stored as @group comments
+  // Group operations — groups are stored as @group comments. A group the
+  // studio CREATES goes on the document's own list, which the save writes
+  // above the `dsl:` header; one the AUTHOR wrote is wherever they put it,
+  // so every operation that reaches an existing group goes through
+  // `documentGroups`/`mapDocumentComments` rather than the head list.
   addGroup: (group) =>
     set((s) => {
       if (!s.document) return s;
       // Check for duplicate group name
-      const existing = parseGroups(s.document.comments);
+      const existing = documentGroups(s.document);
       if (existing.some((g) => g.name === group.name)) return s;
       const comment: Comment = { text: groupToCommentText(group) };
       return { document: { ...s.document, comments: [...s.document.comments, comment] }, ...pushHistory(s) };
@@ -724,21 +941,23 @@ export function createDocumentStore() {
   removeGroup: (groupName) =>
     set((s) => {
       if (!s.document) return s;
-      const comments = s.document.comments.filter((c) => groupNameFromComment(c) !== groupName);
-      return { document: { ...s.document, comments }, ...pushHistory(s) };
+      const document = mapDocumentComments(s.document, (c) =>
+        groupNameFromComment(c) === groupName ? null : c,
+      );
+      return { document, ...pushHistory(s) };
     }),
 
   updateGroup: (groupName, updates) =>
     set((s) => {
       if (!s.document) return s;
-      const comments = s.document.comments.map((c) => {
+      const document = mapDocumentComments(s.document, (c) => {
         if (groupNameFromComment(c) !== groupName) return c;
         const first = parseGroups([c])[0];
         if (!first) return c;
         const updated = { ...first, ...updates };
         return { ...c, text: groupToCommentText(updated) };
       });
-      return { document: { ...s.document, comments }, ...pushHistory(s) };
+      return { document, ...pushHistory(s) };
     }),
   }));
 }

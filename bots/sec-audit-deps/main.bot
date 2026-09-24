@@ -46,6 +46,14 @@ dsl: 2
 
 vars:
   workspace_dir:       string = "${PROJECT_DIR}"
+  ## Where a tool node reads a machine-readable `iterion:` block out of a
+  ## skill. The engine resets this directory and refills it from the bundle
+  ## on every mirror pass, so it carries the bundle's bytes under only the
+  ## names the bundle ships — unlike <workspace>/.claude/skills/, whose
+  ## collision policy lets the target checkout's own file win. A name the
+  ## bundle does not ship has no file here, and the "not covered" path is
+  ## what reports it.
+  bundle_skills_dir:   string = "${BUNDLE_SKILLS_DIR}"
   severity_threshold:  string = "medium"
   scope_notes:         string = ""
   ## Out-of-tree, sandbox-writable scratch (engine resolves
@@ -447,7 +455,7 @@ print(json.dumps({'deps': uniq, 'ecosystems': ecos,
 ## signals. Adding an ecosystem = drop a lang-<id>.md skill with a
 ## heuristics block (+ a parser here only if its output format is new).
 tool run_eco_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -c "
 import os, sys, json, re, subprocess
 raw = os.environ.get('ECOS', '[]') or '[]'
 try:

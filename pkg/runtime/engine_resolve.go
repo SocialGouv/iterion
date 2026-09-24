@@ -1082,6 +1082,25 @@ func (e *Engine) varExpandFn() func(string) string {
 			}
 			return e.bundle.Dir
 		}
+		if key == "BUNDLE_SKILLS_DIR" {
+			// The engine-owned copy of the bundle's skills, reset and
+			// rewritten from the bundle on every mirror pass. A node that
+			// parses a machine-readable `iterion:` block out of a skill reads
+			// it HERE, never from <workspace>/.claude/skills/: that directory
+			// applies the workspace-wins collision policy, so a checkout can
+			// both replace a shipped skill and supply a name the bundle never
+			// shipped. Here a name the bundle does not ship simply does not
+			// exist, which is what makes the "not covered" path observable.
+			//
+			// Unlike ${BUNDLE_DIR} this is NOT the read-only bundle mount:
+			// the kubernetes driver has no host bind mounts, so nothing under
+			// /run/iterion/bundle exists in a pod. The workspace is the one
+			// tree that travels there.
+			if e.containerWorkspace != "" {
+				return ownedSkillsContainerDir(e.containerWorkspace)
+			}
+			return OwnedSkillsDir(e.workDir)
+		}
 		if key == "PROJECT_MEMORY_DIR" {
 			// Project-rooted memory directory, keyed off the run's
 			// repo_root (not the per-run workDir). Resolves to

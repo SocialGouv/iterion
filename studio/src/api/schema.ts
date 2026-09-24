@@ -7215,6 +7215,10 @@ export interface components {
             origin: string;
             stored?: components["schemas"]["BotRoles"];
         };
+        botSourceFilePutReq: {
+            content: string;
+            version?: number;
+        };
         botSourceForkReq: {
             from: string;
         };
@@ -7781,20 +7785,29 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourceFilePutReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
     deleteAdminBotsBySlugFilesByPath: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -7804,12 +7817,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
@@ -13005,20 +13020,29 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourceFilePutReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
     deleteTeamsByIdBotSourcesBySlugFilesByPath: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+            };
             header?: never;
             path: {
                 id: string;
@@ -13029,12 +13053,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };

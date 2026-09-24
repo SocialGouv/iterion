@@ -44,6 +44,10 @@ type SharedBudget struct {
 	costUsed       float64
 	iterationsUsed int
 	startedAt      time.Time
+	// now is the budget's clock: time.Now (also when nil, for a budget
+	// built as a literal), or a clock a test advances by hand so a duration
+	// witness reads the order of events, never a sleep.
+	now func() time.Time
 
 	// Warning tracking — each dimension warns at most once (re-armed
 	// per axis by RaiseCaps so a raised ceiling gets fresh warnings).
@@ -110,8 +114,32 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		maxDuration:     maxDur,
 		capImposed:      b.CapImposed,
 		startedAt:       time.Now(),
+		now:             time.Now,
 		warningsEmitted: make(map[string]bool),
 	}
+}
+
+// elapsed is the run's age by the budget's clock.
+func (b *SharedBudget) elapsed() time.Duration {
+	return b.clockNow().Sub(b.startedAt)
+}
+
+// clockNow reads the budget's clock.
+func (b *SharedBudget) clockNow() time.Time {
+	if b.now == nil {
+		return time.Now()
+	}
+	return b.now()
+}
+
+// useClock replaces the budget's clock and restarts the run's age on it. Only
+// before the budget is first read: the engine calls it once, at construction,
+// for a test's clock.
+func (b *SharedBudget) useClock(now func() time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.now = now
+	b.startedAt = now()
 }
 
 // RaiseCaps raises any of the four caps to the supplied ABSOLUTE values
@@ -218,14 +246,15 @@ func (b *SharedBudget) capsLocked() ir.BudgetOverrides {
 
 // Snapshot returns the budget's consumed amounts and elapsed active time so
 // they can be persisted in a checkpoint and restored on resume. Safe on a nil
-// budget (returns zeros). elapsed is time.Since(startedAt) at call time.
+// budget (returns zeros). elapsed is the run's age by the budget's clock at
+// call time.
 func (b *SharedBudget) Snapshot() (tokens int, cost float64, iterations int, elapsed time.Duration, unpricedTokens, unpricedNodes int) {
 	if b == nil {
 		return 0, 0, 0, 0, 0, 0
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.tokensUsed, b.costUsed, b.iterationsUsed, time.Since(b.startedAt), b.unpricedTokens, b.unpricedNodes
+	return b.tokensUsed, b.costUsed, b.iterationsUsed, b.elapsed(), b.unpricedTokens, b.unpricedNodes
 }
 
 // Restore seeds a freshly-built budget with consumption carried over from a
@@ -248,7 +277,7 @@ func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed
 	b.unpricedTokens = unpricedTokens
 	b.unpricedNodes = unpricedNodes
 	if elapsed > 0 {
-		b.startedAt = time.Now().Add(-elapsed)
+		b.startedAt = b.clockNow().Add(-elapsed)
 	}
 }
 
@@ -364,7 +393,7 @@ func (b *SharedBudget) RemainingDuration() (time.Duration, bool) {
 	if b.maxDuration <= 0 {
 		return 0, false
 	}
-	rem := b.maxDuration - time.Since(b.startedAt)
+	rem := b.maxDuration - b.elapsed()
 	if rem < 0 {
 		rem = 0
 	}
@@ -384,7 +413,7 @@ func (b *SharedBudget) DurationStatus() (used, limit float64, bounded bool) {
 	if b.maxDuration <= 0 {
 		return 0, 0, false
 	}
-	return float64(time.Since(b.startedAt)), float64(b.maxDuration), true
+	return float64(b.elapsed()), float64(b.maxDuration), true
 }
 
 // BudgetStatus is a consistent snapshot of what a run has consumed and of
@@ -417,7 +446,7 @@ func (b *SharedBudget) Status() BudgetStatus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return BudgetStatus{
-		Elapsed:       time.Since(b.startedAt),
+		Elapsed:       b.elapsed(),
 		CostUSD:       b.costUsed,
 		Tokens:        b.tokensUsed,
 		Iterations:    b.iterationsUsed,
@@ -467,7 +496,7 @@ func (b *SharedBudget) Axes() map[string]budgetAxis {
 	add("iterations", float64(b.iterationsUsed), float64(b.maxIterations))
 	add("tokens", float64(b.tokensUsed), float64(b.maxTokens))
 	add("cost_usd", b.costUsed, b.maxCostUSD)
-	add("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+	add("duration", float64(b.elapsed()), float64(b.maxDuration))
 
 	return axes
 }
@@ -499,7 +528,7 @@ func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
 	ok := room("iterations", float64(b.iterationsUsed), float64(b.maxIterations)) &&
 		room("tokens", float64(b.tokensUsed), float64(b.maxTokens)) &&
 		room("cost_usd", b.costUsed, b.maxCostUSD) &&
-		room("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+		room("duration", float64(b.elapsed()), float64(b.maxDuration))
 	return graced, ok && graced != ""
 }
 
@@ -532,7 +561,7 @@ func (b *SharedBudget) liveOverrunLocked() *budgetCheckResult {
 	if r := over("cost_usd", b.costUsed, b.maxCostUSD); r != nil {
 		return r
 	}
-	return over("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+	return over("duration", float64(b.elapsed()), float64(b.maxDuration))
 }
 
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
@@ -562,7 +591,7 @@ func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	check("iterations", float64(b.iterationsUsed), float64(b.maxIterations))
 	check("tokens", float64(b.tokensUsed), float64(b.maxTokens))
 	check("cost_usd", b.costUsed, b.maxCostUSD)
-	check("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+	check("duration", float64(b.elapsed()), float64(b.maxDuration))
 
 	// The advisory token threshold reports once on the tokens axis and
 	// never blocks: the operator asked to be told (audit hint), not
@@ -936,4 +965,15 @@ func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetChec
 		Hint:    fmt.Sprintf("raise budget.%s and resume — local: `iterion resume --max-%s`; cloud: `runs resume --file <workflow with the raised budget>`", exc.dimension, exc.dimension),
 		Cause:   ErrBudgetExceeded,
 	})
+}
+
+// newRunBudget is the one door every run budget this engine builds goes
+// through — the run's own and the resume preflight's — so each reads the run's
+// age on the same clock: the engine's test clock when one is set.
+func (e *Engine) newRunBudget() *SharedBudget {
+	b := newSharedBudget(e.workflow.Budget, e.logger)
+	if b != nil && e.budgetClock != nil {
+		b.useClock(e.budgetClock)
+	}
+	return b
 }

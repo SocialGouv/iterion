@@ -124,7 +124,7 @@ export async function captureActiveEditorDocument(
     file: state.currentFilePath,
     complete,
     sourceLength: source.length,
-    dirty: state.isDirty(),
+    dirty: state.hasUnsavedWork(),
     ...(complete ? { source } : {}),
     ...(authoring ? { authoring } : {}),
     ...(sharedBundle ? { sharedBundle } : {}),

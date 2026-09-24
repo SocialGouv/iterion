@@ -112,6 +112,12 @@ node**:
 heuristics block automatically. No per-ecosystem boolean, no router
 branch. Pure composition.
 
+It reads them from `${BUNDLE_SKILLS_DIR}`, the engine's own copy of this
+bundle's `skills/` — never from `<workspace>/.claude/skills/`, which the
+audited checkout writes. An ecosystem this bundle ships no
+`lang-<ecoid>.md` for is not covered, and no file in the workspace can
+make it look covered.
+
 ## See also
 
 - [sec-audit-source](../sec-audit-source/) — sibling bundle for in-repo source code.

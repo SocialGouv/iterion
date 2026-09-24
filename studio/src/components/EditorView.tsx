@@ -219,7 +219,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (docStoreInst.getState().isDirty()) {
+      if (docStoreInst.getState().hasUnsavedWork()) {
         e.preventDefault();
       }
     };

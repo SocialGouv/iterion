@@ -26,6 +26,9 @@ export interface Toast {
   type: "success" | "error" | "info" | "warning";
   action?: ToastAction;
   persistent?: boolean;
+  /** What a persistent toast is deduplicated on: a newer one with the same
+   *  key replaces it. The message when absent. */
+  key?: string;
 }
 
 let toastIdCounter = 0;
@@ -114,7 +117,11 @@ interface UIState {
   toggleLayoutDirection: () => void;
   toggleLayer: (layer: LayerKind) => void;
   setEditingItem: (item: EditingItem | null) => void;
-  addToast: (message: string, type: Toast["type"], opts?: { action?: ToastAction; persistent?: boolean }) => void;
+  addToast: (
+    message: string,
+    type: Toast["type"],
+    opts?: { action?: ToastAction; persistent?: boolean; key?: string },
+  ) => void;
   removeToast: (id: number) => void;
   // Run-health alert dot
   bumpAlertUnseen: () => void;
@@ -203,11 +210,15 @@ export const useUIStore = create<UIState>((set) => ({
   addToast: (message, type, opts) => {
     const id = ++toastIdCounter;
     set((s) => {
-      // Deduplicate: remove existing persistent toast with the same message
+      // Deduplicate: remove an existing persistent toast with the same key,
+      // or the same message when there is no key.
+      const key = opts?.key ?? message;
       const filtered = opts?.persistent
-        ? s.toasts.filter((t) => !(t.persistent && t.message === message))
+        ? s.toasts.filter((t) => !(t.persistent && (t.key ?? t.message) === key))
         : s.toasts;
-      return { toasts: [...filtered, { id, message, type, action: opts?.action, persistent: opts?.persistent }] };
+      return {
+        toasts: [...filtered, { id, message, type, action: opts?.action, persistent: opts?.persistent, key: opts?.key }],
+      };
     });
     if (!opts?.persistent) {
       setTimeout(() => {

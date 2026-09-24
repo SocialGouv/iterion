@@ -18,7 +18,7 @@ func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) 
 	if e == nil || e.workflow == nil || r == nil || r.Checkpoint == nil {
 		return nil
 	}
-	b := newSharedBudget(e.workflow.Budget, e.logger)
+	b := e.newRunBudget()
 	if b == nil {
 		return nil
 	}

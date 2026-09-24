@@ -493,6 +493,17 @@ export interface AgentDecl {
   tools?: string[];
   tool_policy?: string[];
   tool_max_steps?: number;
+  /** Tool-permission gate mode for this node: "off" | "ask" | "deny".
+   *  Empty/absent inherits the workflow's. See docs/permissions.md. */
+  permission?: string;
+  /** Node-level permission rules, `Tool(pattern)` syntax. A NON-EMPTY list
+   *  replaces the workflow's list of the same kind — never a union, and
+   *  independently per kind. An empty list is not "clear the workflow's":
+   *  the JSON seam carries these with `omitempty`, so write `undefined`
+   *  rather than `[]` when the author empties the control. */
+  allow?: string[];
+  ask?: string[];
+  deny?: string[];
   // Per-LLM-call output cap; 0 / undefined inherits the backend default.
   max_tokens?: number;
   reasoning_effort?: ReasoningEffort;
@@ -533,6 +544,17 @@ export interface JudgeDecl {
   tools?: string[];
   tool_policy?: string[];
   tool_max_steps?: number;
+  /** Tool-permission gate mode for this node: "off" | "ask" | "deny".
+   *  Empty/absent inherits the workflow's. See docs/permissions.md. */
+  permission?: string;
+  /** Node-level permission rules, `Tool(pattern)` syntax. A NON-EMPTY list
+   *  replaces the workflow's list of the same kind — never a union, and
+   *  independently per kind. An empty list is not "clear the workflow's":
+   *  the JSON seam carries these with `omitempty`, so write `undefined`
+   *  rather than `[]` when the author empties the control. */
+  allow?: string[];
+  ask?: string[];
+  deny?: string[];
   max_tokens?: number;
   reasoning_effort?: ReasoningEffort;
   readonly?: boolean;
