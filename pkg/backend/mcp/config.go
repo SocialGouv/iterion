@@ -6,7 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -204,9 +204,12 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 		return nil, nil, fmt.Errorf("mcp: parse %s: %w", path, err)
 	}
 
-	names := make([]string, 0, len(file.MCPServers))
+	// In name order: of several invalid servers, the refusal names the
+	// same one on every run.
+	names := slices.Sorted(maps.Keys(file.MCPServers))
 	servers := make(map[string]*ServerConfig, len(file.MCPServers))
-	for name, raw := range file.MCPServers {
+	for _, name := range names {
+		raw := file.MCPServers[name]
 		cfg := &ServerConfig{
 			Name:      name,
 			Transport: normalizeTransport(raw.Type, raw.Transport, raw.Command, raw.URL),
@@ -228,10 +231,8 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 		if err := validateServerConfig(cfg); err != nil {
 			return nil, nil, fmt.Errorf("mcp: project server %q: %w", name, err)
 		}
-		names = append(names, name)
 		servers[name] = cfg
 	}
-	sort.Strings(names)
 	return servers, names, nil
 }
 
@@ -252,8 +253,8 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 		}
 	}
 
-	for name, cfg := range catalog {
-		if err := validateServerConfig(cfg); err != nil {
+	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		if err := validateServerConfig(catalog[name]); err != nil {
 			return nil, fmt.Errorf("mcp: server %q: %w", name, err)
 		}
 	}
@@ -456,7 +457,8 @@ func PrepareAuth(catalog map[string]*ServerConfig, broker *OAuthBroker) error {
 	if broker == nil {
 		return nil
 	}
-	for name, cfg := range catalog {
+	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		cfg := catalog[name]
 		if cfg == nil || cfg.Auth == nil {
 			continue
 		}
