@@ -252,9 +252,9 @@ vars:
   ## therefore infers NOTHING, in either direction. It verifies every
   ## citation wherever it sits (an invented screen alone on its line is
   ## refused), and it refuses nothing that is not one (`Mot de passe`,
-  ## `package.json`, `404` in ordinary prose stay prose). Guessing which
-  ## of the two a code span is, is the shape that oscillated between a
-  ## false green and a false red; an explicit marker has no middle. The
+  ## `package.json`, `404` in ordinary prose stay prose). Guessing from a
+  ## token's shape which of the two a code span is cannot close both
+  ## directions at once; an explicit marker has no middle. The
   ## token is a corpus entry id, an inventory feature id, or a path
   ## (leading slash). Both ends are declared so a docs repo already using
   ## [[...]] can pick another spelling; either one empty is a refusal,
@@ -2386,10 +2386,11 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 ## — and a code span is prose, whatever it looks like. Every citation is
 ## verified wherever it sits, so an invented screen alone on its line is
 ## refused; nothing that is not a citation is ever looked at, so an
-## interface label, a file name or an inline 404 stay prose. Guessing which
-## of the two a code span was is what oscillated between a false green and
-## a false red across two review rounds: there is no setting that closes
-## both, only an explicit marker that has no middle.
+## interface label, a file name or an inline 404 stay prose. Guessing from
+## a token's shape which of the two a code span is trades a false green (an
+## invention alone on its line goes unverified) for a false red (a label is
+## refused as an entry that does not exist): no setting closes both, only
+## an explicit marker that has no middle.
 ##
 ## LANGUAGE-NEUTRAL BY CONSTRUCTION: the exclusions chapter title, the
 ## anchorless marker and the citation syntax are DECLARED identifiers
@@ -2619,12 +2620,11 @@ def route_proves(pattern):
 def corpus_matches(cited):
     return [c for c in entry_paths if pattern_matches(cited, c)]
 ## A CITATION IS WHAT THE PAGE SAYS IS ONE -- nothing is inferred, in either
-## direction. Two review rounds oscillated between a false green (an invented
-## screen alone on its line was never verified) and a false red (an ordinary
-## code span refused as a corpus entry that does not exist), because the gate
-## was GUESSING from a token's shape which of the two it was. There is no
-## setting that closes both: the way out is to stop guessing. Every citation
-## is verified, wherever it sits; nothing that is not one is ever looked at.
+## direction. Guessing from a token's shape whether it is a reference leaves
+## either a false green (an invented screen alone on its line unverified) or
+## a false red (an ordinary code span refused as a corpus entry that does not
+## exist); no setting closes both. Every citation is verified, wherever it
+## sits; nothing that is not one is ever looked at.
 if not cite_open or not cite_close:
     refuse('NET_UNREADABLE', 'coverage_citation_open/close', 'the citation syntax is not declared -- with no way to recognise a reference this gate would certify a documentation it never read: a refusal, not a vacuous pass', True)
 CITE_RE = re.compile(re.escape(cite_open) + r'\s*([^' + chr(10) + r']*?)\s*' + re.escape(cite_close)) if (cite_open and cite_close) else None
@@ -2640,8 +2640,8 @@ PLACEHOLDER_RE = re.compile('|'.join(re.escape(p) for p in placeholders), re.I) 
 ## leading pipe), a list item and a line of block-level HTML are each read on
 ## their own whatever the spacing; a quote marker, a thematic break and a
 ## template tag line end the block before them. Lumped into one paragraph,
-## an index table credited its header and every other row to each feature
-## listed in it.
+## an index table would credit its header and every other row to each
+## feature listed in it.
 QUOTE_RE = re.compile(r'^ {0,3}> ?')
 ITEM_RE = re.compile(r'^\s*(?:[-*+]|[0-9]{1,9}[.)])(?:\s|' + chr(36) + ')')
 HR_RE = re.compile(r'^ {0,3}(?:(?:-[ \t]*){3,}|(?:[*][ \t]*){3,}|(?:_[ \t]*){3,})' + chr(36))
@@ -2938,8 +2938,8 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
 ## that block only, never to the rows or items around it; and a block that
 ## documents several features SHARES its prose between them -- each needs
 ## its own min_prose characters and min_words words. Credited whole to each,
-## a paragraph of soft-wrapped index lines documented every feature it
-## listed with one sentence's worth of words, no table syntax needed.
+## a paragraph of soft-wrapped index lines would document every feature it
+## lists with one sentence's worth of words, no table syntax needed.
 ## A HEADING DOCUMENTS NOTHING: it labels and anchors a chapter, and its
 ## body is where a feature is described.
 undocumented = []
