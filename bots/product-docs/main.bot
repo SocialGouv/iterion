@@ -2745,7 +2745,7 @@ def page_blocks(rows):
     ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
     ## page, in order. content is the line without its quote markers.
     blocks, cur, mode, in_fence, fence_opener, in_comment = [], None, '', False, None, False
-    skip_title, in_tag = False, False
+    skip_title, in_tag, in_raw = False, False, ''
     ## FRONT MATTER is page metadata no renderer shows: a first line of ---
     ## up to the next --- (or ...), every line between reading as YAML. Read
     ## as markdown, its closing line would underline the keys into a chapter
@@ -2785,6 +2785,16 @@ def page_blocks(rows):
                 continue
             content = content[end + 1:]
             in_tag = False
+        if in_raw:
+            ## The body of a script or style element is DATA for the page's
+            ## behaviour, not prose for its reader: hidden whole, like the
+            ## element that carries it.
+            low = content.lower()
+            end = low.find('</' + in_raw)
+            if end == -1:
+                continue
+            content = content[end:]
+            in_raw = ''
         if in_comment:
             end = content.find('-->')
             if end == -1:
@@ -2794,7 +2804,39 @@ def page_blocks(rows):
         ## An HTML TAG OPENER WITHOUT ITS CLOSE ON THE SAME LINE: the
         ## attributes carry to the following lines, and attributes are
         ## invisible -- read raw, one carried citations that satisfied GAP.
-        open_tag = re.search(r'<[A-Za-z/][^>]*$', content)
+        ## Inline CODE SPANS are literal: a backtick-quoted label is not a
+        ## tag opener, and reading it as one discarded the rest of the page.
+        ## A script or style opener is a RAW-TEXT element: everything up to
+        ## its closer is data, and read as prose or citations it documented
+        ## a feature the reader never saw.
+        masked = []
+        i2, n2 = 0, len(content)
+        while i2 < n2:
+            if content[i2] == chr(96):
+                j2 = content.find(chr(96), i2 + 1)
+                if j2 == -1:
+                    masked.append(' ' * (n2 - i2))
+                    i2 = n2
+                    continue
+                masked.append(' ' * (j2 - i2 + 1))
+                i2 = j2 + 1
+                continue
+            masked.append(content[i2])
+            i2 += 1
+        masked_line = ''.join(masked)
+        raw_open = re.search(r'(?i)<(script|style)\b[^>]*>', masked_line)
+        if raw_open:
+            name = raw_open.group(1).lower()
+            close_at = content.lower().find('</' + name, raw_open.start())
+            if close_at == -1:
+                content = content[:raw_open.start()]
+                in_raw = name
+                if not content.strip():
+                    continue
+            else:
+                gt = content.find('>', close_at)
+                content = content[:raw_open.start()] + ' ' + content[gt + 1:]
+        open_tag = re.search(r'<[A-Za-z/][^>]*$', ''.join(masked))
         if open_tag:
             content = content[:open_tag.start()]
             in_tag = True

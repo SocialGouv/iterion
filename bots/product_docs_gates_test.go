@@ -4416,3 +4416,40 @@ func TestProductDocsCoverageGateStripsClosingHashesFromTitles(t *testing.T) {
 		t.Fatalf("exclusions named = %d, want 1", got.Named)
 	}
 }
+
+func TestProductDocsCoverageGateReadsPastAnInlineCodeAngleLabel(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// An inline code span is LITERAL: `<Widget` inside backticks is a
+	// label, not a tag opener, and reading it as one discarded the rest of
+	// the page — every chapter behind it went UNANCHORED.
+	mutate(t, ws, "docs/demo/README.md",
+		"The manager lands here — [[ref:items.list]] [[ref:026]] — and reads twenty rows,",
+		"Use the `<Widget` label here — [[ref:items.list]] [[ref:026]] — and read twenty rows,")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("an inline code label was read as a tag opener and hid the page:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateHidesScriptBodies(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A script element's body is DATA for the page's behaviour, not prose
+	// for its reader: cited and written there, it documented nothing.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<script>\n"+
+			"var pair = \"[[ref:items.detail]] [[ref:039]] shows one item in full: every field\n"+
+			"the manager filled in, the history of its changes and the actions still open\";\n"+
+			"</script>\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a script element's body counted as documentation:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
