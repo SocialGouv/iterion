@@ -1,7 +1,20 @@
 name: campaign
 display_name: Campy
 icon: 🧭
-version: 0.1.2
+version: 0.2.0
+## 0.2.0 — PHASE 0: the campaign produces its own prerequisites. Three child
+## bots run before `preflight` (unchanged) — assessment writes the contract,
+## golden-master builds the net, product-docs writes the product
+## documentation — each skipped on the ARTEFACT that makes it unnecessary,
+## each verified in git afterwards. Where the net lives is read from the
+## contract, as preflight reads it, and handed to both children that touch
+## it — never a var of its own. The wall clock moves 48h → 72h to hold
+## the bootstrap without spending it out of the programme. `phase_zero`
+## ships OFF: the docs child declares `worktree: auto` and the engine runs
+## such a child in the parent's tree only under a sandbox, so a local run
+## would land its pages on a branch and `docs_landed` would refuse.
+## `--var phase_zero=true` opts in; the default flips when that condition
+## asks whether the child is a subbot instead.
 ## 0.1.2 — preflight, the steward's observed writes and finalize no longer count
 ## iterion's `.claude/` scaffold as work in flight, and the steward's revert
 ## leaves that tree alone (#1364).
@@ -28,6 +41,14 @@ description: |
   the run (interactive) or accumulate into the handoff (default) — and the
   campaign always ends on a committed handoff plus a human review node,
   with blocked lots requalified against the final tree.
+
+  It also produces its own prerequisites. Phase 0 runs three child bots
+  before preflight — assessment writes the contract from a brief,
+  golden-master builds the behavioural net, product-docs writes the
+  product documentation — each SKIPPED when the artefact that makes it
+  unnecessary is already there, each verified in git afterwards, and the
+  whole phase cut by one switch. Preflight is unchanged and still has the
+  last word on what came out.
 when_to_use: |
   Use to carry a WHOLE programme unattended once its two prerequisites
   exist: a `.modernize/plan.yaml` contract and a behavioural net under
@@ -36,15 +57,22 @@ when_to_use: |
   progress in git, executed announced re-records between runs, and kept the
   journal.
 
-  Do NOT use it to run a single lot (run modernize directly), to build the
-  net (golden-master's job), or to decide WHAT to modernise — the programme
-  is a human decision recorded in the contract, and this bot's whole
-  authority over it is measuring whether it advances.
+  `--var phase_zero=true` additionally PRODUCES those prerequisites first —
+  the contract from `.modernize/brief.yaml`, the net, the product
+  documentation — skipping whichever already exists. It is opt-in for now:
+  the documentation child lands its pages on a branch rather than in the
+  campaign's checkout unless the run is sandboxed, and the supervisor
+  refuses what it cannot read in git.
+
+  Do NOT use it to run a single lot (run modernize directly), to build ONLY
+  the net (run golden-master directly), or to decide WHAT to modernise
+  without writing it down — the programme starts as a human brief, and this
+  bot's whole authority over it is measuring whether it advances.
 author: SocialGouv (devthejo) — campaign/main.bot
 schema_version: 1
 
 launch:
-  primary: [governance, escalation, max_lots, plan_path]
+  primary: [phase_zero, governance, escalation, max_lots, plan_path]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
 ## release that reads the profile would refuse the header as an unknown

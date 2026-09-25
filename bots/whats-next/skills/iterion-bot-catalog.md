@@ -613,6 +613,14 @@ the run (interactive) or accumulate into the handoff (default) — and the
 campaign always ends on a committed handoff plus a human review node,
 with blocked lots requalified against the final tree.
 
+It also produces its own prerequisites. Phase 0 runs three child bots
+before preflight — assessment writes the contract from a brief,
+golden-master builds the behavioural net, product-docs writes the
+product documentation — each SKIPPED when the artefact that makes it
+unnecessary is already there, each verified in git afterwards, and the
+whole phase cut by one switch. Preflight is unchanged and still has the
+last word on what came out.
+
 - **Use when**:
   Use to carry a WHOLE programme unattended once its two prerequisites
   exist: a `.modernize/plan.yaml` contract and a behavioural net under
@@ -621,11 +629,18 @@ with blocked lots requalified against the final tree.
   progress in git, executed announced re-records between runs, and kept the
   journal.
   
-  Do NOT use it to run a single lot (run modernize directly), to build the
-  net (golden-master's job), or to decide WHAT to modernise — the programme
-  is a human decision recorded in the contract, and this bot's whole
-  authority over it is measuring whether it advances.
-- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
+  `--var phase_zero=true` additionally PRODUCES those prerequisites first —
+  the contract from `.modernize/brief.yaml`, the net, the product
+  documentation — skipping whichever already exists. It is opt-in for now:
+  the documentation child lands its pages on a branch rather than in the
+  campaign's checkout unless the run is sandboxed, and the supervisor
+  refuses what it cannot read in git.
+  
+  Do NOT use it to run a single lot (run modernize directly), to build ONLY
+  the net (run golden-master directly), or to decide WHAT to modernise
+  without writing it down — the programme starts as a human brief, and this
+  bot's whole authority over it is measuring whether it advances.
+- **Vars**: `brief_path` (string), `docs_dir` (string), `docs_product_id` (string), `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `phase_zero` (bool), `plan_path` (string), `scratch_dir` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
 
 ### `copilot` — Copi

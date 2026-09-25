@@ -238,6 +238,9 @@ func TestPorcelainReadersAreClassified(t *testing.T) {
 		"golden-master/main.bot:oracle_run:\"gm-applied\" in sub(\"git\", \"status\", \"--porcelain\").stdout],":                                              "looks for one marker path",
 		"secured-renovacy/main.bot:prepare_commit:const untracked = execSync(`git -C \"${workspaceDir}\" ls-files --others --exclude-standard`, EXEC_OPTS);":  "filtered where the file list is built, twenty lines below (`/^\\.claude\\//`)",
 		"golden-master/sync-harness.bot:sync_harness:\"gm-applied\" in sub(\"git\", \"status\", \"--porcelain\").stdout],":                                    "looks for one marker path",
+		"campaign/main.bot:plan_landed:st = git(\"status\", \"--porcelain\", \"--\", plan_rel)":                                                               "scoped by pathspec to the contract FILE; the scaffold is a .claude/ tree and the engine's script a workspace-root file",
+		"campaign/main.bot:net_landed:st = git(\"status\", \"--porcelain\", \"--\", oracle_rel, verify_rel)":                                                  "scoped by pathspec to the oracle directory and its entry point; the scaffold is a .claude/ tree and the engine's script a workspace-root file",
+		"campaign/main.bot:docs_landed:st = git(\"status\", \"--porcelain\", \"--\", docs_rel)":                                                               "scoped by pathspec to the documentation directory; the scaffold is a .claude/ tree and the engine's script a workspace-root file",
 	}
 	header := regexp.MustCompile(`^(tool|script|agent|compute|human|subbot|judge|router) ([a-z_]+):`)
 	read := regexp.MustCompile(`--porcelain|ls-files.{0,12}--others`)
