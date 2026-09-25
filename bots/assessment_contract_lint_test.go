@@ -1117,6 +1117,7 @@ func TestAssessmentContractLintRefusesDocumentsRewrittenAfterRender(t *testing.T
 	// THE SCOPE IS THE CHAIN, not the two documents: the measured facts are
 	// read after the render and published by render_plan — rewritten here
 	// with the WIDE digest sealed, they must refuse all the same.
+	baseline := treeBaseline(t, dir) // the tree is untouched by a scratch write
 	facts := filepath.Join(dir, "scratch", "facts.json")
 	if err := os.MkdirAll(filepath.Dir(facts), 0o755); err != nil {
 		t.Fatal(err)
@@ -1128,7 +1129,7 @@ func TestAssessmentContractLintRefusesDocumentsRewrittenAfterRender(t *testing.T
 	if err := os.WriteFile(facts, []byte(`{"facts": {"size.band": "XXL"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out = lintContractWithDigestAt(t, dir, aGoodBrief, wide, filepath.Join(dir, "scratch"))
+	out = lintContractWithDigestAt(t, dir, aGoodBrief, wide, baseline, filepath.Join(dir, "scratch"))
 	if assessmentBool(t, out, "ok") {
 		t.Fatal("facts rewritten between the render and the lint were outside the sealed scope")
 	}
@@ -1166,4 +1167,36 @@ func TestAssessmentContractLintRefusesAShellShapedLotID(t *testing.T) {
 	if string(after) != string(before) {
 		t.Fatal("the injected payload WROTE into the contract")
 	}
+}
+
+// THE TREE THE RENDER MEASURED IS THE TREE THAT GETS VALIDATED: a source
+// edit made by the drafting step — which holds write tools between the
+// render and this lint — became the gate probes' accepted baseline, and a
+// gate green on the rewritten tree read as proven red. Pinned with the
+// render's own sealed baseline and a tracked-file edit in the window.
+func TestAssessmentContractLintRefusesASourceEditInTheDraftingWindow(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	dir := contractRepo(t, aGoodContract, goodOutcomes)
+	scratch := t.TempDir()
+	digest := renderedDigest(t, dir, scratch)
+	baseline := treeBaseline(t, dir)
+	// THE WINDOW: a tracked source file is edited after the render sealed
+	// the tree and before the lint validates the contract.
+	build := filepath.Join(dir, "ci", "build.sh")
+	body, err := os.ReadFile(build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(build, []byte(string(body)+"\necho touched in the window\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := lintContractWithDigestAt(t, dir, aGoodBrief, digest, baseline, scratch)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a source edit made in the drafting window became the probes' accepted baseline")
+	}
+	if assessmentString(t, out, "code") != "TREE_REWRITTEN" {
+		t.Errorf("code = %q, want TREE_REWRITTEN: %s", assessmentString(t, out, "code"),
+			assessmentString(t, out, "reason"))
+	}
+	_ = baseline
 }

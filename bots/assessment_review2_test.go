@@ -309,6 +309,7 @@ func lintContractWithDocuments(t *testing.T, dir, brief string, documents []stri
 		"{{input.brief}}":               briefJSON(t, brief),
 		"{{input.documents}}":           string(encoded),
 		"{{input.documents_digest}}":    strconv.Quote(renderedDigest(t, dir, scratch)),
+		"{{input.tree_baseline}}":       strconv.Quote(treeBaseline(t, dir)),
 		"{{vars.gate_probe_timeout_s}}": gateProbeWall,
 	})
 	if exit != 0 {
@@ -567,6 +568,7 @@ func TestAssessmentGateProbeCoversEveryArtefactReadAfterIt(t *testing.T) {
 				"{{input.brief}}":               briefJSON(t, aGoodBrief),
 				"{{input.documents}}":           `[]`,
 				"{{input.documents_digest}}":    strconv.Quote(renderedDigest(t, dir, scratch)),
+				"{{input.tree_baseline}}":       strconv.Quote(treeBaseline(t, dir)),
 				"{{vars.gate_probe_timeout_s}}": gateProbeWall,
 			})
 			if exit != 0 {
@@ -739,15 +741,31 @@ func renderedDigest(t *testing.T, dir, scratch string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// treeBaseline mirrors the render node's sealed tree digest: the binary
+// diff against HEAD around the drafting step's licensed writes.
+func treeBaseline(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
+		"--binary", "HEAD", "--", ".", ":(exclude).modernize/plan.yaml",
+		":(exclude).modernize/outcomes.json")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("tree baseline: %v", err)
+	}
+	sum := sha256.Sum256(out)
+	return hex.EncodeToString(sum[:])
+}
+
 // lintContractWithDigest pins the hand-off digest instead of the workspace's
 // truth: the tamper path, where the documents were rewritten AFTER the render
 // sealed what it wrote.
 func lintContractWithDigest(t *testing.T, dir, brief, digest string) map[string]any {
 	t.Helper()
-	return lintContractWithDigestAt(t, dir, brief, digest, t.TempDir())
+	return lintContractWithDigestAt(t, dir, brief, digest, treeBaseline(t, dir), t.TempDir())
 }
 
-func lintContractWithDigestAt(t *testing.T, dir, brief, digest, scratch string) map[string]any {
+func lintContractWithDigestAt(t *testing.T, dir, brief, digest, baseline, scratch string) map[string]any {
 	t.Helper()
 	encoded, err := json.Marshal(nil)
 	if err != nil {
@@ -763,6 +781,7 @@ func lintContractWithDigestAt(t *testing.T, dir, brief, digest, scratch string) 
 		"{{input.brief}}":               briefJSON(t, brief),
 		"{{input.documents}}":           string(encoded),
 		"{{input.documents_digest}}":    strconv.Quote(digest),
+		"{{input.tree_baseline}}":       strconv.Quote(baseline),
 		"{{vars.gate_probe_timeout_s}}": gateProbeWall,
 	})
 	if exit != 0 {

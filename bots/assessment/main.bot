@@ -505,6 +505,10 @@ schema render_state:
   ## The digest of the documents AS WRITTEN, sealed here so the lint can tell
   ## a rewrite from a rendering.
   documents_digest: string
+  ## The digest of the tracked tree AS MEASURED, sealed for the same reason:
+  ## a source edit made by the drafting step must refuse, not become the
+  ## gate probes' accepted baseline.
+  tree_baseline: string
 
 ## What the drafting agent claims. Believed as a POINTER to files, never as a
 ## verdict over them: the contract lint reads the files.
@@ -557,6 +561,9 @@ schema contract_input:
   ## this digest is how a rewrite in that window is refused by name instead
   ## of fingerprinted as found.
   documents_digest: string
+  ## Sealed by the render at the same instant: the digest of the tracked
+  ## tree around the drafting step's licensed writes.
+  tree_baseline: string
 
 ## What the commit must find IN the commit, named by the nodes that wrote it.
 ## A list repeated here would drift from the writers, and the check would then
@@ -786,6 +793,16 @@ tool brief_read:
                % (brief_path, type(brief).__name__))
 
     missing = []
+    ## A MAPPING WHERE A LIST IS DECLARED is not an empty section: iterated
+    ## by its keys downstream, every entry inside it silently disappears —
+    ## from the summary the drafting agent reads AND from the checks that
+    ## enforce the brief. Named here, at the door.
+    for field in ("targets", "support_policy", "decisions", "permitted_changes", "forbidden_changes"):
+        value = brief.get(field)
+        if value is not None and not isinstance(value, list):
+            missing.append("%s (a LIST of entries — a %s is iterated by its keys downstream, and "
+                           "every entry inside it silently disappears)"
+                           % (field, type(value).__name__))
     if brief.get("version") != 1:
         missing.append("version: 1")
     if not isinstance(brief.get("objective"), str) or not brief["objective"].strip():
@@ -2778,6 +2795,7 @@ tool render:
     import json
     import os
     import re
+    import subprocess
     import sys
 
     ws = {{vars.workspace_dir}}
@@ -3026,6 +3044,21 @@ tool render:
         except OSError:
             seen.update(b'MISSING')
     out["documents_digest"] = seen.hexdigest()
+    ## THE TREE AT RENDER TIME, sealed the same way. The probes measure the
+    ## tracked tree around themselves, and a SOURCE edit made by the drafting
+    ## step -- which holds write tools between here and the lint -- became
+    ## their accepted baseline: a gate already green on the rewritten tree
+    ## read as proven red. Only the drafting step's LICENSED writes (the
+    ## contract and the outcomes file) are excluded from the diff.
+    tree = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
+                           "--binary", "HEAD", "--", ".", ":(exclude).modernize/plan.yaml",
+                           ":(exclude).modernize/outcomes.json"],
+                          capture_output=True, timeout=600,
+                          env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    if tree.returncode != 0:
+        refuse("RENDER_REFUSED", "cannot read the tracked state of %s: %s" % (
+            ws, tree.stderr.decode('utf-8', 'replace').strip()[-300:]))
+    out["tree_baseline"] = hashlib.sha256(tree.stdout).hexdigest()
     out["reason"] = "state document rendered at %s; %d fact identifier(s) substituted" % (
         state_path, len(used))
     print(json.dumps(out))
@@ -3269,6 +3302,20 @@ tool contract_lint:
     def reject(where, why):
         out["refusals"].append({"where": where, "why": why})
 
+    tree_baseline = {{input.tree_baseline}}
+    tracked_now = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
+                                  "--binary", "HEAD", "--", ".", ":(exclude).modernize/plan.yaml",
+                                  ":(exclude).modernize/outcomes.json"],
+                                 capture_output=True, timeout=600,
+                                 env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    if tracked_now.returncode != 0:
+        refuse("CONTRACT_REFUSED", "cannot read the tracked state of %s: %s" % (
+            ws, tracked_now.stderr.decode('utf-8', 'replace').strip()[-300:]))
+    if tree_baseline != hashlib.sha256(tracked_now.stdout).hexdigest():
+        refuse("TREE_REWRITTEN", "the source tree changed between the render and this lint: the drafting "
+               "step is licensed to write the contract and the outcomes file, nothing else — a source "
+               "edit in that window became the gate probes' accepted baseline, and a gate green on a "
+               "rewritten tree is green whatever the lot does. Restore the tree the render measured.")
     ## THE RENDER'S HAND, VERIFIED. Between the render and this lint, the
     ## drafting agent holds write tools: the held judgement and the state
     ## document are what this validation reasons over, and a hand on them in
@@ -3287,11 +3334,13 @@ tool contract_lint:
                 rendered_now.update(handle.read())
         except OSError:
             rendered_now.update(b'MISSING')
+
     if documents_digest != rendered_now.hexdigest():
-        refuse("ARTEFACTS_REWRITTEN", "the documents changed between the render and this lint: the "
-               "held judgement and the state document are what this validation reasons over, and a "
-               "hand on them in that window publishes an assessment nobody measured. Re-render the "
-               "documents and let this lint read what the render wrote.")
+        refuse("ARTEFACTS_REWRITTEN", "the documents changed between the render and this lint (sealed "
+               "%s, found %s): the held judgement and the state document are what this validation "
+               "reasons over, and a hand on them in that window publishes an assessment nobody "
+               "measured. Re-render the documents and let this lint read what the render wrote."
+               % (documents_digest, rendered_now.hexdigest()))
     if not os.path.isfile(plan_path):
         refuse("CONTRACT_REFUSED",
                "no contract at %s. The drafting step reported writing one; a report is a pointer "
@@ -4345,7 +4394,8 @@ workflow assessment:
   plan_draft -> contract_lint with {
     brief:            "{{outputs.brief_read.brief}}",
     documents:        "{{outputs.render.documents}}",
-    documents_digest: "{{outputs.render.documents_digest}}"
+    documents_digest: "{{outputs.render.documents_digest}}",
+    tree_baseline:    "{{outputs.render.tree_baseline}}"
   }
 
   contract_lint -> contract_refused when not ok
