@@ -167,55 +167,6 @@ func disallowOrchestrationToolsFromEnv() bool {
 	}
 }
 
-// anthropicCredOptsForCLI returns claudesdk.WithEnv options that point
-// the spawned Claude Code subprocess at the right credentials.
-//
-// providerHint, when non-empty, overrides the default precedence with
-// a per-node routing decision (from the DSL `provider:` field):
-//   - "anthropic" — force Anthropic-direct (API key or OAuth dir),
-//     skip z.ai even if ZAI_API_KEY is set on the process. Use when a
-//     specific node needs Anthropic's full context window (1M on
-//     Claude Opus 4.7) instead of the smaller z.ai window.
-//   - "zai" — force z.ai routing (Anthropic-shaped facade backed by
-//     GLM-4.6) even if Anthropic credentials are present. Use to pin
-//     a node to GLM regardless of process-env precedence.
-//   - "moonshot" — force Moonshot routing (Anthropic-shaped facade
-//     backed by the Kimi family), same contract as "zai".
-//   - "" / "auto" — current process-env-driven precedence (below).
-//
-// The hint is matched folded (normalizeProviderHint): it is operator text, and
-// which account pays must not depend on its capitalisation.
-//
-// A facade hint with no key reachable REFUSES rather than degrades: every
-// Anthropic-flavoured channel is actively suppressed so the node surfaces
-// "no <provider> credential" instead of quietly spending a different
-// account (see suppressAnthropicWireEnv).
-//
-// Default precedence (first match wins, returned options are mutually
-// exclusive — never set both ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR). The
-// order is secrets.AnthropicWireSlotOrder, shared with the usage meter and
-// the spend ledger:
-//
-//  1. Per-run BYOK z.ai key: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
-//     (z.ai's Coding-Plan token routes through Anthropic-shaped wire to
-//     z.ai's gateway, which aliases the model to GLM-4.5/4.6 internally).
-//  2. Per-run BYOK Moonshot key: same shape, pointed at Moonshot's
-//     Anthropic-compatible endpoint for the Kimi family.
-//  3. Per-run BYOK Anthropic key: ANTHROPIC_API_KEY.
-//  4. Per-run OAuth-forfait credentials.json (desktop): CLAUDE_CONFIG_DIR.
-//     NB: on the cloud the same kind is scheduled for removal under
-//     Anthropic Consumer Terms — see .plans/zai-glm-oauth.md.
-//  5. Process-env fallback ZAI_API_KEY: same shape as case 1, lets
-//     desktop users put `ZAI_API_KEY=...` in ~/.iterion/env without
-//     also having to set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN by
-//     hand. ANTHROPIC_API_KEY in env (if present) takes precedence
-//     via the CLI's own resolution; we don't set anything in that
-//     case so the inherited env wins. MOONSHOT_API_KEY has no such
-//     step — facadeEnvKey says why.
-func anthropicCredOptsForCLI(ctx context.Context, providerHint string, sandboxed bool) []claudesdk.Option {
-	return credEnvToOpts(anthropicCredEnvForCLI(ctx, providerHint, sandboxed))
-}
-
 // taskSandboxed reports whether the task's CLI subprocess executes inside
 // a REAL sandbox container. The noop driver is a host passthrough — its
 // Run handle is non-nil but every command still runs on the host with
@@ -854,7 +805,143 @@ func UsageMeterBackendForProvider(prov secrets.Provider) string {
 	return ""
 }
 
+// anthropicCredEnvForCLI resolves the credential environment for a CLI.
+// Task-aware spawns use anthropicCredEnvForTask to compose provisioning too.
+//
+// providerHint, when non-empty, overrides the default precedence with
+// a per-node routing decision (from the DSL `provider:` field):
+//   - "anthropic" — force Anthropic-direct (API key or OAuth dir),
+//     skip z.ai even if ZAI_API_KEY is set on the process. Use when a
+//     specific node needs Anthropic's full context window (1M on
+//     Claude Opus 4.7) instead of the smaller z.ai window.
+//   - "zai" — force z.ai routing (Anthropic-shaped facade backed by
+//     GLM-4.6) even if Anthropic credentials are present. Use to pin
+//     a node to GLM regardless of process-env precedence.
+//   - "moonshot" — force Moonshot routing (Anthropic-shaped facade
+//     backed by the Kimi family), same contract as "zai".
+//   - "" / "auto" — current process-env-driven precedence (below).
+//
+// The hint is matched folded (normalizeProviderHint): it is operator text, and
+// which account pays must not depend on its capitalisation.
+//
+// A facade hint with no key reachable REFUSES rather than degrades: every
+// Anthropic-flavoured channel is actively suppressed so the node surfaces
+// "no <provider> credential" instead of quietly spending a different
+// account (see suppressAnthropicWireEnv).
+//
+// Default precedence (first match wins, returned options are mutually
+// exclusive — never set both ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR). The
+// order is secrets.AnthropicWireSlotOrder, shared with the usage meter and
+// the spend ledger:
+//
+//  1. Per-run BYOK z.ai key: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
+//     (z.ai's Coding-Plan token routes through Anthropic-shaped wire to
+//     z.ai's gateway, which aliases the model to GLM-4.5/4.6 internally).
+//  2. Per-run BYOK Moonshot key: same shape, pointed at Moonshot's
+//     Anthropic-compatible endpoint for the Kimi family.
+//  3. Per-run BYOK Anthropic key: ANTHROPIC_API_KEY.
+//  4. Per-run OAuth-forfait credentials.json (desktop): CLAUDE_CONFIG_DIR.
+//     NB: on the cloud the same kind is scheduled for removal under
+//     Anthropic Consumer Terms — see .plans/zai-glm-oauth.md.
+//  5. Process-env fallback ZAI_API_KEY: same shape as case 1, lets
+//     desktop users put `ZAI_API_KEY=...` in ~/.iterion/env without
+//     also having to set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN by
+//     hand. ANTHROPIC_API_KEY in env (if present) takes precedence
+//     via the CLI's own resolution; we don't set anything in that
+//     case so the inherited env wins. MOONSHOT_API_KEY has no such
+//     step — facadeEnvKey says why.
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
+	if env := selectedAnthropicCredEnvForCLI(ctx, providerHint, sandboxed); env != nil {
+		return env
+	}
+	if sandboxed {
+		return ambientAnthropicEnvForSandbox()
+	}
+	return nil
+}
+
+// anthropicCredEnvForTask composes both CLI passes with the same precedence:
+// ambient forwarding < task additions (including empty values) < the resolved
+// credential route. The last layer includes suppression entries: an extra
+// variable must not redirect a selected facade's bearer or revive its forfait.
+func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
+	selected := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
+	env := map[string]string{}
+	if selected == nil && taskSandboxed(task) {
+		for key, value := range ambientAnthropicEnvForSandbox() {
+			env[key] = value
+		}
+	}
+	for _, kv := range task.ExtraEnv {
+		if key, value, ok := strings.Cut(kv, "="); ok && key != "" {
+			env[key] = value
+		}
+	}
+	// These labels belong to the resolver, never to process provisioning.
+	// Otherwise an extra env entry can forge a usage-meter slot or turn a
+	// funded route into the "no credential" suppression sentinel.
+	env[FacadeSlotEnvKey] = ""
+	env[ForfaitSuppressedEnvKey] = ""
+	if selected[FacadeSlotEnvKey] == "" && (selected["ANTHROPIC_API_KEY"] != "" || selected["CLAUDE_CONFIG_DIR"] != "") {
+		// A bound direct credential owns its route as a whole. Applying just
+		// its key after ExtraEnv could restore a context key at an unrelated
+		// endpoint, or let a cloud switch spend a different account instead.
+		for key, value := range clearedAnthropicChannels() {
+			env[key] = value
+		}
+		env["ANTHROPIC_BASE_URL"] = ""
+		env["ANTHROPIC_AUTH_TOKEN"] = ""
+	}
+	if normalizeProviderHint(task.ProviderHint) == "anthropic" {
+		// The explicit direct hint also rules out cloud-provider modes when
+		// auth itself is inherited rather than bound from the run context.
+		for _, key := range cloudProviderSwitches {
+			env[key] = ""
+		}
+	}
+	for key, value := range selected {
+		env[key] = value
+	}
+	return env
+}
+
+// anthropicFingerprintEnvForTask accounts for a host-inherited endpoint without
+// changing the spawn environment. A sandbox already has explicit forwarding.
+// Preserve an explicit empty override and the historical cloud-mode labels:
+// a cloud switch makes an inherited Anthropic endpoint irrelevant to routing.
+func anthropicFingerprintEnvForTask(task Task, env map[string]string) map[string]string {
+	if taskSandboxed(task) {
+		return env
+	}
+	if _, explicit := env["ANTHROPIC_BASE_URL"]; explicit {
+		return env
+	}
+	base := os.Getenv("ANTHROPIC_BASE_URL")
+	if base == "" {
+		return env
+	}
+	for _, key := range cloudProviderSwitches {
+		value, explicit := env[key]
+		if !explicit {
+			value = os.Getenv(key)
+		}
+		if value != "" {
+			return env
+		}
+	}
+	out := make(map[string]string, len(env)+1)
+	for key, value := range env {
+		out[key] = value
+	}
+	out["ANTHROPIC_BASE_URL"] = base
+	return out
+}
+
+// selectedAnthropicCredEnvForCLI returns an authoritative credential choice,
+// or nil when the CLI should inherit ambient credentials. Keep this distinction
+// until task additions are composed: forwarding ambient env into a sandbox
+// must not turn inherited values into overrides of the task's own additions.
+func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
 	providerHint = normalizeProviderHint(providerHint)
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
@@ -935,14 +1022,6 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 			return zaiEnv(zai)
 		}
 	}
-	// Host path: nil = let the spawned CLI inherit whatever ambient
-	// Anthropic env this process carries (os.Environ passthrough). A
-	// sandboxed spawn has no such inheritance — forward the ambient
-	// credentials explicitly so a runner-pod-level forfait
-	// (CLAUDE_CODE_OAUTH_TOKEN) or API key reaches the in-container CLI
-	// exactly as it would a host spawn.
-	if sandboxed {
-		return ambientAnthropicEnvForSandbox()
-	}
+	// The caller composes ambient inheritance/forwarding with task additions.
 	return nil
 }

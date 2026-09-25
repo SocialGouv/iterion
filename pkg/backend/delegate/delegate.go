@@ -525,8 +525,10 @@ type Task struct {
 	// profile bin dirs prepended to PATH on runs without a sandbox).
 	// Entries are appended after the inherited environment, so on a
 	// duplicate key the ExtraEnv value wins (os/exec keeps the last
-	// occurrence). Sandboxed tasks never carry entries here: the
-	// container's env is settled at container creation.
+	// occurrence). Managed credential routes can override their auth and
+	// endpoint fields together, so these additions cannot redirect a bound
+	// credential to another provider. Sandboxed tasks never carry entries here:
+	// the container's env is settled at container creation.
 	ExtraEnv []string
 
 	// BaseDir is the allowed base directory for WorkDir validation.
