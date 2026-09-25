@@ -43,8 +43,11 @@ or forced-tool controls before network I/O. Legacy explicit IDs keep their
 previous behavior. GPT-6 uses Responses for both API-key and OAuth clients,
 including requests inheriting a client model; other compatible providers keep
 their existing transport. Sol/Luna also accept effort `none`; Astra does not.
-All three accept low, medium, high, xhigh and max. Explicit authored efforts
-and token limits remain unchanged. Opus 5.5's implicit effort is medium.
+All three accept low, medium, high, xhigh and max at the provider API. These
+capabilities do not extend the DSL effort vocabulary: `none` is not yet
+authorable there, and CLI adapters retain their existing effort mapping.
+Explicit authored efforts and token limits remain unchanged. Opus 5.5's
+implicit effort is medium.
 
 Offline context/output limits are 1M/128k for Opus and 1.05M/128k for GPT-6.
 The static cost fallback has nonzero current short-context rates; it remains
@@ -55,9 +58,11 @@ and [Opus migration](https://platform.claude.com/docs/en/models/opus-5-5/migrati
 ## Roll out code before configuration
 
 1. Deploy the engine containing the reviewed SDK update and new CLI versions
-   before assigning new model IDs to cloud bots. Verify the runner image digest,
-   not just the server's release: [deployment runbook](cloud-deployment.md).
-2. Snapshot platform bot-vars, team bundle overrides and the affected active,
+   before assigning new model IDs to cloud bots. On digest-pinned installs,
+   update both `image.digest` and `runner.image` in GitOps and verify the
+   deployed images: a restart or tag change alone keeps the old binary.
+   See the [deployment runbook](cloud-deployment.md).
+2. Snapshot platform bot-vars, platform and team bundle overrides, and the affected active,
    queued and resumable runs. Classify operator overrides explicitly; do not
    replace every old-looking value without its owning workflow's context.
 3. **Bot-vars are live**, resolved again when a node is constructed. An immutable
@@ -75,6 +80,23 @@ and [Opus migration](https://platform.claude.com/docs/en/models/opus-5-5/migrati
    on the tracking issue. Keep a before-snapshot for rollback under the same
    active-run precautions. Do not declare the migration deployed while global
    defaults are deferred.
+
+Source precedence is always **team override → platform override → baked
+catalog**, independent of version. Deploying an image does not update or
+remove a stored bundle. Reconcile each affected override against its own
+snapshot, retaining its customizations; do not delete forks to force the
+baked version. The administrative CLI lists/pulls/pushes platform bots
+(`iterion remote admin bots`); for a guarded replacement use
+`PUT /api/admin/bots/{slug}` with the complete `files` map and the last-read
+numeric `version`. Team replacements use
+`PUT /api/teams/{id}/bot-sources/{slug}` with the same payload. A concurrent
+write returns 409; re-read and review the diff instead of dropping the token.
+The CLI whole-bundle push currently omits that concurrency token.
+
+Changed catalog bundles bump their manifest patch versions so built-in
+marketplace entries refresh and newer baked sources can be signalled beneath
+overrides. This semantic version is distinct from the storage revision above.
+It does not change source precedence or upgrade a team fork automatically.
 
 ## Evidence and repeatable checks
 
