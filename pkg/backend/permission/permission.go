@@ -653,6 +653,15 @@ func IsInfrastructureTool(name string) bool {
 	return strings.HasPrefix(n, "mcp_iterion") || strings.HasPrefix(n, "_mcp")
 }
 
+// IsReservedMCPServerName reports whether a user server could place tools in
+// the infrastructure namespace. Use the gate's own FQN normalization so
+// catalog admission and CLI forwarding cannot disagree with the exemption.
+// The probe also catches empty/separator-only names: those would let a tool
+// named iterion_* collapse into the reserved namespace on its own.
+func IsReservedMCPServerName(name string) bool {
+	return IsInfrastructureTool("mcp__" + strings.TrimSpace(name) + "__iterion_probe")
+}
+
 // normalizeMCPName lower-cases a tool name and collapses MCP separator
 // variants (`__`, `.`) to single underscores so the iterion namespace can
 // be recognised in any backend's spelling.

@@ -60,7 +60,7 @@
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` | 12 · 95 |
 | `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 60 · 260 |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — | 1 · 13 |
-| `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — | 3 · 41 |
+| `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — | 3 · 42 |
 | `pkg/backend/permissionhook` | adapts third-party CLI PreToolUse payloads to iterion's shared permission.Policy evaluator. | — | 1 · 5 |
 | `pkg/backend/recipe` | defines the RecipeSpec model and loading/application logic. | — | 1 · 10 |
 | `pkg/backend/rewrite` | iterion's command-output-rewriter extension point: the generalization of what used to be the hardcoded rtk integration. | — | 1 · 32 |
