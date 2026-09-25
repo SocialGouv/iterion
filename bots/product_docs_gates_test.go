@@ -4120,3 +4120,44 @@ func TestProductDocsCatalogIngestRefusesAnAbsoluteOracleDir(t *testing.T) {
 	})
 	runExpectingFailure(t, cmd, "oracle_dir must be RELATIVE")
 }
+
+func TestProductDocsCoverageGateIgnoresCitationsInsideLinkDestinations(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The citation moves into a link DESTINATION: the label is what a reader
+	// reads, the URL in parens is not.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the",
+		"[Open](https://example.test/[[ref:items.detail]]/[[ref:039]]) shows one item in full: every field the")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a citation hidden in a link destination satisfied GAP:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateHidesEveryLineOfAMultilineComment(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The feature and its entry sit between separate comment markers: the
+	// opening line was hidden, the body read as visible text, and the pair
+	// documented a feature nothing showed.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<!-- hidden from the reader\n"+
+			"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes -->\n"+
+			"Ordinary prose follows the hidden block, enough of it to stand as\n"+
+			"writing for any reader of the page who scrolls this far down it.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a feature documented only inside a multi-line comment counted as documented:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}

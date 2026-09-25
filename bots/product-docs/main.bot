@@ -2714,13 +2714,15 @@ COMMENT_RE = re.compile(r'<!--.*?(?:-->|' + chr(36) + ')', re.S)
 LINK_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*\S+')
 def visible_text(content):
     ## THE TEXT A READER SEES. Comments and link reference definitions render
-    ## as nothing, and an HTML tag renders as its CONTENT -- never its
-    ## attributes. Citations read from the raw line hid inside a tag
-    ## attribute no renderer shows, and invisible text satisfied GAP in both
-    ## directions at once: counted as a citation, stripped from the prose.
+    ## as nothing, an HTML tag renders as its CONTENT -- never its attributes
+    ## -- and a link DESTINATION shows only when the page prints it bare:
+    ## the label is what a reader reads, the URL in parens is not. Citations
+    ## read from text a renderer hides -- a tag attribute, a link
+    ## destination -- satisfied GAP in both directions at once: counted as a
+    ## citation, stripped from the prose.
     if LINK_DEF_RE.match(content):
         return ''
-    return TAG_RE.sub(' ', COMMENT_RE.sub(' ', content))
+    return LINK_DEST_RE.sub(']', TAG_RE.sub(' ', COMMENT_RE.sub(' ', content)))
 def fold(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if not unicodedata.combining(c)).lower()
 def unquote(text):
@@ -2732,7 +2734,7 @@ def unquote(text):
 def page_blocks(rows):
     ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
     ## page, in order. content is the line without its quote markers.
-    blocks, cur, mode, in_fence, fence_opener = [], None, '', False, None
+    blocks, cur, mode, in_fence, fence_opener, in_comment = [], None, '', False, None, False
     ## FRONT MATTER is page metadata no renderer shows: a first line of ---
     ## up to the next --- (or ...), every line between reading as YAML. Read
     ## as markdown, its closing line would underline the keys into a chapter
@@ -2765,6 +2767,20 @@ def page_blocks(rows):
             cur, mode = None, ''
             continue
         if in_fence:
+            continue
+        if in_comment:
+            ## A line INSIDE a multi-line comment renders as nothing: hidden
+            ## here, it can neither carry a citation nor pad the prose. Read
+            ## per line, only the opening line was hidden -- the body read as
+            ## visible text, and a pair split across the markers documented a
+            ## feature nothing showed. Decided AFTER the fence: a marker
+            ## inside a fence is fence content, and a fence opened inside a
+            ## comment stays comment text.
+            if '-->' in text:
+                in_comment = False
+            continue
+        if '<!--' in text and '-->' not in text.partition('<!--')[2]:
+            in_comment = True
             continue
         depth, content = unquote(text)
         if not content.strip() or TEMPLATE_LINE_RE.match(content):
@@ -2825,7 +2841,6 @@ def block_prose(b):
     for _no, _text, content in b['lines']:
         s = visible_text(content)
         s = CITE_RE.sub(' ', s) if CITE_RE is not None else s
-        s = LINK_DEST_RE.sub(']', s)
         if b['kind'] == 'row':
             s = s.replace('|', ' ')
         out.append(s)
