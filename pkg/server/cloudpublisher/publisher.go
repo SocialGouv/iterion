@@ -857,6 +857,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// no host detection report applies. Empty when nothing resolved: the
 	// runner's env fallback is unknowable here, and injecting "no family"
 	// facts about credentials we cannot see would be asserting a falsehood.
+	// bundle.APIKeys only, deliberately: a pinned key is spendable by the
+	// routes that name it, but these vars SHAPE THE PROGRAM (review_mode,
+	// llm_families), and widening a run's family set because one node pins a
+	// provider would switch a mono topology to dual behind the author's
+	// back. A node that wants a family pins it; funding it does not ask for
+	// a different review.
 	providers := make([]string, 0, len(bundle.APIKeys))
 	for prov := range bundle.APIKeys {
 		providers = append(providers, string(prov))
@@ -907,7 +913,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// to remove. Deduplicated: a tier is a fact about the run, not a
 	// per-slot count.
 	tiers := map[string]bool{}
-	for prov := range bundle.APIKeys {
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		if spend.allows(strings.ToLower(string(prov))) {
 			tiers[credentialTierForSlot(bundle, res.grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
 		}
@@ -1135,6 +1141,28 @@ func fillAPIKeySlot(bundle *secrets.RunBundle, taken map[string]bool, prov secre
 	return false
 }
 
+// fundedAPIKeySlots returns every provider slot the bundle carries a key for,
+// in EITHER channel — the default one and the pinned one — in
+// allKnownProviders order so two readers never disagree about which came
+// first.
+//
+// This is the question every "what funded this run?" reader asks: the tier
+// stamp, the granted-credential audit line, the required-credential gate. A
+// pinned key funds its provider as surely as a default one — it just serves
+// only the routes that name it — so a reader that walks APIKeys alone reports
+// a run as unfunded while its credential is sealed in the same bundle. The
+// readers that must NOT see a pinned key ask a different question ("what may
+// the DEFAULT precedence spend?"), and they read bundle.APIKeys directly.
+func fundedAPIKeySlots(bundle secrets.RunBundle) []secrets.Provider {
+	out := make([]secrets.Provider, 0, len(bundle.APIKeys)+len(bundle.PinnedAPIKeys))
+	for _, prov := range allKnownProviders {
+		if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+			out = append(out, prov)
+		}
+	}
+	return out
+}
+
 // unfundedPinnedProviders returns the run's pinned providers, sorted, when
 // NONE of them is funded by the bundle — an API key of that provider, or an
 // OAuth credential whose kind authenticates against it. Nil when the run has
@@ -1145,7 +1173,11 @@ func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string
 		return nil
 	}
 	funded := make(map[string]bool, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
-	for prov := range bundle.APIKeys {
+	// Both channels: a pinned key is exactly the case this gate must not
+	// refuse — every route pins one provider, a shared tier funded it for
+	// that pin, and reading APIKeys alone would fail the launch claiming no
+	// tier holds a credential for it while the key is sealed in this bundle.
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		funded[strings.ToLower(string(prov))] = true
 	}
 	for kind := range bundle.OAuthCredentials {
@@ -2031,14 +2063,18 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 	parts := make([]string, 0, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
 	// API keys — the provenance maps tell apart the shared tiers
 	// (deployment-wide fallback keys, the org's lent key) from tenant BYOK.
-	for _, prov := range allKnownProviders {
-		if _, ok := bundle.APIKeys[prov]; !ok {
-			continue
-		}
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		tier := credentialTierForSlot(bundle, grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)
 		fp := apiKeyFPs[prov]
 		if fp == "" {
 			fp = "<unstamped>"
+		}
+		// A pinned key is named as such: it paid for part of the run, and an
+		// operator reading this line to answer "which credential funded that
+		// run?" must not have to infer why a fingerprint is there.
+		if bundle.APIKeys[prov] == "" && bundle.PinnedAPIKeys[prov] != "" {
+			parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s pinned-routes-only)", tier, prov, fp))
+			continue
 		}
 		parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s)", tier, prov, fp))
 	}

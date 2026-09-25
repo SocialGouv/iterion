@@ -195,3 +195,59 @@ func TestUsageCapCredKeys_APinnedSlotIsNotTheBundleDefault(t *testing.T) {
 		}
 	}
 }
+
+// Rf1768e: a pinned key belongs to a shared tier, so ITS readings belong to
+// that tier's ledger — even when the RUN is tenant-scoped because the tenant
+// also holds a credential on the same wire (which is always the case: a
+// pinned key exists only beside another one). Metering it on the tenant's
+// private ledger would hide a window refusal from every other borrower of the
+// same platform account.
+//
+// Both directions on one bench: the tenant's own credential keeps the tenant
+// scope, the pinned one gets the platform's.
+func TestUsageCapCredKeys_APinnedSlotMetersOnItsOwnersLedger(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7", OrgID: "org-1"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:         map[secrets.Provider]string{secrets.ProviderAnthropic: "tenant-anthropic"},
+		PinnedAPIKeys:   map[secrets.Provider]string{secrets.ProviderMoonshot: "platform-moonshot"},
+		PlatformSourced: map[string]bool{string(secrets.ProviderMoonshot): true},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderAnthropic): "fp-anthropic",
+			string(secrets.ProviderMoonshot):  "fp-moonshot",
+		},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	tenant := usagecap.TenantScope("team-7")
+
+	// The run is tenant-scoped: its own key decides that.
+	if got, want := keys.forSource("anthropic-direct"), usagecap.Key(delegate.BackendClaudeCode, tenant, "fp-anthropic"); got != want {
+		t.Errorf("forSource(anthropic-direct) = %q, want %q", got, want)
+	}
+	// …and the shared pinned key is metered on the platform's ledger, not on
+	// that private one.
+	moonshot := facadeSource(secrets.ProviderMoonshot, secrets.MoonshotDefaultBaseURL)
+	if got, want := keys.forSource(moonshot), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "fp-moonshot"); got != want {
+		t.Errorf("forSource(%q) = %q, want %q — a shared key on a tenant's private ledger hides its walls from every other borrower", moonshot, got, want)
+	}
+}
+
+// The org's own pinned key meters on the ORG's ledger: its subscription
+// serves every team of its audience, and merging it with the platform's would
+// make one org's exhausted window park every other tenant's runs.
+func TestUsageCapCredKeys_AnOrgPinnedSlotMetersOnTheOrgLedger(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7", OrgID: "org-1"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:       map[secrets.Provider]string{secrets.ProviderAnthropic: "tenant-anthropic"},
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "org-moonshot"},
+		OrgSourced:    map[string]bool{string(secrets.ProviderMoonshot): true},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderAnthropic): "fp-anthropic",
+			string(secrets.ProviderMoonshot):  "fp-moonshot",
+		},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	moonshot := facadeSource(secrets.ProviderMoonshot, secrets.MoonshotDefaultBaseURL)
+	if got, want := keys.forSource(moonshot), usagecap.Key(delegate.BackendClaudeCode, usagecap.OrgScope("org-1"), "fp-moonshot"); got != want {
+		t.Errorf("forSource(%q) = %q, want %q", moonshot, got, want)
+	}
+}

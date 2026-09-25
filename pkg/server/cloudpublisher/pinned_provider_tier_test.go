@@ -1,12 +1,16 @@
 package cloudpublisher
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -317,5 +321,103 @@ func TestSubmitResume_FundsFromTheLaunchStampNotTheResumedSource(t *testing.T) {
 				t.Errorf("resumed APIKeys[anthropic] = %q, want the platform key", got)
 			}
 		})
+	}
+}
+
+// Re427bb: the required-credential gate must not refuse a launch the pinned
+// fill just funded. The feature's headline case is exactly the shape the gate
+// reads as unfunded: every LLM route pins moonshot, the platform holds
+// anthropic AND moonshot, so anthropic lands in APIKeys and moonshot in
+// PinnedAPIKeys — and a gate walking APIKeys alone fails the launch claiming
+// no tier holds a credential for it, with that key sealed in the same bundle.
+//
+// Both directions on one bench: funded by a pinned key it passes, funded by
+// nobody it still refuses by name.
+func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		platform    []secrets.Provider
+		wantRefused bool
+	}{
+		{"pinned slot funded on a taken wire", []secrets.Provider{secrets.ProviderAnthropic, secrets.ProviderMoonshot}, false},
+		{"nothing funds the pin", []secrets.Provider{secrets.ProviderAnthropic}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+			keys := secrets.NewMemoryApiKeyStore()
+			for _, prov := range tc.platform {
+				seedKey(t, keys, sealer, secrets.PlatformTenantID, prov, "platform-"+string(prov))
+			}
+			p := &Publisher{
+				apiKeys:              keys,
+				runSecrets:           secrets.NewMemoryRunSecretsStore(),
+				sealer:               sealer,
+				logger:               testLogger(),
+				requireLLMCredential: true,
+			}
+			wf := wfPinning("moonshot")
+			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+			ctx := store.WithTenant(context.Background(), "team1")
+			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "",
+				wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+			if tc.wantRefused {
+				if !errors.Is(err, runview.ErrNoLLMCredential) {
+					t.Fatalf("err = %v, want ErrNoLLMCredential — an unfunded pin must still be refused", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v — the launch was refused although the pinned fill funded its only route", err)
+			}
+		})
+	}
+}
+
+// Rec6ef9: a run paid for by a pinned key must SAY so — the tier stamp
+// explains the fingerprint the run already records, and the granted-credential
+// line is what an operator reads to answer "which credential funded that
+// run?". Both walked APIKeys alone.
+func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	keys := secrets.NewMemoryApiKeyStore()
+	// With fingerprints: the stamp is what the per-key concurrency meter and
+	// the audit line read, and a key with none is invisible to both.
+	seedKeyFP(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "platform-anthropic", "fp-anthropic")
+	seedKeyFP(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderMoonshot, "platform-moonshot", "fp-moonshot")
+	var buf bytes.Buffer
+	p := &Publisher{
+		apiKeys:    keys,
+		runSecrets: secrets.NewMemoryRunSecretsStore(),
+		sealer:     sealer,
+		logger:     iterlog.New(iterlog.LevelInfo, &buf),
+	}
+	wf := wfPinning("moonshot")
+	pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+	ctx := store.WithTenant(context.Background(), "team1")
+	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "",
+		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+
+	// The stamp. The pinned key is the ONLY credential any route of this run
+	// can spend, so it is the only fingerprint stamped — the anthropic family
+	// winner is correctly narrowed out (a key no route targets must not hold
+	// a slot of the per-key concurrency ceiling). The gap this covers is the
+	// other half: that fingerprint used to arrive with NO credential_tiers
+	// entry to explain where it came from.
+	if len(res.tiers) == 0 {
+		t.Error("res.tiers is empty — the run records a fingerprint no credential_tiers entry explains")
+	}
+	if len(res.fingerprints) != 1 || res.fingerprints[0] != "fp-moonshot" {
+		t.Errorf("res.fingerprints = %v, want exactly the pinned key's [fp-moonshot]", res.fingerprints)
+	}
+	// The audit line: it must name the pinned slot, and say it is one.
+	line := buf.String()
+	if !strings.Contains(line, "api_key:moonshot") {
+		t.Errorf("the granted-credential line never names the pinned credential: %q", line)
+	}
+	if !strings.Contains(line, "pinned-routes-only") {
+		t.Errorf("the granted-credential line does not say the moonshot key serves pinned routes only: %q", line)
 	}
 }
