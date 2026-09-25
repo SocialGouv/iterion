@@ -1302,7 +1302,15 @@ try:
 except ValueError:
     depth = 1
 secret_globs = [g.strip() for g in (os.environ.get('SECRET_GLOBS') or '').split(',') if g.strip()]
-oracle_dir = (os.environ.get('ORACLE_DIR') or '').strip().strip('/')
+raw_oracle_dir = (os.environ.get('ORACLE_DIR') or '').strip()
+oracle_dir = raw_oracle_dir.strip('/')
+## AN ABSOLUTE PATH OR A PARENT ESCAPE IS A CONFIGURATION ERROR, NOT A
+## MISSING NET. Stripped-then-tested, /workspace/.golden-master read as
+## workspace/.golden-master, was looked for under <ws>/workspace/ and the
+## exhaustiveness gate went inert IN SILENCE -- the one failure a gate must
+## never have. Refuse the launch and name the fix instead.
+if raw_oracle_dir.startswith('/') or '..' in raw_oracle_dir.split('/'):
+    raise SystemExit('product-docs: oracle_dir must be RELATIVE to the workspace or a clone (no leading /, no .. segment); got: ' + raw_oracle_dir)
 if not catalog:
     raise SystemExit('product-docs: catalog_path is required -- pass --var catalog_path=<catalog dir or yaml file>')
 if not product:
@@ -2656,14 +2664,28 @@ if not cite_open or not cite_close:
     refuse('NET_UNREADABLE', 'coverage_citation_open/close', 'the citation syntax is not declared -- with no way to recognise a reference this gate would certify a documentation it never read: a refusal, not a vacuous pass', True)
 CITE_RE = re.compile(re.escape(cite_open) + r'\s*([^' + chr(10) + r']*?)\s*' + re.escape(cite_close)) if (cite_open and cite_close) else None
 inventory_names = set(entry_lists) | set(exclusion_reasons)
-HEADING_RE = re.compile(r'^(#{1,6})\s+(.*\S)\s*' + chr(36))
+## CommonMark lets an ATX heading open with up to THREE spaces; anchored
+## at column zero, ' ## Title' -- a real chapter heading -- read as a
+## paragraph and a chapter without an anchor escaped the rule.
+HEADING_RE = re.compile(r'^ {0,3}(#{1,6})\s+(.*\S)\s*' + chr(36))
 FENCE_RE = re.compile(r'^\s{0,3}(' + BT * 3 + '+|~{3,})')
 ## A WORD IN EVERY SCRIPT. An ASCII range counted zero words on a page written
 ## in a script that does not decompose to ASCII, so min_words could never be
 ## reached: every feature a permanent GAP, unrepairable inside the writeable
 ## set, on a node whose vars declare it language-neutral.
 WORD_RE = re.compile(r'[^\W_]+')
-PLACEHOLDER_RE = re.compile('|'.join(re.escape(p) for p in placeholders), re.I) if placeholders else None
+## SCRIPTS WITHOUT SPACES: a full sentence of han, kana or hangul is ONE
+## WORD_RE run, so a complete, informative page counted as two words and
+## every feature on it went GAP -- unreachable from inside the writeable
+## set. Each such character is counted as the word it renders as;
+## punctuation-only filler still counts nothing.
+CJK_RUN_RE = re.compile('[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+')
+def word_count(text):
+    non_cjk = WORD_RE.findall(CJK_RUN_RE.sub(' ', text))
+    return sum(1 for w in non_cjk if len(w) >= 4) + sum(len(r) for r in CJK_RUN_RE.findall(text))
+## A placeholder is a WHOLE token: without boundaries, WIP matched the wip
+## in "swipe" and TODO the todo in Spanish "todos", refusing honest prose.
+PLACEHOLDER_RE = re.compile('|'.join('(?<![\w])' + re.escape(p) + '(?! [\w])'.replace(' ', '') for p in placeholders), re.I) if placeholders else None
 ## THE UNIT A READER READS AS ONE. Prose is credited over the BLOCK that
 ## carries a citation, and a block is what markdown renders as one: a run of
 ## consecutive non-blank lines is a single paragraph only when nothing in it
@@ -2690,6 +2712,15 @@ LINK_DEST_RE = re.compile(r'\]\([^)]*\)')
 ## same class as a link destination, whose words nobody reads.
 COMMENT_RE = re.compile(r'<!--.*?(?:-->|' + chr(36) + ')', re.S)
 LINK_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*\S+')
+def visible_text(content):
+    ## THE TEXT A READER SEES. Comments and link reference definitions render
+    ## as nothing, and an HTML tag renders as its CONTENT -- never its
+    ## attributes. Citations read from the raw line hid inside a tag
+    ## attribute no renderer shows, and invisible text satisfied GAP in both
+    ## directions at once: counted as a citation, stripped from the prose.
+    if LINK_DEF_RE.match(content):
+        return ''
+    return TAG_RE.sub(' ', COMMENT_RE.sub(' ', content))
 def fold(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if not unicodedata.combining(c)).lower()
 def unquote(text):
@@ -2701,7 +2732,7 @@ def unquote(text):
 def page_blocks(rows):
     ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
     ## page, in order. content is the line without its quote markers.
-    blocks, cur, mode, in_fence = [], None, '', False
+    blocks, cur, mode, in_fence, fence_opener = [], None, '', False, None
     ## FRONT MATTER is page metadata no renderer shows: a first line of ---
     ## up to the next --- (or ...), every line between reading as YAML. Read
     ## as markdown, its closing line would underline the keys into a chapter
@@ -2716,12 +2747,22 @@ def page_blocks(rows):
                 break
     for idx in range(start, len(rows)):
         no, text = rows[idx]
-        if FENCE_RE.match(text):
+        m = FENCE_RE.match(text)
+        if m:
             ## A fenced sample teaches its reader to paste something; it
             ## makes no claim about the product. A shell comment in it is not
             ## a chapter and a path in it is not a citation -- the reason
             ## page_lint exempts fenced blocks from its chrome rules.
-            in_fence, cur, mode = not in_fence, None, ''
+            ## CommonMark closes a fence with the character that OPENED it,
+            ## at least as long. Toggling on any run let a page open with
+            ## backticks and "close" with tildes keep the fence open over the
+            ## chapter that followed, and the gate never read it.
+            ch, ln = m.group(1)[0], len(m.group(1))
+            if not in_fence:
+                in_fence, fence_opener = True, (ch, ln)
+            elif fence_opener and ch == fence_opener[0] and ln >= fence_opener[1]:
+                in_fence, fence_opener = False, None
+            cur, mode = None, ''
             continue
         if in_fence:
             continue
@@ -2782,10 +2823,9 @@ def block_prose(b):
     ## drawn here is between what is shown and what is not.
     out = []
     for _no, _text, content in b['lines']:
-        if LINK_DEF_RE.match(content):
-            continue
-        s = CITE_RE.sub(' ', content) if CITE_RE is not None else content
-        s = LINK_DEST_RE.sub(']', TAG_RE.sub(' ', s))
+        s = visible_text(content)
+        s = CITE_RE.sub(' ', s) if CITE_RE is not None else s
+        s = LINK_DEST_RE.sub(']', s)
         if b['kind'] == 'row':
             s = s.replace('|', ' ')
         out.append(s)
@@ -2801,7 +2841,7 @@ def written(prose, share=1):
     if PLACEHOLDER_RE is not None and PLACEHOLDER_RE.search(prose):
         return '', set()
     words = significant(prose)
-    if len(prose) < min_prose * share or len(words) < min_words * share:
+    if len(prose) < min_prose * share or word_count(prose) < min_words * share:
         return '', set()
     return prose, words
 def opens_exclusions(title):
@@ -2881,7 +2921,7 @@ for where, rows in pages:
             ## either, because a reference nobody can read claims nothing. Read
             ## from the raw line, it let text no reader ever sees satisfy the
             ## two rules that ask a page to say something.
-            visible = '' if LINK_DEF_RE.match(content) else COMMENT_RE.sub(' ', content)
+            visible = visible_text(content)
             ## EVERY citation, and ONLY the citations. A token is a path when
             ## it leads with a slash, an entry when the corpus holds it, an
             ## inventory id when the inventory does -- and an INVENTED
@@ -2894,17 +2934,23 @@ for where, rows in pages:
                     continue
                 if tok.startswith('/'):
                     paths.append(tok)
-                elif tok in corpus_ids:
-                    ents.append(tok)
-                elif tok in inventory_names:
-                    ids.append(tok)
                 else:
-                    ## The net holds neither. WHICH of the two it was meant
+                    ## THE TWO ID SPACES ARE INDEPENDENT MEMBERSHIPS. An id
+                    ## the corpus and the inventory both declare is both
+                    ## things at once; reading the corpus hit as THE answer
+                    ## left ids empty, no pair could form, and a collision
+                    ## made convergence impossible whatever the page wrote.
+                    ## The net holds neither? WHICH of the two it was meant
                     ## to be is not guessed -- guessing from a token shape is
-                    ## the habit this node got rid of, and the repair is the
-                    ## same either way: cite something the net holds, or
-                    ## write prose.
-                    unknown.append(tok)
+                    ## the habit this node got rid of. The repair is the same
+                    ## either way: cite something the net holds, or write
+                    ## prose.
+                    if tok in corpus_ids:
+                        ents.append(tok)
+                    if tok in inventory_names:
+                        ids.append(tok)
+                    if tok not in corpus_ids and tok not in inventory_names:
+                        unknown.append(tok)
             anchors_by_line[(where, no)] = (ents, ids, paths, unknown, text)
             anchored = anchored or bool(ents or ids or paths)
             b['names'].update(ids)
@@ -3018,7 +3064,7 @@ for name in feature_names:
     if body:
         best = max(body, key=lambda b: len(block_prose(b)) / len(b['pairs']))
         prose = block_prose(best)
-        refuse('GAP', name, 'the covered feature is CITED but not documented: at ' + best['where'] + ':' + str(best['lines'][0][0]) + ' the ' + {'para': 'paragraph', 'item': 'list item', 'row': 'table row', 'html': 'HTML line'}[best['kind']] + ' citing it with one of its entries (' + ', '.join(sorted(own)) + ') documents ' + str(len(best['pairs'])) + ' feature(s) with ' + str(len(prose)) + ' characters and ' + str(len(significant(prose))) + ' recognisable words of prose outside the citations -- a row in an index, not a screen a functional reader can understand. Each feature a block documents needs ' + str(min_prose) + ' characters and ' + str(min_words) + ' words of its own; the block is the paragraph, list item or table row that carries the citation, never its neighbours')
+        refuse('GAP', name, 'the covered feature is CITED but not documented: at ' + best['where'] + ':' + str(best['lines'][0][0]) + ' the ' + {'para': 'paragraph', 'item': 'list item', 'row': 'table row', 'html': 'HTML line'}[best['kind']] + ' citing it with one of its entries (' + ', '.join(sorted(own)) + ') documents ' + str(len(best['pairs'])) + ' feature(s) with ' + str(len(prose)) + ' characters and ' + str(word_count(prose)) + ' recognisable words of prose outside the citations -- a row in an index, not a screen a functional reader can understand. Each feature a block documents needs ' + str(min_prose) + ' characters and ' + str(min_words) + ' words of its own; the block is the paragraph, list item or table row that carries the citation, never its neighbours')
     elif cands:
         refuse('GAP', name, 'the covered feature is cited with one of its entries ONLY IN A HEADING -- a title labels a chapter and documents nothing: cite ' + cite_open + name + cite_close + ' with ' + ' or '.join(cite_open + e + cite_close for e in sorted(own)) + ' in the paragraph, list item or table row that describes it')
     else:

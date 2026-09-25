@@ -3938,3 +3938,185 @@ func TestProductDocsCatalogIngestFindsTheNetInASourceClone(t *testing.T) {
 		t.Fatalf("the front door does not say the gate stays inert: %s", got.Log)
 	}
 }
+
+// ─── coverage_check — the adversarial-review corrections ────────────────
+//
+// Seven shapes found by a static adversarial pass (2026-09-25), each pinned
+// by a test that pushes the mutated page THROUGH the gate: an evasion must
+// refuse FOR ITS NAMED CAUSE, an honest page must stay blessed, and
+// reverting the fix must turn the test red again.
+
+func TestProductDocsCoverageGateIgnoresCitationsInsideTagAttributes(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The citation moves into an HTML attribute nobody renders; the visible
+	// prose stays. A citation counts where a reader can see it.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the",
+		`<span data-ref="[[ref:items.detail]] [[ref:039]]"></span> shows one item in full: every field the`)
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a citation hidden in an HTML attribute satisfied GAP:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateClosesAFenceWithItsOwnCharacter(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// Backticks open the fence; the tildes line does NOT close it (wrong
+	// character), the real ~~~ does. Toggling on any run kept the fence open
+	// over the chapter below, and its invented reference was never read.
+	writeFile(t, ws, "docs/demo/samples.md",
+		"# Samples\n"+
+			"\n"+
+			"~~~text\n"+
+			"```\n"+
+			"~~~\n"+
+			"## A chapter behind mixed fences — "+ref("999")+"\n"+
+			"\n"+
+			"Prose the gate must read once the fence has closed, with enough\n"+
+			"words in it to stand as writing on its own for the reader.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a fence closed by the wrong character hid a chapter and an invented reference:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") || !strings.Contains(got.Log, "999") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming 999:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateKeepsBothIdentitiesOfACollidingId(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// "001" is a corpus entry AND, now, a feature id: one membership must
+	// not silence the other, or the feature can never pair with its entry
+	// and the gate refuses the page whatever it writes.
+	mutate(t, ws, ".golden-master/feature-coverage.json",
+		`{"feature": "home.landing", "entries": ["001"]},`,
+		`{"feature": "home.landing", "entries": ["001"]},
+  {"feature": "001", "entries": ["001"]},`)
+	// The entry id 001 is cited by the home.landing paragraph too, so that
+	// block now documents TWO features; the shared floor is per feature, and
+	// the paragraph carries prose enough for both.
+	mutate(t, ws, "docs/demo/README.md",
+		"carries the sign-in call to action and nothing else.\n",
+		"carries the sign-in call to action and nothing else on it,\n"+
+			"every navigation element living in the sidebar beside the main\n"+
+			"panel for the visitor to reach without scrolling.\n")
+	writeFile(t, ws, "docs/demo/collision.md",
+		"# Collision\n"+
+			"\n"+
+			"## The same id in both spaces — [[ref:/]] [[ref:001]]\n"+
+			"\n"+
+			"[[ref:001]] [[ref:001]] names the corpus entry and, with the same\n"+
+			"token, the feature that documents it: both memberships stand, and\n"+
+			"the screen is described for every reader who opens this page.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("an id held by both the corpus and the inventory made convergence impossible:\n%s", got.Log)
+	}
+	if got.Documented != 5 || got.Total != 5 {
+		t.Fatalf("documented = %d/%d, want 5/5 with the colliding feature counted", got.Documented, got.Total)
+	}
+}
+
+func TestProductDocsCoverageGateCountsUnspacedScripts(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A complete Chinese paragraph: to WORD_RE it is two runs, so the page
+	// failed the word floor and every feature on it went GAP -- unreachable
+	// from inside the writeable set.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"[[ref:items.detail]] [[ref:039]] 展示所选条目的完整资料并列出管理员填写的全部字段以及历次修改记录，用户可以查看每次变更的时间和负责人并根据当前权限继续编辑内容或者执行其他可用操作。")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a complete unspaced-script paragraph was refused as undocumented:\n%s", got.Log)
+	}
+	if got.Documented != 4 {
+		t.Fatalf("documented = %d, want 4 — the CJK paragraph documents its feature", got.Documented)
+	}
+}
+
+func TestProductDocsCoverageGateSeesAnIndentedHeading(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// CommonMark opens an ATX heading with up to three spaces; anchored at
+	// column zero, an indented anchorless chapter read as a paragraph and
+	// the structural rule never saw it.
+	writeFile(t, ws, "docs/demo/indented.md",
+		" # A chapter two spaces deep\n"+
+			"\n"+
+			" ## Written without an anchor on purpose\n"+
+			"\n"+
+			"Prose the renderer shows under the indented chapter heading.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("an indented anchorless chapter escaped the structural rule:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "UNANCHORED_CHAPTER") {
+		t.Fatalf("the gate is red without UNANCHORED_CHAPTER:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateDoesNotReadPlaceholdersInsideWords(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// "swipe" carries wip; Spanish "todos" carries TODO. A placeholder is a
+	// whole token, and honest prose is not a substitute.
+	mutate(t, ws, "docs/demo/README.md",
+		"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"manager filled in, the history of its changes and the actions still open\n"+
+			"to them. Users swipe horizontally to inspect the remaining fields of the record.")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("ordinary words matching placeholder substrings refused honest prose:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCatalogIngestRefusesAnAbsoluteOracleDir(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\n"+
+			"docs:\n"+
+			"  product_dir: documentation_produits/demo\n"+
+			"repos:\n"+
+			"  - id: demo-src\n"+
+			"    url: "+source+"\n",
+		`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+			`"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+	writeFile(t, ws, "documentation_produits/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+	// Stripped-then-tested, an absolute oracle_dir went looking under
+	// <ws>/workspace/... and the exhaustiveness gate went inert IN SILENCE.
+	// A configuration error is a refusal that names the fix, never a pass.
+	cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "catalog_ingest"), map[string]string{
+		"vars.workspace_dir":               ws,
+		"vars.catalog_path":                "catalog",
+		"vars.product_id":                  "demo",
+		"vars.scratch_dir":                 scratch,
+		"vars.clone_depth":                 "1",
+		"vars.secret_globs":                "*.env,.env,.env.*,*secret*,*secrets*,*credential*,*.pem,*.key",
+		"vars.coverage_exclusions_heading": defaultExclusionsToken,
+		"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
+		"vars.coverage_routes_file":        "routes.txt",
+		"vars.coverage_citation_open":      citeOpen,
+		"vars.coverage_citation_close":     citeClose,
+		"vars.coverage_placeholders":       defaultPlaceholders,
+		"vars.coverage_min_prose":          "60",
+		"vars.coverage_max_anchorless":     shippedAnchorlessCeiling,
+		"vars.oracle_dir":                  "/workspace/.golden-master",
+	})
+	runExpectingFailure(t, cmd, "oracle_dir must be RELATIVE")
+}
