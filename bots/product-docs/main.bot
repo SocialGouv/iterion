@@ -1553,31 +1553,41 @@ def confine_local(raw, key, shown):
     ## that is not. Containment on the path alone stops at the path.
     ## --no-local does not close it either -- upload-pack serves the
     ## alternates all the same -- so the delegation itself is refused.
-    stores = []
+    ## THE DELEGATION IS FOLLOWED TO ITS END. An alternates file may name a
+    ## store that sits inside the workspace and carries an alternates of its
+    ## own: git serves the union TRANSITIVELY, so a one-level walk stopped a
+    ## chain source -> workspace alternate -> outside alternate exactly one
+    ## link short of the escape. Every store discovered inside the workspace
+    ## has its own alternates read, until the graph is exhausted -- cycles
+    ## break on the visited set.
+    seen_stores = set()
+    queue = []
     rc, gd, _ = run_git(['-C', cand, 'rev-parse', '--git-dir'], timeout=60, env=plain_env)
     if rc == 0 and gd.strip():
-        stores.append(os.path.join(cand, gd.strip()))
+        queue.append(os.path.join(cand, gd.strip()))
     rc, od, _ = run_git(['-C', cand, 'rev-parse', '--git-path', 'objects'], timeout=60, env=plain_env)
-    obj_dir = os.path.join(cand, od.strip()) if rc == 0 and od.strip() else ''
-    if obj_dir:
-        stores.append(obj_dir)
-    rc, alt, _ = run_git(['-C', cand, 'rev-parse', '--git-path', 'objects/info/alternates'], timeout=60, env=plain_env)
-    alt_file = os.path.join(cand, alt.strip()) if rc == 0 and alt.strip() else ''
-    if alt_file and os.path.isfile(alt_file):
+    if rc == 0 and od.strip():
+        queue.append(os.path.join(cand, od.strip()))
+    while queue:
+        store = os.path.realpath(queue.pop())
+        if store in seen_stores:
+            continue
+        seen_stores.add(store)
+        if store != ws_n and not store.startswith(ws_n.rstrip('/') + '/'):
+            return '', key + ' refused: ' + shown + ' reads its git objects from OUTSIDE the docs workspace (' + store + ') -- a clone serves them, so confining the path alone confines nothing'
+        alt_file = os.path.join(store, 'info', 'alternates')
+        if not os.path.isfile(alt_file):
+            continue
         try:
             with open(alt_file, encoding='utf-8', errors='replace') as fh:
                 for entry_line in fh:
                     entry_line = entry_line.strip()
                     if not entry_line or entry_line.startswith('#'):
                         continue
-                    ## An alternates line is relative to the OBJECT directory.
-                    stores.append(entry_line if os.path.isabs(entry_line) else os.path.join(obj_dir or cand, entry_line))
+                    ## An alternates line is relative to the OBJECT directory it names.
+                    queue.append(entry_line if os.path.isabs(entry_line) else os.path.join(store, entry_line))
         except OSError as exc:
             return '', key + ' refused: ' + shown + ' declares an unreadable objects/info/alternates -- ' + redact(str(exc))
-    for store in stores:
-        real = os.path.realpath(store)
-        if real != ws_n and not real.startswith(ws_n.rstrip('/') + '/'):
-            return '', key + ' refused: ' + shown + ' reads its git objects from OUTSIDE the docs workspace (' + real + ') -- a clone serves them, so confining the path alone confines nothing'
     return cand, ''
 
 gitlab_block = entry.get('gitlab') if isinstance(entry.get('gitlab'), dict) else {}
@@ -2749,51 +2759,51 @@ def page_blocks(rows):
                 break
     for idx in range(start, len(rows)):
         no, text = rows[idx]
-        ## COMMENT SPANS BEFORE FENCES. A fence marker inside a comment is
-        ## comment text: deciding the fence first let a triple-backtick line
-        ## inside a comment open one, and the chapters after the closer stayed
-        ## hidden. The visible PART of a line survives: prose before an
-        ## opener, and the tail after a closer, are read -- skipping the
-        ## whole line dropped a documented feature's own paragraph.
+        ## THE OPEN CONSTRUCT WINS. Inside a fence, only a compatible closer
+        ## matters and comment markers are literal (an unmatched marker in a
+        ## fenced HTML sample once swallowed the closer and every chapter
+        ## behind it). Inside a comment, only its closer matters and fence
+        ## markers are comment text (a marker inside a comment once opened a
+        ## fence that hid the chapters after the comment closed). Outside
+        ## both, the EARLIEST marker on the line wins, and the visible PART
+        ## of the line survives: prose before an opener, the tail after a
+        ## closer. The declared anchorless MARKER is exempt from stripping:
+        ## it is a comment that carries gate semantics.
+        if in_fence:
+            m = FENCE_RE.match(text)
+            if m and fence_opener and m.group(1)[0] == fence_opener[0] \
+                    and len(m.group(1)) >= fence_opener[1] and not text[m.end():].strip():
+                in_fence, fence_opener = False, None
+                cur, mode = None, ''
+            continue
         if in_comment:
             end = text.find('-->')
             if end == -1:
                 continue
             text = text[end + 3:]
             in_comment = False
-        start = text.find('<!--')
-        if start != -1:
-            end = text.find('-->', start + 4)
-            if end == -1:
-                in_comment = True
-                text = text[:start]
-                if not text.strip():
-                    continue
+        pos = 0
+        while True:
+            f = FENCE_RE.match(text[pos:])
+            c = text.find('<!--', pos)
+            if f is None and c == -1:
+                break
+            f_at = (pos + f.start()) if f else None
+            if c != -1 and (f_at is None or c < f_at):
+                end = text.find('-->', c + 4)
+                if end == -1:
+                    text = text[:c]
+                    in_comment = True
+                    break
+                if text[c:end + 3] != no_anchor:
+                    text = text[:c] + ' ' + text[end + 3:]
+                    pos = c
+                else:
+                    pos = end + 3
             else:
-                ## The declared anchorless MARKER is a comment that carries
-                ## gate semantics: stripped like any other span, the chapter
-                ## it declares for lost its declaration and the structural
-                ## rule refused an honest page.
-                if text[start:end + 3] != no_anchor:
-                    text = text[:start] + ' ' + text[end + 3:]
-        m = FENCE_RE.match(text)
-        if m:
-            ## A fenced sample teaches its reader to paste something; it
-            ## makes no claim about the product. A shell comment in it is not
-            ## a chapter and a path in it is not a citation -- the reason
-            ## page_lint exempts fenced blocks from its chrome rules.
-            ## CommonMark closes a fence with the character that OPENED it,
-            ## at least as long, and NOTHING ELSE on the line: a closer with
-            ## trailing words is fence content, and reading it as a close
-            ## closed the fence early -- the real closer then opened a new
-            ## one, and the chapter behind it was never read.
-            ch, ln = m.group(1)[0], len(m.group(1))
-            if not in_fence:
-                in_fence, fence_opener = True, (ch, ln)
-            elif fence_opener and ch == fence_opener[0] and ln >= fence_opener[1] and not text[m.end():].strip():
-                in_fence, fence_opener = False, None
-            cur, mode = None, ''
-            continue
+                in_fence, fence_opener = True, (f.group(1)[0], len(f.group(1)))
+                cur, mode = None, ''
+                break
         if in_fence:
             continue
         depth, content = unquote(text)

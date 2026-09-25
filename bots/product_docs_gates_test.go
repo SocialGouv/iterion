@@ -4212,3 +4212,92 @@ func TestProductDocsCoverageGateKeepsVisibleTextAroundCommentSpans(t *testing.T)
 		t.Fatalf("documented = %d, want 4", got.Documented)
 	}
 }
+
+func TestProductDocsCoverageGateKeepsCommentMarkersInFencesLiteral(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// An UNMATCHED marker inside a fenced sample is fence content: the span
+	// machinery once swallowed the closer and every chapter behind it.
+	writeFile(t, ws, "docs/demo/sample.md",
+		"# Sample\n"+
+			"\n"+
+			"```html\n"+
+			"<!-- an unterminated marker in the sample\n"+
+			"```\n"+
+			"## A chapter behind the sample — [[ref:999]]\n"+
+			"\n"+
+			"Prose the gate must read once the fence has closed, enough words\n"+
+			"in it to stand as writing on its own for the reader.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a marker inside a fence hid the chapters behind it:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") || !strings.Contains(got.Log, "999") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming 999:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateScansEveryCommentSpanOnTheLine(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// Two spans on one line: only the first was processed, so the second —
+	// unterminated — left its hidden citation visible.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<!-- one --> <!-- two\n"+
+			"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes -->\n"+
+			"Ordinary prose follows the hidden block, enough of it to stand as\n"+
+			"writing for any reader of the page who scrolls this far down it.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("the second comment span on a line lost its hidden state:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+// THE DELEGATION IS TRANSITIVE: a mirror whose alternates name a store
+// INSIDE the workspace, whose own alternates name one OUTSIDE, serves the
+// union all the same — a one-level walk stopped exactly one link short of
+// the escape.
+func TestProductDocsCatalogIngestFollowsAlternatesTransitively(t *testing.T) {
+	requireGitPython(t)
+	outside := t.TempDir()
+	gitIn(t, outside, "init", "-q", "-b", "main")
+	writeFile(t, outside, "secret-notes.md", "# not for the campaign\n")
+	gitIn(t, outside, "add", "-A")
+	gitIn(t, outside, "commit", "-q", "-m", "seed")
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	// hop 1: the mirror inside the workspace delegates to hop 2
+	mirror := filepath.Join(ws, "mirror.git")
+	gitIn(t, ws, "init", "-q", "--bare", "-b", "main", mirror)
+	// hop 2: an intermediate bare repo, still inside the workspace, that
+	// delegates OUTSIDE. No commit is needed anywhere: the guard refuses
+	// the delegation GRAPH itself, before any object is asked for.
+	hop := filepath.Join(ws, "hop.git")
+	gitIn(t, ws, "init", "-q", "--bare", "-b", "main", hop)
+	writeFile(t, hop, "objects/info/alternates", filepath.Join(outside, ".git", "objects")+"\n")
+	writeFile(t, mirror, "objects/info/alternates", hop+"/objects"+"\n")
+
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \"mirror.git\"\n",
+		`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"mirror.git"}]}`+"\n")
+	writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OKCount != 0 || got.Degraded != 1 {
+		t.Fatalf("a repository delegating through an in-workspace hop to an outside store was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+	}
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "reads its git objects from OUTSIDE the docs workspace") {
+		t.Fatalf("the refusal does not name its cause: %q", note)
+	}
+}
