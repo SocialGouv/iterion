@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.198.0](https://github.com/SocialGouv/iterion/compare/v3.197.3...v3.198.0) (2026-09-25)
+
+### Features
+
+* **moonshot:** Kimi as a first-class provider on the Anthropic wire ([#1744](https://github.com/SocialGouv/iterion/issues/1744)) ([#1753](https://github.com/SocialGouv/iterion/issues/1753)) ([76aeef2](https://github.com/SocialGouv/iterion/commit/76aeef26ef96d5de271b5acc60ecc59480245aa1))
+
+    <details><summary>why</summary>
+
+    Moonshot was reachable only through `backend: "kimi"` — the CLI-agent route (ADR-065), which resolves its own credentials from the host env and sits outside the credential store entirely: no BYOK record, no funding walk, no usage windows, no rotation. A campaign whose only Anthropic-wire providers are anthropic and z.ai freezes the day both are walled at once, and that is not hypothetical: it cost hours, with one key on a dated weekly window, one forfait revoked and one team slot…
+
+    </details>
+
+### Bug Fixes
+
+* **runtime,bots:** ${BUNDLE_SKILLS_DIR} is absolute or the run is refused, and a child never inherits its parent's copy ([#1806](https://github.com/SocialGouv/iterion/issues/1806)) ([96a6b16](https://github.com/SocialGouv/iterion/commit/96a6b16823ca9dc869e132209e1e9544c6055dc3)), references [#1797](https://github.com/SocialGouv/iterion/issues/1797) [#1797](https://github.com/SocialGouv/iterion/issues/1797)
+
+    <details><summary>why</summary>
+
+    A reader joins a skill NAME onto the directory, so an empty or relative value resolved against the node's own working directory — the checkout — and the data block came back from whatever the repository put at that path. The previous spelling carried a literal `/`, which could not collapse that way.
+
+    </details>
+
 ## [3.197.3](https://github.com/SocialGouv/iterion/compare/v3.197.2...v3.197.3) (2026-09-24)
 
 ### Bug Fixes
