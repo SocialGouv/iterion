@@ -157,11 +157,10 @@ func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *te
 	})
 
 	// The boundary, not just its two sides: a launch whose client-supplied
-	// run_id already exists persists NOTHING — CreateRun is an exclusive
-	// create — so its unit goes back. Asking the store "does a document
-	// exist?" instead of the call "did I make one?" finds someone else's run
-	// and charges for it, once per attempt, which is the very symptom the rows
-	// above exist to remove.
+	// run_id already exists persists NOTHING, so its unit goes back. The
+	// run service refuses the taken id up front (before the queue and the
+	// credential pool act on it); CreateRun's exclusive create stays as the
+	// race backstop, and both refusals say "already exists".
 	t.Run("launch: a run_id that already exists persists nothing and releases the slot", func(t *testing.T) {
 		s, counter, ctx, rs := newQuotaReleaseServer(t)
 		const taken = "run-already-there"
@@ -174,7 +173,7 @@ func TestLaunchSurfacesReleaseTheMeteredSlotOnlyBeforeTheRunServiceIsAsked(t *te
 			w := httptest.NewRecorder()
 			s.handleLaunchRun(w, r)
 			if !strings.Contains(w.Body.String(), "already exists") {
-				t.Fatalf("attempt %d did not reach the exclusive create (status %d, body %s)", attempt, w.Code, w.Body.String())
+				t.Fatalf("attempt %d was not refused as a taken run id (status %d, body %s)", attempt, w.Code, w.Body.String())
 			}
 		}
 		if got := meteredRuns(t, counter); got != 0 {
