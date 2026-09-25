@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.201.0](https://github.com/SocialGouv/iterion/compare/v3.200.3...v3.201.0) (2026-09-25)
+
+### Features
+
+* **server,cli,mcp,studio:** a run is addressed by its id, across the teams you may see ([8f509ad](https://github.com/SocialGouv/iterion/commit/8f509adff9d287e36838e691744ef51def27bf3d)), closes [#1847](https://github.com/SocialGouv/iterion/issues/1847) [#1848](https://github.com/SocialGouv/iterion/issues/1848) [#1407](https://github.com/SocialGouv/iterion/issues/1407) [#1849](https://github.com/SocialGouv/iterion/issues/1849), references [#1847](https://github.com/SocialGouv/iterion/issues/1847) [#1848](https://github.com/SocialGouv/iterion/issues/1848)
+
+    <details><summary>why</summary>
+
+    feat(server,cli,mcp,studio): a run is addressed by its id, across the teams you may see
+
+    </details>
+
 ## [3.200.3](https://github.com/SocialGouv/iterion/compare/v3.200.2...v3.200.3) (2026-09-25)
 
 ### Bug Fixes
