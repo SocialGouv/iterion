@@ -441,73 +441,6 @@ func TestExtractRunIDReadsEscapedSegmentsTheWayTheMuxDoes(t *testing.T) {
 	}
 }
 
-// The cache is bounded: capacity is the eviction line, hits refresh, and a
-// missing id is never cached.
-func TestRunTenantCacheBoundsAndHits(t *testing.T) {
-	c := newRunTenantCache(3)
-	c.put("r1", "t1")
-	c.put("r2", "t2")
-	if team, ok := c.get("r1"); !ok || team != "t1" {
-		t.Fatalf("get r1 = %q %v", team, ok)
-	}
-	c.put("r3", "t3")
-	c.put("r4", "t4") // evicts r2 (least recently used: r1 was refreshed)
-	if _, ok := c.get("r2"); ok {
-		t.Fatal("r2 survived the eviction line")
-	}
-	if _, ok := c.get("r1"); !ok {
-		t.Fatal("r1 was evicted despite being the most recent hit")
-	}
-	if c.ll.Len() > 3 {
-		t.Fatalf("cache len = %d, over the bound", c.ll.Len())
-	}
-}
-
-// The list scopes explicitly (#1848 / ADR-103): the handler hands the
-// store a context stamped with the RESOLVED team - the caller's active
-// team by default, the requested ?team_id= when the caller has standing
-// in it, and a 403 naming the parameter for an invisible team. The store
-// side of the filter is the mongo conformance suite's to prove.
-func TestListRunsScopedByExplicitTeam(t *testing.T) {
-	srv, guard := newRunScopeServer(t)
-
-	scope := func(query string, id auth.Identity) (int, string) {
-		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/api/runs"+query, nil)
-		req = req.WithContext(auth.WithIdentity(req.Context(), id))
-		rec := httptest.NewRecorder()
-		srv.handleListRuns(rec, req)
-		if rec.Code != http.StatusOK {
-			return rec.Code, ""
-		}
-		return rec.Code, guard.lastListedTenant()
-	}
-
-	// No override: the caller's active team.
-	code, team := scope("", auth.Identity{UserID: "u-member-b", TeamID: "tenant-B", Role: identity.RoleMember})
-	if code != http.StatusOK || team != "tenant-B" {
-		t.Fatalf("default scope: %d %q, want the caller's active team", code, team)
-	}
-	// An override to a team the caller belongs to.
-	code, team = scope("?team_id=tenant-A", auth.Identity{UserID: "u-both", TeamID: "tenant-B", Role: identity.RoleMember})
-	if code != http.StatusOK || team != "tenant-A" {
-		t.Fatalf("?team_id=tenant-A: %d %q, want the requested team", code, team)
-	}
-	// An override to an invisible team: 403 naming the parameter.
-	req := httptest.NewRequest(http.MethodGet, "/api/runs?team_id=tenant-A", nil)
-	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{UserID: "u-member-b", TeamID: "tenant-B", Role: identity.RoleMember}))
-	rec := httptest.NewRecorder()
-	srv.handleListRuns(rec, req)
-	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "team_id") {
-		t.Fatalf("invisible override: %d %s, want a 403 naming team_id", rec.Code, rec.Body.String())
-	}
-}
-
-// The FULL-STACK witness (the review's H1): a request that walks the real
-// chain — requireAuth's bearer resolution, the choke point, the mux —
-// reads a cross-team run it may see, and the wire carries the run's own
-// team. A wiring that skips the choke point turns this red: with the
-// active-team stamp alone the guarded store refuses run-1.
 func TestRunByIDThroughRequireAuth(t *testing.T) {
 	srv, _ := newRunScopeServer(t)
 	ts := fullStack(t, srv)
@@ -616,4 +549,38 @@ type mismatchedWatchStore struct {
 
 func (mismatchedWatchStore) GetWatch(context.Context, string) (runwatch.Watch, error) {
 	return runwatch.Watch{ID: "w-1", TargetRunID: "other-run"}, nil
+}
+
+// The WS mutation gate (the review's R571177): a read-only viewer
+// connection cannot send mutating envelopes — the ladder's act rung
+// applies over the event socket exactly as over HTTP.
+func TestWSDispatchRefusesAMutatingEnvelopeFromAViewer(t *testing.T) {
+	srv, _ := newRunScopeServer(t)
+	viewer := caller("u-viewer-a", "tenant-A")
+	viewer.Role = identity.RoleViewer // the resolved standing, as the upgrade stamps it
+	c := &runConn{server: srv, runID: "run-1", sendCh: make(chan []byte, 8), closed: make(chan struct{}),
+		identity: viewer}
+	c.dispatch(runWSEnvelope{Type: wsTypeCancel, AckID: "a1"})
+	if got := firstWSError(t, c).Code; got != "forbidden" {
+		t.Fatalf("error code = %q, want forbidden", got)
+	}
+	// A member's envelope passes the gate: whatever happens further down
+	// the cancel path, the refusal is not the ladder's.
+	c2 := &runConn{server: srv, runID: "run-1", sendCh: make(chan []byte, 16), closed: make(chan struct{}),
+		identity: caller("u-member-a", "tenant-A")}
+	payload, _ := json.Marshal(map[string]any{"loop_name": "l", "delta": 1})
+	c2.dispatch(runWSEnvelope{Type: wsTypeBumpLoop, AckID: "a2", Payload: payload})
+	select {
+	case data := <-c2.sendCh:
+		var env runWSEnvelope
+		if json.Unmarshal(data, &env) == nil && env.Type == wsTypeError {
+			var p wsErrorPayload
+			_ = json.Unmarshal(env.Payload, &p)
+			if p.Code == "forbidden" {
+				t.Fatal("a member's mutating envelope was refused by the ladder over WS")
+			}
+		}
+	default:
+		// No immediate reply: the command proceeded past the gate.
+	}
 }

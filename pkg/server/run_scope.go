@@ -1,13 +1,11 @@
 package server
 
 import (
-	"container/list"
 	"context"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -145,72 +143,19 @@ func (s *Server) runIDClass(r *http.Request) (string, bool, int) {
 	return "", false, 0
 }
 
-// runTenantCache is the bounded per-process map of run id to the team that
-// owns it. A run's team is immutable for the run's life (a deleted run keeps
-// its tombstone), so entries need no TTL; the LRU bound caps memory under an
-// id-flood. Lookups only cache POSITIVE resolutions — a not-found run answers
-// 404 from the store every time.
-type runTenantCache struct {
-	mu    sync.Mutex
-	cap   int
-	ll    *list.List // front = most recent
-	elems map[string]*list.Element
-}
-
-type runTenantEntry struct {
-	runID string
-	team  string
-}
-
-func newRunTenantCache(cap int) *runTenantCache {
-	return &runTenantCache{cap: cap, ll: list.New(), elems: map[string]*list.Element{}}
-}
-
-func (c *runTenantCache) get(runID string) (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.elems[runID]; ok {
-		c.ll.MoveToFront(el)
-		return el.Value.(runTenantEntry).team, true
-	}
-	return "", false
-}
-
-func (c *runTenantCache) put(runID, team string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.elems[runID]; ok {
-		c.ll.MoveToFront(el)
-		el.Value = runTenantEntry{runID, team}
-		return
-	}
-	el := c.ll.PushFront(runTenantEntry{runID, team})
-	c.elems[runID] = el
-	for c.ll.Len() > c.cap {
-		oldest := c.ll.Back()
-		if oldest == nil {
-			break
-		}
-		c.ll.Remove(oldest)
-		delete(c.elems, oldest.Value.(runTenantEntry).runID)
-	}
-}
-
-// runTenant resolves the team that owns a run, team-blind: the caller's own
-// tenant stamp must not filter the lookup (store.TeamBlind clears it AND
-// lifts the fail-closed guard — a detached context alone would keep the
-// stamp and the query would only see the caller's team). Team-blindness is
-// the point of the route: authorization happens through the caller's
-// standing in the RESOLVED team, one line below.
+// runTenant resolves the team that owns a run, team-blind, LIVE on every
+// request: the same indexed read is the existence check the 404 contract
+// needs, so a run deleted here or on another replica stops resolving
+// immediately (the review's R3d92d8 - a tenant cache would serve deleted
+// runs from sub-routes that never load the parent). The caller's own
+// tenant stamp must not filter the lookup: store.TeamBlind clears it AND
+// lifts the fail-closed guard - a detached context alone would keep the
+// stamp and the query would only see the caller's team.
 func (s *Server) runTenant(ctx context.Context, runID string) (string, error) {
-	if team, ok := s.runTeams.get(runID); ok {
-		return team, nil
-	}
 	run, err := s.runs.LoadRunCtx(store.TeamBlind(ctx), runID)
 	if err != nil {
 		return "", err
 	}
-	s.runTeams.put(runID, run.TenantID)
 	return run.TenantID, nil
 }
 
@@ -257,12 +202,30 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 			// ADR-078 keeps the capability out of the run console.
 			return auth.Identity{}, false, nil
 		}
-		return auth.Identity{
+		effective := auth.Identity{
 			UserID: id.UserID, Email: id.Email,
 			OrgID: id.OrgID, OrgRole: id.OrgRole,
 			TeamID: teamID, Role: mb.Role,
 			Kind: id.Kind, JTI: id.JTI, Via: "membership",
-		}, true, nil
+		}
+		// The run's team's ORG is the organization this request acts in:
+		// a member resuming a run of another org must be gated —
+		// suspension, monthly budgets — by THAT org, not the
+		// credential's (the review's Reba7e7). Same-org runs, the
+		// overwhelming case, keep the credential's context with no
+		// extra read; a cross-org run resolves the caller's standing in
+		// the run's org, and a lookup that FAILS propagates.
+		if t, terr := st.GetTeam(ctx, teamID); terr == nil && t.OrgID != "" && t.OrgID != id.OrgID {
+			om, oerr := st.GetOrgMembership(ctx, id.UserID, t.OrgID)
+			if oerr != nil && !errors.Is(oerr, identity.ErrNotFound) {
+				return auth.Identity{}, false, oerr
+			}
+			effective.OrgID = t.OrgID
+			if oerr == nil {
+				effective.OrgRole = om.Role
+			}
+		}
+		return effective, true, nil
 	case errors.Is(err, identity.ErrNotFound):
 		// No membership. Org-admin lineage reads as a viewer (what
 		// canViewTeam would grant); anything else is out. ONE pass over

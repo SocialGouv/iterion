@@ -101,7 +101,6 @@ type Server struct {
 	hub                    *Hub
 	watcher                *Watcher
 	runs                   *runview.Service  // run console service; nil disables /api/runs endpoints
-	runTeams               *runTenantCache   // run id → owning team, the by-id choke point's LRU (run_scope.go)
 	watchCoord             *watchCoordinator // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
 	assistantWatches       runwatch.Store    // durable target-run watches; deliberately separate from issue watches
 	assistantWatch         *assistantWatchCoordinator
@@ -666,7 +665,6 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		extraOrigins: loadExtraAllowedOrigins(logger),
 		logger:       logger,
 		mux:          newRecordingMux(),
-		runTeams:     newRunTenantCache(runTenantLRUSize),
 		addrReady:    make(chan struct{}),
 		shutdown:     make(chan struct{}),
 		// Pre-allocate the projection semaphore so its ACQUIRE stays

@@ -19,7 +19,8 @@ export default function AssistantWatchBadge({ runId }: { runId: string }) {
     // run-addressed route (ADR-103 §4) so a cross-team view can stop
     // what it can see. The bare id spelling would fail under an active
     // team other than the run's.
-    mutationFn: (id: string) => stopAssistantRunWatch(id, runId),
+    mutationFn: (id: string) =>
+      stopAssistantRunWatch(id, watches.data?.find((watch) => watch.id === id)?.target_run_id ?? runId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey }),
   });
   const active = watches.data ?? [];
