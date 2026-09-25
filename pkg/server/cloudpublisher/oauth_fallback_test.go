@@ -40,8 +40,15 @@ func seededFP(ownerKey string) string { return "fp-" + ownerKey }
 
 func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string) secrets.RunBundle {
 	t.Helper()
+	return resolveBundlePinned(t, p, runSecrets, sealer, runID, tenant, owner, nil)
+}
+
+// resolveBundlePinned is resolveBundle with the launch-frozen pinned set the
+// shared tiers read (store.Run.PinnedProviders).
+func resolveBundlePinned(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string, pinned []string) secrets.RunBundle {
+	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

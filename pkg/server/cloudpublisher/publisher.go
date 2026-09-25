@@ -425,7 +425,13 @@ var errUntrustedRequiresSecrets = errors.New("untrusted workspace cannot be give
 // bundle. It is a required parameter rather than a field read from somewhere
 // convenient precisely so a future caller cannot omit it: the compiler asks
 // every call site who wrote the code this bundle is about to be handed to.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry, trust store.RunTrust) (credResolution, error) {
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry, trust store.RunTrust, pinnedProviders []string) (credResolution, error) {
+	// The launch-frozen pinned set (store.Run.PinnedProviders), passed in
+	// rather than derived here: the resume path must replay the launch's
+	// answer, not re-derive it from a source that may have moved. Only the
+	// SHARED tiers read it — a tenant's own keys are never gated on a wire
+	// family, so nothing about this reaches them.
+	pinnedSet := pinnedProviderSet(pinnedProviders)
 	if p.runSecrets == nil || p.sealer == nil {
 		return credResolution{}, nil
 	}
@@ -528,7 +534,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// call parks on a durable usage-window retry, while a run published
 					// with an empty wire fails on a no-credential auth error nothing
 					// retries (or silently spends the runner pod's ambient env).
-					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys); len(refused) > 0 {
+					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
 						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID, refused, overrides, p.sealer, nil, withheld.note)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
@@ -727,7 +733,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    neither takes a stranger's donation while either is available.
 				//    Fills per WIRE FAMILY like the platform tier, so an org key can
 				//    never shadow a credential the team already holds in another shape.
-				p.fillFromOrg(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
+				p.fillFromOrg(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits, pinnedSet)
 
 			case credentialTierPool:
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -783,7 +789,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run runs on its donor — filling alongside would outrank the lent
 				//    credential while still consuming the donor's quota and slot.
 				if res.grant == nil {
-					p.fillFromPlatform(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
+					p.fillFromPlatform(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits, pinnedSet)
 				}
 
 			case credentialTierRestore:
@@ -851,6 +857,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// no host detection report applies. Empty when nothing resolved: the
 	// runner's env fallback is unknowable here, and injecting "no family"
 	// facts about credentials we cannot see would be asserting a falsehood.
+	// bundle.APIKeys only, deliberately: a pinned key is spendable by the
+	// routes that name it, but these vars SHAPE THE PROGRAM (review_mode,
+	// llm_families), and widening a run's family set because one node pins a
+	// provider would switch a mono topology to dual behind the author's
+	// back. A node that wants a family pins it; funding it does not ask for
+	// a different review.
 	providers := make([]string, 0, len(bundle.APIKeys))
 	for prov := range bundle.APIKeys {
 		providers = append(providers, string(prov))
@@ -901,7 +913,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// to remove. Deduplicated: a tier is a fact about the run, not a
 	// per-slot count.
 	tiers := map[string]bool{}
-	for prov := range bundle.APIKeys {
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		if spend.allows(strings.ToLower(string(prov))) {
 			tiers[credentialTierForSlot(bundle, res.grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
 		}
@@ -1070,6 +1082,87 @@ func spendableProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFall
 	return spendable{pinned: pinned}
 }
 
+// pinnedProviderSet is the launch-frozen pinned set in the form the fill
+// tiers read it. Empty when the run pins nothing, which is what keeps a
+// workflow with no pin on exactly the behaviour it had before the rule.
+func pinnedProviderSet(pinned []string) map[string]bool {
+	if len(pinned) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(pinned))
+	for _, p := range pinned {
+		if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
+			out[p] = true
+		}
+	}
+	return out
+}
+
+// derivePinnedProviders reads the run's routes through the SAME walk and
+// vocabulary the pool's wants derivation and the run-doc fingerprint stamp
+// use (model.EffectiveProviders / knownPoolProviders), so the three
+// surfaces cannot disagree about what a run targets.
+//
+// It reads `Providers` and deliberately ignores NarrowSafe, which is where
+// it differs from spendableProviders next door: that one NARROWS a request
+// and must fail OPEN, treating an unresolvable route as "may spend
+// anything". Funding is the opposite direction — failing open would make
+// every slot fillable for every run and dissolve the one-key-per-family
+// rule. `Providers` is a sound LOWER BOUND either way: a name in it is
+// named by some resolved route; a route the walk cannot read contributes
+// nothing, so the slot it needed stays unfillable and its node is refused
+// by name, which is this feature's safe direction.
+func derivePinnedProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) []string {
+	return model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders).Providers
+}
+
+// fillAPIKeySlot puts a resolved key in the bundle and reports whether it
+// landed as PINNED-ONLY — the one function both shared tiers fill through,
+// because the choice of map is the whole safety property and a second copy
+// of it is where the next tier would get it wrong.
+//
+// A slot whose wire family is still free fills it normally: that is the
+// pre-existing rule, untouched. A slot only reachable because a route PINS
+// it — its family already filled — goes to PinnedAPIKeys, where no
+// default-precedence reader looks, and does NOT mark the family: it did
+// not fill it, and a later tier must still be able to serve a DIFFERENT
+// pinned slot on the same wire.
+func fillAPIKeySlot(bundle *secrets.RunBundle, taken map[string]bool, prov secrets.Provider, plaintext string) (pinnedOnly bool) {
+	family := secrets.WireFamily(string(prov))
+	if taken[family] {
+		if bundle.PinnedAPIKeys == nil {
+			bundle.PinnedAPIKeys = map[secrets.Provider]string{}
+		}
+		bundle.PinnedAPIKeys[prov] = plaintext
+		return true
+	}
+	bundle.APIKeys[prov] = plaintext
+	taken[family] = true
+	return false
+}
+
+// fundedAPIKeySlots returns every provider slot the bundle carries a key for,
+// in EITHER channel — the default one and the pinned one — in
+// allKnownProviders order so two readers never disagree about which came
+// first.
+//
+// This is the question every "what funded this run?" reader asks: the tier
+// stamp, the granted-credential audit line, the required-credential gate. A
+// pinned key funds its provider as surely as a default one — it just serves
+// only the routes that name it — so a reader that walks APIKeys alone reports
+// a run as unfunded while its credential is sealed in the same bundle. The
+// readers that must NOT see a pinned key ask a different question ("what may
+// the DEFAULT precedence spend?"), and they read bundle.APIKeys directly.
+func fundedAPIKeySlots(bundle secrets.RunBundle) []secrets.Provider {
+	out := make([]secrets.Provider, 0, len(bundle.APIKeys)+len(bundle.PinnedAPIKeys))
+	for _, prov := range allKnownProviders {
+		if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+			out = append(out, prov)
+		}
+	}
+	return out
+}
+
 // unfundedPinnedProviders returns the run's pinned providers, sorted, when
 // NONE of them is funded by the bundle — an API key of that provider, or an
 // OAuth credential whose kind authenticates against it. Nil when the run has
@@ -1080,7 +1173,11 @@ func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string
 		return nil
 	}
 	funded := make(map[string]bool, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
-	for prov := range bundle.APIKeys {
+	// Both channels: a pinned key is exactly the case this gate must not
+	// refuse — every route pins one provider, a shared tier funded it for
+	// that pin, and reading APIKeys alone would fail the launch claiming no
+	// tier holds a credential for it while the key is sealed in this bundle.
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		funded[strings.ToLower(string(prov))] = true
 	}
 	for kind := range bundle.OAuthCredentials {
@@ -1156,7 +1253,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait, pinned map[string]bool) {
 	if p.sealer == nil {
 		return
 	}
@@ -1170,13 +1267,23 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 	for kind := range bundle.OAuthCredentials {
 		taken[secrets.WireFamily(kind)] = true
 	}
-	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] }
+	// One credential per wire family, EXCEPT a slot a route of the run
+	// pins: that one is fundable on its own name (fillAPIKeySlot then
+	// keeps it out of the default precedence). A run with no pin sees the
+	// original rule, unchanged.
+	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] || pinned[strings.ToLower(slot)] }
 
 	// Platform API keys live under the sentinel tenant; the ctx tenant must
 	// match or the store's isolation filter (correctly) returns nothing.
 	if p.apiKeys != nil {
 		missing := make([]secrets.Provider, 0, len(allKnownProviders))
 		for _, prov := range allKnownProviders {
+			// A slot an earlier stage funded is NOT rewritten: the first
+			// tier to fill a slot owns it, and a later tier overwriting it
+			// would move the spend onto its own invoice in silence.
+			if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+				continue
+			}
 			if fillable(string(prov)) {
 				missing = append(missing, prov)
 			}
@@ -1201,12 +1308,15 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 					if !ok || len(r.Plaintext) == 0 || !fillable(string(prov)) {
 						continue
 					}
-					bundle.APIKeys[prov] = string(r.Plaintext)
+					pinnedOnly := fillAPIKeySlot(bundle, taken, prov, string(r.Plaintext))
 					bundle.PlatformSourced[string(prov)] = true
 					apiKeyFPs[prov] = r.Fingerprint
-					taken[secrets.WireFamily(string(prov))] = true
 					usedIDs = append(usedIDs, r.KeyID)
-					p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, prov)
+					if pinnedOnly {
+						p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s (pinned route only — its wire family is served by another credential)", runID, prov)
+					} else {
+						p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, prov)
+					}
 				}
 				if len(usedIDs) > 0 {
 					ids, t := usedIDs, now
@@ -1225,7 +1335,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 			// states verbatim. It is remembered for the restore step
 			// instead, behind any tenant key of the same provider, whose
 			// restore takes precedence.
-			if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
+			if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
 				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, refused, nil, p.sealer, nil, withheld.note)
 				if ferr != nil {
 					p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
@@ -1335,10 +1445,13 @@ type skippedAPIKey struct {
 
 // providersWithoutKey returns the subset of provs that filled no API-key
 // slot — the candidates for the refused-key fallback lookup.
-func providersWithoutKey(provs []secrets.Provider, apiKeys map[secrets.Provider]string) []secrets.Provider {
+func providersWithoutKey(provs []secrets.Provider, apiKeys, pinnedKeys map[secrets.Provider]string) []secrets.Provider {
 	var missing []secrets.Provider
 	for _, prov := range provs {
-		if apiKeys[prov] == "" {
+		// A PINNED fill funds the provider as surely as a default one — it
+		// just serves only the routes that name it. Counting it as
+		// unfunded would remember a key that was used as "refused".
+		if apiKeys[prov] == "" && pinnedKeys[prov] == "" {
 			missing = append(missing, prov)
 		}
 	}
@@ -1964,14 +2077,18 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 	parts := make([]string, 0, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
 	// API keys — the provenance maps tell apart the shared tiers
 	// (deployment-wide fallback keys, the org's lent key) from tenant BYOK.
-	for _, prov := range allKnownProviders {
-		if _, ok := bundle.APIKeys[prov]; !ok {
-			continue
-		}
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		tier := credentialTierForSlot(bundle, grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)
 		fp := apiKeyFPs[prov]
 		if fp == "" {
 			fp = "<unstamped>"
+		}
+		// A pinned key is named as such: it paid for part of the run, and an
+		// operator reading this line to answer "which credential funded that
+		// run?" must not have to infer why a fingerprint is there.
+		if bundle.APIKeys[prov] == "" && bundle.PinnedAPIKeys[prov] != "" {
+			parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s pinned-routes-only)", tier, prov, fp))
+			continue
 		}
 		parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s)", tier, prov, fp))
 	}
@@ -2159,7 +2276,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     NO run record behind (never a stray queued/running run for a launch
 	//     that could not resolve its mandatory credentials).
 	orgID := p.orgIDForTeam(ctx, tenantID)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback), spec.Trust)
+	// The pinned set is derived ONCE, here, and stamped on the document
+	// before it is persisted: every later resolution of this run (every
+	// resume) replays it from the doc instead of re-reading a source that
+	// may have moved. Same doctrine as the model pins and the fallback
+	// chain above.
+	r.PinnedProviders = derivePinnedProviders(wf, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback), spec.Trust, r.PinnedProviders)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -2567,7 +2690,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust)
+	// prior.PinnedProviders, never a fresh derivation: a resume re-resolves
+	// its source, so re-deriving would let a program the launch never
+	// approved decide which credentials this run is granted. Empty on runs
+	// launched before the field existed — the pre-existing
+	// one-key-per-family fill, which is what those runs already had.
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust, prior.PinnedProviders)
 	// Armed before the error check — see SubmitLaunch.
 	if creds.grant != nil {
 		defer func() {

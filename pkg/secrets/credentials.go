@@ -19,6 +19,12 @@ import (
 // the bundle's TTL bounds exposure on the wire and at rest).
 type Credentials struct {
 	APIKeys map[Provider]string
+	// PinnedAPIKeys are keys a shared tier filled only because a route
+	// NAMES their provider — see RunBundle.PinnedAPIKeys for why they are
+	// not in APIKeys. Read them through PinnedAPIKey, and only from a site
+	// that already knows the route names the provider: the default
+	// precedence must never see them.
+	PinnedAPIKeys map[Provider]string
 	// Generic maps workflow/user secret names to plaintext values. It is
 	// populated by the cloud runner from sealed per-run bundles and used
 	// by declared workflow secrets whose value is intentionally empty
@@ -189,6 +195,67 @@ func (c Credentials) APIKey(p Provider) string {
 	return c.APIKeys[p]
 }
 
+// PinnedAPIKey returns the key a shared tier filled for p because a route
+// of the run names p, or "" when there is none.
+//
+// Separate from APIKey on purpose: this one answers "may a route PINNED to
+// p spend something?", never "what does this run hold?". Calling it from a
+// default-precedence walk would undo the whole point of the split — an
+// unpinned node would spend a credential provisioned for a pinned one, on
+// another vendor's account.
+func (c Credentials) PinnedAPIKey(p Provider) string {
+	if c.PinnedAPIKeys == nil {
+		return ""
+	}
+	return c.PinnedAPIKeys[p]
+}
+
+// APIKeyForRoute returns the key a route that NAMES p may spend: the run's
+// own key first, then one a shared tier funded for that pin.
+//
+// This is the accessor every site that already knows the route names its
+// provider should use — a model spec's `<provider>/` prefix, a `provider:`
+// hint, a per-provider funding question. A site that asks "what does this
+// run hold?" without a named provider must keep using APIKey: that is the
+// default precedence, and a pinned key is not part of it.
+func (c Credentials) APIKeyForRoute(p Provider) string {
+	if k := c.APIKey(p); k != "" {
+		return k
+	}
+	return c.PinnedAPIKey(p)
+}
+
+// EveryKeyForRedaction returns every API-key VALUE the run carries, in any
+// channel, for the output secret guard. Deliberately not named after the
+// run's credentials: it answers "what must never appear in output", never
+// "what may this route spend" — a pinned key leaking into a log is a leak
+// like any other, and a new channel added later belongs here the day it
+// exists.
+func (c Credentials) EveryKeyForRedaction() []string {
+	out := make([]string, 0, len(c.APIKeys)+len(c.PinnedAPIKeys))
+	for _, v := range c.APIKeys {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	for _, v := range c.PinnedAPIKeys {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// IsPinnedSlot reports whether the slot is funded ONLY by a pinned key —
+// so a reader looking for the run's DEFAULT credential must skip it.
+func (c Credentials) IsPinnedSlot(slot string) bool {
+	if c.PinnedAPIKeys == nil {
+		return false
+	}
+	p := Provider(slot)
+	return c.PinnedAPIKeys[p] != "" && c.APIKey(p) == ""
+}
+
 func (c Credentials) GenericSecret(name string) string {
 	if c.Generic == nil {
 		return ""
@@ -230,7 +297,9 @@ func SubscriptionOAuthOnly(ctx context.Context, provider Provider, kind OAuthKin
 	if !ok {
 		return false
 	}
-	if creds.APIKey(provider) != "" {
+	// APIKeyForRoute: the caller names the provider, so a key a shared tier
+	// funded for that pin counts as funding it.
+	if creds.APIKeyForRoute(provider) != "" {
 		return false
 	}
 	return creds.OAuthDir(string(kind)) != ""

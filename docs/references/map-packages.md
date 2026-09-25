@@ -185,7 +185,7 @@
 | `pkg/sandbox/noop` | provides the always-available passthrough sandbox driver. | — | 1 · 13 |
 | `pkg/sandbox/registry` | centralises the iterion-shipped sandbox-driver constructor list. | — | 1 · 1 |
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` | 6 · 52 |
-| `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` | 20 · 346 |
+| `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` | 20 · 350 |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | — | 1 · 5 |
 | `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 234 · 166 |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `TeamResolver` | 9 · 14 |
