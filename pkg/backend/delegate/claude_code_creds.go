@@ -969,7 +969,7 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 			// Same licence as the facade branch below: an explicit pin may
 			// spend a key a shared tier funded for it.
 			if k := creds.PinnedAPIKey(secrets.ProviderAnthropic); k != "" {
-				return map[string]string{"ANTHROPIC_API_KEY": k}
+				return map[string]string{"ANTHROPIC_API_KEY": k}, false
 			}
 			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
 				return claudeForfaitEnv(d, sandboxed), false
