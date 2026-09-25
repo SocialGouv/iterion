@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -242,6 +243,10 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 		catalog[name] = cloneServerConfig(cfg)
 	}
 	for name, cfg := range explicit {
+		if cfg == nil {
+			catalog[name] = nil
+			continue
+		}
 		catalog[name] = &ServerConfig{
 			Name:      cfg.Name,
 			Transport: FromIRTransport(cfg.Transport),
@@ -254,6 +259,17 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		cfg := catalog[name]
+		if cfg == nil {
+			return nil, fmt.Errorf("mcp: server %q has no configuration", name)
+		}
+		// The key selects the catalog entry, but CLI adapters forward Name.
+		// Validate both identities before any resolved workflow is published.
+		for _, identity := range []string{name, cfg.Name} {
+			if permission.IsReservedMCPServerName(identity) {
+				return nil, fmt.Errorf("mcp: server %q uses reserved internal name %q; rename the custom MCP server", name, identity)
+			}
+		}
 		if err := validateServerConfig(catalog[name]); err != nil {
 			return nil, fmt.Errorf("mcp: server %q: %w", name, err)
 		}
