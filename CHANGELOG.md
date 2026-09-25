@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.202.0](https://github.com/SocialGouv/iterion/compare/v3.201.0...v3.202.0) (2026-09-25)
+
+### Features
+
+* **cloud:** a pinned provider funds its own slot at the org and platform tiers ([#1818](https://github.com/SocialGouv/iterion/issues/1818)) ([b0ccd66](https://github.com/SocialGouv/iterion/commit/b0ccd660a523fe5216ee6661dd6e5e6b1378dd8a)), references [#659](https://github.com/SocialGouv/iterion/issues/659) [#736](https://github.com/SocialGouv/iterion/issues/736) [#1859](https://github.com/SocialGouv/iterion/issues/1859)
+
+    <details><summary>why</summary>
+
+    The shared tiers fill one credential per WIRE FAMILY, so a tenant whose org or platform holds both an Anthropic and a Moonshot key was served anthropic alone — and a node pinned `provider: moonshot` was then refused, correctly, with its funding one row away. Measured on the platform tier before this:
+
+    </details>
+
 ## [3.201.0](https://github.com/SocialGouv/iterion/compare/v3.200.3...v3.201.0) (2026-09-25)
 
 ### Features
