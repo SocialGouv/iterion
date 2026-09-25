@@ -25,13 +25,6 @@ import (
 // class by construction. The class test walks the mux and pins every route
 // of the class to this choke point.
 
-const (
-	// runTenantLRUSize bounds the per-process run-id → team cache. A run's
-	// team never changes, so entries carry no TTL; the bound keeps a
-	// pathological id-flood from growing the map. Eviction is LRU.
-	runTenantLRUSize = 8192
-)
-
 // runScopePrefix is one canonical run pattern shape: the fixed segment
 // chain that precedes the id wildcard and the wildcard's index.
 type runScopePrefix = struct {

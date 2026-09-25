@@ -584,3 +584,43 @@ func TestWSDispatchRefusesAMutatingEnvelopeFromAViewer(t *testing.T) {
 		// No immediate reply: the command proceeded past the gate.
 	}
 }
+
+// The list scopes explicitly (#1848 / ADR-103): the handler hands the
+// store a context stamped with the RESOLVED team - the caller's active
+// team by default, the requested ?team_id= when the caller has standing
+// in it, and a 403 naming the parameter for an invisible team. The store
+// side of the filter is the mongo conformance suite's to prove.
+func TestListRunsScopedByExplicitTeam(t *testing.T) {
+	srv, guard := newRunScopeServer(t)
+
+	scope := func(query string, id auth.Identity) (int, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/runs"+query, nil)
+		req = req.WithContext(auth.WithIdentity(req.Context(), id))
+		rec := httptest.NewRecorder()
+		srv.handleListRuns(rec, req)
+		if rec.Code != http.StatusOK {
+			return rec.Code, ""
+		}
+		return rec.Code, guard.lastListedTenant()
+	}
+
+	// No override: the caller's active team.
+	code, team := scope("", auth.Identity{UserID: "u-member-b", TeamID: "tenant-B", Role: identity.RoleMember})
+	if code != http.StatusOK || team != "tenant-B" {
+		t.Fatalf("default scope: %d %q, want the caller's active team", code, team)
+	}
+	// An override to a team the caller belongs to.
+	code, team = scope("?team_id=tenant-A", auth.Identity{UserID: "u-both", TeamID: "tenant-B", Role: identity.RoleMember})
+	if code != http.StatusOK || team != "tenant-A" {
+		t.Fatalf("?team_id=tenant-A: %d %q, want the requested team", code, team)
+	}
+	// An override to an invisible team: 403 naming the parameter.
+	req := httptest.NewRequest(http.MethodGet, "/api/runs?team_id=tenant-A", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{UserID: "u-member-b", TeamID: "tenant-B", Role: identity.RoleMember}))
+	rec := httptest.NewRecorder()
+	srv.handleListRuns(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "team_id") {
+		t.Fatalf("invisible override: %d %s, want a 403 naming team_id", rec.Code, rec.Body.String())
+	}
+}
