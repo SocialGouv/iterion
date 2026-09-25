@@ -39,7 +39,12 @@ version: 1.3.0
 ## descriptive column, and a paragraph of soft-wrapped index lines with
 ## no markup at all, were credited whole to every feature they listed);
 ## table pipes, HTML tags, link destinations, HTML comments and link
-## reference definitions are not prose (a visible url is);
+## reference definitions are not prose (a visible url is), and CITATIONS
+## are read from that same visible text -- one inside a comment or a link
+## definition anchors nothing, documents nothing and is not verified;
+## words are counted in EVERY script, not only those folding to ASCII;
+## a DEGRADED note names its repair as operator-side, since fail_log
+## relays it to a campaign that may write only the pages;
 ## `CONCEALED_EXCLUSION` reads the same block and asks for prose of its OWN,
 ## sharing vocabulary with the reason the net records, once per hole (a
 ## row of dots is length without words, and one sentence cannot answer

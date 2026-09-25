@@ -134,6 +134,12 @@ silence:
 | `UNANCHORED_CHAPTER` | a chapter (heading level ≥ 2) citing no reference **in its heading line itself** — a citation in the chapter body does not anchor it — and not declaring that it restitutes none; plus the ceiling, `coverage_max_anchorless`, on how many chapters may declare it at all |
 | `NET_UNREADABLE` | the material cannot be judged: absent, unparsable or not-an-object artifacts, an inventory that contradicts itself, a declared hole with no chapter title to name it under, and **every emptiness** — no page, no feature, no corpus entry, an empty route table |
 
+A `DEGRADED` note names a repair that lies with the **operator**, and says
+so: those notes ride the log `fail_log` relays to the next pass, and an
+imperative there would order the campaign to write inside `<oracle_dir>` —
+which `scope_check` forbids, so obeying the coverage gate would redden the
+scope gate.
+
 That last row is the point of the design, not a detail: a guard written
 `if collection and …` is *disabled* exactly when the collection is
 empty, so each emptiness is decided out loud instead.
@@ -198,7 +204,11 @@ What the gate deliberately does not assume:
   tags, link destinations, HTML comments and link reference definitions
   are not prose — the last two are text no reader ever sees. A url the
   page *shows* is prose: the line drawn is between what a reader sees and
-  what it never does. A heading documents
+  what it never does. **Citations are read from that same visible text**,
+  so one inside an HTML comment or a link reference definition anchors no
+  chapter and documents no feature — and is not verified either, because a
+  reference nobody can read claims nothing. Words are counted in every
+  script, not only the ones that fold to ASCII. A heading documents
   nothing: it labels and anchors a chapter. And a block that documents
   several features **shares** its prose between them — each needs its
   own `coverage_min_prose`. Lumped into one paragraph, an index table

@@ -2531,6 +2531,185 @@ func TestProductDocsCoverageGateCreditsABlockItsOwnProse(t *testing.T) {
 	}
 }
 
+// TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem: prose is
+// measured on the VISIBLE text, and the citation scan must read the same text.
+// Harvested from the raw line, a citation inside an HTML comment or a link
+// reference definition — text that renders as nothing — anchored a chapter and
+// documented a feature, which is the one thing these two rules exist to
+// refuse. The link-definition form is the sharper one: `page_lint` has no rule
+// against it, so `lint_ok` stays green and the whole gate passes on text no
+// reader ever sees.
+//
+// Invisible text is not read in EITHER direction: it satisfies nothing, and it
+// is not verified either, because a reference nobody can read claims nothing.
+func TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem(t *testing.T) {
+	requireGitPython(t)
+	// The control is the INTACT fixture, which the gate blesses. Each case
+	// below moves exactly one claim into invisible text, so `coverage_ok` is
+	// the discriminator: green means the invisible text was read.
+	if got := runCoverage(t, newCoverageFixture(t)); !got.OK {
+		t.Fatalf("the control fixture, whose citations are all visible, was refused:\n%s", got.Log)
+	}
+	for _, tc := range []struct {
+		name  string
+		from  string
+		to    string
+		cause string
+	}{
+		{
+			// A chapter anchored ONLY by a citation inside an HTML comment.
+			name:  "an HTML comment does not anchor a chapter",
+			from:  "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+			to:    "## One item <!--[[ref:/dashboard/items/{id}]] [[ref:039]]-->",
+			cause: "UNANCHORED_CHAPTER",
+		},
+		{
+			// A feature paired with its entry ONLY inside an HTML comment.
+			name: "an HTML comment does not document a feature",
+			from: "[[ref:items.detail]] [[ref:039]] shows one item in full:",
+			to:   "<!--[[ref:items.detail]] [[ref:039]]--> The item record shows one item in full:",
+			// The chapter above it stays visibly anchored, so this is a GAP
+			// and nothing else.
+			cause: "GAP -- items.detail",
+		},
+		{
+			// The sharper form: `page_lint` has no rule against a link
+			// reference definition, so `lint_ok` stays green and the whole
+			// gate would pass on text no reader ever sees.
+			name:  "a link reference definition does not document a feature",
+			from:  "[[ref:items.detail]] [[ref:039]] shows one item in full:",
+			to:    "[fa]: /items/42 [[ref:items.detail]] [[ref:039]]\nThe item record shows one item in full:",
+			cause: "GAP -- items.detail",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			mutate(t, ws, "docs/demo/README.md", tc.from, tc.to)
+			got := runCoverage(t, ws)
+			if got.OK {
+				t.Fatalf("invisible text satisfied the rule that asks the page to say something:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, tc.cause) {
+				t.Fatalf("the gate is red WITHOUT %q — a refusal for another reason proves nothing:\n%s", tc.cause, got.Log)
+			}
+		})
+	}
+	// The other direction: invisible text is not read AT ALL. An invented
+	// reference nobody can see claims nothing, so it is not verified either —
+	// and it may not turn a green documentation red.
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "A method chapter observes nothing and says so.",
+		"A method chapter observes nothing and says so.\n<!-- [[ref:items.invented]] [[ref:999]] -->")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a citation no reader can see turned a green documentation red:\n%s", got.Log)
+	}
+	for _, tok := range []string{"items.invented", "999"} {
+		if strings.Contains(got.Log, tok) {
+			t.Fatalf("the gate verified %q, a citation inside an HTML comment:\n%s", tok, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateCountsWordsInEveryScript: prose was counted with
+// an ASCII-only word pattern over accent-folded text, so a page written in a
+// script that does not decompose to ASCII yielded ZERO words: `min_words` was
+// unreachable, every feature a permanent GAP, and the repair lies in no `.md`
+// file — on a node whose vars declare it language-neutral.
+func TestProductDocsCoverageGateCountsWordsInEveryScript(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "# Продукт\n"+
+		"\n"+
+		"## Страница товара — [[ref:/dashboard/items/{id}]] [[ref:039]]\n"+
+		"\n"+
+		"[[ref:items.detail]] [[ref:039]] показывает одну запись полностью: каждое поле,\n"+
+		"которое заполнил менеджер, историю изменений и доступные ему действия.\n")
+	got := runCoverage(t, ws)
+	if strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("a Cyrillic paragraph that plainly describes the screen was refused:\n%s", got.Log)
+	}
+	// The word test still bites in that script: length without words is not
+	// writing, whatever the alphabet.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "# Продукт\n"+
+		"\n"+
+		"## Страница товара — [[ref:/dashboard/items/{id}]] [[ref:039]]\n"+
+		"\n"+
+		"[[ref:items.detail]] [[ref:039]] "+strings.Repeat("·-", 45)+"\n")
+	if got := runCoverage(t, ws); !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("a row of punctuation passed for a description:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNeverOrdersTheCampaignOutsideItsSet: the two
+// DEGRADED notes ride `log`, and `gate.fail_log` relays `log` to the next pass
+// whenever the gate is red. Written as imperatives ("Commit the routes_probe
+// output"), they ordered the campaign to write inside `<oracle_dir>` — which
+// `scope_check` forbids — so obeying the coverage gate reddened the scope gate:
+// the two-gates-contradicting loop the pre-flight rule exists to prevent.
+func TestProductDocsCoverageGateNeverOrdersTheCampaignOutsideItsSet(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	if err := os.Remove(filepath.Join(ws, ".golden-master/routes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// A red pass, so the log is what fail_log carries to the campaign.
+	mutate(t, ws, "docs/demo/README.md", "## How this page was built "+defaultNoAnchorMarker, "## How this page was built")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("the fixture was meant to be red:\n%s", got.Log)
+	}
+	for _, note := range []string{"no declared route table", "carries NO trace of its own gate"} {
+		if !strings.Contains(got.Log, note) {
+			t.Fatalf("the degradation %q is not reported at all:\n%s", note, got.Log)
+		}
+	}
+	if n := strings.Count(got.Log, "OPERATOR-SIDE ONLY, never a repair for this run"); n != 2 {
+		t.Fatalf("degradation notes marked operator-side = %d, want 2 — fail_log carries this text to a campaign that may write only the pages:\n%s", n, got.Log)
+	}
+	// No note may read as an order to commit anything: the campaign obeys
+	// fail_log literally, and every path named here is outside its set.
+	for _, order := range []string{"Commit the routes_probe", "Commit the rite emissions"} {
+		if strings.Contains(got.Log, order) {
+			t.Fatalf("the log still orders %q, which scope_check forbids:\n%s", order, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCampaignPromptCarriesTheTokensTheGateMatches: the gate matches
+// the exclusions chapter title and the anchorless marker EXACTLY, and both are
+// declared vars. Named only in prose ("the declared anchorless marker"), the
+// agent had to guess them on pass 1 — `<!--no-anchor-->` is unguessable — and a
+// wrong guess costs a whole pass out of `max_passes`+1, in CONCEALED_EXCLUSION
+// for every hole plus an UNANCHORED_CHAPTER.
+func TestProductDocsCampaignPromptCarriesTheTokensTheGateMatches(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("product-docs", "main.bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "prompt campaign_user:")
+	if start < 0 {
+		t.Fatal("prompt campaign_user not found")
+	}
+	end := strings.Index(body[start:], "\nprompt ")
+	if end < 0 {
+		t.Fatal("end of prompt campaign_user not found")
+	}
+	prompt := body[start : start+end]
+	for _, v := range []string{
+		"{{vars.coverage_exclusions_heading}}",
+		"{{vars.coverage_no_anchor_marker}}",
+		"{{vars.coverage_citation_open}}",
+		"{{vars.coverage_citation_close}}",
+	} {
+		if !strings.Contains(prompt, v) {
+			t.Fatalf("the campaign prompt describes a rule the gate matches on %s without passing its value: the writer would have to guess it", v)
+		}
+	}
+}
+
 // TestProductDocsCoverageGateReadsFrontMatterAsMetadata: a page may open on
 // YAML front matter, which GitBook and MkDocs read as page metadata and never
 // show. Read as markdown, its closing --- underlines the keys into a level-2

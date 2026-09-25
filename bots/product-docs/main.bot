@@ -729,7 +729,9 @@ prompt campaign_user:
   and nothing else: a code span is prose, always. So `404` in a sentence
   is a number, an interface label in backticks is a label, and neither
   will ever be refused — while EVERY citation you write is checked,
-  wherever it sits. Cite only what you read in those two files: the
+  wherever a reader can see it. Text a reader never sees is not read at
+  all: a citation inside an HTML comment or a link reference definition
+  anchors nothing and documents nothing. Cite only what you read in those two files: the
   token is a corpus entry id, an inventory feature identifier, or a path
   the net observes (leading slash). The contract that gate enforces, and
   which you write to:
@@ -742,16 +744,18 @@ prompt campaign_user:
     citations side by side are an index row, and a heading labels a
     chapter without documenting anything;
   - every EXCLUSION must be named as such, under a chapter whose title
-    IS EXACTLY the declared exclusions token (the WHOLE title, compared
-    case- and accent-insensitively), in a paragraph or list item of its
-    own saying why — a bare identifier or a "TODO" is a hole, not a
-    sentence, and two exclusions may not share one paragraph;
+    IS EXACTLY `{{vars.coverage_exclusions_heading}}` (the WHOLE title,
+    compared case- and accent-insensitively), in a paragraph or list
+    item of its own saying why — a bare identifier or a "TODO" is a
+    hole, not a sentence, and two exclusions may not share one
+    paragraph;
   - every chapter (heading level 2 and below) CITES at least one
     reference IN ITS HEADING LINE ITSELF — a citation in the chapter
-    body does NOT anchor it — or declares it restitutes none with the
-    declared anchorless marker. That marker is the only HTML comment
-    the editorial lint tolerates, and only a FEW chapters may carry it:
-    when the gate says the declarations are spent, anchor the chapter.
+    body does NOT anchor it — or declares it restitutes none by
+    carrying `{{vars.coverage_no_anchor_marker}}` verbatim in that
+    heading line. That marker is the only HTML comment the editorial
+    lint tolerates, and only a FEW chapters may carry it: when the gate
+    says the declarations are spent, anchor the chapter.
   When the path IS empty there is no net, and none of the above
   applies.
 
@@ -2654,7 +2658,11 @@ CITE_RE = re.compile(re.escape(cite_open) + r'\s*([^' + chr(10) + r']*?)\s*' + r
 inventory_names = set(entry_lists) | set(exclusion_reasons)
 HEADING_RE = re.compile(r'^(#{1,6})\s+(.*\S)\s*' + chr(36))
 FENCE_RE = re.compile(r'^\s{0,3}(' + BT * 3 + '+|~{3,})')
-WORD_RE = re.compile(r'[0-9a-z]+')
+## A WORD IN EVERY SCRIPT. An ASCII range counted zero words on a page written
+## in a script that does not decompose to ASCII, so min_words could never be
+## reached: every feature a permanent GAP, unrepairable inside the writeable
+## set, on a node whose vars declare it language-neutral.
+WORD_RE = re.compile(r'[^\W_]+')
 PLACEHOLDER_RE = re.compile('|'.join(re.escape(p) for p in placeholders), re.I) if placeholders else None
 ## THE UNIT A READER READS AS ONE. Prose is credited over the BLOCK that
 ## carries a citation, and a block is what markdown renders as one: a run of
@@ -2864,14 +2872,22 @@ for where, rows in pages:
         b['under_exclusions'] = in_exc
         b['names'], b['pairs'] = set(), set()
         anchored = False
-        for no, text, _content in b['lines']:
+        for no, text, content in b['lines']:
             ents, ids, paths, unknown = [], [], [], []
+            ## THE SAME TEXT PROSE IS MEASURED ON. Invisible text is not read,
+            ## in EITHER direction: a citation inside an HTML comment or a link
+            ## reference definition renders as nothing, so it anchors no
+            ## chapter and documents no feature -- and it is not verified
+            ## either, because a reference nobody can read claims nothing. Read
+            ## from the raw line, it let text no reader ever sees satisfy the
+            ## two rules that ask a page to say something.
+            visible = '' if LINK_DEF_RE.match(content) else COMMENT_RE.sub(' ', content)
             ## EVERY citation, and ONLY the citations. A token is a path when
             ## it leads with a slash, an entry when the corpus holds it, an
             ## inventory id when the inventory does -- and an INVENTED
             ## reference otherwise, wherever it sits and whatever else the
             ## line carries. A code span is prose and is never read here.
-            for tok in (CITE_RE.findall(text) if CITE_RE is not None else []):
+            for tok in (CITE_RE.findall(visible) if CITE_RE is not None else []):
                 tok = tok.strip()
                 if not tok:
                     refuse('PHANTOM_DOC', where + ':' + str(no), 'an EMPTY citation ' + cite_open + cite_close + ' names nothing -- cite a corpus entry id, an inventory feature id or a path, or write prose')
@@ -3060,9 +3076,14 @@ named = len(exclusion_reasons) - len(hidden)
 count_line = ('COVERAGE GATE: ' + str(documented) + '/' + str(len(feature_names)) + ' features documented, ' + str(named) + '/' + str(len(exclusion_reasons)) + ' exclusions named, ' + str(len(cited_entries)) + ' corpus entries cited, ' + str(len(cited_paths)) + ' paths cited, ' + str(len(headings)) + ' chapters of which ' + str(len(marked)) + ' declared anchorless (ceiling ' + str(max_anchorless) + '); net at ' + oracle + ' holds ' + str(len(feature_names)) + ' features + ' + str(len(exclusion_reasons)) + ' exclusions, ' + str(len(corpus_ids)) + ' corpus entries, ' + str(len(declared)) + ' declared routes')
 notes = [count_line]
 if net_unproven:
-    notes.append('COVERAGE GATE: DEGRADED -- the net at ' + oracle + ' carries NO trace of its own gate (neither verify-oracle.sh nor REPORT.md). This gate reads the inventory and the corpus as given; nothing here proves a harness ever scored them. Commit the rite emissions alongside the net -- and, better, a verdict stamped with the commit it judged.')
+    ## OPERATOR-SIDE, SAID SO. These notes ride log, and gate.fail_log relays
+    ## log to the next pass whenever the gate is red: an imperative here reads
+    ## as a repair order to a campaign that may write <product_dir>/**/*.md and
+    ## nothing else. Following it would redden scope_check instead -- the very
+    ## loop the pre-flight rule exists to prevent.
+    notes.append('COVERAGE GATE: DEGRADED -- the net at ' + oracle + ' carries NO trace of its own gate (neither verify-oracle.sh nor REPORT.md). This gate reads the inventory and the corpus as given; nothing here proves a harness ever scored them. OPERATOR-SIDE ONLY, never a repair for this run: the rite emissions live with the net, outside ' + (product_dir or '<product_dir>') + '/**/*.md, and a verdict stamped with the commit it judged would be better still.')
 if routes_degraded:
-    notes.append('COVERAGE GATE: DEGRADED -- no declared route table at ' + (routes_path or '<coverage_routes_file>') + '. golden-master runs its route table through config.json routes_probe and commits no artifact, so a cited path is checked against the CORPUS ONLY: a route the corpus never touches cannot be recognised and is refused. Commit the routes_probe output there to lift the degradation.')
+    notes.append('COVERAGE GATE: DEGRADED -- no declared route table at ' + (routes_path or '<coverage_routes_file>') + '. golden-master runs its route table through config.json routes_probe and commits no artifact, so a cited path is checked against the CORPUS ONLY: a route the corpus never touches cannot be recognised and is refused. OPERATOR-SIDE ONLY, never a repair for this run: the routes_probe output lands with the net, outside ' + (product_dir or '<product_dir>') + '/**/*.md.')
 for m in marked:
     notes.append('COVERAGE GATE: chapter declared anchorless -- ' + m['page'] + ':' + str(m['line']) + ' ' + m['title'])
 for c in causes[:60]:
