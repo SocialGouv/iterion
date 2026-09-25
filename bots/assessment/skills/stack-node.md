@@ -83,24 +83,72 @@ sha = os.environ["BASE_SHA"]
 ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL="C", TZ="UTC")
 
 def tree():
-    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--name-only", "--full-tree", sha],
+    # oid AND path: the bodies are read in BATCHES below, which needs the oid.
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--full-tree", sha],
                             capture_output=True, text=True, env=ENV, timeout=300)
     if listed.returncode != 0:
         raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
-    return [p for p in listed.stdout.splitlines() if p]
+    out = {}
+    for line in listed.stdout.splitlines():
+        head, tab, path = line.partition("\t")
+        fields = head.split()
+        if tab and path and len(fields) >= 3 and fields[1] == "blob":
+            out[path] = fields[2]
+    return out
+
+# ONE PROCESS PER BATCH, never one per file. A `git show` per path is ~5-10 ms
+# of fork, which is minutes on the large legacy tree this assessment exists for
+# — past the runner's wall, after which no output lands and the measurement
+# publishes a zero it never took. Bounded by a blob count and a byte budget, so
+# a tree of few huge files is bounded too. The floor reads the same way.
+BATCH_BLOBS, BATCH_BYTES, MAX_BLOB = 512, 64 * 1024 * 1024, 2 * 1024 * 1024
+
+def blobs(paths):
+    """Yield (path, text) for each path, reading the bodies in batches."""
+    oids = tree()
+    wanted = [(p, oids[p]) for p in paths if p in oids]
+    for start in range(0, len(wanted), BATCH_BLOBS):
+        batch, budget = [], 0
+        for entry in wanted[start:start + BATCH_BLOBS]:
+            batch.append(entry)
+            budget += 1
+        proc = subprocess.Popen(["git", "-C", ws, "cat-file", "--batch"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV)
+        try:
+            body, err = proc.communicate("".join("%s\n" % oid for _, oid in batch).encode("ascii"),
+                                         timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise SystemExit("reading the blobs of %s timed out" % sha[:12])
+        if proc.returncode != 0:
+            raise SystemExit("git cat-file --batch exited %d: %s"
+                             % (proc.returncode, err.decode("utf-8", "replace")[-300:]))
+        cursor = 0
+        for path, oid in batch:
+            newline = body.find(b"\n", cursor)
+            if newline < 0:
+                raise SystemExit("git cat-file --batch output ended inside a header")
+            header = body[cursor:newline].split()
+            if len(header) != 3:
+                raise SystemExit("git cat-file --batch refused %s: %s"
+                                 % (oid[:12], body[cursor:newline].decode("utf-8", "replace")))
+            length = int(header[2])
+            raw = body[newline + 1:newline + 1 + length]
+            cursor = newline + 1 + length + 1
+            yield path, ("" if length > MAX_BLOB else raw.decode("utf-8", "replace"))
 
 def blob(path):
-    shown = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (sha, path)],
-                           capture_output=True, env=ENV, timeout=120)
-    return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else ""
+    for _, text in blobs([path]):
+        return text
+    return ""
 
 def manifests():
     return [p for p in tree() if os.path.basename(p) == "package.json" and "node_modules/" not in p]
 
 versions, rows = [], []
-for m in sorted(manifests()):
+for m, text in blobs(sorted(manifests())):
     try:
-        data = json.loads(blob(m))
+        data = json.loads(text)
     except ValueError as exc:
         rows.append({"manifest": m, "unreadable": str(exc)})
         continue
@@ -142,24 +190,72 @@ sha = os.environ["BASE_SHA"]
 ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL="C", TZ="UTC")
 
 def tree():
-    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--name-only", "--full-tree", sha],
+    # oid AND path: the bodies are read in BATCHES below, which needs the oid.
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--full-tree", sha],
                             capture_output=True, text=True, env=ENV, timeout=300)
     if listed.returncode != 0:
         raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
-    return [p for p in listed.stdout.splitlines() if p]
+    out = {}
+    for line in listed.stdout.splitlines():
+        head, tab, path = line.partition("\t")
+        fields = head.split()
+        if tab and path and len(fields) >= 3 and fields[1] == "blob":
+            out[path] = fields[2]
+    return out
+
+# ONE PROCESS PER BATCH, never one per file. A `git show` per path is ~5-10 ms
+# of fork, which is minutes on the large legacy tree this assessment exists for
+# — past the runner's wall, after which no output lands and the measurement
+# publishes a zero it never took. Bounded by a blob count and a byte budget, so
+# a tree of few huge files is bounded too. The floor reads the same way.
+BATCH_BLOBS, BATCH_BYTES, MAX_BLOB = 512, 64 * 1024 * 1024, 2 * 1024 * 1024
+
+def blobs(paths):
+    """Yield (path, text) for each path, reading the bodies in batches."""
+    oids = tree()
+    wanted = [(p, oids[p]) for p in paths if p in oids]
+    for start in range(0, len(wanted), BATCH_BLOBS):
+        batch, budget = [], 0
+        for entry in wanted[start:start + BATCH_BLOBS]:
+            batch.append(entry)
+            budget += 1
+        proc = subprocess.Popen(["git", "-C", ws, "cat-file", "--batch"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV)
+        try:
+            body, err = proc.communicate("".join("%s\n" % oid for _, oid in batch).encode("ascii"),
+                                         timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise SystemExit("reading the blobs of %s timed out" % sha[:12])
+        if proc.returncode != 0:
+            raise SystemExit("git cat-file --batch exited %d: %s"
+                             % (proc.returncode, err.decode("utf-8", "replace")[-300:]))
+        cursor = 0
+        for path, oid in batch:
+            newline = body.find(b"\n", cursor)
+            if newline < 0:
+                raise SystemExit("git cat-file --batch output ended inside a header")
+            header = body[cursor:newline].split()
+            if len(header) != 3:
+                raise SystemExit("git cat-file --batch refused %s: %s"
+                                 % (oid[:12], body[cursor:newline].decode("utf-8", "replace")))
+            length = int(header[2])
+            raw = body[newline + 1:newline + 1 + length]
+            cursor = newline + 1 + length + 1
+            yield path, ("" if length > MAX_BLOB else raw.decode("utf-8", "replace"))
 
 def blob(path):
-    shown = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (sha, path)],
-                           capture_output=True, env=ENV, timeout=120)
-    return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else ""
+    for _, text in blobs([path]):
+        return text
+    return ""
 
 def manifests():
     return [p for p in tree() if os.path.basename(p) == "package.json" and "node_modules/" not in p]
 
 runnable = []
-for m in sorted(manifests()):
+for m, text in blobs(sorted(manifests())):
     try:
-        data = json.loads(blob(m))
+        data = json.loads(text)
     except ValueError:
         continue
     scripts = data.get("scripts") or {}
@@ -190,16 +286,64 @@ sha = os.environ["BASE_SHA"]
 ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL="C", TZ="UTC")
 
 def tree():
-    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--name-only", "--full-tree", sha],
+    # oid AND path: the bodies are read in BATCHES below, which needs the oid.
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--full-tree", sha],
                             capture_output=True, text=True, env=ENV, timeout=300)
     if listed.returncode != 0:
         raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
-    return [p for p in listed.stdout.splitlines() if p]
+    out = {}
+    for line in listed.stdout.splitlines():
+        head, tab, path = line.partition("\t")
+        fields = head.split()
+        if tab and path and len(fields) >= 3 and fields[1] == "blob":
+            out[path] = fields[2]
+    return out
+
+# ONE PROCESS PER BATCH, never one per file. A `git show` per path is ~5-10 ms
+# of fork, which is minutes on the large legacy tree this assessment exists for
+# — past the runner's wall, after which no output lands and the measurement
+# publishes a zero it never took. Bounded by a blob count and a byte budget, so
+# a tree of few huge files is bounded too. The floor reads the same way.
+BATCH_BLOBS, BATCH_BYTES, MAX_BLOB = 512, 64 * 1024 * 1024, 2 * 1024 * 1024
+
+def blobs(paths):
+    """Yield (path, text) for each path, reading the bodies in batches."""
+    oids = tree()
+    wanted = [(p, oids[p]) for p in paths if p in oids]
+    for start in range(0, len(wanted), BATCH_BLOBS):
+        batch, budget = [], 0
+        for entry in wanted[start:start + BATCH_BLOBS]:
+            batch.append(entry)
+            budget += 1
+        proc = subprocess.Popen(["git", "-C", ws, "cat-file", "--batch"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV)
+        try:
+            body, err = proc.communicate("".join("%s\n" % oid for _, oid in batch).encode("ascii"),
+                                         timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise SystemExit("reading the blobs of %s timed out" % sha[:12])
+        if proc.returncode != 0:
+            raise SystemExit("git cat-file --batch exited %d: %s"
+                             % (proc.returncode, err.decode("utf-8", "replace")[-300:]))
+        cursor = 0
+        for path, oid in batch:
+            newline = body.find(b"\n", cursor)
+            if newline < 0:
+                raise SystemExit("git cat-file --batch output ended inside a header")
+            header = body[cursor:newline].split()
+            if len(header) != 3:
+                raise SystemExit("git cat-file --batch refused %s: %s"
+                                 % (oid[:12], body[cursor:newline].decode("utf-8", "replace")))
+            length = int(header[2])
+            raw = body[newline + 1:newline + 1 + length]
+            cursor = newline + 1 + length + 1
+            yield path, ("" if length > MAX_BLOB else raw.decode("utf-8", "replace"))
 
 def blob(path):
-    shown = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (sha, path)],
-                           capture_output=True, env=ENV, timeout=120)
-    return shown.stdout.decode("utf-8", "replace") if shown.returncode == 0 else ""
+    for _, text in blobs([path]):
+        return text
+    return ""
 
 def manifests():
     return [p for p in tree() if os.path.basename(p) == "package.json" and "node_modules/" not in p]
@@ -215,8 +359,8 @@ files = [f for f in tree() if f.endswith(SOURCE)
          and "node_modules/" not in f and not f.endswith(".d.ts")
          and ".min." not in os.path.basename(f)]
 total, hits = 0, []
-for f in files:
-    n = len(ROUTE.findall(blob(f)))
+for f, text in blobs(files):
+    n = len(ROUTE.findall(text))
     total += n
     if n:
         hits.append({"file": f, "count": n})

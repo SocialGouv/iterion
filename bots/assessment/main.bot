@@ -240,6 +240,11 @@ prompt judgement_user:
   re-describe it — "[[fact:size.index]] critical findings" would publish a
   measured number certifying something nobody measured.
 
+  `[[ref:§2]]` is a SECTION reference and nothing else: a section number, or
+  text with no digit in it. A figure written inside it — `[[ref:1 240
+  findings]]` — does not match the form, stays on the line, and is refused as
+  the typed number it is.
+
   `state_judgement` — how this repository stands, read as a whole: what its
   measurements mean together, what they do not say, and the risk a reader
   should carry away. Three paragraphs at most.
@@ -2726,9 +2731,14 @@ tool render:
     # resolver reads the script body whole.)
     PLACEHOLDER = re.compile(r"\[\[fact:([A-Za-z0-9_.-]+)\]\]")
     # The ONE legitimate way a digit reaches the page without being a
-    # measurement: a cross-reference. It renders as its own text, and it is
-    # explicit, so the rule below has nothing to guess.
-    REFERENCE = re.compile(r"\[\[ref:([^\[\]\n]{1,60})\]\]")
+    # measurement: a SECTION cross-reference. Bounded to that, because the rule
+    # below strips it before looking for digits — admitting any sixty characters
+    # made `[[ref:1 240 critical findings]]` render as "1 240 critical findings"
+    # in a signed document, with no identifier ever checked, through the one
+    # escape hatch the prompt teaches. Either a section number, or text carrying
+    # no digit at all; anything else does not match, stays in the line, and is
+    # refused as the typed figure it is.
+    REFERENCE = re.compile(r"\[\[ref:(§\s?\d+(?:\.\d+)*[^\[\]\n\d]{0,40}|[^\[\]\n\d]{1,60})\]\]")
     # An ordered list is layout, not a quantity. Its marker is stripped before
     # the digit rule reads the line; nothing else on the line is.
     LIST_MARKER = re.compile(r"(?m)^(\s*)\d+[.)](\s)")
@@ -3518,15 +3528,45 @@ tool contract_lint:
 
     # THIS RUN'S OWN ARTEFACTS ARE STILL UNTRACKED HERE, so `git diff HEAD`
     # cannot see them: the contract this node has just PARSED, the outcomes
-    # beside it, the survey and the rendered documents are all written and not
-    # yet committed. A gate command that rewrites the contract after the parse
-    # is then invisible, and `commit` stages what is on DISK — so the run would
-    # publish a contract no lint ever read, under a message saying it was
-    # validated whole. They are digested by name, into the same value the probe
-    # compares around every command.
-    RUN_ARTEFACTS = [plan_path,
-                     os.path.join(os.path.dirname(plan_path), "outcomes.json"),
-                     os.path.join(ws, {{vars.survey_path}})]
+    # beside it, the survey, the rendered documents, the plan judgement `render`
+    # held back for `render_plan`, and the measured facts that document reads.
+    # A gate command that rewrites any of them after this node has read it is
+    # then invisible, and what is published downstream is what is on DISK —
+    # prose that never went through the renderer's audit, or a band computed
+    # from facts nobody measured.
+    #
+    # THE ROOTS, not a list of names. A hand-kept list is what drifted here: it
+    # named three artefacts and left out the two that `render_plan` reads after
+    # this node runs. Everything this run writes lives under one of these three
+    # directories, so everything under them is digested — including a file a
+    # later version of this bundle adds.
+    ARTEFACT_ROOTS = [os.path.join(ws, os.path.dirname(plan_rel)),
+                      os.path.join(ws, {{vars.out_dir}}),
+                      scratch]
+
+    def artefact_digest():
+        seen = hashlib.sha256()
+        for root in ARTEFACT_ROOTS:
+            for current, directories, names in os.walk(root):
+                directories.sort()
+                for name in sorted(names):
+                    path = os.path.join(current, name)
+                    try:
+                        with open(path, "rb") as handle:
+                            body = handle.read()
+                    except OSError:
+                        body = b"\0unreadable"
+                    seen.update(path.encode("utf-8") + b"\0" + hashlib.sha256(body).digest())
+        # The documents by NAME as well, from the node that wrote them: one
+        # written outside these roots is still this run's to publish.
+        for path in sorted(document_paths):
+            try:
+                with open(path, "rb") as handle:
+                    body = handle.read()
+            except OSError:
+                body = b"\0absent"
+            seen.update(path.encode("utf-8") + b"\0" + hashlib.sha256(body).digest())
+        return seen.digest()
 
     def tracked_state():
         diff = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
@@ -3538,18 +3578,8 @@ tool contract_lint:
                    "cannot read the tracked state of %s around the gate probe: %s" % (
                        ws, (diff.stderr or b"").decode("utf-8", "replace").strip()[-300:]
                        or (names.stderr or "").strip()[-300:]))
-        own = hashlib.sha256()
-        changed = []
-        for path in RUN_ARTEFACTS + sorted(document_paths):
-            try:
-                with open(path, "rb") as handle:
-                    body = handle.read()
-            except OSError:
-                body = b"\0absent"
-            own.update(path.encode("utf-8") + b"\0" + hashlib.sha256(body).digest())
-            changed.append(os.path.relpath(path, ws))
-        return (hashlib.sha256(diff.stdout + own.digest()).hexdigest(),
-                sorted(set(n for n in names.stdout.splitlines() if n)), changed)
+        return (hashlib.sha256(diff.stdout + artefact_digest()).hexdigest(),
+                sorted(set(n for n in names.stdout.splitlines() if n)))
 
     # One process GROUP per command, killed whole on the wall: a gate that
     # starts a build leaves children behind, and a child still writing after
@@ -3588,14 +3618,14 @@ tool contract_lint:
             verdicts.append("%s -> %s" % (command, code))
             state_after = tracked_state()
             if state_after != state_before:
-                changed = sorted(set(state_after[1]) ^ set(state_before[1]))
+                changed = sorted(set(state_after[1]) ^ set(state_before[1])) or \
+                    [os.path.relpath(root, ws) for root in ARTEFACT_ROOTS]
                 reject(where, "its gate command %r WRITES to what it checks: the tracked tree or this "
                               "run's own artefacts changed while it ran (%s). A gate is a check; one "
                               "that rewrites the repository leaves the next run a tree nobody "
                               "committed, and one that rewrites the contract this node already parsed "
                               "gets a programme committed that no lint ever read."
-                       % (command, ", ".join(changed[:6]) or "content of an already-modified or "
-                                                             "uncommitted file"))
+                       % (command, ", ".join(changed[:6])))
                 state_before = state_after
             if code != 0:
                 all_green = False

@@ -2,7 +2,9 @@ package bots
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -297,6 +299,7 @@ func lintContractWithDocuments(t *testing.T, dir, brief string, documents []stri
 		"{{vars.scratch_dir}}":   t.TempDir(),
 		"{{vars.plan_path}}":     ".modernize/plan.yaml",
 		"{{vars.survey_path}}":   ".modernize/survey.json",
+		"{{vars.out_dir}}":       "docs/assessment",
 	}, map[string]string{
 		"{{input.brief}}":               briefJSON(t, brief),
 		"{{input.documents}}":           string(encoded),
@@ -509,4 +512,198 @@ func TestAssessmentTheFloorAndTheLintListTheSameTree(t *testing.T) {
 		t.Fatalf("a survey claiming every entry the floor listed was refused — the two readers disagree: %s",
 			assessmentString(t, lint, "reason"))
 	}
+}
+
+// THE ARTEFACT DIGEST COVERS THE ROOTS, not a list of names. The list drifted
+// once already: it named the contract, its outcomes and the survey, and left
+// out the two artefacts `render_plan` reads AFTER the probe — the plan
+// judgement `render` holds back, published verbatim into the committed
+// programme document without a second pass through the renderer's audit, and
+// the facts file whose band that document prints.
+func TestAssessmentGateProbeCoversEveryArtefactReadAfterIt(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+
+	for _, tc := range []struct{ name, rel, gate string }{
+		{"the held plan judgement", "docs/assessment/.plan-judgement.md",
+			`      - "bash -c 'printf \"forged judgement\\n\" >> docs/assessment/.plan-judgement.md; exit 1'"`},
+		// The scratch path is baked into the command: the probe environment is
+		// an allowlist, so a variable naming it would not travel — which is
+		// itself the guard next door working.
+		{"the measured facts", "scratch/facts.json",
+			`      - "bash -c 'printf \"{}\" > SCRATCH/facts.json; exit 1'"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := t.TempDir()
+			contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+				strings.ReplaceAll(tc.gate, "SCRATCH", scratch), 1)
+			if contract == aGoodContract {
+				t.Fatal("the mutation did not apply")
+			}
+			dir := uncommittedAssessmentRepo(t, contract)
+			// The two artefacts as they stand when the probe runs: written by an
+			// earlier node, read by a later one, committed by neither yet.
+			held := filepath.Join(dir, "docs", "assessment", ".plan-judgement.md")
+			if err := os.WriteFile(held, []byte("the judgement render substituted\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(scratch, "facts.json"),
+				[]byte(`{"size": "M", "facts": {}}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
+				"{{vars.workspace_dir}}": dir,
+				"{{vars.scratch_dir}}":   scratch,
+				"{{vars.plan_path}}":     ".modernize/plan.yaml",
+				"{{vars.survey_path}}":   ".modernize/survey.json",
+				"{{vars.out_dir}}":       "docs/assessment",
+			}, map[string]string{
+				"{{input.brief}}":               briefJSON(t, aGoodBrief),
+				"{{input.documents}}":           `[]`,
+				"{{vars.gate_probe_timeout_s}}": gateProbeWall,
+			})
+			if exit != 0 {
+				t.Fatalf("contract_lint exited %d: %s", exit, stderr)
+			}
+			if assessmentBool(t, out, "ok") {
+				t.Fatalf("a gate that rewrote %s was accepted — a later node reads it and publishes "+
+					"what it finds, with no audit between", tc.rel)
+			}
+			if !strings.Contains(assessmentString(t, out, "reason"), "WRITES to what it checks") {
+				t.Errorf("the refusal is not the write detection's: %s", assessmentString(t, out, "reason"))
+			}
+		})
+	}
+}
+
+// THE REFERENCE FORM IS AN EXCEPTION, NOT A WAY ROUND THE RULE. `[[ref:…]]` is
+// stripped before the digit rule reads the line, and it admitted any sixty
+// characters — so `[[ref:1 240 critical findings]]` published a figure nobody
+// measured, through the one escape hatch the prompt teaches.
+func TestAssessmentRenderRefusesAFigureSmuggledThroughAReference(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	scratch := t.TempDir()
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+	facts := assessmentString(t, measure(t, ws, scratch,
+		writeSurvey(t, t.TempDir(), "deadbeefdeadbeef", stacks, inDomainSurvey(2)),
+		writeFloor(t, scratch, floorLines(20000))), "facts_path")
+
+	t.Run("a figure inside a reference is refused", func(t *testing.T) {
+		out := renderJudgement(t, ws, facts,
+			"The tree carries [[fact:floor.files]], and the audit found [[ref:1 240 critical findings]].",
+			"A plan paragraph citing [[fact:size.band]].",
+			"- A question for the owner, citing [[fact:profile.id]].")
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a figure written inside a reference reached the document — the digit rule is " +
+				"stripped of the very line it exists to read")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "not inside a fact placeholder") {
+			t.Errorf("the refusal is not the typed-figure one: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	// The legitimate neighbours, on the same bench: a section number, a spaced
+	// section number, and digit-free text.
+	for _, ref := range []string{"§2", "§ 3.1", "the section above"} {
+		t.Run("a section reference renders: "+ref, func(t *testing.T) {
+			out := renderJudgement(t, ws, facts,
+				"The tree carries [[fact:floor.files]]; see [[ref:"+ref+"]].",
+				"A plan paragraph citing [[fact:size.band]].",
+				"- A question for the owner, citing [[fact:profile.id]].")
+			if !assessmentBool(t, out, "ok") {
+				t.Fatalf("a legitimate reference %q was refused: %s", ref, assessmentString(t, out, "reason"))
+			}
+			state := mustRead(t, filepath.Join(ws, "docs", "assessment", "00-state-of-the-repository.md"))
+			if !strings.Contains(state, ref) {
+				t.Errorf("the reference %q did not render as its own text", ref)
+			}
+		})
+	}
+}
+
+// THE EXTRACTORS READ IN BATCHES, and the bench is the number of git processes
+// they spawn. A `git show` per source file is ~5-10 ms of fork each, which is
+// minutes on the large legacy tree this bot's own `when_to_use` targets — past
+// the runner's wall, after which no output lands, the measurement falls back to
+// zero entrypoints and the profile's domain withholds the size letter. The
+// floor documents the anti-pattern and reads through `cat-file --batch`; the
+// shipped extractors must too, and a count is what says so.
+func TestAssessmentShippedExtractorsDoNotForkPerFile(t *testing.T) {
+	requireAssessmentTools(t)
+	body, err := os.ReadFile(filepath.Join("assessment", "skills", "stack-go.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not on PATH: %v", err)
+	}
+
+	ws := stackWorkspace(t, map[string]string{"stack-go.md": string(body)})
+	const sources = 40
+	files := map[string]string{"go.mod": "module example.test/app\n\ngo 1.21\n"}
+	for i := 0; i < sources; i++ {
+		files[fmt.Sprintf("pkg/h%02d/main.go", i)] = "package main\n\nimport \"net/http\"\n\n" +
+			"func main() { http.HandleFunc(\"/x\", nil) }\n"
+	}
+	sha := initAssessedRepo(t, ws, files)
+
+	// A counting stand-in for git, first on PATH: it records the subcommand and
+	// delegates to the real one, so what is measured is the real extractor
+	// reading the real tree.
+	stub := t.TempDir()
+	tally := filepath.Join(stub, "spawns.log")
+	script := "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in -*|-C) ;; *) printf '%s\\n' \"$a\" >> " +
+		tally + "; break;; esac; done\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(stub, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	scratch := t.TempDir()
+	out := runExtractorsAt(t, ws, scratch, []map[string]any{
+		{"id": "go", "evidence": "go.mod", "supported": true}}, sha)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("the runner refused: %s", assessmentString(t, out, "reason"))
+	}
+	if errs, _ := out["errors"].([]any); len(errs) > 0 {
+		t.Fatalf("the shipped extractors errored: %v", errs)
+	}
+	// The counts must be right too: a batch reader that read nothing would
+	// spawn little and measure little.
+	raw, err := os.ReadFile(filepath.Join(scratch, "go-entrypoints.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Facts map[string]float64 `json:"facts"`
+	}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Facts["entrypoints"] != float64(sources) {
+		t.Fatalf("entrypoints = %v over %d files, want %d — the batch read did not see them all",
+			document.Facts["entrypoints"], sources, sources)
+	}
+
+	log, err := os.ReadFile(tally)
+	if err != nil {
+		t.Fatalf("the stand-in git was never called, so nothing was measured: %v", err)
+	}
+	spawns := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(log)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			spawns++
+		}
+	}
+	// Three extractors, each one listing plus a bounded number of batch reads.
+	// Per-file reading over this tree would be past 120.
+	const bound = 20
+	if spawns > bound {
+		t.Fatalf("the shipped extractors spawned %d git processes over %d source files (bound %d): "+
+			"they are reading one process per file, which is the pattern that times out on the tree "+
+			"this bot exists for", spawns, sources, bound)
+	}
+	t.Logf("%d git process(es) for three extractors over %d source files", spawns, sources)
 }

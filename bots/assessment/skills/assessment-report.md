@@ -57,9 +57,13 @@ the renderer refuses any digit that is not inside a placeholder, and names the
 line.
 
 The one legitimate way a digit belongs to prose is a cross-reference. It has
-its own form: `[[ref:§2]]` renders as its own text. Nothing else is admitted —
-an ordered-list marker is layout and is ignored, a version number belongs to a
-fact, and a count in words belongs to a fact too.
+its own form: `[[ref:§2]]` renders as its own text. That form is a SECTION
+reference and only that — a section number (`§2`, `§ 3.1`), or text carrying no
+digit. A figure written inside it (`[[ref:1 240 findings]]`) does not match, so
+it stays on the line and is refused exactly like a typed one: the escape hatch
+cannot be used as a way round the rule it is an exception to. Nothing else is
+admitted — an ordered-list marker is layout and is ignored, a version number
+belongs to a fact, and a count in words belongs to a fact too.
 
 **Every field cites at least one fact.** A judgement block states what the
 measurements mean; one that names none of them either says nothing about this
