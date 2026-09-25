@@ -75,6 +75,7 @@ var catalogHostAllowlist = map[string]string{
 	"nixhub.io":                 "the public devbox package index, named in devbox locks",
 	"json.schemastore.org":      "the public JSON schema store",
 	"dl.min.io":                 "a public download host for an object-store client",
+	"api.moonshot.ai":           "Moonshot's public API, documented in the backends guide",
 	// Public vulnerability and standards sources the security bots read.
 	"api.osv.dev":         "the public OSV vulnerability API",
 	"nvd.nist.gov":        "the public national vulnerability database",

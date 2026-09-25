@@ -3058,7 +3058,29 @@ tool render:
     if tree.returncode != 0:
         refuse("RENDER_REFUSED", "cannot read the tracked state of %s: %s" % (
             ws, tree.stderr.decode('utf-8', 'replace').strip()[-300:]))
-    out["tree_baseline"] = hashlib.sha256(tree.stdout).hexdigest()
+    sealed = hashlib.sha256(tree.stdout)
+    ## UNTRACKED SOURCE FILES ARE SOURCE TOO: a NEW file outside the artefact
+    ## roots never appears in a diff against HEAD, and a gate probed on it
+    ## was baseline'd without it. Each untracked file outside the artefact
+    ## roots contributes its path and its bytes.
+    untracked = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "ls-files",
+                                "--others", "--exclude-standard"],
+                               capture_output=True, text=True, timeout=300,
+                               env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    if untracked.returncode == 0:
+        roots = [os.path.join(ws, {{vars.out_dir}}), os.path.join(ws, os.path.dirname({{vars.plan_path}})),
+                 {{vars.scratch_dir}}]
+        for path in sorted(n for n in untracked.stdout.splitlines() if n):
+            full = os.path.join(ws, path)
+            if any(full.startswith(root.rstrip(os.sep) + os.sep) for root in roots if root):
+                continue
+            sealed.update(path.encode('utf-8'))
+            try:
+                with open(full, 'rb') as handle:
+                    sealed.update(handle.read())
+            except OSError:
+                sealed.update(b'MISSING')
+    out["tree_baseline"] = sealed.hexdigest()
     out["reason"] = "state document rendered at %s; %d fact identifier(s) substituted" % (
         state_path, len(used))
     print(json.dumps(out))
@@ -3311,7 +3333,25 @@ tool contract_lint:
     if tracked_now.returncode != 0:
         refuse("CONTRACT_REFUSED", "cannot read the tracked state of %s: %s" % (
             ws, tracked_now.stderr.decode('utf-8', 'replace').strip()[-300:]))
-    if tree_baseline != hashlib.sha256(tracked_now.stdout).hexdigest():
+    sealed_now = hashlib.sha256(tracked_now.stdout)
+    untracked_now = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "ls-files",
+                                    "--others", "--exclude-standard"],
+                                   capture_output=True, text=True, timeout=300,
+                                   env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    if untracked_now.returncode == 0:
+        roots = [os.path.join(ws, {{vars.out_dir}}), os.path.join(ws, os.path.dirname({{vars.plan_path}})),
+                 {{vars.scratch_dir}}]
+        for path in sorted(n for n in untracked_now.stdout.splitlines() if n):
+            full = os.path.join(ws, path)
+            if any(full.startswith(root.rstrip(os.sep) + os.sep) for root in roots if root):
+                continue
+            sealed_now.update(path.encode('utf-8'))
+            try:
+                with open(full, 'rb') as handle:
+                    sealed_now.update(handle.read())
+            except OSError:
+                sealed_now.update(b'MISSING')
+    if tree_baseline != sealed_now.hexdigest():
         refuse("TREE_REWRITTEN", "the source tree changed between the render and this lint: the drafting "
                "step is licensed to write the contract and the outcomes file, nothing else — a source "
                "edit in that window became the gate probes' accepted baseline, and a gate green on a "

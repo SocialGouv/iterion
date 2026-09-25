@@ -742,7 +742,8 @@ func renderedDigest(t *testing.T, dir, scratch string) string {
 }
 
 // treeBaseline mirrors the render node's sealed tree digest: the binary
-// diff against HEAD around the drafting step's licensed writes.
+// diff against HEAD around the drafting step's licensed writes, plus every
+// untracked source file outside the artefact roots (path then bytes).
 func treeBaseline(t *testing.T, dir string) string {
 	t.Helper()
 	cmd := exec.Command("git", "-C", dir, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
@@ -753,8 +754,42 @@ func treeBaseline(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatalf("tree baseline: %v", err)
 	}
-	sum := sha256.Sum256(out)
-	return hex.EncodeToString(sum[:])
+	h := sha256.New()
+	h.Write(out)
+	un := exec.Command("git", "-C", dir, "-c", "core.quotePath=false", "ls-files",
+		"--others", "--exclude-standard")
+	un.Env = cmd.Env
+	names, err := un.Output()
+	if err != nil {
+		t.Fatalf("tree baseline untracked: %v", err)
+	}
+	roots := []string{
+		filepath.Join(dir, "docs", "assessment"),
+		filepath.Join(dir, ".modernize"),
+	}
+	for _, name := range strings.Split(strings.TrimRight(string(names), "\n"), "\n") {
+		if name == "" {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		skip := false
+		for _, root := range roots {
+			if strings.HasPrefix(full, root+string(os.PathSeparator)) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		h.Write([]byte(name))
+		if b, err := os.ReadFile(full); err != nil {
+			h.Write([]byte("MISSING"))
+		} else {
+			h.Write(b)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // lintContractWithDigest pins the hand-off digest instead of the workspace's

@@ -1200,3 +1200,37 @@ func TestAssessmentContractLintRefusesASourceEditInTheDraftingWindow(t *testing.
 	}
 	_ = baseline
 }
+
+// UNTRACKED SOURCE IS SOURCE TOO: a NEW file outside the artefact roots
+// never appears in a diff against HEAD, and a gate probed on it was
+// baseline'd without it. Sealed by the render, refused by the lint.
+func TestAssessmentContractLintRefusesAnUntrackedSourceFileInTheWindow(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	dir := contractRepo(t, aGoodContract, goodOutcomes)
+	scratch := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs", "assessment"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "assessment", "00-state-of-the-repository.md"),
+		[]byte("# state as rendered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "assessment", ".plan-judgement.md"),
+		[]byte("# judgement as rendered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest := renderedDigest(t, dir, scratch)
+	baseline := treeBaseline(t, dir)
+	// THE WINDOW: a new source file appears after the seal.
+	if err := os.WriteFile(filepath.Join(dir, "ci", "extra.sh"), []byte("echo forged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := lintContractWithDigestAt(t, dir, aGoodBrief, digest, baseline, scratch)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("an untracked source file written in the window escaped the seal")
+	}
+	if assessmentString(t, out, "code") != "TREE_REWRITTEN" {
+		t.Errorf("code = %q, want TREE_REWRITTEN: %s", assessmentString(t, out, "code"),
+			assessmentString(t, out, "reason"))
+	}
+}
