@@ -2548,6 +2548,14 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		{`start --token 'Zq7h9xAb3cZq' ok`, "Zq7h9xAb3cZq"},
 		{"token=/ab/cdefgh12 loaded", "/ab/cdefgh12"},
 		{"token=/ab12/cd34ef56 loaded", "/ab12/cd34ef56"},
+		// A credential riding behind a path-shaped head is scanned; an
+		// escaped quote inside a never-closed value (after a key, a flag,
+		// in SQL) no longer defeats the arms.
+		{"token=/data/redis Zq7h9xAb3cZq== done", "Zq7h9xAb3cZq=="},
+		{`deploy start --password "/data/redis/backup Zq7h9xAb3cZq`, "Zq7h9xAb3cZq"},
+		{`password="Zq7h\"9xAb3c`, `Zq7h\"9xAb3c`},
+		{`deploy start --password "Zq7h\"9xAb3c`, `Zq7h\"9xAb3c`},
+		{"CREATE USER app IDENTIFIED BY 'Zq7h\\'9xAb3c ok", "9xAb3c"},
 	} {
 		// A secret holding a quote or a backslash rides the JSON-escaped
 		// samples: both forms must be absent.
@@ -2638,7 +2646,11 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		"token=/data/redis/sessions loaded", "token=/var/log/app.log rotated", "mount token=/var/lib/App7/secret ok",
 		`password="ab;cd12345 done`, `password="p@ssw0rd)123 done`,
 		"token=/data/redis loaded", "MOUNTAIN_PASS=closed_for_winter status",
-		`app start --pass "CHANGE_ME_NOW" --host db`}
+		`app start --pass "CHANGE_ME_NOW" --host db`,
+		// the refusal side of the round-18 arms, each on its own witness
+		`deploy start --password "no such file here`,
+		`CREATE USER app IDENTIFIED BY 'no such file here`,
+		`app start --pass 'CHANGE_ME_NOW`}
 	secretFinding := func(out map[string]any) bool {
 		f := fmt.Sprint(out["leak_findings"])
 		return strings.Contains(f, "class:secret_kv") || strings.Contains(f, "class:bearer")

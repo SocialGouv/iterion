@@ -1575,8 +1575,12 @@ tool leak_scan:
         p = v.split(' ', 1)[0]
         if p.startswith('/') and p.count('/') >= 2:
             segs = [s for s in p.split('/') if s]
-            if segs and all(s.isalpha() and s.islower() for s in segs):
-                return False   # a filesystem path, not a token (base64 holds an uppercase or a digit)
+            rest = v[len(p):].strip()
+            if segs and all(s.isalpha() and s.islower() for s in segs) \
+                    and (not rest or re.fullmatch(r'[a-z]+(?: [a-z]+)*', rest)):
+                return False   # a filesystem path and plain words only — a value holding
+                # anything else (an uppercase, a digit, an `=`) is scanned, and a
+                # base64 token of lowercase letters alone reads as a path (documented)
         if m.lastindex == 5 and re.search(r'(?i)pass[\'"\]]?\s*(?:=>|[=:])\s*$',
                                           m.group(0)[:m.start(m.lastindex) - m.start(0)]) \
                 and re.fullmatch(r'[a-z]+(?:_[a-z0-9]+)+', k):
@@ -1647,9 +1651,9 @@ tool leak_scan:
             r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
             r'|(?<=[a-z])(?:Password|Passwd|Pwd|Pass|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Pass|Secret|Token))'
             r'(?i:[_-]?(?:key|value|phrase|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
-            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:[^"\n]|\\"){6,})"|\'((?:[^\'\n]|\\\'){6,})\'|"([^"\n]{6,})$|\'([^\'\n]{6,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^\s=])\S+)*))'
-            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:[^"\n]|\\"){6,})"|\'((?:[^\'\n]|\\\'){6,})\'|"([^"\n]{6,})$|\'([^\'\n]{6,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
-            r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:[^\'\n]|\\\'){4,})\'|"((?:[^"\n]|\\"){4,})"|\'([^\'\n]{4,})$|"([^"\n]{4,})$)'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:\\.|[^"\\\n]){6,})"|\'((?:\\.|[^\'\\\n]){6,})\'|"((?:\\.|[^"\\\n]){6,})$|\'((?:\\.|[^\'\\\n]){6,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^\s=])\S+)*))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:\\.|[^"\\\n]){6,})"|\'((?:\\.|[^\'\\\n]){6,})\'|"((?:\\.|[^"\\\n]){6,})$|\'((?:\\.|[^\'\\\n]){6,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
+            r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:\\.|[^\'\\\n]){4,})\'|"((?:\\.|[^"\\\n]){4,})"|\'((?:\\.|[^\'\\\n]){4,})$|"((?:\\.|[^"\\\n]){4,})$)'
             r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
