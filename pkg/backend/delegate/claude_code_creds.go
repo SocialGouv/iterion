@@ -747,6 +747,15 @@ func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool)
 		if k := creds.APIKey(secrets.Provider(slot)); k != "" {
 			return facadeEnvFor(slot, k)
 		}
+		// Then a key a shared tier funded BECAUSE a route pins this
+		// provider (secrets.RunBundle.PinnedAPIKeys). Read here and not in
+		// the default-precedence walk below: this branch runs only under an
+		// explicit `provider:` hint, which is the whole licence such a key
+		// carries. After the run's own key, never before it — a tenant's
+		// instrument outranks the deployment's.
+		if k := creds.PinnedAPIKey(secrets.Provider(slot)); k != "" {
+			return facadeEnvFor(slot, k)
+		}
 	}
 	if envKey := facadeEnvKey(slot); envKey != "" {
 		if k := os.Getenv(envKey); k != "" {
@@ -863,6 +872,11 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	if providerHint == "anthropic" {
 		if hasCreds {
 			if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
+				return map[string]string{"ANTHROPIC_API_KEY": k}
+			}
+			// Same licence as the facade branch below: an explicit pin may
+			// spend a key a shared tier funded for it.
+			if k := creds.PinnedAPIKey(secrets.ProviderAnthropic); k != "" {
 				return map[string]string{"ANTHROPIC_API_KEY": k}
 			}
 			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {

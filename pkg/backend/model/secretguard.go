@@ -35,12 +35,12 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 	var genericSecrets map[string]string
 	var genericHosts map[string][]string
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		for prov, val := range creds.APIKeys {
-			if val == "" {
-				continue
-			}
+		// Every channel, not only the default map: a key a shared tier
+		// funded for a pinned route is as real a credential as any other,
+		// and the guard is what keeps it out of node output and logs.
+		for i, val := range creds.EveryKeyForRedaction() {
 			known = append(known, secretguard.Secret{
-				Name:  "provider_" + string(prov),
+				Name:  "provider_key_" + strconv.Itoa(i),
 				Value: val,
 			})
 		}

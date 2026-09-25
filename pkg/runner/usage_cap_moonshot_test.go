@@ -154,3 +154,44 @@ func TestCredentialSlotForRoute_FollowsTheWireSlotOrder(t *testing.T) {
 		t.Errorf("credentialSlotForRoute with no moonshot key = %q, want \"\" — charge nobody rather than a default", got)
 	}
 }
+
+// A slot funded ONLY by a pinned key (secrets.Credentials.PinnedAPIKeys) is
+// charged for ITS OWN readings — that is why its fingerprint is stamped at
+// all — but it is not the run's default credential: no unpinned node can
+// spend it, so a reading with no attributable source must not land there.
+// Charging it would park a key this run's unpinned work never touched.
+//
+// Both directions, one bench: the named label reaches it, the unattributable
+// one does not.
+func TestUsageCapCredKeys_APinnedSlotIsNotTheBundleDefault(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		// The run's own instrument is the Anthropic key; moonshot is funded
+		// only because a route pins it.
+		APIKeys:       map[secrets.Provider]string{secrets.ProviderAnthropic: "anthropic-key"},
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "platform-moonshot"},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderAnthropic): "fp-anthropic",
+			string(secrets.ProviderMoonshot):  "fp-moonshot",
+		},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	scope := usagecap.TenantScope("team-7")
+
+	moonshot := facadeSource(secrets.ProviderMoonshot, secrets.MoonshotDefaultBaseURL)
+	if got := delegate.AnthropicWireFacadeSlot(moonshot); got != string(secrets.ProviderMoonshot) {
+		t.Fatalf("inert bench: AnthropicWireFacadeSlot(%q) = %q, want moonshot", moonshot, got)
+	}
+	// Its own readings: charged to it, or a Moonshot wall would be invisible
+	// and the walled key would keep being handed to the pinned node.
+	if got, want := keys.forSource(moonshot), usagecap.Key(delegate.BackendClaudeCode, scope, "fp-moonshot"); got != want {
+		t.Errorf("forSource(%q) = %q, want %q — a pinned key must be charged for what IT spent", moonshot, got, want)
+	}
+	// The bundle default: never the pinned slot, even though the wire order
+	// puts moonshot first.
+	for _, source := range []string{"", "anthropic-env", "facade:https://some.operator.proxy/anthropic"} {
+		if got, want := keys.forSource(source), usagecap.Key(delegate.BackendClaudeCode, scope, "fp-anthropic"); got != want {
+			t.Errorf("forSource(%q) = %q, want the run's own credential %q — an unattributable reading cannot have been spent on a pinned key", source, got, want)
+		}
+	}
+}

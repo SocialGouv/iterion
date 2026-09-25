@@ -347,3 +347,53 @@ func TestForwardableProviderEnv_ForfaitCrossingKeepsAMoonshotNodesKey(t *testing
 		t.Errorf("in-container resolve of a moonshot node: %v", err)
 	}
 }
+
+// A PINNED key (secrets.RunBundle.PinnedAPIKeys) crosses the sandbox seam
+// only for the node that NAMES its provider in its model spec — that spec is
+// the pin on this backend. Both directions on one bench: the moonshot node
+// gets it, and an `anthropic/…` node in the same run does not, or a
+// credential provisioned for one route would sit in the environment of all
+// of them.
+func TestForwardableProviderEnv_APinnedKeyCrossesOnlyForTheNodeThatNamesIt(t *testing.T) {
+	for _, k := range []string{"MOONSHOT_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ZAI_API_KEY"} {
+		t.Setenv(k, "")
+	}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "platform-moonshot"},
+	})
+
+	pinnedNode, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if pinnedNode["MOONSHOT_API_KEY"] != "platform-moonshot" {
+		t.Errorf("MOONSHOT_API_KEY = %q on a moonshot node — the key provisioned for this pin does not reach the container", pinnedNode["MOONSHOT_API_KEY"])
+	}
+	// The container rebuilds its registry from what crossed: ask it.
+	t.Setenv("MOONSHOT_API_KEY", pinnedNode["MOONSHOT_API_KEY"])
+	if _, rerr := NewRegistry().Resolve("moonshot/kimi-k2"); rerr != nil {
+		t.Errorf("in-container resolve of the pinned moonshot node: %v", rerr)
+	}
+	t.Setenv("MOONSHOT_API_KEY", "")
+
+	other, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if got, present := other["MOONSHOT_API_KEY"]; present {
+		t.Errorf("MOONSHOT_API_KEY = %q crossed for an anthropic node — a pinned key must not reach the routes that did not name it", got)
+	}
+}
+
+// A pinned key is not the run's own instrument, so it must not make the
+// forfait crossing believe the tenant brought a key on this wire: that would
+// leave the tenant's sandboxed `anthropic/…` nodes to the platform's ambient
+// key, which is #736's failure.
+func TestHeldAnthropicWireAPIKey_IgnoresAPinnedKey(t *testing.T) {
+	creds := secrets.Credentials{
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "platform-zai"},
+	}
+	if heldAnthropicWireAPIKey(creds) {
+		t.Error("heldAnthropicWireAPIKey counted a pinned key — the run's forfait would stay out of its own anthropic nodes")
+	}
+}

@@ -46,6 +46,13 @@ type runCredKeys struct {
 	moonshotFP  string
 	anthropicFP string
 	oauthFP     string
+	// pinnedSlots are the slots funded ONLY by a key a shared tier filled
+	// because a route pins that provider (secrets.Credentials.PinnedAPIKeys).
+	// Their fingerprint is real — a reading that NAMES such a slot is charged
+	// to it, which is the whole point of stamping one — but they are not the
+	// run's default credential: no unpinned node can spend them, so an
+	// unattributable reading must not land there either.
+	pinnedSlots map[string]bool
 }
 
 // bySlot returns the fingerprint held for one anthropic-wire slot, "" when
@@ -99,7 +106,10 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	// cross-tenant ledger, mixing its readings with every other borrower's.
 	anyTenant, anyOrg := false, false
 	for _, slot := range secrets.AnthropicWireSlotOrder {
-		present := creds.APIKey(secrets.Provider(slot)) != ""
+		// A pinned key counts as PRESENT for the scope question: it is an
+		// org's or the platform's credential riding this run, and the scope
+		// is exactly what keeps such a key metered on its owner's ledger.
+		present := creds.APIKeyForRoute(secrets.Provider(slot)) != ""
 		if secrets.OAuthKind(slot).Valid() {
 			present = creds.OAuthDir(slot) != ""
 		}
@@ -117,6 +127,14 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k.moonshotFP = creds.Fingerprint(string(secrets.ProviderMoonshot))
 	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))
 	k.oauthFP = creds.Fingerprint(delegate.BackendClaudeCode)
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if creds.IsPinnedSlot(slot) {
+			if k.pinnedSlots == nil {
+				k.pinnedSlots = map[string]bool{}
+			}
+			k.pinnedSlots[slot] = true
+		}
+	}
 	return k
 }
 
@@ -170,6 +188,14 @@ func (k runCredKeys) forSource(source string) string {
 // secrets.AnthropicWireSlotOrder the run actually carries.
 func (k runCredKeys) firstHeld() string {
 	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if k.pinnedSlots[slot] {
+			// Funded for the routes that NAME it and for nothing else. The
+			// default precedence in the delegate cannot reach it, so a
+			// reading with no attributable source cannot have been spent on
+			// it — charging it here would park a key this run's unpinned
+			// work never touched.
+			continue
+		}
 		if fp := k.bySlot(slot); fp != "" {
 			return fp
 		}

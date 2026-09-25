@@ -70,6 +70,16 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 			fingerprints[string(prov)] = secrets.FingerprintSHA256(key)
 		}
 	}
+	// A pinned key (RunBundle.PinnedAPIKeys) is stamped like any other: it
+	// is spent by the routes that named its provider, so its usage windows
+	// must be attributable to IT. Without a fingerprint the meter would key
+	// its refusals on the run's default credential and park the wrong key.
+	// A slot cannot hold both — the fill stops at the first key per slot.
+	for prov, key := range bundle.PinnedAPIKeys {
+		if key != "" && fingerprints[string(prov)] == "" {
+			fingerprints[string(prov)] = secrets.FingerprintSHA256(key)
+		}
+	}
 	for kind, fp := range bundle.OAuthFingerprints {
 		if fp != "" {
 			fingerprints[kind] = fp
@@ -77,8 +87,9 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	}
 
 	creds := secrets.Credentials{
-		APIKeys: bundle.APIKeys,
-		Generic: bundle.GenericSecrets,
+		APIKeys:       bundle.APIKeys,
+		PinnedAPIKeys: bundle.PinnedAPIKeys,
+		Generic:       bundle.GenericSecrets,
 		// Per-secret egress narrowing from bot-secret bindings; the guard
 		// intersects these with the workflow's declared hosts. Hostnames
 		// are not secret, so cleanup below leaves them untouched.
@@ -111,6 +122,9 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		cancelRefresh()
 		for k := range bundle.APIKeys {
 			bundle.APIKeys[k] = ""
+		}
+		for k := range bundle.PinnedAPIKeys {
+			bundle.PinnedAPIKeys[k] = ""
 		}
 		for k := range bundle.GenericSecrets {
 			bundle.GenericSecrets[k] = ""
