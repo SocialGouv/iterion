@@ -150,17 +150,20 @@ function findExistingTab(
   tabs: Tab[],
   kind: TabKind,
   params: Record<string, string>,
+  projectKey: string | null,
 ): Tab | undefined {
+  // Reuse only tabs the current project's view can actually show.
+  const scopedTabs = tabs.filter((t) => tabInScope(t, projectKey));
   // A draft tab starts as `{draft}` and later gains `file` on Save As.
   // Exact paramsEqual would miss it and open a duplicate "Draft" tab
   // that steals focus from the saved file (R11c8b3).
   if (kind === "editor" && params.draft) {
-    const byDraft = tabs.find(
+    const byDraft = scopedTabs.find(
       (t) => t.kind === "editor" && t.params.draft === params.draft,
     );
     if (byDraft) return byDraft;
   }
-  return tabs.find((t) => t.kind === kind && paramsEqual(t.params, params));
+  return scopedTabs.find((t) => t.kind === kind && paramsEqual(t.params, params));
 }
 
 function activeIdField(kind: TabKind): "activeEditorTabId" | "activeRunTabId" {
@@ -176,7 +179,8 @@ export const useTabsStore = create<TabsState>()(
       currentProjectKey: null,
       runOpenNonce: {},
       openTab: (kind, params, label) => {
-        const existing = findExistingTab(get().tabs, kind, params);
+        const state = get();
+        const existing = findExistingTab(state.tabs, kind, params, state.currentProjectKey);
         if (existing) {
           set((s) => {
             const field = activeIdField(existing.kind);
