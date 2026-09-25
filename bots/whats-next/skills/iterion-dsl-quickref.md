@@ -902,6 +902,25 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 render the single-agent workflow (one adaptive agent carrying the mission).
 More complete workflows to copy from: `docs/references/patterns.md`.
 
+### Writing the twin in YAML
+
+A `.bot` can be written as an author document, `x.bot.yaml`: the same
+declarations under the same names, `dsl:` required, in YAML's own values
+(`nodes:` items are `- <kind>: <name>` with that kind's properties). It is
+a draft of `x.bot`, never a program: every launcher refuses it by name.
+Loop: write it, `iterion validate x.bot.yaml` (findings at the document's
+lines, `--exec` too), then `iterion fmt --to bot x.bot.yaml` writes `x.bot`,
+which is what you commit and run. Three rules the `.bot` does not have:
+quote a value that holds `: ` or ` #`, or starts with `{`, `[`, `!` or
+another character YAML reserves (a `{{…}}` template unquoted is a YAML
+mapping) — in single quotes, as double quotes read backslash escapes
+(`"\t"` is a tab); write each edge as one `.bot` edge line — quoted whole in single
+quotes when it holds `: `, the `.bot`'s double quotes inside, a `'` written
+twice; write numbers as digits without a leading 0 (YAML reads `010` as
+the octal 8, `0x10` and `1e2` otherwise: refused). Keys and value forms:
+`iterion dsl spec --region author`; the reasons: `docs/dsl.md`, section
+"Writing the twin in YAML".
+
 ## What you do NOT do
 
 - You do NOT recommend `bot_to_run` as the path of a `.bot` file

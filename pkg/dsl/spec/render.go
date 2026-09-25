@@ -16,7 +16,8 @@ import (
 //
 // and Splice rewrites what lies between the two markers from the registry:
 // `reference` is the whole property reference, `table <kind>` one kind's
-// table, `skill` the compact section the authoring skills carry. `iterion
+// table, `skill` the compact section the authoring skills carry, `author`
+// the author document's reference (AuthorReference). `iterion
 // dsl spec --write` (task dsl:gen) regenerates every file in Files;
 // TestGeneratedDSLDocsAreFresh (task dsl:check) fails when a committed
 // region differs from what the registry renders — the same freshness
@@ -34,6 +35,7 @@ var Files = []string{
 	"docs/references/dsl-grammar.md",
 	"SKILL.md",
 	"bots/whats-next/skills/iterion-dsl-quickref.md",
+	"docs/references/author-schema.md",
 }
 
 // Splice rewrites every generated region of doc from the registry. A
@@ -47,7 +49,7 @@ var Files = []string{
 func Splice(doc string) (string, error) {
 	begins, ends := strings.Count(doc, beginPrefix), strings.Count(doc, endMarker)
 	if n := len(regionRe.FindAllString(doc, -1)); n != begins || n != ends {
-		return "", fmt.Errorf("dsl-spec regions are unbalanced or unrecognised: %d matched, %d begin marker(s), %d end marker(s) — each `%s<what> -->` needs its own `%s` on a later line, LF line ends, and what must be reference, skill or table <kind>", n, begins, ends, beginPrefix, endMarker)
+		return "", fmt.Errorf("dsl-spec regions are unbalanced or unrecognised: %d matched, %d begin marker(s), %d end marker(s) — each `%s<what> -->` needs its own `%s` on a later line, LF line ends, and what must be reference, skill, author or table <kind>", n, begins, ends, beginPrefix, endMarker)
 	}
 	var firstErr error
 	out := regionRe.ReplaceAllStringFunc(doc, func(m string) string {
@@ -70,14 +72,16 @@ func Splice(doc string) (string, error) {
 	return out, nil
 }
 
-// Render produces the body of one region kind: "reference", "table <kind>"
-// or "skill".
+// Render produces the body of one region kind: "reference", "table <kind>",
+// "skill" or "author".
 func Render(what string) (string, error) {
 	switch {
 	case what == "reference":
 		return Reference(), nil
 	case what == "skill":
 		return SkillSection(), nil
+	case what == "author":
+		return AuthorReference(), nil
 	case strings.HasPrefix(what, "table "):
 		kind := strings.TrimPrefix(what, "table ")
 		k, ok := Lookup(kind)

@@ -352,7 +352,7 @@ var llmProperties = []Property{
 // Kinds is the registry, in the order the reference renders them.
 var Kinds = append([]Kind{
 	// ---- top-level declarations ----
-	{Name: "prompt", Role: Declaration, Text: true, Doc: "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt."},
+	{Name: "prompt", Role: Declaration, Text: true, Doc: "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt."},
 	{Name: "schema", Role: Declaration, Doc: "A structured-output shape; a bare header declares an empty schema.",
 		Entries: &Entries{Key: Ident, KeyName: "field", Doc: "One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
 			Fields: []Field{
@@ -417,7 +417,7 @@ var Kinds = append([]Kind{
 				optional("matching", QuotedString, `[matching: "<re>"]`, "An RE2 pattern a string var's value must match, checked at launch against --var and payload values; beside enum in either order, at most one of each"),
 				optional("default", Literal, "= <default>", "The value the run starts with when no --var or preset sets one; a json or string[] default is written as a quoted JSON text"),
 			}}},
-	{Name: "presets", Role: BlockRole, Opener: "presets", Hosts: []string{"file"}, Doc: "Named bundles of var values selected with --recipe / --preset.",
+	{Name: "presets", Role: BlockRole, Opener: "presets", Hosts: []string{"file"}, Doc: "Named bundles of var values selected with `--preset`.",
 		Entries: &Entries{Key: Ident, Doc: "Each entry is a preset name whose indented lines set one var each",
 			Entries: &Entries{Key: Ident, KeyName: "var", Doc: "A var of the file and the literal it takes under this preset",
 				Fields: []Field{field("value", Literal, "<literal>", "The value the var takes; its type is the var's")}}}},

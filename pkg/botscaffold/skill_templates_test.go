@@ -23,7 +23,9 @@ var skillFiles = []string{
 var templateRowRe = regexp.MustCompile("^\\| `([a-z][a-z0-9-]*)` \\|")
 
 // skillSection returns the lines of the file's section titled `title`, up
-// to the next heading of the same or a higher level.
+// to the next heading of the same or a higher level. A line inside a code
+// fence is never a heading: a `# comment` of a shell or YAML example ends
+// no section.
 func skillSection(t *testing.T, path, title string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -32,14 +34,19 @@ func skillSection(t *testing.T, path, title string) []string {
 	}
 	var out []string
 	level := 0
+	inFence := false
 	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+		}
+		heading := !inFence && strings.HasPrefix(line, "#")
 		if level == 0 {
-			if strings.HasSuffix(line, "# "+title) {
+			if heading && strings.HasSuffix(line, "# "+title) {
 				level = strings.Index(line, " ")
 			}
 			continue
 		}
-		if strings.HasPrefix(line, "#") && strings.Index(line, " ") <= level {
+		if heading && strings.Index(line, " ") <= level {
 			break
 		}
 		out = append(out, line)
@@ -48,6 +55,21 @@ func skillSection(t *testing.T, path, title string) []string {
 		t.Fatalf("%s has no %q section", path, title)
 	}
 	return out
+}
+
+// A `# comment` inside a code fence of a section is not the next heading:
+// the section runs past the fence, to the heading that ends it — else two
+// sections that differ after such a line would compare equal.
+func TestSkillSectionIgnoresAHashInsideACodeFence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skill.md")
+	md := "## A\nbefore\n```sh\n# not a heading\n```\nafter the fence\n## B\nnot in A\n"
+	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(skillSection(t, path, "A"), "\n")
+	if !strings.Contains(got, "after the fence") || strings.Contains(got, "not in A") {
+		t.Fatalf("section A read as %q", got)
+	}
 }
 
 func templateSection(t *testing.T, path string) []string {
@@ -77,6 +99,26 @@ func TestSkillsCarryTheSameUnwrittenRules(t *testing.T) {
 	}
 	if strings.TrimSpace(strings.Join(rules[0], "\n")) != strings.TrimSpace(strings.Join(rules[1], "\n")) {
 		t.Errorf("the rules sections of %s and %s differ; the two skills carry the same content", skillFiles[0], skillFiles[1])
+	}
+}
+
+// TestSkillsCarryTheSameTwinSection: the "Writing the twin in YAML"
+// section — the loop and the three rules a YAML author needs that a .bot
+// author does not — is the same text in both skills, whatever its heading
+// level: the runners read the quickref, never the root skill.
+func TestSkillsCarryTheSameTwinSection(t *testing.T) {
+	var sections []string
+	for _, path := range skillFiles {
+		section := strings.TrimSpace(strings.Join(skillSection(t, path, "Writing the twin in YAML"), "\n"))
+		for _, must := range []string{"iterion validate x.bot.yaml", "iterion fmt --to bot x.bot.yaml", "`: `", "` #`"} {
+			if !strings.Contains(section, must) {
+				t.Errorf("%s: the twin section does not say %s", path, must)
+			}
+		}
+		sections = append(sections, section)
+	}
+	if sections[0] != sections[1] {
+		t.Errorf("the twin sections of %s and %s differ; the two skills carry the same content", skillFiles[0], skillFiles[1])
 	}
 }
 

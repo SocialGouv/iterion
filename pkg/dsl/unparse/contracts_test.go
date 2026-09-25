@@ -95,7 +95,7 @@ func TestContractsRoundTrip(t *testing.T) {
 		t.Fatalf("the written text does not parse: %v\n%s", back.Diagnostics, out)
 	}
 	if a, b := documentJSON(t, res.File), documentJSON(t, back.File); !bytes.Equal(a, b) {
-		t.Fatalf("the written text is another document: %s\n%s", firstJSONDifference(a, b), out)
+		t.Fatalf("the written text is another document: %s\n%s", FirstJSONDifference(a, b), out)
 	}
 	if err := Verify(res.File, out); err != nil {
 		t.Fatalf("Verify: %v", err)

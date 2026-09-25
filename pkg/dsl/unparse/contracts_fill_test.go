@@ -40,7 +40,7 @@ func TestEveryContractFieldSurvivesTheWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(want, got) {
-		t.Fatalf("a field did not survive the writer: %s\n%s", firstJSONDifference(want, got), out)
+		t.Fatalf("a field did not survive the writer: %s\n%s", FirstJSONDifference(want, got), out)
 	}
 	if err := Verify(f, out); err != nil {
 		t.Fatalf("Verify: %v", err)

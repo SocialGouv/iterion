@@ -196,6 +196,7 @@ func (b *schemaBuilder) gap(err error) obj {
 func (b *schemaBuilder) lookup(name string) (Kind, bool) {
 	for _, k := range b.kinds {
 		if k.Name == name {
+			k.Doc = authorDoc(k)
 			return k, true
 		}
 	}
@@ -247,20 +248,17 @@ func (b *schemaBuilder) root() obj {
 			"description": "Fragments under the bot's lib/ directory (`lib/<file>.bot`), resolved from the document's directory, as `import` lines do in a .bot.",
 		},
 	}
-	for _, name := range []string{"vars", "presets", "attachments", "secrets"} {
+	for _, name := range authorBlockKinds {
 		if k, ok := b.lookup(name); ok {
 			props[name] = b.kindSchema(k)
 		}
 	}
-	for _, m := range []struct{ kind, key string }{
-		{"prompt", "prompts"}, {"schema", "schemas"}, {"cursor", "cursors"},
-		{"supervisor", "supervisors"}, {"mcp_server", "mcp_servers"}, {"contract", "contracts"},
-	} {
-		k, ok := b.lookup(m.kind)
+	for _, m := range authorNamedDeclarations {
+		k, ok := b.lookup(m.Kind)
 		if !ok {
 			continue
 		}
-		props[m.key] = obj{
+		props[m.Key] = obj{
 			"type":                 "object",
 			"propertyNames":        obj{"pattern": identPattern},
 			"additionalProperties": b.kindSchema(k),
@@ -362,7 +360,9 @@ func (b *schemaBuilder) form(f Form, values []string, body string) obj {
 	case DottedIdent:
 		return obj{"type": "string", "pattern": dottedIdentPattern}
 	case StringOrNumber:
-		return obj{"anyOf": []any{obj{"type": "string"}, obj{"type": "number", "minimum": 0}}}
+		// The text the value spells (author.speller): a sign is kept and
+		// `true`/`false` are words, so the schema takes what the reader does.
+		return obj{"anyOf": []any{obj{"type": "string"}, obj{"type": "number"}, obj{"type": "boolean"}}}
 	case Int:
 		return obj{"type": "integer", "minimum": 0, "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag"}
 	case Number:
