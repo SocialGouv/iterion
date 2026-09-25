@@ -231,7 +231,11 @@ func TestWriteThroughMirroredSkills_IncludesTheOwnedCopy(t *testing.T) {
 		t.Fatalf("mirror: %v", err)
 	}
 	r := &recordingRefresher{}
-	if n := writeThroughMirroredSkills(context.Background(), workDir, r, nil); n == 0 {
+	n, werr := writeThroughMirroredSkills(context.Background(), workDir, r, nil)
+	if werr != nil {
+		t.Fatalf("write-through: %v", werr)
+	}
+	if n == 0 {
 		t.Fatal("nothing written through")
 	}
 	want := path.Join(".claude", ownedSkillsDirName, "lang-python.md")

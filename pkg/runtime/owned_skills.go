@@ -2,10 +2,13 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -50,18 +53,79 @@ import (
 const ownedSkillsDirName = "iterion-skills"
 
 // OwnedSkillsDir returns the engine-owned bundle-skills directory for a
-// workspace, or "" when no workspace is known.
+// workspace: an ABSOLUTE path, or "".
+//
+// That is the whole contract, and the reason is what a reader does with the
+// value: `os.path.join(dir, "lang-python.md")` on an empty or relative dir
+// yields a path resolved against the reader's own working directory, which IS
+// the checkout. A value that degrades quietly into the untrusted tree is the
+// defect this directory exists to remove.
+//
+// A relative workDir is RESOLVED rather than refused — every caller that hands
+// the engine one (a dispatcher spec, a dry run, a subbot request, an external
+// embedder of WithWorkDir) means it against the process's own directory, which
+// is what filepath.Abs reads. Refusing it would turn a working run into a hard
+// stop for no gain: the contract is that the answer is absolute, not that the
+// caller spelled it that way.
 func OwnedSkillsDir(workDir string) string {
 	if workDir == "" {
 		return ""
 	}
-	return filepath.Join(workDir, ".claude", ownedSkillsDirName)
+	abs, err := filepath.Abs(workDir)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(abs, ".claude", ownedSkillsDirName)
+}
+
+// refuseAnOwnedCopyOutsideTheWorkspace refuses a reset that would leave the
+// run's own tree.
+//
+// The directory is removed recursively on every mirror pass, and `.claude` is a
+// path the CHECKOUT supplies: committed as a symlink to somewhere else, it aims
+// that removal at a directory the engine never created, at a pathname the
+// repository under audit chose. Measured before this guard existed: a `.claude`
+// linked out of the workspace had `<target>/iterion-skills` removed with the
+// mirror reporting success.
+//
+// So the rule every destructive step here follows — resolve the symlinks,
+// require the target STRICTLY under the tree we own, then act. A workspace
+// REACHED through a symlink is fine: both sides resolve to the same tree. What
+// is refused is a `.claude` resolving out of it, and the run stops rather than
+// reading an owned copy it may not reset.
+//
+// "Strictly" includes the workspace root itself, which is not a hair split:
+// `.claude` linked to the root puts the owned copy at `<workDir>/iterion-skills`.
+// Measured — the reset removed a file the REPOSITORY had committed there, and
+// the bundle's copy landed outside `.claude/`, the one prefix every staging
+// gesture and cleanliness probe excludes (pkg/treenoise).
+func refuseAnOwnedCopyOutsideTheWorkspace(dir string) error {
+	claudeDir := filepath.Dir(dir)
+	resolved, err := filepath.EvalSymlinks(claudeDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Nothing there yet; the mirror creates a real directory.
+			return nil
+		}
+		return fmt.Errorf("runtime/bundle: resolve %s before resetting the engine-owned skills copy: %w", claudeDir, err)
+	}
+	workDir := filepath.Dir(claudeDir)
+	root, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		return fmt.Errorf("runtime/bundle: resolve the run workspace %s before resetting the engine-owned skills copy: %w", workDir, err)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("runtime/bundle: %s resolves to %s, which is not strictly under the run workspace %s — the engine-owned skills copy is removed and rewritten on every pass, and the engine neither removes a directory its workspace only points at nor writes its own copy outside `.claude/` (a checkout can commit that link)", claudeDir, resolved, root)
+	}
+	return nil
 }
 
 // ownedSkillsContainerDir returns the same directory as seen from inside a
-// sandbox, where the workspace is bound (or copied) at another pathname.
+// sandbox, where the workspace is bound (or copied) at another pathname. Same
+// contract as OwnedSkillsDir: absolute, or nothing.
 func ownedSkillsContainerDir(containerWorkspace string) string {
-	if containerWorkspace == "" {
+	if containerWorkspace == "" || !path.IsAbs(containerWorkspace) {
 		return ""
 	}
 	return path.Join(containerWorkspace, ".claude", ownedSkillsDirName)
@@ -77,11 +141,32 @@ func ownedSkillsContainerDir(containerWorkspace string) string {
 // name is not shipped" observable to the bots as a missing file.
 //
 // I/O failure is fatal, as it is for the mirror: a run whose bot declares
-// skills it could not lay down must not report success without them.
+// skills it could not lay down must not report success without them. So is a
+// named workspace this process cannot resolve to an absolute path:
+// ${BUNDLE_SKILLS_DIR} would expand to nothing, every reader would resolve its
+// skill name against its own working directory — the checkout — and the run
+// would audit the repository using whatever the repository put there.
+//
+// An EMPTY workDir keeps its historical no-op: there is no workspace, so there
+// is no directory of that name to reset and nothing to copy into. The
+// expansion is empty there too, and what refuses it is the reader's own guard,
+// by name.
+//
+// A child running in place resets its PARENT's copy here. The directory is
+// one of childResourcePaths, so the child's scope saves it first and restores
+// it on every exit; in an adopted copy-based sandbox, where this host-side
+// reset cannot reach, the same list drives the reset in the copy, the refill
+// and the restore.
 func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) error {
+	if workDir == "" {
+		return nil
+	}
 	dir := OwnedSkillsDir(workDir)
 	if dir == "" {
-		return nil
+		return fmt.Errorf("runtime/bundle: the run's workspace %q cannot be resolved to an absolute path, so the engine-owned skills copy has no home and ${BUNDLE_SKILLS_DIR} would expand to nothing", workDir)
+	}
+	if err := refuseAnOwnedCopyOutsideTheWorkspace(dir); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("runtime/bundle: reset owned skills dir %s: %w", dir, err)

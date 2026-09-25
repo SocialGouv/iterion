@@ -1,7 +1,10 @@
 name: secured-renovacy
 display_name: Renovacy
 icon: ⬆️
-version: 0.3.1
+version: 0.3.2
+## 0.3.2 — `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and
+## re-checked by each reader that joins a skill name onto it, so it can be
+## neither empty nor relative.
 ## 0.3.1 — the machine-readable `iterion:` data blocks are read from the
 ## engine-owned copy of the bundle's skills (`${BUNDLE_SKILLS_DIR}`) instead of
 ## `<workspace>/.claude/skills/`, which the audited checkout can write.
@@ -88,4 +91,9 @@ launch:
 ## are evaluated from 3.148.0 — a runner between the two would admit the
 ## bundle and fail to compile it. The floor is the higher of the two.
 requires:
-  iterion: ">= 3.148.0"
+  ## The floor `[matching: ...]` asks for (parser.VarMatchingSince, via
+  ## bundle's syntax-floor table): below it the engine does not know the
+  ## form and refuses the FILE as a parse error rather than the bundle as
+  ## an unmet requirement. C252 asks for it; `cmd/release-floors` moves it
+  ## at the cut.
+  iterion: ">= 3.186.0"
