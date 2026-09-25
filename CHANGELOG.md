@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.199.3](https://github.com/SocialGouv/iterion/compare/v3.199.2...v3.199.3) (2026-09-25)
+
+### Bug Fixes
+
+* **cloud:** include Node runtime library and verify bundled CLIs ([#1853](https://github.com/SocialGouv/iterion/issues/1853)) ([933b695](https://github.com/SocialGouv/iterion/commit/933b695670b186c260722f14d8213a7fd914a81c)), closes [#1850](https://github.com/SocialGouv/iterion/issues/1850)
+
+    <details><summary>why</summary>
+
+    Node 26 is copied into Debian slim without libatomic.so.1, causing exit 127 in the server image. Install libatomic1 and smoke-test Node, Claude and Codex under the final non-root user before publication.
+
+    </details>
+
 ## [3.199.2](https://github.com/SocialGouv/iterion/compare/v3.199.1...v3.199.2) (2026-09-25)
 
 ### Bug Fixes
