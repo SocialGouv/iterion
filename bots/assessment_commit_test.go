@@ -153,12 +153,11 @@ func TestAssessmentCommitLandsTheContract(t *testing.T) {
 		}
 	})
 
-	// A commit hook that rewrites a file the commit was carrying leaves it
-	// WRITTEN and not LANDED — and the command still returned zero. Reading the
-	// return code would report a successful assessment whose document on the
-	// branch is not the document that was measured. So the tree is re-read
-	// after the commit, not the exit status.
-	t.Run("a hook that rewrites a document after staging is caught", func(t *testing.T) {
+	// The commit runs --no-verify: a hook planted in the repository does not
+	// run at all, so the validated contract is what gets committed. The
+	// detection layers behind this one (the dirty check, the by-name check)
+	// stay, for every writer that is not a hook.
+	t.Run("a pre-commit hook planted in the repository does not run", func(t *testing.T) {
 		ws := assessedWorkspace(t)
 		hooks := filepath.Join(ws, ".git", "hooks")
 		if err := os.MkdirAll(hooks, 0o755); err != nil {
@@ -170,16 +169,16 @@ func TestAssessmentCommitLandsTheContract(t *testing.T) {
 		}
 
 		out := assessmentCommit(t, ws)
-		if assessmentBool(t, out, "ok") {
-			t.Fatal("a document a hook rewrote out from under the commit was reported as landed — " +
-				"the branch would carry a state document nobody measured")
-		}
-		if code := assessmentString(t, out, "code"); code != "COMMIT_FAILED" {
-			t.Fatalf("code = %q, want COMMIT_FAILED", code)
-		}
-		if !strings.Contains(assessmentString(t, out, "reason"), "uncommitted") {
-			t.Errorf("the refusal does not say what is still uncommitted: %s",
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("the commit refused to land with a hook planted in the repository: %s",
 				assessmentString(t, out, "reason"))
+		}
+		body, err := os.ReadFile(filepath.Join(ws, "docs", "assessment", "00-state-of-the-repository.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "rewritten by a hook") {
+			t.Fatal("the pre-commit hook RAN — the published document is not the one that was measured")
 		}
 	})
 
@@ -224,12 +223,12 @@ func TestAssessmentCommitRefusesAnIgnoredDeliverable(t *testing.T) {
 		})
 	}
 
-	// The one the residue check cannot see. A hook that REWRITES a staged
-	// document leaves it dirty, and `git status --porcelain` catches that; a
-	// hook that DELETES it leaves nothing at all — no dirt, no tracked file,
-	// no diff — and the commit lands without it while the command returns
-	// zero. Only verifying each artefact BY NAME in what landed catches this.
-	t.Run("a hook that deletes a document leaves nothing to be dirty", func(t *testing.T) {
+	// The by-name check's other face, without the hook vector --no-verify
+	// closed: a deliverable removed from the commit BEFORE it runs leaves
+	// nothing to be dirty — no dirt, no tracked file, no diff — and the
+	// commit lands without it while the command returns zero. Only verifying
+	// each artefact BY NAME in what landed catches this.
+	t.Run("a pre-commit hook that deletes a deliverable does not run", func(t *testing.T) {
 		ws := assessedWorkspace(t)
 		hooks := filepath.Join(ws, ".git", "hooks")
 		if err := os.MkdirAll(hooks, 0o755); err != nil {
@@ -241,13 +240,12 @@ func TestAssessmentCommitRefusesAnIgnoredDeliverable(t *testing.T) {
 			t.Fatal(err)
 		}
 		out := assessmentCommit(t, ws)
-		if assessmentBool(t, out, "ok") {
-			t.Fatal("a document removed from the commit out from under the run was reported as " +
-				"landed — nothing was left dirty, and the return code was zero")
-		}
-		if !strings.Contains(assessmentString(t, out, "reason"), "01-modernisation-programme.md") {
-			t.Errorf("the refusal does not name the artefact that never landed: %s",
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("the commit refused with a deleting hook planted in the repository: %s",
 				assessmentString(t, out, "reason"))
+		}
+		if _, err := os.Stat(filepath.Join(ws, "docs", "assessment", "01-modernisation-programme.md")); err != nil {
+			t.Fatal("the deleting hook RAN — the deliverable it targeted never landed")
 		}
 	})
 

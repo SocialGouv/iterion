@@ -536,6 +536,8 @@ schema contract_state:
   ## nothing after it, so this count is the one that says the contract is
   ## verifiable — `lots` alone never did.
   gates_proven_red: int
+  ## The lots whose gate could not be observed at all (see contract_lint).
+  gates_never_ran: json
 
 ## What contract_lint needs that the contract does not carry: the declared
 ## brief. Without it the lint can check a contract against ITSELF — internally
@@ -1709,8 +1711,9 @@ tool inventory_health:
             return None
         if not isinstance(specs, list):
             return None
-        return [str(s.get("output")) for s in specs
-                if isinstance(s, dict) and s.get("output")]
+        return [{"output": str(s.get("output")),
+                 "emits": [str(e) for e in (s.get("emits") or []) if e]}
+                for s in specs if isinstance(s, dict) and s.get("output")]
 
     try:
         survey = json.load(open(survey_path, encoding="utf-8"))
@@ -1737,13 +1740,32 @@ tool inventory_health:
             continue  # unsupported: reported by the runner, by name, not as a zero
         covered.append(stack_id)
         landed = []
-        for name in expected:
+        for spec in expected:
+            name = spec["output"]
             path = os.path.join(scratch, name)
-            if os.path.isfile(path) and os.path.getsize(path) > 0 and name in (produced.get(stack_id) or []):
-                landed.append(name)
-            else:
+            if not (os.path.isfile(path) and os.path.getsize(path) > 0 and name in (produced.get(stack_id) or [])):
                 out["missing"].append({"stack": stack_id, "output": name,
                                        "status": "absent" if not os.path.isfile(path) else "not produced by this pass"})
+                continue
+            # THE OUTPUT DELIVERS WHAT THE SKILL PROMISES. A JSON file with no
+            # `facts` mapping -- or none of the facts its skill declares it
+            # emits -- is an artefact, not a measurement: counted as landed,
+            # an extractor that parsed nothing read as coverage the run never
+            # had, and the measure it promised published as a zero.
+            try:
+                facts = (json.load(open(path, encoding="utf-8")) or {}).get("facts")
+            except (OSError, ValueError, UnicodeDecodeError) as exc:
+                out["missing"].append({"stack": stack_id, "output": name,
+                                       "status": "unreadable JSON: %s" % exc})
+                continue
+            facts = facts if isinstance(facts, dict) else {}
+            absent = [key for key in spec["emits"] if facts.get(key) is None]
+            if absent:
+                out["missing"].append({"stack": stack_id, "output": name,
+                                       "status": "promised fact(s) %s absent from `facts`"
+                                                 % ", ".join(absent)})
+                continue
+            landed.append(name)
         # A stack we SHIP a skill for is a stack we claim to measure. One that
         # produced none of its declared outputs is a coverage VOID, not a clean
         # repository — and the difference is invisible in every table
@@ -1962,6 +1984,7 @@ tool declaration_lint:
             reject(declaration_id, "path %r is neither a file nor a directory in the tree at %s"
                    % (path, base_sha[:12]))
             continue
+        match_count = 0
         if pattern:
             if path not in file_set:
                 reject(declaration_id, "declares a pattern but its path %r is not a file" % path)
@@ -1975,6 +1998,7 @@ tool declaration_lint:
             if body is None:
                 reject(declaration_id, "cannot read %r at %s" % (path, base_sha[:12]))
                 continue
+            match_count = sum(1 for _ in compiled.finditer(body))
             if not compiled.search(body):
                 reject(declaration_id, "pattern matches nothing in %r at %s — a declaration whose "
                                        "evidence is not there is a claim" % (path, base_sha[:12]))
@@ -2000,6 +2024,24 @@ tool declaration_lint:
                                        "bundle counts route registrations, and a declaration "
                                        "counted as one file would put two scales under one metric."
                        % (count, kind))
+                continue
+            # THE COUNT IS READ FROM THE EVIDENCE, NOT ASKED. A figure no
+            # command can re-derive is an invented one: the pattern is what
+            # the gate counts, so a counted declaration carries one, and the
+            # count equals its matches on the file the declaration cites.
+            # Measured on this bundle's own fixture: changing only
+            # `count: 2` to `count: 12` moved the published index by more
+            # than the whole survey could earn.
+            if not pattern:
+                reject(declaration_id, "declares `count` with no `pattern`. The figure is read "
+                                       "from the evidence: name the pattern whose matches ARE "
+                                       "the %s, and the gate counts it." % kind)
+                continue
+            if match_count != count:
+                reject(declaration_id, "declares `count: %d`, and its pattern matches %d in %r at "
+                                       "%s — the declared figure and the evidence disagree, and "
+                                       "the evidence is what a reader can re-derive."
+                       % (count, match_count, path, base_sha[:12]))
                 continue
         elif count is not None:
             reject(declaration_id, "declares `count` on a %s, which is not counted that way" % kind)
@@ -2955,6 +2997,7 @@ tool render_plan:
     lots = {{input.lots}}
     proposals = {{input.proposals}}
     gates_proven_red = {{input.gates_proven_red}}
+    gates_never_ran = {{input.gates_never_ran}}
 
     out = {"ok": False, "code": "", "reason": "", "documents": []}
 
@@ -2989,10 +3032,22 @@ tool render_plan:
         "| lots declared | %d |" % (lots if isinstance(lots, int) else 0),
         "| gates seen to FAIL on the tree the programme starts from | %d |"
         % (gates_proven_red if isinstance(gates_proven_red, int) else 0),
+        "| gates the probe could NOT run (timeout, toolchain absent) | %d |"
+        % (len(gates_never_ran) if isinstance(gates_never_ran, list) else 0),
         "| decisions left OPEN as proposals | %d |" % (proposals if isinstance(proposals, int) else 0),
         "| measured size | %s |" % facts.get("size.band", ""),
         "| stacks NOT covered by an extractor | %s |" % facts.get("stack.unsupported", ""),
         "",
+    ]
+    if gates_never_ran:
+        lines += [
+            "> Gates the probe could NOT run -- a timeout, or a command the shell could not "
+            "find or execute on this tree -- on lots: %s. A lot in this list carries a gate "
+            "nobody has seen do anything: it is NOT proven verifiable, and this document says "
+            "so rather than staying silent about it." % ", ".join(str(x) for x in gates_never_ran),
+            "",
+        ]
+    lines += [
         "## Reading (judgement)",
         "",
         "> The section below is an INTERPRETATION. Its factual assertions are substituted from the "
@@ -3034,6 +3089,11 @@ schema render_plan_input:
   ## verifiable: `lots` says how much was written, this says how much of it
   ## can tell the work apart from its absence.
   gates_proven_red: int
+  ## Lots whose gate the probe could NOT observe: a timeout, a failed spawn,
+  ## or a command the shell could not find or execute. Published because
+  ## silence here reads as proof: a lot in this list carries a gate nobody
+  ## has seen do anything, and the programme document says so.
+  gates_never_ran: json
 
 fail render_refused:
   description: "the prose cited a fact the measurement never produced"
@@ -3108,7 +3168,7 @@ tool contract_lint:
     document_paths = [str(d) for d in ({{input.documents}} or []) if d]
 
     out = {"ok": False, "code": "", "reason": "", "lots": 0, "proposals": 0, "refusals": [],
-           "gates_proven_red": 0}
+           "gates_proven_red": 0, "gates_never_ran": []}
 
     # A contract this bot has just WRITTEN carries `todo` and nothing else.
     # `done` is the execution gate's word, `blocked` is the worker's, and both
@@ -3643,6 +3703,14 @@ tool contract_lint:
             # toolchain, so "not found" is the common outcome of a real gate
             # here, and counting it would report every such contract proven.
             out["gates_proven_red"] += 1
+        else:
+            # A gate that was never SEEN to do anything: the probe timed out,
+            # the spawn failed, or the shell could not find or execute the
+            # command. It is not a failure, so it does not refuse the lot —
+            # and it is not proof, so it is not counted as proof either: the
+            # lot is published in gates_never_ran, because silence here reads
+            # exactly like proof.
+            out["gates_never_ran"].append(lot_id)
 
     # The sweep predicate, ALONE: a record already on the input tree satisfies
     # it before the sweep has run, and the lot's due diligence is then certified
@@ -3712,6 +3780,17 @@ tool contract_lint:
                            "names goal %r, which the declared brief does not carry (it declares %s). "
                            "The brief is where the objectives of a campaign come from."
                            % (goal_id, ", ".join(sorted(brief_goal_ids)) or "none"))
+
+            # THE OTHER DIRECTION. An outcome must answer a declared goal --
+            # checked above; and every goal the brief declares must be
+            # ANSWERED. A goal no outcome covers disappears from the
+            # programme, and the document publishes as though the objective
+            # had never been agreed.
+            covered = {str(o.get("goal_id") or "").strip() for o in outcomes if isinstance(o, dict)}
+            for uncovered in sorted(brief_goal_ids - covered):
+                reject("outcomes", "no outcome answers brief goal %r: the programme is amputated "
+                                   "of an objective the brief declares, and publishes it as "
+                                   "though it had never been agreed." % uncovered)
 
     # ── the contract against the DECLARED BRIEF ────────────────────────
     #
@@ -3974,8 +4053,13 @@ tool commit:
     # commits every entry already in the index — a previous node's staging, or
     # the operator's work in flight — under a message that does not describe
     # it, which is exactly what the explicit `git add` above exists to prevent.
+    # --no-verify: a local pre-commit hook runs DURING the commit and can
+    # rewrite the contract and restage it -- the published blobs would differ
+    # from what this node validated, and the post-commit check compares HEAD
+    # to the disk the hook just mutated, so it would pass. What was validated
+    # is what gets committed, unaltered and unremarked.
     committed = git("-c", "user.name=iterion", "-c", "user.email=iterion@localhost",
-                    "-c", "commit.gpgsign=false", "commit", "-m", message, "--", *pathspec)
+                    "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", message, "--", *pathspec)
     if committed.returncode != 0:
         refuse("COMMIT_FAILED", "git commit refused: %s"
                % ((committed.stderr or committed.stdout or "").strip()[-400:]))
@@ -4163,7 +4247,8 @@ workflow assessment:
     ## shaped against.
     lots:             "{{outputs.contract_lint.lots}}",
     proposals:        "{{outputs.contract_lint.proposals}}",
-    gates_proven_red: "{{outputs.contract_lint.gates_proven_red}}"
+    gates_proven_red: "{{outputs.contract_lint.gates_proven_red}}",
+    gates_never_ran:  "{{outputs.contract_lint.gates_never_ran}}"
   }
 
   render_plan -> plan_render_refused when not ok

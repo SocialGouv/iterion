@@ -976,3 +976,55 @@ func TestAssessmentGateProbeRefusesAGateThatWritesToTheTree(t *testing.T) {
 		}
 	})
 }
+
+// The probe's third outcome is PUBLISHED. A gate that could not be observed —
+// a timeout, a command the shell cannot find or execute — is not a failure and
+// not proof either; the lot lands in gates_never_ran, because silence here
+// reads exactly like proof.
+func TestAssessmentContractLintPublishesTheGatesItCouldNotObserve(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+
+	contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+		`      - "bash ci/no-such-script-on-any-path.sh"`, 1)
+	if contract == aGoodContract {
+		t.Fatal("the mutation did not apply — this case would pass by accident")
+	}
+	out := lintContract(t, contract, goodOutcomes)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("a lot whose gate could not run was refused outright — the toolchain gap is "+
+			"real and the contract is still honest: %s", assessmentString(t, out, "reason"))
+	}
+	if out["gates_proven_red"] != float64(1) {
+		t.Fatalf("gates_proven_red = %v, want 1 — a command the shell cannot find is not a gate "+
+			"seen to fail", out["gates_proven_red"])
+	}
+	never, ok := out["gates_never_ran"].([]any)
+	if !ok || len(never) != 1 {
+		t.Fatalf("gates_never_ran = %v, want exactly the one lot whose gate never ran",
+			out["gates_never_ran"])
+	}
+}
+
+// THE OTHER DIRECTION of the goal rule: every goal the brief declares must be
+// answered. A goal no outcome covers disappears from the programme, and the
+// document publishes as though the objective had never been agreed.
+func TestAssessmentContractLintRefusesAGoalNoOutcomeAnswers(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	twoGoals := strings.Replace(aGoodBrief,
+		"  - id: supported-runtime",
+		"  - id: an-objective-nobody-owes\n"+
+			"    statement: \"something else the platform asked for\"\n"+
+			"    rationale: \"decided elsewhere\"\n"+
+			"  - id: supported-runtime", 1)
+	if twoGoals == aGoodBrief {
+		t.Fatal("the mutation did not apply — this case would pass by accident")
+	}
+	out := lintContractAgainst(t, aGoodContract, goodOutcomes, twoGoals)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a brief goal no outcome answers vanished from the programme")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "an-objective-nobody-owes") {
+		t.Errorf("the refusal does not name the uncovered goal: %s",
+			assessmentString(t, out, "reason"))
+	}
+}

@@ -327,10 +327,18 @@ def blob(path):
 
 # Route registrations: the standard library's own, and the method-per-verb
 # shape every common Go router shares. Matching the SHAPE rather than naming
-# routers keeps a new router one line away instead of a release away.
+# routers keeps a new router one line away instead of a release away -- but
+# the same shape is a CLIENT call on the objects that consume routes:
+# http.Get(, resp.Header.Get( and their kin were counted as route
+# registrations, and the measured total answered a question nobody asked.
+# Receivers that name readers and transports are excluded; a router named
+# like a client is still missed, and the declared route count is the
+# figure the letter publishes.
 ROUTE = re.compile(
     r"\b(?:http\.HandleFunc|http\.Handle"
-    r"|\w+\.(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS"
+    r"|(?!(?:[Hh]ttp|[Hh]eader|resp|response|[Rr]eq|request|client|ctx|context"
+    r"|conn|rows?|vals|values|params|form|session|cache)\b)"
+    r"\w+\.(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS"
     r"|Get|Post|Put|Delete|Patch|Handle|HandleFunc|Mount|Route)\s*\()")
 files = [f for f in tree() if f.endswith(".go")
          and not f.startswith("vendor/") and "/vendor/" not in f

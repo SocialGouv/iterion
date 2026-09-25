@@ -864,3 +864,112 @@ func TestAssessmentInterpreterIsNeverTakenFromTheAssessedRepository(t *testing.T
 		t.Errorf("the refusal does not say where it looked: %s", assessmentString(t, out, "reason"))
 	}
 }
+
+// THE ARTEFACT IS NOT THE MEASUREMENT: an extractor output that carries none
+// of the facts its skill declares it emits counted as coverage landed, and the
+// measure it promised published as a zero.
+func TestAssessmentCoverageGateRefusesAnOutputThatDeliversNoPromisedFact(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := stackWorkspace(t, map[string]string{"stack-synth.md": aStackSkill})
+	scratch := t.TempDir()
+	stacks := []map[string]any{{"id": "synth", "evidence": "a", "supported": true}}
+
+	out := runExtractors(t, ws, scratch, stacks)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("the runner refused: %s", assessmentString(t, out, "reason"))
+	}
+	// The extractor "ran" and wrote well-formed JSON carrying NO fact.
+	target := filepath.Join(scratch, "synth-counts.json")
+	original, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(original, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := parsed["facts"]; !has {
+		t.Fatal("the fixture skill's output carries no facts mapping to strip")
+	}
+	parsed["facts"] = map[string]any{}
+	stripped, _ := json.Marshal(parsed)
+	if err := os.WriteFile(target, stripped, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	survey := writeSurvey(t, t.TempDir(), "deadbeef", stacks, nil)
+	health := runHealth(t, ws, scratch, survey, out)
+	if assessmentBool(t, health, "ok") {
+		t.Fatal("an output delivering none of its promised facts counted as coverage")
+	}
+	reason := assessmentString(t, health, "reason")
+	if !strings.Contains(reason, "entrypoints") || !strings.Contains(reason, "synth") {
+		t.Errorf("the refusal does not name the stack and the missing fact: %s", reason)
+	}
+	if assessmentString(t, health, "code") != "COVERAGE_VOID" {
+		t.Errorf("code = %q, want COVERAGE_VOID", assessmentString(t, health, "code"))
+	}
+}
+
+// THE MEASURED FALSE POSITIVE: the method-per-verb shape is also the shape of
+// the calls that CONSUME routes. http.Get( and resp.Header.Get( counted as
+// route registrations, and the extractor's total answered a question nobody
+// asked. Proven on the SHIPPED skill, executed against a real tree.
+func TestAssessmentGoRouteRegexSkipsClientCalls(t *testing.T) {
+	requireAssessmentTools(t)
+	skill, err := os.ReadFile(filepath.Join("assessment", "skills", "stack-go.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := stackWorkspace(t, map[string]string{"stack-go.md": string(skill)})
+	gittest.Run(t, ws, "init", "-q", "-b", "main")
+	gittest.Run(t, ws, "config", "user.email", "t@example.com")
+	gittest.Run(t, ws, "config", "user.name", "t")
+	gittest.Run(t, ws, "config", "commit.gpgsign", "false")
+
+	write := func(rel, body string) {
+		full := filepath.Join(ws, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.test/app\n\ngo 1.21\n")
+	write("main.go", "package main\n"+
+		"\n"+
+		"func fetch() {\n"+
+		"\thttp.Get(\"https://api.invalid\")\n"+
+		"\tresp.Header.Get(\"Content-Type\")\n"+
+		"}\n"+
+		"\n"+
+		"func routes(r *mux) {\n"+
+		"\tr.Get(\"/\")\n"+
+		"}\n")
+	gittest.Run(t, ws, "add", "-A")
+	gittest.Run(t, ws, "commit", "-qm", "the commit under assessment")
+	sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+
+	scratch := t.TempDir()
+	out := runExtractorsAt(t, ws, scratch, []map[string]any{
+		{"id": "go", "evidence": "go.mod", "supported": true},
+	}, sha)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("the shipped extractor refused a pinned pass: %s", assessmentString(t, out, "reason"))
+	}
+	body, err := os.ReadFile(filepath.Join(scratch, "go-entrypoints.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Facts map[string]any `json:"facts"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatal(err)
+	}
+	if got := document.Facts["entrypoints"]; got != float64(1) {
+		t.Fatalf("entrypoints = %v, want 1 — the two client calls are not route registrations:\n%s",
+			got, string(body))
+	}
+}

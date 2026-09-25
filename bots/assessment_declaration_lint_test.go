@@ -247,7 +247,8 @@ func TestAssessmentDeclarationLintPartitionsOnlyOnThePartitionKinds(t *testing.T
 			partial = append(partial, declaration)
 		}
 		partial = append(partial, map[string]any{
-			"id": "app-routes", "kind": "entrypoint", "count": 2, "path": "src/app/handler.txt",
+			"id": "app-routes", "kind": "entrypoint", "count": 2, "pattern": "route",
+			"path": "src/app/handler.txt",
 		})
 		out := lintDeclarations(t, dir, sha, partial)
 		if assessmentBool(t, out, "ok") {
@@ -381,11 +382,37 @@ func TestAssessmentDeclarationLintRefusesAnEntrypointWithNoCount(t *testing.T) {
 		})
 	}
 
-	t.Run("a declared count is accepted", func(t *testing.T) {
+	t.Run("a declared count is read from its evidence", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
+			"id": "app-routes", "kind": "entrypoint", "count": 2, "pattern": "route",
+			"path": "src/app/handler.txt"}))
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("an entrypoint whose count matches its pattern was refused: %s",
+				assessmentString(t, out, "reason"))
+		}
+	})
+
+	t.Run("a declared count that diverges from its evidence is refused", func(t *testing.T) {
+		// Changing only the declared figure — 2 to 12, the file untouched —
+		// moved the published index by more than the whole survey earned:
+		// the letter is a measurement, and this is where the invention dies.
+		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
+			"id": "app-routes", "kind": "entrypoint", "count": 12, "pattern": "route",
+			"path": "src/app/handler.txt"}))
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a figure the evidence contradicts was accepted")
+		}
+		reason := assessmentString(t, out, "reason")
+		if !strings.Contains(reason, "12") || !strings.Contains(reason, "2") {
+			t.Errorf("the refusal does not name both figures: %s", reason)
+		}
+	})
+
+	t.Run("a counted declaration without the pattern that counts it is refused", func(t *testing.T) {
 		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
 			"id": "app-routes", "kind": "entrypoint", "count": 12, "path": "src/app/handler.txt"}))
-		if !assessmentBool(t, out, "ok") {
-			t.Fatalf("an entrypoint declaring its count was refused: %s", assessmentString(t, out, "reason"))
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a figure nobody can re-derive was accepted")
 		}
 	})
 }
@@ -424,7 +451,7 @@ func TestAssessmentReadsAccentedPathsAsThemselves(t *testing.T) {
 		out := lintDeclarations(t, dir, sha, []map[string]any{
 			{"id": "src-tree", "kind": "first_party", "path": "src"},
 			{"id": "repo-docs", "kind": "excluded", "path": "README.md", "note": "documentation"},
-			{"id": "accented-entry", "kind": "entrypoint", "count": 1, "path": "src/café.txt"},
+			{"id": "accented-entry", "kind": "entrypoint", "count": 1, "pattern": "accented", "path": "src/café.txt"},
 		})
 		if !assessmentBool(t, out, "ok") {
 			t.Fatalf("a declaration citing an accented path was refused — the lint is reading the "+
