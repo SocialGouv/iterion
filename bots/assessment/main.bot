@@ -137,12 +137,20 @@ prompt survey_user:
 
   `stacks` — one entry per stack you detect, each `{"id": "<skill id>",
   "evidence": "<path that proves it>", "supported": true|false, "reason":
-  "<why, when unsupported>"}`. The id is the one a bundled `stack-<id>`
-  skill uses when one exists; when none exists, use the ecosystem's own
-  usual name and mark the entry unsupported with the reason "no extractor
-  skill in this bundle". Never omit a detected stack because you cannot
-  cover it: the workflow runs the extractors of every stack you name that
-  has a skill, and reports the others as unsupported by name.
+  "<why, when unsupported>"}`.
+
+  `supported` is an OBSERVATION, not a judgement: the listing above names the
+  stack extractor skills this bundle ships, and a stack is `supported: true` if
+  and only if its id is in that list, spelled exactly as the list spells it.
+  Everything else is `supported: false` with the reason "no extractor skill in
+  this bundle" — including a stack you know well. A gate re-derives the same
+  answer from the same skills a second later and refuses a run where the two
+  disagree, so a guess here costs the whole run.
+
+  Never omit a detected stack because this bundle cannot cover it: the workflow
+  runs the extractors of every stack you name that has a skill, and reports the
+  others as unsupported BY NAME. An unnamed stack is silence, and silence reads
+  as zero.
 
   `declarations` — the perimeter, one entry per artefact the floor cannot
   identify on its own, each `{"id": "<stable canonical id>", "kind":
@@ -160,9 +168,12 @@ prompt survey_user:
   emits and the unit the size profile's anchor is written in.
 
   Every top-level entry of the tree is claimed by a `first_party`, `excluded`
-  or `tests` declaration whose `path` IS that entry. Nothing else partitions:
-  an entrypoint inside a subtree is evidence about one artefact, never an
-  account of the subtree.
+  or `tests` declaration whose `path` IS that entry — a directory or a file,
+  since a root carries files and a FLAT repository carries its source there.
+  Nothing else partitions: an entrypoint inside a subtree is evidence about one
+  artefact, never an account of the subtree. Source at the root is declared
+  `first_party` file by file; declared `excluded` instead, it is counted as
+  nothing and the document publishes zero lines of first-party source.
 
   `notes` — one short paragraph for a human reader: what you could not
   establish, and why. Not a summary of the counts.
@@ -526,6 +537,11 @@ schema contract_state:
 ## consistent and free to contradict every decision somebody took.
 schema contract_input:
   brief: json
+  ## The documents already rendered, by the node that wrote them. The gate probe
+  ## runs agent-written commands on the live workspace, and everything this run
+  ## is about to publish is still UNCOMMITTED there: a command that rewrites one
+  ## of them is invisible to a diff against HEAD.
+  documents: json
 
 ## What the commit must find IN the commit, named by the nodes that wrote it.
 ## A list repeated here would drift from the writers, and the check would then
@@ -776,6 +792,25 @@ tool brief_read:
                "distinguish an agreed programme from an invented one — see the "
                "assessment-brief skill." % (brief_path, "; ".join(missing[:8])))
 
+    for key in ("permitted_changes", "forbidden_changes"):
+        declared = brief.get(key)
+        if declared is None:
+            continue
+        if not isinstance(declared, list):
+            refuse("BRIEF_INCOMPLETE",
+                   "the brief at %s declares `%s` as a %s; a list of sentences, or of mappings "
+                   "carrying a `statement`, is required." % (brief_path, key, type(declared).__name__))
+        for index, entry in enumerate(declared):
+            if isinstance(entry, (str, int, float)):
+                continue
+            if isinstance(entry, dict) and str(entry.get("statement") or "").strip():
+                continue
+            refuse("BRIEF_INCOMPLETE",
+                   "%s[%d] of the brief at %s carries no `statement`. Every change policy is shown to "
+                   "the agent that drafts the programme and checked by the lint that validates it; one "
+                   "nobody can render is one the drafter is refused for without being told."
+                   % (key, index, brief_path))
+
     goal_ids = [g["id"] for g in goals]
     duplicates = sorted({i for i in goal_ids if goal_ids.count(i) > 1})
     if duplicates:
@@ -789,9 +824,30 @@ tool brief_read:
             return ["%s: none declared." % title]
         return ["%s:" % title] + ["  - %s" % row for row in rows]
 
-    def strings(key):
+    # A CHANGE POLICY IS RENDERED IN BOTH ITS FORMS. These lists take a plain
+    # sentence or a mapping carrying `statement` (and, for a forbidden change,
+    # the `pattern` that enforces it). Keeping only the scalars dropped the
+    # mapping form in silence — the very form the brief skill documents as the
+    # mechanism — so the prompt said "none declared" over a policy that was, and
+    # the contract lint then refused a lot for announcing what the drafter was
+    # never shown. A gate may only refuse a claim about a fact the agent could
+    # observe.
+    def policy_lines(key):
         value = brief.get(key)
-        return [str(v) for v in value if isinstance(v, (str, int, float))] if isinstance(value, list) else []
+        if not isinstance(value, list):
+            return []
+        rendered = []
+        for entry in value:
+            if isinstance(entry, (str, int, float)):
+                rendered.append(str(entry))
+            elif isinstance(entry, dict):
+                statement = str(entry.get("statement") or "").strip()
+                if not statement:
+                    continue
+                pattern = entry.get("pattern")
+                rendered.append("%s%s" % (statement,
+                                          " (enforced by the pattern %r)" % str(pattern) if pattern else ""))
+        return rendered
 
     lines = ["Objective:", brief["objective"].strip(), ""]
     lines += block("Goals", ["%s — %s" % (g["id"], g["statement"].strip()) for g in goals])
@@ -805,8 +861,8 @@ tool brief_read:
     lines += [""] + block("Support policy", [
         "%s supported until %s" % (p.get("component", "?"), p.get("supported_until", "?"))
         for p in policy if isinstance(p, dict)])
-    lines += [""] + block("Permitted changes", strings("permitted_changes"))
-    lines += [""] + block("Forbidden changes", strings("forbidden_changes"))
+    lines += [""] + block("Permitted changes", policy_lines("permitted_changes"))
+    lines += [""] + block("Forbidden changes", policy_lines("forbidden_changes"))
     decisions = brief.get("decisions") if isinstance(brief.get("decisions"), list) else []
     lines += [""] + block("Decisions already taken", [
         "%s: %s" % (d.get("id", "?"), d.get("decision", "?"))
@@ -905,9 +961,19 @@ tool inventory_floor:
         refuse("FLOOR_FAILED", "cannot list the tree at %s: %s"
                % (base_sha[:12], (listed.stderr or "").strip()[-400:]))
 
-    entries = []
+    # EVERY path the tree names, and the BLOBS separately. A submodule is listed
+    # `160000 commit <oid> -`, so the blob filter below drops it — while the
+    # declaration lint partitions over `ls-tree --name-only`, which keeps it.
+    # Read only through the blobs, the survey is never shown an entry the lint
+    # then demands a declaration for, and the run dies with
+    # DECLARATIONS_REFUSED on a repository that is fine. Same class as the
+    # C-quoted path: two reads of one tree that do not agree on what is in it.
+    entries, all_paths = [], []
     for line in listed.stdout.splitlines():
-        head, _, path = line.partition("\t")
+        head, tab, path = line.partition("\t")
+        if not tab or not path:
+            continue
+        all_paths.append(path)
         fields = head.split()
         if len(fields) < 4 or fields[1] != "blob":
             continue
@@ -1052,7 +1118,7 @@ tool inventory_floor:
                       if e["path"] in CI_FILES or e["path"].startswith(CI_PREFIXES))
 
     # ── the listing handed to the survey ───────────────────────────────
-    top = sorted({(p.split("/", 1)[0] + "/") if "/" in p else p for p in (e["path"] for e in entries)})
+    top = sorted({(p.split("/", 1)[0] + "/") if "/" in p else p for p in all_paths})
     MANIFEST_DEPTH = 4
     # WHAT A BUILD MANIFEST LOOKS LIKE IS STACK KNOWLEDGE, so it lives in the
     # skills and not here. This file enumerated a dozen ecosystems' manifest
@@ -1063,9 +1129,11 @@ tool inventory_floor:
     # `assessment-survey.md`, a stack's own additions in its `stack-<id>.md`,
     # and adding an ecosystem is dropping or editing a file.
     MANIFEST_BLOCK = re.compile(r"<!--\s*iterion:manifests(.*?)-->", re.S)
-    patterns, pattern_sources = [], []
+    patterns, pattern_sources, shipped_stacks = [], [], []
     if skills_dir and os.path.isdir(skills_dir):
         for name in sorted(os.listdir(skills_dir)):
+            if name.startswith("stack-") and name.endswith(".md"):
+                shipped_stacks.append(name[len("stack-"):-len(".md")])
             if not name.endswith(".md"):
                 continue
             try:
@@ -1107,7 +1175,9 @@ tool inventory_floor:
          % (MANIFEST_DEPTH, len(manifests), ", ".join(pattern_sources))] + manifests[:200] +
         ["", "LINES BY EXTENSION (whole tree, before any declared exclusion):"] +
         ["  %-16s %6d file(s) %10d line(s)" % (ext, n, lines) for ext, (n, lines) in ranked[:40]] +
-        ["", "CONTINUOUS INTEGRATION: %s" % (", ".join(ci_files[:20]) if ci_files else "no pipeline file found"),
+        ["", "STACK EXTRACTOR SKILLS THIS BUNDLE SHIPS — the only ids a stack may be declared "
+         "`supported: true` under: %s" % (", ".join(sorted(shipped_stacks)) or "none"),
+         "CONTINUOUS INTEGRATION: %s" % (", ".join(ci_files[:20]) if ci_files else "no pipeline file found"),
          "HISTORY: %d commit(s), %d in the 180 days before the pinned commit" % (commits, recent),
          "TAGS: %d reachable from the pinned commit (%d in the clone), %d distinct date(s)"
          % (len(reachable), len(all_tags), len(tag_dates)),
@@ -1126,6 +1196,7 @@ tool inventory_floor:
         "top_level": top,
         "manifests": manifests,
         "manifest_shapes_from": pattern_sources,
+        "shipped_stacks": sorted(shipped_stacks),
         "ci_files": ci_files,
         "ci_present": bool(ci_files),
         "commits": commits,
@@ -1765,10 +1836,15 @@ tool declaration_lint:
     out = {"ok": False, "code": "", "reason": "", "verified": 0, "refusals": []}
 
     KINDS = ("deployable", "system", "first_party", "excluded", "tests", "entrypoint")
-    # `excluded` takes a file as well as a directory: the partition below
-    # demands that every top-level entry be claimed, and a repository's root
-    # carries files (a licence, a readme) that are entries like any other.
-    DIRECTORY_KINDS = ("first_party", "tests")
+    # EVERY PARTITION KIND TAKES A FILE AS WELL AS A DIRECTORY. The partition
+    # below demands that every top-level entry be claimed, and a repository's
+    # root carries files — a licence, a readme, and in a FLAT repository the
+    # source itself. Restricted to directories, `first_party` had no expressible
+    # form there (the only directory is the root, and an empty path is refused),
+    # so every root file had to be `excluded`: the measurement then counted
+    # nothing and the document published "0 lines of first-party source" with a
+    # 100 % exclusion rate over a tree full of code. A withheld letter is a
+    # result; a published zero is a wrong figure.
     PARTITION_KINDS = ("first_party", "excluded", "tests")
     # A DECLARATION CARRIES THE UNIT OF THE METRIC IT FEEDS. Two kinds are
     # counted as things rather than as paths, and a path is the wrong key for
@@ -1877,12 +1953,7 @@ tool declaration_lint:
         if not path:
             reject(declaration_id, "no path; a declaration with no evidence cannot be re-verified")
             continue
-        if kind in DIRECTORY_KINDS:
-            if path not in directories:
-                reject(declaration_id, "path %r is not a directory in the tree at %s"
-                       % (path, base_sha[:12]))
-                continue
-        elif path not in file_set and path not in directories:
+        if path not in file_set and path not in directories:
             reject(declaration_id, "path %r is neither a file nor a directory in the tree at %s"
                    % (path, base_sha[:12]))
             continue
@@ -2422,7 +2493,20 @@ tool measure:
     # substitutes by identifier and refuses one it does not know, which is what
     # keeps an invented figure out of a signed document without a filter that
     # would have to enumerate the spellings of a number.
+    # A trailing "s" pluralises a phrase only when its NOUN IS THE LAST WORD.
+    # "line of first-party source" became "21000 line of first-party sources" in
+    # a signed document — the count on one noun, the plural on another. A phrase
+    # carrying a postmodifier therefore has to state both forms, and this
+    # refuses one that does not: the alternative is trusting every future caller
+    # to notice, which is how the two that were wrong got written.
+    POSTMODIFIER = (" of ", " in ", " to ", " for ", " with ", " that ", " the ", " a ", " an ")
+
     def plural(n, one, many=None):
+        if many is None and any(word in " %s " % one for word in POSTMODIFIER):
+            refuse("MEASUREMENT_REFUSED",
+                   "the published fact %r is a phrase whose noun is not its last word, and no plural "
+                   "form was given: appending an `s` would count one noun and pluralise another. "
+                   "State both forms." % one)
         return "%d %s" % (n, one if n == 1 else (many or one + "s"))
 
     # EVERY FACT CARRIES ITS OWN SYNTAGM. A bare scalar substituted into prose
@@ -2450,12 +2534,16 @@ tool measure:
         plural(floor.get("secret_literal_hits", 0), "occurrence"),
         plural(len(floor.get("secret_literal_keys") or []), "distinct key name"))
     facts["floor.binary"] = plural(len(floor.get("binary") or []), "binary blob")
-    facts["metric.first_party_lines"] = plural(measured["first_party_lines"], "line of first-party source")
+    facts["metric.first_party_lines"] = plural(measured["first_party_lines"],
+                                              "line of first-party source",
+                                              "lines of first-party source")
     facts["metric.entrypoints"] = "%s (%s)" % (plural(measured["entrypoints"], "entrypoint"),
                                                sources["entrypoints"])
     facts["metric.deployables"] = "%s (%s)" % (plural(measured["deployables"], "deployed artefact"),
                                                sources["deployables"])
-    facts["metric.systems"] = plural(measured["systems"], "distinct system the application talks to")
+    facts["metric.systems"] = plural(measured["systems"],
+                                     "distinct system the application talks to",
+                                     "distinct systems the application talks to")
     facts["survey.declarations"] = plural(len(declarations), "declaration")
     facts["perimeter.exclusion_rate"] = (
         "%s of the tree's %s lie outside the counted perimeter (%.0f%%)"
@@ -2470,9 +2558,11 @@ tool measure:
         "the largest exclusions are " +
         ", ".join("`%s` (%s)" % (root, plural(n, "line")) for root, n in excluded_by_root[:5])
         ) if excluded_by_root else "no subtree was excluded or declared tests"
-    facts["survey.first_party_subtrees"] = plural(len(first_party), "first-party subtree")
-    facts["survey.excluded_subtrees"] = plural(len(excluded), "excluded subtree")
-    facts["survey.tests_subtrees"] = plural(len(tests), "test subtree")
+    # PATH, not subtree: a partition declaration may name a file, which is how a
+    # flat repository declares the source at its root.
+    facts["survey.first_party_subtrees"] = plural(len(first_party), "first-party path")
+    facts["survey.excluded_subtrees"] = plural(len(excluded), "excluded path")
+    facts["survey.tests_subtrees"] = plural(len(tests), "test path")
     facts["stack.detected"] = "the stack(s) %s" % (
         ", ".join(sorted({str(s.get("id")) for s in survey.get("stacks") or []
                           if isinstance(s, dict) and s.get("id")})) or "none")
@@ -3005,6 +3095,7 @@ tool contract_lint:
     brief = {{input.brief}}
     if not isinstance(brief, dict):
         brief = {}
+    document_paths = [str(d) for d in ({{input.documents}} or []) if d]
 
     out = {"ok": False, "code": "", "reason": "", "lots": 0, "proposals": 0, "refusals": [],
            "gates_proven_red": 0}
@@ -3425,6 +3516,18 @@ tool contract_lint:
 
     GIT_ENV = git_env()
 
+    # THIS RUN'S OWN ARTEFACTS ARE STILL UNTRACKED HERE, so `git diff HEAD`
+    # cannot see them: the contract this node has just PARSED, the outcomes
+    # beside it, the survey and the rendered documents are all written and not
+    # yet committed. A gate command that rewrites the contract after the parse
+    # is then invisible, and `commit` stages what is on DISK — so the run would
+    # publish a contract no lint ever read, under a message saying it was
+    # validated whole. They are digested by name, into the same value the probe
+    # compares around every command.
+    RUN_ARTEFACTS = [plan_path,
+                     os.path.join(os.path.dirname(plan_path), "outcomes.json"),
+                     os.path.join(ws, {{vars.survey_path}})]
+
     def tracked_state():
         diff = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
                                "--binary", "HEAD"], capture_output=True, env=GIT_ENV, timeout=600)
@@ -3435,7 +3538,18 @@ tool contract_lint:
                    "cannot read the tracked state of %s around the gate probe: %s" % (
                        ws, (diff.stderr or b"").decode("utf-8", "replace").strip()[-300:]
                        or (names.stderr or "").strip()[-300:]))
-        return hashlib.sha256(diff.stdout).hexdigest(), sorted(n for n in names.stdout.splitlines() if n)
+        own = hashlib.sha256()
+        changed = []
+        for path in RUN_ARTEFACTS + sorted(document_paths):
+            try:
+                with open(path, "rb") as handle:
+                    body = handle.read()
+            except OSError:
+                body = b"\0absent"
+            own.update(path.encode("utf-8") + b"\0" + hashlib.sha256(body).digest())
+            changed.append(os.path.relpath(path, ws))
+        return (hashlib.sha256(diff.stdout + own.digest()).hexdigest(),
+                sorted(set(n for n in names.stdout.splitlines() if n)), changed)
 
     # One process GROUP per command, killed whole on the wall: a gate that
     # starts a build leaves children behind, and a child still writing after
@@ -3474,11 +3588,14 @@ tool contract_lint:
             verdicts.append("%s -> %s" % (command, code))
             state_after = tracked_state()
             if state_after != state_before:
-                changed = sorted(set(state_after[1]) ^ set(state_before[1])) or state_after[1]
-                reject(where, "its gate command %r WRITES to the tree it checks: tracked content changed "
-                              "while it ran (%s). A gate is a check; one that rewrites the repository "
-                              "leaves the next run a tree nobody committed, and certifies its own edit."
-                       % (command, ", ".join(changed[:6]) or "content of already-modified files"))
+                changed = sorted(set(state_after[1]) ^ set(state_before[1]))
+                reject(where, "its gate command %r WRITES to what it checks: the tracked tree or this "
+                              "run's own artefacts changed while it ran (%s). A gate is a check; one "
+                              "that rewrites the repository leaves the next run a tree nobody "
+                              "committed, and one that rewrites the contract this node already parsed "
+                              "gets a programme committed that no lint ever read."
+                       % (command, ", ".join(changed[:6]) or "content of an already-modified or "
+                                                             "uncommitted file"))
                 state_before = state_after
             if code != 0:
                 all_green = False
@@ -4003,7 +4120,8 @@ workflow assessment:
   ## against itself: internally consistent, and free to contradict every
   ## decision somebody took.
   plan_draft -> contract_lint with {
-    brief: "{{outputs.brief_read.brief}}"
+    brief:     "{{outputs.brief_read.brief}}",
+    documents: "{{outputs.render.documents}}"
   }
 
   contract_lint -> contract_refused when not ok

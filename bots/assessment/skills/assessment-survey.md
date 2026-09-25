@@ -58,15 +58,24 @@ zero are different results — a stack measured at zero and a stack never
 measured read identically in a table, and only one of them is a fact about the
 repository.
 
+**`supported` is an observation, and the listing you are given carries the
+fact.** It names the stack extractor skills this bundle ships; a stack is
+`supported: true` exactly when its id appears there, spelled as it is spelled
+there. `go` and `golang`, `node` and `nodejs` are different ids, and only the
+shipped spelling is covered. A deterministic gate re-derives the same answer
+from the same skills seconds later and refuses a run where the two disagree —
+so `supported` is never a guess about what this bundle can probably do, and a
+stack you know well is `false` when no skill ships for it.
+
 ## The kinds, and the evidence each owes
 
 | kind | what it declares | evidence the lint re-verifies |
 |---|---|---|
 | `deployable` | one artefact that is deployed and runs on its own | `path` exists at the pinned commit; `pattern` matches inside it when given; `identity` names the SERVICE |
 | `system` | one distinct system the application talks to — a datastore, a broker, an external service | `path` exists; `pattern` matches; `identity` names the SYSTEM |
-| `first_party` | a subtree that IS the product's own source | `path` is a directory in the tree |
+| `first_party` | what IS the product's own source — a subtree, or a file where the source sits at the root | `path` is a file OR a directory in the tree |
 | `excluded` | anything that is NOT first-party — vendored, generated, locked, data, fixtures, documentation | `path` is a file OR a directory in the tree, and `note` says which of those it is |
-| `tests` | a subtree that holds tests | `path` is a directory in the tree |
+| `tests` | what holds tests — a subtree, or a file | `path` is a file OR a directory in the tree |
 | `entrypoint` | the ways in that one artefact exposes — HTTP routes, CLI commands, scheduled jobs, queue consumers | `path` exists; `pattern` matches when given; `count` says HOW MANY |
 
 **Every top-level entry of the tree must be claimed** by a `first_party`,
@@ -77,6 +86,13 @@ account of `src/`, and a `first_party` on `src/app` accounts for `src/app` and
 not for its root. The lint refuses a survey that leaves one unclaimed, and the
 reason is in the next section: it is the only mechanical handle anybody has on
 omission.
+
+**A FLAT repository is declared file by file.** Where the source sits at the
+root, `first_party` names those files — `main.py`, `app.rb` — one declaration
+each. Do not fall back on declaring them `excluded` because the kind reads like
+a subtree: the measurement counts what `first_party` claims, so a root file left
+out is counted as nothing, and the document then publishes zero lines of
+first-party source over a tree full of code.
 
 **The exclusion rate is published.** The document states how many of the tree's
 lines fall outside the counted perimeter, and names the largest exclusions.

@@ -118,18 +118,7 @@ func contractRepo(t *testing.T, contract, outcomes string) string {
 // lintContractIn runs the lint over a workspace the caller prepared.
 func lintContractIn(t *testing.T, dir, brief string) map[string]any {
 	t.Helper()
-	out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
-		"{{vars.workspace_dir}}": dir,
-		"{{vars.scratch_dir}}":   t.TempDir(),
-		"{{vars.plan_path}}":     ".modernize/plan.yaml",
-	}, map[string]string{
-		"{{input.brief}}":               briefJSON(t, brief),
-		"{{vars.gate_probe_timeout_s}}": gateProbeWall,
-	})
-	if exit != 0 {
-		t.Fatalf("contract_lint exited %d: %s", exit, stderr)
-	}
-	return out
+	return lintContractWithDocuments(t, dir, brief, nil)
 }
 
 func lintContract(t *testing.T, contract, outcomes string) map[string]any {
@@ -313,15 +302,7 @@ func TestAssessmentContractLintNeverAcceptsWhatPlanReadRefuses(t *testing.T) {
 			reader := modernizePlanReadAt(t, planRead, dir)
 			executorRefuses := reader.Refused || reader.LotNotActionable
 
-			lintOut, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
-				"{{vars.workspace_dir}}": dir,
-				"{{vars.scratch_dir}}":   t.TempDir(),
-				"{{vars.plan_path}}":     ".modernize/plan.yaml",
-			}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief),
-				"{{vars.gate_probe_timeout_s}}": gateProbeWall})
-			if exit != 0 {
-				t.Fatalf("contract_lint exited %d: %s", exit, stderr)
-			}
+			lintOut := lintContractIn(t, dir, aGoodBrief)
 			lintAccepts := assessmentBool(t, lintOut, "ok")
 
 			if executorRefuses && lintAccepts {
@@ -382,15 +363,7 @@ func TestAssessmentProducedContractIsAcceptedByBothReaders(t *testing.T) {
 	requireAssessmentTools(t, "python3", "git", "yq", "bash")
 	dir := contractRepo(t, aGoodContract, goodOutcomes)
 
-	lint, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
-		"{{vars.workspace_dir}}": dir,
-		"{{vars.scratch_dir}}":   t.TempDir(),
-		"{{vars.plan_path}}":     ".modernize/plan.yaml",
-	}, map[string]string{"{{input.brief}}": briefJSON(t, aGoodBrief),
-		"{{vars.gate_probe_timeout_s}}": gateProbeWall})
-	if exit != 0 {
-		t.Fatalf("contract_lint exited %d: %s", exit, stderr)
-	}
+	lint := lintContractIn(t, dir, aGoodBrief)
 	if !assessmentBool(t, lint, "ok") {
 		t.Fatalf("the whole-contract lint refused the contract: %s", assessmentString(t, lint, "reason"))
 	}
@@ -969,7 +942,7 @@ func TestAssessmentGateProbeRefusesAGateThatWritesToTheTree(t *testing.T) {
 			t.Fatal("a gate that rewrote a tracked file was accepted — the lint certified a gate " +
 				"that edits the tree it checks, and left that edit behind")
 		}
-		if !strings.Contains(assessmentString(t, out, "reason"), "WRITES to the tree") ||
+		if !strings.Contains(assessmentString(t, out, "reason"), "WRITES to what it checks") ||
 			!strings.Contains(assessmentString(t, out, "reason"), "src/lock.txt") {
 			t.Errorf("the refusal does not name the write: %s", assessmentString(t, out, "reason"))
 		}
