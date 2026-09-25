@@ -238,12 +238,14 @@ export const useTabsStore = create<TabsState>()(
           const field = activeIdField(closed.kind);
           let activeId = s[field];
           if (activeId === id) {
-            const sameKind = tabs.filter((t) => t.kind === closed.kind);
+            const visibleKind = (t: Tab) =>
+              t.kind === closed.kind && tabInScope(t, s.currentProjectKey);
+            const sameKind = tabs.filter(visibleKind);
             // Prefer the tab immediately before the closed one within
-            // the same kind; fall back to the first remaining tab of
-            // that kind, then null.
+            // the same visible kind; fall back to the next remaining
+            // visible tab of that kind, then null.
             const closedIdxInKind = s.tabs
-              .filter((t) => t.kind === closed.kind)
+              .filter(visibleKind)
               .findIndex((t) => t.id === id);
             activeId = sameKind[closedIdxInKind - 1]?.id
               ?? sameKind[closedIdxInKind]?.id
