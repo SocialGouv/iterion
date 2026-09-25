@@ -15,7 +15,11 @@ export default function AssistantWatchBadge({ runId }: { runId: string }) {
     refetchInterval: 20_000,
   });
   const stop = useMutation({
-    mutationFn: stopAssistantRunWatch,
+    // The badge's watches all target THIS run: stop them through the
+    // run-addressed route (ADR-103 §4) so a cross-team view can stop
+    // what it can see. The bare id spelling would fail under an active
+    // team other than the run's.
+    mutationFn: (id: string) => stopAssistantRunWatch(id, runId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey }),
   });
   const active = watches.data ?? [];

@@ -31,7 +31,7 @@ export function RunTeamNotice({ tenantId }: { tenantId?: string }) {
   return (
     <div
       data-testid="cross-team-run-notice"
-      className="border-b border-border-default bg-bg-subtle px-4 py-1.5 text-xs text-fg-muted"
+      className="border-b border-border-default bg-surface-1 px-4 py-1.5 text-xs text-fg-muted"
     >
       This run belongs to another team
       {name ? ` — ${name}` : ""}. Actions here apply to that team.

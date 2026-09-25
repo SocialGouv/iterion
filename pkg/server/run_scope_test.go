@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -104,7 +107,18 @@ func newRunScopeServer(t *testing.T) (*Server, *tenantGuardStore) {
 		t.Fatalf("auth service: %v", err)
 	}
 	srv.authSvc = svc
+	srv.signer = signer // the bearer path of requireAuth
 	return srv, guard
+}
+
+// fullStack serves the AUTH middleware in front of the mux — the chain a
+// production request walks — so a wiring that never reaches the choke
+// point (or a choke point that never reaches the mux) turns red.
+func fullStack(t *testing.T, srv *Server) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(srv.requireAuth(srv.mux))
+	t.Cleanup(ts.Close)
+	return ts
 }
 
 // scoped runs scopeRunByID for one caller and reports the written status
@@ -184,6 +198,27 @@ func TestRunByIDLadder(t *testing.T) {
 			t.Fatalf("got %d: a member of the run's team acts on it", code)
 		}
 	})
+	t.Run("viewer cannot drive the CDP pump", func(t *testing.T) {
+		// GET, but live control of the run's browser: an action (H2).
+		code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1/browser/cdp", caller("u-viewer-a", "tenant-A"))
+		if code != http.StatusForbidden {
+			t.Fatalf("got %d: the CDP pump is not a read", code)
+		}
+	})
+	t.Run("member may drive the CDP pump", func(t *testing.T) {
+		code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1/browser/cdp", caller("u-member-a", "tenant-A"))
+		if code != http.StatusOK {
+			t.Fatalf("got %d: the ladder passes a member to the pump", code)
+		}
+	})
+	t.Run("empty wildcard answers 404 not 500", func(t *testing.T) {
+		// /api/runs//run-1: the mux matches with an empty id — nothing
+		// to resolve, a 404 (the review's B1; a 500 named an empty run).
+		code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs//run-1", caller("u-both", "tenant-B"))
+		if code != http.StatusNotFound {
+			t.Fatalf("got %d: an empty wildcard is a missing run", code)
+		}
+	})
 	t.Run("config_editor sees no runs", func(t *testing.T) {
 		code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1", caller("u-configed-a", "tenant-A"))
 		if code != http.StatusNotFound {
@@ -245,6 +280,8 @@ func TestRunByIDStoreOutageDoesNotDegradeToViewer(t *testing.T) {
 	}
 }
 
+// failingMembershipRead always fails its membership read with something
+// that is NOT ErrNotFound — an outage, not an answer.
 type failingMembershipRead struct {
 	identity.Store
 	err error
@@ -254,12 +291,65 @@ func (d failingMembershipRead) GetMembership(ctx context.Context, userID, teamID
 	return identity.Membership{}, d.err
 }
 
+// The LINEAGE arms hold the same rule: a team or org-membership read that
+// fails (not "not found") is an error, not a 404.
+func TestRunByIDLineageOutageIsNotARefusal(t *testing.T) {
+	mem := identity.NewMemoryStore()
+	ctx := context.Background()
+	if _, err := mem.CreateTeam(ctx, identity.Team{ID: "tenant-A", Slug: "team-a", OrgID: "org-1"}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	noMembership := caller("u-foreign", "tenant-B")
+
+	t.Run("team read outage", func(t *testing.T) {
+		st := failingTeamRead{Store: mem, err: context.DeadlineExceeded}
+		_, _, err := identityInTeamOn(st, ctx, noMembership, "tenant-A")
+		if err == nil {
+			t.Fatal("a team read that FAILED produced a verdict")
+		}
+	})
+	t.Run("org membership read outage", func(t *testing.T) {
+		st := failingOrgMembershipRead{Store: mem, err: context.DeadlineExceeded}
+		_, _, err := identityInTeamOn(st, ctx, noMembership, "tenant-A")
+		if err == nil {
+			t.Fatal("an org-membership read that FAILED produced a verdict")
+		}
+	})
+}
+
+type failingTeamRead struct {
+	identity.Store
+	err error
+}
+
+func (d failingTeamRead) GetTeam(ctx context.Context, id string) (identity.Team, error) {
+	return identity.Team{}, d.err
+}
+
+type failingOrgMembershipRead struct {
+	identity.Store
+	err error
+}
+
+func (d failingOrgMembershipRead) GetOrgMembership(ctx context.Context, userID, orgID string) (identity.OrgMembership, error) {
+	return identity.OrgMembership{}, d.err
+}
+
 // The class is the set of REGISTERED routes whose pattern carries the run
 // wildcard — every one of them goes through this file's resolution, and no
 // fixed sibling of theirs ever does (the review's F1: a future
 // "GET /api/runs/stats" must not be read as a run id).
 func TestEveryRunWildcardRouteIsInTheClass(t *testing.T) {
 	srv, _ := newTestServer(t)
+	// A route whose wildcard is NOT spelled {id}: the classification is
+	// wildcard-name-agnostic, so this must classify too (the review's
+	// M1 - a rename must not fall out of the class, or out of this
+	// witness).
+	srv.mux.HandleFunc("GET /api/runs/{runID}/rva-probe", func(http.ResponseWriter, *http.Request) {})
+	// Another resource's {id} route at the SAME index: not a run, and the
+	// classification must leave it alone (this exact hazard panicked a
+	// team-members route on a nil runs service during the round).
+	srv.mux.HandleFunc("GET /api/teams/{id}/rva-probe", func(http.ResponseWriter, *http.Request) {})
 	patterns := 0
 	for _, route := range srv.mux.Routes() {
 		inClass := routeIsRunWildcard(route.Pattern)
@@ -274,7 +364,7 @@ func TestEveryRunWildcardRouteIsInTheClass(t *testing.T) {
 					method = http.MethodGet
 				}
 				req := httptest.NewRequest(method, samplePath(route.Pattern), nil)
-				if _, ok := srv.runIDClass(req); ok {
+				if _, ok, _ := srv.runIDClass(req); ok {
 					t.Fatalf("%s %s: a fixed sibling was classified as a run route", route.Method, route.Pattern)
 				}
 			}
@@ -282,7 +372,7 @@ func TestEveryRunWildcardRouteIsInTheClass(t *testing.T) {
 		}
 		patterns++
 		req := httptest.NewRequest(route.Method, samplePath(route.Pattern), nil)
-		id, ok := srv.runIDClass(req)
+		id, ok, _ := srv.runIDClass(req)
 		if !ok || id == "" {
 			t.Fatalf("%s %s: a run-wildcard route resolved to id=%q ok=%v", route.Method, route.Pattern, id, ok)
 		}
@@ -292,16 +382,34 @@ func TestEveryRunWildcardRouteIsInTheClass(t *testing.T) {
 	}
 }
 
-// routeIsRunWildcard reports whether a REGISTERED pattern is one of the
-// four canonical shapes: {id} directly under /api/runs or /api/ws/runs,
-// anything under it.
+// routeIsRunWildcard reports whether a REGISTERED pattern is shaped like a
+// run-addressed route, DERIVED from the pattern (a wildcard - any spelling -
+// at the id position under /api/runs or /api/ws/runs), never from the
+// production table: a witness reading the table it witnesses is mute on a
+// table change (the review's M1).
 func routeIsRunWildcard(pattern string) bool {
 	if i := strings.Index(pattern, " "); i >= 0 && !strings.HasPrefix(pattern, "/") {
 		pattern = pattern[i+1:]
 	}
-	for _, w := range runScopeWildcards {
-		if pattern == w.prefix || strings.HasPrefix(pattern, w.prefix+"/") {
-			return true
+	segs := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	for _, w := range []struct {
+		fixed int
+		chain []string
+	}{
+		{2, []string{"api", "runs"}},
+		{3, []string{"api", "ws", "runs"}},
+	} {
+		if len(segs) > w.fixed && strings.HasPrefix(segs[w.fixed], "{") && strings.HasSuffix(segs[w.fixed], "}") {
+			match := true
+			for j, want := range w.chain {
+				if segs[j] != want {
+					match = false
+					break
+				}
+			}
+			if match {
+				return true
+			}
 		}
 	}
 	return false
@@ -393,4 +501,119 @@ func TestListRunsScopedByExplicitTeam(t *testing.T) {
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "team_id") {
 		t.Fatalf("invisible override: %d %s, want a 403 naming team_id", rec.Code, rec.Body.String())
 	}
+}
+
+// The FULL-STACK witness (the review's H1): a request that walks the real
+// chain — requireAuth's bearer resolution, the choke point, the mux —
+// reads a cross-team run it may see, and the wire carries the run's own
+// team. A wiring that skips the choke point turns this red: with the
+// active-team stamp alone the guarded store refuses run-1.
+func TestRunByIDThroughRequireAuth(t *testing.T) {
+	srv, _ := newRunScopeServer(t)
+	ts := fullStack(t, srv)
+
+	get := func(token string) (int, string, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/runs/run-1", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		var out struct {
+			Run struct {
+				ID       string `json:"id"`
+				TenantID string `json:"tenant_id"`
+			} `json:"run"`
+		}
+		_ = json.Unmarshal(body, &out)
+		return resp.StatusCode, out.Run.ID, out.Run.TenantID
+	}
+
+	pinned, _, err := srv.signer.IssueAccess(caller("u-both", "tenant-B"))
+	if err != nil {
+		t.Fatalf("mint bearer: %v", err)
+	}
+	code, runID, tenant := get(pinned)
+	if code != http.StatusOK || runID != "run-1" || tenant != "tenant-A" {
+		t.Fatalf("member of the run's team through the full chain: %d id=%q tenant=%q — the choke point is not on the bearer path", code, runID, tenant)
+	}
+
+	foreign, _, err := srv.signer.IssueAccess(caller("u-member-b", "tenant-B"))
+	if err != nil {
+		t.Fatalf("mint bearer: %v", err)
+	}
+	if code, _, _ := get(foreign); code != http.StatusNotFound {
+		t.Fatalf("caller without standing through the full chain: %d, want 404", code)
+	}
+}
+
+// The WebSocket ticket walks the same choke point: a ticket whose holder
+// has standing upgrades; one without takes the 404 BEFORE any upgrade is
+// attempted.
+func TestWSRunTicketThroughRequireAuth(t *testing.T) {
+	srv, _ := newRunScopeServer(t)
+	ts := fullStack(t, srv)
+
+	ticket := func(userID, teamID string) string {
+		t.Helper()
+		id := caller(userID, teamID)
+		tk, err := srv.wsTickets.Mint(context.Background(), id)
+		if err != nil {
+			t.Fatalf("mint ticket: %v", err)
+		}
+		return tk
+	}
+
+	code := func(tk string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/ws/runs/run-1?ticket="+tk, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := code(ticket("u-both", "tenant-B")); code == http.StatusNotFound {
+		t.Fatal("a ticket with standing took 404 — the choke point refuses on the ws path")
+	}
+	if code := code(ticket("u-member-b", "tenant-B")); code != http.StatusNotFound {
+		t.Fatalf("a ticket without standing got %d — the 404 must come before any upgrade", code)
+	}
+}
+
+// The run-addressed watch stop refuses a watch that does not belong to the
+// run in the path — a mismatched pair is a missing watch (the review's B2:
+// the guard had no witness and its removal reddened nothing).
+func TestStopAssistantWatchRefusesARunMismatch(t *testing.T) {
+	srv, _ := newRunScopeServer(t)
+	srv.assistantWatches = mismatchedWatchStore{}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/runs/run-1/assistant-watches/w-1", nil)
+	req.SetPathValue("id", "run-1")
+	req.SetPathValue("watchID", "w-1")
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant-A"))
+	rec := httptest.NewRecorder()
+	srv.handleStopAssistantWatch(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d: a watch targeting another run is not this run's watch", rec.Code)
+	}
+}
+
+type mismatchedWatchStore struct {
+	runwatch.Store
+}
+
+func (mismatchedWatchStore) GetWatch(context.Context, string) (runwatch.Watch, error) {
+	return runwatch.Watch{ID: "w-1", TargetRunID: "other-run"}, nil
 }

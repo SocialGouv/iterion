@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -92,7 +92,6 @@ func decodeJSONResp(t *testing.T, resp *http.Response, v any) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
 
 // listRunsAs issues GET /api/runs the way production delivers it: the list
 // scopes EXPLICITLY (ADR-103), so the request always arrives carrying the

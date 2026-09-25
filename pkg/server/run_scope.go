@@ -34,15 +34,51 @@ const (
 	runTenantLRUSize = 8192
 )
 
-// runScopeWildcards are the literal prefixes the four canonical run patterns
-// carry before the {id} wildcard, as registered in runs.go: the number of
-// fixed segments that precede the id ("api/runs" = 2, "api/ws/runs" = 3).
-var runScopeWildcards = []struct {
+// runScopePrefix is one canonical run pattern shape: the fixed segment
+// chain that precedes the id wildcard and the wildcard's index.
+type runScopePrefix = struct {
 	fixedSegments int
-	prefix        string
-}{
-	{2, "/api/runs/{id}"},
-	{3, "/api/ws/runs/{id}"},
+	segments      []string
+}
+
+// runScopePrefixes are the fixed segment chains that precede the id
+// wildcard in the four canonical run patterns ("api/runs" = 2 fixed
+// segments before the id, "api/ws/runs" = 3). The wildcard's NAME is
+// irrelevant: any registered wildcard at that position puts the route in
+// the class, so a future `{runID}` spelling cannot silently fall outside
+// it (the review's M1 — the hole F1 closed, reopened by a rename). The
+// CHAIN, though, must match exactly — a wildcard at the same index under
+// /api/teams is another resource, not a run.
+var runScopePrefixes = []runScopePrefix{
+	{2, []string{"api", "runs"}},
+	{3, []string{"api", "ws", "runs"}},
+}
+
+// runScopeLadderRoutes names the GET routes that are ACTIONS despite their
+// method: the CDP pump hands the caller the run's browser (navigate, run
+// JS, read the page), the shell hands its terminal. A viewer reads the
+// run; these take a member. Keyed by the fixed segment chain after the id.
+var runScopeLadderRoutes = map[string]bool{
+	"browser/cdp": true,
+	"shell":       true,
+}
+
+// routeSubPath returns the request path segments AFTER the id wildcard
+// position, unescaped, for a route classified under the given prefix.
+func routeSubPath(path string, fixedSegments int) []string {
+	escaped := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(escaped) <= fixedSegments+1 {
+		return nil
+	}
+	out := make([]string, 0, len(escaped)-fixedSegments-1)
+	for _, seg := range escaped[fixedSegments+1:] {
+		seg, err := url.PathUnescape(seg)
+		if err != nil {
+			return nil
+		}
+		out = append(out, seg)
+	}
+	return out
 }
 
 // extractRunID reads the {id} path value the way ServeMux would resolve it:
@@ -64,31 +100,49 @@ func extractRunID(path string, fixedSegments int) string {
 	return id
 }
 
+// patternWildcardAt reports whether a registered pattern is shaped like a
+// run-addressed route: the pattern's path carries the prefix chain
+// ("api/runs" or "api/ws/runs") AND a wildcard — any {name} spelling — at
+// the id position. The chain must match EXACTLY: /api/teams/{id} has a
+// wildcard at the same index and must stay OUT of the class.
+func patternWildcardAt(pattern string, w runScopePrefix) bool {
+	p := pattern
+	if i := strings.Index(p, " "); i >= 0 && !strings.HasPrefix(p, "/") {
+		p = p[i+1:]
+	}
+	segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	if len(segs) <= w.fixedSegments {
+		return false
+	}
+	for j, want := range w.segments {
+		if segs[j] != want {
+			return false
+		}
+	}
+	seg := segs[w.fixedSegments]
+	return strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}")
+}
+
 // runIDClass reports the run id a request addresses by route pattern, and
 // whether the request is in the class at all. The pattern comes from the mux
 // itself (the same lookup the Sentry transaction naming uses), so the class
-// is the set of REGISTERED routes with an {id} wildcard under /api/runs and
+// is the set of REGISTERED routes with an id wildcard under /api/runs and
 // /api/ws/runs — fixed siblings are structurally excluded.
-func (s *Server) runIDClass(r *http.Request) (string, bool) {
+func (s *Server) runIDClass(r *http.Request) (string, bool, int) {
 	if s == nil || s.mux == nil {
-		return "", false
+		return "", false, 0
 	}
 	_, pattern := s.mux.Handler(r)
 	if pattern == "" {
-		return "", false
+		return "", false, 0
 	}
-	// Patterns carry an optional leading method ("GET /api/runs/{id}");
-	// the class is method-independent (the ladder reads the method, not
-	// the classification).
-	if i := strings.Index(pattern, " "); i >= 0 && !strings.HasPrefix(pattern, "/") {
-		pattern = pattern[i+1:]
-	}
-	for _, w := range runScopeWildcards {
-		if pattern == w.prefix || strings.HasPrefix(pattern, w.prefix+"/") {
-			return extractRunID(r.URL.EscapedPath(), w.fixedSegments), true
+	for _, w := range runScopePrefixes {
+		if !patternWildcardAt(pattern, w) {
+			continue
 		}
+		return extractRunID(r.URL.EscapedPath(), w.fixedSegments), true, w.fixedSegments
 	}
-	return "", false
+	return "", false, 0
 }
 
 // runTenantCache is the bounded per-process map of run id to the team that
@@ -214,12 +268,20 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		// canViewTeam would grant); anything else is out. ONE pass over
 		// the store: team → org, then the caller's org membership — no
 		// delegation to orgAdminOfTeam, which would read the same rows
-		// twice (the review's F3).
+		// twice (the review's F3). A read that FAILS — as opposed to
+		// answering "absent" — propagates: an outage is never a refusal
+		// dressed as one (the review's M2).
 		t, terr := st.GetTeam(ctx, teamID)
+		if terr != nil && !errors.Is(terr, identity.ErrNotFound) {
+			return auth.Identity{}, false, terr
+		}
 		if terr != nil || t.OrgID == "" {
 			return auth.Identity{}, false, nil
 		}
 		om, oerr := st.GetOrgMembership(ctx, id.UserID, t.OrgID)
+		if oerr != nil && !errors.Is(oerr, identity.ErrNotFound) {
+			return auth.Identity{}, false, oerr
+		}
 		if oerr != nil || !om.Role.AtLeast(identity.OrgRoleAdmin) {
 			return auth.Identity{}, false, nil
 		}
@@ -241,9 +303,25 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 // (cancel, resume, rewind, answer, upload, delete) takes a member. A viewer
 // of the team is exactly that — read-only (#1847); a config_editor sees no
 // runs at all (ADR-078). Super-admins carry RoleAdmin through
-// identityInTeam and pass both rungs.
-func runScopeLadder(method string, role identity.Role) bool {
-	if method == http.MethodGet || method == http.MethodHead {
+// identityInTeam and pass both rungs. GET routes that hand the caller a
+// LIVE CONTROL of the run — the CDP pump (navigate, run JS, read the page)
+// and the shell terminal — are actions despite their method and take a
+// member too (the review's H2).
+func (s *Server) runScopeLadder(r *http.Request, fixedSegments int, role identity.Role) bool {
+	isRead := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if isRead {
+		// A GET that hands the caller live control of the run is an
+		// action: the CDP pump (navigate, run JS, read the page) and the
+		// shell terminal take a member, not a viewer.
+		joined := strings.Join(routeSubPath(r.URL.EscapedPath(), fixedSegments), "/")
+		for route := range runScopeLadderRoutes {
+			if joined == route || strings.HasPrefix(joined, route+"/") {
+				isRead = false
+				break
+			}
+		}
+	}
+	if isRead {
 		return role.AtLeast(identity.RoleViewer)
 	}
 	return role.AtLeast(identity.RoleMember)
@@ -258,9 +336,16 @@ func runScopeLadder(method string, role identity.Role) bool {
 // (one answer, no existence oracle), 403 for a caller without the ladder's
 // rung, 500 when the store fails (fail visibly, never a degrade).
 func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Identity) (context.Context, bool) {
-	runID, ok := s.runIDClass(r)
+	runID, ok, fixedSegments := s.runIDClass(r)
 	if !ok {
 		return s.stampAuthedContext(w, r, id)
+	}
+	if runID == "" {
+		// A matched wildcard with nothing in it (a double slash the mux
+		// would have redirected): nothing to resolve — 404, not a store
+		// error with an empty id.
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found")
+		return nil, false
 	}
 	team, err := s.runTenant(r.Context(), runID)
 	if err != nil {
@@ -282,7 +367,7 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %s", runID)
 		return nil, false
 	}
-	if !runScopeLadder(r.Method, resolved.Role) {
+	if !s.runScopeLadder(r, fixedSegments, resolved.Role) {
 		// Visible, but the ladder refuses this action for the caller's
 		// role (a viewer acting): a plain 403.
 		s.httpErrorFor(w, r, http.StatusForbidden, "your role in team %s does not allow this action", team)
