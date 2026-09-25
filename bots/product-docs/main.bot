@@ -2749,6 +2749,33 @@ def page_blocks(rows):
                 break
     for idx in range(start, len(rows)):
         no, text = rows[idx]
+        ## COMMENT SPANS BEFORE FENCES. A fence marker inside a comment is
+        ## comment text: deciding the fence first let a triple-backtick line
+        ## inside a comment open one, and the chapters after the closer stayed
+        ## hidden. The visible PART of a line survives: prose before an
+        ## opener, and the tail after a closer, are read -- skipping the
+        ## whole line dropped a documented feature's own paragraph.
+        if in_comment:
+            end = text.find('-->')
+            if end == -1:
+                continue
+            text = text[end + 3:]
+            in_comment = False
+        start = text.find('<!--')
+        if start != -1:
+            end = text.find('-->', start + 4)
+            if end == -1:
+                in_comment = True
+                text = text[:start]
+                if not text.strip():
+                    continue
+            else:
+                ## The declared anchorless MARKER is a comment that carries
+                ## gate semantics: stripped like any other span, the chapter
+                ## it declares for lost its declaration and the structural
+                ## rule refused an honest page.
+                if text[start:end + 3] != no_anchor:
+                    text = text[:start] + ' ' + text[end + 3:]
         m = FENCE_RE.match(text)
         if m:
             ## A fenced sample teaches its reader to paste something; it
@@ -2756,31 +2783,18 @@ def page_blocks(rows):
             ## a chapter and a path in it is not a citation -- the reason
             ## page_lint exempts fenced blocks from its chrome rules.
             ## CommonMark closes a fence with the character that OPENED it,
-            ## at least as long. Toggling on any run let a page open with
-            ## backticks and "close" with tildes keep the fence open over the
-            ## chapter that followed, and the gate never read it.
+            ## at least as long, and NOTHING ELSE on the line: a closer with
+            ## trailing words is fence content, and reading it as a close
+            ## closed the fence early -- the real closer then opened a new
+            ## one, and the chapter behind it was never read.
             ch, ln = m.group(1)[0], len(m.group(1))
             if not in_fence:
                 in_fence, fence_opener = True, (ch, ln)
-            elif fence_opener and ch == fence_opener[0] and ln >= fence_opener[1]:
+            elif fence_opener and ch == fence_opener[0] and ln >= fence_opener[1] and not text[m.end():].strip():
                 in_fence, fence_opener = False, None
             cur, mode = None, ''
             continue
         if in_fence:
-            continue
-        if in_comment:
-            ## A line INSIDE a multi-line comment renders as nothing: hidden
-            ## here, it can neither carry a citation nor pad the prose. Read
-            ## per line, only the opening line was hidden -- the body read as
-            ## visible text, and a pair split across the markers documented a
-            ## feature nothing showed. Decided AFTER the fence: a marker
-            ## inside a fence is fence content, and a fence opened inside a
-            ## comment stays comment text.
-            if '-->' in text:
-                in_comment = False
-            continue
-        if '<!--' in text and '-->' not in text.partition('<!--')[2]:
-            in_comment = True
             continue
         depth, content = unquote(text)
         if not content.strip() or TEMPLATE_LINE_RE.match(content):

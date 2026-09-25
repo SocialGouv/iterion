@@ -4161,3 +4161,54 @@ func TestProductDocsCoverageGateHidesEveryLineOfAMultilineComment(t *testing.T) 
 		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
 	}
 }
+
+func TestProductDocsCoverageGateCloserCarriesNothingButWhitespace(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A closing fence admits only whitespace after the marker: a wordy
+	// "closer" is fence content, and reading it as a close let the real
+	// closer open a NEW fence over the chapter that followed.
+	writeFile(t, ws, "docs/demo/closer.md",
+		"# Closer\n"+
+			"\n"+
+			"```text\n"+
+			"```not-a-close\n"+
+			"```\n"+
+			"## A chapter behind a wordy closer — [[ref:999]]\n"+
+			"\n"+
+			"Prose the gate must read once the fence has closed, enough words\n"+
+			"in it to stand as writing on its own for the reader.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a wordy closer hid the chapter behind the real one:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") || !strings.Contains(got.Log, "999") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming 999:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateKeepsVisibleTextAroundCommentSpans(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The feature's ONLY documentation carries a trailing comment opener:
+	// the visible prefix (and its citations) must survive — skipping the
+	// whole line sent a documented feature to GAP. The fence marker inside
+	// the comment must not open a fence either.
+	mutate(t, ws, "docs/demo/README.md",
+		"Paging is [[ref:items.list.paging]] [[ref:027]], twenty rows per page\n"+
+			"([[ref:/dashboard/items?page=2]]), with a pager at the foot of the list to move between them.\n",
+		"")
+	writeFile(t, ws, "docs/demo/prefix.md",
+		"## Paging — [[ref:/dashboard/items?page=2]] [[ref:027]]\n"+
+			"\n"+
+			"Paging is [[ref:items.list.paging]] [[ref:027]] twenty rows per page <!-- note\n"+
+			"hidden words --> and the pager at the foot of the list moves the\n"+
+			"manager between the pages, newest first, until the first one.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("visible prose around a comment span was dropped — a documented feature went GAP:\n%s", got.Log)
+	}
+	if got.Documented != 4 {
+		t.Fatalf("documented = %d, want 4", got.Documented)
+	}
+}
