@@ -242,7 +242,7 @@ tool preflight:
 
 agent deploy:
   backend: "claude_code"
-  model: "${ITERION_REVIEW_ENV_MODEL:-claude-sonnet-5}"
+  model: "${ITERION_REVIEW_ENV_MODEL:-claude-opus-5-5}"
   input: deploy_input
   output: deploy_report
   system: deploy_system

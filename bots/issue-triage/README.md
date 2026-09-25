@@ -30,7 +30,7 @@ One agent node, then `done` (`entry: triage`, `triage -> done`). No shell,
 no code edits, no `worktree:` and no `sandbox:` block.
 
 ```
-triage  (agent · backend claw · model openai/gpt-5.5 · tools: [skill] · tool_max_steps: 12)
+triage  (agent · backend claw · model openai/gpt-6-sol · tools: [skill] · tool_max_steps: 12)
   1. mcp__iterion_board__get_issue      read the card named by vars.issue_id
   2. skill "iterion-bot-catalog"        MANDATORY — walk the decision tree
                                         top-to-bottom, first match wins

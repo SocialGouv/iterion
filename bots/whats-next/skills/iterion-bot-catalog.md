@@ -588,9 +588,9 @@ with blocked lots requalified against the final tree.
 
 ### `copilot` — Copi
 
-Conversational iterion assistant. Terra (GPT-5.6) is the visible entry and
+Conversational iterion assistant. Terra (GPT-6 Sol) is the visible entry and
 executor in a standing chat loop. It handles simple requests directly; for
-complex work it asks a private Sol (GPT-5.6) reflection node for a plan.
+complex work it asks a private Sol (GPT-6 Sol) reflection node for a plan.
 Both GPT agents can fall back to Claude Opus while retaining their context. A
 fresh judge debates that plan, using Claude Opus then Kimi K3 then Grok when
 needed, before Terra verifies and carries it out. If execution finds a real

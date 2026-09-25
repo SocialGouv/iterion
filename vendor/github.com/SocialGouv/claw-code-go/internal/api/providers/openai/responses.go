@@ -195,7 +195,10 @@ type oaiResponsesUsage struct {
 // tool is declared. This keeps every non-reasoning workflow on the
 // well-tested chat completions path.
 func shouldUseResponsesAPI(req api.CreateMessageRequest) bool {
-	return req.ReasoningEffort != "" && len(req.Tools) > 0
+	// GPT-6 is a Responses-first family, including subagents with no explicit
+	// effort and text-only calls. Never depend on tools to select its transport.
+	return strings.HasPrefix(stripRoutingPrefix(req.Model), "gpt-6-") ||
+		(req.ReasoningEffort != "" && len(req.Tools) > 0)
 }
 
 // ----- Streaming entry point ------------------------------------------------

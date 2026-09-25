@@ -466,7 +466,7 @@ tool extend_base:
 
 agent extend_campaign:
   backend: "claude_code"
-  model: "${ITERION_GOLDEN_MASTER_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_GOLDEN_MASTER_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_GOLDEN_MASTER_EFFORT:-high}"
   input: campaign_input
   output: campaign_output

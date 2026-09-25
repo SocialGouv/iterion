@@ -597,7 +597,7 @@ print(json.dumps({'changed_lockfiles': changed, 'diff_text': diff_text, 'scope_m
 
 agent enumerate_deps:
   backend: "claw"
-  model: "${ITERION_SEC_AUDIT_MODEL:-openai/gpt-5.5}"
+  model: "${ITERION_SEC_AUDIT_MODEL:-openai/gpt-6-sol}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_ENUMERATE:-medium}"
   input: enumerate_input
   output: enumerate_output
@@ -1182,7 +1182,7 @@ agent llm_review:
   ## claude_code is REQUIRED: needs the board MCP server registered and
   ## the bundled skills mirrored to .claude/skills/.
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REVIEW:-high}"
   input: review_input
   output: review_output
@@ -1245,7 +1245,7 @@ agent forge_report:
   ## PR via the native forge REST API. Degrades to local-only when
   ## there is no PR context / token — never fails the run.
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_FORGE_REPORT_EFFORT:-medium}"
   input: forge_report_input
   output: forge_report_output

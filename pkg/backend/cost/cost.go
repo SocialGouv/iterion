@@ -95,6 +95,7 @@ var modelPriceTable = map[string]modelPricing{
 	// family, so newer releases inherit the same numbers until Anthropic
 	// publishes a new price.
 	"claude-opus-5":             opusRate,
+	"claude-opus-5-5":           {4.00, 20.00}, // Claude pricing, 2026-09-25.
 	"claude-opus-4-8":           opusRate,
 	"claude-opus-4-7":           opusRate,
 	"claude-opus-4-6":           opusRate,
@@ -118,6 +119,9 @@ var modelPriceTable = map[string]modelPricing{
 	"gpt-5.4-mini":  {0.75, 4.50},
 	"gpt-5.4-nano":  {0.20, 1.25},
 	"gpt-5.5":       {5.00, 30.00},
+	"gpt-6-astra":   {10.00, 50.00}, // OpenAI standard short-context pricing, 2026-09-25.
+	"gpt-6-sol":     {2.00, 10.00},
+	"gpt-6-luna":    {0.10, 0.50},
 	"gpt-5.5-pro":   {30.00, 180.00},
 	"gpt-5.6":       gpt56SolRate,
 	"gpt-5.6-sol":   gpt56SolRate,

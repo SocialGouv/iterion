@@ -109,7 +109,7 @@ read-only); `plan_phase: off` is the explicit opt-out (the spec hands off
 straight to the campaign — plan in stride). `plan_review: auto` resolves
 at launch from the run's credentials and gates ONLY the peer review: when
 a SECOND model family is available, the plan is critiqued by a
-cross-family peer (`claw` + `openai/gpt-5.6-sol` by default) and revised
+cross-family peer (`claw` + `openai/gpt-6-astra` by default) and revised
 by the SAME author session before the campaign builds; otherwise the
 campaign receives the author's plan stamped as unreviewed
 (`plan_provenance`). `plan_review_policy` picks the mid-run
