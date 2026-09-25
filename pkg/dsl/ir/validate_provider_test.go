@@ -1,6 +1,9 @@
 package ir
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // providerSrc builds a minimal one-agent workflow with the given backend
 // and provider field so the provider validator can be exercised in
@@ -33,8 +36,29 @@ func TestProvider_UnknownTokenWarns(t *testing.T) {
 }
 
 func TestProvider_KnownChainNoWarning(t *testing.T) {
-	r := compileFile(t, providerSrc("claude_code", "anthropic,zai,openai,auto"))
+	r := compileFile(t, providerSrc("claude_code", "anthropic,zai,moonshot,openai,auto"))
 	expectNoDiag(t, r, DiagUnknownProvider)
+}
+
+// The runtime routes on a FOLDED hint (delegate.normalizeProviderHint), so the
+// diagnostic must accept the spellings it honours: warning that "Moonshot will
+// be ignored" is false the moment the delegate routes it, and it reads as an
+// instruction to delete a working route.
+func TestProvider_KnownProviderIsAcceptedWhateverItsCase(t *testing.T) {
+	r := compileFile(t, providerSrc("claude_code", "Anthropic,ZAI,Moonshot,AUTO"))
+	expectNoDiag(t, r, DiagUnknownProvider)
+}
+
+// The C087 message must name every hint the compiler accepts. A list that
+// lags the set tells an author a valid hint is a typo — and the fix they then
+// apply is to remove a working route.
+func TestProvider_UnknownTokenMessageListsEveryKnownProvider(t *testing.T) {
+	list := KnownProviderList()
+	for hint := range KnownProviders {
+		if !strings.Contains(list, hint) {
+			t.Errorf("KnownProviderList() = %q, missing the accepted hint %q", list, hint)
+		}
+	}
 }
 
 // Env-ref forms resolve at run time, so the validator must not try to

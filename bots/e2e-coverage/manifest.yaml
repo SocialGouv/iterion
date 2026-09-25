@@ -1,7 +1,7 @@
 name: e2e-coverage
 display_name: Endy
 icon: 🕸️
-version: 0.5.0
+version: 0.5.1
 ## 0.5.0 — a missing verify.sh is a refusal, and its reason survives a loud matrix (#1598)
 ## 0.4.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,

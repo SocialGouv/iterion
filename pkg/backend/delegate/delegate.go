@@ -525,8 +525,10 @@ type Task struct {
 	// profile bin dirs prepended to PATH on runs without a sandbox).
 	// Entries are appended after the inherited environment, so on a
 	// duplicate key the ExtraEnv value wins (os/exec keeps the last
-	// occurrence). Sandboxed tasks never carry entries here: the
-	// container's env is settled at container creation.
+	// occurrence). Managed credential routes can override their auth and
+	// endpoint fields together, so these additions cannot redirect a bound
+	// credential to another provider. Sandboxed tasks never carry entries here:
+	// the container's env is settled at container creation.
 	ExtraEnv []string
 
 	// BaseDir is the allowed base directory for WorkDir validation.
@@ -712,7 +714,8 @@ type Task struct {
 
 	// SessionFingerprint carries the provider fingerprint that the
 	// parent SessionID was created against (e.g. "anthropic-direct",
-	// "facade:api.z.ai"). The backend uses it to detect a cross-provider
+	// "facade:zai:https://api.z.ai/api/anthropic"). The backend uses it to
+	// detect a cross-provider
 	// fork attempt — resuming or forking a session built by a different
 	// provider triggers HTTP 400 "Invalid signature in thinking block"
 	// because thinking blocks are provider-signed. On mismatch the
@@ -792,10 +795,10 @@ type Task struct {
 	// from the DSL `provider:` field (post env-expansion). When
 	// non-empty, backends honour it to override the default process-env
 	// precedence. Known values: "anthropic" (force Anthropic-direct,
-	// skip z.ai even when ZAI_API_KEY is set), "zai" (force z.ai
-	// facade), "openai" (force OpenAI-direct, skip OPENAI_BASE_URL
-	// overrides). Empty string means "auto" — current
-	// environment-driven precedence.
+	// skip the facades even when their keys are set), "zai" (force the
+	// z.ai facade), "moonshot" (force the Moonshot facade), "openai"
+	// (force OpenAI-direct, skip OPENAI_BASE_URL overrides). Empty
+	// string means "auto" — current environment-driven precedence.
 	//
 	// This carries a SINGLE hint per Execute call. When the DSL declares
 	// an ordered fallback chain (`provider: "anthropic,zai,openai"`), the

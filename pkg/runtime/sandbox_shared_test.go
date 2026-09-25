@@ -103,12 +103,17 @@ func TestStartSandboxSharedAdoptsTheParentRun(t *testing.T) {
 	fake := &sharedFakeRun{}
 	exec := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
 	wf := &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}}
+	// The fake runs its commands on this host, so the pod's workspace is a
+	// directory the test owns, never a literal path.
+	pod := t.TempDir()
 	e := New(wf, st, exec,
 		WithWorkDir(workDir),
 		WithSandboxOverride("auto"), // would try to start one of its own — must be ignored
 		WithParentRunID("run-parent"),
-		WithSharedSandbox(&SharedSandbox{Run: fake, WorkspaceFolder: "/workspace", SharedStateDir: "/shared"}),
+		WithSharedSandbox(&SharedSandbox{Run: fake, WorkspaceFolder: pod, SharedStateDir: "/shared"}),
 	)
+	// The scope Run opens for a child in place before its sandbox settles.
+	e.resourceScope = &runResourceScope{path: workDir, borrowed: true, owned: map[string]string{}}
 	ctx := context.Background()
 	if _, err := st.CreateRun(ctx, "run-child", "child", nil); err != nil {
 		t.Fatal(err)
@@ -120,7 +125,7 @@ func TestStartSandboxSharedAdoptsTheParentRun(t *testing.T) {
 	if exec.sandbox != fake {
 		t.Fatalf("executor sandbox = %v, want the parent's handle", exec.sandbox)
 	}
-	if !e.sandboxSettled || e.containerWorkspace != "/workspace" {
+	if !e.sandboxSettled || e.containerWorkspace != pod {
 		t.Fatalf("settled=%v containerWorkspace=%q, want settled on the parent's workspace", e.sandboxSettled, e.containerWorkspace)
 	}
 	if e.activeShare == nil || e.activeShare.Run != fake {
@@ -174,16 +179,17 @@ workflow parent:
   kid -> done
 `).Workflow
 	for _, tc := range []struct {
-		name  string
-		share *SharedSandbox
+		name      string
+		sandboxed bool
 	}{
-		{"parent sandboxed", &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: "/workspace"}},
-		{"parent unsandboxed", nil},
+		{"parent sandboxed", true},
+		{"parent unsandboxed", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got *SharedSandbox
 			var called bool
 			opts := []EngineOption{
+				WithWorkDir(t.TempDir()),
 				WithSandboxOverride("none"),
 				WithSubbotRunner(func(_ context.Context, req SubbotRequest) (map[string]any, error) {
 					called = true
@@ -192,10 +198,14 @@ workflow parent:
 				}),
 			}
 			// A sandboxed parent: it executes in a live sandbox (here, one
-			// handed to it — the grandchild shape; an own sandbox settles
-			// the same facts).
-			if tc.share != nil {
-				opts = append(opts, WithSharedSandbox(tc.share))
+			// handed to it — the grandchild shape, so it carries its own
+			// parent's run id as every launcher sets it; an own sandbox
+			// settles the same facts). The fake runs its commands on this
+			// host, so the pod's workspace is a directory the test owns.
+			var share *SharedSandbox
+			if tc.sandboxed {
+				share = &SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: t.TempDir()}
+				opts = append(opts, WithSharedSandbox(share), WithParentRunID("run-grandparent"))
 			}
 			e := New(wf, tmpStore(t), newStubExecutor(), opts...)
 			if err := e.Run(context.Background(), "run-"+tc.name, nil); err != nil {
@@ -204,8 +214,8 @@ workflow parent:
 			if !called {
 				t.Fatal("the subbot runner was not invoked")
 			}
-			if got != tc.share {
-				t.Fatalf("ParentSandbox = %v, want %v", got, tc.share)
+			if got != share {
+				t.Fatalf("ParentSandbox = %v, want %v", got, share)
 			}
 		})
 	}

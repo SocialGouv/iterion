@@ -47,11 +47,13 @@ func TestTheDocumentsCanonicalFormKeepsTheBOMAndTheLineEndings(t *testing.T) {
 // The canonical form is refused, the bytes left the author's, when the
 // rewrite would lose what the author wrote: a text the .bot reads otherwise
 // than written (a prompt body the lexer settles, E053), a YAML comment —
-// and, before either, a document that does not read.
+// one right after a flow collection's opening bracket too, which yaml.v3
+// drops — and, before either, a document that does not read.
 func TestTheDocumentsCanonicalFormRefusesWhatARewriteWouldLose(t *testing.T) {
 	for name, tc := range map[string]struct{ src, want string }{
 		"a settled prompt body":         {"dsl: 2\nprompts:\n  spaced: |\n\n      Indented, after a blank line.\n      Second line.\n\nnodes:\n  - agent: a\n    model: m\n    system: spaced\nworkflow:\n  name: w\n  entry: a\n  edges:\n    - a -> done\n", "E053"},
 		"a YAML comment":                {"# keep me\n" + looseDoc, "YAML comment"},
+		"a comment yaml.v3 drops":       {strings.Replace(looseDoc, "edges: [hello -> done]", "edges: [ # keep me\n    hello -> done]", 1), "(the first: # keep me)"},
 		"a document that does not read": {"dsl: 2\nnodes: 3\n", "does not read"},
 	} {
 		t.Run(name, func(t *testing.T) {

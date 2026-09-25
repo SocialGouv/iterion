@@ -42,6 +42,15 @@ type line struct {
 	at     pos
 	val    pos
 	valCol int
+	// opens marks a line that opens a body (header).
+	opens bool
+	// noEmpty marks a header the parser reads no empty body of — a preset,
+	// a string map, `expr`, a cursor's values or bands, `fallbacks`: left
+	// without a line, it goes with its body (headerNoEmpty).
+	noEmpty bool
+	// fill is the line a header left without a body is closed by when a
+	// blank line does not close it: a node's (closeEmptyBodies).
+	fill string
 }
 
 type pos struct{ line, col int }
@@ -55,17 +64,21 @@ func at(n *yaml.Node) pos {
 
 // yamlBreaks cuts the source where yaml.v3's scanner ends a line — CRLF,
 // CR, LF, NEL, LS and PS (its is_break) — so the line a node's Line names
-// is the line edgeAt reads back; cut on LF alone, every line after a lone
-// CR would be read one off, and a line that happens to carry the same text
-// would confirm a column the author never wrote.
+// is the line a reader of the source reads back (sourceLines: the guard's
+// `!`, edgeAt); cut on LF alone, every line after a lone CR would be read
+// one off, and a line that happens to carry the same text would confirm a
+// column the author never wrote.
 var yamlBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
 
 // spell renders the document rooted at root. It returns the text, its
 // line map, the converter's diagnostics and the profile the document
 // declares (1 when it declares none, or one the build cannot read).
 func spell(name string, src []byte, root *yaml.Node) (text string, lines []line, diags []parser.Diagnostic, profile int) {
-	s := &speller{name: name, profile: 1, src: strings.Split(yamlBreaks.Replace(string(src)), "\n")}
+	s := &speller{name: name, profile: 1, src: sourceLines(src)}
 	s.document(root)
+	if s.refused() {
+		s.closeEmptyBodies()
+	}
 	var b strings.Builder
 	for _, l := range s.lines {
 		b.WriteString(l.text)
@@ -92,7 +105,72 @@ func (s *speller) kv(indent int, key, value string, k, v *yaml.Node) {
 }
 
 // header writes a line that opens a body (`agent x:`, `budget:`).
-func (s *speller) header(indent int, text string, n *yaml.Node) { s.emit(indent, text, n) }
+func (s *speller) header(indent int, text string, n *yaml.Node) {
+	s.emit(indent, text, n)
+	s.lines[len(s.lines)-1].opens = true
+}
+
+// headerNoEmpty writes a header whose body the parser has no empty form of.
+func (s *speller) headerNoEmpty(indent int, text string, n *yaml.Node) {
+	s.header(indent, text, n)
+	s.lines[len(s.lines)-1].noEmpty = true
+}
+
+// closeEmptyBodies writes a body left without a line — every entry of it
+// refused — as the parser reads an empty one, so that the text it sees is
+// the document less what the speller refused and a refusal is not read a
+// second time, as a syntax error on the lines below it: a header with no
+// empty form goes with its body, until none is left without one (its
+// parent may be emptied in turn); then a node's header takes its fill, and
+// any other the blank line that closes an empty body.
+func (s *speller) closeEmptyBodies() {
+	indent := func(t string) int { return len(t) - len(strings.TrimLeft(t, " ")) }
+	// empty: no line of a body follows header i, blank lines aside.
+	empty := func(lines []line, i int) bool {
+		for _, l := range lines[i+1:] {
+			if l.text != "" {
+				return indent(l.text) <= indent(lines[i].text)
+			}
+		}
+		return true
+	}
+	for dropped := true; dropped; {
+		dropped = false
+		kept := s.lines[:0:0]
+		for i, l := range s.lines {
+			if l.opens && l.noEmpty && empty(s.lines, i) {
+				dropped = true
+				continue
+			}
+			kept = append(kept, l)
+		}
+		s.lines = kept
+	}
+	out := make([]line, 0, len(s.lines))
+	for i, l := range s.lines {
+		out = append(out, l)
+		if !l.opens || !empty(s.lines, i) {
+			continue
+		}
+		switch {
+		case l.fill != "":
+			out = append(out, line{text: strings.Repeat(" ", indent(l.text)+2) + l.fill, at: l.at})
+		case i+1 == len(s.lines) || s.lines[i+1].text != "":
+			out = append(out, line{})
+		}
+	}
+	s.lines = out
+}
+
+// refused reports whether the speller refused anything.
+func (s *speller) refused() bool {
+	for _, d := range s.diags {
+		if d.Severity == parser.SeverityError {
+			return true
+		}
+	}
+	return false
+}
 
 // bare writes a header with nothing under it and the blank line the
 // parser reads an empty body by (parser.bodyIsEmpty, blockBodyAfter).
@@ -231,9 +309,182 @@ func isDotted(s string) bool {
 var (
 	typeRefRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\[\])*$`)
 	envFormRe  = regexp.MustCompile(spec.EnvFormPattern)
-	numberRe   = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 	typeWordRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\[\])?$`)
 )
+
+// botNumberRe is a number as the .bot writes one — digits, a fraction or
+// not, no leading zero but the digit 0 itself: the one spelling YAML and
+// the .bot read as the same number.
+var botNumberRe = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]+)?$`)
+
+// octalRe is an integer yaml.v3 reads in base 8 — a 0 before more digits,
+// YAML 1.1's octal — where the .bot reads the same digits in base 10.
+var octalRe = regexp.MustCompile(`^-?0[0-9]+$`)
+
+// numberSpelling says how YAML reads the plain number or bool n when the
+// .bot would read its spelling otherwise — msg, YAML's reading, and write,
+// what to write instead ("" when the .bot has no spelling of that reading)
+// — or msg "" when n is spelled as the .bot spells it. YAML reads `010` as
+// the octal 8, `0x10` as 16, `+3` as 3, `1e2` as 100, `1_000` as 1000, `.5`
+// as 0.5, `True` as true, and the twin would re-spell each in silence. A
+// reading is written in the .bot's digits: an integral float as an integer,
+// which an int and a float alike take. signed is a site that takes the
+// value as text: a `-` is the text's own there, the .bot having no signed
+// number to read it otherwise, and the reading keeps it.
+func numberSpelling(n *yaml.Node, signed bool) (msg, write string) {
+	v := n.Value
+	if signed {
+		v = strings.TrimPrefix(v, "-")
+	}
+	sign := func(reading string) string {
+		if signed && strings.HasPrefix(n.Value, "-") && !strings.HasPrefix(reading, "-") {
+			return "-" + reading
+		}
+		return reading
+	}
+	switch n.ShortTag() {
+	case "!!int":
+		if botNumberRe.MatchString(v) {
+			return "", ""
+		}
+		var i int64
+		var u uint64
+		reading := n.Value
+		if n.Decode(&i) == nil {
+			reading = strconv.FormatInt(i, 10)
+			if dec, err := strconv.ParseInt(n.Value, 10, 64); err == nil && octalRe.MatchString(n.Value) && dec != i {
+				return fmt.Sprintf("YAML reads `%s` as the octal number %s, not %d", n.Value, reading, dec), "the number you mean without its leading 0"
+			}
+		} else if n.Decode(&u) == nil {
+			reading = strconv.FormatUint(u, 10)
+		}
+		reading = sign(reading)
+		return fmt.Sprintf("YAML reads `%s` as %s", n.Value, reading), "`" + reading + "`"
+	case "!!float":
+		if botNumberRe.MatchString(v) {
+			return "", ""
+		}
+		f, _ := floatOf(n)
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			return fmt.Sprintf("YAML reads `%s` as a number the .bot has no spelling for", n.Value), ""
+		}
+		if f == 0 {
+			f = 0 // YAML's -0.0 is the 0 the .bot writes
+		}
+		reading := sign(strconv.FormatFloat(f, 'f', -1, 64))
+		if !signed && math.Abs(f) >= 1<<63 && !strings.Contains(reading, ".") {
+			// Beyond every integer the .bot reads, a number written bare
+			// keeps its fraction: the digits alone are an integer out of range.
+			reading += ".0"
+		}
+		return fmt.Sprintf("YAML reads `%s` as %s", n.Value, reading), "`" + reading + "`"
+	case "!!bool":
+		if n.Value == "true" || n.Value == "false" {
+			return "", ""
+		}
+		b, _ := boolOf(n)
+		reading := strconv.FormatBool(b)
+		return fmt.Sprintf("YAML reads `%s` as %s", n.Value, reading), "`" + reading + "`"
+	}
+	return "", ""
+}
+
+// site is what a value's form takes of a refused spelling's ways out —
+// never one the form refuses in turn.
+type site int
+
+const (
+	// valueSite takes a value of its own type — a number, a bool — never
+	// a text: the digits to write.
+	valueSite site = iota
+	// textSite takes a number or a text, and writes a number bare (a JSON
+	// value, a preset's value): the digits, or the value quoted.
+	textSite
+	// quotedSite takes a number or a text and writes either quoted (a
+	// string|number, a setting, a `with` value): the digits, or the value
+	// quoted; a `-` is the text's own.
+	quotedSite
+	// stringSite takes a text only (a string var's default): the value
+	// quoted.
+	stringSite
+)
+
+// literalSite is the site of a var's default, by the var's type: an int,
+// a float or a bool takes a value of its type (an integer, for a float
+// too), a string a text, a json or a list either.
+func literalSite(typ string) site {
+	switch typ {
+	case "int", "float", "bool":
+		return valueSite
+	case "string":
+		return stringSite
+	}
+	return textSite
+}
+
+// remedies names the ways out of a refused spelling that the site takes,
+// write being the digits to write ("" when the .bot has none).
+func (t site) remedies(write string) string {
+	switch {
+	case t == stringSite:
+		return "quote the value"
+	case t.takesText() && write != "":
+		return "write " + write + ", or quote the value if it is text"
+	case t.takesText():
+		return "quote the value if it is text"
+	case write != "":
+		return "write " + write
+	}
+	return "the .bot has no spelling of that number"
+}
+
+// takesText reports whether the site takes a text beside a number.
+func (t site) takesText() bool { return t == textSite || t == quotedSite }
+
+// textRemedy is what a number the .bot has no spelling of — signed, `.inf`
+// — is told: to quote it, where the site takes a text.
+func (t site) textRemedy() string {
+	if t.takesText() {
+		return " — quote the value if it is text"
+	}
+	return ""
+}
+
+// spelledAsTheBot refuses a plain YAML number, or a bool where text is
+// taken, that the .bot would read otherwise (numberSpelling), naming YAML's
+// reading and the ways out the site takes. A value spelled as the .bot
+// spells it is written as it is.
+func (s *speller) spelledAsTheBot(what string, n *yaml.Node, t site) bool {
+	msg, write := numberSpelling(n, t == quotedSite)
+	if msg == "" {
+		return true
+	}
+	s.refuse(n, what+": "+msg+" — "+t.remedies(write))
+	return false
+}
+
+// yamlOnlyFloat refuses a float YAML reads off digits the .bot reads as an
+// integer — `08`, `09`: the digits after a leading 0 are octal, and an 8
+// or a 9 is not one — or off a spelling the .bot has no float of (`1e2`,
+// `0.`) when its value is a whole number: the number meant is that
+// integer, which an int and a float take alike. It reports whether it
+// refused.
+func (s *speller) yamlOnlyFloat(what string, n *yaml.Node, t site) bool {
+	f, ok := floatOf(n)
+	if !ok || f < 0 || f != math.Trunc(f) || f >= 1<<63 || botNumberRe.MatchString(n.Value) {
+		return false
+	}
+	if f == 0 {
+		f = 0 // YAML's -0.0 is the 0 the .bot writes
+	}
+	digits := "`" + strconv.FormatFloat(f, 'f', -1, 64) + "`"
+	if octalRe.MatchString(n.Value) {
+		s.refuse(n, fmt.Sprintf("%s: YAML reads `%s` as a float (a leading 0 makes the digits octal, and an 8 or a 9 is not one) — %s", what, n.Value, t.remedies(digits)))
+		return true
+	}
+	s.refuse(n, fmt.Sprintf("%s: YAML reads `%s` as the float %s — %s", what, n.Value, strings.Trim(digits, "`"), t.remedies(digits)))
+	return true
+}
 
 // q is the one quoted form every string has in the spelled text.
 func q(v string) string { return unparse.QuoteStrict(v) }
@@ -253,18 +504,28 @@ func boolOf(n *yaml.Node) (bool, bool) {
 	return v, n.Decode(&v) == nil
 }
 
-// floatText spells a float as the lexer reads one: as written when the
-// spelling is digits and a fraction, else the shortest decimal — with a
-// fraction when the form must read as a float literal.
-func floatText(n *yaml.Node, f float64, fraction bool) string {
-	if numberRe.MatchString(n.Value) && (!fraction || strings.Contains(n.Value, ".")) {
-		return n.Value
+// floatText is a float literal as its author spelled it — digits, the
+// .bot's spelling (spelledAsTheBot) — with the fraction a float literal
+// needs: digits YAML reads as a float, beyond every integer, keep theirs.
+func floatText(spelled string) string {
+	if !strings.Contains(spelled, ".") {
+		return spelled + ".0"
 	}
-	t := strconv.FormatFloat(f, 'f', -1, 64)
-	if fraction && !strings.Contains(t, ".") {
-		t += ".0"
+	return spelled
+}
+
+// profileFloat says why a `dsl:` header YAML reads as a float is no
+// profile: digits it cannot read as octal (`08`), digits beyond every
+// integer, or a float's own spelling.
+func profileFloat(n *yaml.Node) string {
+	switch {
+	case octalRe.MatchString(n.Value) && !strings.HasPrefix(n.Value, "-"):
+		f, _ := floatOf(n)
+		return fmt.Sprintf("YAML reads `%s` as a float (a leading 0 makes the digits octal, and an 8 or a 9 is not one) — write `%s`", n.Value, strconv.FormatFloat(f, 'f', -1, 64))
+	case botNumberRe.MatchString(n.Value) && !strings.Contains(n.Value, "."):
+		return "`" + n.Value + "` is beyond every integer: the syntax profile is a small positive integer (`dsl: 2`)"
 	}
-	return t
+	return "takes the syntax profile as a bare integer (`2`, never `" + n.Value + "`): the .bot header refuses a float"
 }
 
 // ---- values by form ----
@@ -286,8 +547,10 @@ func (s *speller) scalar(f spec.Form, values []string, what string, n *yaml.Node
 		if n != nil && n.Kind == yaml.SequenceNode {
 			return s.stringList(what, n)
 		}
-		if n != nil && n.Kind == yaml.ScalarNode && n.ShortTag() == "!!int" {
-			return s.integer(what, n)
+		if n != nil && n.Kind == yaml.ScalarNode && (n.ShortTag() == "!!int" || n.ShortTag() == "!!float") {
+			// A count is an integer: YAML's float reading of one (`08`,
+			// `1e2`) is named, as at every integer site.
+			return s.integer(what, n, valueSite)
 		}
 		s.refuse(n, what+" takes a count (an integer) or a pool of member ids (a list of strings), got "+kindWord(n))
 		return "", false
@@ -368,9 +631,9 @@ func (s *speller) scalar(f spec.Form, values []string, what string, n *yaml.Node
 		}
 		return n.Value, true
 	case spec.Int:
-		return s.integer(what, n)
+		return s.integer(what, n, valueSite)
 	case spec.Number:
-		return s.number(what, n)
+		return s.number(what, n, valueSite)
 	case spec.Bool:
 		if tag != "!!bool" {
 			s.refuse(n, what+" takes true or false, got "+describe(n)+" (YAML 1.2 reads yes, no, on and off as strings)")
@@ -382,25 +645,19 @@ func (s *speller) scalar(f spec.Form, values []string, what string, n *yaml.Node
 		switch tag {
 		case "!!str":
 			return q(n.Value), true
-		case "!!int":
-			v, ok := intOf(n)
-			if !ok {
-				s.refuse(n, what+": the integer "+n.Value+" is out of range")
+		case "!!int", "!!bool", "!!float":
+			// The text the value spells, as the .bot reads a bare word or
+			// a number there: no range to hold it to, `true` is a word, and
+			// a spelling the .bot has none of (`.inf`) is text to quote.
+			if !s.spelledAsTheBot(what, n, quotedSite) {
 				return "", false
 			}
-			return q(strconv.FormatInt(v, 10)), true
-		case "!!float":
-			v, ok := floatOf(n)
-			if !ok || math.IsInf(v, 0) || math.IsNaN(v) {
-				s.refuse(n, what+" takes a finite number, got "+n.Value)
-				return "", false
-			}
-			return q(floatText(n, v, false)), true
+			return q(n.Value), true
 		}
 		s.refuse(n, what+" takes a string, a bare word or a number, got "+tagWord(tag))
 		return "", false
 	case spec.Literal:
-		return s.literal(what, n)
+		return s.literal(what, n, textSite)
 	}
 	s.refuse(n, what+": no spelling for the form "+string(f))
 	return "", false
@@ -444,7 +701,7 @@ func (s *speller) ident(what string, n *yaml.Node, dotted bool) (string, bool) {
 	return "", false
 }
 
-func (s *speller) integer(what string, n *yaml.Node) (string, bool) {
+func (s *speller) integer(what string, n *yaml.Node, t site) (string, bool) {
 	switch n.ShortTag() {
 	case "!!int":
 		v, ok := intOf(n)
@@ -453,58 +710,104 @@ func (s *speller) integer(what string, n *yaml.Node) (string, bool) {
 			return "", false
 		}
 		if v < 0 {
-			s.refuse(n, what+" takes a non-negative integer: the .bot has no signed number, got "+n.Value)
+			s.refuse(n, what+" takes a non-negative integer: the .bot has no signed number, got "+n.Value+t.textRemedy())
 			return "", false
 		}
-		return strconv.FormatInt(v, 10), true
+		if !s.spelledAsTheBot(what, n, t) {
+			return "", false
+		}
+		return n.Value, true
 	case "!!float":
-		s.refuse(n, what+" takes an integer written as digits (`3`, never `3.0`), got "+n.Value)
+		if s.yamlOnlyFloat(what, n, t) {
+			return "", false
+		}
+		switch f, _ := floatOf(n); {
+		case f < 0:
+			s.refuse(n, what+" takes a non-negative integer: the .bot has no signed number, got "+n.Value+t.textRemedy())
+		case botNumberRe.MatchString(n.Value) && !strings.Contains(n.Value, "."):
+			// Digits YAML reads as a float: beyond every integer it reads.
+			s.refuse(n, what+": the integer "+n.Value+" is out of range")
+		case !botNumberRe.MatchString(n.Value) && !math.IsInf(f, 0) && !math.IsNaN(f):
+			// A spelling of YAML's own (`01.5`, `.5`): its reading, named.
+			s.refuse(n, fmt.Sprintf("%s takes an integer written as digits; YAML reads `%s` as %s", what, n.Value, strconv.FormatFloat(f, 'f', -1, 64)))
+		default:
+			s.refuse(n, what+" takes an integer written as digits (`3`, never `3.0`), got "+n.Value)
+		}
 		return "", false
 	}
 	s.refuse(n, what+" takes an integer written as digits, got "+describe(n))
 	return "", false
 }
 
-func (s *speller) number(what string, n *yaml.Node) (string, bool) {
+func (s *speller) number(what string, n *yaml.Node, t site) (string, bool) {
 	switch n.ShortTag() {
 	case "!!int":
-		return s.integer(what, n)
+		if _, ok := intOf(n); !ok && t == valueSite && botNumberRe.MatchString(n.Value) {
+			// Digits beyond every integer: the .bot's number reads them as
+			// the float they are, and so does the document.
+			return n.Value, true
+		}
+		return s.integer(what, n, t)
 	case "!!float":
 		v, ok := floatOf(n)
 		if !ok || math.IsInf(v, 0) || math.IsNaN(v) {
-			s.refuse(n, what+" takes a finite number: the .bot has no `.inf` and no `.nan`, got "+n.Value)
+			s.refuse(n, what+" takes a finite number: the .bot has no `.inf` and no `.nan`, got "+n.Value+t.textRemedy())
 			return "", false
 		}
 		if v < 0 {
-			s.refuse(n, what+" takes a non-negative number: the .bot has no signed number, got "+n.Value)
+			s.refuse(n, what+" takes a non-negative number: the .bot has no signed number, got "+n.Value+t.textRemedy())
 			return "", false
 		}
-		return floatText(n, v, false), true
+		if !s.spelledAsTheBot(what, n, t) {
+			return "", false
+		}
+		return n.Value, true
 	}
 	s.refuse(n, what+" takes a number, got "+describe(n))
 	return "", false
 }
 
 // literal spells a var's default or a preset's value: a quoted string, an
-// integer, a float or a bool — the literals the .bot writes.
-func (s *speller) literal(what string, n *yaml.Node) (string, bool) {
+// integer, a float or a bool — the literals the .bot writes — the ways out
+// of a refusal being those the site takes (literalSite: a preset's var is
+// declared elsewhere, so its value takes a number or a text).
+func (s *speller) literal(what string, n *yaml.Node, t site) (string, bool) {
 	if n == nil || n.Kind != yaml.ScalarNode {
 		s.refuse(n, what+" takes a scalar literal — a string, an integer, a float or a bool (a json or string[] value is a quoted JSON text) — got "+kindWord(n))
 		return "", false
 	}
-	switch n.ShortTag() {
+	tag := n.ShortTag()
+	if t == stringSite && tag != "!!str" && tag != "!!null" {
+		// The .bot takes a quoted text as a string var's default, never a
+		// number or a bool (C109): YAML's reading is not what was meant.
+		// (A null is no value, not a text to quote: refused below.)
+		s.refuse(n, what+" of a string var takes a string; `"+n.Value+"` reads as "+tagWord(tag)+" — quote it")
+		return "", false
+	}
+	switch tag {
 	case "!!str":
 		return q(n.Value), true
 	case "!!int":
-		return s.integer(what, n)
+		return s.integer(what, n, t)
 	case "!!float":
-		v, ok := floatOf(n)
-		if !ok || math.IsInf(v, 0) || math.IsNaN(v) || v < 0 {
-			s.refuse(n, what+" takes a finite non-negative float: the .bot has no sign, no `.inf` and no `.nan`, got "+n.Value)
+		if s.yamlOnlyFloat(what, n, t) {
 			return "", false
 		}
-		return floatText(n, v, true), true
+		v, ok := floatOf(n)
+		if !ok || math.IsInf(v, 0) || math.IsNaN(v) || v < 0 {
+			s.refuse(n, what+" takes a finite non-negative float: the .bot has no sign, no `.inf` and no `.nan`, got "+n.Value+t.textRemedy())
+			return "", false
+		}
+		if !s.spelledAsTheBot(what, n, t) {
+			return "", false
+		}
+		return floatText(n.Value), true
 	case "!!bool":
+		// A bool where a value of its type is taken is that value, however
+		// YAML spells it; where a text may be (a preset), `True` is refused.
+		if t != valueSite && !s.spelledAsTheBot(what, n, t) {
+			return "", false
+		}
 		b, _ := boolOf(n)
 		return strconv.FormatBool(b), true
 	}
@@ -568,10 +871,15 @@ func (s *speller) jsonText(what string, n *yaml.Node) (string, bool) {
 		case "!!str":
 			return q(n.Value), true
 		case "!!int":
-			return s.integer(what, n)
+			return s.integer(what, n, textSite)
 		case "!!float":
-			return s.number(what, n)
+			return s.number(what, n, textSite)
 		case "!!bool":
+			// A JSON value may be text: `True` is refused, as wherever a
+			// text is taken, never re-spelled `true`.
+			if !s.spelledAsTheBot(what, n, textSite) {
+				return "", false
+			}
 			b, _ := boolOf(n)
 			return strconv.FormatBool(b), true
 		case "!!null":
@@ -696,7 +1004,13 @@ func (s *speller) head(pairs []pair) {
 	case dsl.Kind != yaml.ScalarNode:
 		s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got a "+kindWord(dsl), "")
 	case dsl.ShortTag() == "!!float":
-		s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: takes the syntax profile as a bare integer (`2`, never `"+dsl.Value+"`): the .bot header refuses a float", "")
+		s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: "+profileFloat(dsl), "")
+		if f, ok := floatOf(dsl); ok && f == math.Trunc(f) && f >= 1 && f <= parser.MaxProfile {
+			// Refused, the rest is still read in the profile YAML reads
+			// (`2.0`): read in profile 1, a paragraph break would be said
+			// dropped, a second report of one mistake.
+			headerText, s.profile = "dsl: "+strconv.Itoa(int(f)), int(f)
+		}
 	case dsl.ShortTag() != "!!int":
 		s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got "+describe(dsl), "")
 	default:
@@ -705,7 +1019,15 @@ func (s *speller) head(pairs []pair) {
 			s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got '"+dsl.Value+"'", "")
 			break
 		}
-		headerText = "dsl: " + strconv.FormatInt(v, 10)
+		if msg, write := numberSpelling(dsl, false); msg != "" {
+			s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: "+msg+" — write "+write, "")
+			if v <= parser.MaxProfile {
+				// Refused, the rest is still read in the profile YAML reads.
+				headerText, s.profile = "dsl: "+strconv.FormatInt(v, 10), int(v)
+			}
+			break
+		}
+		headerText = "dsl: " + dsl.Value
 		if v <= parser.MaxProfile {
 			s.profile = int(v)
 		}
@@ -1105,7 +1427,11 @@ func (s *speller) block(host spec.Kind, p spec.Property, k, v *yaml.Node, indent
 		s.bare(indent, p.Name+":", k)
 		return
 	}
-	s.header(indent, p.Name+":", k)
+	if nonEmptyBlocks[body.Name] {
+		s.headerNoEmpty(indent, p.Name+":", k)
+	} else {
+		s.header(indent, p.Name+":", k)
+	}
 	s.body(body, pairs, indent+2, host.Name)
 }
 
@@ -1124,7 +1450,7 @@ func (s *speller) sequenceEntries(body spec.Kind, what string, k, v *yaml.Node, 
 		s.bare(indent, k.Value+":", k)
 		return
 	}
-	s.header(indent, k.Value+":", k)
+	s.headerNoEmpty(indent, k.Value+":", k)
 	entryKind, _ := spec.Lookup(e.Body)
 	for _, it := range items {
 		pairs, ok := s.mapping(it, "an entry of "+what)
@@ -1158,7 +1484,7 @@ func (s *speller) stringMap(name string, k, v *yaml.Node, indent int) {
 		s.kv(indent, name, "{}", k, v)
 		return
 	}
-	s.header(indent, name+":", k)
+	s.headerNoEmpty(indent, name+":", k)
 	for _, p := range pairs {
 		if !isIdent(p.key.Value) {
 			s.refuse(p.key, "a key of "+what+" is an identifier, got "+strconv.Quote(p.key.Value))
@@ -1196,22 +1522,14 @@ func (s *speller) withText(v *yaml.Node) (string, bool) {
 			clean = false
 			continue
 		}
-		text := p.val.Value
-		switch p.val.ShortTag() {
-		case "!!int":
-			if n, ok := intOf(p.val); ok {
-				text = strconv.FormatInt(n, 10)
-			}
-		case "!!float":
-			if f, ok := floatOf(p.val); ok && !math.IsInf(f, 0) && !math.IsNaN(f) {
-				text = floatText(p.val, f, false)
-			}
-		case "!!bool":
-			if b, ok := boolOf(p.val); ok {
-				text = strconv.FormatBool(b)
-			}
+		// A number or a bool is the string it spells, spelled as the .bot
+		// spells it: YAML's other spellings of one (`007`, `0x10`, `True`)
+		// would reach the .bot as another text. A `-` is the text's own.
+		if !s.spelledAsTheBot("the `with` value "+p.key.Value, p.val, quotedSite) {
+			clean = false
+			continue
 		}
-		parts = append(parts, p.key.Value+": "+q(text))
+		parts = append(parts, p.key.Value+": "+q(p.val.Value))
 	}
 	if len(parts) == 0 {
 		return "with {}", clean
@@ -1323,7 +1641,7 @@ func (s *speller) varEntry(k, v *yaml.Node, indent int) {
 				}
 				tail += " [matching: " + q(p.val.Value) + "]"
 			case "default":
-				if text, ok := s.literal("`default`", p.val); ok {
+				if text, ok := s.literal("`default`", p.val, literalSite(typ)); ok {
 					tail += " = " + text
 				}
 			default:
@@ -1400,13 +1718,13 @@ func (s *speller) presetEntry(k, v *yaml.Node, indent int) {
 		s.refuse(v, "the preset `"+k.Value+"` sets at least one var")
 		return
 	}
-	s.header(indent, k.Value+":", k)
+	s.headerNoEmpty(indent, k.Value+":", k)
 	for _, p := range pairs {
 		if !isIdent(p.key.Value) {
 			s.refuse(p.key, "a value of the preset `"+k.Value+"` is keyed by a var's name, an identifier, got "+strconv.Quote(p.key.Value))
 			continue
 		}
-		if text, ok := s.literal("`"+p.key.Value+"`", p.val); ok {
+		if text, ok := s.literal("`"+p.key.Value+"`", p.val, textSite); ok {
 			s.kv(indent+2, p.key.Value, text, p.key, p.val)
 		}
 	}
@@ -1608,11 +1926,13 @@ func (s *speller) nodes(v *yaml.Node, holds []string, indent int) {
 			continue
 		}
 		s.header(indent, kind.Name+" "+name+":", kk.key)
+		// A header with no body does not parse; an empty description is
+		// what an absent one reads as (unparse.ensureBody) — written here,
+		// or by closeEmptyBodies once a refusal has emptied the body.
+		s.lines[len(s.lines)-1].fill = `description: ""`
 		mark := len(s.lines)
 		s.body(kind, without(pairs, kk.key.Value), indent+2, "")
 		if len(s.lines) == mark {
-			// A header with no body does not parse; an empty description
-			// is what an absent one reads as (unparse.ensureBody).
 			s.kv(indent+2, "description", `""`, kk.key, nil)
 		}
 		s.blank()
@@ -1779,8 +2099,9 @@ func (s *speller) edgeAt(it *yaml.Node, text string, dcol int) (line, col int) {
 	return line, col
 }
 
-// workflow writes `workflow <name>:` and its body: the properties by their
-// forms, the edge lines last.
+// workflow writes `workflow <name>:` and its body in the document's order:
+// the properties by their forms, the edge lines where `edges:` stands (the
+// parser takes them in any order).
 func (s *speller) workflow(v *yaml.Node) {
 	pairs, ok := s.mapping(v, "`workflow`")
 	if !ok {

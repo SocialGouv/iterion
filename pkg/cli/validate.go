@@ -296,21 +296,14 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		// main under the .bot's name: its fragments are read beside that
 		// .bot, and every position stays the document's own. The converter's
 		// diagnostics come first, then the loader's.
-		u = unit.LoadDirWithMainAST(doc.botPath, parsePath, doc.res.File, src)
+		u = doc.loadUnit(doc.botPath)
 		for _, d := range doc.res.Diagnostics {
 			result.addParseDiagnostic(d)
 		}
-		if doc.verifyErr != nil {
-			// The document reads, and the program it describes has no
-			// written .bot form: what the writer would produce reads back as
-			// another program. An error (E054): an OK here followed by a
-			// refusal to write the .bot would be a lie.
-			result.addParseDiagnostic(parser.Diagnostic{
-				Code: parser.DiagAuthorNoWrittenForm, Severity: parser.SeverityError,
-				File: parsePath, Line: 1, Column: 1,
-				Message: "the document has no written .bot form: " + doc.verifyErr.Error(),
-				Hint:    parser.HintFor(parser.DiagAuthorNoWrittenForm),
-			})
+		if d := doc.noWrittenForm(); d != nil {
+			// An error (E054): an OK here followed by a refusal to write the
+			// .bot would be a lie.
+			result.addParseDiagnostic(*d)
 		}
 	} else {
 		u = unit.LoadDirWithMain(parsePath, parsePath, src)

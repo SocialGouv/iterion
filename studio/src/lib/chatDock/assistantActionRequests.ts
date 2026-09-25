@@ -568,6 +568,9 @@ export function validateAssistantActionRequest(
     case "run.unwatch": {
       const watchId = requiredId("watch_id");
       args = { watch_id: watchId };
+      // The run-addressed stop (ADR-103) when the assistant names the
+      // run it is watching; without it the fixed route still serves.
+      optional(args, "target_run_id", text(source, "target_run_id", { max: 200 }));
       detail = `Stop run watch ${watchId}`;
       break;
     }
@@ -916,7 +919,7 @@ export async function executeAssistantAction(
       };
     }
     case "run.unwatch":
-      await runsApi.stopAssistantRunWatch(id("watch_id"));
+      await runsApi.stopAssistantRunWatch(id("watch_id"), id("target_run_id"));
       return { message: `Stopped run watch ${id("watch_id")}` };
     case "run.delete":
       await runsApi.deleteRun(id("run_id"));

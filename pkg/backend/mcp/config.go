@@ -6,9 +6,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -204,9 +205,12 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 		return nil, nil, fmt.Errorf("mcp: parse %s: %w", path, err)
 	}
 
-	names := make([]string, 0, len(file.MCPServers))
+	// In name order: of several invalid servers, the refusal names the
+	// same one on every run.
+	names := slices.Sorted(maps.Keys(file.MCPServers))
 	servers := make(map[string]*ServerConfig, len(file.MCPServers))
-	for name, raw := range file.MCPServers {
+	for _, name := range names {
+		raw := file.MCPServers[name]
 		cfg := &ServerConfig{
 			Name:      name,
 			Transport: normalizeTransport(raw.Type, raw.Transport, raw.Command, raw.URL),
@@ -228,10 +232,8 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 		if err := validateServerConfig(cfg); err != nil {
 			return nil, nil, fmt.Errorf("mcp: project server %q: %w", name, err)
 		}
-		names = append(names, name)
 		servers[name] = cfg
 	}
-	sort.Strings(names)
 	return servers, names, nil
 }
 
@@ -241,6 +243,10 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 		catalog[name] = cloneServerConfig(cfg)
 	}
 	for name, cfg := range explicit {
+		if cfg == nil {
+			catalog[name] = nil
+			continue
+		}
 		catalog[name] = &ServerConfig{
 			Name:      cfg.Name,
 			Transport: FromIRTransport(cfg.Transport),
@@ -252,8 +258,19 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 		}
 	}
 
-	for name, cfg := range catalog {
-		if err := validateServerConfig(cfg); err != nil {
+	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		cfg := catalog[name]
+		if cfg == nil {
+			return nil, fmt.Errorf("mcp: server %q has no configuration", name)
+		}
+		// The key selects the catalog entry, but CLI adapters forward Name.
+		// Validate both identities before any resolved workflow is published.
+		for _, identity := range []string{name, cfg.Name} {
+			if permission.IsReservedMCPServerName(identity) {
+				return nil, fmt.Errorf("mcp: server %q uses reserved internal name %q; rename the custom MCP server", name, identity)
+			}
+		}
+		if err := validateServerConfig(catalog[name]); err != nil {
 			return nil, fmt.Errorf("mcp: server %q: %w", name, err)
 		}
 	}
@@ -456,7 +473,8 @@ func PrepareAuth(catalog map[string]*ServerConfig, broker *OAuthBroker) error {
 	if broker == nil {
 		return nil
 	}
-	for name, cfg := range catalog {
+	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		cfg := catalog[name]
 		if cfg == nil || cfg.Auth == nil {
 			continue
 		}

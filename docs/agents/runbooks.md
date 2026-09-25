@@ -361,3 +361,6 @@ the hours this one spent.
   actually landed (Deployment generation, never pods — the ArgoCD stall of
   2026-09-05 sat 2h30 until the next push). Read it on "I pushed the config
   and nothing happened", or before shipping an engine fix to the runners.
+- [docs/current-bot-models.md](../current-bot-models.md) — Opus 5.5 / GPT-6
+  catalog defaults, CLI pins, transport constraints, live probes and cloud
+  rollout without changing reserved runs through live bot-vars.

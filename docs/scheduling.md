@@ -352,6 +352,26 @@ a human to raise the cap and resume — retrying the same cap would re-fail
 instantly. Nor an auth failure, which is a credential problem time does not
 fix.
 
+## Seeing cloud schedule failures
+
+In Studio, **Automations → Schedules** shows the last completed run's status,
+error code, message and link to the run. A refused launch is shown separately:
+it means the scheduler could not start a run, rather than that the run failed.
+The run detail uses the persisted failure code for its recovery hint, including
+when another error wraps the original message.
+
+A failure keeps the configured cadence. For example,
+`SANDBOX_DRIVER_UNAVAILABLE` requires fixing the configured sandbox driver:
+Docker/Podman installation and PATH on a local runner, or Kubernetes configuration
+and access on a cloud runner. The next scheduled run uses the repaired environment.
+Use **Pause** while making that repair if repeated launches are undesirable,
+then **Resume** when ready. A later successful run clears the failure advice.
+
+For CLI inspection, `iterion remote schedules list` returns the cloud record
+as JSON, including `last_run_status`, `last_run_error_code`, `last_run_error`
+and `last_error`. `iterion schedule list` lists the local cron manifest instead;
+it does not contain cloud run outcomes.
+
 ## Retention — pair recurring schedules with `iterion runs prune`
 
 Every scheduled run persists forever under `<store-dir>/runs/<run_id>/`;

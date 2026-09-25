@@ -14,7 +14,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v1.contract"
           },
-          "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+          "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. An empty contract is written `c1: {}`.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -108,7 +108,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v1.prompt"
           },
-          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; an empty prompt is written `ask: ''`.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -118,7 +118,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v1.schema"
           },
-          "description": "A structured-output shape; a bare header declares an empty schema.",
+          "description": "A structured-output shape; an empty schema is written `verdict: {}`.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -327,7 +327,7 @@
     },
     "v1.contract": {
       "additionalProperties": false,
-      "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+      "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. An empty contract is written `c1: {}`.",
       "properties": {
         "criteria": {
           "$ref": "#/$defs/v1.contract.criteria",
@@ -1932,8 +1932,10 @@
               "type": "string"
             },
             {
-              "minimum": 0,
               "type": "number"
+            },
+            {
+              "type": "boolean"
             }
           ],
           "description": "Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266)"
@@ -1960,8 +1962,10 @@
               "type": "string"
             },
             {
-              "minimum": 0,
               "type": "number"
+            },
+            {
+              "type": "boolean"
             }
           ],
           "description": "Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266)"
@@ -2016,8 +2020,10 @@
             "type": "string"
           },
           {
-            "minimum": 0,
             "type": "number"
+          },
+          {
+            "type": "boolean"
           }
         ],
         "description": "The argument's value: a string, a bare word or a number, coerced by the operation's parameter type"
@@ -2045,14 +2051,14 @@
         "description": "Each entry is a preset name whose indented lines set one var each",
         "type": "object"
       },
-      "description": "Named bundles of var values selected with --recipe / --preset. Each entry is a preset name whose indented lines set one var each",
+      "description": "Named bundles of var values selected with `--preset`. Each entry is a preset name whose indented lines set one var each",
       "propertyNames": {
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       },
       "type": "object"
     },
     "v1.prompt": {
-      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; an empty prompt is written `ask: ''`.",
       "type": "string"
     },
     "v1.recovery": {
@@ -2258,7 +2264,7 @@
           }
         ]
       },
-      "description": "A structured-output shape; a bare header declares an empty schema. One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
+      "description": "A structured-output shape; an empty schema is written `verdict: {}`. One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
       "propertyNames": {
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       },
@@ -2432,7 +2438,7 @@
     },
     "v1.workflow": {
       "additionalProperties": false,
-      "description": "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; a bare header declares an empty workflow (C008).",
+      "description": "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; the document always writes it as a mapping (`workflow:` with no value is refused, E051).",
       "properties": {
         "allow": {
           "description": "Permission rules always allowed, Tool(pattern) syntax",
@@ -2606,7 +2612,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v2.contract"
           },
-          "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+          "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. An empty contract is written `c1: {}`.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -2700,7 +2706,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v2.prompt"
           },
-          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; an empty prompt is written `ask: ''`.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -2710,7 +2716,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v2.schema"
           },
-          "description": "A structured-output shape; a bare header declares an empty schema.",
+          "description": "A structured-output shape; an empty schema is written `verdict: {}`.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -2919,7 +2925,7 @@
     },
     "v2.contract": {
       "additionalProperties": false,
-      "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract.",
+      "description": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. An empty contract is written `c1: {}`.",
       "properties": {
         "criteria": {
           "$ref": "#/$defs/v2.contract.criteria",
@@ -4520,8 +4526,10 @@
               "type": "string"
             },
             {
-              "minimum": 0,
               "type": "number"
+            },
+            {
+              "type": "boolean"
             }
           ],
           "description": "Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266)"
@@ -4548,8 +4556,10 @@
               "type": "string"
             },
             {
-              "minimum": 0,
               "type": "number"
+            },
+            {
+              "type": "boolean"
             }
           ],
           "description": "Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266)"
@@ -4604,8 +4614,10 @@
             "type": "string"
           },
           {
-            "minimum": 0,
             "type": "number"
+          },
+          {
+            "type": "boolean"
           }
         ],
         "description": "The argument's value: a string, a bare word or a number, coerced by the operation's parameter type"
@@ -4633,14 +4645,14 @@
         "description": "Each entry is a preset name whose indented lines set one var each",
         "type": "object"
       },
-      "description": "Named bundles of var values selected with --recipe / --preset. Each entry is a preset name whose indented lines set one var each",
+      "description": "Named bundles of var values selected with `--preset`. Each entry is a preset name whose indented lines set one var each",
       "propertyNames": {
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       },
       "type": "object"
     },
     "v2.prompt": {
-      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; an empty prompt is written `ask: ''`.",
       "type": "string"
     },
     "v2.recovery": {
@@ -4846,7 +4858,7 @@
           }
         ]
       },
-      "description": "A structured-output shape; a bare header declares an empty schema. One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
+      "description": "A structured-output shape; an empty schema is written `verdict: {}`. One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
       "propertyNames": {
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       },
@@ -5020,7 +5032,7 @@
     },
     "v2.workflow": {
       "additionalProperties": false,
-      "description": "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; a bare header declares an empty workflow (C008).",
+      "description": "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; the document always writes it as a mapping (`workflow:` with no value is refused, E051).",
       "properties": {
         "allow": {
           "description": "Permission rules always allowed, Tool(pattern) syntax",

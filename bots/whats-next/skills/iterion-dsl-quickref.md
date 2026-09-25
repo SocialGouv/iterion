@@ -57,7 +57,7 @@ cursor ambition:                  # optional prompt-engineering dial (see docs/c
 
 agent worker:
   backend: "claw"
-  model:   "openai/gpt-5.5"
+  model:   "openai/gpt-6-sol"
   system:  my_system
   output:  verdict
 
@@ -135,7 +135,7 @@ deliberate refusal only changes verdict when an operator changes something.
 ```iter fragment
 agent w:
   backend: "claw"               # or claude_code / codex / pi / kimi / grok / opencode
-  model:   "openai/gpt-5.5"     # claw with openai/* prefix
+  model:   "openai/gpt-6-sol"     # claw with openai/* prefix
   reasoning_effort: high        # low | medium | high | xhigh | max | ultracode
                                 # ultracode = xhigh + multi-agent orchestration prerogative;
                                 # reliable on Opus 4.8 and the Claude 5 family only (else warns C089, runs as xhigh)
@@ -160,7 +160,7 @@ agent w:
   readonly: true                # runtime-blocks mutation tools
   interaction: human            # surfaces ask_user via MCP
   interaction_prompt: ask_msg   # used when interaction is llm or llm_or_human
-  interaction_model: "openai/gpt-5.5"
+  interaction_model: "openai/gpt-6-sol"
   capabilities: [board.read, board.create, board.move]   # opens MCP-gated tools
   skills: ["changelog-writer", "house-style"]   # skill-library refs (quote kebab names);
                                 # mirrored into .claude/skills/ + listed under a ## Skills
@@ -206,12 +206,12 @@ Backend rules:
   ```iter fragment
   agent implement:
     backend: "claude_code"
-    model: "claude-opus-5"
+    model: "claude-opus-5-5"
     tools: [read_file, bash]
     fallbacks:
       api:
         backend: "claw"
-        model: "anthropic/claude-opus-5"
+        model: "anthropic/claude-opus-5-5"
         on: [usage_window]
   ```
 
@@ -349,7 +349,7 @@ human ask_priorities:
   instructions: ask_priorities_prompt    # shown to the human
   interaction: human                     # human | llm | llm_or_human
   interaction_prompt: ask_priorities_llm # prompt used in llm-auto mode
-  interaction_model: "openai/gpt-5.5"    # model used in llm-auto mode
+  interaction_model: "openai/gpt-6-sol"    # model used in llm-auto mode
   min_answers: 1
 ```
 
@@ -901,6 +901,25 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 `blank`, `daily-digest`, `code-reviewer`, `docs-writer` and `issue-triager`
 render the single-agent workflow (one adaptive agent carrying the mission).
 More complete workflows to copy from: `docs/references/patterns.md`.
+
+### Writing the twin in YAML
+
+A `.bot` can be written as an author document, `x.bot.yaml`: the same
+declarations under the same names, `dsl:` required, in YAML's own values
+(`nodes:` items are `- <kind>: <name>` with that kind's properties). It is
+a draft of `x.bot`, never a program: every launcher refuses it by name.
+Loop: write it, `iterion validate x.bot.yaml` (findings at the document's
+lines, `--exec` too), then `iterion fmt --to bot x.bot.yaml` writes `x.bot`,
+which is what you commit and run. Three rules the `.bot` does not have:
+quote a value that holds `: ` or ` #`, or starts with `{`, `[`, `!` or
+another character YAML reserves (a `{{…}}` template unquoted is a YAML
+mapping) — in single quotes, as double quotes read backslash escapes
+(`"\t"` is a tab); write each edge as one `.bot` edge line — quoted whole in single
+quotes when it holds `: `, the `.bot`'s double quotes inside, a `'` written
+twice; write numbers as digits without a leading 0 (YAML reads `010` as
+the octal 8, `0x10` and `1e2` otherwise: refused). Keys and value forms:
+`iterion dsl spec --region author`; the reasons: `docs/dsl.md`, section
+"Writing the twin in YAML".
 
 ## What you do NOT do
 

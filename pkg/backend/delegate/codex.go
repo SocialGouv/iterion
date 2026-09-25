@@ -24,6 +24,15 @@ import (
 //go:embed codex_output_discipline.txt
 var codexOutputDisciplinePreamble string
 
+const defaultCodexModel = "gpt-6-sol"
+
+func codexTaskModel(model string) string {
+	if model == "" {
+		return defaultCodexModel
+	}
+	return strings.TrimPrefix(model, "openai/")
+}
+
 // CodexBackend delegates work to the `codex` CLI (OpenAI Codex)
 // via the Codex Agent SDK.
 type CodexBackend struct {
@@ -35,6 +44,7 @@ type CodexBackend struct {
 
 // Execute runs the codex CLI with the given task using the Codex Agent SDK.
 func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	task.Model = codexTaskModel(task.Model)
 	if task.Permission.Enabled() {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(
 			"delegate: codex cannot enforce this node's permission: %s gate; refusing to run ungated",
@@ -71,9 +81,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
 	}
-	if model := strings.TrimPrefix(task.Model, "openai/"); model != "" {
-		opts = append(opts, codexsdk.WithModel(model))
-	}
+	opts = append(opts, codexsdk.WithModel(codexTaskModel(task.Model)))
 	if task.ToolMaxSteps > 0 {
 		opts = append(opts, codexsdk.WithMaxTurns(task.ToolMaxSteps))
 	}
@@ -368,9 +376,7 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, c
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
 	}
-	if model := strings.TrimPrefix(task.Model, "openai/"); model != "" {
-		opts = append(opts, codexsdk.WithModel(model))
-	}
+	opts = append(opts, codexsdk.WithModel(codexTaskModel(task.Model)))
 	opts = append(opts, codexsdk.WithCliPath(codexCLIPath))
 	if task.ReasoningEffort != "" {
 		opts = append(opts, codexsdk.WithEffort(mapReasoningEffort(task.ReasoningEffort)))

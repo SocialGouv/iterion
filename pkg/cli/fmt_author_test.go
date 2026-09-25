@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/author"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -101,6 +102,141 @@ func TestFmtToBotWritesTheBotADocumentStandsFor(t *testing.T) {
 	}
 }
 
+// --force replaces its destination whole, and says what that file carried
+// that the text replacing it does not: the .bot's comments and frontmatter
+// lines when a document writes it, the document's YAML comments when a
+// .bot does — named by count and the first, under --check as well; a
+// destination with none gets no note.
+func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
+	inTempWorkspace(t)
+	jp, _ := jsonPrinter()
+	bot := writeBot(t, "d/x.bot", "## owner: jo\n## tags: [x]\n\n# Why this bot exists.\ndsl: 2\n\nagent hello:\n  model: \"m\" # trailing\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
+	if _, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml: %v", err)
+	}
+	doc := "d/x.bot.yaml"
+	raw, err := os.ReadFile(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doc, []byte(strings.Replace(string(raw), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	said := func(res FmtResult, want string) bool {
+		for _, n := range res.Notices {
+			if strings.Contains(n, want) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, check := range []bool{true, false} {
+		res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Check: check, Printer: jp})
+		if check && !errors.Is(err, ErrFmtWouldChange) || !check && err != nil {
+			t.Fatalf("--to bot --force (check %v): %v", check, err)
+		}
+		if !said(res, "d/x.bot: --force replaces it whole — 4 comment line(s) it carries are not in what d/x.bot.yaml writes") || !said(res, "owner: jo") {
+			t.Fatalf("--to bot --force (check %v) replaced a commented .bot without saying so: %q", check, res.Notices)
+		}
+	}
+
+	// The other way: a document's YAML comment, replaced by what the .bot writes.
+	now, _ := os.ReadFile(doc)
+	if err := os.WriteFile(doc, append([]byte("# keep me\n"), now...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
+	if err != nil || !said(res, "d/x.bot.yaml: --force replaces it whole — 1 comment line(s) it carries are not in what d/x.bot writes (the first: # keep me)") {
+		t.Fatalf("--to yaml --force replaced a commented document without saying so: %v %q", err, res.Notices)
+	}
+
+	// Nothing carried, nothing said: the .bot now holds no comment.
+	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp}); err != nil {
+		t.Fatal(err)
+	}
+	now, _ = os.ReadFile(doc)
+	if err := os.WriteFile(doc, []byte(strings.Replace(string(now), "Say hello twice.", "Say hello thrice.", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
+	if err != nil || said(res, "--force replaces it whole") {
+		t.Fatalf("a note for a .bot that carried no comment: %v %q", err, res.Notices)
+	}
+
+	// A frontmatter is compared by key: the writer spells it its own way, so
+	// a value the document carries (the quoted description) is not lost, and
+	// a key it does not carry (the tags) is named.
+	fm := writeBot(t, "f/y.bot", "## ---\n## name: hello\n## description: \"Says hello\"\n## tags:\n##   - a\n##   - b\n## ---\n\n# kept nowhere\ndsl: 2\n\nagent hello:\n  model: \"m\"\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
+	if _, err := RunFmt(FmtOptions{Paths: []string{fm}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml of a .bot with a frontmatter: %v", err)
+	}
+	ydoc, _ := os.ReadFile("f/y.bot.yaml")
+	if err := os.WriteFile("f/y.bot.yaml", []byte(strings.Replace(string(ydoc), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = RunFmt(FmtOptions{Paths: []string{"f/y.bot.yaml"}, To: "bot", Force: true, Printer: jp})
+	if err != nil || !said(res, "f/y.bot: --force replaces it whole — 1 comment line(s) and the frontmatter key(s) tags it carries are not in what f/y.bot.yaml writes (the first comment: kept nowhere)") || said(res, "description") {
+		t.Fatalf("--force over a .bot with a frontmatter names the wrong losses: %v %q", err, res.Notices)
+	}
+
+	// A document that is not one YAML document — not YAML, comments alone
+	// (a draft commented out), a second document — is replaced uncounted, and
+	// says so.
+	for _, target := range []string{
+		"# a comment\nnodes: [\"unclosed\n",
+		"# dsl: 2\n# nodes:\n#   - agent: hello\n# a draft commented out\n",
+		"dsl: 2\n---\n# the second document\nnodes: []\n",
+		string([]byte{0xFF, 0xFE, 'd', 0, 's', 0, 'l', 0, ':', 0, ' ', 0, '2', 0, '\n', 0}), // UTF-16, which yaml.v3 also reads
+	} {
+		if err := os.WriteFile("f/y.bot.yaml", []byte(target), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res, err = RunFmt(FmtOptions{Paths: []string{fm}, To: "yaml", Force: true, Printer: jp})
+		if err != nil || !said(res, "f/y.bot.yaml: --force replaces it whole — it does not read as one YAML document") {
+			t.Fatalf("--force over %q said nothing of what it replaced: %v %q", target, err, res.Notices)
+		}
+	}
+
+	// The block's own YAML comments are named — the writer keeps none — and a
+	// key written twice is one key, as the catalogue reads it.
+	fm2 := writeBot(t, "g/z.bot", "## ---\n## # owned by team-x: do not rename\n## name: old\n## name: hello # the public name\n## description: Says hello\n## ---\n\ndsl: 2\n\nagent hello:\n  model: \"m\"\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
+	if _, err := RunFmt(FmtOptions{Paths: []string{fm2}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml of a .bot whose frontmatter carries comments: %v", err)
+	}
+	zdoc, _ := os.ReadFile("g/z.bot.yaml")
+	if err := os.WriteFile("g/z.bot.yaml", []byte(strings.Replace(string(zdoc), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = RunFmt(FmtOptions{Paths: []string{"g/z.bot.yaml"}, To: "bot", Force: true, Printer: jp})
+	if err != nil || !said(res, "g/z.bot: --force replaces it whole — 2 comment line(s) it carries are not in what g/z.bot.yaml writes (the first comment: # owned by team-x: do not rename)") || said(res, "frontmatter key") {
+		t.Fatalf("--force over a .bot whose frontmatter carries comments names the wrong losses: %v %q", err, res.Notices)
+	}
+
+	// A block that is not one document — a `...` ends the first — is compared
+	// line by line: what follows the end marker is named, never dropped.
+	fm3 := writeBot(t, "h/w.bot", "## ---\n## name: hello\n## ...\n## owner: team-x\n## ---\n\ndsl: 2\n\nagent hello:\n  model: \"m\"\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
+	if _, err := RunFmt(FmtOptions{Paths: []string{fm3}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml of a .bot whose frontmatter holds an end marker: %v", err)
+	}
+	wdoc, _ := os.ReadFile("h/w.bot.yaml")
+	if err := os.WriteFile("h/w.bot.yaml", []byte(strings.Replace(string(wdoc), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = RunFmt(FmtOptions{Paths: []string{"h/w.bot.yaml"}, To: "bot", Force: true, Printer: jp})
+	if err != nil || !said(res, "h/w.bot: --force replaces it whole") || !said(res, "comment line(s)") {
+		t.Fatalf("--force over a .bot whose frontmatter holds an end marker said nothing of what follows it: %v %q", err, res.Notices)
+	}
+
+	// A .bot the parser only recovers on is replaced uncounted, and says so:
+	// what it carries past the error cannot be listed.
+	doc2 := writeBot(t, "k/v.bot.yaml", authorHelloDoc)
+	writeBot(t, "k/v.bot", "# keep me\ndsl: 2\n\nagent hello:\n  model: \"m\n# after the error\n")
+	res, err = RunFmt(FmtOptions{Paths: []string{doc2}, To: "bot", Force: true, Printer: jp})
+	if err != nil || !said(res, "k/v.bot: --force replaces it whole — it does not parse as a .bot") {
+		t.Fatalf("--force over a .bot that does not parse said nothing of what it replaced: %v %q", err, res.Notices)
+	}
+}
+
 // A document whose program has no written .bot form (a profile-1 value with
 // no v1 form under a catalog long enough to put the directive out of the
 // lexer's window) is refused by --to bot, nothing written: the proof is the
@@ -149,6 +285,40 @@ func TestFmtRefusesToSettleADocumentsPromptBody(t *testing.T) {
 	got, err := os.ReadFile("s/settled.bot")
 	if err != nil || !strings.Contains(string(got), "prompt spaced:\n  Indented and surrounded by blank lines.\n  Second line.\n") {
 		t.Fatalf("the .bot written does not carry the settled reading: %v\n%s", err, got)
+	}
+}
+
+// `fmt --to bot` says the YAML comments the .bot is not written with — the
+// mirror of `--to yaml`'s note on the .bot's comments — counting them and
+// naming the first, so a ` #` that cut a plain value short is seen at the
+// conversion: the .bot is still written, the value as YAML read it.
+func TestFmtToBotSaysTheCommentsItDoesNotCarry(t *testing.T) {
+	inTempWorkspace(t)
+	doc := writeBot(t, "c/x.bot.yaml", "# a draft\ndsl: 2\nnodes:\n  - tool: status\n    command: echo \"see #123\"\nworkflow:\n  name: w\n  entry: status\n  edges:\n    - status -> done\n")
+	jp, _ := jsonPrinter()
+	res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	if err != nil {
+		t.Fatalf("--to bot: %v", err)
+	}
+	joined := strings.Join(res.Notices, "\n")
+	if !strings.Contains(joined, doc+": 2 YAML comment line(s) are not carried into the .bot (the first: # a draft)") {
+		t.Fatalf("the comments the .bot is not written with were not said: %q", res.Notices)
+	}
+	got, err := os.ReadFile("c/x.bot")
+	if err != nil || !strings.Contains(string(got), `command: "echo \"see"`) {
+		t.Fatalf("the .bot written does not carry the value as YAML read it: %v\n%s", err, got)
+	}
+	// The comment a ` #` started is named before the one written under it,
+	// which yaml.v3 hangs on the key.
+	under := writeBot(t, "u/x.bot.yaml", "dsl: 2\nnodes:\n  - tool: status\n    command: echo \"see #123\"\n    # retries are handled by the caller\nworkflow:\n  name: w\n  entry: status\n  edges:\n    - status -> done\n")
+	res, err = RunFmt(FmtOptions{Paths: []string{under}, To: "bot", Printer: jp})
+	if err != nil || !strings.Contains(strings.Join(res.Notices, "\n"), under+": 2 YAML comment line(s) are not carried into the .bot (the first: #123\")") {
+		t.Fatalf("the note does not name first the comment the ` #` started: %v %q", err, res.Notices)
+	}
+	plain := writeBot(t, "p/x.bot.yaml", "dsl: 2\nnodes:\n  - tool: status\n    command: echo ready\nworkflow:\n  name: w\n  entry: status\n  edges:\n    - status -> done\n")
+	res, err = RunFmt(FmtOptions{Paths: []string{plain}, To: "bot", Printer: jp})
+	if err != nil || len(res.Notices) != 0 {
+		t.Fatalf("a document without a comment: %v, notices %q — want none", err, res.Notices)
 	}
 }
 
@@ -224,6 +394,86 @@ func TestFmtToYamlWritesTheDocumentOfABot(t *testing.T) {
 	}
 	if _, err := os.Stat("y/broken.bot.yaml"); err == nil {
 		t.Fatal("a document was written from a text the parser recovered on")
+	}
+}
+
+// The document `--to yaml` writes reads back — as the same program — before
+// it is written: a float the .bot spells with a leading 0 is written as the
+// digits the reader takes, not as a spelling the next validate refuses; and
+// a writer that renders a document the reader refuses, or reads as another
+// program — a command, a field's type, a prompt changed in a fragment that
+// compiles to no workflow as in a bot — is refused by the proof, nothing
+// written.
+func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
+	inTempWorkspace(t)
+	botText := "dsl: 2\n\nvars:\n  ratio: float = 01.5\n  n: int = 010\n\nagent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n\n  a -> done\n"
+	bot := writeBot(t, "r/numbers.bot", botText)
+	jp, _ := jsonPrinter()
+	if _, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml: %v", err)
+	}
+	out, err := os.ReadFile("r/numbers.bot.yaml")
+	if err != nil {
+		t.Fatalf("the document was not written: %v", err)
+	}
+	back := author.Parse("r/numbers.bot.yaml", out)
+	if back.HasErrors() {
+		t.Fatalf("the document written does not read: %v\n%s", back.Diagnostics, out)
+	}
+	if why := ir.SameProgram(ir.Compile(back.File), ir.Compile(parser.Parse(bot, botText).File)); why != "" || !strings.Contains(string(out), "default: 1.5\n") {
+		t.Fatalf("the document written is not the .bot's program, its float in the reader's digits (%s):\n%s", why, out)
+	}
+	// A .bot that compiles to no workflow — a fragment, the same literals —
+	// is compared declaration by declaration, each literal by its value; and
+	// a parameter a vendor names `<<` is written as the text, not YAML's
+	// merge key.
+	for path, text := range map[string]string{
+		"r/lib/numbers.bot": "dsl: 2\n\nvars:\n  ratio: float = 01.5\n  n: int = 010\n\nagent a:\n  model: \"m\"\n",
+		// The writer puts `system:` before `user:`: the inline prompts come
+		// back in another order, which says nothing.
+		"r/lib/inline.bot": "dsl: 2\n\nagent a:\n  model: \"m\"\n  user: \"the user's text\"\n  system: \"the system's text\"\n",
+		"r/merge.bot":      "dsl: 2\n\ntool c:\n  action: forgejo.issue.comment\n  connection: \"forge-main\"\n  params:\n    \"<<\": \"x\"\n\nworkflow w:\n  entry: c\n\n  c -> done\n",
+	} {
+		frag := writeBot(t, path, text)
+		if _, err := RunFmt(FmtOptions{Paths: []string{frag}, To: "yaml", Printer: jp}); err != nil {
+			t.Fatalf("--to yaml %s: %v", path, err)
+		}
+		if out, err := os.ReadFile(path + ".yaml"); err != nil || author.Parse(path+".yaml", out).HasErrors() {
+			t.Fatalf("the document of %s was not written, or does not read: %v\n%s", path, err, out)
+		}
+	}
+	// A prompt that includes a file resolves it beside the .bot, a file on
+	// disk: the proof reads the document back where the .bot is, not under
+	// the document's own name, which nothing has written yet.
+	writeBot(t, "r/rules.md", "Be brief.\n")
+	inc := writeBot(t, "r/include.bot", "dsl: 2\n\nprompt ask:\n  Say hello. {{include \"rules.md\"}}\n\nagent a:\n  model: \"m\"\n  system: ask\n\nworkflow w:\n  entry: a\n\n  a -> done\n")
+	if res, err := RunFmt(FmtOptions{Paths: []string{inc}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml of a .bot whose prompt includes a file beside it: %v %q", err, res.Refused)
+	}
+	if _, err := os.Stat("r/include.bot.yaml"); err != nil {
+		t.Fatalf("the document of a .bot with an include was not written: %v", err)
+	}
+
+	defer func(w func(*ast.File) ([]byte, error)) { writeDocument = w }(writeDocument)
+	doc := "dsl: 2\nnodes:\n  - agent: a\n    model: m\nworkflow:\n  name: w\n  entry: a\n  edges:\n    - a -> done\n"
+	fragment := "dsl: 2\nnodes:\n  - tool: clean\n    command: rm -rf build\nschemas:\n  verdict:\n    ok: bool\nprompts:\n  ask: Say yes.\n"
+	for _, tc := range []struct{ bot, written, want string }{
+		{"dsl: 2\n\nagent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n\n  a -> done\n", strings.Replace(doc, "    model: m\n", "    model: m\n    max_tokens: 010\n", 1), "the document written does not read back: r/other.bot.yaml:5:17: error [E051]"},
+		{"dsl: 2\n\nagent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n\n  a -> done\n", strings.Replace(doc, "model: m", "model: n", 1), "the document written reads back as another program"},
+		{"dsl: 2\n\nprompt ask:\n  Say yes.\n\nschema verdict:\n  ok: bool\n\ntool clean:\n  command: \"rm -rf build\"\n", strings.Replace(fragment, "rm -rf build", "rm -rf /", 1), "the document written reads back as another program"},
+		{"dsl: 2\n\nprompt ask:\n  Say yes.\n\nschema verdict:\n  ok: bool\n\ntool clean:\n  command: \"rm -rf build\"\n", strings.Replace(fragment, "ok: bool", "ok: string", 1), "the document written reads back as another program"},
+		{"dsl: 2\n\nprompt ask:\n  Say yes.\n\nschema verdict:\n  ok: bool\n\ntool clean:\n  command: \"rm -rf build\"\n", strings.Replace(fragment, "Say yes.", "Say no.", 1), "the document written reads back as another program"},
+	} {
+		written := tc.written
+		writeDocument = func(*ast.File) ([]byte, error) { return []byte(written), nil }
+		other := writeBot(t, "r/other.bot", tc.bot)
+		res, err := RunFmt(FmtOptions{Paths: []string{other}, To: "yaml", Printer: jp})
+		if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], tc.want) {
+			t.Fatalf("a document the proof must refuse was converted: %v %q, want %q\n--- written:\n%s", err, res.Refused, tc.want, written)
+		}
+		if _, err := os.Stat("r/other.bot.yaml"); err == nil {
+			t.Fatal("a document that does not read back as the program was written")
+		}
 	}
 }
 

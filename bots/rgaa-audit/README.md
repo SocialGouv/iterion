@@ -74,7 +74,7 @@ dropping.
 
 Models and effort are env-tunable, set inline on the node `model:` fields:
 `ITERION_RGAA_MODEL_REVIEW` / `ITERION_RGAA_EFFORT_REVIEW` (default
-`claude-opus-5` / `high`) on `campaign`, and the `_REPORT` pair (`claude-opus-5`
+`claude-opus-5-5` / `high`) on `campaign`, and the `_REPORT` pair (`claude-opus-5-5`
 / `medium`) on `report_card`. `ITERION_RGAA_MAX_DURATION` (default `2h`) tunes
 the budget, alongside `max_cost_usd: 20` and `max_tokens: 2000000`.
 

@@ -116,11 +116,16 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 // it to the user out-of-band; the first sign-in then goes through the
 // forced-rotation flow with the temp password as "current password".
 // This is the recovery path on deployments without outbound email.
+// A disabled account must be explicitly re-enabled before this recovery.
 func (s *Server) handleAdminResetUserPassword(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	u, err := s.authStore().GetUser(r.Context(), id)
 	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	if u.Status == identity.UserStatusDisabled {
+		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before resetting its password", u.Email)
 		return
 	}
 	raw := make([]byte, 18)

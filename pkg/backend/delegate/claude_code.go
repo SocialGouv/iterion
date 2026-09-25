@@ -27,13 +27,13 @@ import (
 // backend when the workflow doesn't specify one. Mirrors the official
 // Claude Code CLI default — Opus 5 (1M context window). Workflows can
 // always override via the node's `model:` field — including the
-// env-driven form `model: "${ITERION_CLAUDE_CODE_MODEL:-claude-opus-5}"`
+// env-driven form `model: "${ITERION_CLAUDE_CODE_MODEL:-claude-opus-5-5}"`
 // which the IR expander in pkg/backend/model/executor.go resolves
 // before this backend ever sees the task. Operators who want to pin
 // every claude_code node to a single gateway-side alias (e.g. GLM 5.1
 // on z.ai) should put the env var in their .env and use the DSL form
 // above in the bots that opt in.
-const defaultClaudeCodeModel = "claude-opus-5"
+const defaultClaudeCodeModel = "claude-opus-5-5"
 
 // defaultClaudeCodeEffort is the reasoning effort iterion forces on the
 // claude_code backend when the workflow doesn't specify one. The bare API
@@ -495,6 +495,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		mark := sandboxDelegateMark(task)
 		sandboxCleanup = killSandboxDelegate(run, mark, b.Logger)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
+			env = claudeModelDefaultEnv(env)
 			// Surface the resolved CLI invocation so failures like
 			// "session ended without result" can be traced back to a
 			// concrete `docker exec` command. Without this every silent
@@ -522,6 +523,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		// (b) keep the env identical to the SDK default (os.Environ() + the
 		// per-task entries via hostSpawnEnv), so this is behaviour-neutral.
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
+			env = claudeModelDefaultEnv(env)
 			keys := make([]string, 0, len(env))
 			for k := range env {
 				keys = append(keys, k)
@@ -620,7 +622,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// Inject Anthropic-flavoured credentials and resolve session resume/fork
 	// (see helper). The returned fingerprint is recorded on the Result so a
 	// later resume can detect a credential change.
-	opts, currentFingerprint := b.setupCredsAndSession(ctx, task, opts)
+	opts, currentFingerprint, credErr := b.setupCredsAndSession(ctx, task, opts)
+	if credErr != nil {
+		return Result{BackendName: BackendClaudeCode, ExitCode: -1}, credErr
+	}
 
 	// Stamp every usage reading with the provider-routing label of THIS
 	// session. One wrap here covers all three detection sites (the
@@ -1277,10 +1282,19 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 // the task carries a SessionID, decides whether to resume/fork that session
 // or drop it on a provider-fingerprint mismatch. Returns the extended opts
 // and the current provider fingerprint.
-func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string) {
-	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
+//
+// A node pinned to a facade provider with no key reachable is REFUSED here,
+// by name. The env it would otherwise spawn with has every Anthropic-flavoured
+// channel suppressed on purpose, so the CLI can only die on "Not logged in" —
+// a message naming neither the provider the operator pinned nor the credential
+// that was missing, and only after paying for the spawn.
+func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, error) {
+	credEnv := anthropicCredEnvForTask(ctx, task)
+	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+		return opts, "", err
+	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
-	currentFingerprint := providerFingerprint(credEnv)
+	currentFingerprint := providerFingerprint(anthropicFingerprintEnvForTask(task, credEnv))
 
 	if task.SessionID != "" {
 		drop, reason := shouldDropSessionFork(task, currentFingerprint)
@@ -1294,7 +1308,7 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 			}
 		}
 	}
-	return opts, currentFingerprint
+	return opts, currentFingerprint, nil
 }
 
 // runRecoveryFormatterPass is the single-pass safety net: when a schema is
@@ -1579,6 +1593,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		// lives) rather than spawning a host claude that can't see it.
 		run := task.Sandbox
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
+			env = claudeModelDefaultEnv(env)
 			preview := append([]string{path}, args...)
 			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)", preview, cwd, len(env), openStdin)
 			cmd := run.Command(ctx, append([]string{path}, args...), sandbox.ExecOpts{
@@ -1597,6 +1612,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		// belt-and-braces hedge for the case where ctx propagation is
 		// what's stuck.
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
+			env = claudeModelDefaultEnv(env)
 			cmd := exec.CommandContext(ctx, path, args...)
 			cmd.Dir = cwd
 			// Seed os.Environ() before the per-task entries — matching the
@@ -1614,8 +1630,12 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
-	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint, taskSandboxed(task))...)
 	opts = append(opts, perTaskSpawnOpts(task)...)
+	credEnv := anthropicCredEnvForTask(ctx, task)
+	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+		return nil, err
+	}
+	opts = append(opts, credEnvToOpts(credEnv)...)
 
 	// A GATED node gets one extra sentence — advisory defence in depth beside
 	// the withholding, for the names the roster misses. It is scoped to the

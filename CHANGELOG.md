@@ -3,6 +3,179 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.201.0](https://github.com/SocialGouv/iterion/compare/v3.200.3...v3.201.0) (2026-09-25)
+
+### Features
+
+* **server,cli,mcp,studio:** a run is addressed by its id, across the teams you may see ([8f509ad](https://github.com/SocialGouv/iterion/commit/8f509adff9d287e36838e691744ef51def27bf3d)), closes [#1847](https://github.com/SocialGouv/iterion/issues/1847) [#1848](https://github.com/SocialGouv/iterion/issues/1848) [#1407](https://github.com/SocialGouv/iterion/issues/1407) [#1849](https://github.com/SocialGouv/iterion/issues/1849), references [#1847](https://github.com/SocialGouv/iterion/issues/1847) [#1848](https://github.com/SocialGouv/iterion/issues/1848)
+
+    <details><summary>why</summary>
+
+    feat(server,cli,mcp,studio): a run is addressed by its id, across the teams you may see
+
+    </details>
+
+## [3.200.3](https://github.com/SocialGouv/iterion/compare/v3.200.2...v3.200.3) (2026-09-25)
+
+### Bug Fixes
+
+* **auth:** refuse admin password reset for disabled accounts ([#1863](https://github.com/SocialGouv/iterion/issues/1863)) ([4c245ce](https://github.com/SocialGouv/iterion/commit/4c245ced1ff551a461445057fc1cc8e6c41e62d3)), closes [#1561](https://github.com/SocialGouv/iterion/issues/1561), references [#1862](https://github.com/SocialGouv/iterion/issues/1862)
+
+    <details><summary>why</summary>
+
+    Return an actionable 422 before generating a credential or changing the account. Preserve active/pending recovery and explicit re-enable semantics. Cover the HTTP journey and document the refusal; concurrent stale writes remain separately tracked in #1862.
+
+    </details>
+* **claude-code:** align task credential precedence across CLI passes ([#1859](https://github.com/SocialGouv/iterion/issues/1859)) ([d484906](https://github.com/SocialGouv/iterion/commit/d484906e34036d14a2dd08d4a60bfa0046a93dbe)), closes [#1836](https://github.com/SocialGouv/iterion/issues/1836)
+
+    <details><summary>why</summary>
+
+    Compose ambient forwarding, task env additions and selected credential routes once for host/sandbox main and format spawns. Bind direct credentials to their route, protect resolver markers, and preserve inherited gateway fingerprints.
+
+    </details>
+
+## [3.200.2](https://github.com/SocialGouv/iterion/compare/v3.200.1...v3.200.2) (2026-09-25)
+
+### Bug Fixes
+
+* **mcp:** reserve internal server names across catalog and CLI adapters ([#1861](https://github.com/SocialGouv/iterion/issues/1861)) ([d94706b](https://github.com/SocialGouv/iterion/commit/d94706b5ccdb24a49f33f48ce61ec55f2872f2fe)), closes [#1742](https://github.com/SocialGouv/iterion/issues/1742)
+
+    <details><summary>why</summary>
+
+    Reject user/project/plugin MCP names that normalize into the permission-exempt infrastructure namespace. Keep internal registrations and custom servers separate, with a shared identity check and actionable rename diagnostics.
+
+    </details>
+
+## [3.200.1](https://github.com/SocialGouv/iterion/compare/v3.200.0...v3.200.1) (2026-09-25)
+
+### Bug Fixes
+
+* **credpool:** release only the lease owned by a launch grant ([#1856](https://github.com/SocialGouv/iterion/issues/1856)) ([b13f7ef](https://github.com/SocialGouv/iterion/commit/b13f7ef0f55f6c7205e57351a601f33794e1f88d)), closes [#1845](https://github.com/SocialGouv/iterion/issues/1845)
+
+    <details><summary>why</summary>
+
+    Bind cleanup to the lease inserted by Acquire so a losing launch or resume cannot close a concurrent acquisition for the same run. Keep the existing close CAS and consumed-run accounting semantics.
+
+    </details>
+
+## [3.200.0](https://github.com/SocialGouv/iterion/compare/v3.199.3...v3.200.0) (2026-09-25)
+
+### Features
+
+* **dsl:** the author YAML twin — surfaces, part 2 (lot 5, PR C2) ([10a8071](https://github.com/SocialGouv/iterion/commit/10a8071ba06b3703f7c62e8aa3b88baec6d2968d)), closes [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1010](https://github.com/SocialGouv/iterion/issues/1010)
+
+    <details><summary>why</summary>
+
+    feat(dsl): the author YAML twin — surfaces, part 2 (lot 5, PR C2)
+
+    </details>
+
+## [3.199.3](https://github.com/SocialGouv/iterion/compare/v3.199.2...v3.199.3) (2026-09-25)
+
+### Bug Fixes
+
+* **cloud:** include Node runtime library and verify bundled CLIs ([#1853](https://github.com/SocialGouv/iterion/issues/1853)) ([933b695](https://github.com/SocialGouv/iterion/commit/933b695670b186c260722f14d8213a7fd914a81c)), closes [#1850](https://github.com/SocialGouv/iterion/issues/1850)
+
+    <details><summary>why</summary>
+
+    Node 26 is copied into Debian slim without libatomic.so.1, causing exit 127 in the server image. Install libatomic1 and smoke-test Node, Claude and Codex under the final non-root user before publication.
+
+    </details>
+
+## [3.199.2](https://github.com/SocialGouv/iterion/compare/v3.199.1...v3.199.2) (2026-09-25)
+
+### Bug Fixes
+
+* **server,credpool,runview:** a launch refuses a run id another run already uses, in any team ([e827696](https://github.com/SocialGouv/iterion/commit/e82769697df585dee6507daef254aa51d0c56148)), closes [#1845](https://github.com/SocialGouv/iterion/issues/1845) [#1833](https://github.com/SocialGouv/iterion/issues/1833), references [#1833](https://github.com/SocialGouv/iterion/issues/1833)
+
+    <details><summary>why</summary>
+
+    POST /api/runs accepted a caller-supplied run_id and used it as-is. A launch naming an existing run's id — any team's — reached the credential pool, whose Acquire first supersedes every open lease of that run id through a team-blind query: the other team's leases were closed before the duplicate-id save failed, the donor's slot was freed and the charge erased while the run still used the credential. The launch's answer also differed on whether the id existed. (#1833)
+
+    </details>
+* **server:** the artifact version route gates on the run's team; ?store= is refused on a cloud instance ([308def3](https://github.com/SocialGouv/iterion/commit/308def3612583852ff746b206cc3296c9c7c8652)), closes [#1832](https://github.com/SocialGouv/iterion/issues/1832)
+
+    <details><summary>why</summary>
+
+    GET /api/runs/{id}/artifacts/{node}/{version} read the artifact body with no team gate. In cloud mode the body comes from the blob store (artifacts/<run>/<node>/<version>.json), which knows no team, so the route served another team's artifact to any authenticated caller who knew the run id. The handler now loads the run under the caller's context first, as its siblings do.
+
+    </details>
+
+## [3.199.1](https://github.com/SocialGouv/iterion/compare/v3.199.0...v3.199.1) (2026-09-25)
+
+### Bug Fixes
+
+* **studio:** reuse tabs within the active project ([#1830](https://github.com/SocialGouv/iterion/issues/1830)) ([1a0f846](https://github.com/SocialGouv/iterion/commit/1a0f8467c115ecee5412e799eca4ae3f84c9d98e)), references [#1811](https://github.com/SocialGouv/iterion/issues/1811)
+
+    <details><summary>why</summary>
+
+    Opening the same file or draft in another project now selects a tab that the current editor can display. Reuse follows the existing visibility scope, including the unscoped cloud mode.
+
+    </details>
+* **studio:** select a visible neighbour when closing tabs ([#1840](https://github.com/SocialGouv/iterion/issues/1840)) ([b357d97](https://github.com/SocialGouv/iterion/commit/b357d97e7ccb82eab3707d2fc6529c0d98d09358)), closes [#1829](https://github.com/SocialGouv/iterion/issues/1829)
+
+    <details><summary>why</summary>
+
+    Keep the replacement active editor or run tab in the current project. Compute both the candidate list and the closed-tab index in that scope; retain global cloud selection when project scoping is disabled.
+
+    </details>
+
+## [3.199.0](https://github.com/SocialGouv/iterion/compare/v3.198.1...v3.199.0) (2026-09-25)
+
+### Features
+
+* **models:** default bots to Opus 5.5 and GPT-6 ([#1835](https://github.com/SocialGouv/iterion/issues/1835)) ([62309a8](https://github.com/SocialGouv/iterion/commit/62309a8ca2ac71a2f70ff0584c6f6b67253d8605)), references [#1831](https://github.com/SocialGouv/iterion/issues/1831) [#1837](https://github.com/SocialGouv/iterion/issues/1837)
+
+    <details><summary>why</summary>
+
+    Migrate catalog and implicit defaults, preserve explicit overrides, and pin compatible CLI versions. Adapt structured/grounded generation to mandatory adaptive thinking and consume the published GPT-6 SDK support.
+
+    </details>
+
+### Bug Fixes
+
+* **studio:** expose typed schedule failures and recovery advice ([#1825](https://github.com/SocialGouv/iterion/issues/1825)) ([6b9d278](https://github.com/SocialGouv/iterion/commit/6b9d2780f00d8d4e420d1d5ddf491c50025e57c5)), references [#1565](https://github.com/SocialGouv/iterion/issues/1565)
+
+    <details><summary>why</summary>
+
+    Show the last run outcome and separate launch refusals in schedule rows. Use the persisted failure code for run hints before parsing legacy text. Keep the configured cadence and the existing manual pause control.
+
+    </details>
+
+## [3.198.1](https://github.com/SocialGouv/iterion/compare/v3.198.0...v3.198.1) (2026-09-25)
+
+### Bug Fixes
+
+* **dsl:** preserve literals and quoted reference lists when writing ([#1822](https://github.com/SocialGouv/iterion/issues/1822)) ([a276854](https://github.com/SocialGouv/iterion/commit/a276854cfeb238e4e375224dc70ccd9c2e873fe5)), references [#1810](https://github.com/SocialGouv/iterion/issues/1810) [#1736](https://github.com/SocialGouv/iterion/issues/1736) [#1624](https://github.com/SocialGouv/iterion/issues/1624) [#1809](https://github.com/SocialGouv/iterion/issues/1809)
+
+    <details><summary>why</summary>
+
+    Keep decimal floats parseable and typed, quote non-bare reference list values through the active string profile, and refuse JSON integers that the author YAML reader cannot represent as int64.
+
+    </details>
+
+## [3.198.0](https://github.com/SocialGouv/iterion/compare/v3.197.3...v3.198.0) (2026-09-25)
+
+### Features
+
+* **moonshot:** Kimi as a first-class provider on the Anthropic wire ([#1744](https://github.com/SocialGouv/iterion/issues/1744)) ([#1753](https://github.com/SocialGouv/iterion/issues/1753)) ([76aeef2](https://github.com/SocialGouv/iterion/commit/76aeef26ef96d5de271b5acc60ecc59480245aa1))
+
+    <details><summary>why</summary>
+
+    Moonshot was reachable only through `backend: "kimi"` — the CLI-agent route (ADR-065), which resolves its own credentials from the host env and sits outside the credential store entirely: no BYOK record, no funding walk, no usage windows, no rotation. A campaign whose only Anthropic-wire providers are anthropic and z.ai freezes the day both are walled at once, and that is not hypothetical: it cost hours, with one key on a dated weekly window, one forfait revoked and one team slot…
+
+    </details>
+
+### Bug Fixes
+
+* **runtime,bots:** ${BUNDLE_SKILLS_DIR} is absolute or the run is refused, and a child never inherits its parent's copy ([#1806](https://github.com/SocialGouv/iterion/issues/1806)) ([96a6b16](https://github.com/SocialGouv/iterion/commit/96a6b16823ca9dc869e132209e1e9544c6055dc3)), references [#1797](https://github.com/SocialGouv/iterion/issues/1797) [#1797](https://github.com/SocialGouv/iterion/issues/1797)
+
+    <details><summary>why</summary>
+
+    A reader joins a skill NAME onto the directory, so an empty or relative value resolved against the node's own working directory — the checkout — and the data block came back from whatever the repository put at that path. The previous spelling carried a literal `/`, which could not collapse that way.
+
+    </details>
+
 ## [3.197.3](https://github.com/SocialGouv/iterion/compare/v3.197.2...v3.197.3) (2026-09-24)
 
 ### Bug Fixes

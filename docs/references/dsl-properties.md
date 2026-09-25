@@ -51,7 +51,7 @@ _Generated from the parser's property registry (`pkg/dsl/spec`) by `iterion dsl 
 
 ### prompt
 
-A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include "file"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.
+A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include "file"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.
 
 A top-level declaration: `prompt <name>:`.
 
@@ -182,7 +182,7 @@ Entries: `<name>: string | bool | int | float | json | string[] [enum: "a", "b"]
 
 ### presets
 
-Named bundles of var values selected with --recipe / --preset.
+Named bundles of var values selected with `--preset`.
 
 A block opened by `presets:` inside the top level.
 

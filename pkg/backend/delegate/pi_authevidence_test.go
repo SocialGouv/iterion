@@ -101,10 +101,15 @@ func TestPiExecute_RecordsNothingForANonAuthFailure(t *testing.T) {
 func TestPiUsageSource(t *testing.T) {
 	cases := map[string]string{
 		"anthropic": "anthropic-direct",
-		"zai":       "facade:pi-zai",
-		"openai":    "",
-		"":          "",
-		"google":    "",
+		"zai":       PiUsageSourceZAI,
+		// pi's OWN id for Moonshot — what piResolveModel returns after
+		// piProviderPrefixes. Matching iterion's "moonshot" here would
+		// never fire, and the refusal would land on the default credential.
+		"moonshotai": PiUsageSourceMoonshot,
+		"moonshot":   "",
+		"openai":     "",
+		"":           "",
+		"google":     "",
 	}
 	for provider, want := range cases {
 		if got := piUsageSource(provider); got != want {

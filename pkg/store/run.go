@@ -444,7 +444,7 @@ type NodeServed struct {
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
 	// Fingerprint is the provider fingerprint the backend reported for the
-	// session behind this record ("anthropic-oauth", "facade:<base url>",
+	// session behind this record ("anthropic-oauth", "facade:<slot>:<base url>",
 	// …). A model id alone cannot tell that an Anthropic-shaped facade
 	// answered a claude id with whatever it aliases it to; the fingerprint
 	// can. It names the route that SERVED on a success and the one that

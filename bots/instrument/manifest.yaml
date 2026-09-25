@@ -1,7 +1,7 @@
 name: instrument
 display_name: Obsy
 icon: 📡
-version: 0.2.0
+version: 0.2.1
 ## 0.2.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 0.1.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,

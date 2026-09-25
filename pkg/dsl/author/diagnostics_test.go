@@ -63,6 +63,35 @@ func TestAYAMLSyntaxErrorNamesItsRemedy(t *testing.T) {
 	}
 }
 
+// A scanner message given for two different mistakes names the remedy of
+// each: over-indentation reads as a plain value holding `: `, and a value
+// with quotes of its own — the edge whose with map holds a quoted value,
+// the trap the documentation names — reads as a key missing, like an
+// indentation mistake does.
+func TestAYAMLSyntaxErrorNamesTheRemedyOfEachOfItsCauses(t *testing.T) {
+	tail := "workflow:\n  name: w\n  entry: a\n  edges:\n    - a -> done\n"
+	edges := func(edge string) string {
+		return "dsl: 2\nnodes:\n  - agent: a\n    model: m\nworkflow:\n  name: w\n  entry: a\n  edges:\n    - " + edge + "\n"
+	}
+	for name, tc := range map[string]struct{ src, want string }{
+		"a key indented too deep":               {"dsl: 2\nnodes:\n  - agent: a\n     model: m\n" + tail, "indented deeper"},
+		"a key indented too shallow":            {"dsl: 2\nnodes:\n  - agent: a\n model: m\n" + tail, "indentation:"},
+		"an edge with a quoted value, plain":    {edges(`a -> done with { x: "{{outputs.a.y}}" }`), "single quotes"},
+		"an edge in double quotes of its own":   {edges(`"a -> done with { x: "{{outputs.a.y}}" }"`), "single quotes"},
+		"a command in double quotes of its own": {"dsl: 2\nnodes:\n  - tool: t\n    command: \"echo \"hi\"\"\n" + tail, "single quotes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := Parse("x.bot.yaml", []byte(tc.src))
+			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != parser.DiagAuthorDocument {
+				t.Fatalf("want one E050, got %v", res.Diagnostics)
+			}
+			if msg := res.Diagnostics[0].Message; !strings.Contains(msg, tc.want) {
+				t.Fatalf("the message does not name the remedy %q: %s", tc.want, msg)
+			}
+		})
+	}
+}
+
 // HasErrors is what a caller acts on: true on an error, false on warnings
 // alone and on a clean document.
 func TestHasErrorsTellsErrorsFromWarnings(t *testing.T) {

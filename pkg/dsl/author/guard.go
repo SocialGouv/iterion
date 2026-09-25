@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -36,6 +37,11 @@ var yamlLineRe = regexp.MustCompile(`line (\d+):`)
 func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 	if len(src) > maxSourceSize {
 		return nil, []parser.Diagnostic{docDiag(name, 1, 1, fmt.Sprintf("the document exceeds the maximum size (%d bytes > %d)", len(src), maxSourceSize))}
+	}
+	// yaml.v3 also reads UTF-16; every reader of the source at a node's
+	// position reads UTF-8 (sourceLines), as the .bot it stands for is.
+	if at := invalidUTF8(src); at >= 0 {
+		return nil, []parser.Diagnostic{docDiag(name, len(sourceLines(src[:at])), 1, fmt.Sprintf("the document is not UTF-8 text (byte %d): write it in UTF-8, as the .bot it stands for is", at))}
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(src))
 	var doc yaml.Node
@@ -68,7 +74,7 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 		return nil, []parser.Diagnostic{docDiag(name, line, 1, msg)}
 	}
 	root := doc.Content[0]
-	diags := guardTree(name, root)
+	diags := guardTree(name, root, src)
 	if len(diags) > 0 {
 		return nil, diags
 	}
@@ -79,15 +85,20 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 // meets first, the spelling that avoids them — yaml.v3's own message says
 // what the scanner saw, not what to write. Measured on the authoring probe:
 // a shell command holding a `: ` (a jq filter) written unquoted cost a
-// mid-size model four validation rounds, the message repeating itself.
+// mid-size model four validation rounds, the message repeating itself. A
+// message the scanner gives for two different mistakes names both: the
+// line it reports does not tell them apart (a quoted value that ends early
+// is reported at the start of its mapping).
 func yamlRemedy(msg string) string {
 	switch {
 	case strings.Contains(msg, "mapping values are not allowed"):
-		return " — a plain value holding `: ` reads as a nested mapping: quote the whole value (a command with a jq filter, an expression, an edge whose with map has a `: `)"
+		return " — a plain value holding a `:` followed by a space or by the end of the line reads as a nested mapping: quote the whole value (a command with a jq filter, an expression, an edge whose with map has a `: `, a text ending in `:`), a `'` inside single quotes written twice (`''`); or a key is indented deeper than the keys beside it"
 	case strings.Contains(msg, "cannot start any token"):
-		return " — the value starts with a character YAML reserves (`%`, `@`, a backtick, `|`, `>`, `*`, `&`, `!`, `[`, `{`): quote the whole value"
+		return " — the value starts with a character YAML reserves (`%`, `@`, a backtick): quote the whole value; or a tab indents the line, where YAML takes spaces only"
+	case strings.Contains(msg, "found a tab character"):
+		return " — YAML indents with spaces only: replace the tab"
 	case strings.Contains(msg, "did not find expected key"), strings.Contains(msg, "did not find expected '-' indicator"):
-		return " — indentation: the keys of one mapping start at one column, a value's lines are indented under its key, a list's items under theirs"
+		return " — a value that starts with `{` or `[` (a `{{…}}` template, a `[WIP]`) is read by YAML as a mapping or a list, and a value with quotes of its own, written plain or inside double quotes, ends where YAML reads its quote as closed (an edge whose with map holds a quoted value): write either whole in single quotes, its double quotes as they are and a `'` inside written twice (`''`); or indentation: the keys of one mapping start at one column, a value's lines are indented under its key, a list's items under theirs"
 	case strings.Contains(msg, "could not find expected ':'"):
 		return " — a key is followed by `: ` (colon, space) and its value"
 	case strings.Contains(msg, "found unexpected end of stream"), strings.Contains(msg, "found unexpected document indicator"):
@@ -99,19 +110,76 @@ func yamlRemedy(msg string) string {
 // guardTree walks the tree once and refuses what the converter never
 // reads: an alias or an anchor (a value is written where it is used), an
 // explicit tag (the value's shape decides its type; a `!!str 3` would say
-// otherwise), a merge key, a key that is not a plain string, a key
+// otherwise) — the non-specific tag `!` of a scalar included, which yaml.v3
+// drops without marking the node (read off src: a `!` where the scalar
+// starts) — a merge key, a key that is not a plain string, a key
 // repeated in one mapping (yaml.v3 keeps both; the .bot has one), a tree
 // deeper or larger than the lexer's bounds.
-func guardTree(name string, root *yaml.Node) []parser.Diagnostic {
-	g := &guard{name: name}
+func guardTree(name string, root *yaml.Node, src []byte) []parser.Diagnostic {
+	g := &guard{name: name, lines: sourceLines(src)}
 	g.walk(root, 0)
 	return g.diags
 }
 
+// sourceLines cuts src into the lines yaml.v3's positions count: a UTF-8
+// BOM off, as the scanner skips it, and a line ended where the scanner ends
+// one (yamlBreaks) — every reader of the source at a node's position reads
+// it through here.
+func sourceLines(src []byte) []string {
+	return strings.Split(yamlBreaks.Replace(strings.TrimPrefix(string(src), "\ufeff")), "\n")
+}
+
+// invalidUTF8 is the offset of src's first byte that is not UTF-8, -1 when
+// every byte is.
+func invalidUTF8(src []byte) int {
+	for i := 0; i < len(src); {
+		r, size := utf8.DecodeRune(src[i:])
+		if r == utf8.RuneError && size == 1 {
+			return i
+		}
+		i += size
+	}
+	return -1
+}
+
 type guard struct {
 	name  string
+	lines []string
 	count int
 	diags []parser.Diagnostic
+}
+
+// at is the source from node n's position to the end of its line, "" when
+// the position is not on a line of the source.
+func (g *guard) at(n *yaml.Node) string {
+	if n.Line < 1 || n.Line > len(g.lines) {
+		return ""
+	}
+	line := []rune(g.lines[n.Line-1])
+	if col := n.Column - 1; col >= 0 && col < len(line) {
+		return string(line[col:])
+	}
+	return ""
+}
+
+// droppedBang reports whether YAML read a `!` at scalar n's position as a
+// tag and dropped it, without a mark on the node — yaml.v3 marks a named
+// tag, never the non-specific `!`. A scalar of any style: a quoted value
+// starts with its quote, a block with `|` or `>`, a plain value never with
+// `!` — so a `!` where the node starts is its tag. `! grep -q x f` would
+// otherwise reach the .bot as `grep -q x f`, `! 'test -f x'` as the command
+// it negates. (A collection's `!` changes nothing: its kind is its type.)
+func (g *guard) droppedBang(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode && n.Style&yaml.TaggedStyle == 0 && strings.HasPrefix(g.at(n), "!")
+}
+
+// excerpt is v cut short for a message: its first line, 60 characters at most.
+func excerpt(v string) string {
+	v, _, _ = strings.Cut(v, "\n")
+	if r := []rune(v); len(r) > 60 {
+		return string(r[:60]) + "\u2026"
+	}
+	return v
 }
 
 func (g *guard) refuse(n *yaml.Node, msg string) {
@@ -139,6 +207,9 @@ func (g *guard) walk(n *yaml.Node, depth int) {
 	if n.Style&yaml.TaggedStyle != 0 {
 		g.refuse(n, "an explicit tag ("+n.Tag+") is not read: the value's shape decides its type")
 	}
+	if g.droppedBang(n) {
+		g.refuse(n, "YAML reads a `!` before a value as a tag and drops it — `"+excerpt(g.at(n))+"` would be read without it: quote the whole value if the `!` is part of it")
+	}
 	switch n.Kind {
 	case yaml.AliasNode:
 		g.refuse(n, "an alias (*"+n.Value+") is not read: write the value where it is used")
@@ -148,9 +219,13 @@ func (g *guard) walk(n *yaml.Node, depth int) {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
 			switch {
+			case k.Kind == yaml.MappingNode && strings.HasPrefix(g.at(n), "{{"):
+				// `user: {{input.task}}` reads as a mapping whose key is a
+				// mapping: a template written unquoted.
+				g.refuse(k, "a key is a plain word, not a mapping — a value that starts with `{{` (a template) is read by YAML as a mapping: quote the whole value")
 			case k.Kind != yaml.ScalarNode:
 				g.refuse(k, "a key is a plain word, not a "+kindWord(k))
-			case k.Tag == "!!merge" || k.Value == "<<":
+			case k.Tag == "!!merge": // a plain `<<`; quoted, a key like any other
 				g.refuse(k, "a merge key (<<) is not read: write the entries in place")
 			case k.ShortTag() != "!!str":
 				g.refuse(k, "a key is a plain word; `"+k.Value+"` reads as "+tagWord(k.ShortTag())+" — quote it if it is a name")
@@ -225,6 +300,8 @@ func tagWord(tag string) string {
 		return "a timestamp (a bare date)"
 	case "!!binary":
 		return "binary data"
+	case "!!merge":
+		return "YAML's merge key"
 	}
 	return tag
 }

@@ -845,7 +845,7 @@ compute plan_topology:
 agent plan:
   description: "Author the implementation plan (read-only)"
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: plan_output
   system: plan_system
@@ -873,7 +873,7 @@ compute plan_review_topology:
 judge plan_review:
   description: "Peer plan review (other model family)"
   backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
-  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-5.6-sol}"
+  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-6-astra}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   input: plan_review_input
   output: plan_review_output
@@ -912,7 +912,7 @@ compute plan_gate:
 agent plan_revise:
   description: "Author challenges & integrates the critique"
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: plan_revise_input
   output: plan_revised_output
@@ -931,7 +931,7 @@ agent plan_revise:
 ## the contract.
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -945,7 +945,7 @@ agent campaign:
 ## per-gap session.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: verify_plan
   system: verify_system

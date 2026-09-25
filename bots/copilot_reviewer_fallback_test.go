@@ -20,7 +20,7 @@ func TestCopilotReviewerUsesExternalFallbackOrder(t *testing.T) {
 		t.Fatal("could not isolate Copi judge node")
 	}
 	review := src[start : start+end]
-	if !strings.Contains(review, "model: \"${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5}\"") {
+	if !strings.Contains(review, "model: \"${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5-5}\"") {
 		t.Fatal("Copi reviewer must default to Claude Opus")
 	}
 

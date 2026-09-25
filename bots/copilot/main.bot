@@ -10,9 +10,9 @@
 ## Graph (Terra → Sol + judge → Terra):
 ##   seed (compute)  — projects vars into the uniform turn input so
 ##                     entry and loop share ONE contract.
-##   copi (agent)    — GPT-5.6 Terra: the sole user-facing entry and
+##   copi (agent)    — GPT-6 Sol (entry): the sole user-facing entry and
 ##                     executor. It handles simple work or asks for reflection.
-##   reflect (agent) — GPT-5.6 Sol: private persisted planner.
+##   reflect (agent) — GPT-6 Sol (reflection): private persisted planner.
 ##   judge (judge)   — Claude Opus → Kimi K3 → Grok: challenges Sol's plan.
 ##   implementation_handoff — returns the debated plan to Terra; an observed
 ##                     blocker returns through the full private loop.
@@ -1292,12 +1292,12 @@ agent copi:
   backend: "claw"
   ## Terra is the fast user-facing entry and the only node that may make a
   ## Studio proposal. Sol below has a distinct persistent reflection slot.
-  model: "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-5.6-terra}"
+  model: "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-6-sol}"
   reasoning_effort: "${ITERION_COPILOT_EFFORT:-medium}"
   fallbacks:
     claude:
       backend: "claw"
-      model: "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}"
+      model: "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5-5}"
       on: [usage_window, unavailable, transient_exhausted]
   input: turn_input
   output: copi_turn
@@ -1493,12 +1493,12 @@ compute reflection_state:
 ## actions and it cannot become a second visible assistant voice.
 agent reflect:
   backend: "claw"
-  model: "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-5.6-sol}"
+  model: "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-6-sol}"
   reasoning_effort: "${ITERION_COPILOT_REFLECTION_EFFORT:-high}"
   fallbacks:
     claude:
       backend: "claw"
-      model: "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}"
+      model: "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5-5}"
       on: [usage_window, unavailable, transient_exhausted]
   input: reflect_in
   output: reflect_out
@@ -1518,7 +1518,7 @@ agent reflect:
 ## final reply and falls forward from Opus to Kimi K3, then Grok.
 judge judge:
   backend: "claude_code"
-  model: "${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5}"
+  model: "${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_COPILOT_REVIEWER_EFFORT:-medium}"
   input: judge_in
   output: judge_out

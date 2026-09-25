@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/claw-code-go/pkg/apikit"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
@@ -54,6 +55,22 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	// Copy messages to avoid mutating caller's slice.
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
+
+	// Always-thinking models reject tool_choice:any. Keep the grounding
+	// contract in the executor: an announced, malformed or denied call is
+	// not an executed tool. Chain the observer rather than replacing it.
+	requireExecutedTool := opts.ForceInitialToolUse && len(opts.Tools) > 0 && requiresAdaptiveThinking(opts.Model)
+	executedTool := false
+	if requireExecutedTool {
+		observer := opts.OnToolStarted
+		opts.OnToolStarted = func(info ToolCallInfo) {
+			executedTool = true
+			if observer != nil {
+				observer(info)
+			}
+		}
+		messages = append(messages, api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Before giving your final answer, execute at least one of the available tools to ground your answer in observed evidence."}}})
+	}
 
 	var steps []StepResult
 	var totalUsage Usage
@@ -140,6 +157,9 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = drainOperatorInbox(ctx, messages, opts)
 	}
 
+	if requireExecutedTool && !executedTool {
+		return result(), fmt.Errorf("model %s returned before executing a required initial tool", opts.Model)
+	}
 	return result(), nil
 }
 
@@ -151,10 +171,14 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 // the tools and answer from priors, producing ungrounded verdicts. No-op
 // without tools.
 func forcedInitialToolChoice(opts GenerationOptions, toolCallsSoFar int) *api.ToolChoice {
-	if opts.ForceInitialToolUse && len(opts.Tools) > 0 && toolCallsSoFar == 0 {
+	if opts.ForceInitialToolUse && len(opts.Tools) > 0 && toolCallsSoFar == 0 && !requiresAdaptiveThinking(opts.Model) {
 		return &api.ToolChoice{Type: "any"}
 	}
 	return nil
+}
+
+func requiresAdaptiveThinking(model string) bool {
+	return apikit.AnthropicProfile(wireModelID(model)).RequiresAdaptiveThinking
 }
 
 // buildStepResult shapes one aggregated model response into the StepResult
@@ -433,6 +457,13 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	// Copy messages to avoid mutating caller's slice.
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
+	if requiresAdaptiveThinking(opts.Model) {
+		// Native strict JSON cannot represent the DSL's arbitrary JSON fields.
+		// Keep the existing tool schema and fail-closed parser below, using
+		// auto plus an explicit instruction where forced choice is rejected.
+		toolChoice = nil
+		messages = append(messages, api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: fmt.Sprintf("Return the requested structured result by calling the %q tool with arguments matching its schema. Do not replace the tool call with prose or a JSON text block.", schemaName)}}})
+	}
 
 	// Build a request-only opts overlay: zero out Tools so buildRequest only
 	// includes the synthetic tool via extraTools.
