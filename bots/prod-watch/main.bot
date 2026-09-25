@@ -1552,16 +1552,31 @@ tool leak_scan:
     PAGING = re.compile(r'(?ai)(?:next|page|continuation|sync|resume|cursor|marker|pagination)[_.-]?$')
     def secret_ok(m):
         ## What a secret key can hold that is no secret: a logger's own mask
-        ## or a placeholder (`[Redacted]`, `********`, `${DB_PASSWORD}`), a
-        ## word of 12 letters or fewer (a status or a usage text: `expired`,
-        ## `requires`, `PASSWORD`), a path to the secret (a path shape: two
-        ## slashes, or one of the system prefixes — a base64 token may start
-        ## with `/`), a count of tokens (`"prompt_token": 1234`), an API page
-        ## token (`NextToken=`).
-        v = m.group(m.lastindex).strip()
+        ## or a placeholder (`[Redacted]`, `********`, `${DB_PASSWORD}`, a
+        ## shout-case placeholder `CHANGE_ME`), a word of 12 letters or
+        ## fewer (a status or a usage text: `expired`, `requires`,
+        ## `PASSWORD`), a lowercase snake_case value (a status feed:
+        ## `closed_for_winter` under a `*_pass` key), a path to the secret
+        ## (a relative prefix or one of the system prefixes — a base64
+        ## token may start with `/` and hold more slashes), a count of
+        ## tokens (`"prompt_token": 1234`), an API page token (`NextToken=`),
+        ## and, on a quote never closed, a tail that reads as code or as a
+        ## sentence quoting the key (a CI line, a parse error).
+        raw = m.group(m.lastindex)
+        v = raw.strip()
         w = v.rstrip(')]}')   # an unquoted value may run into the brackets closing it
-        if PLACEHOLDER.fullmatch(v) or re.fullmatch(r'[A-Za-z]{1,12}', w) or v.startswith(('./', '~/')) \
-                or (v.startswith('/') and (v.count('/') > 1 or v.startswith(('/etc/', '/home/', '/root/', '/run/', '/var/', '/tmp/', '/opt/', '/usr/', '/srv/', '/mnt/', '/proc/', '/dev/')))):
+        ## The shape rules read the first token of an unquoted value: the
+        ## plain tokens after it ride the match only to be redacted with it.
+        k = w.split(' ', 1)[0] if m.lastindex == 5 else w
+        if PLACEHOLDER.fullmatch(v) or PLACEHOLDER.fullmatch(k) or re.fullmatch(r'[A-Za-z]{1,12}', k) \
+                or re.fullmatch(r'[A-Z0-9_]+_[A-Z0-9_]+', k) or re.fullmatch(r'[a-z]+(?:_[a-z0-9]+)+', k) \
+                or v.startswith(('./', '../', '~/')) \
+                or v.startswith(('/etc/', '/home/', '/root/', '/run/', '/var/', '/tmp/', '/opt/', '/usr/', '/srv/', '/mnt/', '/proc/', '/dev/')):
+            return False
+        if m.lastindex in (3, 4) and (re.search(r'[+;)}\]}]', v) or raw[:1] == ' ' or v.count(' ') >= 2):
+            ## A quote never closed: the tail must read like the rest of a
+            ## secret, not like a code continuation (` + token);`) or a
+            ## sentence quoting the key (` near offset 12`).
             return False
         glued = m.start() > 0 and (m.string[m.start() - 1].isalnum() or m.string[m.start() - 1] in '_.-')
         if w.isdigit() and glued and m.group(0)[:5].lower() == 'token':
@@ -1572,10 +1587,15 @@ tool leak_scan:
         ## `user:password`: `basic` followed by an ordinary word is prose.
         ## A credential may be unpadded and hold non-ASCII letters (`latin-1`
         ## passwords): pad it, then accept an encoding whose decode is a
-        ## printable `user:password`; undecodable noise stays prose.
+        ## printable `user:password`; undecodable noise, a credential with
+        ## no password part and a snake_case status word after a scheme
+        ## stay prose.
         b = m.group(1)
         if b is None:
-            return True
+            ## A scheme credential: a snake_case status word after the
+            ## scheme (`token authentication_required`) is prose.
+            val = m.group(0).rsplit(' ', 1)[-1] if ' ' in m.group(0) else m.group(0)
+            return not re.fullmatch(r'[A-Za-z]+(?:_[A-Za-z]+)+', val)
         try:
             d = base64.b64decode(b + '=' * (-len(b) % 4), validate=True)
         except ValueError:
@@ -1585,7 +1605,7 @@ tool leak_scan:
                 t = d.decode(enc)
             except UnicodeDecodeError:
                 continue
-            if ':' in t and t.isprintable() and sum(not c.isascii() for c in t) <= 2:
+            if ':' in t and not t.endswith(':') and t.isprintable() and sum(not c.isascii() for c in t) <= 2:
                 return True
         return False
 
@@ -1606,16 +1626,18 @@ tool leak_scan:
         ## `PASSWORD_2_PROD`, `TOKEN_PROD`; not `PASSWORD_FILE`,
         ## `total_tokens`), then `=`, `:` or `=>`; a quoted value runs to its
         ## closing quote (an escaped `\"` stays inside; a quote never closed
-        ## runs to the end of the line). Or a command-line flag (`--password
-        ## …`, `--db-pass …`), SQL (`IDENTIFIED BY '…'`), a URL's credentials
+        ## runs to the end of the line unless the tail reads as code or a
+        ## sentence), and an unquoted value rides the plain tokens after it.
+        ## Or a command-line flag (`--password …`, `--db-pass …`,
+        ## `--passphrase …`), SQL (`IDENTIFIED BY '…'`), a URL's credentials
         ## (`scheme://user:…@`). The value is redacted, the key kept;
         ## `secret_ok` refuses what is no secret.
         ('secret_kv', re.compile(
             r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
             r'|(?<=[a-z])(?:Password|Passwd|Pwd|Pass|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Pass|Secret|Token))'
-            r'(?i:[_-]?(?:key|value|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
-            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:[^"\n]|\\"){6,})"|\'((?:[^\'\n]|\\\'){6,})\'|"([^"\n]{6,})$|\'([^\'\n]{6,})$|([^\s\'"&,;<>]{6,}))'
-            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'
+            r'(?i:[_-]?(?:key|value|phrase|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:[^"\n]|\\"){6,})"|\'((?:[^\'\n]|\\\'){6,})\'|"([^"\n]{6,})$|\'([^\'\n]{6,})$|([^\s\'"&,;<>]{6,}(?: (?!\S*[=])\S+)*))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'
             r'|(?i:identified\s+by|with\s+password)\s+(?:\'([^\'\n]{4,})\'|"([^"\n]{4,})")'
             r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),

@@ -2510,13 +2510,25 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		// start with `/`; a Basic credential may be unpadded or hold latin-1
 		// letters; two suffixes.
 		{`{"password":"ab\"cd12345"}`, `ab\"cd12345`},
-		{`password="Zq7h9xAb3cZq running`, "Zq7h9xAb3cZq running"},
 		{"ADMIN_PASS=Zq7h9xAb3cZq failed", "Zq7h9xAb3cZq"},
 		{"--db-pass Zq7h9xAb3cZq app", "Zq7h9xAb3cZq"},
 		{"dbPass=Zq7h9xAb3cZq failed", "Zq7h9xAb3cZq"},
 		{"token=/+AbCdEf123456 failed", "/+AbCdEf123456"},
 		{"creds basic dXNlcjpwYXNzd29yZOk= in config", "dXNlcjpwYXNzd29yZOk="},
 		{"PASSWORD_2_PROD=Zq7h9xAb3Z ok", "Zq7h9xAb3Z"},
+		// An unquoted value rides its plain tail; a passphrase is a secret
+		// word; a Basic credential may be unpadded; a single-quoted value
+		// takes an escaped quote and a never-closed quote; a base64 token
+		// may hold more than one slash.
+		{"password: hunter2 sekrit7", "sekrit7"},
+		{"password = Zq7h9xAb3c please rotate", "Zq7h9xAb3c please rotate"},
+		{`passphrase="correct horse battery staple"`, "correct horse battery staple"},
+		{"passphrase=osk8DuubSideout ok", "osk8DuubSideout"},
+		{"--passphrase osk8DuubSideou1 app", "osk8DuubSideou1"},
+		{"creds basic dXNlcjpwYXNzd29yZA in config", "dXNlcjpwYXNzd29yZA"},
+		{`password='ab\'cd12345' ok`, `ab\'cd12345`},
+		{"db_pass=Zq7h9xAb3cZq failed", "Zq7h9xAb3cZq"},
+		{"token=/Ab/CdEfGh12345 loaded", "/Ab/CdEfGh12345"},
 	} {
 		// A secret holding a quote or a backslash rides the JSON-escaped
 		// samples: both forms must be absent.
@@ -2534,6 +2546,12 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 	out, _ = scan("quoted-400", []string{`ERROR config password="` + strings.Repeat("Zq7h9xAb3c", 40) + `" ok rejected`})
 	if !strings.Contains(fmt.Sprint(out["leak_findings"]), "class:secret_kv") {
 		t.Fatalf("a quoted secret longer than the samples yields no finding: %v", out["leak_findings"])
+	}
+	// A quote never closed keeps its witnesses on the exact reported lines —
+	// the shape battery's ` rejected` tail would read as a sentence.
+	_, all = scan("eol-keep", []string{`ERROR config password="Zq7h9xAb3cZq running`, `ERROR config password='Zq7h9xAb3cZq running`})
+	if strings.Contains(all, "Zq7h9xAb3cZq running") {
+		t.Fatalf("a secret on a quote never closed escapes the scan")
 	}
 	// Look-alikes raise no secret finding: counters and paths named after a
 	// secret word, a logger's own mask or placeholder, a reference to a
@@ -2553,7 +2571,23 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		"authorization: token authentication failed", "authorization: token validation failed",
 		"authorization: bot escalation created", "authorization: bot deactivated by admin",
 		"authorization: ssws session expired ok", "authorization: apikey revoked for user42",
-		"authorization: basic authentication required", "authorization: ssws authentication expired"}
+		"authorization: basic authentication required", "authorization: ssws authentication expired",
+		// a snake_case status word after a scheme word is prose; so is code
+		// or a sentence quoting a key with an unclosed quote, a status value
+		// under a `*_pass` key, a shout-case placeholder, a Basic blob whose
+		// password part is empty, and a relative path to a secret
+		`logger.debug("token=" + token);`, "console.log('token=' + token)",
+		`res.json({error: "missing token=" + key})`, "token=' + tok)",
+		`parse stopped at token=" near offset 12`, `the filter pattern token="ABC must be quoted`,
+		"authorization: token authentication_required", "authorization: bot deactivated_by_administrator",
+		"authorization: ssws session_expired_and_locked",
+		"mountain_pass=closed_for_winter status", "border_pass=control_post_9 status", "gate_pass=open_gate check",
+		"usage: app --pass CHANGE_ME --host H", "auth basic MTIzNDU2Nzg6 handler", "token=../secrets/db-pass loaded",
+		// a glued code tail after a quoted key (no leading space, no spaces
+		// at all), and a JWT already redacted: the plain word after it must
+		// not turn the marker into a finding
+		`res.write("token="+tok);`,
+		"auth token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz used"}
 	secretFinding := func(out map[string]any) bool {
 		f := fmt.Sprint(out["leak_findings"])
 		return strings.Contains(f, "class:secret_kv") || strings.Contains(f, "class:bearer")
@@ -2577,10 +2611,12 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 	if strings.Contains(all, "NL91 ABNA") || strings.Contains(all, "BE68 5390") || !strings.Contains(fmt.Sprint(out["leak_findings"]), "class:iban count:2") {
 		t.Fatalf("two IBANs one space apart are both found: %v", out["leak_findings"])
 	}
-	// A secret's sample shows its length only, never a character of it.
+	// A secret's sample shows its length only, never a character of it —
+	// the length of the whole redacted span (the plain tail rides along),
+	// whitespace folded.
 	out, _ = scan("sample", []string{"ERROR login password=abc123def rejected"})
 	for _, f := range out["leak_findings"].([]any) {
-		if m := f.(map[string]any); m["class"] == "secret_kv" && m["sample_masked"] != "*** (9 chars)" {
+		if m := f.(map[string]any); m["class"] == "secret_kv" && m["sample_masked"] != "*** (17 chars)" {
 			t.Fatalf("a secret's sample shows its length only: %q", m["sample_masked"])
 		}
 	}
