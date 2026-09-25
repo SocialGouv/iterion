@@ -2,10 +2,27 @@ package spec
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 )
+
+// The docs site builds this page, and its markdown reads a `{ … }` in a
+// table cell as an attribute block (markdown-it-attrs): the cell gets an
+// attribute named `…`, and the page no longer compiles. No table row of the
+// author reference holds a brace outside a code span.
+func TestTheAuthorReferenceHoldsNoBareBraceInATable(t *testing.T) {
+	codeSpan := regexp.MustCompile("`[^`]*`")
+	for i, line := range strings.Split(AuthorReference(), "\n") {
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		if bare := codeSpan.ReplaceAllString(line, ""); strings.ContainsAny(bare, "{}") {
+			t.Errorf("line %d holds a brace outside a code span: %s", i+1, line)
+		}
+	}
+}
 
 // The top-level keys the reference lists are the keys the author JSON
 // Schema's root accepts — both directions, in every profile: a key added to

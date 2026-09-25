@@ -21,7 +21,7 @@ In the order the writer puts them (`iterion fmt`, `iterion fmt --to yaml`).
 | `attachments` | a mapping keyed by name | Operator-supplied files and images the run receives. |
 | `secrets` | a mapping keyed by name | Secrets the run resolves by name from the team's or the local store (docs/secrets.md). |
 | `schemas` | a mapping keyed by name, each value a mapping keyed by field | A structured-output shape; a bare header declares an empty schema. |
-| `prompts` | a mapping keyed by name, each value its text | A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include "file"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt. |
+| `prompts` | a mapping keyed by name, each value its text | A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include "file"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt. |
 | `cursors` | a mapping keyed by name, each value a mapping of its properties | A prompt-engineering dial: an enum (values:) or a numeric band map (bands:) over [0, 1], each entry carrying a prompt fragment (C083–C086). |
 | `supervisors` | a mapping keyed by name, each value a mapping of its properties | A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. |
 | `mcp_servers` | a mapping keyed by name, each value a mapping of its properties | An MCP server the workflow may activate: stdio (command/args) or http/sse (url), optionally OAuth2. |
@@ -73,7 +73,7 @@ A property's value is written by its form — the form the .bot reference gives 
 | string\|ident list | a list of strings, as `string list` |
 | ident \| ident list | a name, or a list of names |
 | map | a mapping of names to strings: `{KEY: v}`, or one `KEY: v` per line |
-| with { … } | a mapping of names to strings; a number or a bool written as the .bot writes one, a `-` included (`3`, `0.5`, `-10`, `true`), is the string it spells — YAML's other spellings (`007`, `True`) are refused: quote them |
+| `with { … }` | a mapping of names to strings; a number or a bool written as the .bot writes one, a `-` included (`3`, `0.5`, `-10`, `true`), is the string it spells — YAML's other spellings (`007`, `True`) are refused: quote them |
 | block | a nested mapping of that kind's properties |
 | ident \| block | a word, or a nested mapping of that kind's properties |
 | literal | a string, an integer or a float as digits, or a bool |

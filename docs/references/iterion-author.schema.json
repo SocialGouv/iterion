@@ -108,7 +108,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v1.prompt"
           },
-          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -2058,7 +2058,7 @@
       "type": "object"
     },
     "v1.prompt": {
-      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
       "type": "string"
     },
     "v1.recovery": {
@@ -2706,7 +2706,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v2.prompt"
           },
-          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+          "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -4652,7 +4652,7 @@
       "type": "object"
     },
     "v2.prompt": {
-      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
+      "description": "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt.",
       "type": "string"
     },
     "v2.recovery": {

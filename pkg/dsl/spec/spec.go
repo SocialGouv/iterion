@@ -352,7 +352,7 @@ var llmProperties = []Property{
 // Kinds is the registry, in the order the reference renders them.
 var Kinds = append([]Kind{
 	// ---- top-level declarations ----
-	{Name: "prompt", Role: Declaration, Text: true, Doc: "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with {{…}} references and {{include \"file\"}} directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt."},
+	{Name: "prompt", Role: Declaration, Text: true, Doc: "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt."},
 	{Name: "schema", Role: Declaration, Doc: "A structured-output shape; a bare header declares an empty schema.",
 		Entries: &Entries{Key: Ident, KeyName: "field", Doc: "One field per line; `file` is valid only on the output schema of a human node whose interaction collects operator bytes (C129); the enum constraint applies to strings",
 			Fields: []Field{

@@ -152,8 +152,20 @@ func AuthorReference() string {
 	b.WriteString("| Form | Written in the author document as |\n|---|---|\n")
 	for _, f := range authorFormOrder {
 		if note, ok := authorFormNotes[f]; ok {
-			fmt.Fprintf(&b, "| %s | %s |\n", escapePipes(string(f)), escapePipes(note))
+			fmt.Fprintf(&b, "| %s | %s |\n", formCell(f), escapePipes(note))
 		}
 	}
 	return b.String()
+}
+
+// formCell is a value form as a table cell: bare, as the .bot reference's
+// own table writes it, and in code when it holds a brace — the docs site
+// reads a `{ … }` ending a cell as an attribute block (markdown-it-attrs),
+// and the page no longer builds.
+func formCell(f Form) string {
+	s := escapePipes(string(f))
+	if strings.ContainsAny(s, "{}") {
+		return "`" + s + "`"
+	}
+	return s
 }
