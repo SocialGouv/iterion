@@ -4301,3 +4301,40 @@ func TestProductDocsCatalogIngestFollowsAlternatesTransitively(t *testing.T) {
 		t.Fatalf("the refusal does not name its cause: %q", note)
 	}
 }
+
+func TestProductDocsCoverageGateHidesALinkDefinitionTitle(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A link reference definition renders as nothing — and its optional
+	// TITLE sits on the next line. Read alone, that title counted as visible
+	// prose and its words as citations: a documented feature behind a
+	// hidden definition's continuation.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"[link]: /target\n"+
+			"  \"shows [[ref:items.detail]] [[ref:039]] one item in full: every field the manager filled in, the history of its changes and the actions still open\"\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a hidden definition's title line counted as documentation:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateRefusesAMalformedPathCitation(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md",
+		"## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item — [[ref://[broken]] [[ref:039]]")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a malformed path citation was accepted:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming the malformed citation:\n%s", got.Log)
+	}
+}

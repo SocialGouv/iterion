@@ -2745,6 +2745,7 @@ def page_blocks(rows):
     ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
     ## page, in order. content is the line without its quote markers.
     blocks, cur, mode, in_fence, fence_opener, in_comment = [], None, '', False, None, False
+    skip_title = False
     ## FRONT MATTER is page metadata no renderer shows: a first line of ---
     ## up to the next --- (or ...), every line between reading as YAML. Read
     ## as markdown, its closing line would underline the keys into a chapter
@@ -2805,6 +2806,19 @@ def page_blocks(rows):
                 cur, mode = None, ''
                 break
         if in_fence:
+            continue
+        if LINK_DEF_RE.match(text):
+            ## A link reference DEFINITION renders as nothing -- and its
+            ## optional TITLE sits on the NEXT line, indented and quoted.
+            ## Read alone, that title counted as visible prose and its words
+            ## as citations: a hidden definition's continuation, leaking.
+            nxt = rows[idx + 1][1].strip() if idx + 1 < len(rows) else ''
+            if len(nxt) >= 2 and nxt[0] in (chr(34), chr(39), '(') and nxt[-1] in (chr(34), chr(39), ')'):
+                skip_title = True
+            cur, mode = None, ''
+            continue
+        if skip_title:
+            skip_title = False
             continue
         depth, content = unquote(text)
         if not content.strip() or TEMPLATE_LINE_RE.match(content):
@@ -3048,7 +3062,16 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
         refuse('PHANTOM_DOC', where + ':' + str(no), 'the reference ' + tok + ' is CITED and the net holds NOTHING by that name -- it is neither one of the ' + str(len(corpus_ids)) + ' corpus entry ids, nor an inventory feature id (covered or excluded), nor a path (those start with a slash). A documented screen without a reference is an invented screen; if this was not meant as a reference, write it as prose -- only ' + cite_open + '...' + cite_close + ' cites')
     for path in paths:
         cited_paths.add(path)
-        parts = urlsplit(path)
+        try:
+            parts = urlsplit(path)
+        except ValueError as exc:
+            ## A MALFORMED citation is a documentation-side error, and the
+            ## gate answers errors by NAME: left to raise, //[-broken]]-shaped
+            ## citations aborted coverage_check instead of refusing the page.
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the cited path ' + path + ' does not '
+                   'parse as a URL (' + str(exc) + ') -- a citation the gate cannot read '
+                   'documents nothing; cite a path the net actually observed')
+            continue
         hits = corpus_matches(parts.path)
         ## The catch-all rule cuts BOTH ways. A cited path is read as a
         ## pattern, so a lone placeholder path matches every corpus entry
