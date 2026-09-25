@@ -2,6 +2,7 @@ package spec
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -119,5 +120,35 @@ func TestAuthorReferenceListsEveryNodeKind(t *testing.T) {
 		if has := strings.Contains(body, line); has != (k.Role == Node) {
 			t.Errorf("%s (a %s): listed as a node %v", k.Name, k.Role, has)
 		}
+	}
+}
+
+// The author surfaces teach how a value is WRITTEN, and in YAML a bare
+// header is refused (E051, "got null") where the .bot reads one as an empty
+// declaration — so no rendered author surface (the reference page, either
+// profile's JSON Schema) may repeat the .bot's "a bare header declares"
+// sentence, and none may send a reader to --recipe for presets: a recipe
+// file carries its own preset_vars and does not select them. The overrides
+// that rewrite the registry Doc on this surface live in author_reference.go;
+// this test renders the surfaces so a new registry Doc that grows one of the
+// phrases re-reddens here instead of shipping the lie.
+func TestTheAuthorSurfacesNeverTeachABareHeaderOrARecipePreset(t *testing.T) {
+	surfaces := map[string]string{"reference": AuthorReference()}
+	for _, profile := range []int{1, 2} {
+		raw, err := RenderSchema(profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		surfaces[fmt.Sprintf("schema v%d", profile)] = string(raw)
+	}
+	for name, body := range surfaces {
+		for _, phrase := range []string{"a bare header", "--recipe"} {
+			if strings.Contains(body, phrase) {
+				t.Errorf("the author %s teaches %q — the converter refuses a bare header (E051) and a recipe file does not select presets", name, phrase)
+			}
+		}
+	}
+	if !strings.Contains(surfaces["reference"], "an empty schema is written `verdict: {}`") {
+		t.Error("the reference no longer spells the working empty form for schemas")
 	}
 }

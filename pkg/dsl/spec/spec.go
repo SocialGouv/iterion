@@ -417,7 +417,7 @@ var Kinds = append([]Kind{
 				optional("matching", QuotedString, `[matching: "<re>"]`, "An RE2 pattern a string var's value must match, checked at launch against --var and payload values; beside enum in either order, at most one of each"),
 				optional("default", Literal, "= <default>", "The value the run starts with when no --var or preset sets one; a json or string[] default is written as a quoted JSON text"),
 			}}},
-	{Name: "presets", Role: BlockRole, Opener: "presets", Hosts: []string{"file"}, Doc: "Named bundles of var values selected with --recipe / --preset.",
+	{Name: "presets", Role: BlockRole, Opener: "presets", Hosts: []string{"file"}, Doc: "Named bundles of var values selected with `--preset`.",
 		Entries: &Entries{Key: Ident, Doc: "Each entry is a preset name whose indented lines set one var each",
 			Entries: &Entries{Key: Ident, KeyName: "var", Doc: "A var of the file and the literal it takes under this preset",
 				Fields: []Field{field("value", Literal, "<literal>", "The value the var takes; its type is the var's")}}}},

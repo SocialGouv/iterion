@@ -17,15 +17,15 @@ In the order the writer puts them (`iterion fmt`, `iterion fmt --to yaml`).
 | `catalog` | a mapping of `name`, `description`, `triggers`, `capabilities` | The catalog identity the .bot carries in its `## ---` frontmatter. |
 | `imports` | a list of `lib/<file>.bot` | The fragments of the bot's unit, read beside the .bot the document stands for, as `import` lines are. |
 | `vars` | a mapping keyed by name | Typed run parameters, overridable with --var and presets. |
-| `presets` | a mapping keyed by name | Named bundles of var values selected with --recipe / --preset. |
+| `presets` | a mapping keyed by name | Named bundles of var values selected with `--preset`. |
 | `attachments` | a mapping keyed by name | Operator-supplied files and images the run receives. |
 | `secrets` | a mapping keyed by name | Secrets the run resolves by name from the team's or the local store (docs/secrets.md). |
-| `schemas` | a mapping keyed by name, each value a mapping keyed by field | A structured-output shape; a bare header declares an empty schema. |
-| `prompts` | a mapping keyed by name, each value its text | A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include "file"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; a bare header declares an empty prompt. |
+| `schemas` | a mapping keyed by name, each value a mapping keyed by field | A structured-output shape; an empty schema is written `verdict: {}`. |
+| `prompts` | a mapping keyed by name, each value its text | A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include "file"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; an empty prompt is written `ask: ''`. |
 | `cursors` | a mapping keyed by name, each value a mapping of its properties | A prompt-engineering dial: an enum (values:) or a numeric band map (bands:) over [0, 1], each entry carrying a prompt fragment (C083–C086). |
 | `supervisors` | a mapping keyed by name, each value a mapping of its properties | A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. |
 | `mcp_servers` | a mapping keyed by name, each value a mapping of its properties | An MCP server the workflow may activate: stdio (command/args) or http/sse (url), optionally OAuth2. |
-| `contracts` | a mapping keyed by name, each value a mapping of its properties | The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. A bare header followed by a blank line or the end of the file declares an empty contract. |
+| `contracts` | a mapping keyed by name, each value a mapping of its properties | The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. An empty contract is written `c1: {}`. |
 | `groups` | a list, each item `group: <name>` with its header parts and its nodes | A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated. |
 | `uses` | a list, each item `use: <group>` with its header parts | One instance of a group, on a single line with no body: the name after `use` is the group's, `as` gives the instance its prefix, the with map binds the group's parameters. |
 | `nodes` | a list, each item `<kind>: <name>` and that kind's properties | The graph's nodes, in order. |

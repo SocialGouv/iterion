@@ -196,6 +196,7 @@ func (b *schemaBuilder) gap(err error) obj {
 func (b *schemaBuilder) lookup(name string) (Kind, bool) {
 	for _, k := range b.kinds {
 		if k.Name == name {
+			k.Doc = authorDoc(k)
 			return k, true
 		}
 	}

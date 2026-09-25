@@ -182,7 +182,7 @@ Entries: `<name>: string | bool | int | float | json | string[] [enum: "a", "b"]
 
 ### presets
 
-Named bundles of var values selected with --recipe / --preset.
+Named bundles of var values selected with `--preset`.
 
 A block opened by `presets:` inside the top level.
 

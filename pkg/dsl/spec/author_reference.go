@@ -15,6 +15,27 @@ import (
 // their own name.
 var authorBlockKinds = []string{"vars", "presets", "attachments", "secrets"}
 
+// authorDocOverrides rewrites, for the author surface only, registry Doc
+// lines whose .bot reading is false in YAML: in a .bot a bare header
+// declares an empty declaration, but the converter takes a value and
+// refuses a bare one (E051), so the page and the JSON Schemas spell the
+// empty forms instead. A test renders every author surface and refuses
+// the phrase, so a registry Doc that grows one re-reddens here.
+var authorDocOverrides = map[string]string{
+	"schema":   "A structured-output shape; an empty schema is written `verdict: {}`.",
+	"prompt":   "A named text block, referenced by `system:` / `user:` / `instructions:`; its body is free text with `{{…}}` references and `{{include \"file\"}}` directives, the first line's indentation stripped from every line. Blank lines in the body are dropped by the lexer in profile 1 and kept as paragraph breaks in profile 2; an empty prompt is written `ask: ''`.",
+	"contract": "The public interface of a bot, named by the workflow's `contract:`; no prompts, tools or provider configuration. An empty contract is written `c1: {}`.",
+	"workflow": "The graph: entry, edges (`src -> dst [when …|else] [as loop(N)] [with {…}]`), and the run-wide settings; the document always writes it as a mapping (`workflow:` with no value is refused, E051).",
+}
+
+// authorDoc is a kind's Doc as the author surface tells it.
+func authorDoc(k Kind) string {
+	if d, ok := authorDocOverrides[k.Name]; ok {
+		return d
+	}
+	return k.Doc
+}
+
 // authorNamedDeclarations are the declarations a document writes as a
 // mapping keyed by the declaration's name, with the key it sits under.
 var authorNamedDeclarations = []struct{ Kind, Key string }{
@@ -40,12 +61,12 @@ func AuthorKeys() []AuthorKey {
 	}
 	for _, name := range authorBlockKinds {
 		if k, ok := Lookup(name); ok {
-			keys = append(keys, AuthorKey{name, authorEntriesShape(k.Entries), k.Doc})
+			keys = append(keys, AuthorKey{name, authorEntriesShape(k.Entries), authorDoc(k)})
 		}
 	}
 	for _, d := range authorNamedDeclarations {
 		if k, ok := Lookup(d.Kind); ok {
-			keys = append(keys, AuthorKey{d.Key, "a mapping keyed by name, each value " + authorBodyShape(k), k.Doc})
+			keys = append(keys, AuthorKey{d.Key, "a mapping keyed by name, each value " + authorBodyShape(k), authorDoc(k)})
 		}
 	}
 	if k, ok := Lookup("group"); ok {
