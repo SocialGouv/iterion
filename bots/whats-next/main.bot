@@ -335,7 +335,7 @@ schema seed_input:
   unused: string
 
 agent nexie:
-  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5-5}"
   ## claude_code is REQUIRED: native Skill tool over the mirrored
   ## bundle skills, the __mcp-board stdio server, ask_user with
   ## same-session resume (`claude --resume <id>`), and the operator

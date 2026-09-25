@@ -1,7 +1,7 @@
 name: bmady
 display_name: Bmady
 icon: 🎭
-version: 0.1.3
+version: 0.1.4
 ## 0.1.2 — the deterministic commit stages everything but the `.claude/`
 ## scaffold iterion mirrors into the worktree (#1364).
 ## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph

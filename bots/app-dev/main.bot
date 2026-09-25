@@ -1194,7 +1194,7 @@ compute route:
 ## mapping (turn 1 starts fresh instead of erroring).
 agent interviewer:
   backend: "claude_code"
-  model: "${ITERION_APP_DEV_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_APP_DEV_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_APP_DEV_EFFORT_INTERVIEW:-high}"
   input: turn_input
   output: interviewer_out
@@ -1428,7 +1428,7 @@ compute plan_topology:
 agent plan:
   description: "Author the build plan (read-only)"
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: plan_output
   system: plan_system
@@ -1456,7 +1456,7 @@ compute plan_review_topology:
 judge plan_review:
   description: "Peer plan review (other model family)"
   backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
-  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-5.6-sol}"
+  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-6-astra}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   input: plan_review_input
   output: plan_review_output
@@ -1495,7 +1495,7 @@ compute plan_gate:
 agent plan_revise:
   description: "Author challenges & integrates the critique"
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: plan_revise_input
   output: plan_revised_output
@@ -1515,7 +1515,7 @@ agent plan_revise:
 ## Board capabilities power the end-of-pass findings handoff.
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_APP_DEV_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_APP_DEV_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_APP_DEV_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -1593,7 +1593,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## per-slice session.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
   output: verify_plan
   system: verify_system
@@ -1874,7 +1874,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## real bugs (see review_system).
 agent review:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
   input: review_input
   output: review_output
@@ -1964,7 +1964,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 
 agent finalize_mr:
   backend: "claude_code"
-  model: "${ITERION_APP_DEV_MR_MODEL:-claude-opus-5}"
+  model: "${ITERION_APP_DEV_MR_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_APP_DEV_MR_EFFORT:-medium}"
   input: finalize_mr_input
   output: finalize_mr_output
@@ -2023,7 +2023,7 @@ compute deploy_gate:
 ## it. interaction: human so it may pause on a genuine deploy decision.
 agent deploy:
   backend: "claude_code"
-  model: "${ITERION_APP_DEV_DEPLOY_MODEL:-claude-opus-5}"
+  model: "${ITERION_APP_DEV_DEPLOY_MODEL:-claude-opus-5-5}"
   ## xhigh, not high: deploy is the step that repeatedly failed, and it fails
   ## on PLANNING rather than on writing — publish the image by which of two
   ## routes, in what order, and recognising early that a workaround producing

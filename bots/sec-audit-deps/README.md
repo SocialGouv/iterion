@@ -70,7 +70,7 @@ operator state.
 ## Pipeline
 
 ```
-enumerate_deps (agent: claw + openai/gpt-5.5, readonly)
+enumerate_deps (agent: claw + openai/gpt-6-sol, readonly)
      — walk lockfiles / node_modules / .venv / vendor → flat dep list + open `ecosystems` list
   └─→ normalize_deps (tool: coerce the LLM dep list into canonical [{ecosystem,name,version,checksum}])
   └─→ run_eco_heuristics (tool: ONE skill-driven node — for each detected ecosystem, read the
