@@ -2542,9 +2542,12 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		{"authorization: token Backup_Admin_Token_Long ok", "Backup_Admin_Token_Long"},
 		{"password=supersecretvalue ok", "supersecretvalue"},
 		{"password=hunter2 beta Zq7h9xAb3cZq== done", "Zq7h9xAb3cZq=="},
+		{"token=Zq7h9xAb3c dGVzdA= done", "dGVzdA="},
 		{`start --password "Zq7h9xAb3cZq" --host db`, "Zq7h9xAb3cZq"},
 		{`start --password "hunter2 sekrit7" ok`, "hunter2 sekrit7"},
 		{`start --token 'Zq7h9xAb3cZq' ok`, "Zq7h9xAb3cZq"},
+		{"token=/ab/cdefgh12 loaded", "/ab/cdefgh12"},
+		{"token=/ab12/cd34ef56 loaded", "/ab12/cd34ef56"},
 	} {
 		// A secret holding a quote or a backslash rides the JSON-escaped
 		// samples: both forms must be absent.
@@ -2566,12 +2569,16 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 	// A quote never closed keeps its witnesses on the exact reported lines —
 	// the shape battery's ` rejected` tail would read as a sentence. A
 	// truncated passphrase (two spaces), base64 (its `+`), and a value with
-	// a timestamp tail are secrets, not prose.
+	// a timestamp tail are secrets, not prose — after a key, after a flag
+	// and in SQL alike.
 	_, all = scan("eol-keep", []string{`ERROR config password="Zq7h9xAb3cZq running`, `ERROR config password='Zq7h9xAb3cZq running`,
 		`ERROR config password="correct horse battery`, `ERROR config password='S3cretV4lue at 0x7f9a3b2c`,
-		`ERROR config password="c2VjcmV0+K3Rva2Vu`})
+		`ERROR config password="c2VjcmV0+K3Rva2Vu`,
+		`deploy start --password "hunter2 sekrit7`, `deploy start --token 'Zq7h9xAb3cZq`,
+		`CREATE USER app IDENTIFIED BY 'Zq7h9xAb3c`})
 	if strings.Contains(all, "Zq7h9xAb3cZq running") || strings.Contains(all, "correct horse battery") ||
-		strings.Contains(all, "S3cretV4lue at 0x7f9a3b2c") || strings.Contains(all, "c2VjcmV0+K3Rva2Vu") {
+		strings.Contains(all, "S3cretV4lue at 0x7f9a3b2c") || strings.Contains(all, "c2VjcmV0+K3Rva2Vu") ||
+		strings.Contains(all, "hunter2 sekrit7") || strings.Contains(all, "Zq7h9xAb3c") {
 		t.Fatalf("a secret on a quote never closed escapes the scan")
 	}
 	// A tail starting with a space is continuation text, not a value — the
@@ -2579,6 +2586,14 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 	out, _ = scan("eol-space", []string{`ERROR config password=" abcd tail`})
 	if strings.Contains(fmt.Sprint(out["leak_findings"]), "class:secret_kv") {
 		t.Fatalf("a continuation tail after a quote raises a leak: %v", out["leak_findings"])
+	}
+	// The three-space trade, pinned: a three-word tail after an unclosed
+	// quote pages (the value is masked) — the shape battery's ` rejected`
+	// tail would make it a four-word sentence, so the exact line is what
+	// is asserted.
+	out, _ = scan("eol-trade", []string{`ERROR config password="no such file`})
+	if !strings.Contains(fmt.Sprint(out["leak_findings"]), "class:secret_kv") {
+		t.Fatalf("a three-word tail no longer pages: %v", out["leak_findings"])
 	}
 	// Look-alikes raise no secret finding: counters and paths named after a
 	// secret word, a logger's own mask or placeholder, a reference to a
@@ -2616,8 +2631,14 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		`res.write("token="+tok);`,
 		"auth token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz used",
 		// a filesystem path under a secret key is no leak; /var/lib needs
-		// its prefix (the segments hold an uppercase)
-		"token=/data/redis/sessions loaded", "token=/var/log/app.log rotated", "mount token=/var/lib/App7/secret ok"}
+		// its prefix (the segments hold an uppercase); a tail holding `;`
+		// alone, or `)` alone, still reads as code; a two-slash lowercase
+		// path; an uppercase status feed; a shout placeholder after a flag,
+		// quoted or not
+		"token=/data/redis/sessions loaded", "token=/var/log/app.log rotated", "mount token=/var/lib/App7/secret ok",
+		`password="ab;cd12345 done`, `password="p@ssw0rd)123 done`,
+		"token=/data/redis loaded", "MOUNTAIN_PASS=closed_for_winter status",
+		`app start --pass "CHANGE_ME_NOW" --host db`}
 	secretFinding := func(out map[string]any) bool {
 		f := fmt.Sprint(out["leak_findings"])
 		return strings.Contains(f, "class:secret_kv") || strings.Contains(f, "class:bearer")
