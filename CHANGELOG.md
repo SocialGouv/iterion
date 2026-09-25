@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.200.0](https://github.com/SocialGouv/iterion/compare/v3.199.3...v3.200.0) (2026-09-25)
+
+### Features
+
+* **dsl:** the author YAML twin — surfaces, part 2 (lot 5, PR C2) ([10a8071](https://github.com/SocialGouv/iterion/commit/10a8071ba06b3703f7c62e8aa3b88baec6d2968d)), closes [#1584](https://github.com/SocialGouv/iterion/issues/1584) [#1010](https://github.com/SocialGouv/iterion/issues/1010)
+
+    <details><summary>why</summary>
+
+    feat(dsl): the author YAML twin — surfaces, part 2 (lot 5, PR C2)
+
+    </details>
+
 ## [3.199.3](https://github.com/SocialGouv/iterion/compare/v3.199.2...v3.199.3) (2026-09-25)
 
 ### Bug Fixes
