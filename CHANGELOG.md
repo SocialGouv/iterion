@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.200.1](https://github.com/SocialGouv/iterion/compare/v3.200.0...v3.200.1) (2026-09-25)
+
+### Bug Fixes
+
+* **credpool:** release only the lease owned by a launch grant ([#1856](https://github.com/SocialGouv/iterion/issues/1856)) ([b13f7ef](https://github.com/SocialGouv/iterion/commit/b13f7ef0f55f6c7205e57351a601f33794e1f88d)), closes [#1845](https://github.com/SocialGouv/iterion/issues/1845)
+
+    <details><summary>why</summary>
+
+    Bind cleanup to the lease inserted by Acquire so a losing launch or resume cannot close a concurrent acquisition for the same run. Keep the existing close CAS and consumed-run accounting semantics.
+
+    </details>
+
 ## [3.200.0](https://github.com/SocialGouv/iterion/compare/v3.199.3...v3.200.0) (2026-09-25)
 
 ### Features
