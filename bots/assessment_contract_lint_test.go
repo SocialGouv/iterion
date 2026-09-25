@@ -1114,3 +1114,37 @@ func TestAssessmentContractLintRefusesDocumentsRewrittenAfterRender(t *testing.T
 		t.Errorf("the refusal does not name the rewrite: %s", assessmentString(t, out, "reason"))
 	}
 }
+
+// THE LOT ID IS INTERPOLATED INTO COMMANDS: the sweep record is
+// `.modernize/sweeps/<id>.md`, probed by a shell outside the ordinary
+// probe's fingerprint and process group. An id carrying `$(...)` executed
+// its own payload there — reproduced by the review gate. A lot id is a name.
+func TestAssessmentContractLintRefusesAShellShapedLotID(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	attack := `L$(printf forged >> .modernize/plan.yaml)`
+	contract := strings.Replace(aGoodContract, `  - id: L2`,
+		"  - id: "+strconv.Quote(attack), 1)
+	if contract == aGoodContract {
+		t.Fatal("the mutation did not apply — check the fixture's lot id")
+	}
+	dir := contractRepo(t, contract, goodOutcomes)
+	before, err := os.ReadFile(filepath.Join(dir, ".modernize", "plan.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := lintContractIn(t, dir, aGoodBrief)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a contract whose lot id carries shell punctuation was accepted — the sweep probe would execute it")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "a lot id is a NAME") {
+		t.Errorf("the refusal does not name the id rule: %s", assessmentString(t, out, "reason"))
+	}
+	time.Sleep(1 * time.Second)
+	after, err := os.ReadFile(filepath.Join(dir, ".modernize", "plan.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("the injected payload WROTE into the contract")
+	}
+}

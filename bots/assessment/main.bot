@@ -3417,6 +3417,17 @@ tool contract_lint:
         if not isinstance(lot_id, str) or not lot_id.strip():
             reject("lots[%d]" % index, "every lot needs a non-empty string id")
             continue
+        ## THE ID IS INTERPOLATED INTO COMMANDS: the sweep record is
+        ## `.modernize/sweeps/<id>.md`, probed by a shell OUTSIDE the ordinary
+        ## probe's fingerprint and process group, and an id carrying `$(...)`
+        ## executed its own payload there. A lot id is a NAME: strict
+        ## characters, refused before anything interpolates it.
+        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$", lot_id):
+            reject("lots[%d]" % index, "id %r: a lot id is a NAME, interpolated into the sweep "
+                                       "record's path and its probe — letters, digits, "
+                                       "underscores, dots and dashes only, never shell punctuation"
+                   % lot_id)
+            continue
         ids.append(lot_id)
         by_id[lot_id] = lot
     duplicates = sorted({i for i in ids if ids.count(i) > 1})

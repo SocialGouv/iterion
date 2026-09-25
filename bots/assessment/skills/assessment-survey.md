@@ -103,10 +103,12 @@ gets smaller without changing.
 
 `deployable` and `system` are deduplicated on `identity`, not on `path`. One
 service described by a container file, a compose entry and a chart is ONE
-deployable with three proofs — keyed by path it is three, and nothing in the
-tree contradicts the count. Declare each proof you like; give them the same
-`identity` and they are one. Conversely, one compose file legitimately declares
-two services: same path, two identities, two declarations.
+deployable — the lint counts ONE declaration per identity, so name the
+strongest proof as the declaration's `path` and let the survey's prose carry
+the others: a second declaration with the same identity is refused, by design
+(one artefact, one declaration, one count). Conversely, one compose file
+legitimately declares two services: same path, two identities, two
+declarations.
 
 `entrypoint` carries `count` — how many ways in that artefact exposes, in the
 same unit every extractor here emits, which is route registrations. Forty
