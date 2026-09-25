@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.200.2](https://github.com/SocialGouv/iterion/compare/v3.200.1...v3.200.2) (2026-09-25)
+
+### Bug Fixes
+
+* **mcp:** reserve internal server names across catalog and CLI adapters ([#1861](https://github.com/SocialGouv/iterion/issues/1861)) ([d94706b](https://github.com/SocialGouv/iterion/commit/d94706b5ccdb24a49f33f48ce61ec55f2872f2fe)), closes [#1742](https://github.com/SocialGouv/iterion/issues/1742)
+
+    <details><summary>why</summary>
+
+    Reject user/project/plugin MCP names that normalize into the permission-exempt infrastructure namespace. Keep internal registrations and custom servers separate, with a shared identity check and actionable rename diagnostics.
+
+    </details>
+
 ## [3.200.1](https://github.com/SocialGouv/iterion/compare/v3.200.0...v3.200.1) (2026-09-25)
 
 ### Bug Fixes
