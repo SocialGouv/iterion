@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.199.0](https://github.com/SocialGouv/iterion/compare/v3.198.1...v3.199.0) (2026-09-25)
+
+### Features
+
+* **models:** default bots to Opus 5.5 and GPT-6 ([#1835](https://github.com/SocialGouv/iterion/issues/1835)) ([62309a8](https://github.com/SocialGouv/iterion/commit/62309a8ca2ac71a2f70ff0584c6f6b67253d8605)), references [#1831](https://github.com/SocialGouv/iterion/issues/1831) [#1837](https://github.com/SocialGouv/iterion/issues/1837)
+
+    <details><summary>why</summary>
+
+    Migrate catalog and implicit defaults, preserve explicit overrides, and pin compatible CLI versions. Adapt structured/grounded generation to mandatory adaptive thinking and consume the published GPT-6 SDK support.
+
+    </details>
+
+### Bug Fixes
+
+* **studio:** expose typed schedule failures and recovery advice ([#1825](https://github.com/SocialGouv/iterion/issues/1825)) ([6b9d278](https://github.com/SocialGouv/iterion/commit/6b9d2780f00d8d4e420d1d5ddf491c50025e57c5)), references [#1565](https://github.com/SocialGouv/iterion/issues/1565)
+
+    <details><summary>why</summary>
+
+    Show the last run outcome and separate launch refusals in schedule rows. Use the persisted failure code for run hints before parsing legacy text. Keep the configured cadence and the existing manual pause control.
+
+    </details>
+
 ## [3.198.1](https://github.com/SocialGouv/iterion/compare/v3.198.0...v3.198.1) (2026-09-25)
 
 ### Bug Fixes
