@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.199.1](https://github.com/SocialGouv/iterion/compare/v3.199.0...v3.199.1) (2026-09-25)
+
+### Bug Fixes
+
+* **studio:** reuse tabs within the active project ([#1830](https://github.com/SocialGouv/iterion/issues/1830)) ([1a0f846](https://github.com/SocialGouv/iterion/commit/1a0f8467c115ecee5412e799eca4ae3f84c9d98e)), references [#1811](https://github.com/SocialGouv/iterion/issues/1811)
+
+    <details><summary>why</summary>
+
+    Opening the same file or draft in another project now selects a tab that the current editor can display. Reuse follows the existing visibility scope, including the unscoped cloud mode.
+
+    </details>
+* **studio:** select a visible neighbour when closing tabs ([#1840](https://github.com/SocialGouv/iterion/issues/1840)) ([b357d97](https://github.com/SocialGouv/iterion/commit/b357d97e7ccb82eab3707d2fc6529c0d98d09358)), closes [#1829](https://github.com/SocialGouv/iterion/issues/1829)
+
+    <details><summary>why</summary>
+
+    Keep the replacement active editor or run tab in the current project. Compute both the candidate list and the closed-tab index in that scope; retain global cloud selection when project scoping is disabled.
+
+    </details>
+
 ## [3.199.0](https://github.com/SocialGouv/iterion/compare/v3.198.1...v3.199.0) (2026-09-25)
 
 ### Features
