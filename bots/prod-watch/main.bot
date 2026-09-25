@@ -1568,21 +1568,31 @@ tool leak_scan:
         ## The shape rules read the first token of an unquoted value: the
         ## plain tokens after it ride the match only to be redacted with it.
         k = w.split(' ', 1)[0] if m.lastindex == 5 else w
-        if PLACEHOLDER.fullmatch(v) or PLACEHOLDER.fullmatch(k) or re.fullmatch(r'[A-Za-z]{1,12}', k) \
-                or v.startswith(('./', '../', '~/')) \
-                or v.startswith(('/etc/', '/home/', '/root/', '/run/', '/var/', '/tmp/', '/opt/', '/usr/', '/srv/', '/mnt/', '/proc/', '/dev/')):
+        ## A head-based refusal (a path, a prefix, a word, a placeholder, a
+        ## page token) may fire only while the head IS the value or the tail
+        ## is plain lowercase words — a credential riding behind a benign
+        ## head is scanned like any other. The floor of the quoted arms is
+        ## character-based (an escape pair counts its two characters).
+        first = w.split(' ', 1)[0]
+        rest = w[len(first):].strip()
+        tail_plain = not rest or bool(re.fullmatch(r'[a-z]+(?: [a-z]+)*', rest))
+        if m.lastindex not in (5, 10, 15) and len(v) < (4 if m.lastindex in (11, 12, 13, 14) else 6):
+            return False
+        if PLACEHOLDER.fullmatch(v):
+            return False
+        if tail_plain and (PLACEHOLDER.fullmatch(k) or re.fullmatch(r'[A-Za-z]{1,12}', k)
+                or v.startswith(('./', '../', '~/'))
+                or v.startswith(('/etc/', '/home/', '/root/', '/run/', '/var/', '/tmp/', '/opt/', '/usr/', '/srv/', '/mnt/', '/proc/', '/dev/'))):
             return False
         p = v.split(' ', 1)[0]
-        if p.startswith('/') and p.count('/') >= 2:
+        if tail_plain and p.startswith('/') and p.count('/') >= 2:
             segs = [s for s in p.split('/') if s]
-            rest = v[len(p):].strip()
-            if segs and all(s.isalpha() and s.islower() for s in segs) \
-                    and (not rest or re.fullmatch(r'[a-z]+(?: [a-z]+)*', rest)):
+            if segs and all(s.isalpha() and s.islower() for s in segs):
                 return False   # a filesystem path and plain words only — a value holding
                 # anything else (an uppercase, a digit, an `=`) is scanned, and a
                 # base64 token of lowercase letters alone reads as a path (documented)
-        if m.lastindex == 5 and re.search(r'(?i)pass[\'"\]]?\s*(?:=>|[=:])\s*$',
-                                          m.group(0)[:m.start(m.lastindex) - m.start(0)]) \
+        if m.lastindex == 5 and tail_plain and re.search(r'(?i)pass[\'"\]]?\s*(?:=>|[=:])\s*$',
+                                                         m.group(0)[:m.start(m.lastindex) - m.start(0)]) \
                 and re.fullmatch(r'[a-z]+(?:_[a-z0-9]+)+', k):
             return False   # a status feed under a bare `*pass` key — quoted, DSN and flag values are credentials
         if m.lastindex in (6, 7, 8, 9, 10) and re.fullmatch(r'[A-Z0-9_]+_[A-Z0-9_]+', k):
@@ -1594,9 +1604,11 @@ tool leak_scan:
             ## value character.
             return False
         glued = m.start() > 0 and (m.string[m.start() - 1].isalnum() or m.string[m.start() - 1] in '_.-')
-        if w.isdigit() and glued and m.group(0)[:5].lower() == 'token':
+        if w.isdigit() and glued and m.group(0)[:5].lower() == 'token' and tail_plain:
             return False
-        return not PAGING.search(m.string[max(0, m.start() - 16):m.start()])
+        if tail_plain:
+            return not PAGING.search(m.string[max(0, m.start() - 16):m.start()])
+        return True
     def basic_ok(m):
         ## Basic credentials outside an Authorization header are base64 of
         ## `user:password`: `basic` followed by an ordinary word is prose.
@@ -1651,9 +1663,9 @@ tool leak_scan:
             r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
             r'|(?<=[a-z])(?:Password|Passwd|Pwd|Pass|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Pass|Secret|Token))'
             r'(?i:[_-]?(?:key|value|phrase|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
-            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:\\.|[^"\\\n]){6,})"|\'((?:\\.|[^\'\\\n]){6,})\'|"((?:\\.|[^"\\\n]){6,})$|\'((?:\\.|[^\'\\\n]){6,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^\s=])\S+)*))'
-            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:\\.|[^"\\\n]){6,})"|\'((?:\\.|[^\'\\\n]){6,})\'|"((?:\\.|[^"\\\n]){6,})$|\'((?:\\.|[^\'\\\n]){6,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
-            r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:\\.|[^\'\\\n]){4,})\'|"((?:\\.|[^"\\\n]){4,})"|\'((?:\\.|[^\'\\\n]){4,})$|"((?:\\.|[^"\\\n]){4,})$)'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,})$|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^\s=])\S+)*))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,})$|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
+            r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,})$|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,})$)'
             r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),

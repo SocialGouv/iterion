@@ -2548,6 +2548,24 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		{`start --token 'Zq7h9xAb3cZq' ok`, "Zq7h9xAb3cZq"},
 		{"token=/ab/cdefgh12 loaded", "/ab/cdefgh12"},
 		{"token=/ab12/cd34ef56 loaded", "/ab12/cd34ef56"},
+		// A credential riding behind ANY refused head is scanned; the quoted
+		// floor is character-based (an escape pair counts its two chars).
+		{"password=/run/secrets/db Zq7h9xAb3cZq== rejected", "Zq7h9xAb3cZq=="},
+		{`password="/run/secrets/db Zq7h9xAb3cZq" rejected`, "Zq7h9xAb3cZq"},
+		{"deploy start --password \"/run/secrets/db Zq7h9xAb3cZq\" rejected", "Zq7h9xAb3cZq"},
+		{"password=/etc/shadow Zq7h9xAb3cZq== rejected", "Zq7h9xAb3cZq=="},
+		{"password=~/secrets/db Zq7h9xAb3cZq== rejected", "Zq7h9xAb3cZq=="},
+		{"password=../secrets/db Zq7h9xAb3cZq== rejected", "Zq7h9xAb3cZq=="},
+		{"password=./secrets/db Zq7h9xAb3cZq== rejected", "Zq7h9xAb3cZq=="},
+		{"password=required Zq7h9xAb3cZq rejected", "Zq7h9xAb3cZq"},
+		{"password=abcdefghijk Zq7h9xAb3cZq rejected", "Zq7h9xAb3cZq"},
+		{"password=[Redacted] Zq7h9xAb3cZq rejected", "Zq7h9xAb3cZq"},
+		{"password=${DB_PASSWORD} Zq7h9xAb3cZq rejected", "Zq7h9xAb3cZq"},
+		{"resume_token=826C1A2B3C4D Zq7h9xAb3cZq", "Zq7h9xAb3cZq"},
+		{`password="a\bcde"`, `a\bcde`},
+		{"CREATE USER app IDENTIFIED BY 'a\\bc' ok", "a\\bc"},
+		{"job.token=12345678 Zq7h9xAb3cZq", "Zq7h9xAb3cZq"},
+		{"mountain_pass=closed_for_winter Zq7h9xAb3cZq", "Zq7h9xAb3cZq"},
 		// A credential riding behind a path-shaped head is scanned; an
 		// escaped quote inside a never-closed value (after a key, a flag,
 		// in SQL) no longer defeats the arms.
@@ -2603,6 +2621,16 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(out["leak_findings"]), "class:secret_kv") {
 		t.Fatalf("a three-word tail no longer pages: %v", out["leak_findings"])
 	}
+	// A value ending in a single backslash (exact lines — the battery's
+	// ` rejected` suffix would let the escape pair cross it), and a
+	// credential riding behind a refused head on a never-closed quote.
+	_, all = scan("backslash-keep", []string{
+		`ERROR config password="abcdef\`, `ERROR config password='abcdef\`,
+		`CREATE USER app IDENTIFIED BY 'abcdef\`, `deploy start --password "abcdef\`,
+		`ERROR config password="/run/secrets/db Zq7h9xAb3cZq`})
+	if strings.Contains(all, `abcdef\`) || strings.Contains(all, "Zq7h9xAb3cZq") {
+		t.Fatalf("RVA20: a value ending in a backslash or a path-headed rider escapes the scan")
+	}
 	// Look-alikes raise no secret finding: counters and paths named after a
 	// secret word, a logger's own mask or placeholder, a reference to a
 	// variable, API pagination tokens, a status word, CLI usage and flag
@@ -2644,6 +2672,9 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		// path; an uppercase status feed; a shout placeholder after a flag,
 		// quoted or not
 		"token=/data/redis/sessions loaded", "token=/var/log/app.log rotated", "mount token=/var/lib/App7/secret ok",
+		"token=/data/redis/sessions",
+		// the character floor: a short quoted value is no secret
+		`password="a1!" rejected`,
 		`password="ab;cd12345 done`, `password="p@ssw0rd)123 done`,
 		"token=/data/redis loaded", "MOUNTAIN_PASS=closed_for_winter status",
 		`app start --pass "CHANGE_ME_NOW" --host db`,
