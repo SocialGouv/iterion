@@ -2711,6 +2711,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/assistant-watches/{watchID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/runs/{id}/assistant-watches/{watchID} */
+        delete: operations["deleteRunsByIdAssistantWatchesByWatchID"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/attachments/{name}": {
         parameters: {
             query?: never;
@@ -6937,6 +6957,7 @@ export interface components {
             skipped_cred_reopens_at?: string;
             source?: components["schemas"]["RunSource"];
             status: string;
+            tenant_id?: string;
             /** Format: date-time */
             updated_at: string;
             watched_issue_ids?: string[];
@@ -11483,6 +11504,27 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteRunsByIdAssistantWatchesByWatchID: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                watchID: string;
             };
             cookie?: never;
         };

@@ -60,6 +60,12 @@ type ExecutionState struct {
 // RunHeader is the run-level metadata embedded in a snapshot.
 type RunHeader struct {
 	ID string `json:"id"`
+	// TenantID is the team the run belongs to (ADR-103): the by-id
+	// resolution serves a run from its own team, and this field lets a
+	// caller - the studio's run console above all - disclose that the
+	// run being viewed lives outside the caller's active team. Empty on
+	// runs persisted before tenancy.
+	TenantID string `json:"tenant_id,omitempty"`
 	// ExecutionContext is the resolved, versioned launch contract. It is
 	// absent on legacy runs created before context persistence was enabled.
 	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
@@ -1523,6 +1529,7 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 func headerFromRun(r *store.Run) RunHeader {
 	h := RunHeader{
 		ID:                   r.ID,
+		TenantID:             r.TenantID,
 		ExecutionContext:     r.ExecutionContext,
 		Admission:            r.Admission,
 		OutputCorrections:    r.OutputCorrections,

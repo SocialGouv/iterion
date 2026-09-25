@@ -336,6 +336,10 @@ export type RunCheckpoint = CheckpointBudget & {
 
 export interface RunHeader {
   id: string;
+  // The team the run belongs to (ADR-103): by-id reads are served from
+  // the run's team, so the console can disclose that the run being viewed
+  // lives outside the caller's active team. Empty on legacy runs.
+  tenant_id?: string;
   execution_context?: ExecutionContext;
   admission?: AdmissionDecision;
   output_corrections?: Record<string, OutputCorrectionEpisode>;
