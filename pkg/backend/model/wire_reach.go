@@ -5,12 +5,27 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // anthropicWireProviders are the credential-routing hints that spend an
 // Anthropic-wire credential: the direct API key / OAuth forfait, and the
-// z.ai facade that rides the same wire.
-var anthropicWireProviders = map[string]bool{"anthropic": true, "zai": true}
+// facades that ride the same wire. Derived from the slot order rather than
+// listed, so a provider joining the wire arms this guard the same day it
+// becomes spendable — a hint missing here makes the pre-flight answer "this
+// run cannot touch the capped subscription" for a run that can.
+var anthropicWireProviders = anthropicWireHints()
+
+func anthropicWireHints() map[string]bool {
+	hints := map[string]bool{}
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if secrets.OAuthKind(slot).Valid() {
+			continue // an OAuth kind is not a `provider:` hint
+		}
+		hints[slot] = true
+	}
+	return hints
+}
 
 // AnthropicWireReachable reports whether some route the run may take can
 // execute against the Anthropic wire — the wire the operator's usage cap

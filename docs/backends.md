@@ -481,10 +481,20 @@ Known hints:
 
 | Hint | Effect |
 |---|---|
-| `anthropic` | Force Anthropic-direct (`ANTHROPIC_API_KEY` / Claude Code OAuth); skip z.ai even when `ZAI_API_KEY` is set. |
+| `anthropic` | Force Anthropic-direct (`ANTHROPIC_API_KEY` / Claude Code OAuth); skip the facades even when their keys are set. |
 | `zai` | Force the z.ai Anthropic-compatible facade (`ANTHROPIC_BASE_URL`=z.ai + `ANTHROPIC_AUTH_TOKEN`=`$ZAI_API_KEY`). |
+| `moonshot` | Force the Moonshot Anthropic-compatible facade, the Kimi family (`MOONSHOT_BASE_URL`, default `https://api.moonshot.ai/anthropic`, + `ANTHROPIC_AUTH_TOKEN`=`$MOONSHOT_API_KEY`). |
 | `openai` | Force OpenAI-direct (`OPENAI_API_KEY`), skipping `OPENAI_BASE_URL` overrides. |
 | `auto` / *(unset)* | Default process-env precedence. |
+
+Hints are matched case-insensitively (`Moonshot` is `moonshot`). A facade
+route — pinned by `zai` / `moonshot`, or chosen by the default precedence from
+a facade key — also clears the Anthropic credentials the Claude Code CLI would
+otherwise inherit from the process or container env: `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN` and the `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` /
+`_FOUNDRY` switches. The switches rank above `ANTHROPIC_AUTH_TOKEN` in the
+CLI's own precedence, and the other two would travel to the facade's gateway
+alongside its token.
 
 ### Fallback chain
 
@@ -1855,18 +1865,43 @@ ZAI_API_KEY=<bearer token from your z.ai dashboard>
 ```
 
 When iterion sees `ZAI_API_KEY` set AND no `ANTHROPIC_API_KEY` /
-`ANTHROPIC_AUTH_TOKEN` set, it automatically configures
+`ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY`
+set, it automatically configures
 `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` and
 `ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY` for both the spawned Claude Code
 subprocess (`backend: claude_code`) and the in-process claw provider
 factory (`backend: claw`). Restart iterion-desktop after editing the
 file so the launcher re-sources it.
 
-If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is also set, that
-takes precedence — the shortcut is intentionally "auto-route only
-when no Anthropic auth is configured". This lets a user keep a
+If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`, or a cloud-provider
+switch) is also set, that takes precedence — the shortcut is intentionally
+"auto-route only when no Anthropic auth is configured". This lets a user keep a
 fallback Anthropic key for some workflows without losing the z.ai
 default.
+
+### Moonshot: `provider: moonshot` (the Kimi family)
+
+Moonshot publishes the same kind of Anthropic-compatible endpoint,
+`https://api.moonshot.ai/anthropic` (the `api.moonshot.cn` gateway answers
+the same wire). It is a first-class provider: `provider: "moonshot"` on a
+`claude_code` or `pi` node, `moonshot/kimi-k2` as a `claw` model spec, and
+`iterion api-keys create --provider moonshot` for a team-scoped BYOK key.
+
+Two differences from the z.ai wiring above, both deliberate:
+
+- **The base-URL override is `MOONSHOT_BASE_URL`, not `ANTHROPIC_BASE_URL`.**
+  The latter is z.ai's own documented knob, so on a host configured for z.ai
+  it already holds z.ai's endpoint — honouring it for a Moonshot key would
+  send that credential to another vendor's gateway.
+- **There is no "`MOONSHOT_API_KEY` alone" shortcut.** That variable is
+  already how `backend: "kimi"` feeds Moonshot's own CLI, so an ambient value
+  means "the kimi CLI is configured", not "route every Anthropic-wire node to
+  Moonshot". Under an explicit `provider: moonshot` hint it IS honoured; a
+  BYOK key is the way to route unpinned nodes.
+
+With the hint set and no key reachable — neither BYOK nor `MOONSHOT_API_KEY`
+— the node is **refused by name**. It does not fall back to Anthropic: that
+would be another account and another bill, silently.
 
 ### Explicit form: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`
 

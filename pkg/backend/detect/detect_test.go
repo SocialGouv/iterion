@@ -26,6 +26,10 @@ func isolateEnv(t *testing.T) {
 		// dev machine (a first-class supported provider) flips the anthropic
 		// provider off and turns detection tests red.
 		"ZAI_API_KEY",
+		// Moonshot is the other Anthropic-compatible facade; scrub it so a
+		// host holding a real key (or configured for the kimi CLI, which
+		// reads the same variable) does not flip moonshot Available.
+		"MOONSHOT_API_KEY", "MOONSHOT_BASE_URL",
 		// xAI Grok is a first-class claw provider (XAI_API_KEY); scrub so a
 		// host with a real key does not flip claw Available unexpectedly.
 		"XAI_API_KEY", "XAI_BASE_URL",
@@ -350,6 +354,37 @@ func TestZAISuggestedModel(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("zai provider not present in detectProviders()")
+	}
+}
+
+// The picker can only offer a provider it lists. Moonshot detects on its own
+// key alone — unlike z.ai there is no ANTHROPIC_BASE_URL form to recognise,
+// because a Moonshot key is routed with MOONSHOT_BASE_URL.
+func TestDetect_MoonshotProvider(t *testing.T) {
+	isolateEnv(t)
+	find := func(t *testing.T) ProviderStatus {
+		t.Helper()
+		for _, p := range detectProviders() {
+			if p.Name == "moonshot" {
+				return p
+			}
+		}
+		t.Fatal("moonshot provider not present in detectProviders()")
+		return ProviderStatus{}
+	}
+	if p := find(t); p.Available {
+		t.Errorf("moonshot reported available with no key: %+v", p)
+	}
+	t.Setenv("MOONSHOT_API_KEY", "moonshot-test")
+	p := find(t)
+	if !p.Available {
+		t.Error("moonshot must be available once MOONSHOT_API_KEY is set")
+	}
+	if p.Source != "MOONSHOT_API_KEY" {
+		t.Errorf("moonshot source = %q, want MOONSHOT_API_KEY", p.Source)
+	}
+	if p.SuggestedModel != "moonshot/kimi-k2" {
+		t.Errorf("moonshot suggested model = %q, want moonshot/kimi-k2", p.SuggestedModel)
 	}
 }
 

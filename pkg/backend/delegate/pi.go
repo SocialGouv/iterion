@@ -193,21 +193,37 @@ func (b *PiBackend) recordAuthRefusal(task Task, err error) error {
 	return err
 }
 
+// The facade source labels a pi node emits. pi reaches these vendors through
+// its OWN first-class providers rather than a base-URL redirect, so there is
+// no facade URL to render and the label is fixed. Exported because the
+// runner's meter must map each one back onto the credential slot that paid
+// (AnthropicWireFacadeSlot): a literal spelled independently on both sides is
+// how a reading ends up charged to the wrong key.
+const (
+	PiUsageSourceZAI      = "facade:pi-zai"
+	PiUsageSourceMoonshot = "facade:pi-moonshot"
+)
+
 // piUsageSource maps pi's provider slug onto the source vocabulary the
 // runner's meter keys on (runCredKeys.forSource), or "" when the refusal
 // cannot be attributed to a credential the meter tracks.
 //
 // Only the anthropic wire is mapped, and that is not an omission: the
 // credential-skip evidence is claude_code-metered end to end
-// (usageBackendForProvider), so a reading on any other provider could not
-// be acted upon even if it were recorded — while a mislabelled one WOULD
+// (UsageMeterBackendForProvider), so a reading on any other provider could
+// not be acted upon even if it were recorded — while a mislabelled one WOULD
 // be acted upon, against the wrong credential.
 func piUsageSource(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "anthropic":
 		return "anthropic-direct"
 	case "zai":
-		return "facade:pi-zai"
+		return PiUsageSourceZAI
+	// pi's own id for Moonshot, which is what piResolveModel returns after
+	// piProviderPrefixes — matching on iterion's "moonshot" here would
+	// never fire.
+	case "moonshotai":
+		return PiUsageSourceMoonshot
 	}
 	return ""
 }
@@ -660,6 +676,7 @@ var piEnvKeys = map[secrets.Provider]string{
 	secrets.ProviderOpenAI:     "OPENAI_API_KEY",
 	secrets.ProviderXAI:        "XAI_API_KEY",
 	secrets.ProviderZAI:        "ZAI_API_KEY",
+	secrets.ProviderMoonshot:   "MOONSHOT_API_KEY",
 	secrets.ProviderOpenRouter: "OPENROUTER_API_KEY",
 }
 

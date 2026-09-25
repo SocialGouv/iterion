@@ -162,16 +162,13 @@ func meterScopeForKeyScope(scopeTeamID string) string {
 }
 
 // usageMeterBackendForProvider names the meter backend a provider's
-// refusals are recorded under, "" for one that carries no metered
-// evidence. Anthropic-shaped keys (the real one and the z.ai facade) are
-// spent by claude_code sessions, so that is where the runner meters them —
-// the same mapping the launch walk applies, kept identical on purpose.
+// refusals are recorded under, "" for one that carries no metered evidence.
+// Deferred to the delegate that does the metering: "kept identical on
+// purpose" was a promise made twice in two packages, and the day they drift
+// this view reports "never refused" for a credential the launch walk is
+// actively skipping.
 func usageMeterBackendForProvider(prov secrets.Provider) string {
-	switch prov {
-	case secrets.ProviderAnthropic, secrets.ProviderZAI:
-		return delegate.BackendClaudeCode
-	}
-	return ""
+	return delegate.UsageMeterBackendForProvider(prov)
 }
 
 // aliveRunsFor counts the runs holding k's concurrency slot right now —

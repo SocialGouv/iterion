@@ -57,6 +57,15 @@ func iterionDefaultRules() []string {
 		// sandboxed run failed with the same shape until z.ai landed
 		// here.
 		"api.z.ai",
+		// Moonshot's Anthropic-compatible facade (the Kimi family),
+		// reached whenever a node carries `provider: moonshot` or a
+		// `moonshot/` model spec. Same failure shape as z.ai's above when
+		// it is missing — the CONNECT proxy blocks the upstream and the
+		// node dies on an empty payload rather than on a credential
+		// error. Both hosts: the .cn gateway answers the same wire, and
+		// an operator may point MOONSHOT_BASE_URL at it.
+		"api.moonshot.ai",
+		"api.moonshot.cn",
 
 		// --- npm --------------------------------------------------
 		"registry.npmjs.org",

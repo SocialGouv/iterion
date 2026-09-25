@@ -53,6 +53,8 @@ func ProviderSourceLabel(p secrets.Provider) string {
 		return "OPENAI_API_KEY"
 	case secrets.ProviderZAI:
 		return "ZAI_API_KEY"
+	case secrets.ProviderMoonshot:
+		return "MOONSHOT_API_KEY"
 	case secrets.ProviderXAI:
 		return "XAI_API_KEY"
 	case secrets.ProviderAzure:
@@ -160,6 +162,7 @@ func cloudProviderSkeleton() []detect.ProviderStatus {
 	return []detect.ProviderStatus{
 		{Name: "anthropic", Source: "ANTHROPIC_API_KEY", SuggestedModel: "anthropic/claude-opus-5"},
 		{Name: "zai", Source: "ZAI_API_KEY", SuggestedModel: "anthropic/glm-5.2"},
+		{Name: "moonshot", Source: "MOONSHOT_API_KEY", SuggestedModel: "moonshot/kimi-k2"},
 		{Name: "openai", Source: "OPENAI_API_KEY", SuggestedModel: "openai/gpt-5.4-mini"},
 		{Name: "xai", Source: "XAI_API_KEY", SuggestedModel: "xai/grok-3"},
 		{Name: "foundry", Source: "AZURE_OPENAI_API_KEY"},
