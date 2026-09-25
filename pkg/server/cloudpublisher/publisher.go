@@ -2171,7 +2171,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if creds.grant != nil {
 		defer func() {
 			if !launched {
-				p.credPool.Release(ctx, runID)
+				p.credPool.ReleaseGrant(ctx, creds.grant)
 			}
 		}()
 	}
@@ -2572,7 +2572,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
-				p.credPool.Release(ctx, spec.RunID)
+				p.credPool.ReleaseGrant(ctx, creds.grant)
 			}
 		}()
 	}

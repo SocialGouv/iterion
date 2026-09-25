@@ -27,6 +27,7 @@ type poolFixture struct {
 	pools   *credpool.MemoryPoolStore
 	pledges *credpool.MemoryPledgeStore
 	ledger  *credpool.MemoryLedger
+	leases  *credpool.MemoryLeaseStore
 }
 
 const (
@@ -58,9 +59,10 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 		t.Fatalf("seed pledge: %v", err)
 	}
 	ledger := credpool.NewMemoryLedger()
+	leases := credpool.NewMemoryLeaseStore()
 
 	broker := credpool.NewBroker(credpool.BrokerConfig{
-		Pools: pools, Pledges: pledges, Leases: credpool.NewMemoryLeaseStore(), Ledger: ledger,
+		Pools: pools, Pledges: pledges, Leases: leases, Ledger: ledger,
 		OAuth: oauth, Sealer: sealer, Logger: testLogger(),
 	})
 	if broker == nil {
@@ -77,7 +79,7 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 			credPool:   broker,
 			logger:     iterlog.New(iterlog.LevelError, nil),
 		},
-		rs: rs, sealer: sealer, pools: pools, pledges: pledges, ledger: ledger,
+		rs: rs, sealer: sealer, pools: pools, pledges: pledges, ledger: ledger, leases: leases,
 	}
 }
 
