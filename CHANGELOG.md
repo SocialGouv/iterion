@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.198.1](https://github.com/SocialGouv/iterion/compare/v3.198.0...v3.198.1) (2026-09-25)
+
+### Bug Fixes
+
+* **dsl:** preserve literals and quoted reference lists when writing ([#1822](https://github.com/SocialGouv/iterion/issues/1822)) ([a276854](https://github.com/SocialGouv/iterion/commit/a276854cfeb238e4e375224dc70ccd9c2e873fe5)), references [#1810](https://github.com/SocialGouv/iterion/issues/1810) [#1736](https://github.com/SocialGouv/iterion/issues/1736) [#1624](https://github.com/SocialGouv/iterion/issues/1624) [#1809](https://github.com/SocialGouv/iterion/issues/1809)
+
+    <details><summary>why</summary>
+
+    Keep decimal floats parseable and typed, quote non-bare reference list values through the active string profile, and refuse JSON integers that the author YAML reader cannot represent as int64.
+
+    </details>
+
 ## [3.198.0](https://github.com/SocialGouv/iterion/compare/v3.197.3...v3.198.0) (2026-09-25)
 
 ### Features

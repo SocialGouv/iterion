@@ -777,6 +777,12 @@ func (w *writer) jsonValueNode(v any) *yaml.Node {
 		if strings.ContainsAny(s, ".eE") {
 			return floatNode(s)
 		}
+		// The author reader decodes !!int into int64. Refuse an integer it
+		// cannot read instead of emitting YAML that rounds or fails later.
+		if _, err := strconv.ParseInt(s, 10, 64); err != nil {
+			w.fail(fmt.Errorf("author: JSON integer %s is outside int64 and has no author document form", s))
+			return nullNode()
+		}
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: s}
 	case []any:
 		items := make([]*yaml.Node, 0, len(t))
