@@ -4338,3 +4338,81 @@ func TestProductDocsCoverageGateRefusesAMalformedPathCitation(t *testing.T) {
 		t.Fatalf("the gate is red without PHANTOM_DOC naming the malformed citation:\n%s", got.Log)
 	}
 }
+
+func TestProductDocsCoverageGateIgnoresCitationsInMultilineTagAttributes(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The tag OPENER carries no close on its line: its attribute continues
+	// on the following lines, and attributes are invisible.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<div\n"+
+			"  title=\"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the manager filled in, with its whole history and every action still open to its owner\">\n"+
+			"</div>\n"+
+			"Ordinary prose follows the tag, enough of it to stand as writing for\n"+
+			"any reader of the page who scrolls this far down it.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("citations inside a multi-line tag's attribute satisfied GAP:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateHidesALabelOnlyLinkDefinition(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The DESTINATION sits on the next line: the definition is two lines of
+	// nothing, and its second line's citations are invisible.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"[hidden]:\n"+
+			"  /url \"[[ref:items.detail]] [[ref:039]] shows one item in full: every field\n"+
+			"  the manager filled in, and the actions still open for the reader\"\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a next-line definition's title counted as documentation:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateReadsAFenceInsideABlockquote(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A fenced sample inside a blockquote is still a fenced sample: its
+	// invented reference proves nothing and refuses nothing.
+	mutate(t, ws, "docs/demo/README.md",
+		"## How this page was built <!--no-anchor-->",
+		"## How this page was built <!--no-anchor-->\n"+
+			"\n"+
+			"> ```text\n"+
+			"> [[ref:invented-screen]]\n"+
+			"> ```\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a blockquoted fenced sample was judged a product claim:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateStripsClosingHashesFromTitles(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// CommonMark renders '## Exclusions ##' as the chapter Exclusions: the
+	// closing hashes are decoration, and a title stored with them matched
+	// no declared exclusions token.
+	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions\n", "## Exclusions ##\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("closing ATX hashes broke the exclusions chapter recognition:\n%s", got.Log)
+	}
+	if got.Named != 1 {
+		t.Fatalf("exclusions named = %d, want 1", got.Named)
+	}
+}

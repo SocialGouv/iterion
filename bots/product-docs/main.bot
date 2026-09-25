@@ -2745,7 +2745,7 @@ def page_blocks(rows):
     ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
     ## page, in order. content is the line without its quote markers.
     blocks, cur, mode, in_fence, fence_opener, in_comment = [], None, '', False, None, False
-    skip_title = False
+    skip_title, in_tag = False, False
     ## FRONT MATTER is page metadata no renderer shows: a first line of ---
     ## up to the next --- (or ...), every line between reading as YAML. Read
     ## as markdown, its closing line would underline the keys into a chapter
@@ -2760,44 +2760,61 @@ def page_blocks(rows):
                 break
     for idx in range(start, len(rows)):
         no, text = rows[idx]
-        ## THE OPEN CONSTRUCT WINS. Inside a fence, only a compatible closer
-        ## matters and comment markers are literal (an unmatched marker in a
-        ## fenced HTML sample once swallowed the closer and every chapter
-        ## behind it). Inside a comment, only its closer matters and fence
-        ## markers are comment text (a marker inside a comment once opened a
-        ## fence that hid the chapters after the comment closed). Outside
-        ## both, the EARLIEST marker on the line wins, and the visible PART
-        ## of the line survives: prose before an opener, the tail after a
-        ## closer. The declared anchorless MARKER is exempt from stripping:
-        ## it is a comment that carries gate semantics.
+        ## THE OPEN CONSTRUCT WINS, and everything is decided on the
+        ## QUOTE-STRIPPED line: a fence inside a blockquote is a fence,
+        ## quoted or not. Inside a fence, only a compatible closer matters
+        ## and comment markers are literal; inside a comment, only its
+        ## closer matters and fence markers are comment text; an HTML tag
+        ## opener without its close carries invisible attributes to the
+        ## following lines. Outside all of them, the EARLIEST marker on the
+        ## line wins, and the visible PART of the line survives: prose
+        ## before an opener, the tail after a closer. The declared
+        ## anchorless MARKER is exempt from stripping: it is a comment that
+        ## carries gate semantics.
+        depth, content = unquote(text)
         if in_fence:
-            m = FENCE_RE.match(text)
+            m = FENCE_RE.match(content)
             if m and fence_opener and m.group(1)[0] == fence_opener[0] \
-                    and len(m.group(1)) >= fence_opener[1] and not text[m.end():].strip():
+                    and len(m.group(1)) >= fence_opener[1] and not content[m.end():].strip():
                 in_fence, fence_opener = False, None
                 cur, mode = None, ''
             continue
-        if in_comment:
-            end = text.find('-->')
+        if in_tag:
+            end = content.find('>')
             if end == -1:
                 continue
-            text = text[end + 3:]
+            content = content[end + 1:]
+            in_tag = False
+        if in_comment:
+            end = content.find('-->')
+            if end == -1:
+                continue
+            content = content[end + 3:]
             in_comment = False
+        ## An HTML TAG OPENER WITHOUT ITS CLOSE ON THE SAME LINE: the
+        ## attributes carry to the following lines, and attributes are
+        ## invisible -- read raw, one carried citations that satisfied GAP.
+        open_tag = re.search(r'<[A-Za-z/][^>]*$', content)
+        if open_tag:
+            content = content[:open_tag.start()]
+            in_tag = True
+            if not content.strip():
+                continue
         pos = 0
         while True:
-            f = FENCE_RE.match(text[pos:])
-            c = text.find('<!--', pos)
+            f = FENCE_RE.match(content[pos:])
+            c = content.find('<!--', pos)
             if f is None and c == -1:
                 break
             f_at = (pos + f.start()) if f else None
             if c != -1 and (f_at is None or c < f_at):
-                end = text.find('-->', c + 4)
+                end = content.find('-->', c + 4)
                 if end == -1:
-                    text = text[:c]
+                    content = content[:c]
                     in_comment = True
                     break
-                if text[c:end + 3] != no_anchor:
-                    text = text[:c] + ' ' + text[end + 3:]
+                if content[c:end + 3] != no_anchor:
+                    content = content[:c] + ' ' + content[end + 3:]
                     pos = c
                 else:
                     pos = end + 3
@@ -2807,7 +2824,14 @@ def page_blocks(rows):
                 break
         if in_fence:
             continue
-        if LINK_DEF_RE.match(text):
+        if re.match(r'^ {0,3}\[[^\]]+\]:\s*$', content):
+            ## A definition whose DESTINATION sits on the next line: both
+            ## lines render as nothing, and the destination+title line read
+            ## alone leaked its citations and its words as prose.
+            skip_title = True
+            cur, mode = None, ''
+            continue
+        if LINK_DEF_RE.match(content):
             ## A link reference DEFINITION renders as nothing -- and its
             ## optional TITLE sits on the NEXT line, indented and quoted.
             ## Read alone, that title counted as visible prose and its words
@@ -2820,7 +2844,6 @@ def page_blocks(rows):
         if skip_title:
             skip_title = False
             continue
-        depth, content = unquote(text)
         if not content.strip() or TEMPLATE_LINE_RE.match(content):
             cur, mode = None, ''
             continue
@@ -2828,7 +2851,11 @@ def page_blocks(rows):
             cur, mode = None, ''
         m = HEADING_RE.match(content)
         if m:
-            blocks.append({'kind': 'heading', 'depth': depth, 'level': len(m.group(1)), 'title': m.group(2), 'lines': [(no, text, content)]})
+            ## CommonMark strips a CLOSING hash sequence from the title:
+            ## '## Exclusions ##' titles the chapter Exclusions, and a title
+            ## stored with its hashes matched no declared exclusions token.
+            blocks.append({'kind': 'heading', 'depth': depth, 'level': len(m.group(1)),
+                           'title': re.sub(r'\s+#+\s*$', '', m.group(2)), 'lines': [(no, text, content)]})
             cur, mode = None, ''
             continue
         m = SETEXT_RE.match(content)
