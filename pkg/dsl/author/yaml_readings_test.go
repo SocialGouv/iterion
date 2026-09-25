@@ -428,7 +428,15 @@ func TestCommentsAreListedInTheOrderTheyAreWritten(t *testing.T) {
 		"a with value":                            "dsl: 2\nnodes:\n  - emit: e\n    event: ev\n    with: {a: b:'c, # 1\n      d: e}\n",
 		"a hash after a colon in a plain":         "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [a:#b, c] # 1\n",
 		"a hash after a plain word and a blank":   "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: [a # 1\n      , b] # 2\n",
-		"a quote after a quoted key's colon":      "dsl: 2\nnodes:\n  - emit: e\n    event: ev\n    with: {\"a\":'b #c', d: e} # 1\n",
+		// A tagged collection starts at its `!`: a comment before the
+		// bracket is one yaml.v3 drops, and a bracket inside it is text.
+		"between a tag and its bracket":         "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools: ! # 1 the tools, see [docs]\n      [read_file, # 2\n      bash]\n",
+		"a tag on its own line, then a comment": "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    tools:\n      !\n      # 1 only these two\n      [read_file, bash]\n",
+		"a quote after a quoted key's colon":    "dsl: 2\nnodes:\n  - emit: e\n    event: ev\n    with: {\"a\":'b #c', d: e} # 1\n",
+		// A directive's line belongs to no node: yaml.v3 drops its comment.
+		"a comment on a YAML directive":          "%YAML 1.1 # 1 pinned\n---\ndsl: 2 # 2\n",
+		"a comment above a directive, one on it": "# 1 header\n%YAML 1.1 # 2 pinned\n---\ndsl: 2 # 3\n",
+		"a comment on a TAG directive":           "%TAG !e! tag:example.com,2026: # 1 the house tags\n---\ndsl: 2 # 2\n",
 	} {
 		got := Comments([]byte(src))
 		for i, c := range got {
@@ -439,5 +447,10 @@ func TestCommentsAreListedInTheOrderTheyAreWritten(t *testing.T) {
 		if want := strings.Count(src, "# "); len(got) != want {
 			t.Fatalf("%s: want the %d comments, got %q", name, want, got)
 		}
+	}
+	// A comment on the tag's line is never the collection's head: two
+	// comments of one text, one above the tag and one on it, are two.
+	if got := Comments([]byte("v:\n  # same\n  ! # same\n  [a, b]\n")); len(got) != 2 {
+		t.Fatalf("a comment above a tag and one of the same text on it: %q, want both", got)
 	}
 }

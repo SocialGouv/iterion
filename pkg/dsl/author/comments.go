@@ -42,7 +42,23 @@ func Comments(src []byte) []string {
 		}
 		add(n.HeadComment)
 		if n.Style&yaml.FlowStyle != 0 && (n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode) {
-			out = append(out, flowComments(lines, n)...)
+			before, inside := flowComments(lines, n)
+			// Between a tag and its bracket, yaml.v3 hangs a comment of its
+			// own line on the collection's head (listed above) and drops one
+			// on the tag's line: only the dropped ones are added here — a
+			// comment on the tag's line is never the head's.
+			head := map[string]int{}
+			for _, h := range strings.Split(n.HeadComment, "\n") {
+				head[strings.TrimSpace(h)]++
+			}
+			for _, c := range before {
+				if c.ownLine && head[c.text] > 0 {
+					head[c.text]--
+					continue
+				}
+				out = append(out, c.text)
+			}
+			out = append(out, inside...)
 			add(n.LineComment)
 			add(n.FootComment)
 			return
@@ -67,7 +83,45 @@ func Comments(src []byte) []string {
 		add(n.FootComment)
 	}
 	walk(&doc)
+	// A comment on a directive's line (`%YAML 1.1 # c`, `%TAG …`) is no
+	// node's: yaml.v3 drops it. It is read off the source and listed after
+	// the own-line comments written above the first directive, which
+	// yaml.v3 lists first, on the document's head.
+	if above, dc := directiveComments(lines); len(dc) > 0 {
+		at := min(above, len(out))
+		out = append(out[:at], append(dc, out[at:]...)...)
+	}
 	return out
+}
+
+// directiveComments reads the comments on the directive lines that open a
+// YAML stream — a `#` after a blank on a line that starts with `%` — and
+// counts the own-line comments written above the first of them. The scan
+// ends at the first line that is none of a directive, a comment or a blank.
+func directiveComments(lines []string) (above int, comments []string) {
+	seen := false
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(l, "%"):
+			seen = true
+			r := []rune(l)
+			for ci := 1; ci < len(r); ci++ {
+				if r[ci] == '#' && (r[ci-1] == ' ' || r[ci-1] == '\t') {
+					comments = append(comments, strings.TrimSpace(string(r[ci:])))
+					break
+				}
+			}
+		case t == "":
+		case strings.HasPrefix(t, "#"):
+			if !seen {
+				above++
+			}
+		default:
+			return above, comments
+		}
+	}
+	return above, comments
 }
 
 // flowComments reads the comments inside flow collection n off the source
@@ -79,8 +133,10 @@ func Comments(src []byte) []string {
 // text (`it's`, `b:'c`), and so is a `#` with no blank before it (`a#b`);
 // the scalar ends at `,`, `?`, a bracket, or a `:` followed by a blank or
 // the end of its line, and goes on across blanks and line breaks otherwise.
-func flowComments(lines []string, n *yaml.Node) []string {
-	var out []string
+// The comments before the opening bracket — the node starts at its `!` tag
+// when it has one — are listed apart (before) from those inside it, each
+// with whether it is written on its own line.
+func flowComments(lines []string, n *yaml.Node) (before []flowComment, out []string) {
 	depth, started, plain := 0, false, false
 	var quote rune
 	for li := n.Line - 1; li >= 0 && li < len(lines); li++ {
@@ -110,7 +166,16 @@ func flowComments(lines []string, n *yaml.Node) []string {
 				}
 				continue
 			case !started:
-				if r == '[' || r == '{' {
+				// Before the bracket: the node may start at a `!` tag
+				// (yaml.v3 places a tagged collection there), and a `#`
+				// there starts a comment, a bracket inside it included.
+				if r == '#' && (ci == 0 || line[ci-1] == ' ' || line[ci-1] == '\t') {
+					before = append(before, flowComment{
+						text:    strings.TrimSpace(string(line[ci:])),
+						ownLine: strings.TrimSpace(string(line[:ci])) == "",
+					})
+					ci = len(line)
+				} else if r == '[' || r == '{' {
 					started, depth = true, 1
 				}
 				continue
@@ -134,7 +199,7 @@ func flowComments(lines []string, n *yaml.Node) []string {
 			case ']', '}':
 				depth--
 				if depth == 0 {
-					return out
+					return before, out
 				}
 			case ',', ':', '?':
 			default:
@@ -142,7 +207,13 @@ func flowComments(lines []string, n *yaml.Node) []string {
 			}
 		}
 	}
-	return out
+	return before, out
+}
+
+// flowComment is a comment read before a flow collection's bracket.
+type flowComment struct {
+	text    string
+	ownLine bool // nothing but blanks before it on its line
 }
 
 // endsPlain reports whether the rune at ci ends a plain scalar inside a

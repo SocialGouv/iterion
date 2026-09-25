@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -127,8 +130,8 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 				// --force replaces the file whole: what it carried and the
 				// text replacing it does not is said, not dropped in silence
 				// (under --check too — a check says what the write would do).
-				if n, first := replacedComments(opts.To, dest, existing, out); n > 0 {
-					res.Notices = append(res.Notices, fmt.Sprintf("%s: --force replaces it whole — %d comment line(s) it carries are not in what %s writes (the first: %s)", dest, n, path, first))
+				if note := forceNote(opts.To, dest, path, existing, out); note != "" {
+					res.Notices = append(res.Notices, note)
 				}
 			}
 			f.Changed = true
@@ -434,25 +437,74 @@ func documentCarriesCatalog(doc []byte) bool {
 	return false
 }
 
-// commentsOutsideFrontmatter counts the comment lines of f the document
-// does not represent: the head's — beyond the frontmatter block when the
-// block became the document's `catalog:` (carries), the block's own lines
-// included when it did not: not closed, not read, none of the four keys,
-// they are lost with the rest — the strict-escape directive aside (the
-// document says its profile with `dsl:`), and every comment a
-// declaration or an edge carries.
-// replacedComments counts the comment lines the file at dest carries that
-// the text replacing it does not — a .bot's `#` and `##` lines, frontmatter
-// included, or a document's YAML comments — and names the first, for the
-// note a --force write owes: it replaces the file whole.
-func replacedComments(to, dest string, existing, out []byte) (int, string) {
-	var had, kept []string
+// forceNote is the note a --force write owes the file it replaces, "" when
+// nothing is lost: the file goes whole, so what it carried that the text
+// replacing it does not is named. A .bot's comment lines are compared by
+// their text, its frontmatter by key — the writer spells the frontmatter
+// its own way, and a value it carries is not lost — and a document's YAML
+// comments by their text; a document that does not read as YAML is said
+// to be replaced uncounted.
+func forceNote(to, dest, from string, existing, out []byte) string {
+	lead := dest + ": --force replaces it whole — "
 	switch to {
 	case "bot":
-		had, kept = botCommentTexts(dest, existing), botCommentTexts(dest, out)
+		had, hadKeys := botCarries(dest, existing)
+		kept, keptKeys := botCarries(dest, out)
+		n, first := lostLines(had, kept)
+		var keys []string
+		for _, k := range hadKeys {
+			if !slices.Contains(keptKeys, k) {
+				keys = append(keys, k)
+			}
+		}
+		var lost []string
+		if n > 0 {
+			lost = append(lost, fmt.Sprintf("%d comment line(s)", n))
+		}
+		if len(keys) > 0 {
+			lost = append(lost, "the frontmatter key(s) "+strings.Join(keys, ", "))
+		}
+		if len(lost) == 0 {
+			return ""
+		}
+		note := lead + strings.Join(lost, " and ") + " it carries are not in what " + from + " writes"
+		if n > 0 {
+			note += " (the first comment: " + first + ")"
+		}
+		return note
 	case "yaml":
-		had, kept = author.Comments(existing), author.Comments(out)
+		if !oneYAMLDocument(existing) {
+			return lead + "it does not read as one YAML document, so what it carries, its comments included, is not counted"
+		}
+		n, first := lostLines(author.Comments(existing), author.Comments(out))
+		if n == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%s%d comment line(s) it carries are not in what %s writes (the first: %s)", lead, n, from, first)
 	}
+	return ""
+}
+
+// oneYAMLDocument reports whether text is what author.Comments reads whole:
+// UTF-8 holding one YAML document, or nothing at all. Comments alone, a
+// second document, a text that is not YAML are not.
+func oneYAMLDocument(text []byte) bool {
+	if !utf8.Valid(text) {
+		return false
+	}
+	if strings.TrimSpace(strings.TrimPrefix(string(text), "\ufeff")) == "" {
+		return true
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(text))
+	if dec.Decode(&yaml.Node{}) != nil {
+		return false
+	}
+	return errors.Is(dec.Decode(&yaml.Node{}), io.EOF)
+}
+
+// lostLines counts the lines of had that kept does not hold, each line of
+// kept matching one of had, and names the first.
+func lostLines(had, kept []string) (int, string) {
 	left := map[string]int{}
 	for _, c := range kept {
 		left[c]++
@@ -471,20 +523,30 @@ func replacedComments(to, dest string, existing, out []byte) (int, string) {
 	return n, first
 }
 
-// botCommentTexts is the text of every comment a .bot carries — the file's
-// own lines and those written around its declarations and edges — the
-// strict-escape directive aside: the writer decides that one.
-func botCommentTexts(name string, text []byte) []string {
+// botCarries is what a .bot carries beside its program: the text of every
+// comment — the file's own lines and those written around its declarations
+// and edges, the strict-escape directive aside (the writer decides that
+// one) — and the keys of a frontmatter block the catalogue reader can read,
+// sorted. A block it cannot read (not closed, not YAML) counts as comment
+// lines.
+func botCarries(name string, text []byte) (comments, keys []string) {
 	f := parser.Parse(name, string(text)).File
-	var out []string
 	add := func(cs []*ast.Comment) {
 		for _, c := range cs {
 			if !parser.IsStrictEscapeDirective(c.Text) {
-				out = append(out, strings.TrimSpace(c.Text))
+				comments = append(comments, strings.TrimSpace(c.Text))
 			}
 		}
 	}
-	add(f.Comments)
+	head := f.Comments
+	if block := parser.Frontmatter(f); block.Found && block.Closed {
+		if blockKeys, blockComments, ok := frontmatterByKey(strings.Join(block.Lines, "\n")); ok {
+			keys = blockKeys
+			comments = append(comments, blockComments...)
+			head = f.Comments[block.Span:]
+		}
+	}
+	add(head)
 	for _, c := range ast.CommentCarriers(f) {
 		if c.Comments != nil {
 			add(*c.Comments)
@@ -493,9 +555,40 @@ func botCommentTexts(name string, text []byte) []string {
 			add(e.Comments)
 		}
 	}
-	return out
+	return comments, keys
 }
 
+// frontmatterByKey reads a frontmatter block as the --force note compares
+// it: one YAML document holding one mapping — its keys, sorted, a key named
+// twice counted once as the catalogue reads it, and the block's own YAML
+// comments, which the writer does not keep. Any other block is not read
+// (ok false), and is compared line by line.
+func frontmatterByKey(text string) (keys, comments []string, ok bool) {
+	dec := yaml.NewDecoder(strings.NewReader(text))
+	var doc yaml.Node
+	if dec.Decode(&doc) != nil || !errors.Is(dec.Decode(&yaml.Node{}), io.EOF) {
+		return nil, nil, false
+	}
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, nil, false
+	}
+	m := doc.Content[0]
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if k := m.Content[i].Value; !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	return keys, author.Comments([]byte(text)), true
+}
+
+// commentsOutsideFrontmatter counts the comment lines of f the document
+// does not represent: the head's — beyond the frontmatter block when the
+// block became the document's `catalog:` (carries), the block's own lines
+// included when it did not: not closed, not read, none of the four keys,
+// they are lost with the rest — the strict-escape directive aside (the
+// document says its profile with `dsl:`), and every comment a
+// declaration or an edge carries.
 func commentsOutsideFrontmatter(f *ast.File, carries bool) int {
 	represented := 0
 	if carries {
