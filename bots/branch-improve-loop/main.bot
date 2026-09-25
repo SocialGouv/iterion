@@ -1637,7 +1637,7 @@ print(json.dumps({
 agent plan:
   description: "Author the triage plan (read-only)"
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: plan_input
   output: plan_output
@@ -1666,7 +1666,7 @@ compute plan_review_topology:
 judge plan_review:
   description: "Peer plan review (other model family)"
   backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
-  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-5.6-sol}"
+  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-6-astra}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   input: plan_review_input
   output: plan_review_output
@@ -1711,7 +1711,7 @@ compute plan_gate:
 agent plan_revise:
   description: "Author challenges & integrates the critique"
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: plan_revise_input
   output: plan_revised_output
@@ -1864,7 +1864,7 @@ agent campaign:
   ## `publish:` leaves an artifact behind for it to read.
   publish: campaign_result
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -1999,7 +1999,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
   output: verify_plan
   system: verify_system
@@ -2285,7 +2285,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## loop so the pushed-back branch ships clean. claude_code (read/git), readonly.
 agent review:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5}"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
   input: review_input
   output: review_output
@@ -2514,7 +2514,7 @@ bank('push to ' + branch + ' refused (' + (err or 'unknown error') + ')', base)
 ## forge_auth_probe confirmed a push credential exists.
 agent finalize_mr:
   backend: "claude_code"
-  model: "${ITERION_BRANCH_IMPROVE_MR_MODEL:-claude-opus-5}"
+  model: "${ITERION_BRANCH_IMPROVE_MR_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_BRANCH_IMPROVE_MR_EFFORT:-medium}"
   input: finalize_mr_input
   output: finalize_mr_output

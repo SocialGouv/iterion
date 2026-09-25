@@ -4,6 +4,8 @@ package unparse
 import (
 	"fmt"
 	"maps"
+	"math"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -872,7 +874,7 @@ func writeRecoveryBlock(b *buf, r *ast.RecoveryBlock, indent string) {
 		fmt.Fprintf(b, "%smodel: %s\n", inner, b.str(r.Model))
 	}
 	if len(r.AgentTools) > 0 {
-		fmt.Fprintf(b, "%sagent_tools: [%s]\n", inner, strings.Join(r.AgentTools, ", "))
+		fmt.Fprintf(b, "%sagent_tools: [%s]\n", inner, refList(b, r.AgentTools))
 	}
 }
 
@@ -1047,11 +1049,11 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		}
 
 		if len(wf.ToolPolicy) > 0 {
-			fmt.Fprintf(&w.b, "  tool_policy: [%s]\n", strings.Join(wf.ToolPolicy, ", "))
+			fmt.Fprintf(&w.b, "  tool_policy: [%s]\n", refList(&w.b, wf.ToolPolicy))
 		}
 
 		if len(wf.Capabilities) > 0 {
-			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", strings.Join(wf.Capabilities, ", "))
+			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", refList(&w.b, wf.Capabilities))
 		}
 		if len(wf.Skills) > 0 {
 			fmt.Fprintf(&w.b, "  skills: [%s]\n", quoteList(&w.b, wf.Skills))
@@ -1406,7 +1408,7 @@ func writeLiteral(b *buf, lit *ast.Literal) {
 	case ast.LitInt:
 		fmt.Fprintf(b, "%d", lit.IntVal)
 	case ast.LitFloat:
-		fmt.Fprintf(b, "%g", lit.FloatVal)
+		b.WriteString(floatLiteral(lit))
 	case ast.LitBool:
 		if lit.BoolVal {
 			b.WriteString("true")
@@ -1416,6 +1418,23 @@ func writeLiteral(b *buf, lit *ast.Literal) {
 	default:
 		b.WriteString(lit.Raw)
 	}
+}
+
+// A parsed decimal spelling preserves precision and trailing zeros, but Raw
+// may be stale after an AST edit. Only reuse it when it still names this value.
+var decimalFloat = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+
+func floatLiteral(lit *ast.Literal) string {
+	if decimalFloat.MatchString(lit.Raw) {
+		if value, err := strconv.ParseFloat(lit.Raw, 64); err == nil && math.Float64bits(value) == math.Float64bits(lit.FloatVal) {
+			return lit.Raw
+		}
+	}
+	s := strconv.FormatFloat(lit.FloatVal, 'f', -1, 64)
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	return s
 }
 
 func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
@@ -1456,6 +1475,21 @@ func writeMCPConfigBlock(b *buf, cfg *ast.MCPConfigDecl, indent string) {
 	if len(cfg.Disable) > 0 {
 		fmt.Fprintf(b, "%s  disable: [%s]\n", indent, strings.Join(cfg.Disable, ", "))
 	}
+}
+
+// Reference lists accept dotted names and trailing wildcards, as well as
+// strings such as "allow:Read". Quote anything outside the bare grammar with
+// the current profile's escaping, while keeping ordinary references readable.
+func refList(b *buf, vals []string) string {
+	refs := make([]string, len(vals))
+	for i, v := range vals {
+		if dottedIdent(strings.TrimSuffix(v, ".*")) {
+			refs[i] = v
+		} else {
+			refs[i] = b.str(v)
+		}
+	}
+	return strings.Join(refs, ", ")
 }
 
 func quoteList(b *buf, vals []string) string {
@@ -1543,13 +1577,13 @@ func writeAgentFields(b *buf, f llmFields) {
 	// turn it into an undeclared surface — the CLI backends' "no
 	// restriction". Only an absent (nil) list writes nothing.
 	if f.Tools != nil {
-		fmt.Fprintf(b, "  tools: [%s]\n", strings.Join(f.Tools, ", "))
+		fmt.Fprintf(b, "  tools: [%s]\n", refList(b, f.Tools))
 	}
 	if len(f.ToolPolicy) > 0 {
-		fmt.Fprintf(b, "  tool_policy: [%s]\n", strings.Join(f.ToolPolicy, ", "))
+		fmt.Fprintf(b, "  tool_policy: [%s]\n", refList(b, f.ToolPolicy))
 	}
 	if len(f.Capabilities) > 0 {
-		fmt.Fprintf(b, "  capabilities: [%s]\n", strings.Join(f.Capabilities, ", "))
+		fmt.Fprintf(b, "  capabilities: [%s]\n", refList(b, f.Capabilities))
 	}
 	if len(f.Skills) > 0 {
 		fmt.Fprintf(b, "  skills: [%s]\n", quoteList(b, f.Skills))

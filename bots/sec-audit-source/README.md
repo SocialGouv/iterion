@@ -41,9 +41,9 @@ edit — see the *Adding a language* section at the bottom of this README.
 #    `iterion sandbox doctor` flags missing tools.)
 
 # 1. Run on the current repo. Only detect_tech defaults to
-#    claw + openai/gpt-5.5 (cheap tech survey); triage, the three
+#    claw + openai/gpt-6-sol (cheap tech survey); triage, the three
 #    revalidation voters, and report_card default to
-#    claude_code + claude-opus-5.
+#    claude_code + claude-opus-5-5.
 devbox run -- iterion run bots/sec-audit-source/main.bot \
   --var workspace_dir=$(pwd) \
   --var severity_threshold=medium
@@ -116,7 +116,7 @@ under the `unanimous_dismiss` policy above; set
 
 ```
 inventory (tool)                    ← deterministic bounded file/manifest list
-  └─→ detect_tech (agent: claw + openai/gpt-5.5, readonly)
+  └─→ detect_tech (agent: claw + openai/gpt-6-sol, readonly)
         emits an OPEN `langs: []` list (no per-language booleans)
   └─→ … project-context + diff-scope + shard-planning gates …
   └─→ run_generic_scanners (tool: gitleaks + trivy fs + semgrep --config=p/default) — ALWAYS on

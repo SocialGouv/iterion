@@ -507,7 +507,7 @@ schema commit_result:
 
 ## ═══ Nodes ═══════════════════════════════════════════════════════
 agent analyst:
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   output: analysis_output
   system: analyst_system
@@ -518,7 +518,7 @@ agent analyst:
   readonly: true
 
 agent pm:
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   input: prd_input
   output: prd_output
@@ -530,7 +530,7 @@ agent pm:
   readonly: true
 
 agent architect:
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   input: arch_input
   output: arch_output
@@ -542,7 +542,7 @@ agent architect:
   readonly: true
 
 agent dev:
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   input: dev_input
   output: dev_output
@@ -553,7 +553,7 @@ agent dev:
   reasoning_effort: "${BMADY_EFFORT_DEV:-high}"
 
 judge qa:
-  model: "${BMADY_MODEL_QA:-claude-opus-5}"
+  model: "${BMADY_MODEL_QA:-claude-opus-5-5}"
   backend: "claude_code"
   input: qa_input
   output: qa_output

@@ -17,8 +17,8 @@ func TestCopilotPersistedAuthorsUseClawWithClaudeFallback(t *testing.T) {
 		end   string
 		model string
 	}{
-		{name: "copi", end: "\ntool validate_draft:", model: "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-5.6-terra}"},
-		{name: "reflect", end: "\njudge judge:", model: "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-5.6-sol}"},
+		{name: "copi", end: "\ntool validate_draft:", model: "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-6-sol}"},
+		{name: "reflect", end: "\njudge judge:", model: "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-6-sol}"},
 	} {
 		start := strings.Index(src, "agent "+node.name+":")
 		if start < 0 {
@@ -35,7 +35,7 @@ func TestCopilotPersistedAuthorsUseClawWithClaudeFallback(t *testing.T) {
 		if !strings.Contains(body, "model: \""+node.model+"\"") {
 			t.Errorf("Copi %s model does not match its dedicated default %q", node.name, node.model)
 		}
-		const fallback = "  fallbacks:\n    claude:\n      backend: \"claw\"\n      model: \"${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}\"\n      on: [usage_window, unavailable, transient_exhausted]"
+		const fallback = "  fallbacks:\n    claude:\n      backend: \"claw\"\n      model: \"${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5-5}\"\n      on: [usage_window, unavailable, transient_exhausted]"
 		if !strings.Contains(body, fallback) || strings.Count(body, "fallbacks:") != 1 || strings.Count(body, "backend:") != 2 || strings.Count(body, "backend: \"claw\"") != 2 {
 			t.Errorf("Copi %s must retain exactly one same-Claw Claude fallback", node.name)
 		}

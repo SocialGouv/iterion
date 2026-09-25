@@ -4,14 +4,10 @@
 
 import type { RunHeader as RunHeaderType } from "@/api/runs";
 import { Button } from "@/components/ui";
-import { parseErrorCode, runErrorHint } from "@/lib/runErrorHints";
+import { runErrorCode, runErrorHint } from "@/lib/runErrorHints";
 
-// ErrorHintRow recognises common RuntimeError codes embedded in the
-// `run.error` field (the engine formats them as "[CODE] message …") and
-// renders a small actionable hint banner below the header. Returns null
-// when the run is healthy or the error code is not recognised — we
-// intentionally stay quiet rather than show a generic "Try resuming"
-// hint that would dilute the targeted ones.
+// Prefer the persisted failure code; legacy runs may only carry a prefix
+// in their error text. Healthy runs never show a stale error hint.
 export default function ErrorHintRow({
   run,
   onResume,
@@ -19,7 +15,7 @@ export default function ErrorHintRow({
   run: RunHeaderType;
   onResume: () => void;
 }) {
-  if (!run.error) return null;
+  if (!run.error && !run.failure_code) return null;
   if (
     run.status !== "failed" &&
     run.status !== "failed_resumable" &&
@@ -27,7 +23,7 @@ export default function ErrorHintRow({
   ) {
     return null;
   }
-  const code = parseErrorCode(run.error);
+  const code = runErrorCode(run);
   const hint = runErrorHint(code, run);
   if (!hint) return null;
   const canResume = run.status === "failed_resumable";

@@ -1,7 +1,7 @@
 name: secured-renovacy
 display_name: Renovacy
 icon: ⬆️
-version: 0.3.2
+version: 0.3.3
 ## 0.3.2 — `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and
 ## re-checked by each reader that joins a skill name onto it, so it can be
 ## neither empty nor relative.

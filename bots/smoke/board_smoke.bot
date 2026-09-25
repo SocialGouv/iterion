@@ -68,7 +68,7 @@ schema smoke_output:
   summary: string
 
 agent smoke:
-  model: "claude-opus-5"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: smoke_output
   system: smoke_system

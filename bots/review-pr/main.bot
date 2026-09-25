@@ -436,7 +436,7 @@ prompt pacer_policy:
 ## the cooldown wakes cover pacing between samples.
 supervisor pacer:
   watches: [reviewer_claude, reviewer_gpt]
-  model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-haiku-4-5}"
+  model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}"
   system: pacer_policy
   cooldown: "6m"
   max_evals: 12
