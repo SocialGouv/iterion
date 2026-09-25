@@ -973,3 +973,63 @@ func TestAssessmentGoRouteRegexSkipsClientCalls(t *testing.T) {
 			got, string(body))
 	}
 }
+
+// SIZE-AWARE BATCHING: a blob over MAX_BLOB is excluded from the batch from
+// its ls-tree size, before any body is read — the extractor completes on a
+// tree carrying one, and the routes it holds count for nothing. (The memory
+// bound itself is structural — sizes arrive before buffers — so this test
+// pins the observable behaviour: completion and the small file's count.)
+func TestAssessmentGoExtractorSkipsAnOversizedBlobAndKeepsGoing(t *testing.T) {
+	requireAssessmentTools(t)
+	skill, err := os.ReadFile(filepath.Join("assessment", "skills", "stack-go.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := stackWorkspace(t, map[string]string{"stack-go.md": string(skill)})
+	gittest.Run(t, ws, "init", "-q", "-b", "main")
+	gittest.Run(t, ws, "config", "user.email", "t@example.com")
+	gittest.Run(t, ws, "config", "user.name", "t")
+	gittest.Run(t, ws, "config", "commit.gpgsign", "false")
+
+	write := func(rel, body string) {
+		full := filepath.Join(ws, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.test/app\n\ngo 1.21\n")
+	write("main.go", "package main\n\nfunc routes(r *mux) {\n\tr.Get(\"/\")\n}\n")
+	// 3 MiB of router registrations: over MAX_BLOB (2 MiB), counted for
+	// nothing — and, before the size-aware batching, buffered whole.
+	write("big.go", strings.Repeat("package big\n\nvar x = r.Get(\"/big\")\n\n", 1)+strings.Repeat("// padding padding padding padding padding padding padding\n", 46000))
+	gittest.Run(t, ws, "add", "-A")
+	gittest.Run(t, ws, "commit", "-qm", "the commit under assessment")
+	sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+
+	scratch := t.TempDir()
+	out := runExtractorsAt(t, ws, scratch, []map[string]any{
+		{"id": "go", "evidence": "go.mod", "supported": true},
+	}, sha)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("the shipped extractor refused a tree carrying an oversized blob: %s", assessmentString(t, out, "reason"))
+	}
+	if errs, _ := out["errors"].([]any); len(errs) > 0 {
+		t.Fatalf("the shipped extractor errored on the oversized tree: %v", errs)
+	}
+	body, err := os.ReadFile(filepath.Join(scratch, "go-entrypoints.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Facts map[string]any `json:"facts"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatal(err)
+	}
+	if got := document.Facts["entrypoints"]; got != float64(1) {
+		t.Fatalf("entrypoints = %v, want 1 — the oversized blob must not contribute and must not break the pass:\n%s", got, string(body))
+	}
+}

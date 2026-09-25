@@ -163,14 +163,21 @@ func TestAssessmentCommitLandsTheContract(t *testing.T) {
 		if err := os.MkdirAll(hooks, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		hook := "#!/bin/sh\nprintf 'rewritten by a hook\\n' >> docs/assessment/00-state-of-the-repository.md\n"
-		if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o755); err != nil {
-			t.Fatal(err)
+		// --no-verify covers only the commit-time hooks: a post-commit or
+		// prepare-commit-msg hook ran anyway, and one that rewrites the
+		// contract and commits the replacement passed every check here.
+		// The core.hooksPath override leaves NO hook standing.
+		hookBody := "printf 'rewritten by a hook\\n' >> docs/assessment/00-state-of-the-repository.md\n"
+		for _, name := range []string{"pre-commit", "prepare-commit-msg", "post-commit"} {
+			hook := "#!/bin/sh\n" + hookBody
+			if err := os.WriteFile(filepath.Join(hooks, name), []byte(hook), 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}
 
 		out := assessmentCommit(t, ws)
 		if !assessmentBool(t, out, "ok") {
-			t.Fatalf("the commit refused to land with a hook planted in the repository: %s",
+			t.Fatalf("the commit refused to land with hooks planted in the repository: %s",
 				assessmentString(t, out, "reason"))
 		}
 		body, err := os.ReadFile(filepath.Join(ws, "docs", "assessment", "00-state-of-the-repository.md"))

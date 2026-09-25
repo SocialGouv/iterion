@@ -4072,13 +4072,17 @@ tool commit:
     # commits every entry already in the index — a previous node's staging, or
     # the operator's work in flight — under a message that does not describe
     # it, which is exactly what the explicit `git add` above exists to prevent.
-    # --no-verify: a local pre-commit hook runs DURING the commit and can
-    # rewrite the contract and restage it -- the published blobs would differ
-    # from what this node validated, and the post-commit check compares HEAD
-    # to the disk the hook just mutated, so it would pass. What was validated
-    # is what gets committed, unaltered and unremarked.
+    # NO HOOK RUNS, not just the pre-commit ones. --no-verify covers the
+    # commit-time hooks, and a post-commit or prepare-commit-msg hook runs
+    # anyway: one that rewrites the contract and commits the replacement
+    # passed every check here, because they compare the rewritten HEAD to
+    # the equally rewritten disk. core.hooksPath pointed at the system's
+    # null device finds no hooks at all -- for every hook this commit could
+    # run. What was validated is what gets committed, unaltered, unremarked,
+    # and un-hooked.
     committed = git("-c", "user.name=iterion", "-c", "user.email=iterion@localhost",
-                    "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", message, "--", *pathspec)
+                    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=" + os.devnull,
+                    "commit", "--no-verify", "-m", message, "--", *pathspec)
     if committed.returncode != 0:
         refuse("COMMIT_FAILED", "git commit refused: %s"
                % ((committed.stderr or committed.stdout or "").strip()[-400:]))

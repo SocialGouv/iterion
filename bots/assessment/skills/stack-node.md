@@ -84,7 +84,7 @@ ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL=
 
 def tree():
     # oid AND path: the bodies are read in BATCHES below, which needs the oid.
-    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--full-tree", sha],
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "-l", "--full-tree", sha],
                             capture_output=True, text=True, env=ENV, timeout=300)
     if listed.returncode != 0:
         raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
@@ -92,8 +92,8 @@ def tree():
     for line in listed.stdout.splitlines():
         head, tab, path = line.partition("\t")
         fields = head.split()
-        if tab and path and len(fields) >= 3 and fields[1] == "blob":
-            out[path] = fields[2]
+        if tab and path and len(fields) >= 4 and fields[1] == "blob":
+            out[path] = (fields[2], int(fields[3]))
     return out
 
 # ONE PROCESS PER BATCH, never one per file. A `git show` per path is ~5-10 ms
@@ -106,16 +106,28 @@ BATCH_BLOBS, BATCH_BYTES, MAX_BLOB = 512, 64 * 1024 * 1024, 2 * 1024 * 1024
 def blobs(paths):
     """Yield (path, text) for each path, reading the bodies in batches."""
     oids = tree()
-    wanted = [(p, oids[p]) for p in paths if p in oids]
-    for start in range(0, len(wanted), BATCH_BLOBS):
-        batch, budget = [], 0
-        for entry in wanted[start:start + BATCH_BLOBS]:
-            batch.append(entry)
-            budget += 1
+    ## SIZES COME FROM THE LS-TREE, BEFORE ANY BODY IS READ. Batching by
+    ## count alone handed cat-file batches whose bodies -- buffered whole by
+    ## one communicate() -- could be gigabytes: BATCH_BYTES was a name, not
+    ## a limit, and one oversized blob was buffered whole before its content
+    ## was discarded. Blobs over MAX_BLOB are excluded HERE, and the byte
+    ## budget closes a batch before it is opened.
+    wanted = [(p, oids[p][0], oids[p][1]) for p in paths
+              if p in oids and oids[p][1] <= MAX_BLOB]
+    batches, batch, budget = [], [], 0
+    for entry in wanted:
+        if batch and (len(batch) >= BATCH_BLOBS or budget + entry[2] > BATCH_BYTES):
+            batches.append(batch)
+            batch, budget = [], 0
+        batch.append(entry)
+        budget += entry[2]
+    if batch:
+        batches.append(batch)
+    for batch in batches:
         proc = subprocess.Popen(["git", "-C", ws, "cat-file", "--batch"], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV)
         try:
-            body, err = proc.communicate("".join("%s\n" % oid for _, oid in batch).encode("ascii"),
+            body, err = proc.communicate("".join("%s\n" % oid for _, oid, _size in batch).encode("ascii"),
                                          timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -124,7 +136,7 @@ def blobs(paths):
             raise SystemExit("git cat-file --batch exited %d: %s"
                              % (proc.returncode, err.decode("utf-8", "replace")[-300:]))
         cursor = 0
-        for path, oid in batch:
+        for path, oid, _size in batch:
             newline = body.find(b"\n", cursor)
             if newline < 0:
                 raise SystemExit("git cat-file --batch output ended inside a header")
@@ -191,7 +203,7 @@ ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL=
 
 def tree():
     # oid AND path: the bodies are read in BATCHES below, which needs the oid.
-    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--full-tree", sha],
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "-l", "--full-tree", sha],
                             capture_output=True, text=True, env=ENV, timeout=300)
     if listed.returncode != 0:
         raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
@@ -199,8 +211,8 @@ def tree():
     for line in listed.stdout.splitlines():
         head, tab, path = line.partition("\t")
         fields = head.split()
-        if tab and path and len(fields) >= 3 and fields[1] == "blob":
-            out[path] = fields[2]
+        if tab and path and len(fields) >= 4 and fields[1] == "blob":
+            out[path] = (fields[2], int(fields[3]))
     return out
 
 # ONE PROCESS PER BATCH, never one per file. A `git show` per path is ~5-10 ms
@@ -213,16 +225,28 @@ BATCH_BLOBS, BATCH_BYTES, MAX_BLOB = 512, 64 * 1024 * 1024, 2 * 1024 * 1024
 def blobs(paths):
     """Yield (path, text) for each path, reading the bodies in batches."""
     oids = tree()
-    wanted = [(p, oids[p]) for p in paths if p in oids]
-    for start in range(0, len(wanted), BATCH_BLOBS):
-        batch, budget = [], 0
-        for entry in wanted[start:start + BATCH_BLOBS]:
-            batch.append(entry)
-            budget += 1
+    ## SIZES COME FROM THE LS-TREE, BEFORE ANY BODY IS READ. Batching by
+    ## count alone handed cat-file batches whose bodies -- buffered whole by
+    ## one communicate() -- could be gigabytes: BATCH_BYTES was a name, not
+    ## a limit, and one oversized blob was buffered whole before its content
+    ## was discarded. Blobs over MAX_BLOB are excluded HERE, and the byte
+    ## budget closes a batch before it is opened.
+    wanted = [(p, oids[p][0], oids[p][1]) for p in paths
+              if p in oids and oids[p][1] <= MAX_BLOB]
+    batches, batch, budget = [], [], 0
+    for entry in wanted:
+        if batch and (len(batch) >= BATCH_BLOBS or budget + entry[2] > BATCH_BYTES):
+            batches.append(batch)
+            batch, budget = [], 0
+        batch.append(entry)
+        budget += entry[2]
+    if batch:
+        batches.append(batch)
+    for batch in batches:
         proc = subprocess.Popen(["git", "-C", ws, "cat-file", "--batch"], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV)
         try:
-            body, err = proc.communicate("".join("%s\n" % oid for _, oid in batch).encode("ascii"),
+            body, err = proc.communicate("".join("%s\n" % oid for _, oid, _size in batch).encode("ascii"),
                                          timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -231,7 +255,7 @@ def blobs(paths):
             raise SystemExit("git cat-file --batch exited %d: %s"
                              % (proc.returncode, err.decode("utf-8", "replace")[-300:]))
         cursor = 0
-        for path, oid in batch:
+        for path, oid, _size in batch:
             newline = body.find(b"\n", cursor)
             if newline < 0:
                 raise SystemExit("git cat-file --batch output ended inside a header")
@@ -287,7 +311,7 @@ ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL=
 
 def tree():
     # oid AND path: the bodies are read in BATCHES below, which needs the oid.
-    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "--full-tree", sha],
+    listed = subprocess.run(["git", "-C", ws, "ls-tree", "-r", "-l", "--full-tree", sha],
                             capture_output=True, text=True, env=ENV, timeout=300)
     if listed.returncode != 0:
         raise SystemExit("cannot list the tree at %s: %s" % (sha[:12], listed.stderr.strip()[-300:]))
@@ -295,8 +319,8 @@ def tree():
     for line in listed.stdout.splitlines():
         head, tab, path = line.partition("\t")
         fields = head.split()
-        if tab and path and len(fields) >= 3 and fields[1] == "blob":
-            out[path] = fields[2]
+        if tab and path and len(fields) >= 4 and fields[1] == "blob":
+            out[path] = (fields[2], int(fields[3]))
     return out
 
 # ONE PROCESS PER BATCH, never one per file. A `git show` per path is ~5-10 ms
@@ -309,16 +333,28 @@ BATCH_BLOBS, BATCH_BYTES, MAX_BLOB = 512, 64 * 1024 * 1024, 2 * 1024 * 1024
 def blobs(paths):
     """Yield (path, text) for each path, reading the bodies in batches."""
     oids = tree()
-    wanted = [(p, oids[p]) for p in paths if p in oids]
-    for start in range(0, len(wanted), BATCH_BLOBS):
-        batch, budget = [], 0
-        for entry in wanted[start:start + BATCH_BLOBS]:
-            batch.append(entry)
-            budget += 1
+    ## SIZES COME FROM THE LS-TREE, BEFORE ANY BODY IS READ. Batching by
+    ## count alone handed cat-file batches whose bodies -- buffered whole by
+    ## one communicate() -- could be gigabytes: BATCH_BYTES was a name, not
+    ## a limit, and one oversized blob was buffered whole before its content
+    ## was discarded. Blobs over MAX_BLOB are excluded HERE, and the byte
+    ## budget closes a batch before it is opened.
+    wanted = [(p, oids[p][0], oids[p][1]) for p in paths
+              if p in oids and oids[p][1] <= MAX_BLOB]
+    batches, batch, budget = [], [], 0
+    for entry in wanted:
+        if batch and (len(batch) >= BATCH_BLOBS or budget + entry[2] > BATCH_BYTES):
+            batches.append(batch)
+            batch, budget = [], 0
+        batch.append(entry)
+        budget += entry[2]
+    if batch:
+        batches.append(batch)
+    for batch in batches:
         proc = subprocess.Popen(["git", "-C", ws, "cat-file", "--batch"], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV)
         try:
-            body, err = proc.communicate("".join("%s\n" % oid for _, oid in batch).encode("ascii"),
+            body, err = proc.communicate("".join("%s\n" % oid for _, oid, _size in batch).encode("ascii"),
                                          timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -327,7 +363,7 @@ def blobs(paths):
             raise SystemExit("git cat-file --batch exited %d: %s"
                              % (proc.returncode, err.decode("utf-8", "replace")[-300:]))
         cursor = 0
-        for path, oid in batch:
+        for path, oid, _size in batch:
             newline = body.find(b"\n", cursor)
             if newline < 0:
                 raise SystemExit("git cat-file --batch output ended inside a header")
