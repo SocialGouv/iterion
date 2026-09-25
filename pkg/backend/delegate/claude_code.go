@@ -1289,12 +1289,12 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 // a message naming neither the provider the operator pinned nor the credential
 // that was missing, and only after paying for the spawn.
 func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, error) {
-	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
+	credEnv := anthropicCredEnvForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
 		return opts, "", err
 	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
-	currentFingerprint := providerFingerprint(credEnv)
+	currentFingerprint := providerFingerprint(anthropicFingerprintEnvForTask(task, credEnv))
 
 	if task.SessionID != "" {
 		drop, reason := shouldDropSessionFork(task, currentFingerprint)
@@ -1630,8 +1630,12 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
-	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint, taskSandboxed(task))...)
 	opts = append(opts, perTaskSpawnOpts(task)...)
+	credEnv := anthropicCredEnvForTask(ctx, task)
+	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+		return nil, err
+	}
+	opts = append(opts, credEnvToOpts(credEnv)...)
 
 	// A GATED node gets one extra sentence — advisory defence in depth beside
 	// the withholding, for the names the roster misses. It is scoped to the
