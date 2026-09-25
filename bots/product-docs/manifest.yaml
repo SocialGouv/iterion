@@ -38,7 +38,8 @@ version: 1.3.0
 ## several features needs that prose FOR EACH (an index table with a
 ## descriptive column, and a paragraph of soft-wrapped index lines with
 ## no markup at all, were credited whole to every feature they listed);
-## table pipes, HTML tags and link destinations are markup, not prose;
+## table pipes, HTML tags, link destinations, HTML comments and link
+## reference definitions are not prose (a visible url is);
 ## `CONCEALED_EXCLUSION` reads the same block and asks for prose of its OWN,
 ## sharing vocabulary with the reason the net records, once per hole (a
 ## row of dots is length without words, and one sentence cannot answer

@@ -2485,6 +2485,29 @@ func TestProductDocsCoverageGateCreditsABlockItsOwnProse(t *testing.T) {
 			body: "[[ref:items.detail]] [[ref:039]] [the item record](https://example.org/manager/reading/items/record/history/listing/)\n",
 			gap:  []string{"items.detail"},
 		},
+		{
+			// page_lint refuses HTML comments on a published page, but the two
+			// gates are separate terms and its rule list is a var: a comment
+			// counted as prose pads a bare citation over the bar.
+			name: "an HTML comment is not prose",
+			body: "[[ref:items.detail]] [[ref:039]] fiche <!-- every field the manager filled in, " +
+				"the complete history of its changes and the actions still open -->\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "a link reference definition is not prose",
+			body: "[[ref:items.detail]] [[ref:039]] fiche article\n" +
+				"  [record]: https://example.org/manager/reading/items/record/history/listing\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			// A url the page SHOWS is content, not markup: the line drawn is
+			// between what a reader sees and what it never does.
+			name: "a visible url is prose",
+			body: "[[ref:items.detail]] [[ref:039]] the item record, described at https://example.org/guide/items/record " +
+				"for every manager who needs the whole history of a file\n",
+			documented: []string{"items.detail"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

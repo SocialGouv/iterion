@@ -195,7 +195,10 @@ What the gate deliberately does not assume:
   quote marker, a thematic break and a `{% … %}` template line end the
   block before them; an underlined title is a heading, and a page's
   leading YAML front matter is metadata, not a chapter. Table pipes, HTML
-  tags and link destinations are markup, not prose. A heading documents
+  tags, link destinations, HTML comments and link reference definitions
+  are not prose — the last two are text no reader ever sees. A url the
+  page *shows* is prose: the line drawn is between what a reader sees and
+  what it never does. A heading documents
   nothing: it labels and anchors a chapter. And a block that documents
   several features **shares** its prose between them — each needs its
   own `coverage_min_prose`. Lumped into one paragraph, an index table

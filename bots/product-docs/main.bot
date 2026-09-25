@@ -2675,6 +2675,13 @@ HTML_BLOCK_RE = re.compile(r'^ {0,3}</?(?:table|thead|tbody|tfoot|tr|td|th|capti
 TAG_RE = re.compile(r'</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>')
 YAML_LINE_RE = re.compile(r'^(?:\s|#|-\s|[A-Za-z0-9_][A-Za-z0-9_.-]*\s*:(?:\s|' + chr(36) + ')|-?' + chr(36) + ')')
 LINK_DEST_RE = re.compile(r'\]\([^)]*\)')
+## Text a reader NEVER sees: an HTML comment (working notes -- page_lint
+## refuses them outright, but the two gates are separate terms and its rule
+## list is a var) and a link reference definition, which renders as nothing at
+## all. Counted as prose, either one pads a bare citation over the bar -- the
+## same class as a link destination, whose words nobody reads.
+COMMENT_RE = re.compile(r'<!--.*?(?:-->|' + chr(36) + ')', re.S)
+LINK_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*\S+')
 def fold(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if not unicodedata.combining(c)).lower()
 def unquote(text):
@@ -2759,17 +2766,22 @@ def page_blocks(rows):
 def block_prose(b):
     ## What a reader READS in the block: its text MINUS its citations and the
     ## markup that renders as no word -- table pipes, HTML tags, link
-    ## destinations (a URL spells words nobody reads). A row of citations is
-    ## an index, and an index documents nothing. Code spans stay: a page
-    ## writing an interface label in one has written words, not a reference.
+    ## destinations (a URL spells words nobody reads) -- and the text a reader
+    ## never sees at all: an HTML comment, a link reference definition. A row
+    ## of citations is an index, and an index documents nothing. Code spans
+    ## stay: a page writing an interface label in one has written words, not a
+    ## reference. A VISIBLE url stays too -- it is on the page, and the line
+    ## drawn here is between what is shown and what is not.
     out = []
     for _no, _text, content in b['lines']:
+        if LINK_DEF_RE.match(content):
+            continue
         s = CITE_RE.sub(' ', content) if CITE_RE is not None else content
         s = LINK_DEST_RE.sub(']', TAG_RE.sub(' ', s))
         if b['kind'] == 'row':
             s = s.replace('|', ' ')
         out.append(s)
-    return ' '.join(' '.join(out).split())
+    return ' '.join(COMMENT_RE.sub(' ', ' '.join(out)).split())
 def significant(text):
     ## The words a reader would recognise. Short ones carry no evidence that
     ## anything was written; folding makes the comparison accent-blind.
