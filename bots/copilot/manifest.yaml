@@ -1,7 +1,7 @@
 name: copilot
 display_name: Copi
 icon: 💬
-version: 0.2.9
+version: 0.2.10
 ## 0.2.8 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (80 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer; the two
@@ -58,13 +58,13 @@ version: 0.2.9
 ## blocking rather than silently skipped.
 ## 0.1.10 —
 description: |
-  Conversational iterion assistant. Terra (GPT-5.6) is the visible entry and
+  Conversational iterion assistant. Sol (GPT-6) is the visible entry and
   executor in a standing chat loop. It handles simple requests directly; for
-  complex work it asks a private Sol (GPT-5.6) reflection node for a plan.
+  complex work it asks a private Sol (GPT-6) reflection node for a plan.
   Both GPT agents can fall back to Claude Opus while retaining their context. A
   fresh judge debates that plan, using Claude Opus then Kimi K3 then Grok when
-  needed, before Terra verifies and carries it out. If execution finds a real
-  blocker, Terra returns it to that same private planning loop. The subject is
+  needed, before Sol verifies and carries it out. If execution finds a real
+  blocker, Sol returns it to that same private planning loop. The subject is
   iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
   semantics, backends, bundles and convergence doctrine. Three
   postures the operator can switch mid-conversation — info (explain

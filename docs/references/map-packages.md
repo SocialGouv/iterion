@@ -50,7 +50,7 @@
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` | 2 · 12 |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — | 2 · 22 |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — | 1 · 7 |
-| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 33 · 192 |
+| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` | 34 · 192 |
 | `pkg/backend/delegate/claudesdk` | provides a Go SDK for the Claude Code CLI. | `ContentBlock`, `MCPServerConfig`, `Message` | 16 · 117 |
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — | 1 · 4 |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — | 8 · 125 |

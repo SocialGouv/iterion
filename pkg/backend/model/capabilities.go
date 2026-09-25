@@ -49,6 +49,9 @@ func curatedCapabilities(provider, modelID string) ModelCapabilities {
 
 func anthropicCapabilities(modelID string) ModelCapabilities {
 	lower := strings.ToLower(modelID)
+	if lower == "claude-opus-5-5" {
+		return ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false, ContextWindow: 1_000_000}
+	}
 
 	// z.ai's GLM models are served through the Anthropic-compatible
 	// endpoint, so they arrive here as "anthropic/glm-X". They are a
@@ -123,6 +126,9 @@ func glmCapabilities(modelID string) ModelCapabilities {
 
 func openaiCapabilities(modelID string) ModelCapabilities {
 	lower := strings.ToLower(modelID)
+	if lower == "gpt-6-astra" || lower == "gpt-6-sol" || lower == "gpt-6-luna" {
+		return ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false, ContextWindow: 1_050_000}
+	}
 
 	// o1, o3, o4 series are reasoning models that don't accept temperature.
 	isReasoning := strings.HasPrefix(lower, "o1") ||

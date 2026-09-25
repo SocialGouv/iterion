@@ -22,9 +22,13 @@ The pool size is **structural** (3 distinct `judge` nodes:
 declarations, not flipping a var (the iterion DSL cannot cleanly
 gate fan-out edges by a numeric var). Default mix:
 
-- `voter_v1` — claw + `openai/gpt-5.5`
-- `voter_v2` — claude_code + `claude-opus-5` (cross-family signal)
-- `voter_v3` — claw + `openai/gpt-5.5`
+- `voter_v1`, `voter_v2`, `voter_v3` — claude_code + `claude-opus-5-5`.
+
+The default pool has independent sessions, but no model-family diversity.
+For a cross-family signal, explicitly configure v1/v3 through
+`ITERION_SEC_AUDIT_BACKEND`, `ITERION_SEC_AUDIT_PROVIDER_CHAIN` and their
+`ITERION_SEC_AUDIT_VOTER_V1_MODEL` / `ITERION_SEC_AUDIT_VOTER_V3_MODEL`
+overrides. The runtime compatibility of that chosen route still applies.
 
 Each judge is `readonly: true` + `session: fresh` — no context bleed
 between voters, no workspace mutation. The ONLY mutator in this

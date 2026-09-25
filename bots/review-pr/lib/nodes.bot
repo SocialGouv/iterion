@@ -273,12 +273,11 @@ agent converge:
   ## review at all despite having a second family credentialed.
   backend: "${ITERION_VIBE_BACKEND_EMIT:-claude_code}"
   ## Dedicated env (NOT ITERION_VIBE_MODEL_CLAUDE, which pins the
-  ## REVIEWER): in mono the merge is near-mechanical — dedupe is a
-  ## no-op, then threshold, cap, report — so it defaults to a cheaper
-  ## model than the judging pass. Flip back per deployment with
-  ## ITERION_VIBE_MODEL_EMIT=claude-opus-5, or off the wire entirely
-  ## with ITERION_VIBE_BACKEND_EMIT=claw ITERION_VIBE_MODEL_EMIT=openai/gpt-5.6-sol.
-  model: "${ITERION_VIBE_MODEL_EMIT:-claude-sonnet-5}"
+  ## REVIEWER): in mono the merge is near-mechanical — dedupe, threshold,
+  ## cap and report. Opus 5.5 at medium effort is the Anthropic default;
+  ## choose a separate OpenAI route with ITERION_VIBE_BACKEND_EMIT=claw
+  ## and ITERION_VIBE_MODEL_EMIT=openai/gpt-6-sol when appropriate.
+  model: "${ITERION_VIBE_MODEL_EMIT:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
   output: emit_output
   system: emit_system

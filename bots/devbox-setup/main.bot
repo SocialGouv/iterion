@@ -99,7 +99,7 @@ compute preflight:
 
 agent detect_stack:
   backend: "claude_code"
-  model: "${DEVBOX_SETUP_MODEL:-claude-opus-5}"
+  model: "${DEVBOX_SETUP_MODEL:-claude-opus-5-5}"
   reasoning_effort: "low"
   output: detect_output
   system: detect_system
@@ -144,7 +144,7 @@ prompt generate_user:
 
 agent generate_devbox:
   backend: "claude_code"
-  model: "${DEVBOX_SETUP_MODEL:-claude-opus-5}"
+  model: "${DEVBOX_SETUP_MODEL:-claude-opus-5-5}"
   reasoning_effort: "medium"
   input: generate_input
   output: generate_output

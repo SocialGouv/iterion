@@ -1,7 +1,7 @@
 name: review-env
 display_name: Envy
 icon: 🌐
-version: 0.1.3
+version: 0.1.4
 ## 0.1.2 — the preflight's uncommitted-changes count leaves iterion's `.claude/`
 ## scaffold out (#1364).
 ## 0.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph

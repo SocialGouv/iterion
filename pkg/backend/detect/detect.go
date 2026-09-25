@@ -642,7 +642,7 @@ func detectProviders() []ProviderStatus {
 			Name:           "anthropic",
 			Available:      anthropicAvailable,
 			Source:         envSource("ANTHROPIC_API_KEY"),
-			SuggestedModel: "anthropic/claude-opus-5",
+			SuggestedModel: "anthropic/claude-opus-5-5",
 		},
 		{
 			Name:           "zai",
@@ -719,7 +719,7 @@ func detectOpenAIProvider() ProviderStatus {
 
 	st := ProviderStatus{
 		Name:           "openai",
-		SuggestedModel: "openai/gpt-5.4-mini",
+		SuggestedModel: "openai/gpt-6-sol",
 	}
 	if !hasAPIKey && !hasOAuth {
 		return st

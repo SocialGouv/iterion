@@ -10,6 +10,7 @@ import (
 // matrix, and to keep non-effort tokens (e.g. the on/off/stream reasoning
 // *mode*) from leaking onto the wire as an effort value.
 var knownEfforts = map[string]bool{
+	"none":    true,
 	"minimal": true,
 	"low":     true,
 	"medium":  true,
@@ -78,7 +79,8 @@ type AnthropicWireProfile struct {
 	ThinkingMode string
 	// RejectsSampling is true when temperature/top_p/top_k must be omitted
 	// (they return a 400 on this model).
-	RejectsSampling bool
+	RejectsSampling          bool
+	RequiresAdaptiveThinking bool
 }
 
 // SupportsEffort reports whether the model accepts output_config.effort.
@@ -104,8 +106,9 @@ func AnthropicProfile(nameOrAlias string) AnthropicWireProfile {
 		return AnthropicWireProfile{}
 	}
 	return AnthropicWireProfile{
-		SupportedEfforts: entry.SupportedReasoningEfforts,
-		ThinkingMode:     entry.ThinkingMode,
-		RejectsSampling:  entry.RejectsSampling,
+		SupportedEfforts:         entry.SupportedReasoningEfforts,
+		ThinkingMode:             entry.ThinkingMode,
+		RejectsSampling:          entry.RejectsSampling,
+		RequiresAdaptiveThinking: entry.RequiresAdaptiveThinking,
 	}
 }

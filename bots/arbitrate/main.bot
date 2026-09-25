@@ -238,7 +238,7 @@ judge arbitrate_judge:
   ## credentials — an arbiter sharing the delivery model's blind spots is
   ## weaker. The default keeps the bot runnable on a single-credential
   ## instance.
-  model: "${ITERION_ARBITRATE_MODEL:-claude-opus-5}"
+  model: "${ITERION_ARBITRATE_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_ARBITRATE_EFFORT:-high}"
   output: verdict_state
   system: judge_system

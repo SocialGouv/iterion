@@ -57,7 +57,7 @@ cursor ambition:                  # optional prompt-engineering dial (see docs/c
 
 agent worker:
   backend: "claw"
-  model:   "openai/gpt-5.5"
+  model:   "openai/gpt-6-sol"
   system:  my_system
   output:  verdict
 
@@ -135,7 +135,7 @@ deliberate refusal only changes verdict when an operator changes something.
 ```iter fragment
 agent w:
   backend: "claw"               # or claude_code / codex / pi / kimi / grok / opencode
-  model:   "openai/gpt-5.5"     # claw with openai/* prefix
+  model:   "openai/gpt-6-sol"     # claw with openai/* prefix
   reasoning_effort: high        # low | medium | high | xhigh | max | ultracode
                                 # ultracode = xhigh + multi-agent orchestration prerogative;
                                 # reliable on Opus 4.8 and the Claude 5 family only (else warns C089, runs as xhigh)
@@ -160,7 +160,7 @@ agent w:
   readonly: true                # runtime-blocks mutation tools
   interaction: human            # surfaces ask_user via MCP
   interaction_prompt: ask_msg   # used when interaction is llm or llm_or_human
-  interaction_model: "openai/gpt-5.5"
+  interaction_model: "openai/gpt-6-sol"
   capabilities: [board.read, board.create, board.move]   # opens MCP-gated tools
   skills: ["changelog-writer", "house-style"]   # skill-library refs (quote kebab names);
                                 # mirrored into .claude/skills/ + listed under a ## Skills
@@ -206,12 +206,12 @@ Backend rules:
   ```iter fragment
   agent implement:
     backend: "claude_code"
-    model: "claude-opus-5"
+    model: "claude-opus-5-5"
     tools: [read_file, bash]
     fallbacks:
       api:
         backend: "claw"
-        model: "anthropic/claude-opus-5"
+        model: "anthropic/claude-opus-5-5"
         on: [usage_window]
   ```
 
@@ -349,7 +349,7 @@ human ask_priorities:
   instructions: ask_priorities_prompt    # shown to the human
   interaction: human                     # human | llm | llm_or_human
   interaction_prompt: ask_priorities_llm # prompt used in llm-auto mode
-  interaction_model: "openai/gpt-5.5"    # model used in llm-auto mode
+  interaction_model: "openai/gpt-6-sol"    # model used in llm-auto mode
   min_answers: 1
 ```
 

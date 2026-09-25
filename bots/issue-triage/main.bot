@@ -115,10 +115,8 @@ schema triage_output:
   rationale: string
 
 agent triage:
-  ## Cheap but procedure-reliable. gpt-5.4-mini (the claw auto-default)
-  ## skips the skill read + label/comment steps; 5.5 follows the
-  ## contract. Same pin precedent as review-pr's claw reviewer.
-  model: "openai/gpt-5.5"
+  ## General-purpose GPT-6 route; tools must ground the routing decision.
+  model: "openai/gpt-6-sol"
   backend: "claw"
   output: triage_output
   system: triage_system
