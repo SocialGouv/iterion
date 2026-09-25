@@ -250,7 +250,7 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if copi.Backend != "claw" {
 		t.Errorf("copi backend = %q, want \"claw\" — the authenticated persisted author route changed", copi.Backend)
 	}
-	if copi.Model != "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-5.6-terra}" {
+	if copi.Model != "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-6-sol}" {
 		t.Errorf("copi model = %q, want the configured Terra entry default", copi.Model)
 	}
 	// Copi is a three-role conversation: Terra owns the visible chat and host
@@ -263,7 +263,7 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if reflect.Backend != "claw" {
 		t.Errorf("reflect backend = %q, want \"claw\" — Sol must use the authenticated OpenAI route", reflect.Backend)
 	}
-	if reflect.Model != "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-5.6-sol}" {
+	if reflect.Model != "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-6-sol}" {
 		t.Errorf("reflect model = %q, want the configured Sol reflection default", reflect.Model)
 	}
 	if reflect.Session != ir.SessionPersist || reflect.SessionSlot != "assistant_reflection" {
@@ -282,7 +282,7 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if !ok {
 		t.Fatal("judge node missing from copilot/main.bot")
 	}
-	if judgeNode.Model != "${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5}" || judgeNode.Backend != "claude_code" {
+	if judgeNode.Model != "${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5-5}" || judgeNode.Backend != "claude_code" {
 		t.Errorf("judge primary = %s/%s, want Claude Opus", judgeNode.Backend, judgeNode.Model)
 	}
 	if judgeNode.Session != ir.SessionFresh {
@@ -520,7 +520,7 @@ func TestCopilot_GraphContract(t *testing.T) {
 			continue
 		}
 		fallback := author.Fallbacks[0]
-		if fallback.Name != "claude" || fallback.Backend != "claw" || fallback.Model != "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}" || fallback.Action != "" {
+		if fallback.Name != "claude" || fallback.Backend != "claw" || fallback.Model != "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5-5}" || fallback.Action != "" {
 			t.Errorf("%s fallback = %#v, want same-Claw Claude", author.ID, fallback)
 		}
 		if !slices.Equal(fallback.On, []string{"usage_window", "unavailable", "transient_exhausted"}) {

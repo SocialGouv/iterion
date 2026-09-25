@@ -1,12 +1,63 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { UNTITLED_TAB_LABEL, useTabsStore } from "./tabs";
+import { UNTITLED_TAB_LABEL, useTabsStore, type TabKind } from "./tabs";
 
 const tabOf = (id: string) => useTabsStore.getState().tabs.find((t) => t.id === id);
 
 beforeEach(() => {
-  useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null });
+  useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null, currentProjectKey: null });
+});
+
+describe("tabs store: opening within the current project", () => {
+  it.each<[TabKind, Record<string, string>]>([
+    ["editor", { file: "bots/a.bot" }],
+    ["editor", {}],
+    ["run", { runId: "shared-run-id" }],
+  ])("keeps identical %s params %j in separate project tabs", (kind, params) => {
+    const store = useTabsStore.getState();
+    store.setCurrentProjectKey("/project-a");
+    const a = store.openTab(kind, params);
+    store.setCurrentProjectKey("/project-b");
+    const b = store.openTab(kind, params);
+
+    expect(b).not.toBe(a);
+    expect(tabOf(b)?.projectKey).toBe("/project-b");
+    expect(store.openTab(kind, params)).toBe(b);
+    store.setCurrentProjectKey("/project-a");
+    expect(store.openTab(kind, params)).toBe(a);
+    expect(useTabsStore.getState().tabs).toHaveLength(2);
+  });
+
+  it("reuses a saved draft only within its project", () => {
+    const store = useTabsStore.getState();
+    store.setCurrentProjectKey("/project-a");
+    const a = store.openTab("editor", { draft: "draft-1" });
+    store.bindFile(a, "bots/a.bot");
+    store.setCurrentProjectKey("/project-b");
+    const b = store.openTab("editor", { draft: "draft-1" });
+
+    expect(b).not.toBe(a);
+    store.bindFile(b, "bots/b.bot");
+    expect(store.openTab("editor", { draft: "draft-1" })).toBe(b);
+    store.setCurrentProjectKey("/project-a");
+    expect(store.openTab("editor", { draft: "draft-1" })).toBe(a);
+    expect(tabOf(a)?.params.file).toBe("bots/a.bot");
+    expect(tabOf(b)?.params.file).toBe("bots/b.bot");
+  });
+
+  it("keeps deduplication unscoped when the current project is null", () => {
+    const store = useTabsStore.getState();
+    store.setCurrentProjectKey("/project-a");
+    const file = store.openTab("editor", { file: "bots/a.bot" });
+    const draft = store.openTab("editor", { draft: "draft-1" });
+    store.bindFile(draft, "bots/draft.bot");
+    store.setCurrentProjectKey(null);
+
+    expect(store.openTab("editor", { file: "bots/a.bot" })).toBe(file);
+    expect(store.openTab("editor", { draft: "draft-1" })).toBe(draft);
+    expect(useTabsStore.getState().tabs).toHaveLength(2);
+  });
 });
 
 describe("tabs store: unbindFile", () => {

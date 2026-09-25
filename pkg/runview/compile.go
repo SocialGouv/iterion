@@ -243,15 +243,11 @@ func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, *CompiledSo
 }
 
 // insideDir reports whether path lies under dir (both absolute), symlinks
-// resolved on both sides when they can be.
+// resolved on both sides when they can be (bundle.ResolvedPath): a path
+// that is not there — the .bot an author document stands for, not written
+// yet — lies where its directory resolves to.
 func insideDir(path, dir string) bool {
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
-	}
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = real
-	}
-	rel, err := filepath.Rel(dir, path)
+	rel, err := filepath.Rel(bundle.ResolvedPath(dir), bundle.ResolvedPath(path))
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
@@ -259,6 +255,29 @@ func insideDir(path, dir string) bool {
 func hasFragmentDir(path string) bool {
 	info, err := os.Stat(filepath.Join(filepath.Dir(path), unit.FragmentDir))
 	return err == nil && info.IsDir()
+}
+
+// besideBundleMain reports whether the workflow file at path (absolute),
+// compiled in bundle b, has its fragments read beside the bundle's main
+// rather than beside itself: a file outside its bundle with no lib/ of its
+// own beside it. That is the store's materialised copy of a bundle's main,
+// which a studio run records and resumes from: it is that bundle's main,
+// and its fragments live beside the ORIGINAL. A file with a lib/ of its own
+// is a unit of its own, wherever its bundle is.
+func besideBundleMain(path string, b *bundle.Bundle) bool {
+	return b != nil && !insideDir(path, b.Dir) && !hasFragmentDir(path)
+}
+
+// FragmentAnchor is the file beside which the fragments of the workflow
+// file at path (absolute), compiled in bundle b, are read: the file itself,
+// or the bundle's main (besideBundleMain). It is for a caller that loads
+// the unit itself, such as an author document's diagram, whose main is the
+// document's AST read as the .bot at path.
+func FragmentAnchor(path string, b *bundle.Bundle) string {
+	if besideBundleMain(path, b) {
+		return b.IterPath
+	}
+	return path
 }
 
 // bundleForPath is the bundle a path-driven compile reads a workflow
@@ -307,9 +326,18 @@ func ResolveBundleFromFilePath(filePath string) (*bundle.Bundle, error) {
 	}
 	b, err := bundle.OpenDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("%s is the entrypoint of bundle %s, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", filePath, dir, err)
+		return nil, EntrypointBundleError(filePath+" is", dir, err)
 	}
 	return b, nil
+}
+
+// EntrypointBundleError is the refusal of a bundle's entrypoint whose
+// bundle does not open, with the remedy a bare main.bot beside a manifest
+// needs. subject names the entrypoint and how it stands to the bundle —
+// `x/main.bot is`, or an author document that `stands for` it — so a .bot
+// and the document of that .bot are refused in one set of words.
+func EntrypointBundleError(subject, dir string, err error) error {
+	return fmt.Errorf("%s the entrypoint of bundle %s, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, dir, err)
 }
 
 func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
@@ -347,12 +375,7 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 	switch {
 	case inline != "" && b != nil:
 		u = unit.LoadDirWithMain(b.IterPath, parserPath, []byte(inline))
-	case b != nil && !insideDir(parserPath, b.Dir) && !hasFragmentDir(parserPath):
-		// A copy of the bundle's main outside the bundle — the store's
-		// materialised copy a studio run records and resumes from — is
-		// that bundle's main: its fragments live beside the ORIGINAL. A
-		// file with a lib/ of its own beside it is a unit of its own,
-		// wherever its bundle is.
+	case besideBundleMain(parserPath, b):
 		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
 		if err != nil {
 			return nil, nil, fmt.Errorf("cannot read file: %w", err)
@@ -373,6 +396,26 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 			}
 		}
 	}
+	return compileLoadedUnit(u, path, parserPath, withHash, b)
+}
+
+// CompileLoadedUnit runs, on a unit the caller loaded, every stage a
+// path-driven compile of the workflow file at path runs after loading its
+// unit: the unit's errors refused, a workflow required, the bundle's
+// prompts merged, the compile, the MCP servers prepared against path's
+// directory. The source's identity, which only a launch records, is not
+// taken. name is the file a refusal names. It is for a caller that loads
+// the unit itself — an author document's diagram, whose main is the
+// document's AST read as the .bot at path — so that what refuses the .bot
+// refuses the document read as it.
+func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.Workflow, error) {
+	wf, _, err := compileLoadedUnit(u, path, name, false, b)
+	return wf, err
+}
+
+// compileLoadedUnit is every stage of compileUnit after the unit is loaded;
+// name is the file a refusal names.
+func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, nil, fmt.Errorf("parse error: %s", d.Error())
@@ -380,7 +423,7 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 	}
 	file := u.Merged
 	if file == nil || len(file.Workflows) == 0 {
-		return nil, nil, fmt.Errorf("no workflow found in %s", parserPath)
+		return nil, nil, fmt.Errorf("no workflow found in %s", name)
 	}
 
 	// Bundle prompts must merge into the AST before ir.Compile so the

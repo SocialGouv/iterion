@@ -1265,6 +1265,87 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 - Workflow budgets are shared across branches in that run. Hitting cost, token, duration, parallelism, or iteration limits emits budget events and stops/parks according to the failure path. Nested subbot runs retain their own budgets. `warn_tokens` is the advisory exception: crossing it emits a single `budget_warning` event (`advisory: true`) suggesting an audit of what consumed the tokens, and execution continues — use it instead of `max_tokens` when heavy consumption is legitimate (judge/rewrite loops going to their bounds) but worth an operator's look.
 - `resources` are named semaphores. Integer values declare capacities; string arrays declare leaseable named members exposed to nodes that list the resource in `needs:`.
 
+## Writing the twin in YAML
+
+A `.bot` can be written in YAML. The author document `x.bot.yaml` holds the declarations of `x.bot` under the same names — `dsl:` (required), then `catalog:`, `vars:`, `schemas:`, `prompts:`, `nodes:`, `workflow:` and the rest, in the order the writer puts them ([author-schema.md](references/author-schema.md) lists every key and how each value is written) — with YAML's own values. It is a way of **writing** the `.bot`, never a second truth ([ADR-102](adr/102-yaml-author-twin.md)): no surface launches, packs, hashes or stores a document — every launcher refuses one by name, and a bundle leaves it out — and the `.bot` is what you commit, review and run.
+
+```yaml author
+dsl: 2
+schemas:
+  verdict:
+    ready: bool
+prompts:
+  ask: Review the change and say whether it is ready to merge.
+nodes:
+  - agent: reviewer
+    model: anthropic/claude-sonnet-4-6
+    output: verdict
+    system: ask
+workflow:
+  name: review
+  entry: reviewer
+  edges:
+    - reviewer -> done when ready
+    - reviewer -> fail when not ready
+```
+
+The loop:
+
+1. Write `x.bot.yaml`. The JSON Schemas [`iterion-author.schema.json`](references/iterion-author.schema.json) (one per profile beside it) give an editor completion and a first check.
+2. `iterion validate x.bot.yaml` reads the document into the program it describes — in the unit and the bundle of `x.bot`, every finding at the line of the document you wrote — and `--exec` runs the dry run on it.
+3. `iterion fmt --to bot x.bot.yaml` writes `x.bot` beside it, proven the same program; a program with no written `.bot` form is refused, nothing written (E054). Once `x.bot` is there, a document you changed writes it again with `--force` — which replaces the file whole: the comments and the frontmatter keys the `.bot` carried and the document does not are gone, and `fmt` counts the comments, names the first, and names the keys.
+4. Commit `x.bot`. In CI, `iterion fmt --to bot --check x.bot.yaml` says whether the `.bot` beside the document is still the one it writes. `iterion diagram x.bot.yaml` draws that `.bot`; `iterion fmt x.bot.yaml` rewrites the document in its canonical form — the form of the examples on this page.
+
+`iterion fmt --to yaml x.bot` goes the other way: the document of an existing `.bot`, and a note for what the document does not carry — the `.bot`'s comments, the frontmatter keys beyond `catalog:`'s four — which the `.bot` keeps until `--to bot --force` writes it from the document.
+
+**Three rules a YAML author needs that a `.bot` author does not.** The authoring probe measured the first two as the traps the YAML form adds ([dsl-authoring-probe.md](references/dsl-authoring-probe.md)); the third is YAML's own:
+
+- **Quote a value that holds `: ` or ` #`, or starts with a character YAML reserves.** A plain `jq '.status: .code'` — or a text ending in `:` — reads as a mapping, and the document is refused (E050), the message saying to quote the value. A value that starts with `{`, `[`, `!`, `&`, `*`, `|`, `>`, `%`, `@` or a backtick is YAML syntax, not text: a `{{input.task}}` template written unquoted is a mapping, and a leading `! ` is a tag YAML drops — `! grep -q x f` would lose its negation; both are refused, the message saying to quote. A space followed by `#` starts a YAML comment, and that is no error: the plain value simply ends there — `echo "see #123"` reads as `echo "see`; `fmt --to bot` counts the comments it leaves out of the `.bot` and names the first, and `validate --exec` finds a command cut in two. Quote in single quotes, a `'` inside written twice (`'it''s'`): inside double quotes YAML reads backslash escapes — `"\t"` is a tab, `"\x41"` is `A`.
+- **An edge is one `.bot` edge line, and its inner quotes are the `.bot`'s.** An edge that holds `: ` — a `with` mapping — is quoted whole in YAML, single quotes outside, the `.bot`'s double quotes inside, and a `'` in it written twice (`''`):
+
+```yaml author
+dsl: 2
+schemas:
+  summary:
+    text: string
+  verdict:
+    ok: bool
+prompts:
+  ask: Summarise the change.
+  check: Is this summary complete? {{input.summary}}
+nodes:
+  - agent: writer
+    model: anthropic/claude-sonnet-4-6
+    output: summary
+    system: ask
+  - judge: reader
+    model: anthropic/claude-sonnet-4-6
+    output: verdict
+    system: check
+workflow:
+  name: summarise
+  entry: writer
+  edges:
+    - 'writer -> reader with { summary: "{{outputs.writer.text}}" }'
+    - reader -> done when ok
+    - reader -> fail when not ok
+```
+
+Written plain, or inside double quotes of its own, the same line ends early and the document is refused (E050), the message naming the single quotes:
+
+```yaml author invalid:E050
+dsl: 2
+workflow:
+  name: summarise
+  entry: writer
+  edges:
+    - writer -> reader with { summary: "{{outputs.writer.text}}" }
+```
+
+- **Write a number as digits, without a leading 0.** YAML reads `010` as the octal 8 where the `.bot` reads 10, `0x10` as 16, `+3` as 3, `1e2` as 100 and `01.5` as 1.5. The converter refuses these spellings rather than re-spell them in silence (E051, YAML's reading named): write the number you mean in the `.bot`'s digits (`8` or `10`, `16`, `100`), or — where the value may be text — quote it (`'010'`, a zip code). A `-` is kept where the value is always text — a `with` value, a connector's parameter (`offset: -10`); where a number or a text is taken (a preset's value, a JSON value) a signed number is refused, quote it if it is text; a property that takes a number takes no sign. The same holds for a bool where text is taken: `True` is YAML's spelling, `true` the `.bot`'s, and `draft: true` in a connector's `params:` is the text `true`.
+
+**What else differs.** A prompt declared under `prompts:` as a `|` block is a `.bot` prompt body: its leading and trailing blank lines are dropped, the first line's indentation is taken off every line, and profile 1 drops its interior blank lines — when the body you wrote is read otherwise, `validate` says so (E053, a warning), `fmt` refuses to rewrite the document rather than put that reading in your place, and `fmt --to bot` writes the reading into the `.bot`. A prompt text written in place (`system: |`) is a string, kept as written. `dsl:` is required (E052). `catalog:` is the `.bot`'s `## ---` frontmatter, read by the one reader the catalogue uses. Comments are not carried either way: a document with YAML comments is refused by `fmt` and left as it is, and it still converts with `--to bot`, which counts the comments the `.bot` is not written with and names the first; `--to yaml` counts the `.bot` comments the document leaves behind. A conversion under `--force` replaces its target whole, and names what the target carried that the new text does not.
+
 ## Validation and references
 
 Three steps stand between a `.bot` and its first paid run, each cheaper than the next, each catching what the previous cannot:

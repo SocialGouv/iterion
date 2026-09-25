@@ -532,6 +532,14 @@ func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 	}
 
 	profile := apikit.AnthropicProfile(req.Model)
+	if profile.RequiresAdaptiveThinking {
+		if req.Thinking != nil && req.Thinking.Type != "adaptive" {
+			return nil, fmt.Errorf("model %s requires adaptive thinking; choose reasoning effort instead of %q", req.Model, req.Thinking.Type)
+		}
+		if req.ToolChoice != nil && req.ToolChoice.Type != "auto" && req.ToolChoice.Type != "none" {
+			return nil, fmt.Errorf("model %s does not support forced tool choice %q; use auto or structured outputs", req.Model, req.ToolChoice.Type)
+		}
+	}
 
 	// Effort → output_config.effort, only when the model accepts this exact
 	// level. AcceptsEffort checks the model's matrix (resolved in the single

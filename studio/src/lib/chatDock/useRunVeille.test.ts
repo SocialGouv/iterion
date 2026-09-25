@@ -34,7 +34,7 @@ describe("useRunVeille ownership", () => {
     await act(async () => { if (completion === "success") old.resolve(veille("A")); else old.reject(new Error("old failure")); });
     expect(result.current.issueIds).toEqual(["issue-B"]);
     await act(() => result.current.stop());
-    expect(api.stopAssistantRunWatch).toHaveBeenCalledWith("watch-B");
+    expect(api.stopAssistantRunWatch).toHaveBeenCalledWith("watch-B", "target-B");
     expect(api.removeWatch).toHaveBeenCalledWith("B", "issue-B");
     expect(api.removeWatch).not.toHaveBeenCalledWith("B", "issue-A");
   });

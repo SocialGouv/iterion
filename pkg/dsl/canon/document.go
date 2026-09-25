@@ -46,12 +46,34 @@ func Document(name string, src []byte) ([]byte, error) {
 	// The proof before the write: the written document reads as the same
 	// program — the .bot text of the two is one.
 	back := author.Parse(name, out)
-	if back.HasErrors() || unparse.Unparse(back.File) != unparse.Unparse(res.File) {
-		return nil, fmt.Errorf("%w: its written form reads as another program", ErrRefused)
+	if errs := diagnosticsOf(back.Diagnostics, parser.SeverityError); len(errs) > 0 {
+		return nil, fmt.Errorf("%w: its written form does not read back: %s", ErrRefused, strings.Join(errs, "; "))
+	}
+	if why := firstDifferentLine(unparse.Unparse(res.File), unparse.Unparse(back.File)); why != "" {
+		return nil, fmt.Errorf("%w: its written form reads as another program (%s)", ErrRefused, why)
 	}
 	// The whole text is one edit, mapped back onto the original bytes: the
 	// BOM stays, and every line ending follows the file's own.
 	return norm.MapBack(src, []rewrite.Edit{{Start: 0, End: len(norm.Text), Repl: written}}), nil
+}
+
+// firstDifferentLine names the first line where the .bot texts a and b
+// differ, "" when they are one.
+func firstDifferentLine(a, b string) string {
+	la, lb := strings.Split(a, "\n"), strings.Split(b, "\n")
+	for i := 0; i < len(la) || i < len(lb); i++ {
+		var x, y string
+		if i < len(la) {
+			x = la[i]
+		}
+		if i < len(lb) {
+			y = lb[i]
+		}
+		if x != y {
+			return fmt.Sprintf("line %d of its .bot text: %q, read back as %q", i+1, x, y)
+		}
+	}
+	return ""
 }
 
 // diagnosticsOf renders the diagnostics of one severity, in order.

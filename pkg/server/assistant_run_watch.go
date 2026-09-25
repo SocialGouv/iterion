@@ -1624,6 +1624,13 @@ func (s *Server) handleStopAssistantWatch(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusNotFound, "watch not found")
 		return
 	}
+	// On the run-addressed spelling, the watch must belong to the run in
+	// the path — a mismatched pair is a missing watch, not a forbidden
+	// one (no existence oracle).
+	if runID := r.PathValue("id"); runID != "" && watch.TargetRunID != runID {
+		s.httpErrorFor(w, r, http.StatusNotFound, "watch not found")
+		return
+	}
 	if _, err := c.runs.LoadRunCtx(r.Context(), watch.TargetRunID); err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "watch not found")
 		return

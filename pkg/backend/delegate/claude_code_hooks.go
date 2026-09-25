@@ -490,6 +490,10 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 // resolves in-container.
 func (b *ClaudeCodeBackend) wireUserMCP(task Task, opts []claudesdk.Option, extras *[]string) []claudesdk.Option {
 	for _, s := range task.MCPServers {
+		if permission.IsReservedMCPServerName(s.Name) {
+			b.Logger.Warn("[%s#%d/claude-code] MCP server %q: reserved for internal infrastructure; skipped — rename the custom server", task.NodeID, task.Iteration, s.Name)
+			continue
+		}
 		var srv claudesdk.MCPServerConfig
 		switch strings.ToLower(strings.TrimSpace(s.Transport)) {
 		case "http":

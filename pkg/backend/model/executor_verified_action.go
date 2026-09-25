@@ -38,7 +38,7 @@ import (
 // Default fallback model for the self-repair / agent rungs when the node's
 // recovery: block names none. Mirrors defaultRouterModel — a cheap, capable
 // default that works for the common Anthropic-credentialled host.
-const defaultVerifiedActionModel = "anthropic/claude-sonnet-4-6"
+const defaultVerifiedActionModel = "anthropic/claude-opus-5-5"
 
 // selfRepairSchema is the structured-output contract for the self-repair
 // rung: the model returns a corrected shell command (and its reasoning).

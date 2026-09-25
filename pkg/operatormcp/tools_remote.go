@@ -34,7 +34,8 @@ func remoteTools() []Tool {
     "workflow": {"type": "string"},
     "repo":     {"type": "string", "description": "Filter by target repository slug."},
     "since":    {"type": "string", "description": "Only runs created since this timestamp/duration (server semantics)."},
-    "limit":    {"type": "integer"}
+    "limit":    {"type": "integer"},
+    "team":     {"type": "string", "description": "Scope the listing to a team id you can view (default: your active team)."}
   },
   "additionalProperties": false
 }`),
@@ -361,6 +362,7 @@ func handleRemoteRunsList(ctx context.Context, s *Server, raw json.RawMessage) (
 		Repo     string `json:"repo"`
 		Since    string `json:"since"`
 		Limit    int    `json:"limit"`
+		Team     string `json:"team"`
 	}
 	if err := s.unmarshalArgs("remote_runs_list", raw, &args); err != nil {
 		return "", false, err
@@ -373,6 +375,9 @@ func handleRemoteRunsList(ctx context.Context, s *Server, raw json.RawMessage) (
 	}
 	if args.Limit > 0 {
 		q["limit"] = fmt.Sprintf("%d", args.Limit)
+	}
+	if args.Team != "" {
+		q["team_id"] = args.Team
 	}
 	return remoteHTTP(ctx, "GET", "/api/runs"+cli.QueryString(q), nil)
 }

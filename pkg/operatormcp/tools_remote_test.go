@@ -78,6 +78,25 @@ func TestRemoteRunsListBuildsQuery(t *testing.T) {
 	}
 }
 
+func TestRemoteRunsListForwardsTeamScope(t *testing.T) {
+	var gotQuery string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/runs", func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"runs":[]}`))
+	})
+	newRemoteStub(t, mux)
+
+	s := newTestServer(t)
+	text, isErr := call(t, s, "remote_runs_list", `{"team":"team-beta","status":"running"}`)
+	if isErr {
+		t.Fatalf("remote_runs_list errored: %s", text)
+	}
+	if !strings.Contains(gotQuery, "team_id=team-beta") || !strings.Contains(gotQuery, "status=running") {
+		t.Fatalf("team scope not forwarded: %q", gotQuery)
+	}
+}
+
 func TestRemoteRunsResumeBody(t *testing.T) {
 	var gotBody map[string]any
 	mux := http.NewServeMux()

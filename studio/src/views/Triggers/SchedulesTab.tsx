@@ -24,6 +24,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { humanizeCron } from "@/lib/humanizeCron";
 
 import { EditScheduleDialog, NewScheduleDialog } from "./ScheduleDialogs";
+import ScheduleOutcome from "./ScheduleOutcome";
 import {
   cadenceLabel,
   filterGroupsByRepo,
@@ -399,6 +400,7 @@ function ScheduleGroupCard({
                 </Button>
               </>
             )}
+            <ScheduleOutcome schedule={s} />
           </li>
         ))}
       </ul>

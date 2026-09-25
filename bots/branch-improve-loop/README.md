@@ -203,7 +203,7 @@ read-only); `plan_phase: off` is the explicit opt-out (plan in stride, the
 v2 shape). `plan_review: auto` resolves at launch from the run's
 credentials and gates ONLY the peer review: when a SECOND model family is
 available, the triage is critiqued by a cross-family peer (`claw` +
-`openai/gpt-5.6-sol` by default) and revised by the SAME author session
+`openai/gpt-6-astra` by default) and revised by the SAME author session
 before the campaign fixes; otherwise the campaign receives the author's
 triage stamped as unreviewed (`plan_provenance`, relayed through the
 budget gate). `plan_review_policy` picks the mid-run peer-unavailability

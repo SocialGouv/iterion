@@ -210,11 +210,16 @@ func (r oaiRequest) MarshalJSON() ([]byte, error) {
 // Dispatch:
 //   - ChatGPT-OAuth mode always routes to /responses (the ChatGPT-Codex
 //     backend exposes no chat/completions endpoint).
-//   - For API-key mode, when reasoning_effort and tools are both present we
-//     route to /v1/responses because /v1/chat/completions rejects that
-//     combination on gpt-5.5+. Every other request keeps using the
-//     well-tested chat completions path.
+//   - GPT-6 uses /v1/responses in API-key mode too. Older models also use
+//     Responses when reasoning_effort and tools are both present, because
+//     Chat Completions rejects that combination on gpt-5.5+.
+//   - Other requests keep using the Chat Completions path.
 func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	// Dispatch on the same effective model as request conversion, including
+	// clients whose callers leave the request model unset.
+	if req.Model == "" || strings.HasPrefix(req.Model, "claude") {
+		req.Model = c.Model
+	}
 	if c.AuthMode == AuthModeChatGPTOAuth || shouldUseResponsesAPI(req) {
 		return c.streamResponses(ctx, req)
 	}

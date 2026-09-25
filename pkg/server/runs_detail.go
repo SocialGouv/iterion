@@ -13,6 +13,16 @@ import (
 // --- Handlers ---
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	// The list is scoped EXPLICITLY (ADR-103): `?team_id=` wins over the
+	// X-Iterion-Team header, then the caller's active team — the same
+	// resolution and 403-that-names-the-parameter as /api/v1/runs/stats.
+	// By-id reads are served from the run's team (the choke point), so a
+	// list is how a caller chooses WHICH team's runs it sees.
+	_, ctx, ok := s.resolveTenantScope(w, r)
+	if !ok {
+		return
+	}
+	r = r.WithContext(ctx)
 	q := r.URL.Query()
 	filter := runview.ListFilter{
 		Workflow: q.Get("workflow"),

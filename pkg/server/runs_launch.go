@@ -701,6 +701,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "usage cap reached")
 			return
 		}
+		if errors.Is(err, runview.ErrRunIDTaken) {
+			// A conflict, not a malformed request: the id names a run in
+			// any team, and the answer is the same for both.
+			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
+			span.SetStatus(codes.Error, "run id taken")
+			return
+		}
 		if errors.Is(err, bundle.ErrAuthorDocument) {
 			s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
 			span.SetStatus(codes.Error, "author document")

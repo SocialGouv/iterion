@@ -40,6 +40,7 @@ var remoteRunsListCmd = &cobra.Command{
 			Repo:     remoteRunsListRepo,
 			Since:    remoteRunsListSince,
 			Limit:    remoteRunsListLimit,
+			Team:     remoteRunsScopeTeam,
 		})
 	}),
 }
@@ -627,5 +628,6 @@ func init() {
 	)
 	remoteRunsStatsCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the aggregation to a team id you can view (default: your active team)")
 	remoteRunsReposCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id you can view (default: your active team)")
+	remoteRunsListCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id you can view (default: your active team)")
 	remoteCmd.AddCommand(remoteRunsCmd)
 }

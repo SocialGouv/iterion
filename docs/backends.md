@@ -1006,7 +1006,16 @@ only have `ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
 no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
 
-**MCP isolation.** iterion spawns the CLI with `--strict-mcp-config`, so the
+**MCP isolation.** User, project and plugin MCP server names must stay outside
+Iterion's reserved infrastructure namespace (`iterion`, `iterion_board`,
+`iterion_runs` and names whose normalized tool names share the `iterion*`
+prefix). Catalog preparation refuses such names with a rename diagnostic;
+empty names and separator-only aliases are also refused. CLI forwarding
+protects the same namespace when a task is constructed programmatically.
+Rename a custom server to use it; internal servers still require their usual
+interaction settings or capabilities.
+
+iterion spawns the CLI with `--strict-mcp-config`, so the
 only MCP servers a node gets are the ones iterion resolves and passes via
 `--mcp-config`: the `.bot`'s `mcp_server:`/`mcp:` blocks, the target repo's
 `.mcp.json` (workflow `autoload_project`, default on), and iterion's own

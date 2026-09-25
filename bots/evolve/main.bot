@@ -14,7 +14,7 @@
 ##   - ALL memory-bearing nodes are `backend: "claw"`. claude_code/codex
 ##     silently ignore the memory: block (validator C047). The per-bot
 ##     memory (visibility: "bot") is Evoly's headline feature.
-##   - Default models are forfait-friendly: claw nodes use openai/gpt-5.5
+##   - Default models are forfait-friendly: claw nodes use openai/gpt-6-astra
 ##     (ChatGPT forfait), the single cross-family "claude" reviewer uses
 ##     claude_code (Claude Code OAuth forfait). claw+anthropic would need
 ##     an API key (Anthropic forfait is Claude-Code-only), so it is avoided.
@@ -699,7 +699,7 @@ schema handoff_output:
 
 ## ─── Nodes ────────────────────────────────────────────────────────
 agent survey:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: survey_input
   output: survey_output
@@ -721,7 +721,7 @@ agent survey:
     visibility: "bot"
 
 agent investigate:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: investigate_input
   output: investigate_output
@@ -753,7 +753,7 @@ agent investigate:
     visibility: "bot"
 
 agent synthesize_vision:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: synthesize_input
   output: vision_output
@@ -773,7 +773,7 @@ agent synthesize_vision:
     visibility: "bot"
 
 agent revise_vision:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: revise_input
   output: vision_output
@@ -796,7 +796,7 @@ agent revise_vision:
     visibility: "bot"
 
 agent propose_evolutions:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: propose_input
   output: propose_output
@@ -821,7 +821,7 @@ agent propose_evolutions:
     visibility: "project"
 
 agent emit_backlog:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: emit_input
   output: emit_output
@@ -836,7 +836,7 @@ agent emit_backlog:
   reasoning_effort: "${ITERION_EVOLVE_EFFORT:-low}"
 
 agent load_nexie_handoff:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: handoff_input
   output: handoff_output
@@ -852,7 +852,7 @@ agent load_nexie_handoff:
 ## (claude_code ignores memory anyway) — it reads the workspace to verify
 ## evidence.
 judge review_claude:
-  model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   input: review_input
   output: verdict_output
@@ -865,9 +865,9 @@ judge review_claude:
   ## branches are workspace-safe (the guard rejects >1 mutating branch).
   readonly: true
 
-## The "gpt" perspective. claw + openai/gpt-5.5 (ChatGPT forfait).
+## The "gpt" perspective. claw + openai/gpt-6-astra (ChatGPT forfait).
 judge review_gpt:
-  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-5.5}"
+  model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: review_input
   output: verdict_output
