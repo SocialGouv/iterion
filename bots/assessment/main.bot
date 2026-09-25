@@ -1280,7 +1280,7 @@ schema survey_input:
 ## agent's count is an opinion with a number in it.
 agent survey:
   backend: "${ITERION_ASSESSMENT_SURVEY_BACKEND:-claude_code}"
-  model: "${ITERION_ASSESSMENT_SURVEY_MODEL:-anthropic/claude-opus-4-5}"
+  model: "${ITERION_ASSESSMENT_SURVEY_MODEL:-anthropic/claude-opus-5-5}"
   reasoning_effort: "${ITERION_ASSESSMENT_SURVEY_EFFORT:-high}"
   input: survey_input
   output: survey_output
@@ -2765,7 +2765,7 @@ schema judgement_input:
 ## opposite one: the renderer refuses an identifier it does not know.
 agent judgement:
   backend: "${ITERION_ASSESSMENT_JUDGEMENT_BACKEND:-claude_code}"
-  model: "${ITERION_ASSESSMENT_JUDGEMENT_MODEL:-anthropic/claude-opus-4-5}"
+  model: "${ITERION_ASSESSMENT_JUDGEMENT_MODEL:-anthropic/claude-opus-5-5}"
   reasoning_effort: "${ITERION_ASSESSMENT_JUDGEMENT_EFFORT:-high}"
   input: judgement_input
   output: judgement_output
@@ -3203,7 +3203,7 @@ schema plan_draft_input:
 ## read as a POINTER to files, never as a verdict over them.
 agent plan_draft:
   backend: "${ITERION_ASSESSMENT_PLAN_BACKEND:-claude_code}"
-  model: "${ITERION_ASSESSMENT_PLAN_MODEL:-anthropic/claude-opus-4-5}"
+  model: "${ITERION_ASSESSMENT_PLAN_MODEL:-anthropic/claude-opus-5-5}"
   reasoning_effort: "${ITERION_ASSESSMENT_PLAN_EFFORT:-high}"
   input: plan_draft_input
   output: plan_draft_output
