@@ -2083,6 +2083,30 @@ tool declaration_lint:
                     reject(inner_id, "its subtree %r sits inside %r (%s), declared %s: the files "
                                      "under it are claimed twice" % (inner, outer, outer_id, inner_kind))
 
+    ## A FILE claim is a claim too. The nesting walk above reads only
+    ## directories, so the same FILE declared twice under two kinds — or a
+    ## first_party file sitting inside an excluded subtree — passed with a
+    ## contradictory perimeter, and measure silently dropped the file.
+    file_claims = {}
+    for decl_id, kind, pth in partition:
+        if pth in directories or not pth:
+            continue
+        if pth in file_claims and file_claims[pth][1] != kind:
+            reject(decl_id, "its file %r is claimed twice: %s and %s (%s) — one path, one "
+                            "perimeter, and the contradiction is resolved by nobody"
+                   % (pth, file_claims[pth][1], kind, file_claims[pth][0]))
+            continue
+        file_claims[pth] = (decl_id, kind)
+    for decl_id, kind, pth in partition:
+        if not pth:
+            continue
+        for outer_id, outer_kind, outer in subtrees:
+            if outer_id == decl_id or not outer:
+                continue
+            if pth.startswith(outer + "/") and outer_kind != "first_party" and kind == "first_party":
+                reject(decl_id, "its file %r sits inside %r (%s), declared %s: the file is claimed "
+                                "twice, or not at all" % (pth, outer, outer_id, kind))
+
     # ── omission: the failure no declaration can be refused for ────────
     #
     # A deployable never declared has no declaration to reject. Nothing goes

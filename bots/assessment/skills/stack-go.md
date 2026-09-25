@@ -371,7 +371,7 @@ def blob(path):
 # like a client is still missed, and the declared route count is the
 # figure the letter publishes.
 ROUTE = re.compile(
-    r"\b(?:http\.HandleFunc|http\.Handle"
+    r"\b(?:http\.HandleFunc\s*\(|http\.Handle\s*\("
     r"|(?!(?:[Hh]ttp|[Hh]eader|resp|response|[Rr]eq|request|client|ctx|context"
     r"|conn|rows?|vals|values|params|form|session|cache)\b)"
     r"\w+\.(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS"

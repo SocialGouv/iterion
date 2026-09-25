@@ -944,6 +944,10 @@ func TestAssessmentGoRouteRegexSkipsClientCalls(t *testing.T) {
 		"\tresp.Header.Get(\"Content-Type\")\n"+
 		"}\n"+
 		"\n"+
+		"func middleware(next http.Handler) http.Handler {\n"+
+		"\treturn http.HandlerFunc(next.ServeHTTP)\n"+
+		"}\n"+
+		"\n"+
 		"func routes(r *mux) {\n"+
 		"\tr.Get(\"/\")\n"+
 		"}\n")

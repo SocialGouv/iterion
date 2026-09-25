@@ -459,3 +459,30 @@ func TestAssessmentReadsAccentedPathsAsThemselves(t *testing.T) {
 		}
 	})
 }
+
+// A FILE claim is a claim too: the nesting walk read only directories, so
+// the same file declared under two kinds — or a first_party file inside an
+// excluded subtree — passed with a contradictory perimeter.
+func TestAssessmentDeclarationLintRefusesContradictoryFileClaims(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	dir, sha := declarationFixture(t)
+
+	t.Run("the same file under two kinds", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
+			"id": "readme-again", "kind": "first_party", "path": "README.md"}))
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a file claimed excluded AND first_party was accepted — the perimeter contradicts itself")
+		}
+		if !strings.Contains(assessmentString(t, out, "reason"), "README.md") {
+			t.Errorf("the refusal does not name the file: %s", assessmentString(t, out, "reason"))
+		}
+	})
+
+	t.Run("a first_party file inside an excluded subtree", func(t *testing.T) {
+		out := lintDeclarations(t, dir, sha, append(wholeSurvey(), map[string]any{
+			"id": "inside-vendored", "kind": "first_party", "path": "third_party/dep.txt"}))
+		if assessmentBool(t, out, "ok") {
+			t.Fatal("a first_party file inside an excluded subtree was accepted — the file is claimed twice, or not at all")
+		}
+	})
+}
