@@ -120,6 +120,12 @@ func validateRoutingPolicyForLaunch(p *store.RoutingPolicy, wf *ir.Workflow) err
 	return nil
 }
 
+// ErrRunIDTaken reports a launch whose caller-supplied run id already
+// names a run, in any team — the same contract CreateRun's exclusive
+// create enforces as the race backstop, enforced earlier: before the
+// launch reaches anything that acts on the id.
+var ErrRunIDTaken = errors.New("runview: run id already exists")
+
 // Launch starts a workflow asynchronously and returns once the run
 // handle has been registered with the manager (i.e. Cancel will work
 // from the moment Launch returns nil error).
@@ -176,6 +182,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 			return nil, fmt.Errorf("mint run id: %w", err)
 		}
 		runID = generated
+	} else if _, err := s.store.LoadRun(store.TeamBlind(context.WithoutCancel(parent)), runID); err == nil || errors.Is(err, store.ErrRunDeleted) {
+		// The id names a run in ANY team: refuse it before the launch
+		// reaches anything that acts on the id — the credential pool
+		// supersedes a run id's leases, and its lease query knows no
+		// team. The lookup is team-blind on purpose: a plain detached
+		// context would keep the caller's tenant stamp, and the query
+		// would only see the caller's own team.
+		return nil, fmt.Errorf("%w: %q", ErrRunIDTaken, runID)
 	}
 
 	// Cloud-mode: hand off to the runner pool via the queue. The

@@ -1894,6 +1894,14 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			p.logger.Warn("cloudpublisher: credential pool declined run %s — %v", runID, err)
 			return nil
 		}
+		if errors.Is(err, credpool.ErrRunHeldElsewhere) {
+			// The run id's open leases belong to another team: not this
+			// caller's to supersede. Best-effort tier — the launch proceeds
+			// on its own credentials, and the log names the refusal rather
+			// than a store blip.
+			p.logger.Warn("cloudpublisher: credential pool refused run %s — %v", runID, err)
+			return nil
+		}
 		// A store failure must not fail the launch: the pool is a
 		// best-effort extra tier, and a run with no credential still
 		// surfaces a legible error at the LLM call site.

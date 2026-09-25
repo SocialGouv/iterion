@@ -131,6 +131,13 @@ func (s *Server) resolveCrossStore(r *http.Request) (store.RunStore, string, err
 	if raw == "" {
 		return nil, "", nil
 	}
+	// A filesystem store knows no tenant: the proxy serves a desktop or
+	// per-project daemon its own user's stores. A cloud server's $HOME is
+	// shared infrastructure, so the proxy is refused there, as
+	// runs/global-active refuses to scan it.
+	if s.cfg.Mode == "cloud" {
+		return nil, "", fmt.Errorf("cross-store: not available on a cloud instance")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return nil, "", fmt.Errorf("cross-store: $HOME not resolvable")

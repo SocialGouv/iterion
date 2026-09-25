@@ -101,7 +101,7 @@
 | `pkg/connector/identity` | preserves the meaning of connector names across generation. | — | 1 · 13 |
 | `pkg/connector/overlay` | the AUTHORED half of a connector package. | — | 1 · 10 |
 | `pkg/connector/spec` | the connector catalog's declarative model: what a connector package IS, independent of where it came from (a generated vendor OpenAPI description, a… | — | 5 · 107 |
-| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` | 6 · 155 |
+| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` | 6 · 156 |
 | `pkg/credusage` | meters per-CREDENTIAL monthly LLM spend — the question the org bucket cannot answer. | `Counter` | 3 · 33 |
 | `pkg/deeplink` | builds the URLs that point a human at a page of the studio. | — | 1 · 6 |
 | `pkg/dispatcher` | implements iterion's long-running dispatcher. | `ManagedRunner`, `RunLauncher`, `Runner` | 30 · 192 |
@@ -174,7 +174,7 @@
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveBackendResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 71 · 253 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 53 · 358 |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 53 · 359 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` | 3 · 67 |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `PreparedSpec`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` | 7 · 72 |
@@ -192,7 +192,7 @@
 | `pkg/server/projects` | manages the studio's per-user project registry. | — | 1 · 11 |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` | 5 · 32 |
 | `pkg/skilllib` | implements iterion's first-class skill library: a standalone, operator-curated store of Claude-Code-style SKILL.md skills, stored globally… | — | 2 · 15 |
-| `pkg/store` | implements the file-backed persistence layer for iterion runs. | `BackendSessionStore`, `IRBlobStore`, `InteractionAnswerCAS`, `OutputCorrectionStore`, `PIDStore`, `ParentedRunCreator`, `PlanStore`, `QueuedAttemptStore`, `QueuedInboxVersioner`, `QueuedMessageInsertOnceStore`, `QueuedRunCreator`, `RetryCircuitStore`, `RouteDecisionStore`, `RunBudgetOverridesPatcher`, `RunDiffBlobStore`, `RunFilesStore`, `RunFilesUploader`, `RunGitMetaStore`, `RunListingStore`, `RunLock`, `RunLogStore`, `RunNoteStore`, `RunRetryStore`, `RunStore`, `RunTagStore`, `SpendStore`, `ToolBlobStore`, `TurnStore`, `WatcherCursorStore` | 52 · 537 |
+| `pkg/store` | implements the file-backed persistence layer for iterion runs. | `BackendSessionStore`, `IRBlobStore`, `InteractionAnswerCAS`, `OutputCorrectionStore`, `PIDStore`, `ParentedRunCreator`, `PlanStore`, `QueuedAttemptStore`, `QueuedInboxVersioner`, `QueuedMessageInsertOnceStore`, `QueuedRunCreator`, `RetryCircuitStore`, `RouteDecisionStore`, `RunBudgetOverridesPatcher`, `RunDiffBlobStore`, `RunFilesStore`, `RunFilesUploader`, `RunGitMetaStore`, `RunListingStore`, `RunLock`, `RunLogStore`, `RunNoteStore`, `RunRetryStore`, `RunStore`, `RunTagStore`, `SpendStore`, `ToolBlobStore`, `TurnStore`, `WatcherCursorStore` | 52 · 538 |
 | `pkg/store/blob` | defines the artifact-blob interface implemented by S3 (cloud) and (potentially) a local filesystem variant for testing. | `Client` | 3 · 42 |
 | `pkg/store/mongo` | implements the cloud-mode RunStore on top of MongoDB for run metadata + events + interactions, paired with an external blob.Client (S3) for artifact… | `LockProvider` | 29 · 151 |
 | `pkg/store/storetest` | exposes the conformance suite that every store.RunStore backend must satisfy. | — | 2 · 4 |
