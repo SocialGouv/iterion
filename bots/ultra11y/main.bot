@@ -553,7 +553,7 @@ print(json.dumps({'todo_path': todo, 'count': int(w.get('count') or 0)}))
 ## it never edits the audited code.
 agent adjudicate:
   backend: "claude_code"
-  model: "${ITERION_ULTRA11Y_MODEL_ADJUDICATE:-claude-opus-5}"
+  model: "${ITERION_ULTRA11Y_MODEL_ADJUDICATE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_ULTRA11Y_EFFORT_ADJUDICATE:-high}"
   input: adjudicate_input
   output: adjudicate_output
@@ -671,7 +671,7 @@ print(json.dumps({'report_path': os.environ['REPORT'], 'issues': kept, 'total': 
 ## set it receives is already the engine's, de-duplicated and capped.
 agent publish:
   backend: "claude_code"
-  model: "${ITERION_ULTRA11Y_MODEL_PUBLISH:-claude-opus-5}"
+  model: "${ITERION_ULTRA11Y_MODEL_PUBLISH:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_ULTRA11Y_EFFORT_PUBLISH:-medium}"
   input: publish_input
   output: publish_output

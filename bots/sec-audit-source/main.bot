@@ -5,28 +5,27 @@
 ##
 ##   0. inventory         — deterministic bounded file/manifest list
 ##                          (prevents detect_tech context overflow).
-##   1. detect_tech       — claw + openai/gpt-5.5, readonly; classifies
+##   1. detect_tech       — claw + openai/gpt-6-sol, readonly; classifies
 ##                          langs / frameworks / managers from inventory.
 ##   2-3. run_*_scanners  — deterministic tool nodes run as ONE
 ##                          sequential branch (generic → js → go →
 ##                          python → custom), not a parallel fan-out, to
 ##                          stay within the runtime's 1-mutating-branch
 ##                          rule. Each lang scanner no-ops on absent langs.
-##   4. triage            — claw + openai/gpt-5.5, readonly,
+##   4. triage            — claude_code + Opus 5.5, readonly,
 ##                          await: best_effort. Reads scanner JSONs
 ##                          + fp-known.yaml → emits candidates[].
-##   5. revalidate        — claw judge, two-phase. May append entries
-##                          to fp-known.yaml via file_edit.
-##   6. report_card       — claude_code (opus 4.7), capabilities
+##   5. voters            — independent disproof sessions; fp_append
+##                          persists the converged false-positive decisions.
+##   6. report_card       — claude_code (Opus 5.5), capabilities
 ##                          board.create + board.label. One issue per
 ##                          surviving finding + writes findings.md.
 ##
-## Backend mix:
-##   - Three claw + openai/gpt-5.5 nodes (detect_tech, triage,
-##     revalidate) keep the LLM-heavy steps cheap.
-##   - One claude_code node (report_card) so the bundled skills/
-##     are mirrored into .claude/skills/ and the board MCP server
-##     is registered with capability-gated tools.
+## Backend routing:
+##   - Triage and independent voters default to claude_code + Opus 5.5.
+##   - Their backend/model/provider overrides allow a deployment-specific
+##     mix; an unconfigured pool has no cross-family diversity.
+##   - report_card uses claude_code with capability-gated board tools.
 ##
 ## Run:
 ##   devbox run -- iterion run bots/sec-audit-source/main.bot \
@@ -46,7 +45,14 @@ vars:
   ## collision policy lets the target checkout's own file win. A name the
   ## bundle does not ship has no file here, and the "not covered" path is
   ## what reports it.
-  bundle_skills_dir:   string = "${BUNDLE_SKILLS_DIR}"
+  ## Constrained absolute so a launch-time override cannot make it empty or
+  ## relative: every reader joins a skill NAME onto it, and a relative join
+  ## resolves against the node's cwd, which is the checkout. The gate reads
+  ## the EXPANDED value, so it refuses "" and "some/dir" while admitting the
+  ## literal a studio form re-sends unmodified. The second branch is what the
+  ## compile-time default check (C161) reads — it compares the LITERAL text,
+  ## never the expansion, so a bare "^/" would refuse this very default.
+  bundle_skills_dir:   string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
   scope_notes:         string = ""
   severity_threshold:  string = "low"
   ## Per-run scanner output (JSON envelopes + shard plumbing). Pure
@@ -2495,13 +2501,13 @@ print(json.dumps({'listing': listing}))
 ## shared those vars with DIFFERENT defaults (detect_tech: claw/gpt-5.5 vs
 ## triage: claude_code/opus), so a user setting ITERION_SEC_AUDIT_BACKEND=claude_code
 ## to make triage "opus-first" (which is ALREADY the default) silently dragged
-## detect_tech onto claude_code+openai/gpt-5.5 — a model the Claude Code CLI
+## detect_tech onto claude_code+openai/gpt-6-sol — a model the Claude Code CLI
 ## cannot run — killing the run at the first node. Decoupled here so the spine
 ## override is safe. To force opus-first triage/voters, set NOTHING (it's the
 ## default); only override the spine var to move OFF claude_code.
 agent detect_tech:
   backend: "${ITERION_SEC_AUDIT_DETECT_BACKEND:-claw}"
-  model: "${ITERION_SEC_AUDIT_DETECT_MODEL:-openai/gpt-5.5}"
+  model: "${ITERION_SEC_AUDIT_DETECT_MODEL:-openai/gpt-6-sol}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_DETECT:-medium}"
   output: tech_output
   system: detect_tech_system
@@ -2594,7 +2600,7 @@ print(json.dumps({
 ## report_card stack and supports write_file via the standard tool surface.
 agent project_context_generate:
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_CONTEXT:-low}"
   input: project_context_generate_input
   output: project_context_output
@@ -2990,6 +2996,7 @@ def _norm_langs(_raw):
     return _out
 langs = _norm_langs(os.environ.get('LANGS', '[]') or '[]')
 skills = os.environ.get('SKILLS_DIR', ''); scan_dir = os.environ['SCAN_DIR']; ws = os.environ['WORKSPACE_DIR']
+if not os.path.isabs(skills): sys.exit('run_lang_scanners: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (skills,))
 env = dict(os.environ); env['SCAN_DIR'] = scan_dir; env['WORKSPACE_DIR'] = ws
 sub = []; paths = {}; errs = []
 for lang in langs:
@@ -4170,6 +4177,7 @@ def _norm_langs(_raw):
     return _out
 _langs = _norm_langs(os.environ.get('LANGS', '[]') or '[]')
 _skills_dir = os.environ.get('SKILLS_DIR', '')
+if not os.path.isabs(_skills_dir): sys.exit('scan_health: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (_skills_dir,))
 LANG = []
 # _lang_outputs maps each SKILL-BACKED detected language (one we ship a
 # lang-<id>.md for, i.e. one we CLAIM to SAST-scan) to its declared output
@@ -4564,7 +4572,7 @@ print(json.dumps({
 ##                                       chain. DEFAULT IS EMPTY → the
 ##                                       node runs on the first-class model
 ##                                       above (opus). Set e.g.
-##                                       `zai:glm-5.2,anthropic:claude-opus-5`
+##                                       `zai:glm-5.2,anthropic:claude-opus-5-5`
 ##                                       to put z.ai's 1M-ctx glm first with
 ##                                       opus on fall-through (ADR-043: GLM is
 ##                                       a second-tier opt-in lane; opus is
@@ -4572,7 +4580,7 @@ print(json.dumps({
 ##                                       output). See ADR-004.
 agent triage:
   backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_MODEL:-claude-opus-5-5}"
   provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_TRIAGE:-high}"
   input: triage_input
@@ -4712,9 +4720,8 @@ print(json.dumps({
 ## by a numeric var). Pattern mirrors Revi's 2-reviewer fan_out_all →
 ## wait_all converge at bots/code-review/main.bot:353-401.
 ##
-## Cross-family agreement signal: v1/v3 = claw + gpt-5.5; v2 =
-## claude_code + claude-opus-5. Differing model families maximise
-## the value of disagreement (cf. Revi's claude/gpt split). Each
+## Independent-session agreement signal: all voters default to Opus 5.5.
+## Cross-family diversity requires explicit deployment overrides. Each
 ## voter is `readonly: true` + `session: fresh` so it cannot bleed
 ## context from other voters and cannot mutate the workspace; the
 ## ONLY mutator in this subgraph is fp_append, downstream of the
@@ -4731,21 +4738,15 @@ print(json.dumps({
 ## (branch_<router>_<node>/<node>) do NOT resolve in a tool command.
 ## Independence is enforced by the prompt, not by parallelism.
 
-## Voter pool — cross-family by design (v1+v3 share a chain; v2 is the
-## Anthropic-family counterweight). Each voter reads the SAME candidate
-## list + the (possibly large) project context, then `git log/blame +
-## read_file ±50` per cited file. That payload is well within glm-5.2's
-## 1M window but overflows gpt-5.5/forfait's effective ~200K — see
-## docs/bot-runs/sec-audit-source.md for the prior stall. So v1+v3 now
-## route through claude_code with the same per-element provider chain as
-## triage (zai:glm-5.2 → anthropic:opus on fall-through), keeping the
-## "different vendor lineage to v2" diversity that the design intends.
-## v2 stays on anthropic/opus standalone (no chain): two voters falling
-## back to opus is enough to preserve a cross-vendor signal at the
-## first attempt without burning extra retry budget on v2.
+## Voter pool: each voter reads the SAME candidates and project context,
+## then git log/blame and the surrounding source. All three default to
+## claude_code + Opus 5.5 in separate sessions. v1/v3 keep configurable
+## backend/model/provider chains for deployments opting into cross-family
+## diversity; an unset chain provides no such diversity. Earlier capacity
+## incidents are recorded in docs/bot-runs/sec-audit-source.md.
 judge voter_v1:
   backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_VOTER_V1_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_VOTER_V1_MODEL:-claude-opus-5-5}"
   provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
   input: voter_input
@@ -4758,7 +4759,7 @@ judge voter_v1:
   readonly: true
 
 judge voter_v2:
-  ## Cross-family voter (claude_code subscription), pinned to the same
+  ## Independent voter (claude_code subscription), pinned to the same
   ## read-plus-shell surface as v1/v3. On claude_code an omitted `tools:`
   ## list is the FULL native toolset, Write/Edit included
   ## (pkg/backend/delegate/claude_code.go: claudeNativeDisallowedTools
@@ -4767,7 +4768,7 @@ judge voter_v2:
   ## it. The list is the first line; the paragraph in disprove_voter_system
   ## is the second.
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
   input: voter_input
   output: voter_output
@@ -4780,7 +4781,7 @@ judge voter_v2:
 
 judge voter_v3:
   backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_VOTER_V3_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_VOTER_V3_MODEL:-claude-opus-5-5}"
   provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
   input: voter_input
@@ -5096,7 +5097,7 @@ agent report_card:
   ## skills/ mirrored to .claude/skills/ and the board MCP server
   ## registered with capability-gated tools.
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REPORT:-medium}"
   input: report_input
   output: report_output
@@ -5491,7 +5492,7 @@ print(json.dumps({
 ## the first time.
 agent patch_author:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_AUTHOR:-high}"
   input: patch_author_input
   output: patch_author_output
@@ -5575,6 +5576,7 @@ if not isinstance(finding, dict):
     finding = {}
 ws = os.environ['WS']
 skills = os.environ['SKILLS']
+if not os.path.isabs(skills): sys.exit('reproduce_rung: BUNDLE_SKILLS_DIR is %r, not an absolute path; a skill name joined onto it would resolve against the working directory of this node, so the data block is not read' % (skills,))
 scanner = (finding.get('scanner') or '').strip()
 matcher = (finding.get('matcher') or '').strip()
 fpath = (finding.get('file') or '').strip()
@@ -5685,7 +5687,7 @@ except Exception as e:
 ## the prompt restricts it to read-only flags.
 judge reattack:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REATTACK:-high}"
   input: reattack_input
   output: reattack_output
@@ -5722,7 +5724,7 @@ compute project_review_input:
 ## patch_author context bleeds in.
 judge reviewer_isolation:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REVIEW:-high}"
   input: review_isolation_input
   output: review_isolation_output
@@ -6107,7 +6109,7 @@ out(result)
 ## warnings on report_card. Acceptable per the D5a contract.
 agent remediation_report:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REPORT:-medium}"
   input: remediation_report_input
   output: remediation_report_output
@@ -6161,7 +6163,7 @@ workflow sec_audit_source:
     ## mode, which keeps \X verbatim, so the backslash reaches the shell and
     ## \" becomes a LITERAL quote character (C143). Nothing here needs
     ## quoting — no value has a space — and the message uses single quotes.
-    post_create: "set -u; want=0.154.0; pfx=$HOME/.npm-global; if ! $pfx/bin/codex --version 2>/dev/null | grep -q $want; then npm install -g --prefix $pfx @openai/codex@$want >/dev/null 2>&1 || echo 'iterion: could not install @openai/codex — deepsec falls back to the codex bundled in the image, which may be too old for the model requested' >&2; fi"
+    post_create: "set -u; want=0.156.1; pfx=$HOME/.npm-global; if ! $pfx/bin/codex --version 2>/dev/null | grep -q $want; then npm install -g --prefix $pfx @openai/codex@$want >/dev/null 2>&1 || echo 'iterion: could not install @openai/codex — deepsec falls back to the codex bundled in the image, which may be too old for the model requested' >&2; fi"
 
   ## An audit READS the repository it is pointed at. The mid-run workspace
   ## checkpoint would `git add -A` the pod's tree — this bot's own

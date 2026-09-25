@@ -1,6 +1,9 @@
 package ir
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Provider-routing diagnostics.
 const (
@@ -19,8 +22,21 @@ const (
 var KnownProviders = map[string]bool{
 	"anthropic": true,
 	"zai":       true,
+	"moonshot":  true,
 	"openai":    true,
 	"auto":      true,
+}
+
+// KnownProviderList renders KnownProviders for the C087 message, sorted.
+// Derived rather than retyped: a diagnostic naming a smaller set than the
+// compiler enforces tells an author a valid hint is a typo.
+func KnownProviderList() string {
+	names := make([]string, 0, len(KnownProviders))
+	for name := range KnownProviders {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // hintIgnoringBackends are the backends that do NOT consume the per-node
@@ -86,13 +102,18 @@ func (c *compiler) validateProviders(w *Workflow) {
 					"%s %q: provider chain element %q is malformed — the `provider:model` form needs both a provider and a model",
 					kind, id, tok)
 			}
-			if hint == "auto" || hint == "" {
+			// Looked up FOLDED, echoed as typed. The runtime folds the hint
+			// before it routes (delegate.normalizeProviderHint), so matching
+			// the literal here would report a hint that works as a typo — and
+			// the fix an author then applies is to delete a working route.
+			folded := strings.ToLower(hint)
+			if folded == "auto" || folded == "" {
 				continue
 			}
-			if !KnownProviders[hint] {
+			if !KnownProviders[folded] {
 				c.warnfAt(DiagUnknownProvider, id, "",
-					"%s %q: provider %q is not a known routing hint (known: anthropic, zai, openai, auto) — it will be ignored and the node falls back to default credential precedence",
-					kind, id, hint)
+					"%s %q: provider %q is not a known routing hint (known: %s) — it will be ignored and the node falls back to default credential precedence",
+					kind, id, hint, KnownProviderList())
 			}
 		}
 		if len(tokens) > 1 && hintIgnoringBackends[backend] {

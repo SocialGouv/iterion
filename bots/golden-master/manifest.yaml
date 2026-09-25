@@ -1,7 +1,7 @@
 name: golden-master
 display_name: Goldy
 icon: 🪞
-version: 0.1.4
+version: 0.1.5
 ## 0.1.3 — reanchor: the `invalid` field of `campaign_input` is declared
 ## `json`, the type of the `{{vars.invalid}}` the edge carries whole
 ## (#1320/#1285).

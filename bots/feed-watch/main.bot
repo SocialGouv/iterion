@@ -1174,7 +1174,7 @@ agent synthesize:
   fallbacks:
     gpt_forfait:
       backend: "claw"
-      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-5.5}"
+      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-6-sol}"
       on: [usage_window]
 
 ## Deterministic link firewall between the LLM and delivery. Extracts

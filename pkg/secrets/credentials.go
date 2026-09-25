@@ -126,13 +126,48 @@ func (c Credentials) IsTenantOwned(slot string) bool {
 // fallback. Slots outside the two shared wires are their own family.
 func WireFamily(slot string) string {
 	switch slot {
-	case string(ProviderAnthropic), string(ProviderZAI), string(OAuthKindClaudeCode):
-		return "anthropic-wire"
+	case string(ProviderAnthropic), string(ProviderZAI), string(ProviderMoonshot), string(OAuthKindClaudeCode):
+		return WireFamilyAnthropic
 	case string(ProviderOpenAI), string(OAuthKindCodex):
-		return "openai-wire"
+		return WireFamilyOpenAI
 	default:
 		return slot
 	}
+}
+
+// The two shared wire families WireFamily returns. Named because callers
+// now BRANCH on them (which meter a provider's refusals are recorded under),
+// and a literal repeated at a decision site is how the next provider gets
+// classified by one reader and not the next.
+const (
+	WireFamilyAnthropic = "anthropic-wire"
+	WireFamilyOpenAI    = "openai-wire"
+)
+
+// AnthropicWireSlotOrder is THE precedence of the anthropic-wire credential
+// slots, most-preferred first: the facade keys (each an explicit tenant
+// instrument naming one vendor and one bill), then the Anthropic API key,
+// then the OAuth forfait.
+//
+// It exists because that order was restated at three sites that must never
+// disagree — the delegate that builds the CLI env, the usage meter that
+// charges a refusal, and the spend ledger that names what a route spent.
+// Drift there fails nothing loudly: a reading is charged to a credential the
+// run did not spend, and the evidence-based skip then parks the healthy key
+// and keeps the frozen one. Adding a provider to this wire means adding it
+// HERE, once; the delegate's own precedence is held to this list by
+// TestDefaultPrecedenceFollowsAnthropicWireSlotOrder.
+//
+// It is the claude_code delegate's precedence, where every facade key
+// reroutes the CLI. claw names its provider in the model spec instead, so its
+// sandbox seam keeps its own list of the keys its anthropic provider spends
+// (model.clawAnthropicProviderSlots) — a facade with a claw provider of its
+// own funds no `anthropic/…` node.
+var AnthropicWireSlotOrder = []string{
+	string(ProviderZAI),
+	string(ProviderMoonshot),
+	string(ProviderAnthropic),
+	string(OAuthKindClaudeCode),
 }
 
 // Fingerprint returns the short audit fingerprint of the credential that

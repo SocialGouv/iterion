@@ -36,6 +36,11 @@ func TestAnthropicWireReachable(t *testing.T) {
 		{"claw + openai model prefix only", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai/gpt-5"}}), false},
 		{"claw + anthropic provider", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "anthropic"}}), true},
 		{"claw + zai facade", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "${RESCUE_PROVIDER:-zai}"}}), true},
+		// The Moonshot facade rides the same wire, so a node pinned to it
+		// CAN spend the metered subscription's sibling credential — the
+		// pre-flight must stay armed for it exactly as for z.ai.
+		{"claw + moonshot facade", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "moonshot"}}), true},
+		{"claw + moonshot/ model prefix", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "moonshot/kimi-k2"}}), true},
 		// A provider the executor resolves from the run's vars is unknown
 		// to this walk: it defers, like "auto", and the wire stays reachable.
 		{"claw + templated provider defers", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "{{vars.p}}"}}), true},

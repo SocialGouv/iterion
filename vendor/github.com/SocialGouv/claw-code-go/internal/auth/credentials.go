@@ -116,8 +116,9 @@ func GetActiveProvider() string {
 //  1. ANTHROPIC_API_KEY env var  → provider "anthropic" / method "api_key"
 //  2. OPENAI_API_KEY env var     → provider "openai"    / method "api_key"
 //  3. ZAI_API_KEY env var        → provider "zai"       / method "api_key"
-//  4. Active provider in ~/.claw-code/credentials.json
-//  5. Legacy ~/.claw-code/auth.json (Anthropic OAuth from Phase 3 flows)
+//  4. MOONSHOT_API_KEY env var   → provider "moonshot"  / method "api_key"
+//  5. Active provider in ~/.claw-code/credentials.json
+//  6. Legacy ~/.claw-code/auth.json (Anthropic OAuth from Phase 3 flows)
 func ResolveCredentials() (provider, token, method string, err error) {
 	// Env-var overrides take precedence over any stored state.
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
@@ -133,6 +134,13 @@ func ResolveCredentials() (provider, token, method string, err error) {
 	// store's default.
 	if key := os.Getenv("ZAI_API_KEY"); key != "" {
 		return "zai", key, "api_key", nil
+	}
+	// Moonshot's native key: provider "moonshot", Kimi through the
+	// Anthropic-compatible endpoint. Same placement rule as z.ai above —
+	// after the ANTHROPIC_* pair, so an operator who pointed
+	// ANTHROPIC_BASE_URL at Moonshot keeps that explicit choice.
+	if key := os.Getenv("MOONSHOT_API_KEY"); key != "" {
+		return "moonshot", key, "api_key", nil
 	}
 
 	// Try the credentials store.

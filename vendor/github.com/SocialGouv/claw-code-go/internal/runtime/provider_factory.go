@@ -7,6 +7,7 @@ import (
 	anthropicprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/anthropic"
 	bedrockprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/bedrock"
 	foundryprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/foundry"
+	moonshotprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/moonshot"
 	openaiprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/vertex"
 	zaiprovider "github.com/SocialGouv/claw-code-go/internal/api/providers/zai"
@@ -14,13 +15,15 @@ import (
 
 // SelectProvider returns the Provider for the given name.
 // Supported: "anthropic" (default), "openai", "xai", "dashscope", "zai",
-// "bedrock", "vertex", "foundry".
+// "moonshot", "bedrock", "vertex", "foundry".
 func SelectProvider(name string) api.Provider {
 	switch name {
 	case "openai", "xai", "dashscope":
 		return openaiprovider.New()
 	case "zai":
 		return zaiprovider.New()
+	case "moonshot":
+		return moonshotprovider.New()
 	case "bedrock":
 		return bedrockprovider.New()
 	case "vertex":

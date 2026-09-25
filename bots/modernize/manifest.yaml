@@ -1,7 +1,7 @@
 name: modernize
 display_name: Morphy
 icon: 🧱
-version: 0.5.0
+version: 0.5.1
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,

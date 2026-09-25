@@ -17,6 +17,7 @@ import (
 	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
 	bedrockprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/bedrock"
 	foundryprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/foundry"
+	moonshotprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/moonshot"
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 
@@ -283,6 +284,48 @@ func (r *Registry) registerDefaults() {
 			BaseURL: xaiBaseURL(),
 		}))
 	}
+	// Moonshot — the Kimi family through Moonshot's Anthropic-compatible
+	// endpoint. Auth via MOONSHOT_API_KEY (or cloud BYOK under provider
+	// "moonshot"). Model specs look like `moonshot/kimi-k2`. No Claude-forfait
+	// or subscription path applies: this wire only ever takes an account key.
+	r.providers["moonshot"] = func(modelID string) (api.APIClient, error) {
+		key := strings.TrimSpace(os.Getenv("MOONSHOT_API_KEY"))
+		if key == "" {
+			// Named rather than degraded. A client built with no credential
+			// is non-nil, so the caller proceeds and every call answers 401
+			// with nothing saying which variable was missing — issue #687's
+			// shape, and the reason the anthropic ctx factory refuses too.
+			return nil, fmt.Errorf("no Moonshot credential: set MOONSHOT_API_KEY, or attach a BYOK key under provider %q", secrets.ProviderMoonshot)
+		}
+		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  key,
+			Model:   modelID,
+			BaseURL: moonshotBaseURL(),
+		}))
+	}
+	r.providersWithKey["moonshot"] = func(modelID, apiKey string) (api.APIClient, error) {
+		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: moonshotBaseURL(),
+		}))
+	}
+}
+
+// moonshotBaseURL resolves the Anthropic-compatible host for Moonshot: an
+// explicit MOONSHOT_BASE_URL (operator / proxy / the .cn gateway), otherwise
+// the published endpoint.
+//
+// Deliberately NOT ANTHROPIC_BASE_URL, unlike the anthropic factory's z.ai
+// fallback above: that variable is z.ai's own documented wiring knob, so on a
+// host configured for z.ai it holds z.ai's endpoint — reading it here would
+// send a Moonshot key to another vendor's gateway. Same reasoning, and the
+// same variable, as delegate.moonshotEnv.
+func moonshotBaseURL() string {
+	if base := strings.TrimSpace(os.Getenv("MOONSHOT_BASE_URL")); base != "" {
+		return base
+	}
+	return secrets.MoonshotDefaultBaseURL
 }
 
 // xaiBaseURL resolves the OpenAI-compatible host for xAI. Prefer an

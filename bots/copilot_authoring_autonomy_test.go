@@ -51,7 +51,7 @@ func TestCopilotOwnsRepairsInsideTheAuthoringPerimeter(t *testing.T) {
 
 	reflectAgent := copilotContractSection(t, main, "agent reflect:", "judge judge:")
 	if !strings.Contains(reflectAgent, "session_slot: assistant_reflection") ||
-		!strings.Contains(reflectAgent, "model: \"${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-5.6-sol}\"") {
+		!strings.Contains(reflectAgent, "model: \"${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-6-sol}\"") {
 		t.Error("Copi reflection must retain its own persisted Sol session")
 	}
 	if strings.Contains(reflectAgent, "interaction: human") || strings.Contains(reflectAgent, "assistant_actions") {

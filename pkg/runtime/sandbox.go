@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -2196,7 +2197,15 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	copyBased := sharedSandboxIsCopyBased(shared.Run)
 	pushed := 0
 	if refresher, ok := shared.Run.(sandbox.WorkspaceFileRefresher); ok {
-		pushed = writeThroughMirroredSkills(ctx, e.workDir, refresher, e.logger)
+		// clearBorrowedSandboxResources emptied every borrowed entry in the
+		// copy above — the parent's engine-owned skills copy among them, saved
+		// by beginRunResources and restored when this child's scope ends. This
+		// refills them from the child's host mirror.
+		var werr error
+		pushed, werr = writeThroughMirroredSkills(ctx, e.workDir, refresher, e.logger)
+		if werr != nil {
+			return devboxCleanup, fmt.Errorf("runtime: the engine-owned skills copy did not land in the adopted sandbox, whose own copy was emptied for this child; a reader would report every name it cannot find as not covered: %w", werr)
+		}
 	}
 	// What the child does NOT get in a shared sandbox, said once, in the
 	// events: its own file secrets are not materialised at adoption (no
@@ -2249,21 +2258,42 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 // what the copy lacks. Each write is bounded on its own. Returns the count
 // written; a failed write is logged and skipped — a skill the agent cannot
 // read is a degraded run, not a dead one.
-func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher sandbox.WorkspaceFileRefresher, logger *iterlog.Logger) int {
+//
+// It walks childResourcePaths — the entries clearBorrowedSandboxResources has
+// just emptied in the copy — so whatever the reset removes, this refills.
+//
+// The engine-owned copy is the ONE exception, and returns an error. Its
+// directory was emptied in the container a moment ago so the parent's names
+// could not answer for this child; a file that then fails to land leaves the
+// child with a copy that is partly or wholly missing, and a reader finding no
+// entry for a name reports it as not covered. That is a security verdict
+// quietly downgraded — the outcome the reset exists to prevent — so adoption
+// fails closed at both halves or neither.
+func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher sandbox.WorkspaceFileRefresher, logger *iterlog.Logger) (int, error) {
 	const perFile = 30 * time.Second
 	n := 0
-	push := func(path string) {
+	var ownedErr error
+	push := func(path string, owned bool) {
 		rel, rerr := filepath.Rel(workDir, path)
 		if rerr != nil {
+			if owned && ownedErr == nil {
+				ownedErr = fmt.Errorf("runtime: %s is not under the run workspace %s: %w", path, workDir, rerr)
+			}
 			return
 		}
 		body, rerr := os.ReadFile(path)
 		if rerr != nil {
+			if owned && ownedErr == nil {
+				ownedErr = fmt.Errorf("runtime: read %s for write-through: %w", rel, rerr)
+			}
 			return
 		}
 		wctx, cancel := context.WithTimeout(ctx, perFile)
 		defer cancel()
 		if werr := refresher.RefreshWorkspaceFile(wctx, filepath.ToSlash(rel), body); werr != nil {
+			if owned && ownedErr == nil {
+				ownedErr = fmt.Errorf("runtime: write %s into the shared sandbox: %w", rel, werr)
+			}
 			if logger != nil {
 				logger.Warn("runtime: write-through of %s into the shared sandbox failed: %v", rel, werr)
 			}
@@ -2271,20 +2301,26 @@ func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher s
 		}
 		n++
 	}
-	for _, sub := range []string{"skills", "commands", "agents", ownedSkillsDirName} {
-		root := filepath.Join(workDir, ".claude", sub)
+	for _, name := range childResourcePaths {
+		owned := name == ownedSkillsDirName
+		root := filepath.Join(workDir, ".claude", name)
+		// A root that does not exist is an entry this run has nothing for
+		// (settings.json is a file root: the walk visits it alone). Any other
+		// error inside the owned copy is a file that will not land.
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				if owned && ownedErr == nil && (path != root || !errors.Is(err, fs.ErrNotExist)) {
+					ownedErr = fmt.Errorf("runtime: walk %s for write-through: %w", path, err)
+				}
 				return nil
 			}
-			push(path)
+			if !d.IsDir() {
+				push(path, owned)
+			}
 			return nil
 		})
 	}
-	if settings := filepath.Join(workDir, ".claude", "settings.json"); fileExists(settings) {
-		push(settings)
-	}
-	return n
+	return n, ownedErr
 }
 
 func fileExists(path string) bool {

@@ -1,7 +1,7 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.9
+version: 3.5.10
 ## 3.5.9 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside four prompts (campaign_system 16,
 ## campaign_user 7, finalize_mr_system 6, finalize_mr_user 4 — 33 in all) now
