@@ -2430,7 +2430,7 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		{"4111111111111111", "4111111111111111"},
 		{"0612345678", "0612345678"},
 	}
-	glue := []string{"登录", "é", "д", "λ", "ع", ".", ",", ";", ":", "!", "?", "(", ")", "[", "]", "\"", "'", "`", "🙂", "\u200b", "\u200d", "\u00a0", "\u3000"}
+	glue := []string{"登录", "é", "д", "λ", "ع", "٣", ".", ",", ";", ":", "!", "?", "(", ")", "[", "]", "\"", "'", "`", "🙂", "\u200b", "\u200d", "\u00a0", "\u3000"}
 	scan := func(name string, lines []string) (map[string]any, string) {
 		raw := filepath.Join(h.scratch, name+".jsonl")
 		var buf strings.Builder
@@ -2480,20 +2480,79 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		}
 	}
 	// A secret by its key, in the shapes logs carry it — an environment
-	// variable, a JSON field, a camelCase name, a command-line flag, Basic
-	// credentials: its value never comes out; counters and paths named
-	// after a secret word raise no false leak.
-	for _, shape := range []string{"DB_PASSWORD=hunter2hunter2", "API_TOKEN=hunter2hunter2", "CLIENT_SECRET=hunter2hunter2",
-		"AWS_SECRET_ACCESS_KEY=hunter2hunter2", "SECRET_KEY_BASE=hunter2hunter2", `{"password":"hunter2hunter2"}`, `{"api_key": "hunter2hunter2"}`,
-		`{"dbPassword":"hunter2hunter2"}`, "dbPassword=hunter2hunter2", "--password hunter2hunter2", "-token hunter2hunter2",
-		"Authorization: Basic aHVudGVyMmh1bnRlcjI="} {
-		if _, all := scan("shape", []string{"ERROR config " + shape + " rejected"}); strings.Contains(all, "hunter2hunter2") || strings.Contains(all, "aHVudGVyMmh1bnRlcjI=") {
-			t.Fatalf("a secret in the shape %q escapes the scan", shape)
+	// variable and the suffixes a secret name takes, a JSON field, a camelCase
+	// name, a quoted value running to its closing quote, a command-line flag,
+	// `=>`, a short value; and credentials outside a key — a header scheme,
+	// Basic, SQL, a DSN, a well-known token prefix: the value never comes out.
+	long := strings.Repeat("Zq7h9xAb3c", 5)
+	for _, c := range []struct{ shape, secret string }{
+		{"DB_PASSWORD=hunter2hunter2", "hunter2hunter2"}, {"API_TOKEN=hunter2hunter2", "hunter2hunter2"}, {"CLIENT_SECRET=hunter2hunter2", "hunter2hunter2"},
+		{"AWS_SECRET_ACCESS_KEY=hunter2hunter2", "hunter2hunter2"}, {"SECRET_KEY_BASE=hunter2hunter2", "hunter2hunter2"},
+		{`{"password":"hunter2hunter2"}`, "hunter2hunter2"}, {`{"api_key": "hunter2hunter2"}`, "hunter2hunter2"}, {`{"dbPassword":"hunter2hunter2"}`, "hunter2hunter2"},
+		{"dbPassword=hunter2hunter2", "hunter2hunter2"}, {"--password hunter2hunter2", "hunter2hunter2"}, {"-token hunter2hunter2", "hunter2hunter2"},
+		{"Authorization: Basic aHVudGVyMmh1bnRlcjI=", "aHVudGVyMmh1bnRlcjI="},
+		{"SECRET_KEY=Zq7h9xAb3c", "Zq7h9xAb3c"}, {"JWT_SECRET_KEY=Zq7h9xAb3d", "Zq7h9xAb3d"}, {"STRIPE_SECRET_KEY=Zq7h9xAb3e", "Zq7h9xAb3e"},
+		{"secretKey: Zq7h9xAb3f", "Zq7h9xAb3f"}, {"CLIENT_SECRET_VALUE=Zq7h9xAb3g", "Zq7h9xAb3g"}, {"DB_PASSWORD_PROD=Zq7h9xAb3h", "Zq7h9xAb3h"},
+		{"PASSWORD1=Zq7h9xAb3i", "Zq7h9xAb3i"}, {"ADMIN_PASSWORD_2=Zq7h9xAb3j", "Zq7h9xAb3j"}, {"TOKEN_V2=Zq7h9xAb3k", "Zq7h9xAb3k"},
+		{"Config{DBPassword:Zq7h9xAb3l}", "Zq7h9xAb3l"},
+		{`"password":"Xy7;abcdefgh"`, "Xy7;abcdefgh"}, {`password="Ab1,cd2efgh"`, "Ab1,cd2efgh"}, {`password: "my secret phrase"`, "my secret phrase"},
+		{`"password": "correct horse battery"`, "horse battery"},
+		{"--db-password Zq7h9xAb3m", "Zq7h9xAb3m"}, {"--auth-token Zq7h9xAb3n", "Zq7h9xAb3n"}, {"--client-secret Zq7h9xAb3o", "Zq7h9xAb3o"},
+		{`{"password"=>"Zq7h9xAb3p"}`, "Zq7h9xAb3p"}, {"[password] => Zq7h9xAb3q", "Zq7h9xAb3q"}, {`'password' => 'Zq7h9xAb3r'`, "Zq7h9xAb3r"},
+		{"password=abc123", "abc123"}, {`"token": "Zq7h9x"`, "Zq7h9x"}, {"DB_PASSWORD=Zq7h9xA", "Zq7h9xA"}, {"API_KEY=Zq7h9xAb3s", "Zq7h9xAb3s"},
+		{"Authorization: Token " + long, long}, {"Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"},
+		{"CREATE USER app IDENTIFIED BY 'Zq7h9xAb3t'", "Zq7h9xAb3t"}, {"ALTER ROLE app WITH PASSWORD 'Zq7h9xAb3u'", "Zq7h9xAb3u"},
+		{"redis://:Zq7h9xAb3v@redis:6379/0", "Zq7h9xAb3v"}, {"postgres://app:Zq7h9xAb3w@db:5432/app", "Zq7h9xAb3w"},
+		{"sk_live_" + long[:24], long[:24]}, {"AIza" + long[:35], long[:35]}, {"hf_" + long[:34], long[:34]}, {"npm_" + long[:36], long[:36]},
+		{"SG." + long[:22] + "." + long[:43], long[:43]},
+	} {
+		if _, all := scan("shape", []string{"ERROR config " + c.shape + " rejected"}); strings.Contains(all, c.secret) {
+			t.Fatalf("a secret in the shape %q escapes the scan", c.shape)
 		}
 	}
-	out, _ = scan("benign", []string{"INFO usage total_tokens=123456", "INFO token_count=4096 ok", "INFO PASSWORD_FILE=/run/secrets/db"})
-	if strings.Contains(fmt.Sprint(out["leak_findings"]), "secret_kv") {
-		t.Fatalf("a counter or a path named after a secret word is no secret: %v", out["leak_findings"])
+	// Look-alikes raise no secret finding: counters and paths named after a
+	// secret word, a logger's own mask or placeholder, a reference to a
+	// variable, API pagination tokens, a status word, CLI usage and flag
+	// errors, `basic` followed by an ordinary word.
+	benign := []string{"INFO usage total_tokens=123456", "INFO token_count=4096 ok", "INFO PASSWORD_FILE=/run/secrets/db",
+		`{"password":"********"}`, `{"password":"[FILTERED]"}`, `{"req":{"password":"[Redacted]"}}`, "password: xxxxxxxx", "password=${DB_PASSWORD}",
+		`{"prompt_token": 123456}`, `{"input_token":150000}`, `{"cached_token": 204800}`,
+		"NextToken=AAAAQmFzZTY0UGFnZVRva2Vu", `{"nextPageToken": "CAoQAA7h9xAb"}`, "next_token=eyJvZmZzZXQiOjEwMH0&limit=100", "page_token=CAoQAA7h",
+		`{"continuationToken": "abc123def456"}`, "sync_token: 7h9xAb3cZq", "resume_token=826C1A2B3C4D", "ContinuationToken=1ueGcxLPRx1Tr",
+		"refreshToken: expired", "csrfToken: missing", "invalidToken: signature mismatch", "resetPassword: failed", "forgotPassword: request accepted",
+		"Error: --token requires a value", "missing --password argument", "usage: backup --password PASSWORD --host HOST", "--api-key missing",
+		"option --passwd ignored", "--token /run/secrets/token",
+		"basic authentication/authorization failed", "using basic internationalization support", "basic misconfiguration detected",
+		"auth=basic /api/v1/users/login 401", "falling back to basic authentication.method"}
+	secretFinding := func(out map[string]any) bool {
+		f := fmt.Sprint(out["leak_findings"])
+		return strings.Contains(f, "class:secret_kv") || strings.Contains(f, "class:bearer")
+	}
+	if out, _ := scan("benign", benign); secretFinding(out) {
+		for _, l := range benign {
+			if o, _ := scan("benign-one", []string{l}); secretFinding(o) {
+				t.Fatalf("a look-alike raises a secret finding: %q -> %v", l, o["leak_findings"])
+			}
+		}
+		t.Fatalf("look-alikes raise a secret finding: %v", out["leak_findings"])
+	}
+	// A run of host names and short words is no IBAN because some prefix of it
+	// passes the checksum — the country's IBAN length decides; two IBANs one
+	// space apart are both found.
+	out, _ = scan("iban-prose", []string{"INFO job TD32 done cart next shut last with ok", "INFO job WL58 item done sent shut fail last item fail ok"})
+	if strings.Contains(fmt.Sprint(out["leak_findings"]), "class:iban") {
+		t.Fatalf("IBAN-shaped prose is no IBAN: %v", out["leak_findings"])
+	}
+	out, all = scan("iban-pair", []string{"ERROR payer payee BE68 5390 0754 7034 NL91 ABNA 0417 1643 00 refused"})
+	if strings.Contains(all, "NL91 ABNA") || strings.Contains(all, "BE68 5390") || !strings.Contains(fmt.Sprint(out["leak_findings"]), "class:iban count:2") {
+		t.Fatalf("two IBANs one space apart are both found: %v", out["leak_findings"])
+	}
+	// A secret's sample shows its length only, never a character of it.
+	out, _ = scan("sample", []string{"ERROR login password=abc123def rejected"})
+	for _, f := range out["leak_findings"].([]any) {
+		if m := f.(map[string]any); m["class"] == "secret_kv" && m["sample_masked"] != "*** (9 chars)" {
+			t.Fatalf("a secret's sample shows its length only: %q", m["sample_masked"])
+		}
 	}
 	// A card word glued to a letter of another script still makes the
 	// digit run next to it a card: a leak found, not only a masked number.
@@ -2526,10 +2585,16 @@ func TestProdWatch_NoSecretEscapesAnyOutput(t *testing.T) {
 		if r := pwCoverageReasons(outs["decide"]); !strings.Contains(r, "not one token on one line") {
 			t.Fatalf("token %q: the lanes name the malformed token, without quoting it: %q", token, r)
 		}
+		for _, lane := range []string{"poll_loki", "poll_prom"} {
+			if e := fmt.Sprint(outs[lane]["errors"]); !strings.Contains(e, "not one token on one line") {
+				t.Fatalf("token %q: %s names the malformed token on its own errors: %s", token, lane, e)
+			}
+		}
 	}
 	alert := []map[string]any{{"fingerprint": "probe:api", "kind": "probe", "severity": "critical", "state": "new", "title_key": "probe_down", "title_arg": "api",
 		"detail_key": "probe_detail", "fields": map[string]any{}, "evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
-	for _, hook := range []string{"hooks.example/CANARY", "/hook CANARY", "/hook\x01CANARY"} {
+	for _, hook := range []string{"hooks.example/CANARY", "/hook CANARY", "/hook\x01CANARY", "https://bob:CANARY@hooks.example.com/hooks/abc",
+		"https://hooks.example.com:CANARY/hooks/abc", "file://localhost/CANARY-hook"} {
 		h := newPWHarness(t)
 		if strings.HasPrefix(hook, "/") {
 			hook = h.srv.URL + hook
@@ -2661,15 +2726,26 @@ func TestProdWatch_UpstreamTextStaysOut(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	const pii = "jean.dupont@example.org"
 	for _, c := range []struct {
-		name string
-		loki map[string]any
-		prom map[string]any
+		name      string
+		loki      map[string]any
+		prom      map[string]any
+		promW     []string // Prometheus warnings on a breached value
+		rawG      string   // the status line every Grafana call answers with
+		rawH      string   // the status line the health endpoint answers with
+		version   string   // the health endpoint's version field
+		announced bool     // a lane error the coverage note announces
 	}{
-		{"a Loki status that is text", map[string]any{"status": "no data for " + pii}, nil},
-		{"a line in the timestamp slot", map[string]any{"status": "success", "data": map[string]any{"resultType": "streams",
-			"result": []any{map[string]any{"stream": map[string]any{"container": "api"}, "values": []any{[]any{"login failed for " + pii, "x"}}}}}}, nil},
-		{"a Prometheus scalar that is text", nil, map[string]any{"status": "success", "data": map[string]any{"resultType": "scalar", "result": []any{0, "user " + pii}}}},
-		{"an error type that is text", nil, map[string]any{"status": "error", "errorType": "bad data for " + pii}},
+		{name: "a Loki status that is text", loki: map[string]any{"status": "no data for " + pii}, announced: true},
+		{name: "a line in the timestamp slot", loki: map[string]any{"status": "success", "data": map[string]any{"resultType": "streams",
+			"result": []any{map[string]any{"stream": map[string]any{"container": "api"}, "values": []any{[]any{"login failed for " + pii, "x"}}}}}}, announced: true},
+		{name: "a Prometheus scalar that is text", prom: map[string]any{"status": "success", "data": map[string]any{"resultType": "scalar", "result": []any{0, "user " + pii}}}, announced: true},
+		{name: "an error type that is text", prom: map[string]any{"status": "error", "errorType": "bad data for " + pii}, announced: true},
+		{name: "a Grafana 5xx reason phrase that is text", rawG: "HTTP/1.1 500 login failed for " + pii, announced: true},
+		{name: "a Grafana 4xx reason phrase that is text", rawG: "HTTP/1.1 400 bad data for " + pii, announced: true},
+		{name: "a health status line that is text", rawH: "login failed for " + pii},
+		{name: "a health reason phrase that is text", rawH: "HTTP/1.1 500 login failed for " + pii},
+		{name: "a version that is not a version", version: "user " + pii},
+		{name: "Prometheus warnings quoting text", promW: []string{"bad label value for " + pii}},
 	} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
@@ -2681,12 +2757,18 @@ func TestProdWatch_UpstreamTextStaysOut(t *testing.T) {
 			if c.prom != nil {
 				h.prom.Store(map[string]pwProm{"restarts-q": {Body: c.prom}})
 			}
+			if c.promW != nil {
+				h.prom.Store(map[string]pwProm{"restarts-q": {Value: "999", Warnings: c.promW}})
+			}
+			h.rawGrafana.Store(c.rawG)
+			h.rawHealth.Store(c.rawH)
+			h.healthVersion.Store(c.version)
 			outs := h.tick(t, wf, false)
 			if all := pwEverything(t, h, outs); strings.Contains(all, pii) {
 				i := strings.Index(all, pii)
 				t.Fatalf("upstream text escapes: …%s…", all[max(0, i-120):min(len(all), i+40)])
 			}
-			if r := pwCoverageReasons(outs["decide"]); r == "" {
+			if r := pwCoverageReasons(outs["decide"]); c.announced && r == "" {
 				t.Fatalf("the lane error is announced: %v", outs["decide"]["stale_sources"])
 			}
 		})
@@ -2719,5 +2801,299 @@ func TestProdWatch_ZeroWidthWindowStillReportsAnUnusableGrafana(t *testing.T) {
 	}
 	if e := fmt.Sprint(loki["per_query"].(map[string]any)["errors"].(map[string]any)["error"]); !strings.Contains(e, "not bound or empty") {
 		t.Fatalf("the query names the cause: %q", e)
+	}
+}
+
+// TestProdWatch_ABrokenFirstTokenLosesNoLine: a token unusable from the first
+// tick on — whatever the bootstrap window, zero minutes included — loses no
+// line: once the token works, the window reopens where the first one opened,
+// and the lines logged meanwhile are read.
+func TestProdWatch_ABrokenFirstTokenLosesNoLine(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for _, boot := range []int{0, 10} {
+		h := newPWHarness(t)
+		h.writeConfig(t, func(cfg map[string]any) {
+			lokiOnly(1000, 60)(cfg)
+			cfg["loki"].(map[string]any)["bootstrap_window_minutes"] = boot
+			cfg["probes"] = []map[string]any{{"id": "api", "url": h.srv.URL + "/health", "expect_status": 200, "severity": "critical"}}
+		})
+		if err := os.WriteFile(h.tokenFile, []byte("\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		vars := cursorVars(h, 60, 0, 5000)
+		h.cursorTick(t, wf, vars)
+		time.Sleep(30 * time.Millisecond)
+		h.lines.Store([]pwLine{{TS: time.Now().UnixNano(), Line: "ERROR payment refused while the token was broken", Container: "api", Q: "errors-q"}})
+		time.Sleep(30 * time.Millisecond)
+		h.cursorTick(t, wf, vars)
+		if err := os.WriteFile(h.tokenFile, []byte(pwToken+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+		read := 0
+		for i := 0; i < 2; i++ {
+			read += int(h.cursorTick(t, wf, vars)["poll_loki"]["lines"].(float64))
+		}
+		if read != 1 {
+			t.Fatalf("bootstrap %d min: the line logged while the token was broken is read once it works: %d line(s)", boot, read)
+		}
+	}
+}
+
+// TestProdWatch_CoverageNoteNamesWhatItCut: the note says what fits its
+// budget, what is new first, and counts as said only what it said — after an
+// outage that gaps many queries, the one still losing lines is named, then
+// the note stops; a Prometheus error behind Loki errors is named; a component
+// said again is stamped again.
+func TestProdWatch_CoverageNoteNamesWhatItCut(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	win := func(gap bool, err string) map[string]any {
+		return map[string]any{"lines": 20, "error": err, "truncated": false, "gap": gap, "from_ns": "100", "to_ns": "900"}
+	}
+	names := []string{"api-errors", "billing-errors", "checkout-errors", "jobs-errors", "mailer-errors", "orders-errors", "payments-errors", "search-errors"}
+	gaps := func(gapped ...string) map[string]any {
+		pq := map[string]any{}
+		for _, n := range names {
+			pq[n] = win(false, "")
+		}
+		for _, n := range gapped {
+			pq[n] = win(true, "")
+		}
+		return pq
+	}
+	for _, next := range [][]string{{"search-errors"}, names} {
+		h := newPWHarness(t)
+		state := map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{"loki": map[string]any{}}, "incidents": map[string]any{}, "health": map[string]any{}}
+		tick := func(pq map[string]any) string {
+			out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial"}, state, map[string]any{
+				"loki_per_query": pq, "lanes": map[string]any{"loki": true, "prometheus": false, "probes": false}})
+			if err != nil {
+				t.Fatalf("decide: %v %s", err, stderr)
+			}
+			state = pwStateNext(t, out)
+			return pwCoverageReasons(out)
+		}
+		r1 := tick(gaps(names...))
+		r2 := tick(gaps(next...))
+		r3 := tick(gaps(next...))
+		if len(r1) > 600 || !strings.Contains(r1+r2, "search-errors: gap") {
+			t.Fatalf("after %v: the query still losing lines is named within the budget: %q / %q", next, r1, r2)
+		}
+		if r3 != "" {
+			t.Fatalf("after %v: once every component is said, the note stops: %q", next, r3)
+		}
+	}
+	h := newPWHarness(t)
+	state := map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{"loki": map[string]any{}}, "incidents": map[string]any{}, "health": map[string]any{}}
+	const lokiErr = "URLError: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)>"
+	const promErr = "LaneError: Prometheus answered status error (execution)"
+	tick := func(lokiDown bool) string {
+		pq, lerr := map[string]any{"zz-ok": win(false, "")}, []any{}
+		for _, n := range names[:5] {
+			pq[n] = win(false, "")
+			if lokiDown {
+				pq[n] = win(false, lokiErr)
+				lerr = append(lerr, map[string]any{"query": n, "error": lokiErr})
+			}
+		}
+		out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial"}, state, map[string]any{
+			"loki_per_query": pq, "loki_errors": lerr, "loki_ok": true, "prom_ok": false,
+			"prom_errors":  []any{map[string]any{"probe": "restarts", "error": promErr}},
+			"prom_results": []any{map[string]any{"id": "restarts", "state": "error", "error": promErr}, map[string]any{"id": "cpu", "state": "healthy"}}})
+		if err != nil {
+			t.Fatalf("decide: %v %s", err, stderr)
+		}
+		state = pwStateNext(t, out)
+		return pwCoverageReasons(out)
+	}
+	if r1, r2 := tick(true), tick(false); !strings.Contains(r1+r2, "Prometheus answered status error") {
+		t.Fatalf("a Prometheus error behind Loki errors is named: %q / %q", r1, r2)
+	}
+	old := hoursAgo(20)
+	state["coverage_posted"] = map[string]any{"gap: api-errors": old}
+	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial"}, state, map[string]any{
+		"loki_per_query": gaps("api-errors", "billing-errors"), "lanes": map[string]any{"loki": true, "prometheus": false, "probes": false}})
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, stderr)
+	}
+	if r := pwCoverageReasons(out); !strings.Contains(r, "api-errors: gap") {
+		t.Fatalf("a note for a new component says the older one too: %q", r)
+	}
+	if stamp := pwStateNext(t, out)["coverage_posted"].(map[string]any)["gap: api-errors"]; stamp == old {
+		t.Fatalf("a component said again is stamped again: %v", stamp)
+	}
+}
+
+// TestProdWatch_ALoggerMaskIsNoLeakAndHidesNone: a logger's own mask where a
+// password was (`[Redacted]`, pino's default) raises no leak; the real
+// password logged next is a new leak alert, not swallowed by a false one.
+func TestProdWatch_ALoggerMaskIsNoLeakAndHidesNone(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.tick(t, wf, false)
+	line := func(pw string) {
+		time.Sleep(20 * time.Millisecond)
+		h.lines.Store([]pwLine{{TS: time.Now().UnixNano(), Line: `{"level":30,"msg":"login","req":{"body":{"user":"42","password":"` + pw + `"}}}`, Container: "api", Q: "sweep-q"}})
+		time.Sleep(20 * time.Millisecond)
+	}
+	line("[Redacted]")
+	if a := strings.Join(alertsOf(t, h.tick(t, wf, false)), ","); strings.Contains(a, "leak") {
+		t.Fatalf("a logger's own mask is no leak: %s", a)
+	}
+	line("Zq7hunter2Xy9")
+	outs := h.tick(t, wf, false)
+	if a := strings.Join(alertsOf(t, outs), ","); !strings.Contains(a, "leak:new:high") {
+		t.Fatalf("the real password logged next is a new leak alert: %s", a)
+	}
+	if all := pwEverything(t, h, outs); strings.Contains(all, "Zq7hunter2Xy9") {
+		t.Fatalf("the real password never comes out")
+	}
+}
+
+// TestProdWatch_LeakSourcesAreEveryQueryThatSawIt: a leak records every
+// query that returned one of its lines — the sweep and a second template
+// query included, however many streams it was found in — so removing one of
+// them never freezes the incident while another still looks.
+func TestProdWatch_LeakSourcesAreEveryQueryThatSawIt(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	queries := func(qs map[string]any) func(cfg map[string]any) {
+		return func(cfg map[string]any) {
+			lokiOnly(1000, 60)(cfg)
+			cfg["loki"].(map[string]any)["queries"] = qs
+		}
+	}
+	for _, c := range []struct {
+		name, class, sources string
+		lines                func(now int64) []pwLine
+		configured, after    map[string]any
+	}{
+		{"one line three queries", "iban", "[a-errors b-errors leak_sweep]", func(now int64) []pwLine {
+			const leak = "ERROR transfer to FR7630006000011234567890189 refused"
+			return []pwLine{{TS: now, Line: leak, Container: "api", Q: "a-q"}, {TS: now, Line: leak, Container: "api", Q: "b-q"}, {TS: now, Line: leak, Container: "api", Q: "sweep-q"}}
+		}, map[string]any{"a-errors": "a-q", "b-errors": "b-q", "leak_sweep": "sweep-q"}, map[string]any{"b-errors": "b-q", "leak_sweep": "sweep-q"}},
+		{"nine streams and one", "email", "[a-errors b-errors]", func(now int64) []pwLine {
+			var lines []pwLine
+			for i := 0; i < 9; i++ {
+				for k := 0; k < 3; k++ {
+					lines = append(lines, pwLine{TS: now + int64(i*10+k), Line: fmt.Sprintf("ERROR user %d login jean.dupont@example.org", i*10+k), Container: fmt.Sprintf("api%d", i), Q: "a-q"})
+				}
+			}
+			return append(lines, pwLine{TS: now + 500, Line: "WARN mail bounced for marie.curie@example.org", Container: "mailer", Q: "b-q"})
+		}, map[string]any{"a-errors": "a-q", "b-errors": "b-q"}, map[string]any{"b-errors": "b-q"}},
+	} {
+		h := newPWHarness(t)
+		h.writeConfig(t, queries(c.configured))
+		h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+		h.lines.Store(c.lines(time.Now().UnixNano()))
+		h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+		st := h.state(t)
+		if rec := st["incidents"].(map[string]any)["leak:"+c.class].(map[string]any); fmt.Sprint(rec["sources"]) != c.sources {
+			t.Fatalf("%s: the leak records every query that returned its lines: %v", c.name, rec["sources"])
+		}
+		for _, r := range st["incidents"].(map[string]any) {
+			r.(map[string]any)["last_seen"] = hoursAgo(49)
+		}
+		h.setState(t, st)
+		h.lines.Store([]pwLine{})
+		h.writeConfig(t, queries(c.after))
+		if quiet := strings.Join(pwQuietFPs(h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))), ","); !strings.Contains(quiet, "leak:"+c.class) {
+			t.Fatalf("%s: a query that found the leak is still configured, so it gets its note: %v", c.name, quiet)
+		}
+	}
+}
+
+// TestProdWatch_AStampInTheFutureSilencesNothing: a stamp a clock running
+// ahead wrote — a component said, an incident notified, a source warned —
+// reads as not said: it never silences what it stamps.
+func TestProdWatch_AStampInTheFutureSilencesNothing(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	const future = "2999-01-01T00:00:00+00:00"
+	state := func() map[string]any {
+		return map[string]any{"version": 1, "generation": 7, "cursors": map[string]any{"loki": map[string]any{"errors": map[string]any{"covered_to_ns": "111", "frontier_ns": "111", "band": []any{}, "overlap_from_ns": "0"}}},
+			"incidents": map[string]any{}, "health": map[string]any{}}
+	}
+	h := newPWHarness(t)
+	st := state()
+	st["coverage_posted"] = map[string]any{"gap: errors": future}
+	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial"}, st, map[string]any{
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": true, "from_ns": "100", "to_ns": "900"}},
+		"lanes":          map[string]any{"loki": true, "prometheus": false, "probes": false}})
+	if err != nil || !strings.Contains(pwCoverageReasons(out), "errors: gap") {
+		t.Fatalf("a component said in the future is said now: %v %s %v", pwCoverageReasons(out), stderr, err)
+	}
+	st = state()
+	st["incidents"] = map[string]any{"probe:api": incident("probe", "critical", true, 0, 0.1)}
+	st["incidents"].(map[string]any)["probe:api"].(map[string]any)["last_notified"] = future
+	probeDown := []map[string]any{{"id": "api", "url": "u", "ok": false, "status": 503, "ms": 5, "error": "HTTP 503", "expected": 200, "severity": "critical"}}
+	out, stderr, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{"http_results": probeDown})
+	if err != nil || strings.Join(alertsOf(t, map[string]map[string]any{"decide": out}), ",") != "probe:reminder:critical" {
+		t.Fatalf("an incident notified in the future is reminded: %v %s %v", out["summary"], stderr, err)
+	}
+	st = state()
+	st["health"] = map[string]any{"prometheus": map[string]any{"last_ok": hoursAgo(10), "last_warned": future}}
+	out, stderr, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, st, map[string]any{
+		"prom_ok": false, "prom_errors": []any{map[string]any{"probe": "restarts", "error": "LaneError: Prometheus answered status error (execution)"}},
+		"lanes": map[string]any{"loki": false, "prometheus": true, "probes": true}, "http_results": []map[string]any{{"id": "api", "url": "u", "ok": true, "status": 200, "ms": 5, "error": "", "expected": 200, "severity": "critical"}}})
+	if err != nil || !strings.Contains(fmt.Sprint(out["stale_sources"]), "source:prometheus") {
+		t.Fatalf("a source warned in the future is warned now: %v %s %v", out["stale_sources"], stderr, err)
+	}
+}
+
+// TestProdWatch_ATokenFileWithAByteOrderMarkStillWorks: a token file an
+// editor saved with a UTF-8 byte-order mark is read as the token alone.
+func TestProdWatch_ATokenFileWithAByteOrderMarkStillWorks(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	if err := os.WriteFile(h.tokenFile, []byte("\ufeff"+pwToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outs := h.tick(t, wf, false)
+	for _, lane := range []string{"poll_loki", "poll_prom"} {
+		if e := outs[lane]["errors"]; fmt.Sprint(e) != "[]" {
+			t.Fatalf("%s reads the token behind a byte-order mark: %v", lane, e)
+		}
+	}
+}
+
+// TestProdWatch_ALokiStatusErrorIsNamed: a Loki answer whose status is
+// "error" is the lane's own message — named as such, not "did not parse".
+func TestProdWatch_ALokiStatusErrorIsNamed(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.lokiBody.Store(map[string]any{"status": "error"})
+	if e := fmt.Sprint(h.tick(t, wf, false)["poll_loki"]["errors"]); !strings.Contains(e, "Loki answered status error") {
+		t.Fatalf("a Loki status error is named: %s", e)
+	}
+}
+
+// TestProdWatch_AnIncidentsSourcesAreTheQueriesThatLastCountedIt: an
+// incident's sources follow the queries that counted it on its last counted
+// tick — not the ones that counted it first.
+func TestProdWatch_AnIncidentsSourcesAreTheQueriesThatLastCountedIt(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		lokiOnly(1000, 60)(cfg)
+		cfg["loki"].(map[string]any)["queries"] = map[string]any{"a-errors": "a-q", "b-errors": "b-q"}
+	})
+	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	const pattern = "ERROR payment gateway refused the card"
+	now := time.Now().UnixNano()
+	h.lines.Store([]pwLine{{TS: now, Line: pattern, Container: "api", Q: "a-q"}, {TS: now, Line: pattern, Container: "api", Q: "b-q"}})
+	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	time.Sleep(20 * time.Millisecond)
+	h.lines.Store([]pwLine{{TS: time.Now().UnixNano(), Line: pattern, Container: "api", Q: "b-q"}})
+	time.Sleep(20 * time.Millisecond)
+	h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
+	if rec := h.state(t)["incidents"].(map[string]any)[pwTemplateFP(pattern)].(map[string]any); fmt.Sprint(rec["sources"]) != "[b-errors]" {
+		t.Fatalf("the sources are the queries that last counted it: %v", rec["sources"])
 	}
 }

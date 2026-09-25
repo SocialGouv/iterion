@@ -222,7 +222,7 @@ schema prom_input:
 
 schema prom_output:
   ## [{id, state (healthy|breached|no_data|error), value, op, threshold,
-  ##   severity, title, warnings, error}]
+  ##   severity, title, warnings (a count), error}]
   results: json
   ok: bool
   errors: json
@@ -708,7 +708,7 @@ tool resolve_release:
   output: release_output
   language: py
   script: |
-    import json, socket, ipaddress
+    import json, re, socket, ipaddress
     import urllib.request, urllib.error
     from urllib.parse import urlsplit
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -762,10 +762,18 @@ tool resolve_release:
         for key in field.split('.'):
             cur = cur.get(key) if isinstance(cur, dict) else None
         value = str(cur).strip() if cur not in (None, '') else ''
-        if not value:
+        if value and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,119}', value):
+            ## A version is one token; anything else is the server's text.
+            note, value = 'field ' + repr(field) + ' is not a version token (its text is withheld)', ''
+        elif not value:
             note = 'field ' + repr(field) + ' absent or empty in the health body'
+    except urllib.error.HTTPError as e:
+        note = 'HTTPError: HTTP Error ' + str(e.code) + ' (the reason phrase is withheld)'
     except Exception as e:
-        note = type(e).__name__ + ': ' + str(e)[:200]
+        ## The transport's message and the node's own travel; anything else
+        ## — a malformed status line — is named by its type.
+        note = type(e).__name__ + (': ' + str(e)[:200] if isinstance(e, (OSError, ValueError))
+                                   else ': the answer did not parse (its text is withheld)')
     print(json.dumps({'release': value[:120], 'release_source': src, 'release_known': False,
                       'note': note or 'unverified until the analysis slice resolves it in the repository'},
                      ensure_ascii=False))
@@ -785,7 +793,7 @@ tool poll_loki:
   output: loki_output
   language: py
   script: |
-    import json, os, socket, ipaddress, time, sys, hashlib
+    import json, os, socket, ipaddress, time, sys, hashlib, http
     import urllib.request, urllib.error
     from urllib.parse import urlsplit, urlencode
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -846,8 +854,16 @@ tool poll_loki:
     def lane_error(e):
         ## What an exception says about an upstream answer can quote it — a
         ## value that did not parse, a line where a number belongs, a header
-        ## holding the token: only the lane's own messages and the
-        ## transport's travel; anything else is named by its type.
+        ## holding the token, an HTTP reason phrase (the server's words): only
+        ## the lane's own messages and the transport's travel, an HTTP error
+        ## as its code and the standard phrase; anything else is named by its
+        ## type.
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                phrase = http.HTTPStatus(e.code).phrase
+            except ValueError:
+                phrase = 'unknown status'
+            return 'HTTPError: HTTP Error ' + str(e.code) + ': ' + phrase
         if isinstance(e, (CredentialRefused, LaneError, OSError)):
             return type(e).__name__ + ': ' + str(e)[:200]
         return type(e).__name__ + ': the answer did not parse (its text is withheld)'
@@ -860,7 +876,7 @@ tool poll_loki:
     token, setup_exc = '', None
     try:
         if token_file and os.path.exists(token_file):
-            with open(token_file, encoding='utf-8') as fh:
+            with open(token_file, encoding='utf-8-sig') as fh:
                 token = fh.read().strip()
         if not token:
             raise CredentialRefused('the grafana_token secret is not bound or empty -- bind a service-account token (Viewer) '
@@ -990,21 +1006,12 @@ tool poll_loki:
                                        frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
                                        overlap_from_ns=str(inherited_from), skipped_overlap=0)
                 continue
-            if frm == to and setup_exc is not None:
-                ## Nothing to read — but the lane cannot be used: that is
-                ## the query's error (its health must not read OK), and the
-                ## cursor stays where it was.
-                err = lane_error(setup_exc)
-                errors.append({'query': name, 'error': err})
-                band, bbase = encode(band_prev)
-                per_query[name] = dict(meta, lines=0, truncated=False, error=err, covered_to_ns=str(prev_to),
-                                       frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
-                                       overlap_from_ns=str(inherited_from), skipped_overlap=0)
-                continue
-            if frm == to:
+            if frm == to and setup_exc is None:
                 ## A zero-width window (a bootstrap of 0 minutes, or a window
                 ## floor at `to`) is fully covered: nothing to read, the
-                ## high-water mark moves to `to`, the band is kept.
+                ## high-water mark moves to `to`, the band is kept. On a lane
+                ## that cannot be used it is a failed walk instead: the
+                ## query's error, the frontier where the window opened.
                 covered = max(to, prev_to)
                 ## Nothing was walked: the frontier stays where the last walk
                 ## stopped (below the mark after a truncated walk — the
@@ -1158,7 +1165,7 @@ tool poll_prom:
   output: prom_output
   language: py
   script: |
-    import json, os, socket, ipaddress, time, math
+    import json, os, socket, ipaddress, time, math, http
     import urllib.request, urllib.error
     from urllib.parse import urlsplit, urlencode
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1208,8 +1215,16 @@ tool poll_prom:
     def lane_error(e):
         ## What an exception says about an upstream answer can quote it — a
         ## value that did not parse, a line where a number belongs, a header
-        ## holding the token: only the lane's own messages and the
-        ## transport's travel; anything else is named by its type.
+        ## holding the token, an HTTP reason phrase (the server's words): only
+        ## the lane's own messages and the transport's travel, an HTTP error
+        ## as its code and the standard phrase; anything else is named by its
+        ## type.
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                phrase = http.HTTPStatus(e.code).phrase
+            except ValueError:
+                phrase = 'unknown status'
+            return 'HTTPError: HTTP Error ' + str(e.code) + ': ' + phrase
         if isinstance(e, (CredentialRefused, LaneError, OSError)):
             return type(e).__name__ + ': ' + str(e)[:200]
         return type(e).__name__ + ': the answer did not parse (its text is withheld)'
@@ -1222,7 +1237,7 @@ tool poll_prom:
     token, setup_exc = '', None
     try:
         if token_file and os.path.exists(token_file):
-            with open(token_file, encoding='utf-8') as fh:
+            with open(token_file, encoding='utf-8-sig') as fh:
                 token = fh.read().strip()
         if not token:
             raise CredentialRefused('the grafana_token secret is not bound or empty -- bind a service-account token (Viewer) '
@@ -1278,7 +1293,7 @@ tool poll_prom:
     results, errors = [], []
     for p in probes:
         res = {'id': p['id'], 'title': p.get('title') or p['id'], 'op': p['op'], 'threshold': p['threshold'],
-               'severity': p['severity'], 'state': 'error', 'value': None, 'warnings': [], 'error': ''}
+               'severity': p['severity'], 'state': 'error', 'value': None, 'warnings': 0, 'error': ''}
         try:
             if setup_exc is not None:
                 raise setup_exc
@@ -1287,7 +1302,8 @@ tool poll_prom:
                 ## The error TEXT may quote label values — personal data in a
                 ## label set: only the status and the error type travel.
                 raise LaneError('Prometheus answered status ' + word(data.get('status')) + ' (' + word(data.get('errorType')) + ')')
-            res['warnings'] = [str(w)[:200] for w in (data.get('warnings') or [])][:5]
+            ## The server's text (label values in it): counted, never quoted.
+            res['warnings'] = len(data.get('warnings') or [])
             d = data.get('data') or {}
             rtype = d.get('resultType')
             samples = []
@@ -1400,7 +1416,11 @@ tool probe_http:
             if not res['ok']:
                 res['error'] = 'HTTP ' + str(res['status'])
         except Exception as e:
-            res['error'] = type(e).__name__ + ': ' + str(e)[:200]
+            ## The transport's message and the node's own travel; anything
+            ## else — a malformed status line is the server's text — is named
+            ## by its type.
+            res['error'] = type(e).__name__ + (': ' + str(e)[:200] if isinstance(e, (OSError, ValueError))
+                                               else ': the answer did not parse (its text is withheld)')
         res['ms'] = int((time.monotonic() - t0) * 1000)
         results.append(res)
     print(json.dumps({'results': results}, ensure_ascii=False))
@@ -1424,7 +1444,7 @@ tool leak_scan:
   output: leak_output
   language: py
   script: |
-    import json, os, re, hashlib, unicodedata
+    import json, os, re, hashlib, unicodedata, base64
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     raw_path = {{input.raw_file}}
     per_query = {{input.per_query}} or {}
@@ -1441,9 +1461,20 @@ tool leak_scan:
         if not raw.isdigit() or len(raw) != 13:
             return False
         return (97 - int(raw) % 97) == int(key)
+    ## The IBAN registry: each country's IBAN length. A run of host names and
+    ## short words whose prefix happens to pass the checksum has the wrong
+    ## country or the wrong length.
+    IBAN_LEN = {'AD': 24, 'AE': 23, 'AL': 28, 'AT': 20, 'AZ': 28, 'BA': 20, 'BE': 16, 'BG': 22, 'BH': 22, 'BR': 29, 'BY': 28,
+                'CH': 21, 'CR': 22, 'CY': 28, 'CZ': 24, 'DE': 22, 'DK': 18, 'DO': 28, 'EE': 20, 'EG': 29, 'ES': 24, 'FI': 18,
+                'FO': 18, 'FR': 27, 'GB': 22, 'GE': 22, 'GI': 23, 'GL': 18, 'GR': 27, 'GT': 28, 'HR': 21, 'HU': 28, 'IE': 22,
+                'IL': 23, 'IQ': 23, 'IS': 26, 'IT': 27, 'JO': 30, 'KW': 30, 'KZ': 20, 'LB': 28, 'LC': 32, 'LI': 21, 'LT': 20,
+                'LU': 20, 'LV': 21, 'LY': 25, 'MC': 27, 'MD': 24, 'ME': 22, 'MK': 19, 'MR': 27, 'MT': 31, 'MU': 30, 'NL': 18,
+                'NO': 15, 'PK': 24, 'PL': 28, 'PS': 29, 'PT': 25, 'QA': 29, 'RO': 24, 'RS': 22, 'SA': 24, 'SC': 31, 'SE': 24,
+                'SI': 19, 'SK': 24, 'SM': 27, 'ST': 25, 'SV': 28, 'TL': 23, 'TN': 24, 'TR': 26, 'UA': 29, 'VA': 22, 'VG': 24,
+                'XK': 20}
     def iban_ok(s):
         s = re.sub(r'\s+', '', s).upper()
-        if len(s) < 15 or len(s) > 34 or not s.isascii() or not s.isalnum():
+        if not s.isascii() or not s.isalnum() or IBAN_LEN.get(s[:2]) != len(s):
             return False
         moved = s[4:] + s[:4]
         digits = ''.join(str(int(ch, 36)) for ch in moved)
@@ -1460,11 +1491,13 @@ tool leak_scan:
                     x -= 9
             total += x
         return total % 10 == 0
-    ## Every class is bounded in ASCII (`a`): a value glued to a letter of
-    ## another script, an accented letter or an emoji is still found (under
-    ## Unicode rules those are word characters and `\b` would not hold),
-    ## and IGNORECASE folds ASCII letters only — it would also let `İ` into
-    ## [A-Z], which NFKC keeps and no base-36 digit is.
+    ## Every class of names, tokens and phone numbers is bounded in ASCII
+    ## (`a`): a value glued to a letter of another script, an accented letter
+    ## or an emoji is still found (under Unicode rules those are word
+    ## characters and `\b` would not hold), and IGNORECASE folds ASCII
+    ## letters only — it would also let `İ` into [A-Z], which NFKC keeps and
+    ## no base-36 digit is. The NIR, card and belt classes read any digit
+    ## NFKC leaves.
     CARD_CONTEXT = re.compile(r'(?ai)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
     def iin_ok(d):
         ## The issuer prefix of a real card network: Visa 4, Mastercard
@@ -1515,24 +1548,63 @@ tool leak_scan:
         text = BELT_BARE.sub('<num>', text)
         return BELT_GROUPED.sub(lambda m: '<num>' if sum(ch.isdigit() for ch in m.group(0)) >= 12 else m.group(0), text)
 
+    PLACEHOLDER = re.compile(r'[*xX•#.]+|\[[^\]]*\]|<[^>]*>|\([^)]*\)|\{+[^}]*\}+|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%\([^)]*\)s')
+    PAGING = re.compile(r'(?ai)(?:next|page|continuation|sync|resume|cursor|marker|pagination)[_.-]?$')
+    def secret_ok(m):
+        ## What a secret key can hold that is no secret: a logger's own mask
+        ## or a placeholder (`[Redacted]`, `********`, `${DB_PASSWORD}`), a
+        ## word of 12 letters or fewer (a status or a usage text: `expired`,
+        ## `requires`, `PASSWORD`), a path to the secret, a count of tokens
+        ## (`"prompt_token": 1234`), an API page token (`NextToken=`).
+        v = m.group(m.lastindex).strip()
+        w = v.rstrip(')]}')   # an unquoted value may run into the brackets closing it
+        if PLACEHOLDER.fullmatch(v) or re.fullmatch(r'[A-Za-z]{1,12}', w) or v.startswith(('/', './', '~/')):
+            return False
+        glued = m.start() > 0 and (m.string[m.start() - 1].isalnum() or m.string[m.start() - 1] in '_.-')
+        if w.isdigit() and glued and m.group(0)[:5].lower() == 'token':
+            return False
+        return not PAGING.search(m.string[max(0, m.start() - 16):m.start()])
+    def basic_ok(m):
+        ## Basic credentials outside an Authorization header are base64 of
+        ## `user:password`: `basic` followed by an ordinary word is prose.
+        b = m.group(1)
+        if b is None:
+            return True
+        if len(b) % 4:
+            return False
+        try:
+            d = base64.b64decode(b, validate=True).decode('utf-8')
+        except ValueError:
+            return False
+        return ':' in d and d.isprintable()
+
     ## Order matters: a JWT contains digit runs, a bearer value may look
     ## like an email's local part. Secrets first, then validated
     ## identifiers, then contact data.
     CLASSES = [
         ('private_key', re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,4000}?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----'), None),
         ('jwt', re.compile(r'(?a)\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'), None),
-        ('bearer', re.compile(r'(?ai)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{16,}'), None),
-        ('cloud_or_forge_token', re.compile(r'(?a)\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'), None),
-        ## A secret by its key: a secret word that starts a name part — snake,
-        ## kebab, dotted or quoted (`DB_PASSWORD=`, `"api_key": "…"`) — or a
-        ## camelCase part (`dbPassword:`), then `=` or `:`; or a command-line
-        ## flag (`--password …`). The value is redacted, the key kept. A word
-        ## the name goes on after (`total_tokens`, `PASSWORD_FILE`) is not a
-        ## secret key.
+        ('bearer', re.compile(r'(?ai)\bauthorization\s*:\s*(?:basic|token|apikey|api-key|bot|ssws)\s+[A-Za-z0-9._~+/=-]{8,}'
+                              r'|\bbearer\s+[A-Za-z0-9._~+/=-]{16,}|\bbasic\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])'), basic_ok),
+        ('cloud_or_forge_token', re.compile(r'(?a)\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{35}|hf_[A-Za-z0-9]{30,}|npm_[A-Za-z0-9]{36}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b'), None),
+        ## A secret by its key: a secret word starting a name part — snake,
+        ## kebab, dotted, quoted or bracketed (`DB_PASSWORD=`, `"api_key":`,
+        ## `[password] =>`) — or a camelCase part (`dbPassword:`,
+        ## `DBPassword:`), with only the suffixes a secret name takes (`_KEY`,
+        ## `_VALUE`, a number, an environment: `SECRET_KEY`, `PASSWORD_2`,
+        ## `TOKEN_PROD`; not `PASSWORD_FILE`, `total_tokens`), then `=`, `:` or
+        ## `=>`; a quoted value runs to its closing quote. Or a command-line
+        ## flag (`--password …`, `--db-password …`), SQL (`IDENTIFIED BY
+        ## '…'`), a URL's credentials (`scheme://user:…@`). The value is
+        ## redacted, the key kept; `secret_ok` refuses what is no secret.
         ('secret_kv', re.compile(
             r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
-            r'|(?<=[a-z])(?:Password|Passwd|Pwd|Secret|Token|ApiKey|AccessKey|PrivateKey))[\'"]?\s*[=:]\s*[\'"]?([^\s\'"&,;<>]{6,})'
-            r'|(?<![A-Za-z0-9-])--?(?i:password|passwd|pwd|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'), None),
+            r'|(?<=[a-z])(?:Password|Passwd|Pwd|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Secret|Token))'
+            r'(?i:[_-]?(?:key|value|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"([^"\n]{6,256})"|\'([^\'\n]{6,256})\'|([^\s\'"&,;<>]{6,}))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'
+            r'|(?i:identified\s+by|with\s+password)\s+(?:\'([^\'\n]{4,256})\'|"([^"\n]{4,256})")'
+            r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
         ## Bare, or grouped under ONE repeated separator of any kind; a run
@@ -1541,7 +1613,7 @@ tool leak_scan:
         ('card', re.compile(r'(?<!\d)(?:\d{15,19}|\d{1,6}(?:([^A-Za-z0-9\n])\d{1,6})(?:\1\d{1,6}){1,8})(?!\d|\.\d|\1\d)'), lambda m: card_ok(m)),
         ('num', None, None),
         ('email', re.compile(r'(?a)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
-        ('phone_fr', re.compile(r'(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
+        ('phone_fr', re.compile(r'(?a)(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
     ]
     def mask(cls, value):
         v = re.sub(r'\s+', '', value)
@@ -1549,6 +1621,9 @@ tool leak_scan:
             return cls + ':***' + v[-2:]
         if cls in ('private_key',):
             return 'private key block'
+        if cls in ('secret_kv', 'bearer', 'jwt', 'cloud_or_forge_token'):
+            ## A secret shows none of its characters, only its length.
+            return '*** (' + str(len(v)) + ' chars)'
         if len(v) <= 4:
             return '***'
         return v[:2] + '***' + v[-1]
@@ -1561,10 +1636,11 @@ tool leak_scan:
         return re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFKC', line))
 
     findings = {}
-    def note(cls, value, q, stream, ts):
+    def note(cls, value, q, stream, ts, qs=()):
         f = findings.setdefault(cls, {'class': cls, 'severity': 'high', 'count': 0, 'hashes': set(),
-                                       'sources': {}, 'sample_masked': mask(cls, value)})
+                                       'sources': {}, 'queries': set(), 'sample_masked': mask(cls, value)})
         f['count'] += 1
+        f['queries'].update(qs or (q,))
         f['hashes'].add(hashlib.sha1(value.encode('utf-8', 'replace')).hexdigest()[:16])
         key = q + '|' + '/'.join(str(stream.get(k)) for k in ('container', 'pod') if stream.get(k))
         s = f['sources'].setdefault(key, {'query': q, 'stream': key.split('|', 1)[1], 'first': ts, 'last': ts, 'count': 0})
@@ -1573,7 +1649,7 @@ tool leak_scan:
         s['last'] = max(s['last'], ts)
 
     MARKER = re.compile(r'\[REDACTED:[a-z_]+\]')
-    def scrub(line, q, stream, ts):
+    def scrub(line, q, stream, ts, qs=()):
         ## A marker LITERALLY present in the log (attacker-influenced text
         ## can spell one) is neutralised first, so no class can hide behind it.
         out = MARKER.sub('[literal-marker]', normalize(line))
@@ -1592,17 +1668,20 @@ tool leak_scan:
                     for k in range(len(parts) - 1, 0, -1):
                         head = ' '.join(parts[:k])
                         if iban_ok(head):
-                            note(cls, head, q, stream, ts)
-                            return '[REDACTED:' + cls + ']' + m.group(0)[len(head):]
+                            note(cls, head, q, stream, ts, qs)
+                            ## What follows the IBAN may hold another one.
+                            return '[REDACTED:' + cls + ']' + rx.sub(repl, m.group(0)[len(head):])
                     return m.group(0)
                 g = m.lastindex if cls == 'secret_kv' else None   # the value group of whichever form matched
                 value = m.group(g) if g else m.group(0)
                 if MARKER.fullmatch(value):
                     ## A marker left by an earlier class is not a second value.
                     return m.group(0)
-                note(cls, value, q, stream, ts)
+                note(cls, value, q, stream, ts, qs)
                 if cls == 'secret_kv':
-                    return m.group(0)[:m.start(g) - m.start(0)] + '[REDACTED:' + cls + ']'
+                    ## The key before the value and what closes it (a quote,
+                    ## the `@` of a URL) are kept.
+                    return m.group(0)[:m.start(g) - m.start(0)] + '[REDACTED:' + cls + ']' + m.group(0)[m.end(g) - m.start(0):]
                 return '[REDACTED:' + cls + ']'
             out = rx.sub(repl, out)
         return out
@@ -1664,7 +1743,7 @@ tool leak_scan:
         tqs = sorted(x for x in qs if x != 'leak_sweep')
         q = tqs[0] if tqs else 'leak_sweep'
         scanned += 1
-        scrubbed = scrub(line, q, stream, ts)
+        scrubbed = scrub(line, q, stream, ts, sorted(qs))
         if not tqs:
             continue
         tpl = template(scrubbed)
@@ -1718,7 +1797,7 @@ tool leak_scan:
     for f in findings.values():
         leak_list.append({'class': f['class'], 'severity': f['severity'], 'count': f['count'],
                           'distinct': len(f['hashes']), 'sources': sorted(f['sources'].values(), key=lambda s: -s['count'])[:8],
-                          'sample_masked': f['sample_masked']})
+                          'queries': sorted(f['queries']), 'sample_masked': f['sample_masked']})
     leak_list.sort(key=lambda f: -f['count'])
     coverage = 'full'
     for q, info in per_query.items():
@@ -1789,6 +1868,11 @@ tool decide:
             return (now - datetime.datetime.fromisoformat(iso)).total_seconds() / 3600
         except (TypeError, ValueError):
             return 10 ** 6
+    def said_within(iso, hours):
+        ## A stamp that silences a message — a component said, an incident
+        ## notified, a source warned — counts only in the past: one a clock
+        ## running ahead wrote reads as not said.
+        return 0 <= age_h(iso) < hours
 
     def iso_of_ns(ts):
         try:
@@ -1839,12 +1923,12 @@ tool decide:
             cands.append({'fp': 'prom:' + r['id'], 'kind': 'prom', 'sources': [r['id']], 'severity': r.get('severity') or 'high',
                           'title_key': 'prom_breached', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
                           'fields': {'title': r.get('title') or r['id'], 'value': r.get('value'), 'op': r.get('op'), 'threshold': r.get('threshold')},
-                          'evidence': {'warnings': r.get('warnings') or []}, 'lane': 'prometheus', 'tick_count': 1})
+                          'evidence': {'warnings': r.get('warnings') or 0}, 'lane': 'prometheus', 'tick_count': 1})
         elif r.get('state') == 'no_data':
             cands.append({'fp': 'prom:' + r['id'] + ':no_data', 'kind': 'prom_no_data', 'sources': [r['id']], 'severity': 'medium',
                           'title_key': 'prom_no_data', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
                           'fields': {'title': r.get('title') or r['id'], 'value': 'no data', 'op': r.get('op'), 'threshold': r.get('threshold')},
-                          'evidence': {'warnings': r.get('warnings') or []}, 'lane': 'prometheus', 'tick_count': 1})
+                          'evidence': {'warnings': r.get('warnings') or 0}, 'lane': 'prometheus', 'tick_count': 1})
     ## Only a template's LIVE lines (read outside a query's first window)
     ## count and post; the history lines are observed. The scan counted
     ## them apart, per line — whichever query created the template.
@@ -1862,7 +1946,7 @@ tool decide:
                                    'query': (t.get('query_live') if live else t.get('query'))},
                       'lane': 'loki', 'tick_count': cnt})
     for f in (signals.get('leak') or []):
-        cands.append({'fp': 'leak:' + f['class'], 'kind': 'leak', 'sources': sorted({str(x.get('query')) for x in (f.get('sources') or []) if x.get('query')}),
+        cands.append({'fp': 'leak:' + f['class'], 'kind': 'leak', 'sources': sorted(f.get('queries') or []),
                       'severity': f.get('severity') or 'high',
                       'title_key': 'leak', 'title_arg': f['class'], 'detail_key': 'leak_detail',
                       'fields': {'count': f.get('count'), 'class': f['class'], 'distinct': f.get('distinct'),
@@ -1910,7 +1994,7 @@ tool decide:
             state_word = 'new'
         elif RANK.get(c['severity'], 0) > RANK.get(prev.get('severity') or 'low', 0):
             state_word = 'escalated'
-        elif prev.get('last_notified') and age_h(prev['last_notified']) >= renotify_h:
+        elif prev.get('last_notified') and not said_within(prev['last_notified'], renotify_h):
             state_word = 'reminder'
         if state_word:
             alerts.append({'fingerprint': fp, 'kind': c['kind'], 'severity': rec['severity'], 'state': state_word,
@@ -2006,7 +2090,7 @@ tool decide:
             if a < stale_h:
                 continue
             warned = h.get('last_warned') or ''
-            if warned and age_h(warned) < stale_h:
+            if warned and said_within(warned, stale_h):
                 continue
             stale.append({'source': source, 'hours': int(a) if a < 10 ** 6 else -1, 'last_ok': last_ok, 'error': h.get('last_error') or ''})
             h['last_warned'] = now_iso
@@ -2023,27 +2107,44 @@ tool decide:
     ## whatever the combination: a lane flapping, or kinds coming and going
     ## together, never re-post it every tick.
     coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors) else 'full'
-    lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
-                                   for e in (loki_errors + prom_errors)))[:600]
     gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
     truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
-    ## The reasons, the loss first: a gap, then the errors, then what is
-    ## only behind — so a long error never pushes a loss out of the budget.
-    reasons = [q + ': gap — the cursor fell out of the max window, the lines in between were skipped' for q in gapped]
-    if lane_errors:
-        reasons.append(lane_errors)
-    reasons += [q + ': truncated at max_lines' for q in truncated_qs]
+    lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
+                                   for e in (loki_errors + prom_errors)))[:600]
+    ## The note's pieces, each with the component it says — the loss first:
+    ## a gap, then the errors, then what is only behind.
+    pieces = [('gap: ' + q, q + ': gap — the cursor fell out of the max window, the lines in between were skipped') for q in gapped]
+    pieces += [(c, text) for text, c in sorted(
+        (str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160],
+         lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160])
+        for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors)) for e in errs)]
+    pieces += [('truncated', q + ': truncated at max_lines') for q in truncated_qs]
     if signals.get('templates_cut'):
-        reasons.append('template list cut: ' + str(signals.get('templates_total') or '?') +
-                       ' templates, the 200 with the most live lines kept')
-    coverage_reasons = '; '.join(reasons)[:600]
-    components = sorted({lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160]
-                         for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors)) for e in errs})
-    components += ['gap: ' + q for q in gapped] + (['truncated'] if truncated_qs else []) + (['cut'] if signals.get('templates_cut') else [])
-    posted_kinds = {k: v for k, v in (state.get('coverage_posted') or {}).items() if age_h(v) < renotify_h}
+        pieces.append(('cut', 'template list cut: ' + str(signals.get('templates_total') or '?') +
+                       ' templates, the 200 with the most live lines kept'))
+    components = sorted({c for c, _ in pieces})
+    posted_kinds = {k: v for k, v in (state.get('coverage_posted') or {}).items() if said_within(v, renotify_h)}
     coverage_note = coverage == 'partial' and any(c not in posted_kinds for c in components)
+    coverage_reasons = ''
     if coverage_note:
-        for c in components:
+        ## The 600-character budget takes what is new first, then what was
+        ## said already — one piece per component —, then the other queries
+        ## of an error kind. A component counts as said only when a piece of
+        ## it is in the text: what the budget left out is said next tick.
+        firsts, seen = [], set()
+        for c, text in pieces:
+            if c not in seen:
+                seen.add(c)
+                firsts.append((c, text))
+        ordered = [x for x in firsts if x[0] not in posted_kinds] + [x for x in firsts if x[0] in posted_kinds]
+        ordered += [x for x in pieces if x not in firsts]
+        said = set()
+        for c, text in ordered:
+            joined = coverage_reasons + '; ' + text if coverage_reasons else text
+            if len(joined) <= 600:
+                coverage_reasons = joined
+                said.add(c)
+        for c in said:
             posted_kinds[c] = now_iso
     state['coverage_posted'] = posted_kinds
 
@@ -2280,13 +2381,16 @@ tool notify:
     msgs_ok, required_failed = set(), []
     def usable(url):
         ## A webhook URL is a secret (its path is the key): it must be one
-        ## printable http(s) URL with a host before any use — a failure
-        ## names the webhook, never quotes the URL.
+        ## printable http(s) URL with a host, no credentials and a port that
+        ## parses before any use (the HTTP client quotes those parts in its
+        ## errors) — a failure names the webhook, never quotes the URL.
         try:
             parts = urlsplit(url) if isinstance(url, str) else None
+            port_ok = parts is not None and (parts.port is None or parts.port > 0)
         except ValueError:
             return False
-        return bool(parts and parts.scheme in ('http', 'https') and parts.hostname and url.isascii() and url.isprintable() and ' ' not in url)
+        return bool(parts and parts.scheme in ('http', 'https') and parts.hostname and parts.username is None and parts.password is None
+                    and port_ok and url.isascii() and url.isprintable() and ' ' not in url)
     for idx, s, p in payloads:
         url = whmap[s['webhook']]
         try:

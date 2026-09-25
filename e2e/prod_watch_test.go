@@ -153,6 +153,9 @@ type pwHarness struct {
 	failLokiFrom                         atomic.Int64      // Loki calls numbered from here (1-based) answer 500…
 	failLokiCount                        atomic.Int64      // …for this many consecutive calls (the node retries a 5xx once)
 	lokiBody                             atomic.Value      // map[string]any answered verbatim with HTTP 200 (a proxy answering garbage)
+	rawGrafana                           atomic.Value      // string: a status line every Grafana call answers with (a reason phrase of its own)
+	rawHealth                            atomic.Value      // string: the same for the health endpoint (a malformed status line included)
+	healthVersion                        atomic.Value      // string: the version field the health endpoint reports
 	stderrs                              map[string]string // what each node of the last h.tick wrote on stderr
 	sinkMu                               sync.Mutex
 	sinkBodies                           []string
@@ -160,6 +163,24 @@ type pwHarness struct {
 }
 
 const pwToken = "glsa_test_token_0123456789"
+
+// answerRaw writes raw — a status line — and an empty body straight on the
+// connection: an upstream answering with a reason phrase of its own or a
+// malformed status line (Go's server only ever writes the standard phrase).
+func answerRaw(w http.ResponseWriter, raw string) bool {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		return false
+	}
+	conn, buf, err := hj.Hijack()
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_, _ = buf.WriteString(raw + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+	_ = buf.Flush()
+	return true
+}
 
 func newPWHarness(t *testing.T) *pwHarness {
 	t.Helper()
@@ -177,6 +198,9 @@ func newPWHarness(t *testing.T) *pwHarness {
 	}
 	mux.HandleFunc("/api/datasources/proxy/uid/loki/loki/api/v1/query_range", func(w http.ResponseWriter, r *http.Request) {
 		if !auth(w, r) {
+			return
+		}
+		if raw, _ := h.rawGrafana.Load().(string); raw != "" && answerRaw(w, raw) {
 			return
 		}
 		q := r.URL.Query()
@@ -238,6 +262,9 @@ func newPWHarness(t *testing.T) *pwHarness {
 		if !auth(w, r) {
 			return
 		}
+		if raw, _ := h.rawGrafana.Load().(string); raw != "" && answerRaw(w, raw) {
+			return
+		}
 		p, ok := h.prom.Load().(map[string]pwProm)[r.URL.Query().Get("query")]
 		if !ok {
 			p = pwProm{NoData: true}
@@ -261,8 +288,15 @@ func newPWHarness(t *testing.T) *pwHarness {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if raw, _ := h.rawHealth.Load().(string); raw != "" && answerRaw(w, raw) {
+			return
+		}
+		version, _ := h.healthVersion.Load().(string)
+		if version == "" {
+			version = "abc1234"
+		}
 		w.WriteHeader(int(h.healthStatus.Load()))
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": "abc1234"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": version})
 	})
 	var flaky atomic.Int64
 	mux.HandleFunc("/flaky", func(w http.ResponseWriter, r *http.Request) {
@@ -940,6 +974,7 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 		{"a sink threshold that is a number", "min_severity", func(cfg map[string]any) { cfg["sinks"].([]map[string]any)[0]["min_severity"] = 3 }},
 		{"a health probe URL that is a number", "url", func(cfg map[string]any) { cfg["probes"].([]map[string]any)[0]["url"] = 8080 }},
 		{"a Grafana URL that does not parse", "base_url", func(cfg map[string]any) { cfg["grafana"].(map[string]any)["base_url"] = "https://graf[ana.example" }},
+		{"a Grafana URL without a host", "base_url", func(cfg map[string]any) { cfg["grafana"].(map[string]any)["base_url"] = "https:///grafana" }},
 	} {
 		h.writeConfig(t, c.mod)
 		if _, stderr, err := plan(h.tokenFile); err == nil || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, c.want) {

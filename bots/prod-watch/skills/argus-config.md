@@ -49,7 +49,8 @@ overrides).
   to the analysis agent).
 - `release` — `source: none | health_field`. With `health_field`, the
   `field` (dotted path) of the JSON body at `health_url` is the deployed
-  version. **`release_known` stays false in this slice**: a string found in
+  version — one token (letters, digits, `._+:/@-`, 120 at most); any
+  other text is withheld and noted. **`release_known` stays false in this slice**: a string found in
   a body is not a verified deployment; the analysis slice resolves it in
   the repository and only then says "known".
 - `grafana` — `base_url` (https), the datasource UIDs. The bot calls the
@@ -87,12 +88,13 @@ overrides).
 
 - `webhooks` — JSON map name → incoming-webhook URL, identical to
   feed-watch's. Read only by the deterministic notify step. Each URL must
-  be one http(s) URL with a host; a malformed one fails that sink's
-  delivery, named by the webhook — a URL is never quoted (its path is the
-  key).
+  be one http(s) URL with a host, no credentials (`user:password@`) and a
+  port that parses; a malformed one fails that sink's delivery, named by
+  the webhook — a URL is never quoted (its path is the key).
 - `grafana_token` — a Grafana service-account token. Read only by the two
   proxy lanes; never into a prompt; one token on one line (whitespace or
-  a control character inside is refused, never quoted). A configured
+  a control character inside is refused, never quoted; a byte-order mark an
+  editor saved is dropped). A configured
   Grafana whose token is unbound, blank, malformed or refused is a lane
   error on every query and probe,
   named in the coverage note: the health probes still report (with no

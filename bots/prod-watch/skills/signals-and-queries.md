@@ -101,19 +101,21 @@ The only node that opens `loki_raw.jsonl`. For every line, in this order
 |---|---|---|
 | `private_key` | PEM private-key block | `[REDACTED:private_key]` |
 | `jwt` | three base64url segments starting `eyJ` | `[REDACTED:jwt]` |
-| `bearer` | `Bearer <token>` or `Basic <credentials>` | `[REDACTED:bearer]` |
-| `cloud_or_forge_token` | AWS `AKIA…`, GitLab `glpat-`/`glrt-`, Grafana `glsa_`, Sentry `sntry…`, Anthropic `sk-ant-`, OpenAI `sk-…`, Slack `xox…`, GitHub `ghp_`/`github_pat_` | `[REDACTED:cloud_or_forge_token]` |
-| `secret_kv` | a secret word that starts a name part — snake, kebab, dotted, quoted or camelCase: `password=…`, `DB_PASSWORD=…`, `"api_key": "…"`, `dbPassword: …` — or a flag `--password …` (the value only; `total_tokens=…`, `PASSWORD_FILE=…` are not secret keys) | key kept, value replaced |
+| `bearer` | `Bearer <token>`; `Authorization: Basic|Token|ApiKey|Bot|SSWS <credentials>`; `Basic <credentials>` elsewhere when it decodes to `user:password` (`basic` followed by an ordinary word is prose) | `[REDACTED:bearer]` |
+| `cloud_or_forge_token` | AWS `AKIA…`, GitLab `glpat-`/`glrt-`, Grafana `glsa_`, Sentry `sntry…`, Anthropic `sk-ant-`, OpenAI `sk-…`, Slack `xox…`, GitHub `ghp_`/`github_pat_`, Stripe `sk_live_`/`rk_live_` (and `_test_`), Google `AIza…`, Hugging Face `hf_`, npm `npm_`, SendGrid `SG.…` | `[REDACTED:cloud_or_forge_token]` |
+| `secret_kv` | a secret word starting a name part — snake, kebab, dotted, quoted or bracketed — or a camelCase part (`dbPassword`, `DBPassword`), with only the suffixes a secret name takes (`_KEY`, `_VALUE`, a number, an environment: `SECRET_KEY=…`, `PASSWORD_2=…`, `TOKEN_PROD=…`), then `=`, `:` or `=>` (`"api_key": "…"`, `[password] => …`); a quoted value runs to its closing quote; a flag `--password …`, `--db-password …`; SQL `IDENTIFIED BY '…'` / `WITH PASSWORD '…'`; a URL's credentials `scheme://user:…@`. Not a secret: a logger's own mask or a placeholder (`[Redacted]`, `********`, `${DB_PASSWORD}`), a word of 12 letters or fewer (a status or a usage text: `expired`, `requires`), a path, a count under a `…_token` key (`"prompt_token": 1234`), an API page token (`NextToken=`, `page_token=`); `total_tokens=…`, `PASSWORD_FILE=…` are not secret keys | key kept, value replaced |
 | `nir` | 13 digits + 2-digit key, **key validated** (Corsica 2A/2B handled) | `[REDACTED:nir]` |
-| `iban` | country code + check digits + BBAN, **mod-97 validated** | `[REDACTED:iban]` |
+| `iban` | country code + check digits + BBAN, **the length that country's IBAN has, mod-97 validated** | `[REDACTED:iban]` |
 | `card` | 15–19 digits, **Luhn-validated**, the issuer prefix a card network's (Visa, Mastercard, Amex, JCB, Discover, Diners, UnionPay, Maestro), and either grouped like a card (4-4-4-4 with a 1–3 digit tail for 17–19 digits, or the Amex 4-6-5, under one repeated separator of any kind) or preceded by a card word within 40 chars | `[REDACTED:card]` |
 | `email` | RFC-lite address | `[REDACTED:email]` |
 | `phone_fr` | French national or `+33` number | `[REDACTED:phone_fr]` |
 
 Lines are NFKC-normalised first, so full-width digits are seen, and every
-class is bounded in ASCII: a value glued to a letter of another script, an
-accented letter, punctuation or an emoji is still found; an IBAN followed
-by a word is found too (the longest valid prefix). The
+class of names, tokens and phone numbers is bounded in ASCII: a value glued
+to a letter or a digit of another script, an accented letter, punctuation or
+an emoji is still found (the NIR, card and belt read any digit NFKC leaves);
+an IBAN followed by a word is found too (the prefix of its country's
+length), and two IBANs in a row both. The
 detection is **heuristic**: validators narrow the false positives (a
 timestamp is not an IBAN; a digit run is a card only with a card's own
 grouping or a card word next to it, since Luhn alone is a coin flip on
@@ -128,7 +130,10 @@ design: digits joined by letters (`4111x1111x1111x1111`) match no class,
 a token glued to ASCII letters, digits or `_` (`keyAKIA…`, `x_AKIA…`)
 reads as part of an identifier and goes unfound, as does a secret word
 glued to a letter before it (`xpassword=…`); `x_password=…` and an email
-glued so are still found. This slice reports every class at severity `high`; the
+glued so are still found. A password that is one plain word of 12 letters
+or fewer is not reported (it reads as a status or a usage text), nor a
+number under a compound `…_token` key (a count). This slice reports every
+class at severity `high`; the
 policy slice adds per-class `critical` with keyword context and the
 circuit-breaker.
 
@@ -149,8 +154,10 @@ What leaves the node (`signals.json`, scratch; counts on stdout):
   incident's clock, so a cut concludes nothing against it — its count,
   reminders and quiet note wait for a tick where it is kept).
 - **leak** — per class: `count`, `distinct` (hashes of the values, never
-  the values), `sources` (query + container/pod + first/last), one
-  `sample_masked` (`jo***@***` style, or `nir:***12`).
+  the values), `sources` (query + container/pod + first/last, the 8
+  busiest), `queries` (every query that returned one of its lines — the
+  incident's sources), one `sample_masked` (`jo***@***` style, `nir:***12`;
+  a secret shows only its length: `*** (9 chars)`).
 - **coverage** — `full`, or `partial` when any query was truncated,
   failed, or had a gap (its previous cursor fell out of the max window).
 
@@ -167,16 +174,19 @@ scalar) are folded by `agg` (default `max`) and compared with `op` to
   the metric may not exist on this cluster (posted as a `medium`
   incident so a mis-wired preset is noticed);
 - `error` — the API failed (a lane error, in the coverage note). A lane
-  error quotes only the lane's own message or the transport's: an answer
-  that does not parse — a value that is text, an error text that may quote
-  label values — is named by its type, its text withheld. The tick
+  error quotes only the lane's own message or the transport's, an HTTP
+  error as its code and the standard phrase (a reason phrase is the
+  server's text): an answer that does not parse — a value that is text, an
+  error text that may quote label values — is named by its type, its text
+  withheld. The tick
   is still reported when another probe answered; while any probe errors,
   nothing is concluded about the lane's incidents (no "not observed any
   more") and its health is not refreshed. Every probe failing is the lane
   failing: decide refuses the tick only when every configured lane
   failed, naming the errors.
 
-API warnings ride along in the result. Use `increase()`/`rate()` with an
+API warnings are counted in the result (`warnings`), their text withheld
+(it may quote label values). Use `increase()`/`rate()` with an
 explicit range for counters; the examples in `argus-config.md` assume
 kube-state-metrics and ingress-nginx metrics, which are **not** present
 on every cluster — validate them on yours.
@@ -187,7 +197,9 @@ on every cluster — validate them on yours.
 `expect_status`; latency in ms; the body is never stored. Redirects are
 followed hop by hop through the address guard (public hosts only, unless
 `allow_private_sources`). A failing probe is a `critical` incident by
-default: it is the one signal that needs no observability stack.
+default: it is the one signal that needs no observability stack. Its error
+is the HTTP status, the transport's message or the exception's type — a
+malformed status line is the server's text, withheld.
 
 ## Reading a tick
 
@@ -210,7 +222,12 @@ COMPONENT of the partiality once, then again only after `renotify_hours`,
 whatever the combination (a query's gap, a lane's error kind — queries or
 probes failing in turn with the same error are one kind, the same error on
 two lanes two —, a truncation, a cut), with its reasons quoted: the gaps first — they lose lines —
-then the lane errors, the truncated queries, a cut template list. So a
-query dark for good, a lane flapping, or a flood that outruns
-`max_lines` until the cursor falls out of the max window, says why once,
-instead of every tick or never.
+then the lane errors, the truncated queries, a cut template list. The
+note holds 600 characters: what is new first, then what was said already,
+then the other queries of an error kind; a component counts as said only
+when it is in the text — what the budget left out is said the next tick.
+A stamp dated in the future (a clock running ahead) counts as not said,
+for the note, a reminder and a silent-source warning alike. So a query
+dark for good, a lane flapping, or a flood that outruns `max_lines` until
+the cursor falls out of the max window, says why once, instead of every
+tick or never.
