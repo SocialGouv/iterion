@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.199.2](https://github.com/SocialGouv/iterion/compare/v3.199.1...v3.199.2) (2026-09-25)
+
+### Bug Fixes
+
+* **server,credpool,runview:** a launch refuses a run id another run already uses, in any team ([e827696](https://github.com/SocialGouv/iterion/commit/e82769697df585dee6507daef254aa51d0c56148)), closes [#1845](https://github.com/SocialGouv/iterion/issues/1845) [#1833](https://github.com/SocialGouv/iterion/issues/1833), references [#1833](https://github.com/SocialGouv/iterion/issues/1833)
+
+    <details><summary>why</summary>
+
+    POST /api/runs accepted a caller-supplied run_id and used it as-is. A launch naming an existing run's id — any team's — reached the credential pool, whose Acquire first supersedes every open lease of that run id through a team-blind query: the other team's leases were closed before the duplicate-id save failed, the donor's slot was freed and the charge erased while the run still used the credential. The launch's answer also differed on whether the id existed. (#1833)
+
+    </details>
+* **server:** the artifact version route gates on the run's team; ?store= is refused on a cloud instance ([308def3](https://github.com/SocialGouv/iterion/commit/308def3612583852ff746b206cc3296c9c7c8652)), closes [#1832](https://github.com/SocialGouv/iterion/issues/1832)
+
+    <details><summary>why</summary>
+
+    GET /api/runs/{id}/artifacts/{node}/{version} read the artifact body with no team gate. In cloud mode the body comes from the blob store (artifacts/<run>/<node>/<version>.json), which knows no team, so the route served another team's artifact to any authenticated caller who knew the run id. The handler now loads the run under the caller's context first, as its siblings do.
+
+    </details>
+
 ## [3.199.1](https://github.com/SocialGouv/iterion/compare/v3.199.0...v3.199.1) (2026-09-25)
 
 ### Bug Fixes
