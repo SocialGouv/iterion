@@ -259,23 +259,28 @@ func TestAssessmentCommitRefusesAnIgnoredDeliverable(t *testing.T) {
 	// The case only a read of the TREE sees. A hook that rewinds the branch
 	// after the commit leaves nothing dirty — the artefacts are gone from the
 	// index and the disk alike — and `git commit` has already returned zero.
-	t.Run("a hook that rewinds the branch after the commit", func(t *testing.T) {
+	t.Run("a post-commit hook planted in the repository does not run", func(t *testing.T) {
 		ws := assessedWorkspace(t)
 		hooks := filepath.Join(ws, ".git", "hooks")
 		if err := os.MkdirAll(hooks, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		// The rewind hook ran under the detection-only regime; the
+		// core.hooksPath override leaves it no ground to run on, so the
+		// landing is carried by the branch — asserted, not assumed.
 		hook := "#!/bin/sh\ngit reset -q --hard HEAD~1\n"
 		if err := os.WriteFile(filepath.Join(hooks, "post-commit"), []byte(hook), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		out := assessmentCommit(t, ws)
-		if assessmentBool(t, out, "ok") {
-			t.Fatal("an assessment whose commit a hook rewound was reported as landed — the branch " +
-				"carries none of it")
+		if !assessmentBool(t, out, "ok") {
+			t.Fatalf("the commit refused to land with a post-commit hook planted: %s",
+				assessmentString(t, out, "reason"))
 		}
-		if !strings.Contains(assessmentString(t, out, "reason"), "does not carry") {
-			t.Errorf("the refusal is not the tree read's: %s", assessmentString(t, out, "reason"))
+		landed := gittest.Run(t, ws, "ls-tree", "--name-only", "HEAD", "--",
+			"docs/assessment/00-state-of-the-repository.md")
+		if !strings.Contains(landed, "00-state-of-the-repository.md") {
+			t.Fatal("the branch does not carry the landing — the hook's rewind happened")
 		}
 	})
 
