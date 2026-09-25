@@ -223,6 +223,9 @@ type Grant struct {
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
 	RemainingUSD float64
+	// Bound when the lease is inserted, never looked up by run ID later:
+	// concurrent acquisitions can hold different leases for the same run.
+	releaseGuard *ReleaseGuard
 }
 
 // Acquire finds a donor for req and records the lease. Returns ErrNoDonor
@@ -626,6 +629,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		Payload:      payload,
 		Fingerprint:  fingerprint,
 		RemainingUSD: remaining,
+		releaseGuard: &ReleaseGuard{lease: lease},
 	}, "", nil
 }
 
@@ -749,7 +753,7 @@ func (b *Broker) releaseReservation(ctx context.Context, pledgeID string, when t
 	}
 }
 
-// ReleaseGuard pins the exact lease that was open before a caller performed
+// ReleaseGuard pins an exact lease at acquisition or before a caller performs
 // an atomic state transition. A later attempt of the same run gets a new
 // lease id, so releasing through this guard can never close that successor.
 // Its fields stay private so callers cannot manufacture or retarget one.
@@ -785,6 +789,18 @@ func (b *Broker) ReleaseCaptured(ctx context.Context, guard *ReleaseGuard) {
 	b.releaseLease(context.WithoutCancel(ctx), guard.lease)
 }
 
+// ReleaseGrant undoes only the acquisition that produced grant. Launchers
+// must use it instead of Release: another acquisition for the same run may
+// have inserted its lease even before the original Acquire returned.
+// A nil grant, or one not produced by Acquire, has nothing to release.
+// Like ReleaseCaptured, it is cancellation-immune and idempotent.
+func (b *Broker) ReleaseGrant(ctx context.Context, grant *Grant) {
+	if grant == nil {
+		return
+	}
+	b.ReleaseCaptured(ctx, grant.releaseGuard)
+}
+
 // Release undoes an acquisition whose run never started — a launch that
 // failed after the credential was granted (the run document could not be
 // saved, the queue publish failed).
@@ -796,6 +812,8 @@ func (b *Broker) ReleaseCaptured(ctx context.Context, guard *ReleaseGuard) {
 //
 // Idempotent and best-effort: it is called from error paths that must
 // surface their OWN error, not this one.
+// Callers holding the original grant should use ReleaseGrant, which cannot
+// release a different acquisition for the same run.
 func (b *Broker) Release(ctx context.Context, runID string) {
 	b.ReleaseCaptured(ctx, b.CaptureRelease(ctx, runID))
 }

@@ -101,7 +101,7 @@
 | `pkg/connector/identity` | preserves the meaning of connector names across generation. | — | 1 · 13 |
 | `pkg/connector/overlay` | the AUTHORED half of a connector package. | — | 1 · 10 |
 | `pkg/connector/spec` | the connector catalog's declarative model: what a connector package IS, independent of where it came from (a generated vendor OpenAPI description, a… | — | 5 · 107 |
-| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` | 6 · 156 |
+| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` | 6 · 157 |
 | `pkg/credusage` | meters per-CREDENTIAL monthly LLM spend — the question the org bucket cannot answer. | `Counter` | 3 · 33 |
 | `pkg/deeplink` | builds the URLs that point a human at a page of the studio. | — | 1 · 6 |
 | `pkg/dispatcher` | implements iterion's long-running dispatcher. | `ManagedRunner`, `RunLauncher`, `Runner` | 30 · 192 |
