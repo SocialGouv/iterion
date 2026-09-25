@@ -27,6 +27,16 @@ import (
 type tenantGuardStore struct {
 	*store.FilesystemRunStore
 	runTenant string
+	// listTenant records the tenant stamped on the context of the last
+	// list call — the observable a scoping test reads.
+	mu             sync.Mutex
+	lastListTenant string
+}
+
+func (g *tenantGuardStore) lastListedTenant() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.lastListTenant
 }
 
 func (g *tenantGuardStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
@@ -34,6 +44,15 @@ func (g *tenantGuardStore) LoadRun(ctx context.Context, id string) (*store.Run, 
 		return nil, errors.New("store: run file not found")
 	}
 	return g.FilesystemRunStore.LoadRun(ctx, id)
+}
+
+func (g *tenantGuardStore) ListRuns(ctx context.Context) ([]string, error) {
+	if tid, ok := store.TenantFromContext(ctx); ok {
+		g.mu.Lock()
+		g.lastListTenant = tid
+		g.mu.Unlock()
+	}
+	return g.FilesystemRunStore.ListRuns(ctx)
 }
 
 // tenantGuardedServer serves one run, run-1, that exists for real and
