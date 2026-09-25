@@ -241,7 +241,17 @@ export async function listRunVeille(runId: string): Promise<RunVeille> {
 
 export async function stopAssistantRunWatch(
   watchId: string,
+  targetRunId?: string,
 ): Promise<{ id: string; state: "stopped" }> {
+  // The run-addressed spelling (ADR-103): a watch armed from a cross-team
+  // run view is stopped through that run. The fixed route stays for
+  // callers that only hold the watch id.
+  if (targetRunId) {
+    return request(
+      `/runs/${encodeURIComponent(targetRunId)}/assistant-watches/${encodeURIComponent(watchId)}`,
+      { method: "DELETE" },
+    );
+  }
   return request(`/assistant-watches/${encodeURIComponent(watchId)}`, {
     method: "DELETE",
   });

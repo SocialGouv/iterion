@@ -82,6 +82,11 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-watches", s.handleListAssistantWatches)
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-watch-health", s.handleAssistantWatchHealth)
 	s.mux.HandleFunc("DELETE /api/assistant-watches/{watchID}", s.handleStopAssistantWatch)
+	// The run-addressed spelling of the stop above (ADR-103): a caller
+	// viewing team B's run while active in team A can arm a watch through
+	// the re-scoped routes, so stopping it must answer by the run's id
+	// too. The fixed sibling stays for compatibility.
+	s.mux.HandleFunc("DELETE /api/runs/{id}/assistant-watches/{watchID}", s.handleStopAssistantWatch)
 	s.mux.HandleFunc("POST /api/runs/{id}/assistant-missions", s.handleCreateAssistantMission)
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-missions", s.handleListAssistantMissions)
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-missions/{missionID}", s.handleGetAssistantMission)

@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -355,7 +356,28 @@ func (c *runConn) readPump() {
 	}
 }
 
+// runWSMutatingTypes are the envelopes that change the run (the review's
+// R571177): the ladder's act rung applies to them exactly as it would to
+// the same command over HTTP — a read-only viewer connection cannot
+// cancel, pause, answer or steer the run through the event socket.
+var runWSMutatingTypes = map[string]bool{
+	wsTypeCancel:              true,
+	wsTypePause:               true,
+	wsTypeAnswer:              true,
+	wsTypeQueueMessage:        true,
+	wsTypeCancelQueuedMessage: true,
+	wsTypeBumpLoop:            true,
+	wsTypeRaiseBudget:         true,
+}
+
 func (c *runConn) dispatch(env runWSEnvelope) {
+	// A zero Role means no auth context at all (local/desktop mode, where
+	// the run console runs trusted): the gate guards AUTHENTICATED
+	// surfaces.
+	if runWSMutatingTypes[env.Type] && c.identity.Role != "" && !c.identity.Role.AtLeast(identity.RoleMember) {
+		c.sendError("forbidden", "your role in the run's team does not allow this action", env.AckID)
+		return
+	}
 	switch env.Type {
 	case wsTypeSubscribe:
 		c.handleSubscribe(env)
