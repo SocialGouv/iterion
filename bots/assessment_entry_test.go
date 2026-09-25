@@ -278,3 +278,32 @@ targets:`, 1)
 		}
 	})
 }
+
+// THE SWEEP DECISION TRAVELS: crosses_major is what makes a sweep mandatory,
+// and the lint enforces it — so the summary the drafting agent reads must
+// carry the decision the brief already took, not leave it to be guessed.
+func TestAssessmentBriefSummaryCarriesTheSweepDecision(t *testing.T) {
+	requireAssessmentTools(t)
+	with := strings.Replace(aGoodBrief, `    target: "5.1"`,
+		"    target: \"5.1\"\n    crosses_major: true", 1)
+	if with == aGoodBrief {
+		t.Fatal("the mutation did not apply")
+	}
+	out := readBrief(t, with)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("brief refused: %s", assessmentString(t, out, "reason"))
+	}
+	if !strings.Contains(assessmentString(t, out, "summary"), "IS due") {
+		t.Errorf("the summary drops the explicit crosses_major: true — the agent would guess a decision the brief took")
+	}
+
+	without := strings.Replace(aGoodBrief, `    target: "5.1"`,
+		"    target: \"5.1\"\n    crosses_major: false", 1)
+	out = readBrief(t, without)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("brief refused: %s", assessmentString(t, out, "reason"))
+	}
+	if !strings.Contains(assessmentString(t, out, "summary"), "NOT due") {
+		t.Errorf("the summary drops the explicit crosses_major: false: %s", assessmentString(t, out, "summary"))
+	}
+}

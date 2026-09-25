@@ -298,16 +298,17 @@ func lintContractWithDocuments(t *testing.T, dir, brief string, documents []stri
 	if err != nil {
 		t.Fatal(err)
 	}
+	scratch := t.TempDir()
 	out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 		"{{vars.workspace_dir}}": dir,
-		"{{vars.scratch_dir}}":   t.TempDir(),
+		"{{vars.scratch_dir}}":   scratch,
 		"{{vars.plan_path}}":     ".modernize/plan.yaml",
 		"{{vars.survey_path}}":   ".modernize/survey.json",
 		"{{vars.out_dir}}":       "docs/assessment",
 	}, map[string]string{
 		"{{input.brief}}":               briefJSON(t, brief),
 		"{{input.documents}}":           string(encoded),
-		"{{input.documents_digest}}":    strconv.Quote(renderedDigest(t, dir)),
+		"{{input.documents_digest}}":    strconv.Quote(renderedDigest(t, dir, scratch)),
 		"{{vars.gate_probe_timeout_s}}": gateProbeWall,
 	})
 	if exit != 0 {
@@ -565,7 +566,7 @@ func TestAssessmentGateProbeCoversEveryArtefactReadAfterIt(t *testing.T) {
 			}, map[string]string{
 				"{{input.brief}}":               briefJSON(t, aGoodBrief),
 				"{{input.documents}}":           `[]`,
-				"{{input.documents_digest}}":    strconv.Quote(renderedDigest(t, dir)),
+				"{{input.documents_digest}}":    strconv.Quote(renderedDigest(t, dir, scratch)),
 				"{{vars.gate_probe_timeout_s}}": gateProbeWall,
 			})
 			if exit != 0 {
@@ -717,12 +718,14 @@ func TestAssessmentShippedExtractorsDoNotForkPerFile(t *testing.T) {
 // renderedDigest mirrors the render node's hand-off digest: the two rendered
 // documents, sorted, each contributing its path then its bytes — MISSING for
 // an absent file. The lint recomputes exactly this and refuses a divergence.
-func renderedDigest(t *testing.T, dir string) string {
+func renderedDigest(t *testing.T, dir, scratch string) string {
 	t.Helper()
 	h := sha256.New()
 	paths := []string{
 		filepath.Join(dir, "docs", "assessment", "00-state-of-the-repository.md"),
 		filepath.Join(dir, "docs", "assessment", ".plan-judgement.md"),
+		filepath.Join(scratch, "facts.json"),
+		filepath.Join(dir, ".modernize", "survey.json"),
 	}
 	sort.Strings(paths)
 	for _, p := range paths {
@@ -741,13 +744,18 @@ func renderedDigest(t *testing.T, dir string) string {
 // sealed what it wrote.
 func lintContractWithDigest(t *testing.T, dir, brief, digest string) map[string]any {
 	t.Helper()
+	return lintContractWithDigestAt(t, dir, brief, digest, t.TempDir())
+}
+
+func lintContractWithDigestAt(t *testing.T, dir, brief, digest, scratch string) map[string]any {
+	t.Helper()
 	encoded, err := json.Marshal(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 		"{{vars.workspace_dir}}": dir,
-		"{{vars.scratch_dir}}":   t.TempDir(),
+		"{{vars.scratch_dir}}":   scratch,
 		"{{vars.plan_path}}":     ".modernize/plan.yaml",
 		"{{vars.survey_path}}":   ".modernize/survey.json",
 		"{{vars.out_dir}}":       "docs/assessment",

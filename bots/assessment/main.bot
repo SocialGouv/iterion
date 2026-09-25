@@ -868,9 +868,12 @@ tool brief_read:
     lines += block("Goals", ["%s — %s" % (g["id"], g["statement"].strip()) for g in goals])
     targets = brief.get("targets") if isinstance(brief.get("targets"), list) else []
     lines += [""] + block("Targets (decided)", [
-        "%s: %s -> %s%s" % (t.get("component", "?"), t.get("current", "?"), t.get("target", "?"),
-                            (" via %s" % ", ".join(str(s) for s in t["series"]))
-                            if isinstance(t.get("series"), list) and t["series"] else "")
+        "%s: %s -> %s%s%s" % (t.get("component", "?"), t.get("current", "?"), t.get("target", "?"),
+                              (" via %s" % ", ".join(str(s) for s in t["series"]))
+                              if isinstance(t.get("series"), list) and t["series"] else "",
+                              ("; the upgrade sweep %s" % ("IS due" if t.get("crosses_major") is True
+                                                           else "is declared NOT due"))
+                              if isinstance(t.get("crosses_major"), bool) else "")
         for t in targets if isinstance(t, dict)])
     policy = brief.get("support_policy") if isinstance(brief.get("support_policy"), list) else []
     lines += [""] + block("Support policy", [
@@ -3012,10 +3015,16 @@ tool render:
     ## recomputes this digest over the same files and refuses a rewrite,
     ## instead of fingerprinting whatever it finds.
     seen = hashlib.sha256()
-    for path in sorted([state_path, held]):
+    ## The scope is EVERYTHING the chain reads after this node and commits or
+    ## publishes: the two rendered documents, the measured facts, the survey.
+    for path in sorted([state_path, held, facts_path,
+                        os.path.join(ws, {{vars.survey_path}})]):
         seen.update(path.encode('utf-8'))
-        with open(path, 'rb') as handle:
-            seen.update(handle.read())
+        try:
+            with open(path, 'rb') as handle:
+                seen.update(handle.read())
+        except OSError:
+            seen.update(b'MISSING')
     out["documents_digest"] = seen.hexdigest()
     out["reason"] = "state document rendered at %s; %d fact identifier(s) substituted" % (
         state_path, len(used))
@@ -3269,7 +3278,9 @@ tool contract_lint:
     documents_digest = {{input.documents_digest}}
     rendered_now = hashlib.sha256()
     for path in sorted([os.path.join(ws, {{vars.out_dir}}, "00-state-of-the-repository.md"),
-                        os.path.join(ws, {{vars.out_dir}}, ".plan-judgement.md")]):
+                        os.path.join(ws, {{vars.out_dir}}, ".plan-judgement.md"),
+                        os.path.join(scratch, "facts.json"),
+                        os.path.join(ws, {{vars.survey_path}})]):
         rendered_now.update(path.encode('utf-8'))
         try:
             with open(path, 'rb') as handle:

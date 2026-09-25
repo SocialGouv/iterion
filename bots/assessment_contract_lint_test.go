@@ -1099,7 +1099,7 @@ func TestAssessmentContractLintRefusesDocumentsRewrittenAfterRender(t *testing.T
 		[]byte("# judgement as rendered\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	digest := renderedDigest(t, dir)
+	digest := renderedDigest(t, dir, t.TempDir())
 	// THE WINDOW: the render sealed its digest; the drafting agent's write
 	// tools are still live.
 	if err := os.WriteFile(filepath.Join(assessed, "00-state-of-the-repository.md"),
@@ -1112,6 +1112,25 @@ func TestAssessmentContractLintRefusesDocumentsRewrittenAfterRender(t *testing.T
 	}
 	if !strings.Contains(assessmentString(t, out, "reason"), "changed between the render") {
 		t.Errorf("the refusal does not name the rewrite: %s", assessmentString(t, out, "reason"))
+	}
+
+	// THE SCOPE IS THE CHAIN, not the two documents: the measured facts are
+	// read after the render and published by render_plan — rewritten here
+	// with the WIDE digest sealed, they must refuse all the same.
+	facts := filepath.Join(dir, "scratch", "facts.json")
+	if err := os.MkdirAll(filepath.Dir(facts), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(facts, []byte(`{"facts": {"size.band": "S"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wide := renderedDigest(t, dir, filepath.Join(dir, "scratch"))
+	if err := os.WriteFile(facts, []byte(`{"facts": {"size.band": "XXL"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = lintContractWithDigestAt(t, dir, aGoodBrief, wide, filepath.Join(dir, "scratch"))
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("facts rewritten between the render and the lint were outside the sealed scope")
 	}
 }
 

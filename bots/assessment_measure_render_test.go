@@ -237,6 +237,7 @@ func TestAssessmentRenderRefusesAFactNobodyMeasured(t *testing.T) {
 		out, exit, stderr := assessmentRun(t, "render", map[string]string{
 			"{{vars.workspace_dir}}":    ws,
 			"{{vars.out_dir}}":          "docs/assessment",
+			"{{vars.survey_path}}":      ".modernize/survey.json",
 			"{{input.facts_path}}":      factsPath,
 			"{{input.state_judgement}}": state,
 			"{{input.plan_judgement}}":  "The programme faces [[fact:stack.detected]].",
@@ -406,6 +407,7 @@ func renderJudgement(t *testing.T, ws, factsPath, state, plan, questions string)
 	out, exit, stderr := assessmentRun(t, "render", map[string]string{
 		"{{vars.workspace_dir}}":    ws,
 		"{{vars.out_dir}}":          "docs/assessment",
+			"{{vars.survey_path}}":      ".modernize/survey.json",
 		"{{input.facts_path}}":      factsPath,
 		"{{input.state_judgement}}": state,
 		"{{input.plan_judgement}}":  plan,
@@ -465,6 +467,7 @@ func TestAssessmentRenderRefusesATypedFigureAndAMisusedFact(t *testing.T) {
 		out, exit, stderr := assessmentRun(t, "render", map[string]string{
 			"{{vars.workspace_dir}}":   ws,
 			"{{vars.out_dir}}":         "docs/assessment",
+			"{{vars.survey_path}}":     ".modernize/survey.json",
 			"{{input.facts_path}}":     factsPath,
 			"{{input.plan_judgement}}": plan,
 			"{{input.open_questions}}": questions,
