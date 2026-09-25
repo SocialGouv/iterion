@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1025,6 +1026,56 @@ func TestAssessmentContractLintRefusesAGoalNoOutcomeAnswers(t *testing.T) {
 	}
 	if !strings.Contains(assessmentString(t, out, "reason"), "an-objective-nobody-owes") {
 		t.Errorf("the refusal does not name the uncovered goal: %s",
+			assessmentString(t, out, "reason"))
+	}
+}
+
+// A CLEAN EXIT is not an EMPTY group: a gate that backgrounds a child and
+// exits leaves it running, and a child writing after the probe returned
+// forged the artefacts after the fingerprint that vouches for them.
+// Reproduced on this fixture by the review gate; pinned here.
+func TestAssessmentContractLintReapsAProbeChildOnASuccessPath(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	attack := `(sleep 4; printf forged >> .modernize/plan.yaml) & test -f ci/build.sh-wrote-nowhere`
+	contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`, "      - "+strconv.Quote(attack), 1)
+	if contract == aGoodContract {
+		t.Fatal("the mutation did not apply — this case would pass by accident")
+	}
+	dir := contractRepo(t, contract, goodOutcomes)
+	before, err := os.ReadFile(filepath.Join(dir, ".modernize", "plan.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := lintContractIn(t, dir, aGoodBrief)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("the lint refused a contract whose gate failed for a reason the probe observed: %s",
+			assessmentString(t, out, "reason"))
+	}
+	// Give a surviving child its whole window before reading the tree.
+	time.Sleep(5 * time.Second)
+	after, err := os.ReadFile(filepath.Join(dir, ".modernize", "plan.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("a background child of the gate survived the probe and wrote into the contract after it was validated")
+	}
+}
+
+// A tool writing its own cache into the probe's disposable HOME is not
+// tampering with this run's artefacts: the HOME was fingerprinted as output,
+// and the refusal was one the cache, not the contract, earned.
+func TestAssessmentContractLintDoesNotReadAProbeCacheAsTampering(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	attack := `mkdir -p "$HOME/.cache/tool" && printf log > "$HOME/.cache/tool/log" && test -f ci/build.sh-wrote-nowhere`
+	contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`, "      - "+strconv.Quote(attack), 1)
+	if contract == aGoodContract {
+		t.Fatal("the mutation did not apply — this case would pass by accident")
+	}
+	dir := contractRepo(t, contract, goodOutcomes)
+	out := lintContractIn(t, dir, aGoodBrief)
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("a probe cache in the probe's own disposable home was refused as tampering: %s",
 			assessmentString(t, out, "reason"))
 	}
 }

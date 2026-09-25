@@ -3554,12 +3554,17 @@ tool contract_lint:
     probe_env.setdefault("PATH", "/usr/bin:/bin")
     try:
         os.makedirs(scratch, exist_ok=True)
-        probe_env["HOME"] = tempfile.mkdtemp(prefix="gate-probe-home-", dir=scratch)
+        # NOT under the scratch, which IS an ARTEFACT_ROOT, and a
+        # tool that writes its own cache into its HOME was fingerprinted as
+        # tampering with this run's artefacts — a refusal the cache, not the
+        # contract, earned. The system temp is disposable and digested by
+        # nothing.
+        probe_env["HOME"] = tempfile.mkdtemp(prefix="gate-probe-home-")
     except OSError as exc:
         refuse("CONTRACT_REFUSED",
-               "cannot create an empty home for the gate probe under %s: %s. The probe runs "
+               "cannot create the probe's scratch or its empty home: %s. The probe runs "
                "agent-written commands, and it does not run them in the operator's home."
-               % (scratch, exc))
+               % exc)
     probe_env["LC_ALL"] = "C"
     probe_env["TZ"] = "UTC"
     probe_env["GIT_TERMINAL_PROMPT"] = "0"
@@ -3652,7 +3657,7 @@ tool contract_lint:
         except OSError as exc:
             return "did not run: %s" % exc
         try:
-            return proc.wait(timeout=GATE_PROBE_TIMEOUT_S)
+            code = proc.wait(timeout=GATE_PROBE_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -3660,6 +3665,20 @@ tool contract_lint:
                 pass  # the group already exited between the wall and the kill
             proc.wait()
             return "timeout"
+        # A CLEAN EXIT is not an EMPTY group. A gate that backgrounds a child
+        # and exits leaves it running: a child still writing after the probe
+        # returned wrote into the artefacts AFTER the fingerprint that vouches
+        # for them — the forged-judgement attack, reproduced on this bundle's
+        # own fixture. The group is reaped on EVERY path out of here.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # nothing survived the gate's own exit
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return code
 
     state_before = tracked_state()
     probe_spent = 0.0
