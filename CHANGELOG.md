@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.200.3](https://github.com/SocialGouv/iterion/compare/v3.200.2...v3.200.3) (2026-09-25)
+
+### Bug Fixes
+
+* **auth:** refuse admin password reset for disabled accounts ([#1863](https://github.com/SocialGouv/iterion/issues/1863)) ([4c245ce](https://github.com/SocialGouv/iterion/commit/4c245ced1ff551a461445057fc1cc8e6c41e62d3)), closes [#1561](https://github.com/SocialGouv/iterion/issues/1561), references [#1862](https://github.com/SocialGouv/iterion/issues/1862)
+
+    <details><summary>why</summary>
+
+    Return an actionable 422 before generating a credential or changing the account. Preserve active/pending recovery and explicit re-enable semantics. Cover the HTTP journey and document the refusal; concurrent stale writes remain separately tracked in #1862.
+
+    </details>
+* **claude-code:** align task credential precedence across CLI passes ([#1859](https://github.com/SocialGouv/iterion/issues/1859)) ([d484906](https://github.com/SocialGouv/iterion/commit/d484906e34036d14a2dd08d4a60bfa0046a93dbe)), closes [#1836](https://github.com/SocialGouv/iterion/issues/1836)
+
+    <details><summary>why</summary>
+
+    Compose ambient forwarding, task env additions and selected credential routes once for host/sandbox main and format spawns. Bind direct credentials to their route, protect resolver markers, and preserve inherited gateway fingerprints.
+
+    </details>
+
 ## [3.200.2](https://github.com/SocialGouv/iterion/compare/v3.200.1...v3.200.2) (2026-09-25)
 
 ### Bug Fixes
