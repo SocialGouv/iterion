@@ -539,7 +539,38 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if err == nil {
 			t.Fatal("the mirror accepted a .claude pointing out of the workspace")
 		}
-		if !strings.Contains(err.Error(), "outside the run workspace") {
+		if !strings.Contains(err.Error(), "not strictly under") {
+			t.Fatalf("the refusal does not name what is wrong: %v", err)
+		}
+	})
+
+	t.Run("linked to the workspace root: refused, nothing removed", func(t *testing.T) {
+		// Not a hair split: the owned copy would sit at <workDir>/iterion-skills,
+		// so the reset removes what the repository committed there and the
+		// bundle's copy lands outside `.claude/`, the prefix every staging
+		// gesture excludes.
+		work := t.TempDir()
+		committed := filepath.Join(work, ownedSkillsDirName, "committed-by-the-repo.md")
+		if err := os.MkdirAll(filepath.Dir(committed), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(committed, []byte("a file the checkout brought\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(work, filepath.Join(work, ".claude")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil)
+		if _, statErr := os.Stat(committed); statErr != nil {
+			t.Errorf("the reset removed a file the checkout committed: %v", statErr)
+		}
+		if _, ownErr := os.Stat(filepath.Join(work, ownedSkillsDirName, sharedNameSkill)); ownErr == nil {
+			t.Error("the engine wrote its own copy outside `.claude/`, where no staging gesture excludes it")
+		}
+		if err == nil {
+			t.Fatal("the mirror accepted a .claude pointing at the workspace root")
+		}
+		if !strings.Contains(err.Error(), "not strictly under") {
 			t.Fatalf("the refusal does not name what is wrong: %v", err)
 		}
 	})

@@ -89,10 +89,16 @@ func OwnedSkillsDir(workDir string) string {
 // mirror reporting success.
 //
 // So the rule every destructive step here follows — resolve the symlinks,
-// require the target strictly under the tree we own, then act. A workspace
+// require the target STRICTLY under the tree we own, then act. A workspace
 // REACHED through a symlink is fine: both sides resolve to the same tree. What
 // is refused is a `.claude` resolving out of it, and the run stops rather than
 // reading an owned copy it may not reset.
+//
+// "Strictly" includes the workspace root itself, which is not a hair split:
+// `.claude` linked to the root puts the owned copy at `<workDir>/iterion-skills`.
+// Measured — the reset removed a file the REPOSITORY had committed there, and
+// the bundle's copy landed outside `.claude/`, the one prefix every staging
+// gesture and cleanliness probe excludes (pkg/treenoise).
 func refuseAnOwnedCopyOutsideTheWorkspace(dir string) error {
 	claudeDir := filepath.Dir(dir)
 	resolved, err := filepath.EvalSymlinks(claudeDir)
@@ -109,8 +115,8 @@ func refuseAnOwnedCopyOutsideTheWorkspace(dir string) error {
 		return fmt.Errorf("runtime/bundle: resolve the run workspace %s before resetting the engine-owned skills copy: %w", workDir, err)
 	}
 	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("runtime/bundle: %s resolves to %s, outside the run workspace %s — the engine-owned skills copy is removed and rewritten on every pass, and the engine does not remove a directory its workspace only points at (a checkout can commit that link)", claudeDir, resolved, root)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("runtime/bundle: %s resolves to %s, which is not strictly under the run workspace %s — the engine-owned skills copy is removed and rewritten on every pass, and the engine neither removes a directory its workspace only points at nor writes its own copy outside `.claude/` (a checkout can commit that link)", claudeDir, resolved, root)
 	}
 	return nil
 }
