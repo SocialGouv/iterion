@@ -2505,10 +2505,35 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		{"redis://:Zq7h9xAb3v@redis:6379/0", "Zq7h9xAb3v"}, {"postgres://app:Zq7h9xAb3w@db:5432/app", "Zq7h9xAb3w"},
 		{"sk_live_" + long[:24], long[:24]}, {"AIza" + long[:35], long[:35]}, {"hf_" + long[:34], long[:34]}, {"npm_" + long[:36], long[:36]},
 		{"SG." + long[:22] + "." + long[:43], long[:43]},
+		// An escaped quote stays inside a quoted value; a never-closed quote
+		// runs to the end of the line; the bare word pass; a base64 token may
+		// start with `/`; a Basic credential may be unpadded or hold latin-1
+		// letters; two suffixes.
+		{`{"password":"ab\"cd12345"}`, `ab\"cd12345`},
+		{`password="Zq7h9xAb3cZq running`, "Zq7h9xAb3cZq running"},
+		{"ADMIN_PASS=Zq7h9xAb3cZq failed", "Zq7h9xAb3cZq"},
+		{"--db-pass Zq7h9xAb3cZq app", "Zq7h9xAb3cZq"},
+		{"dbPass=Zq7h9xAb3cZq failed", "Zq7h9xAb3cZq"},
+		{"token=/+AbCdEf123456 failed", "/+AbCdEf123456"},
+		{"creds basic dXNlcjpwYXNzd29yZOk= in config", "dXNlcjpwYXNzd29yZOk="},
+		{"PASSWORD_2_PROD=Zq7h9xAb3Z ok", "Zq7h9xAb3Z"},
 	} {
-		if _, all := scan("shape", []string{"ERROR config " + c.shape + " rejected"}); strings.Contains(all, c.secret) {
+		// A secret holding a quote or a backslash rides the JSON-escaped
+		// samples: both forms must be absent.
+		esc := func(s string) string {
+			s = strings.ReplaceAll(s, `\`, `\\`)
+			return strings.ReplaceAll(s, `"`, `\"`)
+		}
+		if _, all := scan("shape", []string{"ERROR config " + c.shape + " rejected"}); strings.Contains(all, c.secret) || strings.Contains(all, esc(c.secret)) {
 			t.Fatalf("a secret in the shape %q escapes the scan", c.shape)
 		}
+	}
+	// A quoted secret longer than the 300-character samples still yields its
+	// finding — the shape battery cannot see a secret longer than the samples
+	// it greps, so the finding itself is what is asserted.
+	out, _ = scan("quoted-400", []string{`ERROR config password="` + strings.Repeat("Zq7h9xAb3c", 40) + `" ok rejected`})
+	if !strings.Contains(fmt.Sprint(out["leak_findings"]), "class:secret_kv") {
+		t.Fatalf("a quoted secret longer than the samples yields no finding: %v", out["leak_findings"])
 	}
 	// Look-alikes raise no secret finding: counters and paths named after a
 	// secret word, a logger's own mask or placeholder, a reference to a
@@ -2523,7 +2548,12 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		"Error: --token requires a value", "missing --password argument", "usage: backup --password PASSWORD --host HOST", "--api-key missing",
 		"option --passwd ignored", "--token /run/secrets/token",
 		"basic authentication/authorization failed", "using basic internationalization support", "basic misconfiguration detected",
-		"auth=basic /api/v1/users/login 401", "falling back to basic authentication.method"}
+		"auth=basic /api/v1/users/login 401", "falling back to basic authentication.method",
+		// a scheme word followed by a short word is prose, not a credential
+		"authorization: token authentication failed", "authorization: token validation failed",
+		"authorization: bot escalation created", "authorization: bot deactivated by admin",
+		"authorization: ssws session expired ok", "authorization: apikey revoked for user42",
+		"authorization: basic authentication required", "authorization: ssws authentication expired"}
 	secretFinding := func(out map[string]any) bool {
 		f := fmt.Sprint(out["leak_findings"])
 		return strings.Contains(f, "class:secret_kv") || strings.Contains(f, "class:bearer")
@@ -2734,6 +2764,8 @@ func TestProdWatch_UpstreamTextStaysOut(t *testing.T) {
 		rawH      string   // the status line the health endpoint answers with
 		version   string   // the health endpoint's version field
 		announced bool     // a lane error the coverage note announces
+
+		wantWarnings int // the Prometheus warning count the alert evidence carries
 	}{
 		{name: "a Loki status that is text", loki: map[string]any{"status": "no data for " + pii}, announced: true},
 		{name: "a line in the timestamp slot", loki: map[string]any{"status": "success", "data": map[string]any{"resultType": "streams",
@@ -2745,7 +2777,8 @@ func TestProdWatch_UpstreamTextStaysOut(t *testing.T) {
 		{name: "a health status line that is text", rawH: "login failed for " + pii},
 		{name: "a health reason phrase that is text", rawH: "HTTP/1.1 500 login failed for " + pii},
 		{name: "a version that is not a version", version: "user " + pii},
-		{name: "Prometheus warnings quoting text", promW: []string{"bad label value for " + pii}},
+		{name: "a version that is an email", version: pii},
+		{name: "Prometheus warnings quoting text", promW: []string{"bad label value for " + pii}, wantWarnings: 1},
 	} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
@@ -2770,6 +2803,11 @@ func TestProdWatch_UpstreamTextStaysOut(t *testing.T) {
 			}
 			if r := pwCoverageReasons(outs["decide"]); c.announced && r == "" {
 				t.Fatalf("the lane error is announced: %v", outs["decide"]["stale_sources"])
+			}
+			if c.wantWarnings > 0 {
+				if got := fmt.Sprint(outs["decide"]["alerts"]); !strings.Contains(got, "warnings:"+strconv.Itoa(c.wantWarnings)) {
+					t.Fatalf("the alert evidence carries the warning count: %s", got)
+				}
 			}
 		})
 	}

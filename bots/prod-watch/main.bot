@@ -762,7 +762,7 @@ tool resolve_release:
         for key in field.split('.'):
             cur = cur.get(key) if isinstance(cur, dict) else None
         value = str(cur).strip() if cur not in (None, '') else ''
-        if value and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,119}', value):
+        if value and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,119}', value):
             ## A version is one token; anything else is the server's text.
             note, value = 'field ' + repr(field) + ' is not a version token (its text is withheld)', ''
         elif not value:
@@ -1554,11 +1554,14 @@ tool leak_scan:
         ## What a secret key can hold that is no secret: a logger's own mask
         ## or a placeholder (`[Redacted]`, `********`, `${DB_PASSWORD}`), a
         ## word of 12 letters or fewer (a status or a usage text: `expired`,
-        ## `requires`, `PASSWORD`), a path to the secret, a count of tokens
-        ## (`"prompt_token": 1234`), an API page token (`NextToken=`).
+        ## `requires`, `PASSWORD`), a path to the secret (a path shape: two
+        ## slashes, or one of the system prefixes — a base64 token may start
+        ## with `/`), a count of tokens (`"prompt_token": 1234`), an API page
+        ## token (`NextToken=`).
         v = m.group(m.lastindex).strip()
         w = v.rstrip(')]}')   # an unquoted value may run into the brackets closing it
-        if PLACEHOLDER.fullmatch(v) or re.fullmatch(r'[A-Za-z]{1,12}', w) or v.startswith(('/', './', '~/')):
+        if PLACEHOLDER.fullmatch(v) or re.fullmatch(r'[A-Za-z]{1,12}', w) or v.startswith(('./', '~/')) \
+                or (v.startswith('/') and (v.count('/') > 1 or v.startswith(('/etc/', '/home/', '/root/', '/run/', '/var/', '/tmp/', '/opt/', '/usr/', '/srv/', '/mnt/', '/proc/', '/dev/')))):
             return False
         glued = m.start() > 0 and (m.string[m.start() - 1].isalnum() or m.string[m.start() - 1] in '_.-')
         if w.isdigit() and glued and m.group(0)[:5].lower() == 'token':
@@ -1567,16 +1570,24 @@ tool leak_scan:
     def basic_ok(m):
         ## Basic credentials outside an Authorization header are base64 of
         ## `user:password`: `basic` followed by an ordinary word is prose.
+        ## A credential may be unpadded and hold non-ASCII letters (`latin-1`
+        ## passwords): pad it, then accept an encoding whose decode is a
+        ## printable `user:password`; undecodable noise stays prose.
         b = m.group(1)
         if b is None:
             return True
-        if len(b) % 4:
-            return False
         try:
-            d = base64.b64decode(b, validate=True).decode('utf-8')
+            d = base64.b64decode(b + '=' * (-len(b) % 4), validate=True)
         except ValueError:
             return False
-        return ':' in d and d.isprintable()
+        for enc in ('utf-8', 'latin-1'):
+            try:
+                t = d.decode(enc)
+            except UnicodeDecodeError:
+                continue
+            if ':' in t and t.isprintable() and sum(not c.isascii() for c in t) <= 2:
+                return True
+        return False
 
     ## Order matters: a JWT contains digit runs, a bearer value may look
     ## like an email's local part. Secrets first, then validated
@@ -1584,7 +1595,7 @@ tool leak_scan:
     CLASSES = [
         ('private_key', re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,4000}?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----'), None),
         ('jwt', re.compile(r'(?a)\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'), None),
-        ('bearer', re.compile(r'(?ai)\bauthorization\s*:\s*(?:basic|token|apikey|api-key|bot|ssws)\s+[A-Za-z0-9._~+/=-]{8,}'
+        ('bearer', re.compile(r'(?ai)\bauthorization\s*:\s*(?:basic|token|apikey|api-key|bot|ssws)\s+[A-Za-z0-9._~+/=-]{16,}'
                               r'|\bbearer\s+[A-Za-z0-9._~+/=-]{16,}|\bbasic\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])'), basic_ok),
         ('cloud_or_forge_token', re.compile(r'(?a)\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{35}|hf_[A-Za-z0-9]{30,}|npm_[A-Za-z0-9]{36}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b'), None),
         ## A secret by its key: a secret word starting a name part — snake,
@@ -1592,18 +1603,20 @@ tool leak_scan:
         ## `[password] =>`) — or a camelCase part (`dbPassword:`,
         ## `DBPassword:`), with only the suffixes a secret name takes (`_KEY`,
         ## `_VALUE`, a number, an environment: `SECRET_KEY`, `PASSWORD_2`,
-        ## `TOKEN_PROD`; not `PASSWORD_FILE`, `total_tokens`), then `=`, `:` or
-        ## `=>`; a quoted value runs to its closing quote. Or a command-line
-        ## flag (`--password …`, `--db-password …`), SQL (`IDENTIFIED BY
-        ## '…'`), a URL's credentials (`scheme://user:…@`). The value is
-        ## redacted, the key kept; `secret_ok` refuses what is no secret.
+        ## `PASSWORD_2_PROD`, `TOKEN_PROD`; not `PASSWORD_FILE`,
+        ## `total_tokens`), then `=`, `:` or `=>`; a quoted value runs to its
+        ## closing quote (an escaped `\"` stays inside; a quote never closed
+        ## runs to the end of the line). Or a command-line flag (`--password
+        ## …`, `--db-pass …`), SQL (`IDENTIFIED BY '…'`), a URL's credentials
+        ## (`scheme://user:…@`). The value is redacted, the key kept;
+        ## `secret_ok` refuses what is no secret.
         ('secret_kv', re.compile(
-            r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
-            r'|(?<=[a-z])(?:Password|Passwd|Pwd|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Secret|Token))'
+            r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
+            r'|(?<=[a-z])(?:Password|Passwd|Pwd|Pass|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Pass|Secret|Token))'
             r'(?i:[_-]?(?:key|value|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
-            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"([^"\n]{6,256})"|\'([^\'\n]{6,256})\'|([^\s\'"&,;<>]{6,}))'
-            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'
-            r'|(?i:identified\s+by|with\s+password)\s+(?:\'([^\'\n]{4,256})\'|"([^"\n]{4,256})")'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:[^"\n]|\\"){6,})"|\'((?:[^\'\n]|\\\'){6,})\'|"([^"\n]{6,})$|\'([^\'\n]{6,})$|([^\s\'"&,;<>]{6,}))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'
+            r'|(?i:identified\s+by|with\s+password)\s+(?:\'([^\'\n]{4,})\'|"([^"\n]{4,})")'
             r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),

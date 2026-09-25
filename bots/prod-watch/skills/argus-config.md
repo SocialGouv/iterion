@@ -49,8 +49,9 @@ overrides).
   to the analysis agent).
 - `release` — `source: none | health_field`. With `health_field`, the
   `field` (dotted path) of the JSON body at `health_url` is the deployed
-  version — one token (letters, digits, `._+:/@-`, 120 at most); any
-  other text is withheld and noted. **`release_known` stays false in this slice**: a string found in
+  version — one token (letters, digits, `._+-`, 120 at most; a build
+  suffix like `1.2.3+build.4` passes, an email address or a URL cannot);
+  any other text is withheld and noted. **`release_known` stays false in this slice**: a string found in
   a body is not a verified deployment; the analysis slice resolves it in
   the repository and only then says "known".
 - `grafana` — `base_url` (https), the datasource UIDs. The bot calls the
