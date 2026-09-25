@@ -1352,7 +1352,7 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// api.anthropic.com for a GLM model it cannot serve, breaking exactly the
 	// forfait-carrying tenants this change is for.
 	if !modelServedByZAI(model) {
-		if err := applyForfaitAcrossSandbox(env, creds); err != nil {
+		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
 			return nil, err
 		}
 	}
@@ -1385,7 +1385,7 @@ func modelServedByZAI(model string) bool {
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
 // the model gate above reads as one line.
-func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials) error {
+func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials, model string) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -1410,6 +1410,18 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 	// destination the operator chose, so a bearer carrying the whole Claude
 	// account does not travel there. clawAnthropicProviderSlots says which keys
 	// those are.
+	// A key pinned for THIS node's own route is as held as a BYOK slot: the
+	// pinned-key block above injected it into the env, and applying the
+	// forfait here deleted it right back — the container spent the forfait
+	// while the in-process path spent the pin, and an expired forfait
+	// refused a node whose key was good. The route-less predicate below
+	// stays pin-blind on purpose (#736): a pin for ANOTHER route must not
+	// keep the forfait out of an unpinned node.
+	for _, slot := range clawAnthropicProviderSlots {
+		if slot == clawPinnedProvider(model) && creds.PinnedAPIKey(slot) != "" {
+			return nil
+		}
+	}
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
 		!heldAnthropicWireAPIKey(creds) &&
 		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {

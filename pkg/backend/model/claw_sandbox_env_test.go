@@ -397,3 +397,29 @@ func TestHeldAnthropicWireAPIKey_IgnoresAPinnedKey(t *testing.T) {
 		t.Error("heldAnthropicWireAPIKey counted a pinned key — the run's forfait would stay out of its own anthropic nodes")
 	}
 }
+
+// The forfait crossing is a PER-NODE decision. A key pinned for THIS node's
+// own route was just injected by the pinned-key block; applying the forfait
+// deleted it right back — the container spent the forfait while the
+// in-process path spent the pin, and an expired forfait refused a node whose
+// key was good. A pin for ANOTHER route still must not keep the forfait out
+// of an unpinned node (#736, TestHeldAnthropicWireAPIKey_IgnoresAPinnedKey).
+func TestForwardableProviderEnv_ForfaitCrossingKeepsThisNodesPinnedAnthropicKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ZAI_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-PINNED"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+	})
+	env := envFor(t, ctx)
+
+	if env["ANTHROPIC_API_KEY"] != "sk-ant-PINNED" {
+		t.Fatalf("ANTHROPIC_API_KEY = %q — the forfait crossing deleted the key this node's own pin injected", env["ANTHROPIC_API_KEY"])
+	}
+	if _, present := env["CLAUDE_CONFIG_DIR"]; present {
+		t.Error("CLAUDE_CONFIG_DIR set although this node holds its own pinned key — the sandbox would spend the forfait while the in-process path spends the pin")
+	}
+}

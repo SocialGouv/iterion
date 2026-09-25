@@ -1278,6 +1278,12 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 	if p.apiKeys != nil {
 		missing := make([]secrets.Provider, 0, len(allKnownProviders))
 		for _, prov := range allKnownProviders {
+			// A slot an earlier stage funded is NOT rewritten: the first
+			// tier to fill a slot owns it, and a later tier overwriting it
+			// would move the spend onto its own invoice in silence.
+			if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+				continue
+			}
 			if fillable(string(prov)) {
 				missing = append(missing, prov)
 			}

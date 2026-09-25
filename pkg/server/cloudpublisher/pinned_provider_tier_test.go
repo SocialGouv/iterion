@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -419,5 +420,47 @@ func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
 	}
 	if !strings.Contains(line, "pinned-routes-only") {
 		t.Errorf("the granted-credential line does not say the moonshot key serves pinned routes only: %q", line)
+	}
+}
+
+// THE FIRST TIER TO FILL A SLOT OWNS IT. A tenant forfait takes the
+// anthropic wire; a route pins moonshot; the org holds a moonshot key and so
+// does the platform. The org tier runs first and funds the slot — and the
+// platform tier must pass it by: rewriting it moved the spend onto the
+// platform's invoice in silence, and the facade env served the platform's
+// key from then on.
+func TestPinnedProvider_AnOrgKeyFundedFirstKeepsItsSlotFromThePlatformTier(t *testing.T) {
+	const orgID = "org-1"
+	p := orgTierPublisher(t, orgID, identity.CredentialAudience{Teams: []string{"team-in"}})
+	seedKey(t, p.apiKeys, p.sealer, secrets.OrgTierTenantID(orgID), secrets.ProviderMoonshot, "org-moonshot")
+	seedKey(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderMoonshot, "platform-moonshot")
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, p.sealer, "webhook:cfg-1", "sk-ant-tenant-forfait")
+	p.oauthForfait = oauth
+
+	ctx := store.WithTenant(context.Background(), "team-in")
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "",
+		nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"moonshot"})
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
+	rec, err := rs.Get(ctx, creds.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	b, err := secrets.OpenRunBundle(p.sealer, "run-1", rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+
+	// The tenant forfait takes the anthropic WIRE, and moonshot rides that
+	// wire's family — so the org's pinned funding lands in the pinned
+	// channel, exactly the slot the platform tier used to rewrite.
+	if got := b.PinnedAPIKeys[secrets.ProviderMoonshot]; got != "org-moonshot" {
+		t.Errorf("PinnedAPIKeys[moonshot] = %q, want the ORG key — a later tier rewrote a slot another tier had funded", got)
+	}
+	if !b.OrgSourced["moonshot"] {
+		t.Errorf("OrgSourced = %v, missing moonshot — the slot's provenance was rewritten", b.OrgSourced)
 	}
 }
