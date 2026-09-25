@@ -442,14 +442,19 @@ func documentCarriesCatalog(doc []byte) bool {
 // replacing it does not is named. A .bot's comment lines are compared by
 // their text, its frontmatter by key — the writer spells the frontmatter
 // its own way, and a value it carries is not lost — and a document's YAML
-// comments by their text; a document that does not read as YAML is said
-// to be replaced uncounted.
+// comments by their text. A target the reader cannot read whole — a .bot
+// the parser recovers on, a document that is not one YAML document — is
+// said to be replaced uncounted.
 func forceNote(to, dest, from string, existing, out []byte) string {
 	lead := dest + ": --force replaces it whole — "
 	switch to {
 	case "bot":
-		had, hadKeys := botCarries(dest, existing)
-		kept, keptKeys := botCarries(dest, out)
+		pr := parser.Parse(dest, string(existing))
+		if diagnosticErrors(pr.Diagnostics) != "" {
+			return lead + "it does not parse as a .bot, so what it carries, its comments included, is not counted"
+		}
+		had, hadKeys := botCarries(pr.File)
+		kept, keptKeys := botCarries(parser.Parse(dest, string(out)).File)
 		n, first := lostLines(had, kept)
 		var keys []string
 		for _, k := range hadKeys {
@@ -523,14 +528,13 @@ func lostLines(had, kept []string) (int, string) {
 	return n, first
 }
 
-// botCarries is what a .bot carries beside its program: the text of every
-// comment — the file's own lines and those written around its declarations
-// and edges, the strict-escape directive aside (the writer decides that
-// one) — and the keys of a frontmatter block the catalogue reader can read,
-// sorted. A block it cannot read (not closed, not YAML) counts as comment
-// lines.
-func botCarries(name string, text []byte) (comments, keys []string) {
-	f := parser.Parse(name, string(text)).File
+// botCarries is what a parsed .bot carries beside its program: the text of
+// every comment — the file's own lines and those written around its
+// declarations and edges, the strict-escape directive aside (the writer
+// decides that one) — and the keys of a frontmatter block the catalogue
+// reader can read, sorted. A block it cannot read (not closed, not YAML)
+// counts as comment lines.
+func botCarries(f *ast.File) (comments, keys []string) {
 	add := func(cs []*ast.Comment) {
 		for _, c := range cs {
 			if !parser.IsStrictEscapeDirective(c.Text) {

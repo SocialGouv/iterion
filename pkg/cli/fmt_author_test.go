@@ -226,6 +226,15 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 	if err != nil || !said(res, "h/w.bot: --force replaces it whole") || !said(res, "comment line(s)") {
 		t.Fatalf("--force over a .bot whose frontmatter holds an end marker said nothing of what follows it: %v %q", err, res.Notices)
 	}
+
+	// A .bot the parser only recovers on is replaced uncounted, and says so:
+	// what it carries past the error cannot be listed.
+	doc2 := writeBot(t, "k/v.bot.yaml", authorHelloDoc)
+	writeBot(t, "k/v.bot", "# keep me\ndsl: 2\n\nagent hello:\n  model: \"m\n# after the error\n")
+	res, err = RunFmt(FmtOptions{Paths: []string{doc2}, To: "bot", Force: true, Printer: jp})
+	if err != nil || !said(res, "k/v.bot: --force replaces it whole — it does not parse as a .bot") {
+		t.Fatalf("--force over a .bot that does not parse said nothing of what it replaced: %v %q", err, res.Notices)
+	}
 }
 
 // A document whose program has no written .bot form (a profile-1 value with
