@@ -2529,6 +2529,22 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		{`password='ab\'cd12345' ok`, `ab\'cd12345`},
 		{"db_pass=Zq7h9xAb3cZq failed", "Zq7h9xAb3cZq"},
 		{"token=/Ab/CdEfGh12345 loaded", "/Ab/CdEfGh12345"},
+		// The value-shape refusals hold only where a status feed can live:
+		// a quoted, DSN or flag value is always a credential, and so is a
+		// shout-case or snake_case value under a credential key; a quoted
+		// flag value is a value; the tail rides base64 padding; a long
+		// letters-only word is a secret.
+		{"SECRET_KEY=PROD_DB_MASTER ok", "PROD_DB_MASTER"},
+		{"db_password=prod_db_master_2026 ok", "prod_db_master_2026"},
+		{`password="super_secret_value"`, "super_secret_value"},
+		{"postgres://app:prod_db_master@db:5432/app ok", "prod_db_master"},
+		{"started with --password my_secret_pass ok", "my_secret_pass"},
+		{"authorization: token Backup_Admin_Token_Long ok", "Backup_Admin_Token_Long"},
+		{"password=supersecretvalue ok", "supersecretvalue"},
+		{"password=hunter2 beta Zq7h9xAb3cZq== done", "Zq7h9xAb3cZq=="},
+		{`start --password "Zq7h9xAb3cZq" --host db`, "Zq7h9xAb3cZq"},
+		{`start --password "hunter2 sekrit7" ok`, "hunter2 sekrit7"},
+		{`start --token 'Zq7h9xAb3cZq' ok`, "Zq7h9xAb3cZq"},
 	} {
 		// A secret holding a quote or a backslash rides the JSON-escaped
 		// samples: both forms must be absent.
@@ -2548,10 +2564,21 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		t.Fatalf("a quoted secret longer than the samples yields no finding: %v", out["leak_findings"])
 	}
 	// A quote never closed keeps its witnesses on the exact reported lines —
-	// the shape battery's ` rejected` tail would read as a sentence.
-	_, all = scan("eol-keep", []string{`ERROR config password="Zq7h9xAb3cZq running`, `ERROR config password='Zq7h9xAb3cZq running`})
-	if strings.Contains(all, "Zq7h9xAb3cZq running") {
+	// the shape battery's ` rejected` tail would read as a sentence. A
+	// truncated passphrase (two spaces), base64 (its `+`), and a value with
+	// a timestamp tail are secrets, not prose.
+	_, all = scan("eol-keep", []string{`ERROR config password="Zq7h9xAb3cZq running`, `ERROR config password='Zq7h9xAb3cZq running`,
+		`ERROR config password="correct horse battery`, `ERROR config password='S3cretV4lue at 0x7f9a3b2c`,
+		`ERROR config password="c2VjcmV0+K3Rva2Vu`})
+	if strings.Contains(all, "Zq7h9xAb3cZq running") || strings.Contains(all, "correct horse battery") ||
+		strings.Contains(all, "S3cretV4lue at 0x7f9a3b2c") || strings.Contains(all, "c2VjcmV0+K3Rva2Vu") {
 		t.Fatalf("a secret on a quote never closed escapes the scan")
+	}
+	// A tail starting with a space is continuation text, not a value — the
+	// one refusal no other guard covers.
+	out, _ = scan("eol-space", []string{`ERROR config password=" abcd tail`})
+	if strings.Contains(fmt.Sprint(out["leak_findings"]), "class:secret_kv") {
+		t.Fatalf("a continuation tail after a quote raises a leak: %v", out["leak_findings"])
 	}
 	// Look-alikes raise no secret finding: counters and paths named after a
 	// secret word, a logger's own mask or placeholder, a reference to a
@@ -2587,7 +2614,10 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		// at all), and a JWT already redacted: the plain word after it must
 		// not turn the marker into a finding
 		`res.write("token="+tok);`,
-		"auth token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz used"}
+		"auth token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz used",
+		// a filesystem path under a secret key is no leak; /var/lib needs
+		// its prefix (the segments hold an uppercase)
+		"token=/data/redis/sessions loaded", "token=/var/log/app.log rotated", "mount token=/var/lib/App7/secret ok"}
 	secretFinding := func(out map[string]any) bool {
 		f := fmt.Sprint(out["leak_findings"])
 		return strings.Contains(f, "class:secret_kv") || strings.Contains(f, "class:bearer")

@@ -1569,14 +1569,24 @@ tool leak_scan:
         ## plain tokens after it ride the match only to be redacted with it.
         k = w.split(' ', 1)[0] if m.lastindex == 5 else w
         if PLACEHOLDER.fullmatch(v) or PLACEHOLDER.fullmatch(k) or re.fullmatch(r'[A-Za-z]{1,12}', k) \
-                or re.fullmatch(r'[A-Z0-9_]+_[A-Z0-9_]+', k) or re.fullmatch(r'[a-z]+(?:_[a-z0-9]+)+', k) \
                 or v.startswith(('./', '../', '~/')) \
                 or v.startswith(('/etc/', '/home/', '/root/', '/run/', '/var/', '/tmp/', '/opt/', '/usr/', '/srv/', '/mnt/', '/proc/', '/dev/')):
             return False
-        if m.lastindex in (3, 4) and (re.search(r'[+;)}\]}]', v) or raw[:1] == ' ' or v.count(' ') >= 2):
+        if v.startswith('/') and v.count('/') >= 2:
+            segs = [s for s in v.split('/') if s]
+            if segs and all(s.islower() for s in segs):
+                return False   # a filesystem path, not a token (base64 holds uppercase or digits)
+        if m.lastindex == 5 and re.search(r'(?i)pass[\'"\]]?\s*(?:=>|[=:])\s*$',
+                                          m.group(0)[:m.start(m.lastindex) - m.start(0)]) \
+                and re.fullmatch(r'[a-z]+(?:_[a-z0-9]+)+', k):
+            return False   # a status feed under a bare `*pass` key — quoted, DSN and flag values are credentials
+        if m.lastindex in (6, 7, 8) and re.fullmatch(r'[A-Z0-9_]+_[A-Z0-9_]+', k):
+            return False   # a shout-case placeholder after a flag (`--pass CHANGE_ME`)
+        if m.lastindex in (3, 4) and (raw[:1] == ' ' or ';' in v or re.search(r'[)}\]]', v) or v.count(' ') >= 3):
             ## A quote never closed: the tail must read like the rest of a
-            ## secret, not like a code continuation (` + token);`) or a
-            ## sentence quoting the key (` near offset 12`).
+            ## secret, not like code (`;)}]`, even glued: `+tok);`) or a
+            ## sentence quoting the key (three spaces). Base64's `+` is a
+            ## value character.
             return False
         glued = m.start() > 0 and (m.string[m.start() - 1].isalnum() or m.string[m.start() - 1] in '_.-')
         if w.isdigit() and glued and m.group(0)[:5].lower() == 'token':
@@ -1595,7 +1605,7 @@ tool leak_scan:
             ## A scheme credential: a snake_case status word after the
             ## scheme (`token authentication_required`) is prose.
             val = m.group(0).rsplit(' ', 1)[-1] if ' ' in m.group(0) else m.group(0)
-            return not re.fullmatch(r'[A-Za-z]+(?:_[A-Za-z]+)+', val)
+            return not re.fullmatch(r'[a-z]+(?:_[a-z]+)+', val)
         try:
             d = base64.b64decode(b + '=' * (-len(b) % 4), validate=True)
         except ValueError:
@@ -1636,8 +1646,8 @@ tool leak_scan:
             r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
             r'|(?<=[a-z])(?:Password|Passwd|Pwd|Pass|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Pass|Secret|Token))'
             r'(?i:[_-]?(?:key|value|phrase|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
-            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:[^"\n]|\\"){6,})"|\'((?:[^\'\n]|\\\'){6,})\'|"([^"\n]{6,})$|\'([^\'\n]{6,})$|([^\s\'"&,;<>]{6,}(?: (?!\S*[=])\S+)*))'
-            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+([^\s\'"&,;<>-][^\s\'"&,;<>]{5,})'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:[^"\n]|\\"){6,})"|\'((?:[^\'\n]|\\\'){6,})\'|"([^"\n]{6,})$|\'([^\'\n]{6,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^=])\S+)*))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"([^"\n]{6,})"|\'([^\'\n]{6,})\'|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
             r'|(?i:identified\s+by|with\s+password)\s+(?:\'([^\'\n]{4,})\'|"([^"\n]{4,})")'
             r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
