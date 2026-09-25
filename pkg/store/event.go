@@ -458,7 +458,7 @@ const (
 	// Data keys: backend, declared_model, effective_model.
 	EventModelDrift EventType = "model_drift"
 	// EventModelServedViaFacade: the backend served the node through an
-	// Anthropic-shaped facade (session fingerprint "facade:<base url>")
+	// Anthropic-shaped facade (session fingerprint "facade:<slot>:<base url>")
 	// rather than the provider the model id names. The reported model id is
 	// unchanged — the facade aliases it silently — so this is the only
 	// signal that a "claude-*" node was answered by another family. Emitted

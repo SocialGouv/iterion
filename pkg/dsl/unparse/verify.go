@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -184,6 +186,7 @@ func reread(f *ast.File, text string) error {
 		// compile.
 		fa, fb := *f, *pr.File
 		fa.Profile, fb.Profile = fa.EffectiveProfile(), fb.EffectiveProfile()
+		fa.Prompts, fb.Prompts = InlinePromptsLast(fa.Prompts), InlinePromptsLast(fb.Prompts)
 		a, err := ast.MarshalFileWithoutComments(&fa)
 		if err != nil {
 			return fmt.Errorf("cannot compare the document: %w", err)
@@ -193,7 +196,7 @@ func reread(f *ast.File, text string) error {
 			return fmt.Errorf("cannot compare the serialised source: %w", err)
 		}
 		if !bytes.Equal(a, b) {
-			return fmt.Errorf("the serialised source is not the same document: %s", firstJSONDifference(a, b))
+			return fmt.Errorf("the serialised source is not the same document: %s", FirstJSONDifference(a, b))
 		}
 	}
 	return nil
@@ -360,7 +363,7 @@ func sameContracts(a, b *ast.File) string {
 		return "cannot compare the serialised source's contracts: " + err.Error()
 	}
 	if !bytes.Equal(x, y) {
-		return firstJSONDifference(x, y)
+		return FirstJSONDifference(x, y)
 	}
 	for i, w := range a.Workflows {
 		if w == nil || i >= len(b.Workflows) || b.Workflows[i] == nil {
@@ -383,6 +386,27 @@ func checkFallbackNames(fbs []*ast.FallbackDecl) error {
 	return nil
 }
 
+// InlinePromptsLast is ps with the declared prompts first, in their order,
+// and the inline ones after them, sorted by name. An inline prompt is named
+// after its body and listed where its node is read — the writer puts
+// `system:` before `user:` and a group's nodes after the others, a document
+// may write them the other way — so its rank says nothing that a comparison
+// of two readings of one program should read; the node that uses it names
+// it. The slice is new, ps is left as it came.
+func InlinePromptsLast(ps []*ast.PromptDecl) []*ast.PromptDecl {
+	out := make([]*ast.PromptDecl, 0, len(ps))
+	var inline []*ast.PromptDecl
+	for _, p := range ps {
+		if p.Inline {
+			inline = append(inline, p)
+		} else {
+			out = append(out, p)
+		}
+	}
+	sort.SliceStable(inline, func(i, j int) bool { return inline[i].Name < inline[j].Name })
+	return append(out, inline...)
+}
+
 // canonicalPrompts is a shallow copy of f whose prompt bodies are in the
 // lexer's canonical form — the form the writer emits and the re-parse
 // yields. The document itself is left as it came.
@@ -403,9 +427,9 @@ func canonicalPrompts(f *ast.File) *ast.File {
 	return &cp
 }
 
-// firstJSONDifference names the first key path at which two JSON documents
+// FirstJSONDifference names the first key path at which two JSON documents
 // diverge, so a refused save says which declaration did not survive.
-func firstJSONDifference(a, b []byte) string {
+func FirstJSONDifference(a, b []byte) string {
 	var x, y any
 	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
 		return "the documents differ"
@@ -418,6 +442,9 @@ func firstJSONDifference(a, b []byte) string {
 	return "the documents differ in their encoding"
 }
 
+// diffAny names the first difference between two decoded JSON values: a
+// mapping's keys walked in sorted order, so the difference a refusal names
+// is the same on every run — never the one a map's iteration happened on.
 func diffAny(path string, x, y any) string {
 	switch xv := x.(type) {
 	case map[string]any:
@@ -425,16 +452,16 @@ func diffAny(path string, x, y any) string {
 		if !ok {
 			return path + " differs in kind"
 		}
-		for k, xe := range xv {
+		for _, k := range slices.Sorted(maps.Keys(xv)) {
 			ye, ok := yv[k]
 			if !ok {
 				return path + "." + k + " is missing after the round-trip"
 			}
-			if d := diffAny(path+"."+k, xe, ye); d != "" {
+			if d := diffAny(path+"."+k, xv[k], ye); d != "" {
 				return d
 			}
 		}
-		for k := range yv {
+		for _, k := range slices.Sorted(maps.Keys(yv)) {
 			if _, ok := xv[k]; !ok {
 				return path + "." + k + " appeared after the round-trip"
 			}

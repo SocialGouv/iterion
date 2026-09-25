@@ -2,27 +2,28 @@ package model
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
-// TestMain pins the process-wide spec registry to a nonexistent cache with
-// auto-fetch off, so this package's tests never spawn a background network
-// goroutine and never resolve against the host's real
-// ~/.iterion/model-specs-cache.json. Without it, curated-equality assertions
-// (TestCapabilitiesForModel) flake on a dev machine that has run a real bot —
-// clean CI has no cache, so the failure only ever appeared locally.
+// TestMain isolates this package's tests from the host's live model prices
+// (pricingtest.Isolate): they never spawn a background network goroutine and
+// never resolve against the host's caches. Without it, curated-equality
+// assertions (TestCapabilitiesForModel) flake on a dev machine that has run a
+// real bot, and a usage_progress sample falls under its floor wherever claw's
+// cache prices a model below the static table (#1686).
 func TestMain(m *testing.M) {
-	restore := modelspecs.SetDefault(modelspecs.New(modelspecs.Options{
-		CachePath:   filepath.Join(os.TempDir(), "iterion-modelspecs-test-absent.json"),
-		NoAutoFetch: true,
-	}))
+	restore := pricingtest.Isolate()
 	code := m.Run()
 	restore()
 	os.Exit(code)
 }
+
+// The isolation TestMain installs, witnessed: a live price on the host must not
+// reach this package's estimates.
+func TestThisPackagePricesFromTheStaticTable(t *testing.T) { pricingtest.RequireIsolated(t) }
 
 // seedSpecs installs a registry answering exactly the given specs for the
 // duration of a test. Keyed the way the aggregator's flat table is

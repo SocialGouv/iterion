@@ -2,6 +2,39 @@ package model
 
 import "testing"
 
+func TestCoerceEffortWithNone(t *testing.T) {
+	// Capabilities are a set: their order must not change the nearest lower
+	// effort or the minimum used for an unrecognised value.
+	orders := [][]string{
+		{"none", "low", "high"}, {"none", "high", "low"},
+		{"low", "none", "high"}, {"low", "high", "none"},
+		{"high", "none", "low"}, {"high", "low", "none"},
+	}
+	for _, supported := range orders {
+		for effort, want := range map[string]string{
+			"none": "none", "minimal": "none", "unknown": "none",
+			"low": "low", "medium": "low", "max": "high",
+		} {
+			if got := coerceEffort(effort, supported, "low"); got != want {
+				t.Errorf("coerceEffort(%q, %v) = %q, want %q", effort, supported, got, want)
+			}
+		}
+	}
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna", "openai/gpt-6-sol", "openai/gpt-6-luna"} {
+		for _, effort := range []string{"none", "minimal"} {
+			if got := coerceEffortForModel(effort, model); got != "none" {
+				t.Errorf("coerceEffortForModel(%q, %q) = %q, want none", effort, model, got)
+			}
+		}
+	}
+	// Models without none still clamp to their actual minimum.
+	for _, model := range []string{"gpt-6-astra", "claude-opus-5-5"} {
+		if got := coerceEffortForModel("none", model); got != "low" {
+			t.Errorf("coerceEffortForModel(none, %q) = %q, want low", model, got)
+		}
+	}
+}
+
 func TestCoerceEffort(t *testing.T) {
 	openaiSupported := []string{"minimal", "low", "medium", "high"}
 	anthropicOpus47 := []string{"low", "medium", "high", "xhigh", "max"}

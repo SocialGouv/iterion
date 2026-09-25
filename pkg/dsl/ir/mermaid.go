@@ -213,13 +213,21 @@ func styleClasses(w *Workflow) string {
 	b.WriteString("    classDef done fill:#2ECC71,stroke:#1A8B4C,color:#fff\n")
 	b.WriteString("    classDef fail fill:#E74C3C,stroke:#A93226,color:#fff\n")
 
-	// Group nodes by kind.
+	// Group nodes by kind, one class line per kind in the kinds' own
+	// order — never a map's, which would write the same workflow as a
+	// different diagram from one run to the next.
 	groups := map[NodeKind][]string{}
 	for id, node := range w.Nodes {
 		groups[node.NodeKind()] = append(groups[node.NodeKind()], sanitizeID(id))
 	}
+	kinds := make([]NodeKind, 0, len(groups))
+	for kind := range groups {
+		kinds = append(kinds, kind)
+	}
+	sort.Slice(kinds, func(i, j int) bool { return kinds[i] < kinds[j] })
 
-	for kind, nodeIDs := range groups {
+	for _, kind := range kinds {
+		nodeIDs := groups[kind]
 		sort.Strings(nodeIDs)
 		fmt.Fprintf(&b, "    class %s %s\n", strings.Join(nodeIDs, ","), kind.String())
 	}

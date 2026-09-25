@@ -241,3 +241,30 @@ func TestPresetIterionDefault(t *testing.T) {
 		}
 	}
 }
+
+// A provider the engine can route to but the CONNECT proxy blocks fails in
+// the worst possible shape: the agent gets no LLM response at all, and the
+// structured-output validator reports "missing required field" on an empty
+// payload rather than a network refusal. That is how z.ai landed on this
+// list; every Anthropic-wire facade belongs on it for the same reason.
+func TestDefaultRulesAllowEveryAnthropicWireFacade(t *testing.T) {
+	rules := iterionDefaultRules()
+	has := func(host string) bool {
+		for _, r := range rules {
+			if r == host {
+				return true
+			}
+		}
+		return false
+	}
+	for _, host := range []string{
+		"api.anthropic.com",
+		"api.z.ai",
+		"api.moonshot.ai",
+		"api.moonshot.cn",
+	} {
+		if !has(host) {
+			t.Errorf("iterionDefaultRules() does not allow %q — a sandboxed node routed there dies on an empty payload, not on a credential error", host)
+		}
+	}
+}

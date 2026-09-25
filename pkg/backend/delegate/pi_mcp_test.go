@@ -661,7 +661,7 @@ func TestPiRPCLiveMCPSSERefusesCrossOriginEndpoint(t *testing.T) {
 // every call allowed even under `permission: deny` — the one boundary the gate
 // exists to hold.
 func TestPiMCPServersRejectsTheReservedNamespace(t *testing.T) {
-	for _, name := range []string{"iterion_board", "iterion-board", "Iterion.Anything", "iterionish"} {
+	for _, name := range []string{"iterion_board", "iterion-board", "Iterion.Anything", "iterionish", "__iterion", ".iterion", "._Iterion", "", "__", ".", "_._", " Iterion_runs "} {
 		t.Run(name, func(t *testing.T) {
 			got := piMCPServers(Task{
 				MCPServers: []TaskMCPServer{{Name: name, Transport: "stdio", Command: "x"}},

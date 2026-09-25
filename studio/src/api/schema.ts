@@ -2711,6 +2711,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/assistant-watches/{watchID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/runs/{id}/assistant-watches/{watchID} */
+        delete: operations["deleteRunsByIdAssistantWatchesByWatchID"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/attachments/{name}": {
         parameters: {
             query?: never;
@@ -6937,6 +6957,7 @@ export interface components {
             skipped_cred_reopens_at?: string;
             source?: components["schemas"]["RunSource"];
             status: string;
+            tenant_id?: string;
             /** Format: date-time */
             updated_at: string;
             watched_issue_ids?: string[];
@@ -7214,6 +7235,10 @@ export interface components {
             effective: components["schemas"]["effectiveBotRoles"];
             origin: string;
             stored?: components["schemas"]["BotRoles"];
+        };
+        botSourceFilePutReq: {
+            content: string;
+            version?: number;
         };
         botSourceForkReq: {
             from: string;
@@ -7781,20 +7806,29 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourceFilePutReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
     deleteAdminBotsBySlugFilesByPath: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -7804,12 +7838,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
@@ -11482,6 +11518,27 @@ export interface operations {
             };
         };
     };
+    deleteRunsByIdAssistantWatchesByWatchID: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getRunsByIdAttachmentsByName: {
         parameters: {
             query?: never;
@@ -13005,20 +13062,29 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourceFilePutReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
     deleteTeamsByIdBotSourcesBySlugFilesByPath: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+            };
             header?: never;
             path: {
                 id: string;
@@ -13029,12 +13095,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };

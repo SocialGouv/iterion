@@ -243,3 +243,107 @@ func TestForwardableProviderEnv_ExpiredForfaitRefusesInsteadOfBlinding(t *testin
 		t.Fatalf("expected a named expiry refusal, got %v", err)
 	}
 }
+
+// The contract written above providerCredentialEnvVars, applied to the
+// provider that just landed: a provider whose Resolve() reads os.Getenv must
+// have its variable listed, or the in-container runner — which rebuilds its
+// registry from env alone — resolves without it.
+//
+// Moonshot reads two. MOONSHOT_API_KEY is the loud half (the in-container
+// factory refuses by name). MOONSHOT_BASE_URL is the silent one: the node
+// keeps working, against the PUBLISHED endpoint, while the operator pinned
+// another gateway on the host — one node, two vendors' infrastructure, and
+// nothing said. So the assertion is not on the list, it is on the ANSWER the
+// two sides give to the same question.
+func TestForwardableProviderEnv_CarriesTheMoonshotRoute(t *testing.T) {
+	t.Setenv("MOONSHOT_API_KEY", "moonshot-platform-key")
+	t.Setenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/anthropic")
+	hostBase := moonshotBaseURL()
+
+	env, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+
+	// The container sees ONLY what crossed: rebuild that view and ask the
+	// registry's own resolvers, rather than reading the list back to itself.
+	t.Setenv("MOONSHOT_API_KEY", env["MOONSHOT_API_KEY"])
+	t.Setenv("MOONSHOT_BASE_URL", env["MOONSHOT_BASE_URL"])
+	if got := moonshotBaseURL(); got != hostBase {
+		t.Errorf("in-container Moonshot endpoint = %q, host = %q — the same node talks to two vendors' gateways", got, hostBase)
+	}
+	if _, err := NewRegistry().Resolve("moonshot/kimi-k2"); err != nil {
+		t.Errorf("in-container resolve of a moonshot node: %v", err)
+	}
+}
+
+// The run's own key still beats the ambient one across the seam — the whole
+// point of the boundary is that a tenant's credential is what pays.
+func TestForwardableProviderEnv_MoonshotBYOKBeatsTheAmbientKey(t *testing.T) {
+	t.Setenv("MOONSHOT_API_KEY", "moonshot-platform-key")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant-key"},
+	})
+	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["MOONSHOT_API_KEY"] != "moonshot-tenant-key" {
+		t.Errorf("MOONSHOT_API_KEY = %q, want the tenant's own key", env["MOONSHOT_API_KEY"])
+	}
+}
+
+// A Moonshot key funds no `anthropic/…` node — claw reaches Kimi through its
+// own `moonshot/…` provider — so holding one must not keep the run's forfait
+// out of the tenant's sandboxed anthropic nodes. When it did, the crossing was
+// skipped and the platform's ambient Anthropic key crossed instead: the host
+// path spends the forfait for the same node, the sandbox billed the platform.
+func TestForwardableProviderEnv_MoonshotKeyDoesNotKeepTheForfaitOut(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ZAI_API_KEY", "")
+	t.Setenv("MOONSHOT_API_KEY", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant-key"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+	})
+	env := envFor(t, ctx)
+
+	if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the seeded in-sandbox dir %q — the tenant's Moonshot key kept its forfait out", got, secrets.ClaudeCodeSandboxConfigDir)
+	}
+	if v, present := env["ANTHROPIC_API_KEY"]; present {
+		t.Errorf("ANTHROPIC_API_KEY=%q forwarded — the platform key would serve the tenant's anthropic node", v)
+	}
+}
+
+// The other half: the forfait crossing clears what would outrank the forfait
+// for an ANTHROPIC node, and a moonshot node's key is not that. Deleting it
+// left a sandboxed `moonshot/…` node of a forfait-holding tenant with no
+// credential, while the same node works on the host.
+func TestForwardableProviderEnv_ForfaitCrossingKeepsAMoonshotNodesKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ZAI_API_KEY", "")
+	t.Setenv("MOONSHOT_API_KEY", "moonshot-platform-key")
+	t.Setenv("MOONSHOT_BASE_URL", "")
+
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+	})
+	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["MOONSHOT_API_KEY"] != "moonshot-platform-key" {
+		t.Fatalf("MOONSHOT_API_KEY = %q — the moonshot node lost its only credential to the forfait crossing", env["MOONSHOT_API_KEY"])
+	}
+	// The container rebuilds its registry from what crossed: ask it.
+	t.Setenv("MOONSHOT_API_KEY", env["MOONSHOT_API_KEY"])
+	if _, err := NewRegistry().Resolve("moonshot/kimi-k2"); err != nil {
+		t.Errorf("in-container resolve of a moonshot node: %v", err)
+	}
+}

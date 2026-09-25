@@ -103,7 +103,11 @@ func TestTheCopyAChildReadsMatchesTheHostAfterAdoption(t *testing.T) {
 	if err := e.clearBorrowedSandboxResources(context.Background()); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	if n := writeThroughMirroredSkills(context.Background(), host, run, nil); n != len(workspace) {
+	n, werr := writeThroughMirroredSkills(context.Background(), host, run, nil)
+	if werr != nil {
+		t.Fatalf("write-through: %v", werr)
+	}
+	if n != len(workspace) {
 		t.Fatalf("wrote %d files back, want %d", n, len(workspace))
 	}
 

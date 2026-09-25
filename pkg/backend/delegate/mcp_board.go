@@ -70,13 +70,11 @@ func BoardToolsFor(caps []string) []string {
 // not matched: pkg/operatormcp serves them under the server name `iterion`,
 // never under `iterion_board` or `iterion_runs`.
 //
-// What this does NOT establish: that an FQN in these two namespaces is served
-// by iterion. A target repo's `.mcp.json` may declare a server under either
-// name and `wireUserMCP` registers it verbatim, last, over iterion's own — so
-// the tools behind a matching FQN can be foreign. That is a reserved-name gap
-// in the MCP catalog, not in this predicate, and it does not move the verdict
-// its one reader computes: ambient MCP tools never enter the effective surface
-// at all. Filed separately.
+// The catalog refuses user/plugin servers in the reserved namespace, and CLI
+// forwarding applies the same check to programmatic Task entries. This name
+// predicate still does not authenticate tools inherited outside that resolved
+// catalog (for example, an explicit strict-MCP opt-out); ambient MCP tools do
+// not enter the effective surface used by the workspace-safety classifier.
 func IsIterionMCPTool(name string) bool {
 	return strings.HasPrefix(name, "mcp__"+boardMCPServerName+"__") ||
 		strings.HasPrefix(name, "mcp__"+runsMCPServerName+"__")

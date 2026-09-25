@@ -1195,6 +1195,14 @@ var providerCredentialEnvVars = []string{
 	// existing ClaudeCodeSandboxConfigDir mount (mirroring CODEX_HOME) is the
 	// shape that closes it.
 	"ZAI_API_KEY",
+	// Moonshot's factory reads BOTH the key and the base URL that decides
+	// WHICH gateway it is spent on (registry.go moonshotBaseURL: the .cn
+	// endpoint, an operator proxy). A missing key is loud — the in-container
+	// factory refuses by name — but a missing base URL is not: the node keeps
+	// working against the published endpoint while the host talks to the
+	// operator's, one node on two vendors' infrastructure with nothing said.
+	"MOONSHOT_API_KEY",
+	"MOONSHOT_BASE_URL",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
 	// key, which is METERED and billed to its lender.
@@ -1243,6 +1251,7 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderAnthropic: "ANTHROPIC_API_KEY",
 	secrets.ProviderAzure:     "AZURE_OPENAI_API_KEY",
 	secrets.ProviderZAI:       "ZAI_API_KEY",
+	secrets.ProviderMoonshot:  "MOONSHOT_API_KEY",
 	secrets.ProviderXAI:       "XAI_API_KEY",
 }
 
@@ -1355,14 +1364,16 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 	// against the platform account, and does so invisibly, because the ambient
 	// key works.
 	//
-	// Two limits, both deliberate: a BYOK anthropic or z.ai key is the tenant's
-	// own explicit instrument and keeps precedence (otherwise the same run
-	// would spend a different one depending on whether it happened to be
-	// sandboxed); and a redirected wire is a destination the operator chose, so
-	// a bearer carrying the whole Claude account does not travel there.
+	// Two limits, both deliberate: a BYOK key claw's anthropic provider would
+	// spend — the Anthropic one, or z.ai's, which the env factory synthesises
+	// onto z.ai's base URL — is the tenant's own explicit instrument and keeps
+	// precedence (otherwise the same run would spend a different one depending
+	// on whether it happened to be sandboxed); and a redirected wire is a
+	// destination the operator chose, so a bearer carrying the whole Claude
+	// account does not travel there. clawAnthropicProviderSlots says which keys
+	// those are.
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-		creds.APIKeys[secrets.ProviderAnthropic] == "" &&
-		creds.APIKeys[secrets.ProviderZAI] == "" &&
+		!heldAnthropicWireAPIKey(creds) &&
 		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
 		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
 		// Validate BEFORE clearing. Once the shadows are gone the forfait is
@@ -1376,11 +1387,57 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
 		}
 		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
-		for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+		for _, shadow := range anthropicWireShadowEnv() {
 			delete(env, shadow)
 		}
 	}
 	return nil
+}
+
+// clawAnthropicProviderSlots are the BYOK slots whose key claw's `anthropic`
+// provider spends: the Anthropic key, and z.ai's, which the registry's env
+// factory reads when no Anthropic credential precedes it and points at z.ai's
+// base URL. They are the keys that outrank the forfait inside the container,
+// and so the only ones that decide the forfait crossing.
+//
+// NOT every slot of secrets.AnthropicWireSlotOrder. That list is the claude_code
+// delegate's precedence, where each facade key reroutes the CLI. claw names
+// its provider in the model spec instead, and a facade with a provider of its
+// own — moonshot, reached as `moonshot/…` — funds no `anthropic/…` node: the
+// env factory never reads its key. Counting it here kept a tenant's forfait
+// out of its sandboxed anthropic nodes whenever the tenant also held a
+// Moonshot key, so the platform's ambient Anthropic key served them; and
+// listing its variable as a shadow deleted the key a moonshot node needs.
+// TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends holds this list to
+// the factory.
+var clawAnthropicProviderSlots = []secrets.Provider{
+	secrets.ProviderAnthropic,
+	secrets.ProviderZAI,
+}
+
+// heldAnthropicWireAPIKey reports whether the run carries a BYOK key claw's
+// anthropic provider would spend (clawAnthropicProviderSlots).
+func heldAnthropicWireAPIKey(creds secrets.Credentials) bool {
+	for _, slot := range clawAnthropicProviderSlots {
+		if creds.APIKeys[slot] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// anthropicWireShadowEnv names the ambient variables that would outrank the
+// forfait inside the container: the two Anthropic-flavoured ones the env
+// factory reads directly, plus the forwarded key of every other slot it
+// spends.
+func anthropicWireShadowEnv() []string {
+	shadows := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+	for _, slot := range clawAnthropicProviderSlots {
+		if name := byokEnvVar[slot]; name != "" && name != "ANTHROPIC_API_KEY" {
+			shadows = append(shadows, name)
+		}
+	}
+	return shadows
 }
 
 // canonicalMCPToolName maps an MCP tool name the model emitted in the

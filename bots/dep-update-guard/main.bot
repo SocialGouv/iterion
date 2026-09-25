@@ -792,7 +792,7 @@ print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
 ## the sec scanners from the sandbox image; reads the skills and adapts.
 agent security_audit:
   backend: "claude_code"
-  model: "${VETTY_MODEL_AUDIT:-claude-opus-5}"
+  model: "${VETTY_MODEL_AUDIT:-claude-opus-5-5}"
   reasoning_effort: "${VETTY_EFFORT_AUDIT:-high}"
   input: audit_input
   output: audit_output
@@ -814,7 +814,7 @@ compute audit_gate:
 ## Align consuming code to the bump AND keep the build green (mutating).
 agent align:
   backend: "claude_code"
-  model: "${VETTY_MODEL_ALIGN:-claude-opus-5}"
+  model: "${VETTY_MODEL_ALIGN:-claude-opus-5-5}"
   reasoning_effort: "${VETTY_EFFORT_ALIGN:-high}"
   input: align_input
   output: align_output
@@ -842,13 +842,13 @@ human escalate:
   ## provider/model-id, NOT a bare model name: a human node's llm half runs
   ## through the direct claw generation path, which has no backend to infer
   ## the provider from (an agent node's claude_code backend does).
-  model: "${VETTY_MODEL_ESCALATE:-anthropic/claude-opus-5}"
+  model: "${VETTY_MODEL_ESCALATE:-anthropic/claude-opus-5-5}"
 
 ## verify_build — adaptive capture of the repo's build+tests into the
 ## out-of-tree verify.sh (it does NOT judge; the tool's exit code does).
 agent verify_build:
   backend: "claude_code"
-  model: "${VETTY_MODEL_VALIDATE:-claude-opus-5}"
+  model: "${VETTY_MODEL_VALIDATE:-claude-opus-5-5}"
   reasoning_effort: "${VETTY_EFFORT_VALIDATE:-medium}"
   input: verify_feedback_input
   output: verify_plan
@@ -1278,7 +1278,7 @@ compute commit_check:
 ## Commit the alignment onto the PR branch + push it back (token auth).
 agent commit:
   backend: "claude_code"
-  model: "${VETTY_MODEL_COMMIT:-claude-opus-5}"
+  model: "${VETTY_MODEL_COMMIT:-claude-opus-5-5}"
   reasoning_effort: "${VETTY_EFFORT_COMMIT:-medium}"
   input: commit_input
   output: commit_output

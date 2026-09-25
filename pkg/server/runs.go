@@ -82,6 +82,11 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-watches", s.handleListAssistantWatches)
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-watch-health", s.handleAssistantWatchHealth)
 	s.mux.HandleFunc("DELETE /api/assistant-watches/{watchID}", s.handleStopAssistantWatch)
+	// The run-addressed spelling of the stop above (ADR-103): a caller
+	// viewing team B's run while active in team A can arm a watch through
+	// the re-scoped routes, so stopping it must answer by the run's id
+	// too. The fixed sibling stays for compatibility.
+	s.mux.HandleFunc("DELETE /api/runs/{id}/assistant-watches/{watchID}", s.handleStopAssistantWatch)
 	s.mux.HandleFunc("POST /api/runs/{id}/assistant-missions", s.handleCreateAssistantMission)
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-missions", s.handleListAssistantMissions)
 	s.mux.HandleFunc("GET /api/runs/{id}/assistant-missions/{missionID}", s.handleGetAssistantMission)
@@ -130,6 +135,13 @@ func (s *Server) resolveCrossStore(r *http.Request) (store.RunStore, string, err
 	raw := r.URL.Query().Get("store")
 	if raw == "" {
 		return nil, "", nil
+	}
+	// A filesystem store knows no tenant: the proxy serves a desktop or
+	// per-project daemon its own user's stores. A cloud server's $HOME is
+	// shared infrastructure, so the proxy is refused there, as
+	// runs/global-active refuses to scan it.
+	if s.cfg.Mode == "cloud" {
+		return nil, "", fmt.Errorf("cross-store: not available on a cloud instance")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

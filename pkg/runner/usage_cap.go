@@ -43,8 +43,27 @@ import (
 type runCredKeys struct {
 	scope       string
 	zaiFP       string
+	moonshotFP  string
 	anthropicFP string
 	oauthFP     string
+}
+
+// bySlot returns the fingerprint held for one anthropic-wire slot, "" when
+// the run carries none. The switch is the only place slot names meet struct
+// fields, so the walks below can be written against
+// secrets.AnthropicWireSlotOrder rather than restating the precedence.
+func (k runCredKeys) bySlot(slot string) string {
+	switch slot {
+	case string(secrets.ProviderZAI):
+		return k.zaiFP
+	case string(secrets.ProviderMoonshot):
+		return k.moonshotFP
+	case string(secrets.ProviderAnthropic):
+		return k.anthropicFP
+	case string(secrets.OAuthKindClaudeCode):
+		return k.oauthFP
+	}
+	return ""
 }
 
 // usageCapCredKeys reads the run's resolved credentials once. Scope: a
@@ -75,16 +94,27 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 		}
 		return creds.IsTenantOwned(slot), creds.IsOrgSourced(slot)
 	}
-	tenantZai, orgZai := held(string(secrets.ProviderZAI), creds.APIKey(secrets.ProviderZAI) != "")
-	tenantKey, orgKey := held(string(secrets.ProviderAnthropic), creds.APIKey(secrets.ProviderAnthropic) != "")
-	tenantOAuth, orgOAuth := held(delegate.BackendClaudeCode, creds.OAuthDir(delegate.BackendClaudeCode) != "")
+	// Every slot of the wire, in one walk: a scope decided from a subset
+	// would meter a run holding only the missing provider's key on the
+	// cross-tenant ledger, mixing its readings with every other borrower's.
+	anyTenant, anyOrg := false, false
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		present := creds.APIKey(secrets.Provider(slot)) != ""
+		if secrets.OAuthKind(slot).Valid() {
+			present = creds.OAuthDir(slot) != ""
+		}
+		tenant, org := held(slot, present)
+		anyTenant = anyTenant || tenant
+		anyOrg = anyOrg || org
+	}
 	switch {
-	case tenantZai || tenantKey || tenantOAuth:
+	case anyTenant:
 		k.scope = usagecap.TenantScope(msg.TenantID)
-	case orgZai || orgKey || orgOAuth:
+	case anyOrg:
 		k.scope = usagecap.OrgScope(msg.OrgID)
 	}
 	k.zaiFP = creds.Fingerprint(string(secrets.ProviderZAI))
+	k.moonshotFP = creds.Fingerprint(string(secrets.ProviderMoonshot))
 	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))
 	k.oauthFP = creds.Fingerprint(delegate.BackendClaudeCode)
 	return k
@@ -92,32 +122,59 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 
 // forSource keys a reading under the credential its session actually ran
 // on. The source labels are providerFingerprint's vocabulary: a facade URL
-// is the z.ai token, "anthropic-direct" the Anthropic API key,
+// is a facade token, "anthropic-direct" the Anthropic API key,
 // "anthropic-oauth" the OAuth dir. An empty label (older binary) and
 // "anthropic-env" (inherited pod env — no bundle credential at all) fall
-// back to the bundle-default precedence: z.ai AUTH_TOKEN over an Anthropic
-// API key over an OAuth dir, anthropicCredEnvForCLI's contract. A rotated
-// token therefore opens a fresh meter instead of inheriting the readings
-// of the account it replaced.
+// back to the bundle-default precedence, secrets.AnthropicWireSlotOrder —
+// anthropicCredEnvForCLI's contract, read from the list it is written
+// against. A rotated token therefore opens a fresh meter instead of
+// inheriting the readings of the account it replaced.
+//
+// Every facade renders as "facade:<slot>:<base-url>", and the SLOT is what
+// names the vendor now that two ride this wire — the delegate stamps it on the
+// env it built (AnthropicWireFacadeSlot reads it back). Charging a Moonshot
+// refusal to the z.ai fingerprint would park the healthy key and keep the
+// frozen one — the failure this whole struct exists to avoid.
+//
+// A label that NAMES a slot is answered by that slot ALONE: when the run holds
+// no fingerprint for it, the reading is keyed on the scope with no credential
+// rather than on whichever key the precedence happens to start with. That
+// state is reachable — a pod-level MOONSHOT_API_KEY funds a moonshot-pinned
+// node (facadeCredEnvForHint) without being a BYOK record, so the run carries
+// no moonshot fingerprint while its readings still say moonshot — and the
+// neighbour it would otherwise charge is a healthy key the wall never touched.
+//
+// An UNRECOGNISED facade label (an operator base URL forwarded from the
+// ambient env, a label from a binary that predates the stamp) names no slot at
+// all, and there the bundle default is the only answer available.
 func (k runCredKeys) forSource(source string) string {
 	fp := ""
 	switch {
-	case strings.HasPrefix(source, "facade:") && k.zaiFP != "":
-		fp = k.zaiFP
+	case strings.HasPrefix(source, "facade:"):
+		if slot := delegate.AnthropicWireFacadeSlot(source); slot != "" {
+			fp = k.bySlot(slot)
+		} else {
+			fp = k.firstHeld()
+		}
 	case source == "anthropic-direct" && k.anthropicFP != "":
 		fp = k.anthropicFP
 	case source == "anthropic-oauth" && k.oauthFP != "":
 		fp = k.oauthFP
 	default:
-		if k.zaiFP != "" {
-			fp = k.zaiFP
-		} else if k.anthropicFP != "" {
-			fp = k.anthropicFP
-		} else if k.oauthFP != "" {
-			fp = k.oauthFP
-		}
+		fp = k.firstHeld()
 	}
 	return usagecap.Key(delegate.BackendClaudeCode, k.scope, fp)
+}
+
+// firstHeld is the bundle-default precedence: the first slot of
+// secrets.AnthropicWireSlotOrder the run actually carries.
+func (k runCredKeys) firstHeld() string {
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if fp := k.bySlot(slot); fp != "" {
+			return fp
+		}
+	}
+	return ""
 }
 
 // usageCapKey is the run's DEFAULT credential key — what the pre-flight

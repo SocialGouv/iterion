@@ -9,6 +9,8 @@ const authoring = vi.hoisted(() => ({
   snapshotAssistantAuthoring: vi.fn(),
 }));
 const runs = vi.hoisted(() => ({ deliverHostEvent: vi.fn() }));
+const clientApi = vi.hoisted(() => ({ openFile: vi.fn() }));
+const snapshotOverride = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
 const proposal = vi.hoisted(() => ({
   current: {
     sessionId: "editor-session",
@@ -30,12 +32,16 @@ const session = vi.hoisted(() => ({
 
 vi.mock("@/api/assistantAuthoring", () => authoring);
 vi.mock("@/api/runs", () => runs);
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/api/client")>()),
+  openFile: clientApi.openFile,
+}));
 vi.mock("@/hooks/useFileChangeProposal", () => ({
   useFileChangeProposal: () => proposal.current,
 }));
 vi.mock("@/lib/chatDock/editorSession", () => ({
   resolveEditorSession: () => session,
-  resolveAuthoringSnapshot: () => ({
+  resolveAuthoringSnapshot: () => snapshotOverride.current ?? ({
     editor_path: "bots/demo/main.bot",
     files: [{
       scope: "workspace",
@@ -245,5 +251,79 @@ describe("AssistantFileChangeOffer", () => {
 
     expect(await screen.findByText("stale file")).toBeTruthy();
     expect(runs.deliverHostEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("AssistantFileChangeOffer's reload of the active file", () => {
+  it("stands down while the author's own replacement of the tab is pending", async () => {
+    // An Open the author asked for is still loading: that request wins, and
+    // a reload landing first would get its answer refused for edits nobody
+    // made.
+    snapshotOverride.current = {
+      editor_path: "bots/demo/main.bot",
+      active_file: { scope: "workspace", path: "scripts/helper.py" },
+      files: [{
+        scope: "workspace",
+        path: "scripts/helper.py",
+        available: true,
+        readable: true,
+        sha256: "abc",
+        size: 10,
+      }],
+    };
+    const original = session.store.getState;
+    session.store.getState = () => ({
+      _generation: 7,
+      isDirty: false,
+      hasUnsavedWork: () => false,
+      currentFilePath: "scripts/helper.py",
+      _pendingIntent: 3,
+    }) as unknown as ReturnType<typeof original>;
+    try {
+      await saveChanges("assistant-pending");
+      await waitFor(() => expect(authoring.commitAssistantAuthoring).toHaveBeenCalled());
+      expect(await screen.findByText(/the open tab changed and was not reloaded/)).toBeTruthy();
+      expect(clientApi.openFile).not.toHaveBeenCalled();
+    } finally {
+      session.store.getState = original;
+      snapshotOverride.current = null;
+    }
+  });
+
+  it("does not land its answer once the author's replacement began during the fetch", async () => {
+    snapshotOverride.current = {
+      editor_path: "bots/demo/main.bot",
+      active_file: { scope: "workspace", path: "scripts/helper.py" },
+      files: [{
+        scope: "workspace",
+        path: "scripts/helper.py",
+        available: true,
+        readable: true,
+        sha256: "abc",
+        size: 10,
+      }],
+    };
+    const state = {
+      _generation: 7,
+      isDirty: false,
+      hasUnsavedWork: () => false,
+      currentFilePath: "scripts/helper.py",
+      _pendingIntent: null as number | null,
+    };
+    const original = session.store.getState;
+    session.store.getState = () => state as unknown as ReturnType<typeof original>;
+    // The author opens another file while the reload is in flight.
+    clientApi.openFile.mockImplementation(async () => {
+      state._pendingIntent = 4;
+      return { source: "", document: {}, diagnostics: [], path: "scripts/helper.py" };
+    });
+    try {
+      await saveChanges("assistant-late");
+      await waitFor(() => expect(clientApi.openFile).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText(/the open tab changed and was not reloaded/)).toBeTruthy();
+    } finally {
+      session.store.getState = original;
+      snapshotOverride.current = null;
+    }
   });
 });

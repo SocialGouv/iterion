@@ -45,6 +45,12 @@ export function useLaunchDoc(
   // toolbar's Run button, so this view refuses exactly what that disables.
   const refusal = useDocumentStore(launchRefusal);
   const [confirmedDiskPath, setConfirmedDiskPath] = useState<string | null>(null);
+  // A ?file= launch is about THAT file: its source is kept here, not in the
+  // active editor tab's store — which this route reads, and which may hold
+  // another file. Written there, it would become that tab's text: what its
+  // salvage view shows as the file, and what a draft tab compares to know
+  // the canvas is still the assistant's.
+  const [fileSource, setFileSource] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
 
   // The effect writes the store (currentSource), so every dep that changes
@@ -61,6 +67,7 @@ export function useLaunchDoc(
     // to an inline editor buffer or to a different path while async reads
     // are in flight.
     setConfirmedDiskPath(null);
+    setFileSource(null);
     if (!filePath) {
       // No ?file= path — launch the unsaved editor buffer via inline
       // source. The launch API (resolveWorkflowPath) runs off Source when
@@ -122,7 +129,7 @@ export function useLaunchDoc(
       .then((res) => {
         if (cancelled) return;
         setDoc(res.document);
-        setCurrentSource(res.source);
+        setFileSource(res.source);
         setConfirmedDiskPath(res.confirmed_disk_path ?? null);
         const fields = pickVars(res.document);
         const initial: Record<string, string> = {};
@@ -174,7 +181,7 @@ export function useLaunchDoc(
   return {
     doc,
     noSource,
-    currentSource,
+    currentSource: filePath ? fileSource : currentSource,
     confirmedDiskPath,
     values,
     setValues,

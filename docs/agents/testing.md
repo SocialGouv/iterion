@@ -97,16 +97,14 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   `commit.gpgsign` hangs every fixture commit on a pinentry with no TTY).
   The helper bakes both in; `pkg/git.TestEveryTestGitCallerDisablesAutoMaintenance`
   sweeps `_test.go` and fails a new site that assembles its own argv.
-- **`task check` can go red on the HOST git rather than on your change.** The
-  assistant's attested authoring commits use guarded ref transactions, which
-  need **git ≥ 2.46**, and `devbox.json` pins no git — the tests run against
-  whatever the host provides. On an older git (2.43 on Debian 12) `pkg/server`
-  fails with 23 red tests, all `TestAuthoringGit*` / `TestAssistantDependency*`
-  and all carrying the same sentence: *"attested authoring commits require Git
-  2.46 or newer for guarded ref transactions"*. That is a real refusal from the
-  code under test, not a flake — and it is unrelated to whatever you changed.
-  Read the message before hunting a regression; CI runs a newer git, so the
-  required `test` check stays green.
+- **Run tests with devbox's pinned Git.** The assistant's attested authoring
+  commits use guarded ref transactions, which need **Git ≥ 2.46**.
+  `devbox.json` pins Git 2.55.0 and `devbox.lock` resolves it for each platform;
+  check the effective executable with `devbox run -- git --version`.
+  Running outside devbox can still pick an older host Git and fail with
+  *"attested authoring commits require Git 2.46 or newer for guarded ref
+  transactions"*. Re-enter devbox before diagnosing those failures as a
+  regression in the code under test.
 - **A run's workspace must be a repository the TEST owns.** An engine built
   without `WithWorkDir` defaults to `os.Getwd()` — the package directory,
   inside the developer's checkout — so `worktree: auto` (the IR default)
@@ -148,4 +146,3 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   run Endy scoped to the family). Contract:
   [bots/e2e-coverage/skills/coverage-matrix.md](../../bots/e2e-coverage/skills/coverage-matrix.md).
 - **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures — impractical for the v2 `campaign` nodes (whole-session claude_code agents), whose fixtures are hand-authored seeds frozen on the termination-contract schema. Wired scenarios: feature-dev `campaign_feature_complete`, docs-refresh `campaign_docs_aligned`, whats-next `nexie_turn_basic`. See [docs/adr/008-bot-golden-replay-framework.md](../adr/008-bot-golden-replay-framework.md).
-

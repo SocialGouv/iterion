@@ -206,6 +206,7 @@ var clawProviders = map[string]bool{
 	"anthropic": true,
 	"openai":    true,
 	"zai":       true,
+	"moonshot":  true,
 	"xai":       true,
 	"bedrock":   true,
 	"vertex":    true,

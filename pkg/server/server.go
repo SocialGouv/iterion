@@ -924,10 +924,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
-			logger.Warn("run console disabled: %v", svcErr)
-		} else {
-			s.runs = svc
+			// ADR-103 §5: a cloud replica without the run resolver is not
+			// a degraded replica — every by-id read would die per request
+			// on a nil service. Fail the startup, visibly.
+			panic(fmt.Sprintf("server: the run resolver is required in cloud mode (ADR-103): %v", svcErr))
 		}
+		s.runs = svc
 	case storeDir != "":
 		svcOpts := []runview.ServiceOption{
 			runview.WithLogger(logger),

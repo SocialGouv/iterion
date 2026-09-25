@@ -2036,7 +2036,7 @@ print(json.dumps({'pages': pages, 'page_count': len(pages), 'hints': hints, 'hin
 ## capabilities power the findings handoff.
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
   ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
   ## tool + the orchestration prerogative, so it can fan out its own
   ## sub-readers per source repository or per user role. A product
@@ -3259,7 +3259,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 
 agent finalize_mr:
   backend: "claude_code"
-  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_PRODUCT_DOCS_MR_EFFORT:-medium}"
   input: finalize_mr_input
   output: finalize_mr_output
@@ -3343,7 +3343,7 @@ print(json.dumps({'do_publish': ok, 'reason': reason}))
 ## bundle's own publish-static-site skill, mirrored with the rest.
 agent publish:
   backend: "claude_code"
-  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_PRODUCT_DOCS_PUBLISH_EFFORT:-medium}"
   skills: ["deploy-target"]
   input: publish_input

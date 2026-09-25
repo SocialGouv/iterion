@@ -65,6 +65,31 @@ export const HUMAN_INTERACTION_OPTIONS: SelectOption[] = [
 export const HUMAN_INTERACTION_HELP =
   "human = always wait for input; llm = LLM generates answer (requires model); llm_or_human = LLM tries first, escalates to human if undecided.";
 
+// Node-level tool-permission gate (docs/permissions.md). The empty value is
+// "inherit the workflow's mode", which is why the forms pass allowEmpty
+// rather than listing a fourth option.
+export const PERMISSION_OPTIONS: SelectOption[] = [
+  { value: "off", label: "off (no gate)" },
+  { value: "ask", label: "ask (pause for approval)" },
+  { value: "deny", label: "deny (block)" },
+];
+
+// Every clause maps to a line of pkg/backend/permission/permission.go.
+// Evaluate's order (:302-315) matches deny, then ask, then allow BEFORE it
+// reaches "otherwise the mode default" — so the rules behave identically in
+// both armed modes, and an `ask:` rule pauses even under `deny`. What the
+// mode decides is the default for what nothing matched. And an explicit
+// `off` is not the same as leaving the field empty: it wins over the
+// workflow AND over ITERION_PERMISSION (`cmp.Or(override, node, workflow,
+// env)`, executor_build_task.go:169).
+export const PERMISSION_HELP =
+  "Tool-permission gate for this node. Empty inherits: workflow → ITERION_PERMISSION → off. off = no gate, and it OVERRIDES ITERION_PERMISSION, so it is not the same as empty. The rules are read the same way in both armed modes — deny: always blocks, ask: always pauses (yes, under deny too), allow: approves what neither matched. The mode decides only what nothing matched: ask PAUSES it for a human, deny BLOCKS it with no pause.";
+
+// The one thing the feature is easy to get backwards, so every rule-list
+// control repeats it: a node list REPLACES, it never adds.
+export const PERMISSION_RULES_HELP =
+  "A non-empty list REPLACES the workflow's list of this kind — never a union, and independently per kind. Restate anything from the workflow's list of this kind you still want. Empty inherits it. Tool(pattern) syntax, e.g. Bash(git diff:*).";
+
 export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "", label: "(default)" },
   { value: "low", label: "low" },

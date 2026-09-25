@@ -1,3 +1,4 @@
+import { useDropEditorTab } from "@/hooks/useDropEditorTab";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
@@ -466,9 +467,22 @@ function SidebarTabRow({
   const closeTab = useTabsStore((s) => s.closeTab);
   const [, setLocation] = useLocation();
   const isActive = matchesCurrent(tab, currentLocation);
+  const { guardDroppingEditorTab, dialog: discardSourceDialog } = useDropEditorTab();
 
+  // The second close control for the same tab. It disposes the tab's store
+  // exactly as the tab strip's × does, so it asks the same question: an
+  // editor tab can hold text the Source view has not applied, and that is
+  // the one unmount the view cannot adopt its buffer back from.
   const handleClose = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (tab.kind === "editor") {
+      void guardDroppingEditorTab(() => closeTabAndReroute(), tab.id);
+      return;
+    }
+    closeTabAndReroute();
+  };
+
+  const closeTabAndReroute = () => {
     const wasViewing = matchesCurrent(tab, currentLocation);
     closeTab(tab.id);
     if (!wasViewing) return;
@@ -507,6 +521,7 @@ function SidebarTabRow({
         {icon}
         <span className="truncate">{tab.label}</span>
       </Link>
+      {discardSourceDialog}
       <button
         type="button"
         onClick={handleClose}

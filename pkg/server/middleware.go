@@ -66,7 +66,10 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 				httpError(w, http.StatusUnauthorized, "invalid or expired ws ticket")
 				return
 			}
-			ctx, ok := s.stampAuthedContext(w, r, id)
+			// The run-by-id choke point (ADR-103): a ticket whose WS
+			// route addresses a run by id is re-scoped to the RUN's team
+			// exactly like any other credential.
+			ctx, ok := s.scopeRunByID(w, r, id)
 			if !ok {
 				return
 			}
@@ -111,7 +114,10 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		// and the store-level tenant_id / user_id (for the Mongo
 		// query filters in pkg/store/mongo). The store layer keeps
 		// its own keys so it can stay independent of pkg/auth.
-		ctx, ok := s.stampAuthedContext(w, r, id)
+		// scopeRunByID is the run-by-id choke point (ADR-103): routes
+		// addressing a run by id are stamped with the caller's standing
+		// in the RUN's team; everything else stamps as before.
+		ctx, ok := s.scopeRunByID(w, r, id)
 		if !ok {
 			return
 		}

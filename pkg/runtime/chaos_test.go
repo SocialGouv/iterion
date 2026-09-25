@@ -40,10 +40,15 @@ func (f *failAfterNExecutor) pass(nodeIDs ...string) *failAfterNExecutor {
 	return f
 }
 
-// EffectiveToolNames forwards the tool-surface seam, as any wrapper must: the
-// engine reads an executor that does not answer it at the worst case.
+// EffectiveToolNames and EffectiveBackendName forward both seams, as any
+// wrapper must: the engine reads an executor that does not answer them at the
+// worst case.
 func (f *failAfterNExecutor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string {
 	return f.inner.EffectiveToolNames(node, mayEscalateToUltracode)
+}
+
+func (f *failAfterNExecutor) EffectiveBackendName(node ir.Node) string {
+	return f.inner.EffectiveBackendName(node)
 }
 
 func (f *failAfterNExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {

@@ -1,7 +1,13 @@
 name: supply-shield-cve
 display_name: Vulny
 icon: 🚨
-version: 0.1.2
+version: 0.1.5
+## 0.1.4 — `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and
+## re-checked by each reader that joins a skill name onto it, so it can be
+## neither empty nor relative.
+## 0.1.3 — the machine-readable `iterion:` data blocks are read from the
+## engine-owned copy of the bundle's skills (`${BUNDLE_SKILLS_DIR}`) instead of
+## `<workspace>/.claude/skills/`, which the audited checkout can write.
 ## 0.1.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (33 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.
@@ -62,4 +68,9 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.141.0"
+  ## The floor `[matching: ...]` asks for (parser.VarMatchingSince, via
+  ## bundle's syntax-floor table): below it the engine does not know the
+  ## form and refuses the FILE as a parse error rather than the bundle as
+  ## an unmet requirement. C252 asks for it; `cmd/release-floors` moves it
+  ## at the cut.
+  iterion: ">= 3.186.0"

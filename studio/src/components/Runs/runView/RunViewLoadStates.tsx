@@ -51,10 +51,11 @@ export function RunViewLoadError({
               <details className="text-caption text-fg-subtle">
                 <summary className="cursor-pointer">Why might this happen?</summary>
                 <p className="mt-1 text-left">
-                  Runs are scoped to a (org, team) context. A shared link opened
-                  under the wrong team returns 404 even when the run exists on
-                  another team you belong to. The run may also have been deleted
-                  by the operator who owned it.
+                  A run is served from the team that owns it: opening a
+                  shared link works whenever your account can see that team,
+                  whatever team is active in the sidebar. A 404 here means
+                  your account has no standing in the run's team, or the run
+                  was deleted by whoever owned it.
                 </p>
               </details>
             </>

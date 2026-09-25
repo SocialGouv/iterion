@@ -1,7 +1,7 @@
 name: feature-gap-fill
 display_name: Fini
 icon: 🧩
-version: 2.4.0
+version: 2.4.1
 ## 2.4.0 — a missing verify.sh is a refusal, not a pass (#1598)
 ## 2.3.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,

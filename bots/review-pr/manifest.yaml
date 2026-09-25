@@ -1,7 +1,7 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.10
+version: 0.9.11
 ## 0.9.9 — the lost-gate guard sees EVERY exit. 0.9.8 filled
 ## gate_requested on the success emit only, so the three failure exits (no
 ## endpoint bound, endpoint HTTP error, endpoint unreachable) left it at its

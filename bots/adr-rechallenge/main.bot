@@ -544,7 +544,7 @@ print(json.dumps({
 ## explicit; session: fresh because no prior context is useful.
 agent survey_code:
   backend: "claude_code"
-  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${REARCHI_EFFORT:-high}"
   input: survey_input
   output: survey_output
@@ -561,7 +561,7 @@ agent survey_code:
 ## because the prompt is small (no need to inherit a large turn cache).
 agent frame_arguments:
   backend: "claude_code"
-  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${REARCHI_EFFORT:-high}"
   input: frame_input
   output: frame_output
@@ -596,7 +596,7 @@ compute derive_decision:
 ## board.assign / no set_bot: triage stays with the operator.
 agent file_change_ticket:
   backend: "claude_code"
-  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${REARCHI_EFFORT:-high}"
   input: change_ticket_input
   output: change_ticket_output
@@ -613,7 +613,7 @@ agent file_change_ticket:
 ## NOT readonly — this is the one write step in the bot.
 agent write_addendum:
   backend: "claude_code"
-  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${REARCHI_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${REARCHI_EFFORT:-high}"
   input: addendum_input
   output: addendum_output

@@ -270,6 +270,61 @@ for collision, devbox and pause/resume rules.
    skill wins over a plugin skill and a
    [skill-library](skills-library.md) skill (precedence: bundle >
    plugin > library > hand-authored — ADR-059).
+
+   The same skills are ALSO written, verbatim, to
+   `<workDir>/.claude/iterion-skills/` — a copy the engine owns. That
+   directory is removed and refilled from the bundle on every mirror
+   pass (including for a run with no bundle), so it carries the
+   bundle's bytes under only the names the bundle ships, and no
+   collision policy applies to it. `${BUNDLE_SKILLS_DIR}` expands to
+   it, resolving to the in-container pathname when sandboxed.
+
+   Which one to read: an AGENT discovers skills under
+   `.claude/skills/`, where the workspace-wins rule is what lets an
+   operator customise one. A **tool node that parses a
+   machine-readable `iterion:` data block out of a skill** reads
+   `${BUNDLE_SKILLS_DIR}` instead — the workspace is a checkout of the
+   repository being worked on, so a file found under `.claude/skills/`
+   may be the bundle's or the repository's and nothing read back can
+   tell the two apart. A name the bundle does not ship has no file in
+   the owned copy, which is what makes "this name is not covered"
+   observable to the reader.
+
+   `${BUNDLE_SKILLS_DIR}` is **absolute or nothing**: a reader joins a
+   skill name onto it, and an empty or relative value would resolve
+   against the node's own working directory — the checkout. A relative
+   workspace is resolved against the process directory rather than
+   refused; one the process cannot resolve at all fails the run. A bot
+   declaring the var should constrain it,
+   e.g. `[matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"]`. The second
+   branch is required, not decoration: the launch gate reads the
+   EXPANDED value, but the compile-time default check (C161) compares
+   the **literal** default text, so a bare `^/` refuses
+   `"${BUNDLE_SKILLS_DIR}"` itself.
+
+   The reset removes the directory recursively, and `.claude` is a path
+   the checkout supplies: the engine resolves it and refuses the run
+   when it lands outside the workspace, rather than removing a
+   directory the workspace only points at. A workspace REACHED through
+   a symlink is untouched by that rule — both sides resolve to the same
+   tree.
+
+   A **child** running in its parent's workspace borrows the directory
+   the way it borrows `.claude/skills`, `commands`, `agents` and
+   `settings.json`: one list names all five. The child's scope saves the
+   parent's copy before the child's mirror replaces it and restores it
+   on every exit — success, failure, or an adoption that aborted — so
+   the parent reads its own bundle's names and bytes once the child
+   returns. Children sharing a workspace take that scope one at a time.
+   In a **shared copy-based sandbox** (a child adopting its parent's
+   live pod) the same list drives the reset in the pod, before the
+   child's copy is written through: the write-through seam adds files
+   and removes none, so a name only the parent's bundle ships would
+   otherwise answer for the child. Both halves fail closed — a file of
+   the owned copy that does not land aborts the adoption, because a
+   reader finding no entry for a name reports it as not covered. A file
+   outside that copy keeps the seam's ordinary behaviour: a skill the
+   agent cannot read is a degraded run, not a dead one.
 2. **Prompts** in `prompts/*.md` are merged into the AST `prompts:`
    table **before** static validation runs, so node-level
    `system:`/`user:` references against bundle filenames type-check.

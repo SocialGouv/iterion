@@ -340,6 +340,7 @@ var allKnownProviders = []secrets.Provider{
 	secrets.ProviderOpenRouter,
 	secrets.ProviderXAI,
 	secrets.ProviderZAI,
+	secrets.ProviderMoonshot,
 }
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
@@ -1659,16 +1660,12 @@ func usageBackendForKind(kind secrets.OAuthKind) string {
 }
 
 // usageBackendForProvider maps a BYOK api-key provider to the meter backend
-// its refusals are recorded under. Anthropic-shaped keys (the real one and
-// the z.ai facade) are spent by claude_code sessions, so that is where the
-// runner meters them. "" for a provider with no metered evidence — those
-// keys are never skipped.
+// its refusals are recorded under, "" for a provider with no metered
+// evidence — those keys are never skipped. Deferred to the delegate that
+// does the metering, so this walk and the credential view cannot classify a
+// new provider differently.
 func usageBackendForProvider(prov secrets.Provider) string {
-	switch prov {
-	case secrets.ProviderAnthropic, secrets.ProviderZAI:
-		return delegate.BackendClaudeCode
-	}
-	return ""
+	return delegate.UsageMeterBackendForProvider(prov)
 }
 
 // apiKeyUsable builds the Resolve predicate for one resolution: a key with
@@ -1895,6 +1892,14 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			// A wrapper we did not recognise still counts as an abstention;
 			// keep it visible instead of falling silently to the next tier.
 			p.logger.Warn("cloudpublisher: credential pool declined run %s — %v", runID, err)
+			return nil
+		}
+		if errors.Is(err, credpool.ErrRunHeldElsewhere) {
+			// The run id's open leases belong to another team: not this
+			// caller's to supersede. Best-effort tier — the launch proceeds
+			// on its own credentials, and the log names the refusal rather
+			// than a store blip.
+			p.logger.Warn("cloudpublisher: credential pool refused run %s — %v", runID, err)
 			return nil
 		}
 		// A store failure must not fail the launch: the pool is a
@@ -2166,7 +2171,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if creds.grant != nil {
 		defer func() {
 			if !launched {
-				p.credPool.Release(ctx, runID)
+				p.credPool.ReleaseGrant(ctx, creds.grant)
 			}
 		}()
 	}
@@ -2567,7 +2572,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
-				p.credPool.Release(ctx, spec.RunID)
+				p.credPool.ReleaseGrant(ctx, creds.grant)
 			}
 		}()
 	}

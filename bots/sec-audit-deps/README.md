@@ -70,7 +70,7 @@ operator state.
 ## Pipeline
 
 ```
-enumerate_deps (agent: claw + openai/gpt-5.5, readonly)
+enumerate_deps (agent: claw + openai/gpt-6-sol, readonly)
      — walk lockfiles / node_modules / .venv / vendor → flat dep list + open `ecosystems` list
   └─→ normalize_deps (tool: coerce the LLM dep list into canonical [{ecosystem,name,version,checksum}])
   └─→ run_eco_heuristics (tool: ONE skill-driven node — for each detected ecosystem, read the
@@ -111,6 +111,12 @@ node**:
 `run_eco_heuristics` reads each detected ecosystem's skill and runs its
 heuristics block automatically. No per-ecosystem boolean, no router
 branch. Pure composition.
+
+It reads them from `${BUNDLE_SKILLS_DIR}`, the engine's own copy of this
+bundle's `skills/` — never from `<workspace>/.claude/skills/`, which the
+audited checkout writes. An ecosystem this bundle ships no
+`lang-<ecoid>.md` for is not covered, and no file in the workspace can
+make it look covered.
 
 ## See also
 

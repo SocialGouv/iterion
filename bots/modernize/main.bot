@@ -663,7 +663,7 @@ fail lot_not_actionable:
 
 agent upgrade_campaign:
   backend: "claude_code"
-  model: "${ITERION_MODERNIZE_MODEL_CLAUDE:-claude-opus-5}"
+  model: "${ITERION_MODERNIZE_MODEL_CLAUDE:-claude-opus-5-5}"
   reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
   input: campaign_input
   output: campaign_output
