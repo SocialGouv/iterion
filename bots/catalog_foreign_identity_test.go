@@ -230,7 +230,12 @@ func permittedHost(host string) bool {
 		return true
 	}
 	for _, suffix := range reservedSuffixes {
-		if host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix) {
+		// DNS BOUNDARY, not a string suffix: example.com reserves the
+		// DOMAIN, and customerexample.com is a different domain somebody
+		// else owns. A reserved entry matches itself, or a subdomain of
+		// itself — a label boundary, never a loose string suffix.
+		name := strings.TrimPrefix(suffix, ".")
+		if host == name || strings.HasSuffix(host, "."+name) {
 			return true
 		}
 	}
@@ -533,5 +538,26 @@ func TestCatalogIdentityGuardJudgesTheCommitNotTheCheckout(t *testing.T) {
 	if found := scanForeignHosts(t, walked, nil); len(found) == 0 {
 		t.Fatal("the scanner does not see the private forge in the untracked artefact — " +
 			"then the guard is blind, not merely scoped")
+	}
+}
+
+// A reserved name reserves ITS DOMAIN, not any string it happens to end
+// with: customerexample.com and private-example.org are somebody's real
+// domains, and the loose suffix read let them through without an entry.
+func TestCatalogReservedDomainsCarryADNSBoundary(t *testing.T) {
+	for _, host := range []string{
+		"customerexample.com", "private-example.org", "notexample.net",
+	} {
+		if permittedHost(host) {
+			t.Errorf("%s passed on a loose string suffix — it is nobody's reserved domain", host)
+		}
+	}
+	for _, host := range []string{
+		"example.com", "api.example.com", "deep.sub.example.org",
+		"service.test", "my.service.test", "box.local",
+	} {
+		if !permittedHost(host) {
+			t.Errorf("%s refused — a reserved domain or its own subdomain must pass", host)
+		}
 	}
 }
