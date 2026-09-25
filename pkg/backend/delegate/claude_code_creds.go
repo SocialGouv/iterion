@@ -851,13 +851,18 @@ func UsageMeterBackendForProvider(prov secrets.Provider) string {
 //     case so the inherited env wins. MOONSHOT_API_KEY has no such
 //     step — facadeEnvKey says why.
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
-	if env := selectedAnthropicCredEnvForCLI(ctx, providerHint, sandboxed); env != nil {
+	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, providerHint, sandboxed)
+	if sandboxed && inheritAmbient {
+		env := ambientAnthropicEnvForSandbox()
+		if env == nil && len(selected) > 0 {
+			env = make(map[string]string, len(selected))
+		}
+		for key, value := range selected {
+			env[key] = value
+		}
 		return env
 	}
-	if sandboxed {
-		return ambientAnthropicEnvForSandbox()
-	}
-	return nil
+	return selected
 }
 
 // anthropicCredEnvForTask composes both CLI passes with the same precedence:
@@ -865,9 +870,9 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 // credential route. The last layer includes suppression entries: an extra
 // variable must not redirect a selected facade's bearer or revive its forfait.
 func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
-	selected := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
+	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
 	env := map[string]string{}
-	if selected == nil && taskSandboxed(task) {
+	if inheritAmbient && taskSandboxed(task) {
 		for key, value := range ambientAnthropicEnvForSandbox() {
 			env[key] = value
 		}
@@ -937,11 +942,11 @@ func anthropicFingerprintEnvForTask(task Task, env map[string]string) map[string
 	return out
 }
 
-// selectedAnthropicCredEnvForCLI returns an authoritative credential choice,
-// or nil when the CLI should inherit ambient credentials. Keep this distinction
-// until task additions are composed: forwarding ambient env into a sandbox
-// must not turn inherited values into overrides of the task's own additions.
-func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
+// selectedAnthropicCredEnvForCLI returns authoritative route/credential
+// overrides and whether auth is ambient. An explicit direct hint can clear
+// stale routing fields while still inheriting credentials; those credentials
+// must be composed BEFORE task additions, not promoted to selected overrides.
+func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) (env map[string]string, inheritAmbient bool) {
 	providerHint = normalizeProviderHint(providerHint)
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
@@ -950,30 +955,21 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 	if providerHint == "anthropic" {
 		if hasCreds {
 			if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
-				return map[string]string{"ANTHROPIC_API_KEY": k}
+				return map[string]string{"ANTHROPIC_API_KEY": k}, false
 			}
 			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-				return claudeForfaitEnv(d, sandboxed)
+				return claudeForfaitEnv(d, sandboxed), false
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the
 		// CLI. Actively clear ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 		// so a stale z.ai value from the parent env doesn't leak in. A
-		// sandboxed spawn inherits the CONTAINER env, not this process'
-		// — forward the ambient Anthropic-direct credentials explicitly
-		// (keeping the z.ai suppression: the hint forces direct).
-		env := map[string]string{
+		// sandboxed spawn needs explicit forwarding; the caller composes
+		// that ambient layer before any task additions, then these overrides.
+		return map[string]string{
 			"ANTHROPIC_BASE_URL":   "",
 			"ANTHROPIC_AUTH_TOKEN": "",
-		}
-		if sandboxed {
-			for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"} {
-				if v := os.Getenv(k); v != "" {
-					env[k] = v
-				}
-			}
-		}
-		return env
+		}, true
 	}
 
 	// A facade hint ("zai", "moonshot") forces that vendor's endpoint: the
@@ -982,7 +978,7 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 	// Each facade goes through the same function so none can land with a
 	// weaker refusal than its siblings.
 	if facadeEnvKey(providerHint) != "" {
-		return facadeCredEnvForHint(providerHint, creds, hasCreds)
+		return facadeCredEnvForHint(providerHint, creds, hasCreds), false
 	}
 
 	// Default precedence (providerHint is "" / "auto"), in
@@ -996,16 +992,16 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 			switch slot {
 			case string(secrets.ProviderAnthropic):
 				if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
-					return map[string]string{"ANTHROPIC_API_KEY": k}
+					return map[string]string{"ANTHROPIC_API_KEY": k}, false
 				}
 			case string(secrets.OAuthKindClaudeCode):
 				if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-					return claudeForfaitEnv(d, sandboxed)
+					return claudeForfaitEnv(d, sandboxed), false
 				}
 			default:
 				if k := creds.APIKey(secrets.Provider(slot)); k != "" {
 					if env := facadeEnvFor(slot, k); env != nil {
-						return env
+						return env, false
 					}
 				}
 			}
@@ -1019,9 +1015,9 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 	// turn a Bedrock/Vertex/Foundry host into a z.ai one.
 	if !ambientAnthropicAuthConfigured() {
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
-			return zaiEnv(zai)
+			return zaiEnv(zai), false
 		}
 	}
 	// The caller composes ambient inheritance/forwarding with task additions.
-	return nil
+	return nil, true
 }
