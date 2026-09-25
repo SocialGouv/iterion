@@ -502,6 +502,9 @@ schema render_state:
   code: string
   reason: string
   documents: json
+  ## The digest of the documents AS WRITTEN, sealed here so the lint can tell
+  ## a rewrite from a rendering.
+  documents_digest: string
 
 ## What the drafting agent claims. Believed as a POINTER to files, never as a
 ## verdict over them: the contract lint reads the files.
@@ -549,6 +552,11 @@ schema contract_input:
   ## is about to publish is still UNCOMMITTED there: a command that rewrites one
   ## of them is invisible to a diff against HEAD.
   documents: json
+  ## Sealed by the render: the digest of the documents AS WRITTEN. The
+  ## drafting agent holds write tools between the render and this lint, and
+  ## this digest is how a rewrite in that window is refused by name instead
+  ## of fingerprinted as found.
+  documents_digest: string
 
 ## What the commit must find IN the commit, named by the nodes that wrote it.
 ## A list repeated here would drift from the writers, and the check would then
@@ -2763,6 +2771,7 @@ tool render:
   output: render_state
   language: py
   script: |
+    import hashlib
     import json
     import os
     import re
@@ -2998,6 +3007,16 @@ tool render:
 
     out["ok"] = True
     out["documents"] = [state_path]
+    ## THE HAND-OFF DIGEST: what this render wrote, sealed NOW. Between here
+    ## and the lint, the drafting agent holds write tools; the lint
+    ## recomputes this digest over the same files and refuses a rewrite,
+    ## instead of fingerprinting whatever it finds.
+    seen = hashlib.sha256()
+    for path in sorted([state_path, held]):
+        seen.update(path.encode('utf-8'))
+        with open(path, 'rb') as handle:
+            seen.update(handle.read())
+    out["documents_digest"] = seen.hexdigest()
     out["reason"] = "state document rendered at %s; %d fact identifier(s) substituted" % (
         state_path, len(used))
     print(json.dumps(out))
@@ -3241,6 +3260,27 @@ tool contract_lint:
     def reject(where, why):
         out["refusals"].append({"where": where, "why": why})
 
+    ## THE RENDER'S HAND, VERIFIED. Between the render and this lint, the
+    ## drafting agent holds write tools: the held judgement and the state
+    ## document are what this validation reasons over, and a hand on them in
+    ## that window would be fingerprinted as found. The render sealed the
+    ## digest of what it wrote; recomputing it here publishes only what the
+    ## render measured.
+    documents_digest = {{input.documents_digest}}
+    rendered_now = hashlib.sha256()
+    for path in sorted([os.path.join(ws, {{vars.out_dir}}, "00-state-of-the-repository.md"),
+                        os.path.join(ws, {{vars.out_dir}}, ".plan-judgement.md")]):
+        rendered_now.update(path.encode('utf-8'))
+        try:
+            with open(path, 'rb') as handle:
+                rendered_now.update(handle.read())
+        except OSError:
+            rendered_now.update(b'MISSING')
+    if documents_digest != rendered_now.hexdigest():
+        refuse("ARTEFACTS_REWRITTEN", "the documents changed between the render and this lint: the "
+               "held judgement and the state document are what this validation reasons over, and a "
+               "hand on them in that window publishes an assessment nobody measured. Re-render the "
+               "documents and let this lint read what the render wrote.")
     if not os.path.isfile(plan_path):
         refuse("CONTRACT_REFUSED",
                "no contract at %s. The drafting step reported writing one; a report is a pointer "
@@ -4281,8 +4321,9 @@ workflow assessment:
   ## against itself: internally consistent, and free to contradict every
   ## decision somebody took.
   plan_draft -> contract_lint with {
-    brief:     "{{outputs.brief_read.brief}}",
-    documents: "{{outputs.render.documents}}"
+    brief:            "{{outputs.brief_read.brief}}",
+    documents:        "{{outputs.render.documents}}",
+    documents_digest: "{{outputs.render.documents_digest}}"
   }
 
   contract_lint -> contract_refused when not ok

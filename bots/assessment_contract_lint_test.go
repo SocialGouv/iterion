@@ -1079,3 +1079,38 @@ func TestAssessmentContractLintDoesNotReadAProbeCacheAsTampering(t *testing.T) {
 			assessmentString(t, out, "reason"))
 	}
 }
+
+// THE RENDER'S HAND, VERIFIED. Between the render and this lint the drafting
+// agent holds write tools; a document rewritten in that window was
+// fingerprinted as found. Reproduced on this fixture by the review gate;
+// pinned here with the render's own sealed digest.
+func TestAssessmentContractLintRefusesDocumentsRewrittenAfterRender(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	dir := contractRepo(t, aGoodContract, goodOutcomes)
+	assessed := filepath.Join(dir, "docs", "assessment")
+	if err := os.MkdirAll(assessed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assessed, "00-state-of-the-repository.md"),
+		[]byte("# state as rendered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assessed, ".plan-judgement.md"),
+		[]byte("# judgement as rendered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest := renderedDigest(t, dir)
+	// THE WINDOW: the render sealed its digest; the drafting agent's write
+	// tools are still live.
+	if err := os.WriteFile(filepath.Join(assessed, "00-state-of-the-repository.md"),
+		[]byte("999 critical vulnerabilities were measured.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := lintContractWithDigest(t, dir, aGoodBrief, digest)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("documents rewritten between the render and the lint were fingerprinted as found")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "changed between the render") {
+		t.Errorf("the refusal does not name the rewrite: %s", assessmentString(t, out, "reason"))
+	}
+}
