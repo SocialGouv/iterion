@@ -69,22 +69,22 @@ func runnerBinary() (string, error) {
 // from a LaunchSpec or ResumeSpec and turned into an os/exec command
 // by buildRunnerCmd.
 type detachedSpec struct {
-	Command    runnerCommand
-	RunID      string
-	FilePath   string
-	BundleDir  string            // Launch only: the bundle FilePath was admitted against, when FilePath is not at its main.bot path
-	Vars       map[string]string // Launch only
-	Answers    map[string]string // Resume only; CLI --answer accepts string values today
-	StoreDir   string
-	Force      bool
+	Command   runnerCommand
+	RunID     string
+	FilePath  string
+	BundleDir string            // Launch only: the bundle FilePath was admitted against, when FilePath is not at its main.bot path
+	Vars      map[string]string // Launch only
+	Answers   map[string]string // Resume only; CLI --answer accepts string values today
+	StoreDir  string
+	Force     bool
 	// AllowUnknownInputs forwards the run-level #1757 opt-out as the CLI's
 	// --allow-unknown-inputs flag: the subprocess re-runs the input check
 	// from scratch, so anything not passed here refuses where the
 	// admitting boundary chose to ride.
 	AllowUnknownInputs bool
 	Timeout            time.Duration
-	MergeInto  string // worktree finalization, Launch only
-	BranchName string // worktree finalization, Launch only
+	MergeInto          string // worktree finalization, Launch only
+	BranchName         string // worktree finalization, Launch only
 	// AutoMemory forwards the run-level auto-memory override as the CLI's
 	// --auto-memory flag. The subprocess re-resolves the knob from scratch,
 	// so anything not passed here is silently replaced by the workflow's own
