@@ -185,6 +185,10 @@ traps already paid for:
   timestamp (non-UTC) fails `go mod verify` ("does not match version-control
   timestamp") and turns vendor-check red on main and every PR merge-ref —
   this happened three times on 2026-07-11 alone.
+  **First-party project.** claw-code-go is developed by this same team
+  (repo `SocialGouv/claw-code-go`, sibling worktrees under `.works/`);
+  improving it in passing — while touching a seam that crosses it — is part
+  of this repo's scope, not a fork-and-forget dependency.
 
 ## Everyday CLI
 
@@ -248,6 +252,9 @@ Revi gate, the release/changelog pipeline (never hand-edit `CHANGELOG.md`) and
 the Billy pause all live in
 [docs/agents/review-and-merge.md](docs/agents/review-and-merge.md) — read it
 before opening, merging or unblocking a PR.
+A gate parked on provider
+quota is a rerouting signal, not a wait — the parked-gate drill lives in that
+same page.
 
 ## Conventions
 

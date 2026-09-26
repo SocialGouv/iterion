@@ -71,6 +71,30 @@ head sha, off by default so the developer keeps the choice.
 push re-reviews the new head, so the status tracks the code you actually fixed.
 It stays on.
 
+**A parked gate is a rerouting signal, not a wait.** When `revi/review` parks
+on provider quota (a `gate-paused` comment naming a usage window and a retry
+instant), the pull request is fine — the credential isn't. Waiting for the
+window reset is the last resort, never the plan. In order:
+
+1. **Identify the blocked credential.** The pause comment names the window;
+   `iterion remote admin llm oauth` and `admin llm api-keys` show what the
+   deployment draws on. A stale "exhausted" reading whose provider reset
+   instant has already passed is cleared with
+   `iterion remote admin usage-readings clear <fingerprint>` — the next run
+   re-measures the windows itself.
+2. **Lend a live forfait to the deployment.** An OAuth subscription
+   (`admin llm oauth set <claude_code|codex> --rank N --from-file
+   ~/.codex/auth.json`) or a provider API key
+   (`admin llm api-keys create --provider <p> --from-env VAR`) adds capacity
+   the gate can serve on without a redeploy. Any credential write to a shared
+   deployment goes through the operator's explicit validation, with the exact
+   command in the question.
+3. **Keep the quality loop moving locally.** While the gate is parked, run the
+   equivalent adversarial review with a locally-available forfait CLI
+   ([adversarial-review-loop.md](adversarial-review-loop.md)); a local loop
+   maintains the review pressure but does NOT replace the required status —
+   the merge still waits for a real `revi/review` verdict.
+
 ## <a name="billy-is-paused"></a>Billy is paused (2026-09-15)
 
 The fixer campaign (`bots/branch-improve-loop`, Billy) is a whole-session
