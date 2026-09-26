@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.202.2](https://github.com/SocialGouv/iterion/compare/v3.202.1...v3.202.2) (2026-09-26)
+
+### Bug Fixes
+
+* the .bot file is read and validated by one rule ([#1728](https://github.com/SocialGouv/iterion/issues/1728) [#1808](https://github.com/SocialGouv/iterion/issues/1808) [#1762](https://github.com/SocialGouv/iterion/issues/1762)) ([#1871](https://github.com/SocialGouv/iterion/issues/1871)) ([2336861](https://github.com/SocialGouv/iterion/commit/2336861cd167467c1859ea01349a77e360364d28))
+
+    <details><summary>why</summary>
+
+    A file with no workflow got valid:false and nothing else on the JSON path: the reason was the human renderer's alone. It now rides the result as a parse diagnostic naming the declared remedy — and a file that failed to PARSE carries only its parse error, never a second "no workflow found" counting one cause twice.
+
+    </details>
+
 ## [3.202.1](https://github.com/SocialGouv/iterion/compare/v3.202.0...v3.202.1) (2026-09-26)
 
 ### Bug Fixes
