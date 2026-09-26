@@ -26,6 +26,7 @@ bots/adr-cartograph/main.bot
 bots/adr-rechallenge/main.bot
 bots/app-dev/main.bot
 bots/arbitrate/main.bot
+bots/assessment/main.bot
 bots/branch-improve-loop/main.bot
 bots/campaign/main.bot
 bots/copilot/main.bot

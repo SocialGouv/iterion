@@ -45,7 +45,7 @@ it — the repo's `.mcp.json` only references the variable.)
 
 The repo ships a project-scoped [.mcp.json](../.mcp.json) that registers two
 servers: **iterion's own operator MCP** (`iterion mcp` — the `local_*`/
-`remote_*` tools of [mcp-server.md](mcp-server.md); needs the `iterion`
+`remote_*` tools of [mcp-server.md](mcp-server.md); needs the `dev-iterion`
 binary on PATH, `task build` + install) and the **official Sentry MCP server** (`@sentry/mcp-server`, works self-hosted via
 `--host` + `--access-token`), pinned to the org/project above. With
 `SENTRY_ACCESS_TOKEN` exported, any Claude Code session opened in this repo

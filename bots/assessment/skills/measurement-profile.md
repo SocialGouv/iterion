@@ -1,0 +1,145 @@
+---
+name: measurement-profile
+description: The default measurement profile — metrics, canonical exclusions, domain of applicability, synthetic anchor and size thresholds, versioned together. Read to understand what the published size letter means and what it does not.
+---
+
+# The measurement profile
+
+A size letter is a **ratio to an anchor**, cut into bands. It is therefore not
+a property of a repository: it is a property of a repository *read through a
+scale*. The scale is this file, and the assessment publishes the letter with
+this profile's identifier and version beside it, always.
+
+That is a convention, stated as one rather than hidden. Two repositories sized
+under different profiles are not comparable. A letter quoted without its
+profile is a false quotation.
+
+## What the profile fixes, and why all five together
+
+| part | what it decides |
+|---|---|
+| **metrics** | which four quantities describe amplitude, and in what UNIT |
+| **canonical exclusions** | what the TOOL never counts as first-party, whatever a survey declares |
+| **domain** | the repositories the letter means anything for |
+| **anchor** | the reference the ratios are taken against |
+| **thresholds** | where one band ends and the next begins |
+
+They are versioned as ONE object because changing any of them changes the
+letter. A profile that let the anchor move while the version stayed put would
+publish two incomparable letters under one name — the precise failure the
+version number exists to prevent.
+
+## The index
+
+The index is the **geometric mean of the four ratios** to the anchor. The
+geometric mean is deliberate: it makes the index scale-free and it makes no
+single axis dominate. It also has a consequence that the domain exists to
+handle — **one null axis drives the whole index to zero**, so a repository
+with no entrypoints at all (a library, a batch job, a data pipeline) would be
+sized `XS` by construction, regardless of how large it is.
+
+That is not a defect to be smoothed away with a floor value. It is the scale
+saying it does not apply.
+
+## The domain, and what happens outside it
+
+The letter is published only when the repository is **inside the domain**:
+every metric strictly positive, and a first-party source size above the floor
+below. Outside it, the assessment publishes the **raw measurements** and the
+size `not-applicable`, naming the axis that put it outside.
+
+A `not-applicable` is a real answer. It is not a failure of the measurement
+and it must not be read as "small".
+
+## Uncertainty is published with the letter
+
+Three of the four metrics are discrete counts, where one either way is a
+plausible disagreement between two careful surveys; lines of source is the
+only one a walk settles on its own. The
+assessment therefore recomputes the index with ±1 applied to each discrete
+count, on the project side and on the anchor side, and publishes the **set of
+bands** those variants land in. When that set has more than one member, the
+repository sits on a boundary and the letter should be read as the range, not
+as the point.
+
+## Two metrics are counted as THINGS, one is counted in registrations
+
+`deployables` and `systems` are counted by distinct **identity**, never by the
+file that proves them: one service described by a container file, a compose
+entry and a chart is ONE deployable with three proofs, and counted by path it
+is three with nothing in the tree to contradict the count. A survey therefore
+declares the name of the service or the system, and the lint deduplicates on
+that name.
+
+`entrypoints` is counted in **route registrations** — what every extractor in
+this bundle emits, and what the anchor below is expressed in. A declaration
+says how many its artefact exposes rather than standing for one file: forty
+routes laid out one per file and forty routes in one file are the same
+repository, and a metric that answers 40 or 1 depending on the layout is two
+scales under one name.
+
+## What the tool excludes, and what the survey excludes
+
+A **canonical exclusion** is applied by the measurement itself, whatever the
+survey declares — so it must be something the tool can recognise on its own,
+in any language. There is one: a file that declares itself **generated** in
+its own header (`Code generated … DO NOT EDIT`, `@generated`). The floor
+recognises it while it reads the bodies, and the measurement subtracts it from
+the first-party count.
+
+Vendored code, lock files, fixtures and datasets, and tests are excluded too,
+but by the **survey**: recognising them is a stack's knowledge, which the
+workflow does not carry. The partition makes the survey classify every
+top-level entry `first_party`, `tests` or `excluded`, a subtree deeper down is
+carved out with an `excluded` or `tests` declaration inside a first-party one,
+and the **exclusion rate** published beside the band says how much of the
+tree the survey left out. A profile that listed those kinds as canonical would
+advertise an exclusion nothing applies; the measurement refuses a canonical
+kind it has no mechanism for.
+
+## The anchor is synthetic
+
+The anchor below is a **convention**, not a measured project. Its four values
+are round numbers chosen to put a mid-sized service near the middle of the
+scale. This matters twice: nothing about anybody's repository is disclosed by
+publishing it, and nobody should read the anchor as a claim that a real
+project of that shape exists or is typical.
+
+<!-- iterion:profile
+{
+  "id": "public-default",
+  "version": "1.1.0",
+  "metrics": [
+    {"key": "first_party_lines", "label": "first-party lines of source (the survey's tests and exclusions, and self-declared generated files, left out)", "discrete": false},
+    {"key": "entrypoints", "label": "entrypoints, counted in route registrations", "discrete": true},
+    {"key": "deployables", "label": "deployed artefacts", "discrete": true},
+    {"key": "systems", "label": "distinct systems the application talks to", "discrete": true}
+  ],
+  "canonical_exclusions": [
+    {"kind": "generated", "why": "a file declaring itself generated in its own header is not first-party"}
+  ],
+  "domain": {
+    "all_metrics_positive": true,
+    "min_first_party_lines": 2000,
+    "statement": "a deployed application with at least one entrypoint, one deployable and one distinct system, above the first-party floor. A library, a batch with no entrypoint, or a repository below the floor is OUTSIDE the domain and gets raw measurements with no letter."
+  },
+  "anchor": {
+    "synthetic": true,
+    "first_party_lines": 20000,
+    "entrypoints": 40,
+    "deployables": 2,
+    "systems": 4
+  },
+  "bands": ["XS", "S", "M", "L", "XL", "XXL"],
+  "thresholds": [0.5, 1.0, 2.0, 4.0, 8.0]
+}
+-->
+
+## Using another profile
+
+An operator may point the bot at their own profile with `--var
+profile_path=<path in the workspace>`, carrying the same block. The published
+letter then names THAT profile and version. The default exists so that the
+common case is a scale somebody reasoned about rather than one improvised per
+run — and so that the failure mode of a hastily written profile is visible in
+the document, under a name that is not `public-default`.
