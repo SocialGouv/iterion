@@ -483,8 +483,8 @@ func (r *EngineRunner) dispatchViaService(ctx context.Context, spec DispatchSpec
 		// The daemon's own warn-and-proceed contract on unknown bot_args
 		// (loop.go): the launch proceeds, the warning already fired.
 		AllowUnknownInputs: true,
-		WorkDir:  spec.WorkspacePath,
-		DailyCap: spec.DailyCap,
+		WorkDir:            spec.WorkspacePath,
+		DailyCap:           spec.DailyCap,
 	}
 	if spec.Issue != nil && spec.Issue.ID != "" {
 		ls.SourceRef = &store.RunSource{

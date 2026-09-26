@@ -2392,16 +2392,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	persisted = true
 
 	msg := &queue.RunMessage{
-		V:                queue.SchemaVersion,
-		Contributions:    contributions,
-		RunID:            runID,
-		WorkflowName:     wf.Name,
-		WorkflowHash:     hash,
-		ExecutionContext: r.ExecutionContext.Clone(),
-		IRCompiled:       body,
-		Vars:             inputs,
+		V:                  queue.SchemaVersion,
+		Contributions:      contributions,
+		RunID:              runID,
+		WorkflowName:       wf.Name,
+		WorkflowHash:       hash,
+		ExecutionContext:   r.ExecutionContext.Clone(),
+		IRCompiled:         body,
+		Vars:               inputs,
 		AllowUnknownInputs: spec.AllowUnknownInputs,
-		SecretsRef:       creds.secretsRef,
+		SecretsRef:         creds.secretsRef,
 		// The stored-bundle ref THREADED from the launch surface's own
 		// resolution (never re-fetched here — a push racing the launch must
 		// not pair this compile's IR with newer resources). The runner

@@ -196,9 +196,9 @@ type RunMessage struct {
 	// instead of refusing it. It rides the wire because the runner
 	// re-applies the check before engine.Run — a queued run cannot skip it
 	// by having been admitted on an older build. False = the check runs.
-	AllowUnknownInputs bool `json:"allow_unknown_inputs,omitempty"`
-	SecretsRef    string         `json:"secrets_ref,omitempty"`
-	TimeoutSec    int            `json:"timeout_sec,omitempty"`
+	AllowUnknownInputs bool   `json:"allow_unknown_inputs,omitempty"`
+	SecretsRef         string `json:"secrets_ref,omitempty"`
+	TimeoutSec         int    `json:"timeout_sec,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
