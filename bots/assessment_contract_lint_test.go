@@ -1137,7 +1137,7 @@ func TestAssessmentContractLintRefusesDocumentsRewrittenAfterRender(t *testing.T
 	if err := os.WriteFile(facts, []byte(`{"facts": {"size.band": "XXL"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out = lintContractWithDigestAt(t, dir, aGoodBrief, wide, baseline, filepath.Join(dir, "scratch"))
+	out = lintContractWithDigestAtPlan(t, dir, aGoodBrief, wide, baseline, filepath.Join(dir, "scratch"), ".modernize/plan.yaml")
 	if assessmentBool(t, out, "ok") {
 		t.Fatal("facts rewritten between the render and the lint were outside the sealed scope")
 	}
@@ -1198,7 +1198,7 @@ func TestAssessmentContractLintRefusesASourceEditInTheDraftingWindow(t *testing.
 	if err := os.WriteFile(build, []byte(string(body)+"\necho touched in the window\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := lintContractWithDigestAt(t, dir, aGoodBrief, digest, baseline, scratch)
+	out := lintContractWithDigestAtPlan(t, dir, aGoodBrief, digest, baseline, scratch, ".modernize/plan.yaml")
 	if assessmentBool(t, out, "ok") {
 		t.Fatal("a source edit made in the drafting window became the probes' accepted baseline")
 	}
@@ -1233,7 +1233,7 @@ func TestAssessmentContractLintRefusesAnUntrackedSourceFileInTheWindow(t *testin
 	if err := os.WriteFile(filepath.Join(dir, "ci", "extra.sh"), []byte("echo forged\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := lintContractWithDigestAt(t, dir, aGoodBrief, digest, baseline, scratch)
+	out := lintContractWithDigestAtPlan(t, dir, aGoodBrief, digest, baseline, scratch, ".modernize/plan.yaml")
 	if assessmentBool(t, out, "ok") {
 		t.Fatal("an untracked source file written in the window escaped the seal")
 	}
@@ -1257,5 +1257,40 @@ func TestAssessmentContractLintRefusesAGateThatCreatesASourceFile(t *testing.T) 
 	}
 	if !strings.Contains(assessmentString(t, out, "reason"), "WRITES to what it checks") {
 		t.Errorf("the refusal is not the write detection's: %s", assessmentString(t, out, "reason"))
+	}
+}
+
+// THE LICENSED-WRITE EXCLUDES FOLLOW THE PLAN PATH: an operator may move the
+// contract (plan_path is a launch var), and the seal recomputes its excludes
+// from the same var — a write to the moved contract is licensed, not
+// tampering.
+func TestAssessmentContractLintHonoursACustomPlanPathInTheSeal(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	dir := contractRepo(t, aGoodContract, goodOutcomes)
+	if err := os.MkdirAll(filepath.Join(dir, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, dir, "mv", ".modernize/plan.yaml", "plans/plan.yaml")
+	gittest.Run(t, dir, "commit", "-qm", "the contract moves to a custom plan path")
+
+	scratch := t.TempDir()
+	digest := renderedDigest(t, dir, scratch)
+	baseline := treeBaselineExcluding(t, dir, "plans/plan.yaml", "plans/outcomes.json")
+
+	// THE WINDOW: the licensed plan file is edited — still valid YAML, still
+	// the contract the drafting step wrote.
+	f, err := os.OpenFile(filepath.Join(dir, "plans", "plan.yaml"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("# a drafting note the operator left\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	out := lintContractWithDigestAtPlan(t, dir, aGoodBrief, digest, baseline, scratch, "plans/plan.yaml")
+	if code := assessmentString(t, out, "code"); code == "TREE_REWRITTEN" {
+		t.Fatalf("a write to the licensed plan file (at its custom path) was flagged as tampering:\n%s",
+			assessmentString(t, out, "reason"))
 	}
 }
