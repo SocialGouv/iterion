@@ -1,7 +1,105 @@
 name: product-docs
 display_name: Prody
 icon: 🧭
-version: 1.1.3
+version: 1.3.0
+## 1.3.0 — EXHAUSTIVENESS IS A GATE, not the agent's word. A new
+## deterministic node, `coverage_check`, reads the product's
+## golden-master net — `<oracle_dir>/feature-coverage.json` (covered
+## features with the corpus entries that exercise them, exclusions with
+## their written reason) and `<oracle_dir>/corpus.json` — and answers
+## the one question a documentation bot cannot honestly ask itself: is
+## everything documented, and does everything documented EXIST? Five
+## named refusals (PHANTOM_DOC, GAP, CONCEALED_EXCLUSION,
+## UNANCHORED_CHAPTER, NET_UNREADABLE), each one falsified by a test
+## that reddens it and by nothing else; every emptiness is one of them,
+## because a guard reading `if collection and …` is disabled exactly
+## when the collection is empty. Convergence becomes `scope_ok ∧
+## lint_ok ∧ coverage_ok ∧ docs_aligned`. The gate is ARMED only when
+## catalog_ingest finds both artifacts (workspace first, then each
+## source clone): with no net it is inert and the bot is byte-for-byte
+## the one it was — a non-regression pinned by its own test. The
+## exclusions chapter and the anchorless marker are DECLARED
+## identifiers (`coverage_*` vars), not French literals, and the anchor
+## vocabulary is read off the net rather than assumed. page_lint
+## exempts exactly the declared marker, so the two gates cannot order
+## the campaign to add and to remove the same characters.
+## Also: a catalog entry may now name a source by `path` — a repository
+## already on disk, RELATIVE to the workspace (`.` being the workspace
+## itself), cloned locally with no forge, no network and no credential,
+## then redacted like any other source. That is how a campaign
+## documents its OWN repository.
+## THE GATE PROVES A PRODUCT IS DOCUMENTED, not that an inventory is
+## cited. A documentation made of an anchor table, of chapters suffixed
+## with the anchorless marker and of invented screens described one
+## sentence at a time used to score GREEN. Now: `GAP` asks for PROSE
+## outside the references, in the BLOCK that carries them — a paragraph,
+## a list item, a table row, each read on its own as markdown renders
+## it, a heading documenting nothing — and a block that documents
+## several features needs that prose FOR EACH (an index table with a
+## descriptive column, and a paragraph of soft-wrapped index lines with
+## no markup at all, were credited whole to every feature they listed);
+## table pipes, HTML tags, link destinations, HTML comments and link
+## reference definitions are not prose (a visible url is), and CITATIONS
+## are read from that same visible text -- one inside a comment or a link
+## definition anchors nothing, documents nothing and is not verified;
+## words are counted in EVERY script, not only those folding to ASCII;
+## a DEGRADED note names its repair as operator-side, since fail_log
+## relays it to a campaign that may write only the pages;
+## `CONCEALED_EXCLUSION` reads the same block and asks for prose of its OWN,
+## sharing vocabulary with the reason the net records, once per hole (a
+## row of dots is length without words, and one sentence cannot answer
+## for two, and a summary line naming two holes no longer locks the
+## second out of its own paragraph); the anchorless marker has a CEILING
+## (`coverage_max_anchorless`, default 2) which the anchor refusal
+## HONOURS — it offers the marker only while headroom remains instead of
+## naming a remedy the ceiling takes back, and never asks for a bigger
+## ceiling (a launch var outside the writeable set); the exclusions
+## chapter, anchored by its role, spends nothing, and a sub-heading
+## repeating the declared token no longer closes the chapter early; the
+## exclusions title is matched WHOLE ("Les exclusions de garantie" no
+## longer opens the chapter of holes); and a REFERENCE IS WHAT THE PAGE SAYS
+## IS ONE — `coverage_citation_open` + token +
+## `coverage_citation_close` (`[[ref:001]]`), never a code span. The
+## gate infers nothing in either direction: every citation is verified
+## wherever it sits (an invented screen alone on its line is refused)
+## and nothing else is ever looked at (an interface label, a file name,
+## an inline `404` stay prose). That replaces a (length, character-class)
+## shape inference no setting could settle — tightened it let an
+## invention through, loosened it ordered the campaign to delete
+## reader-facing prose. A TAIL
+## WILDCARD (`/dashboard/**`) proves nothing on EITHER side — cited by a
+## page or declared by the route table, one predicate governs both;
+## `coverage_routes_file` is
+## confined to the net, and the absence of any trace of the net's own
+## gate is reported as `net_unproven`. The counts (`counts_line`) ride
+## the run events and the PR body, so a declared-anchorless chapter
+## costs its author something.
+## page_lint stops treating the declared marker as a switch on every
+## rule: the exemption is the html_comments rule, for a comment that IS
+## the token, and it is armed by the NET rather than by the var — with
+## no net the node is the one it was, value included.
+## A net artifact whose top-level JSON is not an OBJECT is named at the
+## one door both files come through, instead of answering a key lookup
+## with a traceback; and an empty `coverage_exclusions_heading` while the
+## net declares a hole stops the run, since no page could ever name one.
+## PRE-FLIGHT vs CONVERGENCE. A cause whose repair lies OUTSIDE the
+## writeable set (`<product_dir>/**/*.md`) — the net, a launch var, the
+## catalog — stops the run by name instead of riding `fail_log`: left as
+## a gate term it orders the campaign to fix what `scope_check` forbids
+## it to touch, and the run burns every pass on two contradictory
+## instructions. An ABSENT `exclusions` key is an empty list, as the net
+## producer reads it; only a key that is there and mistyped refuses.
+## SOURCE CONFINEMENT, one decision point. A source that names the
+## FILESYSTEM is confined to the workspace whichever key carries it:
+## `url` is read first, and an absolute path, a `file://` url or a
+## relative value that resolves on disk is a local source under another
+## name — same containment, same credential-free environment, same clone
+## mode as `path`. A repository whose git dir, object directory or
+## `objects/info/alternates` resolves outside the workspace is refused
+## too: a clone serves the union of those stores, so confining the path
+## alone confines nothing (`--no-local` does not change that — upload-pack
+## serves the alternates as well). The inventory reports the decision each
+## entry took (`local`).
 ## 1.1.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (50 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.
@@ -63,11 +161,22 @@ description: |
 
   The determinism is TRUTH-only: a scope gate fails the run if anything
   outside `<product_dir>/**/*.md` changed, an EDITORIAL LINT gate fails
-  it if a published page still carries working notes, and convergence
-  is those two gates ∧ the campaign's honest `docs_aligned` contract —
-  nothing else. A deterministic scan runs each pass as an ADVISORY
-  hints producer (dead links, orphan pages, catalog surfaces no page
+  it if a published page still carries working notes, an
+  EXHAUSTIVENESS gate fails it if the product carries a golden-master
+  net and the pages do not account for it, and convergence is those
+  three gates ∧ the campaign's honest `docs_aligned` contract — nothing
+  else. A deterministic scan runs each pass as an ADVISORY hints
+  producer (dead links, orphan pages, catalog surfaces no page
   covers): help the agent is free to contradict, never an obligation.
+
+  EXHAUSTIVENESS IS NOT THE AGENT'S WORD. When the product commits a
+  golden-master net, `coverage_check` reads its feature inventory and
+  its capture corpus and refuses five ways, each cause named: a
+  documented screen the net never saw, an inventoried feature no page
+  documents, an exclusion the pages do not name as one, a chapter
+  naming no reference it restitutes, and an inventory or a
+  documentation too empty to judge. Without a net the node is inert
+  and the bot is exactly the one it was.
 
   EDITORIAL SOVEREIGNTY: the bundle ships generic default editorial
   skills in French (documentary model, GitBook blocks, glossary, tone),
@@ -134,7 +243,10 @@ invocations:
 ## the form (still settable via --var / bot_args).
 launch:
   primary: [catalog_path, product_id, scope_notes, open_mr]
-  hidden: [workspace_dir, dismissed_path, scratch_dir, max_hints]
+  hidden: [workspace_dir, dismissed_path, scratch_dir, max_hints,
+           oracle_dir, coverage_exclusions_heading, coverage_no_anchor_marker,
+           coverage_routes_file, coverage_citation_open, coverage_citation_close,
+           coverage_placeholders, coverage_min_prose, coverage_max_anchorless]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
 ## release that reads the profile would refuse the header as an unknown

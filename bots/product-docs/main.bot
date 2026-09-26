@@ -20,7 +20,7 @@
 ## TRUTH gates only; the scan is advisory, never an obligation):
 ##
 ##   catalog_ingest -> scan_hints -> campaign -> scope_check
-##     -> page_lint -> gate
+##     -> page_lint -> coverage_check -> gate
 ##   gate --(converged)--> mr_gate -> forge_auth_probe -> finalize_mr
 ##   gate --> scan_hints            (continuation_loop, max_passes)
 ##   …every tail outcome -> publish_gate --(publish)--> publish
@@ -56,7 +56,19 @@
 ##                    section, no "Correspondance technique" annex.
 ##                    A lint failure is NOT converged and feeds the
 ##                    next pass.
-##   gate           — converged = scope_ok ∧ lint_ok ∧
+##   coverage_check — DETERMINISTIC EXHAUSTIVENESS gate, armed if and
+##                    only if the product carries a golden-master net
+##                    (`<oracle_dir>/feature-coverage.json` +
+##                    `corpus.json`, in the workspace or in a source
+##                    clone). It answers, from the net and not from the
+##                    agent, the one question a documentation bot
+##                    cannot ask itself: is everything documented, and
+##                    does everything documented exist? Five named
+##                    refusals — PHANTOM_DOC, GAP,
+##                    CONCEALED_EXCLUSION, UNANCHORED_CHAPTER,
+##                    NET_UNREADABLE. WITHOUT a net it is inert and
+##                    Prody is exactly the bot it was.
+##   gate           — converged = scope_ok ∧ lint_ok ∧ coverage_ok ∧
 ##                    campaign.docs_aligned. NOTHING ELSE.
 ##
 ## EDITORIAL SOVEREIGNTY — the core design constraint. The editorial
@@ -86,7 +98,8 @@
 ## stack is the agent's own judgment, guided by the skills.
 ##
 ## CONTINUATION IS BOUNDED. The single declared loop
-## (scan_hints→campaign→scope_check→page_lint→gate→scan_hints) is
+## (scan_hints→campaign→scope_check→page_lint→coverage_check→gate
+## →scan_hints) is
 ## capped by `max_passes`; on exhaustion the run ships what is banked
 ## (every committed page is real, landed work). `iterion validate`
 ## reports NO undeclared cycle — this is the only declared loop.
@@ -191,6 +204,92 @@ vars:
   ## bound — telemetry counts are computed BEFORE truncation, so the
   ## report stays honest about what was cut).
   max_hints: int = 120
+
+  ## ─── Exhaustiveness gate (automatic when a net is present) ────
+  ## Directory holding the golden-master non-regression net, looked up
+  ## in the docs workspace FIRST and then in each source clone.
+  ## coverage_check is armed if and only if BOTH
+  ## `<oracle_dir>/feature-coverage.json` (the inventory: covered
+  ## features with the corpus entries that exercise them, exclusions
+  ## with their written reason) and `<oracle_dir>/corpus.json` (the
+  ## catalogue of captured entries) are found there. No net, no gate:
+  ## the bot behaves exactly as it did before this node existed.
+  ## Empty disables the lookup outright.
+  oracle_dir: string = ".golden-master"
+
+  ## DECLARED IDENTIFIERS the exhaustiveness gate matches on. They are
+  ## vars and not literals because the gate is language-neutral while
+  ## the pages are not: a docs repo writing in French sets
+  ## `coverage_no_anchor_marker=<!--sans-ancre-->` without touching the
+  ## bot. The bundle's own editorial defaults stay French.
+  ##   coverage_exclusions_heading — what the heading title opening the
+  ##     chapter under which an exclusion counts as NAMED must BE: the
+  ##     WHOLE title, compared case- and accent-insensitively, never a
+  ##     substring (a reader-facing chapter merely CONTAINING the token
+  ##     would otherwise open the chapter of documented holes). It is the
+  ##     ONLY way a page can name a hole, so leaving it empty while the
+  ##     net declares one STOPS the run by name rather than refusing
+  ##     every hole for a repair this run may not make
+  ##   coverage_no_anchor_marker — what a chapter carries to declare it
+  ##     restitutes no reference at all. page_lint exempts exactly this
+  ##     token from its html_comments rule, so the two gates cannot
+  ##     contradict each other; empty disables the escape hatch.
+  coverage_exclusions_heading: string = "exclusions"
+  coverage_no_anchor_marker: string = "<!--no-anchor-->"
+
+  ## The DECLARED route table, read from the net: a path RELATIVE to
+  ## `oracle_dir` and nothing else — an absolute path or a `..` escape is
+  ## a named refusal that STOPS the run, because its repair is a launch
+  ## var this run may not write. One route per line in the
+  ## golden-master `routes_probe` grammar — `METHOD /path/{id}` or a
+  ## bare `/path`, `#` comments allowed. golden-master today RUNS that
+  ## probe at every gate and commits no artifact, so the file is
+  ## usually absent: the gate then DEGRADES the path check to the
+  ## corpus alone and says so, in its log and in `routes_degraded`.
+  ## Degraded is loud and still refuses; it is never silently green.
+  coverage_routes_file: string = "routes.txt"
+
+  ## THE CITATION SYNTAX. A reference is what a page SAYS is one --
+  ## `coverage_citation_open` + token + `coverage_citation_close` -- and
+  ## nothing else: a code span is prose, whatever it looks like. The gate
+  ## therefore infers NOTHING, in either direction. It verifies every
+  ## citation wherever it sits (an invented screen alone on its line is
+  ## refused), and it refuses nothing that is not one (`Mot de passe`,
+  ## `package.json`, `404` in ordinary prose stay prose). Guessing from a
+  ## token's shape which of the two a code span is cannot close both
+  ## directions at once; an explicit marker has no middle. The
+  ## token is a corpus entry id, an inventory feature id, or a path
+  ## (leading slash). Both ends are declared so a docs repo already using
+  ## [[...]] can pick another spelling; either one empty is a refusal,
+  ## never a gate that quietly recognises nothing.
+  coverage_citation_open: string = "[[ref:"
+  coverage_citation_close: string = "]]"
+
+  ## Substitutes that do not count as writing when a page documents a
+  ## feature or names an exclusion, and the minimum number of prose
+  ## characters that does. Prose is measured over the BLOCK carrying the
+  ## citation — a paragraph, a list item or a table row, never its
+  ## neighbours — outside the citations and the markup, and a block that
+  ## documents several features needs this much FOR EACH of them. A bare
+  ## identifier under a heading is silence wearing a label.
+  coverage_placeholders: string = "TODO,FIXME,TBD,XXX,WIP,lorem ipsum"
+  coverage_min_prose: int = 60
+
+  ## HARD CEILING on chapters declaring they restitute no reference
+  ## (`coverage_no_anchor_marker`). The marker is the written exception to
+  ## the anchor rule, and an exception with no ceiling is the rule: a
+  ## campaign reading fail_log would mark every chapter it cannot anchor
+  ## and converge on nothing. The default is what the bundle's OWN
+  ## editorial model needs — a method chapter, plus one for a product that
+  ## keeps an introduction. At 0 the anchor refusal would offer a marker
+  ## the ceiling then refuses, and the run would ping-pong between two
+  ## causes until max_passes: the refusal therefore stops offering the
+  ## marker once the headroom is gone, and it never asks for a bigger
+  ## ceiling — raising it is an operator decision, not a repair inside the
+  ## writeable set. The chapter that OPENS the declared exclusions chapter
+  ## never counts: it is anchored by its role, and its body is judged by
+  ## the exclusions rule.
+  coverage_max_anchorless: int = 2
 
   ## Hard cap on continuation PASSES — the convergence backstop.
   ## NOTE loop semantics: `as continuation_loop(N)` bounds the loop
@@ -615,10 +714,57 @@ prompt campaign_user:
   what the product does:
   {{input.hints}}
 
+  ## Non-regression net (golden-master), or empty
+  {{input.oracle_path}}
+
+  When that path is NOT empty, an EXHAUSTIVENESS gate reads your pages
+  against the two files it holds — `feature-coverage.json` (the covered
+  features, each with the corpus entries that exercise it, and the
+  exclusions with their written reason) and `corpus.json` (the captured
+  entries, each with its id and its path). READ THEM BOTH before you
+  plan.
+
+  A REFERENCE IS WHAT YOU MARK AS ONE. The gate reads
+  `{{vars.coverage_citation_open}}<token>{{vars.coverage_citation_close}}`
+  and nothing else: a code span is prose, always. So `404` in a sentence
+  is a number, an interface label in backticks is a label, and neither
+  will ever be refused — while EVERY citation you write is checked,
+  wherever a reader can see it. Text a reader never sees is not read at
+  all: a citation inside an HTML comment or a link reference definition
+  anchors nothing and documents nothing. Cite only what you read in those two files: the
+  token is a corpus entry id, an inventory feature identifier, or a path
+  the net observes (leading slash). The contract that gate enforces, and
+  which you write to:
+  - every COVERED feature needs ONE line that CITES its identifier AND
+    at least one of its own corpus entries, in a paragraph, a list item
+    or a table row that DESCRIBES it: {{vars.coverage_min_prose}}
+    characters of real prose outside the citations, FOR EACH feature
+    that block documents. Each table row, each list item and each
+    heading is read on its own — a neighbour's words are not yours, two
+    citations side by side are an index row, and a heading labels a
+    chapter without documenting anything;
+  - every EXCLUSION must be named as such, under a chapter whose title
+    IS EXACTLY `{{vars.coverage_exclusions_heading}}` (the WHOLE title,
+    compared case- and accent-insensitively), in a paragraph or list
+    item of its own saying why — a bare identifier or a "TODO" is a
+    hole, not a sentence, and two exclusions may not share one
+    paragraph;
+  - every chapter (heading level 2 and below) CITES at least one
+    reference IN ITS HEADING LINE ITSELF — a citation in the chapter
+    body does NOT anchor it — or declares it restitutes none by
+    carrying `{{vars.coverage_no_anchor_marker}}` verbatim in that
+    heading line. That marker is the only HTML comment the editorial
+    lint tolerates, and only a FEW chapters may carry it: when the gate
+    says the declarations are spent, anchor the chapter.
+  When the path IS empty there is no net, and none of the above
+  applies.
+
   Deterministic gate feedback from the PREVIOUS pass (empty on the
   first pass; when present it is a SCOPE violation — files outside
-  `<product_dir>/**/*.md` changed, revert those commits — or a LINT
-  violation — a published page carries working notes, remove them):
+  `<product_dir>/**/*.md` changed, revert those commits — a LINT
+  violation — a published page carries working notes, remove them — or
+  a COVERAGE violation, each cause named with what is missing and
+  where):
   {{input.fail_log}}
 
   Plan your pass, then write — for each page: read the sources that
@@ -689,7 +835,14 @@ prompt finalize_mr_system:
        non-empty — an honest "Reste à documenter" section. When
        unread_sources is non-empty, a "Sources non lues" section
        naming what could not be read and what that leaves
-       undocumented. PROMISES: read the promises ledger named in your
+       undocumented. When coverage_counts is non-empty, a
+       "Couverture" section quoting it VERBATIM: the run converged
+       against a non-regression net, and the counts — features
+       documented, exclusions named, chapters that DECLARED they
+       restitute no reference — are what a reviewer reads to see what
+       that convergence cost. A declaration nobody ever reads is free,
+       which is exactly what it must not be. Never round, never
+       summarise, never drop the line. PROMISES: read the promises ledger named in your
        user prompt; when it has entries, append a "Points à confirmer
        avec l'équipe produit" section (one bullet each: page, claim,
        gap) — verbatim in substance, never silently dropped.
@@ -719,6 +872,9 @@ prompt finalize_mr_user:
 
   Sources the campaign could NOT read (empty = it read everything):
   {{input.unread_sources}}
+
+  Exhaustiveness counts from the coverage gate (empty = no net):
+  {{input.coverage_counts}}
 
   Promises ledger (JSON array; the file may be absent or empty):
   {{vars.scratch_dir}}/promises.json
@@ -863,6 +1019,10 @@ schema ingest_output:
   redacted_count: int
   previous_stamp: string
   delta_unavailable: bool
+  ## Absolute path of the golden-master net (the directory holding BOTH
+  ## `feature-coverage.json` and `corpus.json`), or empty when there is
+  ## none. Empty is what keeps coverage_check inert.
+  oracle_path: string
   log: string
 
 ## scan_hints input — the product tree to scan and the surfaces to
@@ -907,6 +1067,10 @@ schema campaign_input:
   mode: string
   incremental_base: string
   recently_changed_pages: string[]
+  ## The golden-master net, or empty. Non-empty means an EXHAUSTIVENESS
+  ## gate will read these pages against that inventory, and the campaign
+  ## is told on pass ONE rather than discovering it from a red gate.
+  oracle_path: string
   fail_log: string
 
 ## campaign's TERMINATION CONTRACT: a machine-checkable output the
@@ -940,6 +1104,18 @@ schema scope_check_output:
   out_of_scope: string[]
   log: string
 
+## page_lint input — the product directory, the run base, and WHETHER A NET
+## IS PRESENT. The last one decides nothing about the rules: it decides
+## whether the anchorless marker is exempt from `html_comments` at all. That
+## exemption exists only to stop this gate contradicting coverage_check, and
+## coverage_check is armed only by a net — so with no net the marker is a
+## working note again and this node behaves, VALUE included, exactly as it did
+## before the coverage gate existed.
+schema lint_input:
+  product_dir: string
+  base_sha: string
+  oracle_path: string
+
 ## page_lint is the DETERMINISTIC editorial gate: a published page
 ## carries no working notes. Violations are reported with page + line
 ## + rule so the campaign can remove exactly them.
@@ -950,10 +1126,48 @@ schema lint_output:
   pages_linted: int
   log: string
 
+## coverage_check input — the published tree to read and the net to
+## read it against. An empty `oracle_path` is the inert case.
+schema coverage_input:
+  product_dir: string
+  oracle_path: string
+
+## coverage_check is the DETERMINISTIC EXHAUSTIVENESS gate, armed only
+## when a golden-master net is present. Every refusal is NAMED in
+## `causes` ({cause, where, detail}) and repeated in `log`; the counts
+## are recalculable telemetry, never the verdict. `net_present` false
+## means the gate did not run at all and `coverage_ok` is true by
+## construction — the non-regression contract.
+schema coverage_output:
+  coverage_ok: bool
+  net_present: bool
+  causes: json
+  cause_count: int
+  features_total: int
+  features_documented: int
+  exclusions_total: int
+  exclusions_named: int
+  entries_cited: int
+  paths_cited: int
+  chapters: int
+  chapters_unanchored_declared: int
+  chapters_anchorless_max: int
+  routes_declared: int
+  routes_degraded: bool
+  ## The net carries no trace of its own gate (verify-oracle.sh, REPORT.md).
+  ## This node reads the inventory as given; nothing proves a harness scored it.
+  net_unproven: bool
+  oracle_dir_used: string
+  ## The recalculable counts, on ONE line, so a CONVERGED run carries them too
+  ## -- a declaration of anchorlessness that nobody ever reads costs nothing.
+  counts_line: string
+  log: string
+
 ## gate is the deterministic continuation decision. converged = the
 ## writeable set is clean AND the published pages carry no working
-## notes AND the campaign reports the documentation aligned — nothing
-## else. fail_log relays both gates' complaints to the next pass.
+## notes AND the documentation is exhaustive against the net (vacuously
+## true without one) AND the campaign reports the documentation aligned
+## — nothing else. fail_log relays the three gates' complaints.
 schema gate_state:
   converged: bool
   fail_log: string
@@ -983,6 +1197,11 @@ schema finalize_mr_input:
   campaign_summary: string
   drift_remaining: string
   unread_sources: string
+  ## The exhaustiveness counts, verbatim from coverage_check, EMPTY when the
+  ## product carries no net. A converged run says nothing about them
+  ## otherwise, and a chapter that declared it restitutes nothing would cost
+  ## its author nothing at all.
+  coverage_counts: string
 
 schema finalize_mr_output:
   opened: bool
@@ -1072,7 +1291,7 @@ schema surface_site_link_input:
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks; values flow via shell env vars.
 tool catalog_ingest:
-  command: `WS={{vars.workspace_dir}} CATALOG={{vars.catalog_path}} PRODUCT={{vars.product_id}} SCRATCH={{vars.scratch_dir}} DEPTH={{vars.clone_depth}} SECRET_GLOBS={{vars.secret_globs}} python3 -c "
+  command: `WS={{vars.workspace_dir}} CATALOG={{vars.catalog_path}} PRODUCT={{vars.product_id}} SCRATCH={{vars.scratch_dir}} DEPTH={{vars.clone_depth}} SECRET_GLOBS={{vars.secret_globs}} ORACLE_DIR={{vars.oracle_dir}} python3 -c "
 import os, json, re, subprocess, shutil, fnmatch
 ws = os.environ['WS']
 catalog = (os.environ.get('CATALOG') or '').strip()
@@ -1083,6 +1302,15 @@ try:
 except ValueError:
     depth = 1
 secret_globs = [g.strip() for g in (os.environ.get('SECRET_GLOBS') or '').split(',') if g.strip()]
+raw_oracle_dir = (os.environ.get('ORACLE_DIR') or '').strip()
+oracle_dir = raw_oracle_dir.strip('/')
+## AN ABSOLUTE PATH OR A PARENT ESCAPE IS A CONFIGURATION ERROR, NOT A
+## MISSING NET. Stripped-then-tested, /workspace/.golden-master read as
+## workspace/.golden-master, was looked for under <ws>/workspace/ and the
+## exhaustiveness gate went inert IN SILENCE -- the one failure a gate must
+## never have. Refuse the launch and name the fix instead.
+if raw_oracle_dir.startswith('/') or '..' in raw_oracle_dir.split('/'):
+    raise SystemExit('product-docs: oracle_dir must be RELATIVE to the workspace or a clone (no leading /, no .. segment); got: ' + raw_oracle_dir)
 if not catalog:
     raise SystemExit('product-docs: catalog_path is required -- pass --var catalog_path=<catalog dir or yaml file>')
 if not product:
@@ -1234,12 +1462,20 @@ if token and forge_host:
     git_env['GIT_ASKPASS'] = helper
     git_env['PRODUCT_DOCS_GIT_TOKEN'] = token
 
-def run_git(args, cwd=None, timeout=900):
+## An environment carrying NO credential, for the sources that are
+## already on disk: a local clone never prompts, so handing it the
+## askpass helper would only widen where the token can travel.
+plain_env = dict(os.environ)
+plain_env['GIT_TERMINAL_PROMPT'] = '0'
+for _v in ('GIT_ASKPASS', 'PRODUCT_DOCS_GIT_TOKEN'):
+    plain_env.pop(_v, None)
+
+def run_git(args, cwd=None, timeout=900, env=None):
     try:
         ## quotePath=false at the ONE choke point every call crosses:
         ## the per-repo changed_files lists carry source paths, and the
         ## sources of a French product name files with accents.
-        p = subprocess.run(['git', '-c', 'core.quotePath=false'] + args, cwd=cwd, env=git_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        p = subprocess.run(['git', '-c', 'core.quotePath=false'] + args, cwd=cwd, env=(env if env is not None else git_env), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
         return p.returncode, (p.stdout or ''), (p.stderr or '')
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, '', str(exc)
@@ -1261,6 +1497,98 @@ def redact(reason):
     if token:
         msg = msg.replace(token, '<redacted>')
     return msg[:400]
+
+## ONE decision for every source that names the FILESYSTEM, whichever catalog
+## key carried it. A url and a path are two spellings of the same thing once
+## the value is on disk, so they take the same containment, the same
+## credential-free environment and the same clone mode -- two doors onto the
+## filesystem is one door too many, since the stricter one only has to not be
+## written.
+FS_SCHEME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://')
+SCP_LIKE_RE = re.compile(r'^[^/]+@[^/]+:')
+
+def filesystem_target(value):
+    ## (on-disk path, refusal). An empty path with no refusal means the value
+    ## names a FORGE and travels the network path with the forge credential.
+    if value.startswith('file://'):
+        rest = value[len('file://'):]
+        ## file://<host>/<path> is a local url this node cannot confine: the
+        ## host decides what the path means. A named refusal beats a guess
+        ## about which tree it would open.
+        if not rest.startswith('/'):
+            return '', 'url refused: a file:// url carrying a host names no path this node can confine to the docs workspace'
+        return rest, ''
+    if FS_SCHEME_RE.match(value) or SCP_LIKE_RE.match(value):
+        return '', ''
+    if os.path.isabs(value):
+        return value, ''
+    ## A RELATIVE url is a forge shorthand unless it is really there: a
+    ## relative url that resolves on disk is the same filesystem read as
+    ## the path key, under another name.
+    if os.path.exists(os.path.join(ws, value)):
+        return value, ''
+    return '', ''
+
+def confine_local(raw, key, shown):
+    ## (clone source, refusal). realpath, not normpath: normpath does not
+    ## resolve symlinks, so a symlink COMMITTED in the docs repo and named by
+    ## the catalog walks straight past a textual containment check -- and the
+    ## catalog is repo content, hostile-grade by this node own rule.
+    ws_n = os.path.realpath(ws)
+    cand = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(ws_n, raw))
+    if cand != ws_n and not cand.startswith(ws_n.rstrip('/') + '/'):
+        return '', key + ' refused: ' + shown + ' escapes the docs workspace -- a source read from the filesystem is read from the workspace, never from a tree nobody chose to expose'
+    ## --show-toplevel and not --git-dir: git walks UP to the nearest
+    ## enclosing repository, so ANY subdirectory of the workspace answers and
+    ## the guard would pass a path git clone then refuses. A named refusal
+    ## here beats a clone error two steps later.
+    rc, top, _ = run_git(['-C', cand, 'rev-parse', '--show-toplevel'], timeout=60, env=plain_env)
+    rcb, bare, _ = run_git(['-C', cand, 'rev-parse', '--is-bare-repository'], timeout=60, env=plain_env)
+    is_root = (rc == 0 and os.path.realpath(top.strip()) == os.path.realpath(cand)) or (rcb == 0 and bare.strip() == 'true')
+    if not is_root:
+        return '', key + ' ' + shown + ' is not a git repository -- a local source is cloned, so it must be the ROOT of one'
+    ## A repository may DELEGATE its object store: objects/info/alternates
+    ## names other stores and a clone serves the UNION of them, so a
+    ## repository sitting inside the workspace hands over the contents of one
+    ## that is not. Containment on the path alone stops at the path.
+    ## --no-local does not close it either -- upload-pack serves the
+    ## alternates all the same -- so the delegation itself is refused.
+    ## THE DELEGATION IS FOLLOWED TO ITS END. An alternates file may name a
+    ## store that sits inside the workspace and carries an alternates of its
+    ## own: git serves the union TRANSITIVELY, so a one-level walk stopped a
+    ## chain source -> workspace alternate -> outside alternate exactly one
+    ## link short of the escape. Every store discovered inside the workspace
+    ## has its own alternates read, until the graph is exhausted -- cycles
+    ## break on the visited set.
+    seen_stores = set()
+    queue = []
+    rc, gd, _ = run_git(['-C', cand, 'rev-parse', '--git-dir'], timeout=60, env=plain_env)
+    if rc == 0 and gd.strip():
+        queue.append(os.path.join(cand, gd.strip()))
+    rc, od, _ = run_git(['-C', cand, 'rev-parse', '--git-path', 'objects'], timeout=60, env=plain_env)
+    if rc == 0 and od.strip():
+        queue.append(os.path.join(cand, od.strip()))
+    while queue:
+        store = os.path.realpath(queue.pop())
+        if store in seen_stores:
+            continue
+        seen_stores.add(store)
+        if store != ws_n and not store.startswith(ws_n.rstrip('/') + '/'):
+            return '', key + ' refused: ' + shown + ' reads its git objects from OUTSIDE the docs workspace (' + store + ') -- a clone serves them, so confining the path alone confines nothing'
+        alt_file = os.path.join(store, 'info', 'alternates')
+        if not os.path.isfile(alt_file):
+            continue
+        try:
+            with open(alt_file, encoding='utf-8', errors='replace') as fh:
+                for entry_line in fh:
+                    entry_line = entry_line.strip()
+                    if not entry_line or entry_line.startswith('#'):
+                        continue
+                    ## An alternates line is relative to the OBJECT directory it names.
+                    queue.append(entry_line if os.path.isabs(entry_line) else os.path.join(store, entry_line))
+        except OSError as exc:
+            return '', key + ' refused: ' + shown + ' declares an unreadable objects/info/alternates -- ' + redact(str(exc))
+    return cand, ''
 
 gitlab_block = entry.get('gitlab') if isinstance(entry.get('gitlab'), dict) else {}
 gitlab_host = str(gitlab_block.get('host') or '').strip().rstrip('/')
@@ -1306,9 +1634,10 @@ for raw in repos:
     github_repo = str(raw.get('github_repo') or '').strip().strip('/')
     gitlab_path = str(raw.get('gitlab_path') or '').strip().strip('/')
     explicit = str(raw.get('url') or '').strip()
+    local = str(raw.get('path') or '').strip()
     rid = str(raw.get('id') or '').strip()
     if not rid:
-        rid = (explicit or github_repo or gitlab_path).rstrip('/').split('/')[-1].replace('.git', '')
+        rid = (explicit or local or github_repo or gitlab_path).rstrip('/').split('/')[-1].replace('.git', '')
     ## The id becomes a filesystem destination that is rmtree'd and
     ## cloned into. The catalog is operator input, so it is sanitised
     ## on EVERY path -- an explicit id is not more trustworthy than a
@@ -1329,14 +1658,45 @@ for raw in repos:
     if ref.startswith('-'):
         inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'ref refused: an option-shaped ref is a git argument, not a branch'})
         continue
+    is_local = False
     if explicit:
         ## Same for the url, plus the remote-HELPER form (ext::<cmd>),
-        ## which git executes outright. Ordinary local paths stay
-        ## legal: an on-disk mirror is a legitimate source.
+        ## which git executes outright.
         if explicit.startswith('-') or '::' in explicit:
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'url refused: an option-shaped or remote-helper (ext::) url is an execution primitive, not a repository'})
             continue
-        url = explicit
+        ## A url whose value names the FILESYSTEM is a local source wearing
+        ## another key: it takes the SAME decision as path -- one containment
+        ## rule, one credential-free environment, one clone mode. Two doors
+        ## onto the filesystem is one door too many, since the stricter one
+        ## only has to not be written.
+        target, why = filesystem_target(explicit)
+        if why:
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': why})
+            continue
+        if target:
+            cand, refusal = confine_local(target, 'url', explicit)
+            if refusal:
+                inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': refusal})
+                continue
+            url, is_local = cand, True
+        else:
+            url = explicit
+    elif local:
+        ## A repository ALREADY ON DISK, named by a path RELATIVE to the
+        ## workspace -- a lone dot being the workspace itself. This is how a
+        ## campaign documents its OWN repository: no forge, no network,
+        ## no credential, and the clone is still redacted and read
+        ## read-only like any other source.
+        if os.path.isabs(local):
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'path refused: a source path is RELATIVE to the docs workspace, never absolute'})
+            continue
+        cand, refusal = confine_local(local, 'path', local)
+        if refusal:
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': refusal})
+            continue
+        url = cand
+        is_local = True
     elif github_repo:
         url = 'https://github.com/' + github_repo + '.git'
     elif gitlab_path:
@@ -1348,9 +1708,12 @@ for raw in repos:
         inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'catalog entry names no github_repo, gitlab_path or url'})
         continue
     dest = os.path.join(sources_root, rid)
+    ## A source already on disk is reached without a credential: the
+    ## token belongs to the forge, and nothing local can ask for it.
+    repo_env = plain_env if is_local else git_env
     note = ''
     if os.path.isdir(os.path.join(dest, '.git')):
-        rc, _, err = run_git(['fetch', '--prune', 'origin'], cwd=dest)
+        rc, _, err = run_git(['fetch', '--prune', 'origin'], cwd=dest, env=repo_env)
         if rc != 0:
             shutil.rmtree(dest, ignore_errors=True)
         else:
@@ -1362,12 +1725,21 @@ for raw in repos:
     if not os.path.isdir(os.path.join(dest, '.git')):
         shutil.rmtree(dest, ignore_errors=True)
         args = ['clone']
-        if depth > 0:
+        ## --no-hardlinks on a LOCAL source: git hardlinks the object
+        ## store of a same-filesystem clone, and the redaction pass
+        ## below deletes files. The worktree copies are fresh either
+        ## way, but a clone that shares storage with the tree it was
+        ## taken from is one refactor away from writing into it.
+        ## --depth is meaningless on a local path (git says so and
+        ## ignores it), so it is not passed rather than warned about.
+        if is_local:
+            args += ['--no-hardlinks']
+        elif depth > 0:
             args += ['--depth', str(depth)]
         if ref:
             args += ['--branch', ref]
         args += [url, dest]
-        rc, _, err = run_git(args)
+        rc, _, err = run_git(args, env=repo_env)
         if rc != 0:
             shutil.rmtree(dest, ignore_errors=True)
             inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': strip_creds(url), 'changed_files': [], 'note': 'clone failed: ' + (redact(err) or 'unknown error') + (' (no push/read credential was available)' if not token else '')})
@@ -1396,7 +1768,7 @@ for raw in repos:
     if prev and head and prev != head:
         rc, _, _ = run_git(['cat-file', '-e', prev + '^{commit}'], cwd=dest, timeout=60)
         if rc != 0:
-            run_git(['fetch', '--depth', '1', 'origin', prev], cwd=dest, timeout=300)
+            run_git(['fetch', '--depth', '1', 'origin', prev], cwd=dest, timeout=300, env=repo_env)
             rc, _, _ = run_git(['cat-file', '-e', prev + '^{commit}'], cwd=dest, timeout=60)
         if rc == 0:
             rc, out, _ = run_git(['diff', '--name-only', prev, head], cwd=dest, timeout=300)
@@ -1417,10 +1789,26 @@ for raw in repos:
     ## worktree, readable with one git show. Dropping it is what makes
     ## the redaction true rather than cosmetic.
     shutil.rmtree(os.path.join(dest, '.git'), ignore_errors=True)
-    inventory.append({'id': rid, 'status': 'ok', 'path': dest, 'head': head, 'url': strip_creds(url), 'changed_files': changed[:500], 'note': note})
+    ## The local flag is the DECISION this entry took, not a spelling: a source
+    ## whose value named the filesystem was confined to the workspace, cloned
+    ## over it with no forge, no network and no credential. Reported so the
+    ## choice is visible to the operator and to the tests that pin it.
+    inventory.append({'id': rid, 'status': 'ok', 'local': is_local, 'path': dest, 'head': head, 'url': strip_creds(url), 'changed_files': changed[:500], 'note': note})
 
 ok = [e for e in inventory if e['status'] == 'ok']
 degraded = [e for e in inventory if e['status'] != 'ok']
+## THE NON-REGRESSION NET, resolved ONCE and in ONE place. coverage_check
+## is armed by the PRESENCE of the two artifacts, nowhere else -- and the
+## campaign is told about them on its very first pass, which it could not
+## be if the gate discovered them after the pass. The docs workspace wins
+## over a clone: a docs repo carrying its own net describes itself.
+oracle_path = ''
+if oracle_dir and not os.path.isabs(oracle_dir) and '..' not in oracle_dir.split('/'):
+    for root in [ws] + [e['path'] for e in ok if e.get('path')]:
+        cand = os.path.join(root, oracle_dir)
+        if os.path.isfile(os.path.join(cand, 'feature-coverage.json')) and os.path.isfile(os.path.join(cand, 'corpus.json')):
+            oracle_path = cand
+            break
 ## FULL sha: the next run's shallow-clone delta repair does
 ## run_git(['fetch', '--depth', '1', 'origin', prev]) -- git can only
 ## fetch a full object name, so an abbreviated stamp made the repair
@@ -1435,13 +1823,17 @@ if degraded:
     parts.append('unreadable: ' + ', '.join(e['id'] for e in degraded))
 if not repos:
     parts.append('the catalog entry declares no repos[] -- nothing to ground the documentation in')
+if oracle_path:
+    parts.append('golden-master net found at ' + oracle_path + ' -- the exhaustiveness gate is ARMED')
+else:
+    parts.append('no golden-master net (' + (oracle_dir or '<oracle_dir>') + '/feature-coverage.json + corpus.json) in the workspace or the clones -- the exhaustiveness gate stays inert')
 ## The RUN BASE, recorded before the campaign has written anything.
 ## scope_check diffs against THIS -- never against a base re-derived
 ## from the campaign's own commit messages, which would let an
 ## un-trailered commit choose the window it is audited on.
 rc, out, _ = run_git(['rev-parse', 'HEAD'], cwd=ws, timeout=60)
 base_sha = out.strip() if rc == 0 else ''
-print(json.dumps({'product_id': product, 'product_dir': product_dir, 'base_sha': base_sha, 'surfaces': surfaces, 'inventory': inventory, 'sources_stamp': stamp, 'repo_count': len(inventory), 'ok_count': len(ok), 'degraded_count': len(degraded), 'redacted_count': redacted_total, 'previous_stamp': previous_stamp, 'delta_unavailable': delta_unavailable, 'log': '; '.join(parts)}, ensure_ascii=False))
+print(json.dumps({'product_id': product, 'product_dir': product_dir, 'base_sha': base_sha, 'surfaces': surfaces, 'inventory': inventory, 'sources_stamp': stamp, 'repo_count': len(inventory), 'ok_count': len(ok), 'degraded_count': len(degraded), 'redacted_count': redacted_total, 'previous_stamp': previous_stamp, 'delta_unavailable': delta_unavailable, 'oracle_path': oracle_path, 'log': '; '.join(parts)}, ensure_ascii=False))
 "`
   output: ingest_output
 
@@ -1772,14 +2164,28 @@ except Exception as exc:
 ## A violation is NOT converged: the log feeds the next pass and the
 ## campaign removes exactly the reported lines.
 tool page_lint:
-  input: product_dir_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} LINT_RULES={{vars.lint_rules}} EXTRA_HEADINGS={{vars.extra_forbidden_headings}} python3 -c "
+  input: lint_input
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} LINT_RULES={{vars.lint_rules}} EXTRA_HEADINGS={{vars.extra_forbidden_headings}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ORACLE_PATH={{input.oracle_path}} python3 -c "
 import os, json, glob, re
 ws = os.environ['WS']
 os.chdir(ws)
 product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
 rules = {r.strip() for r in (os.environ.get('LINT_RULES') or '').split(',') if r.strip()}
 extra = [h.strip() for h in (os.environ.get('EXTRA_HEADINGS') or '').split(',') if h.strip()]
+## ONE declared token, honoured by every site that reads a heading.
+## coverage_check reads vars.coverage_no_anchor_marker as the written
+## exception to its anchor rule; if this gate also read it as a working
+## note, the two would order the campaign to add and to remove the same
+## characters, and the run could never converge. The exemption is the
+## EXACT token and nothing else: any other comment on the same line is
+## still a violation, and the marker itself is still chrome-free by
+## construction (an HTML comment renders as nothing).
+## AND IT IS ARMED BY THE NET, not by the var. coverage_check is armed by the
+## presence of the two artifacts, so with no net there is no second gate to
+## contradict -- and a run with no net must get the node it had before the
+## coverage gate existed, its VALUES included and not only its expression: a
+## working note on such a page is a working note.
+no_anchor = (os.environ.get('NO_ANCHOR') or '').strip() if (os.environ.get('ORACLE_PATH') or '').strip() else ''
 if not product_dir:
     ## Fail CLOSED, like scope_check: an empty product directory lints
     ## zero pages, and reporting that as clean would certify an
@@ -1830,7 +2236,14 @@ for page in pages:
     in_hint = 0
     hint_start = 0
     hint_body = []
-    for lineno, line in enumerate(lines, start=1):
+    for lineno, raw_line in enumerate(lines, start=1):
+        ## THE LINE IS READ RAW. Stripping the declared token before every
+        ## rule made the token a switch on all of them: a marker declared as
+        ## an opening comment put out html_comments, one declared as the word
+        ## password put out the secret scan. The exemption is where it belongs:
+        ## the html_comments rule, and only for a comment that IS the token;
+        ## the title extraction removes it so it cannot pad a heading.
+        line = raw_line
         ## Credential material is scanned EVERYWHERE, fenced code
         ## included: a pasted secret is worse inside a block, not
         ## exempt from the gate.
@@ -1853,10 +2266,25 @@ for page in pages:
             if in_comment:
                 if '-->' in line:
                     in_comment = False
-            elif '<!--' in line:
-                add(page, lineno, 'html_comments', line)
-                if '-->' not in line.split('<!--', 1)[1]:
-                    in_comment = True
+            else:
+                at = 0
+                while True:
+                    start = line.find('<!--', at)
+                    if start < 0:
+                        break
+                    close = line.find('-->', start)
+                    comment = line[start:close + 3] if close >= 0 else line[start:]
+                    ## EXACTLY the declared token is exempt, and only as a
+                    ## whole comment: a second, genuine note on the same line
+                    ## is still a violation, and a token that is a PREFIX of
+                    ## a comment exempts nothing.
+                    if no_anchor and comment == no_anchor:
+                        at = start + len(no_anchor)
+                        continue
+                    add(page, lineno, 'html_comments', line)
+                    if close < 0:
+                        in_comment = True
+                    break
         ## A hint block is scanned for a Sources body, but it NEVER
         ## suppresses the heading rules below: no document state may
         ## disable a gate rule for the rest of a page (an unclosed or
@@ -1890,6 +2318,11 @@ for page in pages:
             if bm:
                 title = bm.group(1).strip()
                 from_bold = True
+        ## The declared marker is chrome-free by construction (an HTML comment
+        ## renders as nothing), so it must not pad the title the rules below
+        ## match on -- a heading that IS 'Sources' stays 'Sources'.
+        if title and no_anchor:
+            title = title.replace(no_anchor, '').strip()
         if not title:
             continue
         plain = re.sub(r'[*_' + chr(96) + r']', '', title).strip()
@@ -1918,18 +2351,946 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 "`
   output: lint_output
 
+## coverage_check — the DETERMINISTIC EXHAUSTIVENESS gate, and the
+## answer to the one question a documentation bot cannot ask itself:
+## did I document EVERYTHING? Until now the answer was the agent's own
+## `docs_aligned`, and the surface coverage was an advisory hint. Here
+## it is read off the golden-master net the target already commits.
+##
+## ARMED IF AND ONLY IF a net is present — catalog_ingest resolves
+## `<oracle_dir>/{feature-coverage.json, corpus.json}` in the docs
+## workspace, then in each source clone, and passes the directory (or
+## nothing) down this edge. WITHOUT a net this node reports
+## `coverage_ok: true, net_present: false`, contributes nothing to
+## fail_log, and Prody is exactly the bot it was.
+##
+## WITH a net it refuses five ways, each cause NAMED, never counted in
+## silence:
+##   PHANTOM_DOC         — a documented screen the net never saw: a
+##                         cited corpus entry that does not exist, an
+##                         inventory id nobody inventoried, a path that
+##                         is neither a declared route nor a corpus
+##                         entry path, a query parameter the corpus
+##                         never observes on that path. A framework
+##                         catch-all route (`/{slug}`, `/**`) declares
+##                         every path and proves none: for a path only
+##                         such a route covers, the corpus is the only
+##                         evidence.
+##   GAP                 — a covered feature no block documents. One
+##                         line must CITE its id AND one of its
+##                         inventory entries, and the block carrying it
+##                         -- a paragraph, a list item, a table row --
+##                         must READ, with prose enough for every
+##                         feature it documents: the screen is anchored
+##                         on the reference that exercises it, and
+##                         described for a reader. Two citations side by
+##                         side are an index row, a neighbour's prose is
+##                         not the row's own, and a heading describes
+##                         nothing.
+##   CONCEALED_EXCLUSION — an exclusion the pages do not name AS one,
+##                         under the declared exclusions chapter, in a
+##                         block of prose of its own. A documentation
+##                         that hides a hole lies about the application.
+##   UNANCHORED_CHAPTER  — a chapter (heading level >= 2) naming no
+##                         reference it restitutes and not declaring it
+##                         observes none. The general clause of
+##                         PHANTOM_DOC; the gate PRINTS the chapters
+##                         that carry the declared marker, so hiding
+##                         one behind it only denounces itself.
+##   NET_UNREADABLE      — the material cannot be judged: absent,
+##                         unparsable or not-an-object artifacts, a
+##                         declared hole with no title to name it
+##                         under, an inventory that
+##                         contradicts itself, and EVERY emptiness —
+##                         no page, no feature, no corpus entry, no
+##                         `exclusions` key, an empty route table. A
+##                         guard that reads `if collection and …` is
+##                         DISABLED on an empty collection; here each
+##                         emptiness is a decision, said out loud.
+##
+## IT INFERS NOTHING, IN EITHER DIRECTION. A reference is what the page
+## SAYS is one — `coverage_citation_open` + token + `coverage_citation_close`
+## — and a code span is prose, whatever it looks like. Every citation is
+## verified wherever it sits, so an invented screen alone on its line is
+## refused; nothing that is not a citation is ever looked at, so an
+## interface label, a file name or an inline 404 stay prose. Guessing from
+## a token's shape which of the two a code span is trades a false green (an
+## invention alone on its line goes unverified) for a false red (a label is
+## refused as an entry that does not exist): no setting closes both, only
+## an explicit marker that has no middle.
+##
+## LANGUAGE-NEUTRAL BY CONSTRUCTION: the exclusions chapter title, the
+## anchorless marker and the citation syntax are DECLARED identifiers
+## (`coverage_*` vars). What it does NOT judge is the prose: that stays
+## with its reader.
+##
+## Raw-string command, like its siblings: the python body carries no
+## double quote, no literal backtick and no dollar sign.
+tool coverage_check:
+  input: coverage_input
+  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES_FILE={{vars.coverage_routes_file}} CITE_OPEN={{vars.coverage_citation_open}} CITE_CLOSE={{vars.coverage_citation_close}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} MAX_ANCHORLESS={{vars.coverage_max_anchorless}} python3 -c "
+import os, json, glob, re, unicodedata
+from urllib.parse import urlsplit, parse_qsl
+ws = os.environ['WS']
+os.chdir(ws)
+oracle = (os.environ.get('ORACLE_PATH') or '').strip()
+product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
+excl_token = (os.environ.get('EXCL_HEADING') or '').strip()
+no_anchor = (os.environ.get('NO_ANCHOR') or '').strip()
+routes_file = (os.environ.get('ROUTES_FILE') or '').strip()
+cite_open = (os.environ.get('CITE_OPEN') or '').strip()
+cite_close = (os.environ.get('CITE_CLOSE') or '').strip()
+placeholders = [p.strip() for p in (os.environ.get('PLACEHOLDERS') or '').split(',') if p.strip()]
+try:
+    min_prose = int((os.environ.get('MIN_PROSE') or '60').strip() or '60')
+except ValueError:
+    min_prose = 60
+try:
+    max_anchorless = int((os.environ.get('MAX_ANCHORLESS') or '0').strip() or '0')
+except ValueError:
+    max_anchorless = 0
+## A block of min_prose characters carrying fewer than one recognisable word
+## per twelve is not a sentence: a row of dots or of dashes reaches any length.
+min_words = max(3, min_prose // 12)
+BT = chr(96)
+## NO NET, NO GATE. Prody without a golden-master net is Prody as it was:
+## this node reports coverage_ok and adds NOTHING to the gate expression or
+## to fail_log. The activation is the PRESENCE of the two artifacts, resolved
+## once by catalog_ingest -- never a var an operator could forget to unset.
+if not oracle:
+    print(json.dumps({'coverage_ok': True, 'net_present': False, 'causes': [], 'cause_count': 0, 'features_total': 0, 'features_documented': 0, 'exclusions_total': 0, 'exclusions_named': 0, 'entries_cited': 0, 'paths_cited': 0, 'chapters': 0, 'chapters_unanchored_declared': 0, 'chapters_anchorless_max': 0, 'routes_declared': 0, 'routes_degraded': False, 'net_unproven': False, 'oracle_dir_used': '', 'counts_line': '', 'log': ''}, ensure_ascii=False))
+    raise SystemExit(0)
+causes = []
+def refuse(cause, where, detail, outside=False):
+    ## outside=True marks a cause whose REPAIR lands outside this run
+    ## writeable set. scope_check allows the campaign to write
+    ## <product_dir>/**/*.md and nothing else, so a complaint about the net,
+    ## about a launch var or about the catalog is an order it is forbidden to
+    ## obey: the two gates would contradict each other and the run would burn
+    ## every pass. Those are refused BEFORE the loop instead -- see the
+    ## pre-flight refusal below.
+    causes.append({'cause': cause, 'where': where, 'detail': detail, 'outside': outside})
+def load(path, what):
+    ## ONE door for both artifacts, and it hands back an OBJECT or nothing.
+    ## Every reader below asks a parsed document for a key; a JSON array, a
+    ## string or a number answers that with an AttributeError and a traceback
+    ## -- a crash where the doctrine promises a named cause. The shape of the
+    ## top level is decided here, once, rather than at each of its readers.
+    if not os.path.isfile(path):
+        refuse('NET_UNREADABLE', path, what + ': file absent', True)
+        return None
+    try:
+        with open(path, encoding='utf-8') as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        refuse('NET_UNREADABLE', path, what + ': unreadable JSON -- ' + ' '.join(str(exc).split())[:200], True)
+        return None
+    if not isinstance(doc, dict):
+        refuse('NET_UNREADABLE', path, what + ': the top-level JSON is a ' + type(doc).__name__ + ' and not an object -- this file is read for its keys, and a document that has none cannot be judged: a refusal, not a traceback', True)
+        return None
+    return doc
+cov = load(os.path.join(oracle, 'feature-coverage.json'), 'the inventory feature-coverage.json')
+corpus = load(os.path.join(oracle, 'corpus.json'), 'the corpus corpus.json')
+features, exclusions, entries = None, None, None
+if cov is not None:
+    features = cov.get('features')
+    exclusions = cov.get('exclusions')
+if corpus is not None:
+    entries = corpus.get('entries')
+## THE EMPTY IS A NAMED REFUSAL, never a guard that switches itself off.
+## An if-collection-and-... guard is DISABLED on an empty collection: every loop
+## below runs unguarded, and each emptiness is decided here, out loud.
+if not isinstance(features, list) or not features:
+    refuse('NET_UNREADABLE', 'feature-coverage.json', 'features is absent, empty or not a list -- with no inventory, completeness cannot be falsified: a refusal, not a vacuous pass', True)
+    features = []
+## An ABSENT exclusions key is an EMPTY LIST, which is how the net producer
+## itself reads it (golden-master validate_feature_coverage: coverage.get(key)
+## or []). A product that excludes nothing writes no key; refusing it would
+## refuse every such product for ever, and for a repair that lands in the net
+## -- a file this run is forbidden to write. Only a key that is THERE and
+## mistyped is a refusal.
+if exclusions is None:
+    exclusions = []
+if not isinstance(exclusions, list):
+    refuse('NET_UNREADABLE', 'feature-coverage.json', 'exclusions is present and is not a list -- the net no longer declares its holes in a readable shape, and a documentation with no declared hole lies by omission', True)
+    exclusions = []
+if not isinstance(entries, list) or not entries:
+    refuse('NET_UNREADABLE', 'corpus.json', 'entries is absent, empty or not a list -- with no corpus no anchor exists: a refusal, not a vacuous pass', True)
+    entries = []
+feature_names, entry_lists = [], {}
+for i, f in enumerate(features):
+    name = f.get('feature') if isinstance(f, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        refuse('NET_UNREADABLE', 'features[' + str(i) + ']', 'inventory entry with no readable feature id', True)
+        continue
+    name = name.strip()
+    if name in entry_lists:
+        refuse('NET_UNREADABLE', name, 'listed twice among the COVERED features -- the count would grow without inventorying anything', True)
+        continue
+    ents = f.get('entries')
+    ## The USABLE set decides, not the list's truthiness: entries of [' ']
+    ## is a truthy list that names nothing, and it would join the covered
+    ## features with an empty entry set -- a permanent GAP whose detail
+    ## lists no entry to document, unactionable where the doctrine
+    ## promises a named refusal.
+    own = set(e.strip() for e in ents if isinstance(e, str) and e.strip()) if isinstance(ents, list) else set()
+    if not own:
+        refuse('NET_UNREADABLE', name, 'COVERED with no usable corpus entry -- a feature without a reference cannot be anchored', True)
+        entry_lists[name] = set()
+        continue
+    feature_names.append(name)
+    entry_lists[name] = own
+exclusion_names, exclusion_reasons = [], {}
+for i, x in enumerate(exclusions):
+    name = x.get('feature') if isinstance(x, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        refuse('NET_UNREADABLE', 'exclusions[' + str(i) + ']', 'exclusion with no readable feature id', True)
+        continue
+    name = name.strip()
+    if name in exclusion_reasons:
+        refuse('NET_UNREADABLE', name, 'excluded twice in the inventory -- its hole would be counted twice', True)
+        continue
+    exclusion_names.append(name)
+    reason = x.get('reason') if isinstance(x.get('reason'), str) else ''
+    exclusion_reasons[name] = reason
+    if not reason.strip():
+        refuse('NET_UNREADABLE', name, 'EMPTY reason in the inventory -- the net no longer declares why this hole exists', True)
+for name in sorted(set(feature_names) & set(exclusion_reasons)):
+    refuse('NET_UNREADABLE', name, 'BOTH covered and excluded -- the inventory contradicts itself', True)
+## A HOLE THE PAGES CANNOT NAME. The declared chapter title is the ONLY way an
+## exclusion counts as named, so an empty one refuses every hole the net
+## declares, for a repair -- a launch var -- the campaign is forbidden to make:
+## it would burn every pass rewriting prose that was never the problem. This
+## is not the disabled-guard trap the node refuses elsewhere: what the
+## condition reads is the TOKEN, and with no hole declared the rule has no
+## subject at all, nothing being skipped in silence.
+if exclusion_reasons and not excl_token:
+    refuse('NET_UNREADABLE', 'coverage_exclusions_heading', 'the net declares ' + str(len(exclusion_reasons)) + ' exclusion(s) and the chapter title that would name them is not declared -- with no title no page can ever name a hole, and every one of them would be refused as concealed: a refusal, not an order the campaign cannot obey', True)
+corpus_ids = set()
+entry_paths = {}
+for e in entries:
+    if not isinstance(e, dict):
+        continue
+    eid = e.get('id')
+    if isinstance(eid, str) and eid.strip():
+        corpus_ids.add(eid.strip())
+    p = e.get('path')
+    if isinstance(p, str) and p.startswith('/'):
+        parts = urlsplit(p)
+        entry_paths.setdefault(parts.path, set()).update(k for k, _v in parse_qsl(parts.query, keep_blank_values=True))
+## The INVENTORY MUST POINT AT EVIDENCE THAT IS THERE. The two artifacts
+## are regenerated separately, so a feature can keep citing an entry the
+## corpus no longer holds. Left unchecked that drift makes two of this
+## gate's own rules mutually unsatisfiable: documenting the feature with
+## that entry is refused as a PHANTOM_DOC, omitting it is refused as a
+## GAP, and the campaign burns every pass obeying two contradictory
+## orders. The net's harness refuses the same drift on its side; this
+## re-reads it here rather than assuming it was run.
+for name in feature_names:
+    absent = sorted(e for e in entry_lists.get(name, set()) if e not in corpus_ids)
+    if absent:
+        refuse('NET_UNREADABLE', name, 'the inventory maps it to corpus entries that DO NOT EXIST (' + ', '.join(absent) + ') -- the map points at evidence that is not there, and no page can satisfy both the gap rule and the phantom rule', True)
+
+## The DECLARED route table. Goldy runs its own routes_probe at every gate
+## and commits no artifact, so this file is OPTIONAL: absent, the path check
+## DEGRADES to the corpus alone and says so in the log and in
+## routes_degraded. Degraded is visible; it is never silently green.
+declared = []
+routes_path = ''
+if routes_file and (os.path.isabs(routes_file) or '..' in routes_file.split('/')):
+    ## Same guard as oracle_dir: the route table is read from INSIDE the net,
+    ## never from an absolute path or a dot-dot escape an operator typed once.
+    refuse('NET_UNREADABLE', 'coverage_routes_file', 'the declared route table is named by an absolute path or a dot-dot escape -- it is read from inside the net directory and nowhere else', True)
+elif routes_file:
+    routes_path = os.path.join(oracle, routes_file)
+    if os.path.isfile(routes_path):
+        try:
+            with open(routes_path, encoding='utf-8') as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    head, _sep, tail = line.partition(' ')
+                    pat = tail.strip() if (tail.strip() and head.isalpha() and head.isupper()) else line
+                    if pat.startswith('/'):
+                        declared.append(pat)
+        except OSError as exc:
+            refuse('NET_UNREADABLE', routes_path, 'the declared route table is unreadable -- ' + ' '.join(str(exc).split())[:200], True)
+        if not declared:
+            refuse('NET_UNREADABLE', routes_path, 'the declared route table is EMPTY -- a table that declares nothing is not a degraded check, it is a broken one: a refusal, not a vacuous pass', True)
+routes_degraded = not declared
+## PRODY TRUSTS THE NET WITHOUT PROOF THAT THE NET OWN GATE RAN ON IT. A rite
+## emits its runner (verify-oracle.sh, which replays the gate) and REPORT.md
+## into the net directory, so the ABSENCE of both means no harness ever
+## produced this material here. Their presence is a TRACE and never a verdict
+## -- neither file is stamped with the commit it judged, and asking for that
+## stamp belongs to the golden-master bundle, not to this one. Reported the
+## way routes_degraded is: visible, never silently green.
+net_proof = [f for f in ['verify-oracle.sh', 'REPORT.md'] if oracle and os.path.isfile(os.path.join(oracle, f))]
+net_unproven = not net_proof
+def segments(path):
+    return [s for s in path.split('/') if s != '']
+def pattern_matches(pattern, target):
+    ## The net's own route grammar (golden-master route_regex): {x}, :x and *
+    ## match ONE segment, ** matches the tail and only as the last segment.
+    ## A trailing slash is NEVER folded -- with and without are two routes.
+    ps, ts = segments(pattern), segments(target)
+    if (pattern.endswith('/') and pattern != '/') != (target.endswith('/') and target != '/'):
+        return False
+    i = 0
+    while i < len(ps):
+        seg = ps[i]
+        if seg == '**':
+            return i == len(ps) - 1
+        if i >= len(ts):
+            return False
+        if not (seg == '*' or seg.startswith(':') or (seg.startswith('{') and seg.endswith('}')) or seg == ts[i]):
+            return False
+        i += 1
+    return i == len(ts)
+def has_literal(pattern):
+    return any(not (s == '*' or s == '**' or s.startswith(':') or (s.startswith('{') and s.endswith('}'))) for s in segments(pattern))
+def route_proves(pattern):
+    ## A framework catch-all (/{slug}, /**) declares every path and proves
+    ## none, and so does a TAIL WILDCARD: ** swallows an unbounded tail, so
+    ## /dashboard/** carries one literal segment and still matches screens it
+    ## has never described. For a path only such a route covers, the corpus
+    ## reference is the only evidence. ONE predicate, read by both sides: a
+    ## declared route and a cited path are the same claim written by two
+    ## different authors, and the rule that governs one governs the other.
+    ps = segments(pattern)
+    if not ps:
+        return True
+    return has_literal(pattern) and '**' not in ps
+def corpus_matches(cited):
+    return [c for c in entry_paths if pattern_matches(cited, c)]
+## A CITATION IS WHAT THE PAGE SAYS IS ONE -- nothing is inferred, in either
+## direction. Guessing from a token's shape whether it is a reference leaves
+## either a false green (an invented screen alone on its line unverified) or
+## a false red (an ordinary code span refused as a corpus entry that does not
+## exist); no setting closes both. Every citation is verified, wherever it
+## sits; nothing that is not one is ever looked at.
+if not cite_open or not cite_close:
+    refuse('NET_UNREADABLE', 'coverage_citation_open/close', 'the citation syntax is not declared -- with no way to recognise a reference this gate would certify a documentation it never read: a refusal, not a vacuous pass', True)
+CITE_RE = re.compile(re.escape(cite_open) + r'\s*([^' + chr(10) + r']*?)\s*' + re.escape(cite_close)) if (cite_open and cite_close) else None
+inventory_names = set(entry_lists) | set(exclusion_reasons)
+## CommonMark lets an ATX heading open with up to THREE spaces; anchored
+## at column zero, ' ## Title' -- a real chapter heading -- read as a
+## paragraph and a chapter without an anchor escaped the rule.
+HEADING_RE = re.compile(r'^ {0,3}(#{1,6})\s+(.*\S)\s*' + chr(36))
+FENCE_RE = re.compile(r'^\s{0,3}(' + BT * 3 + '+|~{3,})')
+## A WORD IN EVERY SCRIPT. An ASCII range counted zero words on a page written
+## in a script that does not decompose to ASCII, so min_words could never be
+## reached: every feature a permanent GAP, unrepairable inside the writeable
+## set, on a node whose vars declare it language-neutral.
+WORD_RE = re.compile(r'[^\W_]+')
+## SCRIPTS WITHOUT SPACES: a full sentence of han, kana or hangul is ONE
+## WORD_RE run, so a complete, informative page counted as two words and
+## every feature on it went GAP -- unreachable from inside the writeable
+## set. Each such character is counted as the word it renders as;
+## punctuation-only filler still counts nothing.
+CJK_RUN_RE = re.compile('[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+')
+def word_count(text):
+    non_cjk = WORD_RE.findall(CJK_RUN_RE.sub(' ', text))
+    return sum(1 for w in non_cjk if len(w) >= 4) + sum(len(r) for r in CJK_RUN_RE.findall(text))
+## A placeholder is a WHOLE token: without boundaries, WIP matched the wip
+## in "swipe" and TODO the todo in Spanish "todos", refusing honest prose.
+PLACEHOLDER_RE = re.compile('|'.join('(?<![\w])' + re.escape(p) + '(?! [\w])'.replace(' ', '') for p in placeholders), re.I) if placeholders else None
+## THE UNIT A READER READS AS ONE. Prose is credited over the BLOCK that
+## carries a citation, and a block is what markdown renders as one: a run of
+## consecutive non-blank lines is a single paragraph only when nothing in it
+## starts a block of its own. A heading, a table row (with or without its
+## leading pipe), a list item and a line of block-level HTML are each read on
+## their own whatever the spacing; a quote marker, a thematic break and a
+## template tag line end the block before them. Lumped into one paragraph,
+## an index table would credit its header and every other row to each
+## feature listed in it.
+QUOTE_RE = re.compile(r'^ {0,3}> ?')
+ITEM_RE = re.compile(r'^\s*(?:[-*+]|[0-9]{1,9}[.)])(?:\s|' + chr(36) + ')')
+HR_RE = re.compile(r'^ {0,3}(?:(?:-[ \t]*){3,}|(?:[*][ \t]*){3,}|(?:_[ \t]*){3,})' + chr(36))
+SETEXT_RE = re.compile(r'^ {0,3}(=+|-+)[ \t]*' + chr(36))
+DELIM_RE = re.compile(r'^\s*[|]?\s*:?-+:?\s*(?:[|]\s*:?-+:?\s*)*[|]?\s*' + chr(36))
+TEMPLATE_LINE_RE = re.compile(r'^\s*[{]%.*%[}]\s*' + chr(36))
+HTML_BLOCK_RE = re.compile(r'^ {0,3}</?(?:table|thead|tbody|tfoot|tr|td|th|caption|ul|ol|li|dl|dt|dd|div|p|details|summary|section|article|aside|header|footer|nav|figure|figcaption|blockquote|h[1-6])(?:[\s/>]|' + chr(36) + ')', re.I)
+TAG_RE = re.compile(r'</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>')
+YAML_LINE_RE = re.compile(r'^(?:\s|#|-\s|[A-Za-z0-9_][A-Za-z0-9_.-]*\s*:(?:\s|' + chr(36) + ')|-?' + chr(36) + ')')
+LINK_DEST_RE = re.compile(r'\]\([^)]*\)')
+## Text a reader NEVER sees: an HTML comment (working notes -- page_lint
+## refuses them outright, but the two gates are separate terms and its rule
+## list is a var) and a link reference definition, which renders as nothing at
+## all. Counted as prose, either one pads a bare citation over the bar -- the
+## same class as a link destination, whose words nobody reads.
+COMMENT_RE = re.compile(r'<!--.*?(?:-->|' + chr(36) + ')', re.S)
+LINK_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*\S+')
+def visible_text(content):
+    ## THE TEXT A READER SEES. Comments and link reference definitions render
+    ## as nothing, an HTML tag renders as its CONTENT -- never its attributes
+    ## -- and a link DESTINATION shows only when the page prints it bare:
+    ## the label is what a reader reads, the URL in parens is not. Citations
+    ## read from text a renderer hides -- a tag attribute, a link
+    ## destination -- satisfied GAP in both directions at once: counted as a
+    ## citation, stripped from the prose.
+    if LINK_DEF_RE.match(content):
+        return ''
+    return LINK_DEST_RE.sub(']', TAG_RE.sub(' ', COMMENT_RE.sub(' ', content)))
+def fold(s):
+    return ''.join(c for c in unicodedata.normalize('NFD', s) if not unicodedata.combining(c)).lower()
+def unquote(text):
+    depth, m = 0, QUOTE_RE.match(text)
+    while m:
+        depth, text = depth + 1, text[m.end():]
+        m = QUOTE_RE.match(text)
+    return depth, text
+def page_blocks(rows):
+    ## [{kind, depth, lines: [(no, text, content)], level?, title?}] for ONE
+    ## page, in order. content is the line without its quote markers.
+    blocks, cur, mode, in_fence, fence_opener, in_comment = [], None, '', False, None, False
+    skip_title, in_tag, in_raw = False, False, ''
+    ## FRONT MATTER is page metadata no renderer shows: a first line of ---
+    ## up to the next --- (or ...), every line between reading as YAML. Read
+    ## as markdown, its closing line would underline the keys into a chapter
+    ## nobody can anchor. A block that does NOT read as YAML is shown to the
+    ## reader, and is read here like the rest of the page.
+    start = 0
+    if rows and rows[0][1].strip() == '---':
+        for j in range(1, len(rows)):
+            if rows[j][1].strip() in ('---', '...'):
+                if all(YAML_LINE_RE.match(t) for _n, t in rows[1:j]):
+                    start = j + 1
+                break
+    for idx in range(start, len(rows)):
+        no, text = rows[idx]
+        ## THE OPEN CONSTRUCT WINS, and everything is decided on the
+        ## QUOTE-STRIPPED line: a fence inside a blockquote is a fence,
+        ## quoted or not. Inside a fence, only a compatible closer matters
+        ## and comment markers are literal; inside a comment, only its
+        ## closer matters and fence markers are comment text; an HTML tag
+        ## opener without its close carries invisible attributes to the
+        ## following lines. Outside all of them, the EARLIEST marker on the
+        ## line wins, and the visible PART of the line survives: prose
+        ## before an opener, the tail after a closer. The declared
+        ## anchorless MARKER is exempt from stripping: it is a comment that
+        ## carries gate semantics.
+        depth, content = unquote(text)
+        if in_fence:
+            m = FENCE_RE.match(content)
+            if m and fence_opener and m.group(1)[0] == fence_opener[0] \
+                    and len(m.group(1)) >= fence_opener[1] and not content[m.end():].strip():
+                in_fence, fence_opener = False, None
+                cur, mode = None, ''
+            continue
+        if in_tag:
+            end = content.find('>')
+            if end == -1:
+                continue
+            content = content[end + 1:]
+            in_tag = False
+        if in_raw:
+            ## The body of a script or style element is DATA for the page's
+            ## behaviour, not prose for its reader: hidden whole, like the
+            ## element that carries it.
+            low = content.lower()
+            end = low.find('</' + in_raw)
+            if end == -1:
+                continue
+            content = content[end:]
+            in_raw = ''
+        if in_comment:
+            end = content.find('-->')
+            if end == -1:
+                continue
+            content = content[end + 3:]
+            in_comment = False
+        ## An HTML TAG OPENER WITHOUT ITS CLOSE ON THE SAME LINE: the
+        ## attributes carry to the following lines, and attributes are
+        ## invisible -- read raw, one carried citations that satisfied GAP.
+        ## Inline CODE SPANS are literal: a backtick-quoted label is not a
+        ## tag opener, and reading it as one discarded the rest of the page.
+        ## A script or style opener is a RAW-TEXT element: everything up to
+        ## its closer is data, and read as prose or citations it documented
+        ## a feature the reader never saw.
+        masked = []
+        i2, n2 = 0, len(content)
+        while i2 < n2:
+            if content[i2] == chr(96):
+                j2 = content.find(chr(96), i2 + 1)
+                if j2 == -1:
+                    masked.append(' ' * (n2 - i2))
+                    i2 = n2
+                    continue
+                masked.append(' ' * (j2 - i2 + 1))
+                i2 = j2 + 1
+                continue
+            masked.append(content[i2])
+            i2 += 1
+        masked_line = ''.join(masked)
+        raw_open = re.search(r'(?i)<(script|style)\b[^>]*>', masked_line)
+        if raw_open:
+            name = raw_open.group(1).lower()
+            close_at = content.lower().find('</' + name, raw_open.start())
+            if close_at == -1:
+                content = content[:raw_open.start()]
+                in_raw = name
+                if not content.strip():
+                    continue
+            else:
+                gt = content.find('>', close_at)
+                content = content[:raw_open.start()] + ' ' + content[gt + 1:]
+        open_tag = re.search(r'<[A-Za-z/][^>]*$', ''.join(masked))
+        if open_tag:
+            content = content[:open_tag.start()]
+            in_tag = True
+            if not content.strip():
+                continue
+        pos = 0
+        while True:
+            f = FENCE_RE.match(content[pos:])
+            c = content.find('<!--', pos)
+            if f is None and c == -1:
+                break
+            f_at = (pos + f.start()) if f else None
+            if c != -1 and (f_at is None or c < f_at):
+                end = content.find('-->', c + 4)
+                if end == -1:
+                    content = content[:c]
+                    in_comment = True
+                    break
+                if content[c:end + 3] != no_anchor:
+                    content = content[:c] + ' ' + content[end + 3:]
+                    pos = c
+                else:
+                    pos = end + 3
+            else:
+                in_fence, fence_opener = True, (f.group(1)[0], len(f.group(1)))
+                cur, mode = None, ''
+                break
+        if in_fence:
+            continue
+        if re.match(r'^ {0,3}\[[^\]]+\]:\s*$', content):
+            ## A definition whose DESTINATION sits on the next line: both
+            ## lines render as nothing, and the destination+title line read
+            ## alone leaked its citations and its words as prose.
+            skip_title = True
+            cur, mode = None, ''
+            continue
+        if LINK_DEF_RE.match(content):
+            ## A link reference DEFINITION renders as nothing -- and its
+            ## optional TITLE sits on the NEXT line, indented and quoted.
+            ## Read alone, that title counted as visible prose and its words
+            ## as citations: a hidden definition's continuation, leaking.
+            nxt = rows[idx + 1][1].strip() if idx + 1 < len(rows) else ''
+            if len(nxt) >= 2 and nxt[0] in (chr(34), chr(39), '(') and nxt[-1] in (chr(34), chr(39), ')'):
+                skip_title = True
+            cur, mode = None, ''
+            continue
+        if skip_title:
+            skip_title = False
+            continue
+        if not content.strip() or TEMPLATE_LINE_RE.match(content):
+            cur, mode = None, ''
+            continue
+        if cur is not None and cur['depth'] != depth:
+            cur, mode = None, ''
+        m = HEADING_RE.match(content)
+        if m:
+            ## CommonMark strips a CLOSING hash sequence from the title:
+            ## '## Exclusions ##' titles the chapter Exclusions, and a title
+            ## stored with its hashes matched no declared exclusions token.
+            blocks.append({'kind': 'heading', 'depth': depth, 'level': len(m.group(1)),
+                           'title': re.sub(r'\s+#+\s*$', '', m.group(2)), 'lines': [(no, text, content)]})
+            cur, mode = None, ''
+            continue
+        m = SETEXT_RE.match(content)
+        if m and cur is not None and cur['kind'] == 'para':
+            ## An underline turns the paragraph above it into a heading, as
+            ## every renderer does -- a chapter written that way is a chapter.
+            cur['kind'], cur['level'] = 'heading', (1 if m.group(1)[0] == '=' else 2)
+            cur['title'] = ' '.join(c.strip() for _n, _t, c in cur['lines'])
+            cur, mode = None, ''
+            continue
+        if HR_RE.match(content):
+            cur, mode = None, ''
+            continue
+        nxt = unquote(rows[idx + 1][1])[1] if idx + 1 < len(rows) else ''
+        if not mode and '|' in content and '|' in nxt and DELIM_RE.match(nxt):
+            ## A TABLE is a header row followed by its delimiter row, leading
+            ## pipes or not -- lines of pipes with no delimiter render as a
+            ## paragraph, and are measured as one.
+            mode = 'row'
+        elif not mode and HTML_BLOCK_RE.match(content):
+            mode = 'html'
+        if mode:
+            ## A table or an HTML block runs to the next blank line, and each
+            ## of its lines is read on its own: a row credits its own cells.
+            blocks.append({'kind': mode, 'depth': depth, 'lines': [(no, text, content)]})
+            cur = None
+            continue
+        if ITEM_RE.match(content):
+            cur = {'kind': 'item', 'depth': depth, 'lines': [(no, text, content)]}
+            blocks.append(cur)
+            continue
+        if cur is not None:
+            cur['lines'].append((no, text, content))
+            continue
+        cur = {'kind': 'para', 'depth': depth, 'lines': [(no, text, content)]}
+        blocks.append(cur)
+    return blocks
+def block_prose(b):
+    ## What a reader READS in the block: its text MINUS its citations and the
+    ## markup that renders as no word -- table pipes, HTML tags, link
+    ## destinations (a URL spells words nobody reads) -- and the text a reader
+    ## never sees at all: an HTML comment, a link reference definition. A row
+    ## of citations is an index, and an index documents nothing. Code spans
+    ## stay: a page writing an interface label in one has written words, not a
+    ## reference. A VISIBLE url stays too -- it is on the page, and the line
+    ## drawn here is between what is shown and what is not.
+    out = []
+    for _no, _text, content in b['lines']:
+        s = visible_text(content)
+        s = CITE_RE.sub(' ', s) if CITE_RE is not None else s
+        if b['kind'] == 'row':
+            s = s.replace('|', ' ')
+        out.append(s)
+    return ' '.join(COMMENT_RE.sub(' ', ' '.join(out)).split())
+def significant(text):
+    ## The words a reader would recognise. Short ones carry no evidence that
+    ## anything was written; folding makes the comparison accent-blind.
+    return set(w for w in WORD_RE.findall(fold(text)) if len(w) >= 4)
+def written(prose, share=1):
+    ## (prose, words) when the block is WRITING for share subjects, ('',
+    ## empty) otherwise. Length alone is not writing: dots reach any length,
+    ## and a declared substitute is a label on silence.
+    if PLACEHOLDER_RE is not None and PLACEHOLDER_RE.search(prose):
+        return '', set()
+    words = significant(prose)
+    if len(prose) < min_prose * share or word_count(prose) < min_words * share:
+        return '', set()
+    return prose, words
+def opens_exclusions(title):
+    ## The WHOLE title, anchored -- the way page_lint matches its own chrome
+    ## headings. Matched as a SUBSTRING, an insurance product chapter called
+    ## 'Les exclusions de garantie' opened the chapter of documented holes.
+    if not excl_token:
+        return False
+    plain = title.replace(no_anchor, '') if no_anchor else title
+    plain = re.sub(r'[*_' + BT + r']', '', plain).strip().rstrip(':').strip()
+    return fold(plain) == fold(excl_token)
+## The documentation. Absent or empty: a NAMED refusal, never a vacuous green.
+files = sorted(p for p in glob.glob(os.path.join(product_dir, '**', '*.md'), recursive=True) if os.path.isfile(p)) if product_dir else []
+if not product_dir:
+    refuse('NET_UNREADABLE', '<product_dir>', 'no product directory was resolved, so no published page could be read -- refusing to certify coverage', True)
+elif not files:
+    refuse('NET_UNREADABLE', product_dir, 'NO markdown file -- the functional documentation does not exist: a refusal, not a vacuous pass')
+## PRE-FLIGHT REFUSAL. A cause whose repair lands OUTSIDE the writeable set
+## is not a term of convergence: scope_check lets this run write
+## <product_dir>/**/*.md and nothing else, so an order to repair the net, a
+## launch var or the catalog is an order the campaign is forbidden to obey.
+## Left as a gate term it makes two deterministic gates contradict each other
+## and the run burns every pass. The run stops HERE instead, naming every such
+## cause, and the operator repairs the net where the net lives.
+blocking = [c for c in causes if c.get('outside')]
+if blocking:
+    shown = [c['cause'] + ' -- ' + c['where'] + ': ' + c['detail'] for c in blocking[:40]]
+    raise SystemExit('product-docs: the non-regression net cannot be judged, and its repair lies OUTSIDE the writeable set of this run (' + (product_dir or '<product_dir>') + '/**/*.md). That is a PRE-FLIGHT failure, never a convergence term -- the campaign would be ordered to fix what it is forbidden to touch. ' + str(len(blocking)) + ' cause(s):' + chr(10) + chr(10).join('- ' + line for line in shown))
+pages = []
+for path in files:
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            pages.append((path, list(enumerate(fh.read().splitlines(), 1))))
+    except OSError as exc:
+        refuse('NET_UNREADABLE', path, 'page unreadable -- ' + ' '.join(str(exc).split())[:200])
+## ONE pass over the blocks in file order, so the chapter a citation sits
+## under is a fact of structure and not an opinion. Headings of EVERY level
+## open the exclusions chapter (a one-chapter-per-file model puts it at level
+## 1); the anchor rule below judges levels >= 2 only -- a file's title is
+## judged by its body. A heading inside a quote is part of the quote, not a
+## chapter of the document.
+headings = []
+marked = []
+anchors_by_line = {}
+blocks = []
+for where, rows in pages:
+    ## Fence state and CHAPTER state are both PER PAGE. An unclosed fence
+    ## at the end of one page would otherwise blind the gate to every page
+    ## after it -- and a page ending inside the exclusions chapter would
+    ## mark the NEXT page's lines as being under it, which is the exact
+    ## false green this gate exists to refuse: an exclusion id cited with
+    ## enough prose in an unrelated page would satisfy the rule.
+    in_exc, exc_level = False, None
+    for b in page_blocks(rows):
+        b['where'] = where
+        chapter = b['kind'] == 'heading' and b['depth'] == 0
+        excl_heading = chapter and opens_exclusions(b['title'])
+        if excl_heading:
+            ## Already inside the chapter, a DEEPER heading repeating the
+            ## token must not re-anchor it at its own level: a sibling of
+            ## that sub-heading would then close the whole chapter early,
+            ## and every exclusion named after it would read as concealed.
+            ## The SHALLOWEST level wins.
+            exc_level = b['level'] if exc_level is None else min(exc_level, b['level'])
+            in_exc = True
+        elif chapter and exc_level is not None and b['level'] <= exc_level:
+            in_exc, exc_level = False, None
+        b['under_exclusions'] = in_exc
+        b['names'], b['pairs'] = set(), set()
+        anchored = False
+        for no, text, content in b['lines']:
+            ents, ids, paths, unknown = [], [], [], []
+            ## THE SAME TEXT PROSE IS MEASURED ON. Invisible text is not read,
+            ## in EITHER direction: a citation inside an HTML comment or a link
+            ## reference definition renders as nothing, so it anchors no
+            ## chapter and documents no feature -- and it is not verified
+            ## either, because a reference nobody can read claims nothing. Read
+            ## from the raw line, it let text no reader ever sees satisfy the
+            ## two rules that ask a page to say something.
+            visible = visible_text(content)
+            ## EVERY citation, and ONLY the citations. A token is a path when
+            ## it leads with a slash, an entry when the corpus holds it, an
+            ## inventory id when the inventory does -- and an INVENTED
+            ## reference otherwise, wherever it sits and whatever else the
+            ## line carries. A code span is prose and is never read here.
+            for tok in (CITE_RE.findall(visible) if CITE_RE is not None else []):
+                tok = tok.strip()
+                if not tok:
+                    refuse('PHANTOM_DOC', where + ':' + str(no), 'an EMPTY citation ' + cite_open + cite_close + ' names nothing -- cite a corpus entry id, an inventory feature id or a path, or write prose')
+                    continue
+                if tok.startswith('/'):
+                    paths.append(tok)
+                else:
+                    ## THE TWO ID SPACES ARE INDEPENDENT MEMBERSHIPS. An id
+                    ## the corpus and the inventory both declare is both
+                    ## things at once; reading the corpus hit as THE answer
+                    ## left ids empty, no pair could form, and a collision
+                    ## made convergence impossible whatever the page wrote.
+                    ## The net holds neither? WHICH of the two it was meant
+                    ## to be is not guessed -- guessing from a token shape is
+                    ## the habit this node got rid of. The repair is the same
+                    ## either way: cite something the net holds, or write
+                    ## prose.
+                    if tok in corpus_ids:
+                        ents.append(tok)
+                    if tok in inventory_names:
+                        ids.append(tok)
+                    if tok not in corpus_ids and tok not in inventory_names:
+                        unknown.append(tok)
+            anchors_by_line[(where, no)] = (ents, ids, paths, unknown, text)
+            anchored = anchored or bool(ents or ids or paths)
+            b['names'].update(ids)
+            ## The PAIR the gap rule reads: ONE line citing a covered feature
+            ## together with one of its own entries.
+            for name in ids:
+                if entry_lists.get(name, set()) & set(ents):
+                    b['pairs'].add(name)
+        if chapter and b['level'] > 1:
+            headings.append((where, b['lines'][0][0], b['level'], b['title'], excl_heading, anchored))
+        blocks.append(b)
+## STRUCTURAL RULE -- every chapter carries an anchor, or DECLARES that it
+## carries none. A chapter that can name no reference it restitutes describes
+## a screen nobody captured: the general clause of the phantom refusal. The
+## declared marker is the written exception, and the gate PRINTS the chapters
+## that carry it -- hiding a whole chapter behind it only denounces itself.
+## The chapter that OPENS the declared exclusions chapter is anchored by its
+## ROLE: the gate knows what it is, and its body is judged by the exclusions
+## rule. Requiring a marker there would force every product to spend one of
+## its anchorless declarations on a chapter the gate itself named.
+judged = [h for h in headings if not h[4]]
+for where, no, level, title, _x, _a in judged:
+    if no_anchor and no_anchor in title:
+        marked.append({'page': where, 'line': no, 'title': title.replace(no_anchor, '').strip()})
+## THE COUNT IS KNOWN BEFORE THE FIRST REFUSAL IS WRITTEN, because a refusal
+## that offers a remedy the ceiling then denies makes the two causes ping-pong
+## until max_passes: the campaign marks the chapter, the ceiling refuses the
+## mark, the anchor rule offers the mark again. With no headroom the refusal
+## asks for an ANCHOR and says the hatch is full -- and it never asks for a
+## bigger ceiling, which is an operator decision outside the writeable set.
+headroom = max_anchorless - len(marked)
+for where, no, level, title, _x, anchored in judged:
+    if no_anchor and no_anchor in title:
+        continue
+    ## A chapter is anchored by a reference that EXISTS (or by a path, which
+    ## is a citation by syntax) -- never by a token that merely resembles
+    ## one, which would let a chapter fake its own anchor. The answer is the
+    ## one the single pass already computed for this heading: a second copy
+    ## of the test is how the two come to disagree.
+    if not anchored:
+        remedy = (' or declare it restitutes none with ' + no_anchor + ' (' + str(headroom) + ' such declaration(s) left of ' + str(max_anchorless) + ')') if (no_anchor and headroom > 0) else (' -- the anchorless declarations are ALL SPENT (' + str(len(marked)) + ' of ' + str(max_anchorless) + '), so this chapter must carry a reference')
+        refuse('UNANCHORED_CHAPTER', where + ':' + str(no), 'the chapter ' + title + ' names NO reference it restitutes -- cite a corpus entry, an inventory id or a path IN THE HEADING LINE ITSELF (a citation in the chapter body does NOT anchor it)' + remedy)
+## THE ESCAPE HATCH HAS A CEILING. Above it, the declarations are themselves
+## the refusal, and each marked chapter is printed whether the run is red or
+## green. The repair named is ANCHORING: raising the ceiling is an operator
+## decision, and ordering the campaign to make one would order it outside the
+## writeable set scope_check enforces.
+if len(marked) > max_anchorless:
+    refuse('UNANCHORED_CHAPTER', product_dir or '<product_dir>', str(len(marked)) + ' chapter(s) DECLARE they restitute no reference and at most ' + str(max_anchorless) + ' may -- anchor the surplus on a corpus entry, an inventory id or a path: ' + ', '.join(m['page'] + ':' + str(m['line']) + ' ' + m['title'] for m in marked[:20]))
+## PHANTOM_DOC -- every cited anchor must exist, in the corpus, in the
+## inventory or in the declarations; never in the writer's memory.
+cited_entries, cited_paths = set(), set()
+for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.items()):
+    cited_entries.update(ents)
+    for tok in unknown:
+        refuse('PHANTOM_DOC', where + ':' + str(no), 'the reference ' + tok + ' is CITED and the net holds NOTHING by that name -- it is neither one of the ' + str(len(corpus_ids)) + ' corpus entry ids, nor an inventory feature id (covered or excluded), nor a path (those start with a slash). A documented screen without a reference is an invented screen; if this was not meant as a reference, write it as prose -- only ' + cite_open + '...' + cite_close + ' cites')
+    for path in paths:
+        cited_paths.add(path)
+        try:
+            parts = urlsplit(path)
+        except ValueError as exc:
+            ## A MALFORMED citation is a documentation-side error, and the
+            ## gate answers errors by NAME: left to raise, //[-broken]]-shaped
+            ## citations aborted coverage_check instead of refusing the page.
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the cited path ' + path + ' does not '
+                   'parse as a URL (' + str(exc) + ') -- a citation the gate cannot read '
+                   'documents nothing; cite a path the net actually observed')
+            continue
+        hits = corpus_matches(parts.path)
+        ## The catch-all rule cuts BOTH ways. A cited path is read as a
+        ## pattern, so a lone placeholder path matches every corpus entry
+        ## and would pass while restituting nothing -- the same hole the
+        ## declared-route side closes, on the side the graded agent writes.
+        if segments(parts.path) and not has_literal(parts.path):
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the cited path ' + path + ' is made of PLACEHOLDERS ONLY -- like a framework catch-all it matches every path and restitutes none; cite a path the net actually observed')
+        elif '**' in segments(parts.path):
+            ## A cited path is read as a PATTERN, and ** swallows the whole
+            ## tail: /dashboard/** carries one literal segment, so it passes
+            ## the placeholders-only rule while claiming every screen below
+            ## it. A documentation cites the screens it documents.
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the cited path ' + path + ' carries a TAIL WILDCARD -- it claims every path below it and restitutes none of them; cite the paths the documentation actually describes')
+        elif any(route_proves(r) and pattern_matches(r, parts.path) for r in declared):
+            pass
+        elif hits:
+            pass
+        elif routes_degraded:
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the path ' + path + ' matches NO corpus entry path, and no declared route table was available to widen the check (degraded) -- a documented screen the net never observed')
+        else:
+            refuse('PHANTOM_DOC', where + ':' + str(no), 'the path ' + path + ' is NEITHER a declared route NOR a corpus entry path -- a documented screen the application does not serve')
+        observed = set()
+        for c in hits:
+            observed |= entry_paths.get(c, set())
+        for k, _v in parse_qsl(parts.query, keep_blank_values=True):
+            if k not in observed:
+                refuse('PHANTOM_DOC', where + ':' + str(no), 'the parameter ' + k + ' of ' + path + ' is observed on NO corpus entry of that path -- a documented filter the net does not exercise')
+## GAP -- every covered feature is DOCUMENTED by one block: a paragraph, a
+## list item or a table row with ONE line citing its id AND one of its own
+## inventory entries -- the documented screen is anchored on the reference
+## that exercises it -- and prose a reader reads. The loop runs over EVERY
+## feature, unguarded: emptying the documentation of one feature or of all
+## reddens the same way.
+##
+## CO-PRESENCE IS NOT DOCUMENTATION, and a neighbour's prose is not either.
+## Two citations on a line are an index row; a block's text is credited to
+## that block only, never to the rows or items around it; and a block that
+## documents several features SHARES its prose between them -- each needs
+## its own min_prose characters and min_words words. Credited whole to each,
+## a paragraph of soft-wrapped index lines would document every feature it
+## lists with one sentence's worth of words, no table syntax needed.
+## A HEADING DOCUMENTS NOTHING: it labels and anchors a chapter, and its
+## body is where a feature is described.
+undocumented = []
+for name in feature_names:
+    own = entry_lists.get(name, set())
+    cands = [b for b in blocks if name in b['pairs']]
+    body = [b for b in cands if b['kind'] != 'heading']
+    if any(written(block_prose(b), len(b['pairs']))[0] for b in body):
+        continue
+    undocumented.append(name)
+    if body:
+        best = max(body, key=lambda b: len(block_prose(b)) / len(b['pairs']))
+        prose = block_prose(best)
+        refuse('GAP', name, 'the covered feature is CITED but not documented: at ' + best['where'] + ':' + str(best['lines'][0][0]) + ' the ' + {'para': 'paragraph', 'item': 'list item', 'row': 'table row', 'html': 'HTML line'}[best['kind']] + ' citing it with one of its entries (' + ', '.join(sorted(own)) + ') documents ' + str(len(best['pairs'])) + ' feature(s) with ' + str(len(prose)) + ' characters and ' + str(word_count(prose)) + ' recognisable words of prose outside the citations -- a row in an index, not a screen a functional reader can understand. Each feature a block documents needs ' + str(min_prose) + ' characters and ' + str(min_words) + ' words of its own; the block is the paragraph, list item or table row that carries the citation, never its neighbours')
+    elif cands:
+        refuse('GAP', name, 'the covered feature is cited with one of its entries ONLY IN A HEADING -- a title labels a chapter and documents nothing: cite ' + cite_open + name + cite_close + ' with ' + ' or '.join(cite_open + e + cite_close for e in sorted(own)) + ' in the paragraph, list item or table row that describes it')
+    else:
+        refuse('GAP', name, 'the covered feature is ABSENT from the documentation: no line CITES ' + cite_open + name + cite_close + ' together with one of its entries (' + ', '.join(cite_open + e + cite_close for e in sorted(own)) + ') -- a served, inventoried screen the functional reader will not find')
+## CONCEALED_EXCLUSION -- every exclusion is cited UNDER a chapter that says
+## exclusions, in a block with PROSE: a bare id is not writing, and a
+## placeholder is not either. The block is the one the gap rule reads -- a
+## paragraph wrapped over two lines says its reason once, across both. The
+## full reason stays in the net; the page carries it for its reader, and the
+## gate refuses silence and substitutes alike.
+hidden = []
+claimed = {}
+for name in sorted(exclusion_reasons):
+    reason_words = significant(exclusion_reasons.get(name) or '')
+    ## THE PAGE MUST SAY WHAT THE NET SAYS. Length is an orthography anyone
+    ## can reach -- one generic sentence copied under every id cleared the
+    ## bar. The net already carries the reason, so the page prose has to
+    ## OVERLAP it: two of its recognisable words, or the one it has.
+    need = min(2, len(reason_words))
+    ok = ''
+    for b in blocks:
+        if b['kind'] == 'heading' or not b['under_exclusions'] or name not in b['names']:
+            continue
+        prose, words = written(block_prose(b))
+        if not prose:
+            continue
+        if need and len(words & reason_words) < need:
+            continue
+        ## PREFER A BLOCK NOBODY HAS CLAIMED. Breaking on the FIRST qualifying
+        ## one made a shared summary -- one sentence naming two holes,
+        ## legitimately -- claim the first exclusion and leave the second
+        ## unfixable: its own dedicated paragraph further down was never
+        ## looked at, and the refusal asked for prose it had already written.
+        cand = ' '.join(fold(prose).split())
+        if not ok:
+            ok = cand
+        if cand not in claimed:
+            ok = cand
+            break
+    if not ok:
+        hidden.append(name)
+        refuse('CONCEALED_EXCLUSION', name, 'the exclusion is nowhere named AS an exclusion in the documentation (its id cited under a chapter titled exactly ' + (excl_token or '<coverage_exclusions_heading>') + ', in a paragraph, list item or table row whose prose of its own says what the net says) -- a documentation that hides a hole lies about the application; the net records the reason: ' + (exclusion_reasons.get(name) or '')[:120])
+        continue
+    ## ONE PROSE, ONE EXCLUSION. The same block satisfying two holes -- one
+    ## paragraph naming both, or one sentence copied under each -- describes
+    ## neither: it is a template, and a template is silence with more
+    ## characters.
+    if ok in claimed:
+        hidden.append(name)
+        refuse('CONCEALED_EXCLUSION', name, 'the exclusion is named with the SAME prose as ' + claimed[ok] + ' -- one paragraph cannot say why two different holes exist; give this one a paragraph or list item of its own that says what the net records: ' + (exclusion_reasons.get(name) or '')[:120])
+        continue
+    claimed[ok] = name
+documented = len(feature_names) - len(undocumented)
+named = len(exclusion_reasons) - len(hidden)
+count_line = ('COVERAGE GATE: ' + str(documented) + '/' + str(len(feature_names)) + ' features documented, ' + str(named) + '/' + str(len(exclusion_reasons)) + ' exclusions named, ' + str(len(cited_entries)) + ' corpus entries cited, ' + str(len(cited_paths)) + ' paths cited, ' + str(len(headings)) + ' chapters of which ' + str(len(marked)) + ' declared anchorless (ceiling ' + str(max_anchorless) + '); net at ' + oracle + ' holds ' + str(len(feature_names)) + ' features + ' + str(len(exclusion_reasons)) + ' exclusions, ' + str(len(corpus_ids)) + ' corpus entries, ' + str(len(declared)) + ' declared routes')
+notes = [count_line]
+if net_unproven:
+    ## OPERATOR-SIDE, SAID SO. These notes ride log, and gate.fail_log relays
+    ## log to the next pass whenever the gate is red: an imperative here reads
+    ## as a repair order to a campaign that may write <product_dir>/**/*.md and
+    ## nothing else. Following it would redden scope_check instead -- the very
+    ## loop the pre-flight rule exists to prevent.
+    notes.append('COVERAGE GATE: DEGRADED -- the net at ' + oracle + ' carries NO trace of its own gate (neither verify-oracle.sh nor REPORT.md). This gate reads the inventory and the corpus as given; nothing here proves a harness ever scored them. OPERATOR-SIDE ONLY, never a repair for this run: the rite emissions live with the net, outside ' + (product_dir or '<product_dir>') + '/**/*.md, and a verdict stamped with the commit it judged would be better still.')
+if routes_degraded:
+    notes.append('COVERAGE GATE: DEGRADED -- no declared route table at ' + (routes_path or '<coverage_routes_file>') + '. golden-master runs its route table through config.json routes_probe and commits no artifact, so a cited path is checked against the CORPUS ONLY: a route the corpus never touches cannot be recognised and is refused. OPERATOR-SIDE ONLY, never a repair for this run: the routes_probe output lands with the net, outside ' + (product_dir or '<product_dir>') + '/**/*.md.')
+for m in marked:
+    notes.append('COVERAGE GATE: chapter declared anchorless -- ' + m['page'] + ':' + str(m['line']) + ' ' + m['title'])
+for c in causes[:60]:
+    notes.append('COVERAGE GATE: ' + c['cause'] + ' -- ' + c['where'] + ': ' + c['detail'])
+if len(causes) > 60:
+    notes.append('COVERAGE GATE: ... and ' + str(len(causes) - 60) + ' more')
+if causes:
+    notes.append('COVERAGE GATE: RED -- ' + str(len(causes)) + ' named cause(s); each one above says what is missing and where. Fix exactly those, then re-check.')
+else:
+    notes.append('COVERAGE GATE: GREEN -- every documented screen rests on a reference that exists, every inventoried feature is documented, every exclusion is named.')
+print(json.dumps({'coverage_ok': not causes, 'net_present': True, 'causes': causes[:200], 'cause_count': len(causes), 'features_total': len(feature_names), 'features_documented': documented, 'exclusions_total': len(exclusion_reasons), 'exclusions_named': named, 'entries_cited': len(cited_entries), 'paths_cited': len(cited_paths), 'chapters': len(headings), 'chapters_unanchored_declared': len(marked), 'chapters_anchorless_max': max_anchorless, 'routes_declared': len(declared), 'routes_degraded': routes_degraded, 'net_unproven': net_unproven, 'oracle_dir_used': oracle, 'counts_line': count_line, 'log': chr(10).join(notes)}, ensure_ascii=False))
+"`
+  output: coverage_output
+
 ## gate — the deterministic continuation decision. converged = the
 ## writeable set is clean AND the published pages carry no working
-## notes AND the campaign reports the documentation aligned. NOTHING
-## ELSE: the advisory hint counts are telemetry in the run events,
-## never conditions. fail_log relays both gates' complaints to the next
-## pass; a green-but-more-work pass rides an empty log. No LLM, no
-## shell.
+## notes AND the documentation is EXHAUSTIVE against the net AND the
+## campaign reports the documentation aligned. NOTHING ELSE: the
+## advisory hint counts are telemetry in the run events, never
+## conditions. Without a net `coverage_ok` is true by construction, so
+## this is the expression it always was. fail_log relays the three
+## gates' complaints to the next pass — and carries the coverage term
+## only when it is red, so a run with no net produces byte-for-byte the
+## log it produced before. A green-but-more-work pass rides an empty
+## log. No LLM, no shell.
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.scope_check.scope_ok && outputs.page_lint.lint_ok && outputs.campaign.docs_aligned"
-    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log + ' | ', '') + if(!outputs.page_lint.lint_ok, outputs.page_lint.log, '')"
+    converged: "outputs.scope_check.scope_ok && outputs.page_lint.lint_ok && outputs.coverage_check.coverage_ok && outputs.campaign.docs_aligned"
+    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log + ' | ', '') + if(!outputs.page_lint.lint_ok, outputs.page_lint.log, '') + if(!outputs.coverage_check.coverage_ok, if(!outputs.page_lint.lint_ok, ' | ', '') + outputs.coverage_check.log, '')"
 
 ## ─── Nodes : PR finalization tail (opt-in) ─────────────────────────
 
@@ -2217,6 +3578,7 @@ workflow product_docs:
     mode: "{{outputs.scan_hints.mode}}",
     incremental_base: "{{outputs.scan_hints.incremental_base}}",
     recently_changed_pages: "{{outputs.scan_hints.recently_changed_pages}}",
+    oracle_path: "{{outputs.catalog_ingest.oracle_path}}",
     fail_log: "{{outputs.gate.fail_log}}"
   }
 
@@ -2231,9 +3593,17 @@ workflow product_docs:
   }
   scope_check -> page_lint with {
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
-    base_sha: "{{outputs.catalog_ingest.base_sha}}"
+    base_sha: "{{outputs.catalog_ingest.base_sha}}",
+    oracle_path: "{{outputs.catalog_ingest.oracle_path}}"
   }
-  page_lint -> gate
+  ## The exhaustiveness gate. `oracle_path` is empty whenever the
+  ## product carries no golden-master net, and the node is then a
+  ## no-op that certifies nothing and refuses nothing.
+  page_lint -> coverage_check with {
+    product_dir: "{{outputs.catalog_ingest.product_dir}}",
+    oracle_path: "{{outputs.catalog_ingest.oracle_path}}"
+  }
+  coverage_check -> gate
 
   ## Converged → straight to the PR tail.
   gate -> mr_gate when converged
@@ -2268,7 +3638,8 @@ workflow product_docs:
     scope_notes:      "{{vars.scope_notes}}",
     campaign_summary: "{{outputs.campaign.summary}}",
     drift_remaining:  "{{outputs.campaign.drift_remaining}}",
-    unread_sources:   "{{outputs.campaign.unread_sources}}"
+    unread_sources:   "{{outputs.campaign.unread_sources}}",
+    coverage_counts:  "{{outputs.coverage_check.counts_line}}"
   }
   forge_auth_probe -> publish_gate when not available
   ## PR opened → surface its URL as a headline result-link in the run

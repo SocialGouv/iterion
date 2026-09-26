@@ -1108,11 +1108,22 @@ in the report, never documented from inference.
 
 The determinism is TRUTH-only: a scope gate fails the run if anything
 outside `<product_dir>/**/*.md` changed, an EDITORIAL LINT gate fails
-it if a published page still carries working notes, and convergence
-is those two gates ∧ the campaign's honest `docs_aligned` contract —
-nothing else. A deterministic scan runs each pass as an ADVISORY
-hints producer (dead links, orphan pages, catalog surfaces no page
+it if a published page still carries working notes, an
+EXHAUSTIVENESS gate fails it if the product carries a golden-master
+net and the pages do not account for it, and convergence is those
+three gates ∧ the campaign's honest `docs_aligned` contract — nothing
+else. A deterministic scan runs each pass as an ADVISORY hints
+producer (dead links, orphan pages, catalog surfaces no page
 covers): help the agent is free to contradict, never an obligation.
+
+EXHAUSTIVENESS IS NOT THE AGENT'S WORD. When the product commits a
+golden-master net, `coverage_check` reads its feature inventory and
+its capture corpus and refuses five ways, each cause named: a
+documented screen the net never saw, an inventoried feature no page
+documents, an exclusion the pages do not name as one, a chapter
+naming no reference it restitutes, and an inventory or a
+documentation too empty to judge. Without a net the node is inert
+and the bot is exactly the one it was.
 
 EDITORIAL SOVEREIGNTY: the bundle ships generic default editorial
 skills in French (documentary model, GitBook blocks, glossary, tone),
@@ -1145,7 +1156,7 @@ container image and puts it live through the operator-attached
   developers — and the topology second: docs repo here, N source
   repos there.
 - **Triggers**: product-docs, functional-docs, doc-produit
-- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_image` (string), `publish_registry_user` (string), `publish_slug` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `catalog_path` (string), `clone_depth` (int), `coverage_citation_close` (string), `coverage_citation_open` (string), `coverage_exclusions_heading` (string), `coverage_max_anchorless` (int), `coverage_min_prose` (int), `coverage_no_anchor_marker` (string), `coverage_placeholders` (string), `coverage_routes_file` (string), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `oracle_dir` (string), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_image` (string), `publish_registry_user` (string), `publish_slug` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/product-docs/main.bot`
 
 ### `revi-converse` — Revi (converse)
