@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.203.0](https://github.com/SocialGouv/iterion/compare/v3.202.3...v3.203.0) (2026-09-26)
+
+### Features
+
+* **bots:** prod-watch (Argus) — slice A: the deterministic, zero-LLM watch tick ([#1869](https://github.com/SocialGouv/iterion/issues/1869)) ([1e7ed5e](https://github.com/SocialGouv/iterion/commit/1e7ed5e11762c8292a206b167bee34c71cfe7ec3)), references [#1695](https://github.com/SocialGouv/iterion/issues/1695) [#1696](https://github.com/SocialGouv/iterion/issues/1696) [#1704](https://github.com/SocialGouv/iterion/issues/1704) [#1697](https://github.com/SocialGouv/iterion/issues/1697) [#1698](https://github.com/SocialGouv/iterion/issues/1698) [#1699](https://github.com/SocialGouv/iterion/issues/1699) [#1700](https://github.com/SocialGouv/iterion/issues/1700) [#1701](https://github.com/SocialGouv/iterion/issues/1701) [#1702](https://github.com/SocialGouv/iterion/issues/1702) [#1708](https://github.com/SocialGouv/iterion/issues/1708)
+
+    <details><summary>why</summary>
+
+    ## Argus — slice A: the deterministic, zero-LLM watch tick (`bots/prod-watch`)
+
+    </details>
+
 ## [3.202.3](https://github.com/SocialGouv/iterion/compare/v3.202.2...v3.202.3) (2026-09-26)
 
 ### Bug Fixes
