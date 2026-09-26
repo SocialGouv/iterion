@@ -80,9 +80,11 @@ export function useFileWatcher() {
           // them, and a fragment deleted from under it would otherwise
           // leave a name in the list that nothing answers for.
           if (!filePath || !touchesOpenUnit(event.path, filePath, store.unit)) break;
+          // Named, like every message a tab raises app-wide: several tabs
+          // can be open, and the one on screen may not be the one concerned.
           addToast(
             event.path === filePath
-              ? "Current file was deleted externally"
+              ? `${filePath} was deleted externally`
               : `${event.path} was deleted externally — it is one of this bot's files`,
             "warning",
             { persistent: true },

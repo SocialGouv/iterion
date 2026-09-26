@@ -25,14 +25,17 @@ import {
 } from "@/lib/chatDock/pageContext";
 import { findNodeDecl } from "@/lib/defaults";
 import { useTabsStore } from "@/store/tabs";
+import { EditorTabActiveContext } from "@/components/Editor/editorTabActive";
+import { HiddenSubtreeContext } from "@/components/ui/hiddenSubtree";
 
 interface EditorViewProps {
-  // Whether this editor tab is currently the visible one. EditorTabsView
-  // keeps inactive tabs mounted with display:none; the Canvas uses this
-  // to refit its viewport when the tab regains visibility (React Flow
-  // measured at 0×0 while hidden otherwise renders blank on return).
-  // Defaults to true so a standalone EditorView (deep-link fallback,
-  // tests) behaves exactly as before.
+  // Whether this editor tab is the visible one. EditorTabsView keeps
+  // inactive tabs mounted with display:none. Provided to the subtree twice:
+  // `useEditorTabActive` for what acts on something global (the Toolbar's
+  // shortcuts, the canvas's shortcut, Arrange / Fit-view slot and centring,
+  // and its refit on return), and `HiddenSubtreeContext` for the UI kit's
+  // portals (the file picker among them), which render nothing while the tab
+  // is hidden. Defaults to true for tests that render it alone.
   active?: boolean;
 }
 
@@ -50,7 +53,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const setInspectorWidth = useUIStore((s) => s.setInspectorWidth);
   const inspectorCollapsed = useUIStore((s) => s.inspectorCollapsed);
   const toggleInspectorCollapsed = useUIStore((s) => s.toggleInspectorCollapsed);
-  const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
+  const setPendingFitNodeId = useSelectionStore((s) => s.setPendingFitNodeId);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const iterDocument = useDocumentStore((s) => s.document);
   const dirty = useDocumentStore(
@@ -172,7 +175,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const handledSearch = useRef<string | null>(null);
 
   useAutoValidation();
-  useAutoOpenDiagnosticsOnError();
+  useAutoOpenDiagnosticsOnError(active);
   useFileWatcher();
 
   // Honor node-focus deep links from the run console:
@@ -267,6 +270,8 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const leftWidth = libraryExpanded || inSubNodeView ? 280 : 64;
 
   return (
+    <EditorTabActiveContext.Provider value={active}>
+    <HiddenSubtreeContext.Provider value={!active}>
     <ReactFlowProvider>
       <div className="h-full w-full overflow-hidden flex flex-col">
         {bannerRunId && (
@@ -323,7 +328,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
 
         <div className="min-h-0 flex">
           <div className={sourceViewOpen && !expanded ? "w-1/2 h-full" : "w-full h-full"}>
-            <Canvas active={active} />
+            <Canvas />
           </div>
           {sourceViewOpen && !expanded && (
             <div className="w-1/2 h-full border-l border-border-default">
@@ -385,5 +390,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
       </DesktopOnlyNotice>
       </div>
     </ReactFlowProvider>
+    </HiddenSubtreeContext.Provider>
+    </EditorTabActiveContext.Provider>
   );
 }

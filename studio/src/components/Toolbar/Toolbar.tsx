@@ -53,10 +53,16 @@ import {
   ListBulletIcon,
 } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
+import { useEditorTabActive } from "@/components/Editor/editorTabActive";
 import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
 
 export default function Toolbar() {
   const [, setLocation] = useLocation();
+  // Every open tab has its own Toolbar: only the one on screen answers the
+  // keyboard, or a key pressed on one tab would undo, save or open in all of
+  // them. (Its picker and dialogs render through the UI kit, which shows
+  // nothing from a hidden tab.)
+  const active = useEditorTabActive();
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const undo = useDocumentStore((s) => s.undo);
@@ -133,7 +139,11 @@ export default function Toolbar() {
 
   // Keyboard shortcuts
   useEffect(() => {
+    if (!active) return;
     const handler = (e: KeyboardEvent) => {
+      // A key the focused element already answered — the canvas takes Ctrl+Z
+      // and Ctrl+Y itself — is not answered twice.
+      if (e.defaultPrevented) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -153,7 +163,7 @@ export default function Toolbar() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [undo, redo, handleSave]);
+  }, [active, undo, redo, handleSave]);
 
   const workflows = document?.workflows ?? [];
 

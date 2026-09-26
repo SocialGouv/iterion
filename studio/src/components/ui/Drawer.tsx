@@ -1,6 +1,7 @@
 import * as RD from "@radix-ui/react-dialog";
 import { Cross2Icon } from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
+import { useHiddenSubtree } from "./hiddenSubtree";
 
 // Right-side sheet built on Radix Dialog — focus trap, Escape,
 // click-outside and aria wiring come from Radix. For centered
@@ -26,8 +27,9 @@ export function Drawer({
   footer,
   widthClass = "max-w-xl",
 }: DrawerProps) {
+  const hidden = useHiddenSubtree();
   return (
-    <RD.Root open={open} onOpenChange={onOpenChange}>
+    <RD.Root open={open && !hidden} onOpenChange={onOpenChange}>
       <RD.Portal>
         <RD.Overlay className="fixed inset-0 z-[var(--z-overlay)] bg-scrim-modal animate-fade-in-opacity" />
         <RD.Content

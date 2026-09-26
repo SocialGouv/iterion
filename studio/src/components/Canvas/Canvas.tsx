@@ -44,6 +44,7 @@ import SearchOverlay from "./SearchOverlay";
 import { useCanvasHandlers } from "./useCanvasHandlers";
 import CommandPalette, { type CommandAction } from "@/components/shared/CommandPalette";
 import { useLocation } from "wouter";
+import { useEditorTabActive } from "@/components/Editor/editorTabActive";
 
 const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode, subbotFrame: SubbotFrameNode, fanoutFrame: FanoutFrame };
 const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
@@ -52,16 +53,13 @@ function isEditableNode(id: string): boolean {
   return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id) && !isGroupNodeId(id) && !isSubbotChildId(id);
 }
 
-interface CanvasProps {
-  // Whether the hosting editor tab is currently visible. Inactive tabs
-  // stay mounted with display:none; React Flow can't measure a hidden
-  // container, so when the tab is shown again we restore the saved
-  // viewport (or refit) to avoid a blank canvas. Defaults to true so
-  // standalone mounts behave unchanged.
-  active?: boolean;
-}
-
-export default function Canvas({ active = true }: CanvasProps) {
+export default function Canvas() {
+  // Whether the hosting editor tab is the one on screen. Inactive tabs stay
+  // mounted with display:none: React Flow can't measure a hidden container,
+  // so the viewport is restored (or refit) when the tab is shown again, and
+  // nothing global — a shortcut, the Arrange / Fit-view slot, a centring
+  // request — is answered from a hidden tab.
+  const active = useEditorTabActive();
   const addNode = useAddNode();
   const addFromLibrary = useAddFromLibrary();
   const addSubNode = useAddSubNode();
@@ -83,8 +81,8 @@ export default function Canvas({ active = true }: CanvasProps) {
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
-  const pendingFitNodeId = useUIStore((s) => s.pendingFitNodeId);
-  const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
+  const pendingFitNodeId = useSelectionStore((s) => s.pendingFitNodeId);
+  const setPendingFitNodeId = useSelectionStore((s) => s.setPendingFitNodeId);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView, getNodes, getViewport, setViewport } = useReactFlow();
@@ -111,7 +109,9 @@ export default function Canvas({ active = true }: CanvasProps) {
   // focused element except text inputs.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [, setLocation] = useLocation();
+  // Only the tab on screen: every open tab has its own Canvas.
   useEffect(() => {
+    if (!active) return;
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
         const target = e.target as HTMLElement | null;
@@ -127,7 +127,7 @@ export default function Canvas({ active = true }: CanvasProps) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [active]);
 
   // Schema role dialog state (for existing schema drops without relation)
   const [schemaRoleDialog, setSchemaRoleDialog] = useState<{
@@ -159,13 +159,13 @@ export default function Canvas({ active = true }: CanvasProps) {
     }
   }, [activeWorkflowName, fitView]);
 
-  // URL-driven node centering ("Open in editor" from a run). The
-  // EditorView puts the target ir_node_id into the UI store; we wait
-  // for it to appear in React Flow's node set (the layout pass needs
-  // a tick) before calling fitView, then clear the request so a later
-  // navigation doesn't re-trigger.
+  // Node centring: a deep link ("Open in editor" from a run), a duplicate or
+  // a paste puts the node's id in this tab's selection store. One layout
+  // tick later the canvas fits the node if it is there, and clears the
+  // request either way, so a later navigation doesn't re-trigger it. The
+  // request waits while the tab is hidden: a hidden canvas cannot be measured.
   useEffect(() => {
-    if (!pendingFitNodeId) return;
+    if (!active || !pendingFitNodeId) return;
     const t = setTimeout(() => {
       const exists = getNodes().some((n) => n.id === pendingFitNodeId);
       if (exists) {
@@ -174,7 +174,7 @@ export default function Canvas({ active = true }: CanvasProps) {
       setPendingFitNodeId(null);
     }, DEBOUNCE_LAYOUT_SETTLE_MS);
     return () => clearTimeout(t);
-  }, [pendingFitNodeId, fitView, getNodes, setPendingFitNodeId]);
+  }, [active, pendingFitNodeId, fitView, getNodes, setPendingFitNodeId]);
 
   // Save/restore viewport when entering/leaving sub-node detail view
   const prevSubViewRef = useRef<string | null>(null);
@@ -295,13 +295,14 @@ export default function Canvas({ active = true }: CanvasProps) {
 
   // Expose Arrange / Fit-view to the top-level Toolbar (which sits
   // outside the ReactFlowProvider subtree and can't call useReactFlow
-  // directly). The setter is stable across renders, so this effect
-  // re-runs only when the handlers themselves change.
+  // directly). One slot for the whole app, so only the tab on screen
+  // fills it: a hidden tab's canvas re-registering would take the buttons.
   const setCanvasActions = useUIStore((s) => s.setCanvasActions);
   useEffect(() => {
+    if (!active) return;
     setCanvasActions({ arrange: handleArrange, fitView: handleFitView });
     return () => setCanvasActions(null);
-  }, [setCanvasActions, handleArrange, handleFitView]);
+  }, [active, setCanvasActions, handleArrange, handleFitView]);
 
   const { confirm, dialog } = useConfirm();
 

@@ -86,17 +86,16 @@ import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { signInURL } from "@/auth/returnTo";
 import { setUnauthorizedHandler } from "@/api/client";
 import { getOrCreateDocumentStore } from "@/store/document";
-import { useTabsStore } from "@/store/tabs";
+import { editorTabOnScreen } from "@/components/Editor/editorOnScreen";
 import { useServerInfoStore } from "@/store/serverInfo";
 
-// activeEditorDocStore looks up the document store for the editor
-// tab currently shown in /editor. Returns null when no editor tab is
-// open so menu undo/redo shortcuts silently no-op rather than
-// mutating a stale global default.
+// activeEditorDocStore looks up the document store of the editor tab on
+// screen. Null when no editor tab is on screen — another page, or the
+// editor's welcome pane: the menu's Undo / Redo then do nothing rather than
+// change a document the author cannot see.
 function activeEditorDocStore() {
-  const { activeEditorTabId } = useTabsStore.getState();
-  if (!activeEditorTabId) return null;
-  return getOrCreateDocumentStore(activeEditorTabId);
+  const tabId = editorTabOnScreen();
+  return tabId ? getOrCreateDocumentStore(tabId) : null;
 }
 
 export default function App() {

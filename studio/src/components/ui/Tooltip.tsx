@@ -1,5 +1,6 @@
 import * as RT from "@radix-ui/react-tooltip";
 import type { ReactNode } from "react";
+import { useHiddenSubtree } from "./hiddenSubtree";
 
 export interface TooltipProps {
   content: ReactNode;
@@ -18,6 +19,7 @@ export function Tooltip({
   delayDuration = 250,
   disabled = false,
 }: TooltipProps) {
+  const hidden = useHiddenSubtree();
   if (disabled || content === null || content === undefined || content === "") {
     return <>{children}</>;
   }
@@ -25,6 +27,7 @@ export function Tooltip({
     <RT.Provider delayDuration={delayDuration}>
       <RT.Root>
         <RT.Trigger asChild>{children}</RT.Trigger>
+        {!hidden && (
         <RT.Portal>
           <RT.Content
             side={side}
@@ -36,6 +39,7 @@ export function Tooltip({
             <RT.Arrow className="fill-[color:var(--color-surface-2)]" />
           </RT.Content>
         </RT.Portal>
+        )}
       </RT.Root>
     </RT.Provider>
   );
