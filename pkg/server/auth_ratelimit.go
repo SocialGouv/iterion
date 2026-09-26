@@ -44,6 +44,12 @@ func peekJSONField(r *http.Request, field string) string {
 // across replicas via an atomic Lua token-bucket.
 type authRateLimiterBackend interface {
 	allow(key string, cfg authBucketCfg) (bool, time.Duration)
+	// refund gives one token back to the named bucket, capped at burst —
+	// the undo of an allow a caller did not keep (#1726). A key the limiter
+	// no longer holds (evicted under the LRU cap, or the Valkey key
+	// expired) refunds nothing: recreating a bucket to hand it a token
+	// would grant a fresh budget to a key whose history is gone.
+	refund(key string, cfg authBucketCfg)
 }
 
 // authRateLimiter enforces a per-key token-bucket rate limit on the
@@ -127,6 +133,29 @@ func (r *authRateLimiter) allow(key string, cfg authBucketCfg) (bool, time.Durat
 	}
 	b.tokens--
 	return true, 0
+}
+
+// refund returns one token to the named bucket, capped at burst. An
+// unknown key refunds nothing (see the interface's contract).
+func (r *authRateLimiter) refund(key string, cfg authBucketCfg) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.buckets[key]
+	if !ok {
+		return
+	}
+	now := r.now()
+	elapsed := now.Sub(b.last).Seconds()
+	if elapsed > 0 {
+		b.tokens += elapsed * cfg.rate
+		if b.tokens > cfg.burst {
+			b.tokens = cfg.burst
+		}
+	}
+	b.last = now
+	if b.tokens < cfg.burst {
+		b.tokens++
+	}
 }
 
 // limitRoute wraps an HTTP handler with per-IP rate limiting. The

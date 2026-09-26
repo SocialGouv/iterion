@@ -106,18 +106,32 @@ type launchAdmission struct {
 	counter  orgusage.Counter
 	usageKey orgusage.Subject
 	when     time.Time
+	// The per-minute launch bucket whose token this launch consumed
+	// (#1726). rollback refunds it: a launch the caller refuses after the
+	// gate — a malformed body, a lost duplicate race — must not leave the
+	// org's per-minute budget empty for a run that never was, 429-ing
+	// every legitimate launch behind the loop. rate is nil when no bucket
+	// was consumed (no limit configured, or no limiter).
+	rate    authRateLimiterBackend
+	rateKey string
+	rateCfg authBucketCfg
 }
 
 func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
-	if a == nil || a.counter == nil || a.usageKey == "" {
+	if a == nil {
 		return
 	}
-	// Detached ctx, same rationale as AllowRun's deny-path rollback: the
-	// abandoning request may already be cancelled.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
-	defer cancel()
-	if err := a.counter.ReleaseRun(ctx, a.usageKey, a.when); err != nil && logger != nil {
-		logger.Warn("launch gate: admission rollback for %s: %v (monthly run counter over-counts by one)", a.usageKey, err)
+	if a.counter != nil && a.usageKey != "" {
+		// Detached ctx, same rationale as AllowRun's deny-path rollback: the
+		// abandoning request may already be cancelled.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+		defer cancel()
+		if err := a.counter.ReleaseRun(ctx, a.usageKey, a.when); err != nil && logger != nil {
+			logger.Warn("launch gate: admission rollback for %s: %v (monthly run counter over-counts by one)", a.usageKey, err)
+		}
+	}
+	if a.rate != nil && a.rateKey != "" {
+		a.rate.refund(a.rateKey, a.rateCfg)
 	}
 }
 
@@ -207,10 +221,15 @@ func (s *Server) gateLaunch(ctx context.Context) (*launchAdmission, *launchDenia
 	if d := s.gateConcurrency(ctx, t); d != nil {
 		return nil, d
 	}
-	if d := s.gateLaunchRate(t); d != nil {
+	rateKey, rateCfg, d := s.gateLaunchRate(t)
+	if d != nil {
 		return nil, d
 	}
-	return s.gateMonthlyCaps(ctx, org, t, now)
+	adm, d := s.gateMonthlyCaps(ctx, org, t, now)
+	if adm != nil && rateKey != "" {
+		adm.rate, adm.rateKey, adm.rateCfg = s.authLimiter, rateKey, rateCfg
+	}
+	return adm, d
 }
 
 // orgForTeam resolves the parent org for the launch gate: the JWT's
@@ -260,21 +279,25 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team) *launchDe
 	return nil
 }
 
-func (s *Server) gateLaunchRate(t identity.Team) *launchDenial {
+// gateLaunchRate consumes one token from the org's per-minute launch
+// bucket and returns the key + config it consumed, so the admission can
+// refund them on a launch the caller refuses afterwards (#1726).
+func (s *Server) gateLaunchRate(t identity.Team) (string, authBucketCfg, *launchDenial) {
 	perMin := orValue(t.LaunchRatePerMin, s.orgDefaults.LaunchRatePerMin)
 	if perMin <= 0 || s.authLimiter == nil {
-		return nil
+		return "", authBucketCfg{}, nil
 	}
 	bucket := authBucketCfg{rate: float64(perMin) / 60.0, burst: float64(perMin)}
-	if ok, retry := s.authLimiter.allow("orglaunch:"+t.ID, bucket); !ok {
-		return &launchDenial{
+	key := "orglaunch:" + t.ID
+	if ok, retry := s.authLimiter.allow(key, bucket); !ok {
+		return "", authBucketCfg{}, &launchDenial{
 			status:     http.StatusTooManyRequests,
 			reason:     denyLaunchRateLimited,
 			detail:     fmt.Sprintf("org launch rate cap (%d/min) exceeded", perMin),
 			retryAfter: retry,
 		}
 	}
-	return nil
+	return key, bucket, nil
 }
 
 // gateMonthlyCaps charges the month's run counter and checks BOTH

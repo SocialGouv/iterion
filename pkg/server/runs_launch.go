@@ -319,10 +319,9 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// nil-safe and a no-op when nothing was metered (local mode, super-admin,
 	// the fail-open arms), so this is inert on those paths.
 	//
-	// It hands back the monthly unit and nothing else: gateLaunch also spends
-	// a per-minute launch-rate token, which launchAdmission does not carry, so
-	// a client looping a bad request still empties that bucket. That belongs
-	// to the gate, not to this handler.
+	// It hands back the monthly unit AND the per-minute launch-rate token the
+	// gate spent (launchAdmission carries the bucket; #1726): a client looping
+	// a bad request no longer empties that bucket.
 	runMayExist := false
 	defer func() {
 		if !runMayExist {

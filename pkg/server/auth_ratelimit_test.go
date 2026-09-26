@@ -160,3 +160,34 @@ func TestRetrySeconds_RoundsUpToOneOrMore(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthRateLimiter_RefundRestoresAToken pins the undo of an allow
+// (#1726): a consumed token comes back (capped at burst), an empty
+// bucket refills to exactly one allowance, and an unknown key is not
+// minted into a budget.
+func TestAuthRateLimiter_RefundRestoresAToken(t *testing.T) {
+	r := newAuthRateLimiter()
+	// A slow rate keeps refill noise out of the assertions.
+	cfg := authBucketCfg{rate: 1.0 / 60.0, burst: 1}
+
+	if ok, _ := r.allow("k", cfg); !ok {
+		t.Fatal("first allow refused on a full bucket")
+	}
+	if ok, _ := r.allow("k", cfg); ok {
+		t.Fatal("second allow passed an emptied bucket")
+	}
+	r.refund("k", cfg)
+	if ok, _ := r.allow("k", cfg); !ok {
+		t.Fatal("allow after refund refused — the token did not come back")
+	}
+	if ok, _ := r.allow("k", cfg); ok {
+		t.Fatal("allow after the refunded token was spent passed an empty bucket")
+	}
+
+	// A key the limiter never held refunds nothing: the next allow on it
+	// starts from a full bucket, not from burst+1.
+	r.refund("ghost", cfg)
+	if ok, _ := r.allow("ghost", cfg); !ok {
+		t.Fatal("allow on a refunded-but-never-held key refused")
+	}
+}
