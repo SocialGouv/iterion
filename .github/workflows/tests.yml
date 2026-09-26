@@ -971,6 +971,14 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # No Go cache here, on purpose (#1839): the restore is keyed on
+          # go.sum and carries the build cache of the whole suite — ~400 MB
+          # measured — for a job that runs ONE vendored command. A slow
+          # restore ate the job's whole 10-minute budget and fmt-check was
+          # cancelled before checking anything. The `go run` below rebuilds
+          # cmd/iterion in a couple of minutes, inside the budget; the
+          # module cache is not needed at all (-mod=vendor).
+          cache: false
       # Mirror of `task fmt:check`, inlined so the job does not pull go-task
       # for one command. internal/ciguard asserts the two stay identical.
       - name: Shipped bots and examples are canonical
@@ -995,6 +1003,10 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # No Go cache, same reason as fmt-check (#1839): one vendored
+          # `go run`, no module downloads — a slow restore of a ~400 MB
+          # archive is pure overhead against this job's 10-minute budget.
+          cache: false
       - name: Links broken by this change
         # Step-level rather than job-level on purpose: a job-level
         # continue-on-error still paints the job red on the pull request,
