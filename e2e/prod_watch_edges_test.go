@@ -2449,7 +2449,7 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		if err != nil {
 			t.Fatalf("leak_scan %s: %v %s", name, err, stderr)
 		}
-		b, _ := os.ReadFile(filepath.Join(dir, "signals.json"))
+		b, _ := os.ReadFile(out["signals_file"].(string))
 		return out, fmt.Sprint(out) + stderr + string(b)
 	}
 	for _, v := range values {
@@ -3163,7 +3163,11 @@ func TestProdWatch_LeakSourcesAreEveryQueryThatSawIt(t *testing.T) {
 		h.lines.Store(c.lines(time.Now().UnixNano()))
 		h.cursorTick(t, wf, cursorVars(h, 60, 0, 5000))
 		st := h.state(t)
-		if rec := st["incidents"].(map[string]any)["leak:"+c.class].(map[string]any); fmt.Sprint(rec["sources"]) != c.sources {
+		inc, ok := st["incidents"].(map[string]any)["leak:"+c.class]
+		if !ok {
+			t.Fatalf("%s: the leak:%s incident is absent from the state (incidents: %v)", c.name, c.class, st["incidents"])
+		}
+		if rec, _ := inc.(map[string]any); fmt.Sprint(rec["sources"]) != c.sources {
 			t.Fatalf("%s: the leak records every query that returned its lines: %v", c.name, rec["sources"])
 		}
 		for _, r := range st["incidents"].(map[string]any) {

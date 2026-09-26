@@ -421,6 +421,10 @@ tool plan:
         sev = str(p.get('severity') or 'high').lower()
         if sev not in ('critical', 'high', 'medium', 'low'):
             raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' has an unknown severity ' + repr(sev))
+        agg = str(p.get('agg') or 'max').lower()
+        if agg not in ('max', 'min', 'sum', 'first'):
+            raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' has an unknown agg ' + repr(agg) +
+                             ' (max, min, sum, first) -- an unknown word would silently mean max')
         ## The title is text wherever it lands (the state, the messages): a
         ## number written in the config is its text, anything else a mistake.
         title = p.get('title')
@@ -432,7 +436,7 @@ tool plan:
             raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' threshold must be a number')
         norm_probes.append({'id': str(p['id']), 'query': p['query'], 'op': op, 'threshold': thr,
                             'severity': sev, 'title': str(title) if title not in (None, '') else str(p['id']),
-                            'agg': p.get('agg') or 'max'})
+                            'agg': agg})
     uses_grafana = bool(queries) or bool(norm_probes)
     if uses_grafana:
         if not grafana.get('base_url'):
@@ -804,7 +808,9 @@ tool poll_loki:
     allow_private = {{input.allow_private}}
     token_file = {{secrets.grafana_token.path}}
     os.makedirs(scratch, exist_ok=True)
-    raw_path = os.path.join(scratch, 'loki_raw.jsonl')
+    ## The scratch is per-workspace and shared between runs: the handoff
+    ## names carry the run id so two runs never write each other's handoffs.
+    raw_path = os.path.join(scratch, 'loki_raw-' + str({{run.id}})[-12:] + '.jsonl')
     queries = loki.get('queries') or {}
     windows = loki.get('windows') or {}
     max_lines = int(loki.get('max_lines') or 5000)
@@ -820,8 +826,6 @@ tool poll_loki:
     base = (grafana.get('base_url') or '').rstrip('/')
     uid = grafana.get('loki_uid') or ''
     origin = urlsplit(base)
-    if origin.scheme != 'https' and not allow_private:
-        raise SystemExit('prod-watch: grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
 
     def _addr_ok(ip):
         try:
@@ -868,11 +872,12 @@ tool poll_loki:
             return type(e).__name__ + ': ' + str(e)[:200]
         return type(e).__name__ + ': the answer did not parse (its text is withheld)'
 
-    ## What the lane needs from its environment — a usable token, a Grafana
-    ## host resolving to an allowed address — is checked once: a failure is
-    ## reported on every query or probe of the lane (a Loki cursor stays),
-    ## never the tick's death, so a secret rotated wrong or a Grafana gone
-    ## from the DNS never silences the health probes.
+    ## What the lane needs from its environment — a usable token, a scheme
+    ## the bearer credential can ride, a Grafana host resolving to an
+    ## allowed address — is checked once: a failure is reported on every
+    ## query or probe of the lane (a Loki cursor stays), never the tick's
+    ## death, so a secret rotated wrong, an http:// base URL, or a Grafana
+    ## gone from the DNS never silences the health probes.
     token, setup_exc = '', None
     try:
         if token_file and os.path.exists(token_file):
@@ -885,6 +890,10 @@ tool poll_loki:
             ## Never quoted: the text is the secret, or holds it.
             raise CredentialRefused('the grafana_token secret is not one token on one line (whitespace or a control '
                                     'character inside) -- bind the token alone')
+        if origin.scheme != 'https' and not allow_private:
+            ## Refused before the host resolves: a public-name http:// Grafana
+            ## fails by NAME, not by a DNS miss that reads like an outage.
+            raise LaneError('grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
         try:
             _validate_host(origin.hostname or '')
         except (OSError, ValueError) as e:
@@ -1181,8 +1190,6 @@ tool poll_prom:
     base = (grafana.get('base_url') or '').rstrip('/')
     uid = grafana.get('prometheus_uid') or ''
     origin = urlsplit(base)
-    if origin.scheme != 'https' and not allow_private:
-        raise SystemExit('prod-watch: grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
 
     def _addr_ok(ip):
         try:
@@ -1229,11 +1236,12 @@ tool poll_prom:
             return type(e).__name__ + ': ' + str(e)[:200]
         return type(e).__name__ + ': the answer did not parse (its text is withheld)'
 
-    ## What the lane needs from its environment — a usable token, a Grafana
-    ## host resolving to an allowed address — is checked once: a failure is
-    ## reported on every query or probe of the lane (a Loki cursor stays),
-    ## never the tick's death, so a secret rotated wrong or a Grafana gone
-    ## from the DNS never silences the health probes.
+    ## What the lane needs from its environment — a usable token, a scheme
+    ## the bearer credential can ride, a Grafana host resolving to an
+    ## allowed address — is checked once: a failure is reported on every
+    ## query or probe of the lane (a Loki cursor stays), never the tick's
+    ## death, so a secret rotated wrong, an http:// base URL, or a Grafana
+    ## gone from the DNS never silences the health probes.
     token, setup_exc = '', None
     try:
         if token_file and os.path.exists(token_file):
@@ -1246,6 +1254,10 @@ tool poll_prom:
             ## Never quoted: the text is the secret, or holds it.
             raise CredentialRefused('the grafana_token secret is not one token on one line (whitespace or a control '
                                     'character inside) -- bind the token alone')
+        if origin.scheme != 'https' and not allow_private:
+            ## Refused before the host resolves: a public-name http:// Grafana
+            ## fails by NAME, not by a DNS miss that reads like an outage.
+            raise LaneError('grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
         try:
             _validate_host(origin.hostname or '')
         except (OSError, ValueError) as e:
@@ -1451,7 +1463,8 @@ tool leak_scan:
     app = {{input.app}} or {}
     scratch = {{input.scratch_dir}}
     os.makedirs(scratch, exist_ok=True)
-    signals_path = os.path.join(scratch, 'signals.json')
+    ## Shared scratch: the handoff name carries the run id.
+    signals_path = os.path.join(scratch, 'signals-' + str({{run.id}})[-12:] + '.json')
 
     def nir_ok(m):
         ## 13 digits + a 2-digit key = 97 - (number mod 97); Corsica maps
@@ -1952,6 +1965,11 @@ tool decide:
         if last and age_h(last) < age_h(rec.get('last_seen') or ''):
             rec['last_seen'] = last
 
+    if loki_per_query and not os.path.exists(signals_file):
+        expected = sum(int((i or {}).get('lines') or 0) for i in loki_per_query.values())
+        if expected > 0:
+            raise SystemExit('prod-watch: the signals file ' + repr(signals_file) + ' is missing although the lanes reported ' +
+                             str(expected) + ' line(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
     signals = jload(signals_file, {})
     spath = os.path.join(state_dir, 'state.json')
     bootstrap = not os.path.exists(spath)
@@ -2285,16 +2303,17 @@ tool decide:
         raise SystemExit('prod-watch: every configured lane failed this tick (' + ', '.join(dead) + ') -- refusing to report a quiet tick' +
                          (': ' + lane_errors if lane_errors else ''))
 
-    state_next = os.path.join(scratch, 'state_next.json')
+    ## Shared scratch: the handoff names carry the run id.
+    state_next = os.path.join(scratch, 'state_next-' + str({{run.id}})[-12:] + '.json')
     with open(state_next, 'w', encoding='utf-8') as fh:
         json.dump(state, fh, ensure_ascii=False, indent=1, sort_keys=True)
-    alertlog = os.path.join(scratch, 'alertlog_delta.jsonl')
+    alertlog = os.path.join(scratch, 'alertlog_delta-' + str({{run.id}})[-12:] + '.jsonl')
     with open(alertlog, 'w', encoding='utf-8') as fh:
         for a in posted:
             fh.write(json.dumps({'at': now_iso, 'fp': a['fingerprint'], 'kind': a['kind'], 'severity': a['severity'],
                                  'state': a['state'], 'title': a['title_arg'], 'count': a['count'], 'release': release},
                                 ensure_ascii=False) + chr(10))
-    tick = os.path.join(scratch, 'tick.json')
+    tick = os.path.join(scratch, 'tick-' + str({{run.id}})[-12:] + '.json')
     with open(tick, 'w', encoding='utf-8') as fh:
         json.dump({'at': now_iso, 'generation': state['generation'], 'lines': signals.get('lines_scanned', 0),
                    'templates': len(signals.get('templates') or []), 'alerts': len(posted), 'overflow': overflow,

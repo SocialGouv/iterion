@@ -79,11 +79,14 @@ overrides).
 - `sinks` — same contract as feed-watch/vuln-watch: `webhook` is a NAME
   looked up in the `webhooks` secret; `min_severity` filters what a sink
   receives (notes such as overflow, staleness and partial coverage are
-  `medium`); `required: false` marks a best-effort sink whose failure does
-  not block the tick.
+  `medium`, and bypass `min_severity`: a sink that only pages for critical
+  still learns the bot went blind); a message that reached NO sink fails
+  the tick and replays whatever `required` says — `required: false` marks
+  a best-effort sink whose own failure alone does not fail the tick.
 - `labels` — message-wording overrides (any language). Keys and their
   English defaults live in the bot's `plan` node; placeholders in braces
-  are substituted verbatim.
+  are substituted with each value markdown-inert and truncated to 200
+  characters.
 
 ## The secrets
 
@@ -112,6 +115,7 @@ Cloud: bind team secrets by name (`POST /api/teams/<id>/secrets` with
 ```
 <state_dir>/             default .prod-watch/  (--var state_dir=)
   .lock                  flock serializing state writes (one runner)
+  .gitignore             keeps .lock out of git (written by the bot)
   .gitattributes         alertlog.jsonl and ticks.jsonl merge=union
   state.json             cursors + incidents + source health — mode=watch is its ONLY writer
   alertlog.jsonl         append-only history of every alert posted

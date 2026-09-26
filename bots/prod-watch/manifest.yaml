@@ -75,8 +75,9 @@ launch:
   primary: [mode, dry_run]
   hidden: [scratch_dir]
 
-## Profile 2 (`dsl: 2` at the head of main.bot) plus the typed `fail`
-## node: a runner older than the release that reads them would refuse
-## the bundle at admission instead of failing mid-run.
+## Profile 2 (`dsl: 2`) and the typed `fail` node exist since 3.141.0; the
+## floor is the release the bot was authored and verified against, not a
+## named engine feature. A runner older than this release refuses the
+## bundle at admission instead of failing mid-run.
 requires:
   iterion: ">= 3.192.0"

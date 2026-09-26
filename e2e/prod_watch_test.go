@@ -61,6 +61,7 @@ func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map
 		b, _ := json.Marshal(path)
 		script = strings.ReplaceAll(script, "{{secrets."+name+".path}}", string(b))
 	}
+	script = strings.ReplaceAll(script, "{{run.id}}", `"harness"`)
 	if i := strings.Index(script, "{{"); i >= 0 {
 		end := i + 60
 		if end > len(script) {
@@ -118,7 +119,9 @@ func runPyEnv(t *testing.T, dir, script string, env []string) (map[string]any, s
 	runErr := c.Run()
 	out := map[string]any{}
 	if s := strings.TrimSpace(stdout.String()); s != "" {
-		_ = json.Unmarshal([]byte(s), &out)
+		if err := json.Unmarshal([]byte(s), &out); err != nil && runErr == nil {
+			t.Fatalf("stdout is not ONE json object (the engine would wrap it as {result: …}):\n%s", s)
+		}
 	}
 	return out, stderr.String(), runErr
 }
@@ -510,7 +513,8 @@ func TestProdWatch_TickLifecycle(t *testing.T) {
 	}
 	// The raw file is where the raw line must live — and ONLY there: the
 	// scan read it from here, so an empty file would mean it saw nothing.
-	if b, _ := os.ReadFile(filepath.Join(h.scratch, "loki_raw.jsonl")); !strings.Contains(string(b), rawEmail) {
+	// The path is the node's output (the handoff name carries the run id).
+	if b, _ := os.ReadFile(outs["poll_loki"]["raw_file"].(string)); !strings.Contains(string(b), rawEmail) {
 		t.Fatal("the raw file must hold the raw line the scan redacted")
 	}
 
@@ -562,7 +566,7 @@ func TestProdWatch_TickLifecycle(t *testing.T) {
 			t.Fatalf("raw email persisted in %s", f)
 		}
 	}
-	if b, _ := os.ReadFile(filepath.Join(h.scratch, "signals.json")); strings.Contains(string(b), rawEmail) {
+	if b, _ := os.ReadFile(outs["leak_scan"]["signals_file"].(string)); strings.Contains(string(b), rawEmail) {
 		t.Fatal("raw email in the derived signals file")
 	}
 }
@@ -969,6 +973,9 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	}{
 		{"a probe severity that is a number", "unknown severity", func(cfg map[string]any) {
 			cfg["prometheus"].(map[string]any)["probes"].([]map[string]any)[0]["severity"] = 3
+		}},
+		{"a probe agg that is not an aggregation", "unknown agg", func(cfg map[string]any) {
+			cfg["prometheus"].(map[string]any)["probes"].([]map[string]any)[0]["agg"] = "avg"
 		}},
 		{"a health probe severity that is a number", "unknown severity", func(cfg map[string]any) { cfg["probes"].([]map[string]any)[0]["severity"] = 3 }},
 		{"a sink threshold that is a number", "min_severity", func(cfg map[string]any) { cfg["sinks"].([]map[string]any)[0]["min_severity"] = 3 }},
@@ -2130,7 +2137,7 @@ func TestProdWatch_DecideDarkQueryDoesNotHealTheLane(t *testing.T) {
 	lastOK := time.Now().Add(-48 * time.Hour).UTC().Format("2006-01-02T15:04:05+00:00")
 	state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "incidents": map[string]any{},
 		"health": map[string]any{"loki": map[string]any{"last_ok": lastOK, "last_error": "previously dark"}}}
-	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "partial", "lines_scanned": 0}
+	signals := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial", "lines_scanned": 0}
 	out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
 		"loki_ok": true, "loki_errors": []any{map[string]any{"query": "errors", "error": "HTTPError: 500"}},
 		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "HTTPError: 500", "from_ns": "100", "to_ns": "900"},
@@ -2165,7 +2172,7 @@ func TestProdWatch_DecideDarkQueryDoesNotWashTheLifecycle(t *testing.T) {
 	h := newPWHarness(t)
 	state := map[string]any{"version": 1, "generation": 3, "cursors": map[string]any{"loki": map[string]any{}}, "health": map[string]any{},
 		"incidents": map[string]any{"loki:dark": incident("loki", "medium", true, 100, 100), "loki:old": incident("loki", "medium", true, 400, 400)}}
-	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "partial", "lines_scanned": 0}
+	signals := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial", "lines_scanned": 0}
 	out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
 		"loki_ok": true, "loki_errors": []any{map[string]any{"query": "errors", "error": "HTTPError: 500"}},
 		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "HTTPError: 500", "from_ns": "100", "to_ns": "900"},
@@ -2198,7 +2205,7 @@ func TestProdWatch_DecidePartialObservationConcludesNothing(t *testing.T) {
 		return map[string]any{"loki:quiet": incident("loki", "medium", true, 100, 100), "loki:old": incident("loki", "medium", true, 400, 400),
 			"leak:email": incident("leak", "high", true, 100, 100)}
 	}
-	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "partial", "lines_scanned": 0}
+	signals := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "partial", "lines_scanned": 0}
 	cases := map[string]map[string]any{
 		"truncated":  {"lines": 5, "error": "", "truncated": true, "gap": false, "covered_to_ns": "500", "from_ns": "100", "to_ns": "900"},
 		"zero-width": {"lines": 0, "error": "", "truncated": false, "gap": false, "covered_to_ns": "900", "from_ns": "900", "to_ns": "900"},
@@ -2260,7 +2267,7 @@ func TestProdWatch_DecideDroppedQueryKeepsItsMark(t *testing.T) {
 			"errors": map[string]any{"covered_to_ns": "555", "frontier_ns": "555", "band": []any{"0:aaaaaaaaaaaaaaaa"}, "band_base_ns": "555", "overlap_from_ns": "400", "at": recent},
 			"stale":  map[string]any{"covered_to_ns": "111", "frontier_ns": "111", "band": []any{}, "band_base_ns": "111", "overlap_from_ns": "111", "at": ancient},
 		}}}
-	signals := map[string]any{"templates": []any{}, "leak_findings": []any{}, "coverage": "full", "lines_scanned": 0}
+	signals := map[string]any{"templates": []any{}, "leak": []any{}, "coverage": "full", "lines_scanned": 0}
 	out, stderr, err := pwDecide(t, wf, h, signals, state, map[string]any{
 		"loki_per_query": map[string]any{"other": map[string]any{"lines": 0, "error": "", "covered_to_ns": "999"}}})
 	if err != nil {
@@ -2636,7 +2643,9 @@ func TestProdWatch_ProxyEnvDoesNotDisarmTheGuard(t *testing.T) {
 	}
 	// Strict posture against the loopback fake, with a proxy variable naming
 	// that same host: the guard must still refuse (before the fix it returned
-	// early and the request — with the bearer — went out).
+	// early and the request — with the bearer — went out). The refusal is a
+	// LANE ERROR on every query — the node completes, ok:false, the reason
+	// named — never the node's death.
 	for _, node := range []string{"poll_prom", "poll_loki"} {
 		inputs := map[string]any{"grafana": plan["grafana"], "timeout_secs": 5, "allow_private": false, "scratch_dir": h.scratch}
 		if node == "poll_prom" {
@@ -2644,10 +2653,183 @@ func TestProdWatch_ProxyEnvDoesNotDisarmTheGuard(t *testing.T) {
 		} else {
 			inputs["loki"] = plan["loki"]
 		}
-		_, stderr, err := runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, node).Script, inputs, nil, map[string]string{"grafana_token": h.tokenFile}),
+		out, stderr, err := runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, node).Script, inputs, nil, map[string]string{"grafana_token": h.tokenFile}),
 			[]string{"HTTPS_PROXY=http://127.0.0.1:9", "https_proxy=http://127.0.0.1:9"})
-		if err == nil || (!strings.Contains(stderr, "SSRF-unsafe") && !strings.Contains(stderr, "must be https")) {
-			t.Fatalf("%s: strict posture must refuse the loopback target even with a proxy env naming it: err=%v stderr=%s", node, err, stderr)
+		if err != nil {
+			t.Fatalf("%s: a setup refusal is a lane error, never the node's death: %v %s", node, err, stderr)
+		}
+		if ok, _ := out["ok"].(bool); ok {
+			t.Fatalf("%s: strict posture must not mark the lane ok: %v", node, out)
+		}
+		if s := fmt.Sprint(out["errors"]); !strings.Contains(s, "SSRF-unsafe") && !strings.Contains(s, "must be https") {
+			t.Fatalf("%s: the lane errors must name the refusal: %v", node, out["errors"])
+		}
+	}
+}
+
+// TestProdWatch_GrafanaSchemeIsALaneError: an http:// Grafana URL with a
+// bearer token to ride is refused on the lane — every query of the lane
+// carries the reason and the node completes (a config error is a lane
+// error, never the tick's death before the health probes ran).
+func TestProdWatch_GrafanaSchemeIsALaneError(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) { cfg["grafana"].(map[string]any)["base_url"] = "http://grafana.example" })
+	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, map[string]any{
+		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
+	if err != nil {
+		t.Fatalf("plan admits the config; the lane carries the refusal: %v %s", err, stderr)
+	}
+	for _, node := range []string{"poll_loki", "poll_prom"} {
+		inputs := map[string]any{"grafana": plan["grafana"], "timeout_secs": 5, "allow_private": false, "scratch_dir": h.scratch}
+		if node == "poll_prom" {
+			inputs["prometheus"] = plan["prometheus"]
+		} else {
+			inputs["loki"] = plan["loki"]
+		}
+		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, node).Script, inputs, nil, map[string]string{"grafana_token": h.tokenFile}))
+		if err != nil {
+			t.Fatalf("%s: the scheme refusal is a lane error, never the node's death: %v %s", node, err, stderr)
+		}
+		if ok, _ := out["ok"].(bool); ok {
+			t.Fatalf("%s: an http:// Grafana must not mark the lane ok: %v", node, out)
+		}
+		if s := fmt.Sprint(out["errors"]); !strings.Contains(s, "must be https") {
+			t.Fatalf("%s: the lane errors must name the scheme refusal: %v", node, out["errors"])
+		}
+	}
+}
+
+// TestProdWatch_DecideRefusesAMissingSignalsHandoff: the twin of leak_scan's
+// raw-file guard — a cleaned scratch or a resume on another runner must fail
+// the tick BY NAME, never read as an empty scan (the cursor would advance
+// over lines nobody decided on).
+func TestProdWatch_DecideRefusesAMissingSignalsHandoff(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	missing := filepath.Join(h.scratch, "prod-watch", "signals-missing.json")
+	_, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}}, nil, map[string]any{
+		"signals_file":   missing,
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 7, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}},
+	})
+	if err == nil || !strings.Contains(stderr, "is missing although the lanes reported") {
+		t.Fatalf("a missing signals file with lines reported refuses by name: err=%v stderr=%s", err, stderr)
+	}
+	// The empty twin stays legitimate: a lane that reported nothing with no
+	// file is an empty decision, not a refusal.
+	if _, stderr, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}}, nil, map[string]any{
+		"signals_file":   missing,
+		"loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}},
+	}); err != nil {
+		t.Fatalf("an empty handoff with no lines reported is a legitimate empty decision: %v %s", err, stderr)
+	}
+}
+
+// TestProdWatch_ResolveReleaseContract: the one node no other test asserts —
+// its output contract (release filled, release_known false, the named notes)
+// and its strict-posture address guard carry their own witnesses, so a
+// mutant that stops filling `release` or disarms the guard reddens here.
+func TestProdWatch_ResolveReleaseContract(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","version":"abc1234","secret_marker":"CANARY-body-SUPERSECRET","status_text":"degraded but serving"}`))
+	}))
+	t.Cleanup(srv.Close)
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	run := func(release map[string]any, allowPrivate bool) map[string]any {
+		t.Helper()
+		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "resolve_release").Script,
+			map[string]any{"release": release, "timeout_secs": 5, "allow_private": allowPrivate}, nil, nil))
+		if err != nil {
+			t.Fatalf("resolve_release(%v): %v %s", release, err, stderr)
+		}
+		return out
+	}
+	out := run(map[string]any{"source": "health_field", "health_url": srv.URL + "/health", "field": "version"}, true)
+	if out["release"] != "abc1234" || out["release_known"] != false {
+		t.Fatalf("the happy path fills release and keeps release_known false: %v", out)
+	}
+	if s, _ := out["note"].(string); !strings.Contains(s, "unverified") {
+		t.Fatalf("the note says the value is unverified: %v", out["note"])
+	}
+	// Strict posture refuses a private address by name, before any request.
+	out = run(map[string]any{"source": "health_field", "health_url": srv.URL + "/health", "field": "version"}, false)
+	if out["release"] != "" || !strings.Contains(fmt.Sprint(out["note"]), "SSRF-unsafe") {
+		t.Fatalf("strict posture refuses the loopback target by name: %v", out)
+	}
+	// A field whose value is not one version token (here: three words) is
+	// withheld entirely — the server's text must not ride out as a release.
+	out = run(map[string]any{"source": "health_field", "health_url": srv.URL + "/health", "field": "status_text"}, true)
+	if out["release"] != "" || !strings.Contains(fmt.Sprint(out["note"]), "withheld") {
+		t.Fatalf("a non-version field value is withheld: %v", out)
+	}
+	// No source configured, and an unreachable URL, are named notes.
+	out = run(map[string]any{}, true)
+	if out["release_source"] != "none" || !strings.Contains(fmt.Sprint(out["note"]), "no release source configured") {
+		t.Fatalf("source none is a named note: %v", out)
+	}
+	out = run(map[string]any{"source": "health_field", "health_url": deadURL + "/health", "field": "version"}, true)
+	if out["release"] != "" || !strings.Contains(fmt.Sprint(out["note"]), "Connection refused") {
+		t.Fatalf("an unreachable source is a named note: %v", out)
+	}
+}
+
+// TestProdWatch_TheGraphWiringIsTheTick: tick() re-declares every node's
+// inputs by hand, so a dropped or renamed edge mapping compiles fine and
+// runs green — the golden table here is what notices. Any key added to or
+// removed from an edge mapping must edit this table on purpose.
+func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	want := map[string]map[string]bool{
+		"resolve_release": {"release": true, "timeout_secs": true, "allow_private": true},
+		"poll_loki":       {"grafana": true, "loki": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
+		"poll_prom":       {"grafana": true, "prometheus": true, "timeout_secs": true, "allow_private": true},
+		"probe_http":      {"probes": true, "timeout_secs": true, "allow_private": true},
+		"leak_scan":       {"raw_file": true, "per_query": true, "app": true, "scratch_dir": true},
+		"decide": {"signals_file": true, "prom_results": true, "http_results": true, "loki_ok": true, "loki_truncated": true,
+			"loki_errors": true, "loki_per_query": true, "prom_ok": true, "prom_errors": true, "release": true, "release_known": true,
+			"lanes": true, "app": true, "workspace": true, "state_dir": true, "scratch_dir": true, "renotify_hours": true,
+			"quiet_after_hours": true, "forget_after_days": true, "source_stale_hours": true, "max_alerts": true},
+		"notify": {"alerts": true, "overflow_count": true, "stale_sources": true, "sinks": true, "labels": true, "app": true,
+			"release": true, "release_known": true, "dry_run": true, "max_message_chars": true},
+		"commit_state": {"state_next_file": true, "alertlog_file": true, "tick_file": true, "generation": true,
+			"state_commit": true, "workspace": true, "state_dir": true},
+	}
+	got := map[string]map[string]bool{}
+	for _, e := range wf.Edges {
+		if len(e.With) == 0 {
+			continue
+		}
+		if got[e.To] != nil {
+			t.Fatalf("node %s receives data mappings from more than one edge — decide which wiring is real", e.To)
+		}
+		got[e.To] = map[string]bool{}
+		for _, m := range e.With {
+			got[e.To][m.Key] = true
+		}
+	}
+	for node, keys := range want {
+		if len(got[node]) != len(keys) {
+			t.Fatalf("node %s receives %d input mappings, the tick declares %d (got %v, want %v)", node, len(got[node]), len(keys), got[node], keys)
+		}
+		for k := range keys {
+			if !got[node][k] {
+				t.Fatalf("node %s: the edge mapping lost input %q — decide's tick() feeds it and the edge no longer carries it", node, k)
+			}
+		}
+	}
+	for node := range got {
+		if want[node] == nil {
+			t.Fatalf("node %s receives edge mappings the golden table does not know — update the table on purpose", node)
 		}
 	}
 }

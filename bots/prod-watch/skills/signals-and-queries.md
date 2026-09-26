@@ -11,7 +11,10 @@ Each configured query is fetched over a **frozen window** `[from, to)`:
 
 - `to = now − ingest_lag_seconds` (default 120 s): Loki ingestion is not
   instantaneous; a line that arrives after the cursor moved past its
-  timestamp would be lost for good.
+  timestamp would be lost for good. Set `ingest_lag_seconds` to your
+  worst-case ingestion delay: `overlap_seconds` buys back only the tail of
+  ONE window — a line even later than lag + overlap is lost with a `full`
+  coverage note, and no later tick reads it.
 - `from` = the frontier where the last walk stopped, or the high-water
   mark − `overlap_seconds` (default 60 s), whichever is earlier — never
   before the band's lower bound, and bounded below by
@@ -106,7 +109,7 @@ The only node that opens `loki_raw.jsonl`. For every line, in this order
 | `secret_kv` | a secret word starting a name part — snake, kebab, dotted, quoted or bracketed — or a camelCase part (`dbPassword`, `DBPassword`, `dbPass`), with only the suffixes a secret name takes (`_KEY`, `_VALUE`, `PHRASE`, a number, an environment: `SECRET_KEY=…`, `PASSWORD_2_PROD=…`, `PASSPHRASE=…`, `TOKEN_PROD=…`), then `=`, `:` or `=>` (`"api_key": "…"`, `[password] => …`); a quoted value runs to its closing quote (an escaped `\"` stays inside — closed or never-closed alike, after a key, a flag, in SQL; a value ending in a single backslash is taken whole; a quote never closed runs to the end of the line unless the tail reads as code — `;)}]`, even glued — or as a sentence quoting the key: three spaces, so a three-word tail still pages, the deliberate trade); an unquoted value rides the plain tokens after it (`password: hunter2 sekrit7` redacts the whole tail; a token shaped like a name with a value — `user=42` — ends it, base64 padding `Zq7h9xAb3cZq==` does not, an empty `user=` rides); a flag value, quoted or not (`--password …`, `--db-pass …`, `--passphrase "…"` — one shell word: a multi-word secret after a flag must be quoted to ride whole); SQL `IDENTIFIED BY '…'` / `WITH PASSWORD '…'`; a URL's credentials `scheme://user:…@` (the password from 4 characters — shorter DSN passwords are a documented bound). Not a secret: a logger's own mask or a placeholder (`[Redacted]`, `********`, `${DB_PASSWORD}`, or a shout-underscore placeholder after a flag — `--pass CHANGE_ME`, quoted or not), a word of 12 letters or fewer (a status or a usage text: `expired`, `requires`), a lowercase snake_case value under a bare `*pass` key (`mountain_pass=closed_for_winter` is a status feed — under any other key, and quoted, in a DSN or after a flag, the same value is a credential and is redacted), a path **shape** (a relative prefix `./`, `../`, `~/`, a system prefix `/run/secrets/db`, or lowercase alpha segments `/data/redis/sessions` — and every head-based refusal holds only while the head is the whole value or the tail is plain lowercase words: a credential riding behind a path, a prefix, a word or a placeholder head is scanned; a base64 token of lowercase letters alone with slashes reads as a path — a documented miss), a count under a `…_token` key (`"prompt_token": 1234`), an API page token (`NextToken=`, `page_token=`); `total_tokens=…`, `PASSWORD_FILE=…` are not secret keys | key kept, value replaced |
 | `nir` | 13 digits + 2-digit key, **key validated** (Corsica 2A/2B handled) | `[REDACTED:nir]` |
 | `iban` | country code + check digits + BBAN, **the length that country's IBAN has, mod-97 validated** | `[REDACTED:iban]` |
-| `card` | 15–19 digits, **Luhn-validated**, the issuer prefix a card network's (Visa, Mastercard, Amex, JCB, Discover, Diners, UnionPay, Maestro), and either grouped like a card (4-4-4-4 with a 1–3 digit tail for 17–19 digits, or the Amex 4-6-5, under one repeated separator of any kind) or preceded by a card word within 40 chars | `[REDACTED:card]` |
+| `card` | 15–19 digits, **Luhn-validated**, the issuer prefix a card network's (Visa, Mastercard, Amex, JCB, Discover, Diners, UnionPay, Maestro — at 15 digits only Amex prefixes pass), and either grouped like a card (4-4-4-4 with a 1–3 digit tail for 17–19 digits, or the Amex 4-6-5, under one repeated separator of any kind) or preceded by a card word within 40 chars | `[REDACTED:card]` |
 | `email` | RFC-lite address | `[REDACTED:email]` |
 | `phone_fr` | French national or `+33` number | `[REDACTED:phone_fr]` |
 
@@ -132,7 +135,9 @@ reads as part of an identifier and goes unfound, as does a secret word
 glued to a letter before it (`xpassword=…`); `x_password=…` and an email
 glued so are still found. A password that is one plain word of 12 letters
 or fewer is not reported (it reads as a status or a usage text), nor a
-number under a compound `…_token` key (a count). This slice reports every
+number under a compound `…_token` key (a count), nor a short all-digit
+value (`passcode: 998877`) — it reads as a counter or an id, and the
+digit-key vocabulary is a deliberate trade. This slice reports every
 class at severity `high`; the
 policy slice adds per-class `critical` with keyword context and the
 circuit-breaker.
