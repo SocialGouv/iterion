@@ -77,7 +77,12 @@ type detachedSpec struct {
 	Answers    map[string]string // Resume only; CLI --answer accepts string values today
 	StoreDir   string
 	Force      bool
-	Timeout    time.Duration
+	// AllowUnknownInputs forwards the run-level #1757 opt-out as the CLI's
+	// --allow-unknown-inputs flag: the subprocess re-runs the input check
+	// from scratch, so anything not passed here refuses where the
+	// admitting boundary chose to ride.
+	AllowUnknownInputs bool
+	Timeout            time.Duration
 	MergeInto  string // worktree finalization, Launch only
 	BranchName string // worktree finalization, Launch only
 	// AutoMemory forwards the run-level auto-memory override as the CLI's
@@ -143,6 +148,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		}
 		if spec.Permission != "" {
 			args = append(args, "--permission", spec.Permission)
+		}
+		if spec.AllowUnknownInputs {
+			args = append(args, "--allow-unknown-inputs")
 		}
 		args = appendDetachedBudgetArgs(args, spec.Budget)
 	case runnerCommandResume:
@@ -395,20 +403,21 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	s.prepareRunLogNoFile(runID)
 
 	res, err := s.spawnDetached(parent, detachedSpec{
-		Command:         runnerCommandRun,
-		RunID:           runID,
-		FilePath:        spec.FilePath,
-		BundleDir:       spec.BundleDir,
-		Vars:            spec.Vars,
-		StoreDir:        s.storeDir,
-		Timeout:         spec.Timeout,
-		MergeInto:       spec.MergeInto,
-		BranchName:      spec.BranchName,
-		AutoMemory:      spec.AutoMemory,
-		LoopBudgetGuard: spec.LoopBudgetGuard,
-		Supervisors:     spec.Supervisors,
-		Permission:      spec.Permission,
-		Budget:          spec.Budget,
+		Command:            runnerCommandRun,
+		RunID:              runID,
+		FilePath:           spec.FilePath,
+		BundleDir:          spec.BundleDir,
+		Vars:               spec.Vars,
+		StoreDir:           s.storeDir,
+		AllowUnknownInputs: spec.AllowUnknownInputs,
+		Timeout:            spec.Timeout,
+		MergeInto:          spec.MergeInto,
+		BranchName:         spec.BranchName,
+		AutoMemory:         spec.AutoMemory,
+		LoopBudgetGuard:    spec.LoopBudgetGuard,
+		Supervisors:        spec.Supervisors,
+		Permission:         spec.Permission,
+		Budget:             spec.Budget,
 	})
 	if err != nil {
 		// The doc was pre-created above; without a runner it would sit
