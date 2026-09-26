@@ -351,13 +351,17 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	if u.Merged == nil || len(u.Merged.Workflows) == 0 {
 		result.Valid = false
 		why := "no workflow found"
+		hint := "a .bot carries its program in a `workflow \"name\" { … }` block: add one, or validate the bot's main if this file is one of its imports"
+		if doc != nil {
+			hint = "a document carries its program in a top-level `workflow:` key: add one, or validate the bot's main if this document is one of its imports"
+		}
 		// A file under lib/ is a fragment: a piece of the bot whose main
 		// imports it, and it holds no workflow by design. Validated alone
 		// it can only fail; the remedy is the main.
 		if filepath.Base(filepath.Dir(parsePath)) == unit.FragmentDir {
 			fragment := filepath.Base(parsePath)
 			why = "no workflow found: " + fragment + " is a fragment under " + unit.FragmentDir + "/, validated through the main that imports it"
-			hint := "run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + fragment + "\"`)"
+			hint = "run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + fragment + "\"`)"
 			if doc != nil {
 				// A document is never a fragment: an import names a .bot. The
 				// remedy names the .bot the document stands for — which the
@@ -366,6 +370,18 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				why = "no workflow found: " + fragment + " is an author document under " + unit.FragmentDir + "/ — a document is never a fragment; the .bot it stands for (" + bot + ") is one, through the main that imports it"
 				hint = "write the .bot the document stands for, then run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + bot + "\"`)"
 			}
+		}
+		// A file that failed to PARSE has its cause named already: a second
+		// error saying no workflow was found would count one cause twice —
+		// the workflow is missing because the program did not parse.
+		parseErrored := false
+		for _, d := range result.Diagnostics {
+			if d.Severity == "error" {
+				parseErrored = true
+				break
+			}
+		}
+		if !parseErrored {
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
 				Source:   "parse",
 				Severity: "error",

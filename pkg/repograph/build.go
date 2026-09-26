@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"time"
 	"unicode/utf8"
 
@@ -561,7 +563,7 @@ func addBotWorkflows(g *Graph, root, bot, dir string) error {
 		return nil
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".bot") {
+		if e.IsDir() || !workflowfile.IsWorkflowFile(e.Name()) {
 			continue
 		}
 		abs := filepath.Join(dir, e.Name())

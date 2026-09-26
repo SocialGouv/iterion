@@ -3,6 +3,66 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.203.0](https://github.com/SocialGouv/iterion/compare/v3.202.3...v3.203.0) (2026-09-26)
+
+### Features
+
+* **bots:** prod-watch (Argus) — slice A: the deterministic, zero-LLM watch tick ([#1869](https://github.com/SocialGouv/iterion/issues/1869)) ([1e7ed5e](https://github.com/SocialGouv/iterion/commit/1e7ed5e11762c8292a206b167bee34c71cfe7ec3)), references [#1695](https://github.com/SocialGouv/iterion/issues/1695) [#1696](https://github.com/SocialGouv/iterion/issues/1696) [#1704](https://github.com/SocialGouv/iterion/issues/1704) [#1697](https://github.com/SocialGouv/iterion/issues/1697) [#1698](https://github.com/SocialGouv/iterion/issues/1698) [#1699](https://github.com/SocialGouv/iterion/issues/1699) [#1700](https://github.com/SocialGouv/iterion/issues/1700) [#1701](https://github.com/SocialGouv/iterion/issues/1701) [#1702](https://github.com/SocialGouv/iterion/issues/1702) [#1708](https://github.com/SocialGouv/iterion/issues/1708)
+
+    <details><summary>why</summary>
+
+    ## Argus — slice A: the deterministic, zero-LLM watch tick (`bots/prod-watch`)
+
+    </details>
+
+## [3.202.3](https://github.com/SocialGouv/iterion/compare/v3.202.2...v3.202.3) (2026-09-26)
+
+### Bug Fixes
+
+* **server:** the metering surfaces read the slot's fact off the error, not off err != nil ([#1875](https://github.com/SocialGouv/iterion/issues/1875)) ([6414f2a](https://github.com/SocialGouv/iterion/commit/6414f2acc695f437fb018cb4fa1f494fef5e12f8)), closes [#1725](https://github.com/SocialGouv/iterion/issues/1725), references [#1725](https://github.com/SocialGouv/iterion/issues/1725)
+
+    <details><summary>why</summary>
+
+    Three sibling surfaces (the trigger spine, the board dispatcher, the retry sweeper) refunded the metered slot on ANY error out of Launch/Resume, on the strength of a comment saying "every error means no run started" — and the repo already knew that sentence was false (RunPersistedError, #1638's own aftermath). The ticket measured it: a publish that reports failure AFTER the message landed leaves a run the runner may claim, and the refund under-counts it.
+
+    </details>
+
+## [3.202.2](https://github.com/SocialGouv/iterion/compare/v3.202.1...v3.202.2) (2026-09-26)
+
+### Bug Fixes
+
+* the .bot file is read and validated by one rule ([#1728](https://github.com/SocialGouv/iterion/issues/1728) [#1808](https://github.com/SocialGouv/iterion/issues/1808) [#1762](https://github.com/SocialGouv/iterion/issues/1762)) ([#1871](https://github.com/SocialGouv/iterion/issues/1871)) ([2336861](https://github.com/SocialGouv/iterion/commit/2336861cd167467c1859ea01349a77e360364d28))
+
+    <details><summary>why</summary>
+
+    A file with no workflow got valid:false and nothing else on the JSON path: the reason was the human renderer's alone. It now rides the result as a parse diagnostic naming the declared remedy — and a file that failed to PARSE carries only its parse error, never a second "no workflow found" counting one cause twice.
+
+    </details>
+
+## [3.202.1](https://github.com/SocialGouv/iterion/compare/v3.202.0...v3.202.1) (2026-09-26)
+
+### Bug Fixes
+
+* **mcp:** the project-scoped engine server no longer squats the reserved iterion namespace ([#1870](https://github.com/SocialGouv/iterion/issues/1870)) ([c8e0d32](https://github.com/SocialGouv/iterion/commit/c8e0d32aa12bfbfbeb3bc8be4abbe9ce107d948b))
+
+    <details><summary>why</summary>
+
+    The runner refuses any project-declared MCP server whose normalized tool namespace lands on iterion's own (a project server named `iterion*` could forge infrastructure tools — ask_user, board, control — past the permission gate), so the refusal is load-bearing and stays. The repo's own `.mcp.json` predates the check and has parked every PR review on the runner's DLQ since it deployed (10 entries since 2026-09-25 21:31 UTC, this repository's reviews included). The local engine server is renamed…
+
+    </details>
+
+## [3.202.0](https://github.com/SocialGouv/iterion/compare/v3.201.0...v3.202.0) (2026-09-25)
+
+### Features
+
+* **cloud:** a pinned provider funds its own slot at the org and platform tiers ([#1818](https://github.com/SocialGouv/iterion/issues/1818)) ([b0ccd66](https://github.com/SocialGouv/iterion/commit/b0ccd660a523fe5216ee6661dd6e5e6b1378dd8a)), references [#659](https://github.com/SocialGouv/iterion/issues/659) [#736](https://github.com/SocialGouv/iterion/issues/736) [#1859](https://github.com/SocialGouv/iterion/issues/1859)
+
+    <details><summary>why</summary>
+
+    The shared tiers fill one credential per WIRE FAMILY, so a tenant whose org or platform holds both an Anthropic and a Moonshot key was served anthropic alone — and a node pinned `provider: moonshot` was then refused, correctly, with its funding one row away. Measured on the platform tier before this:
+
+    </details>
+
 ## [3.201.0](https://github.com/SocialGouv/iterion/compare/v3.200.3...v3.201.0) (2026-09-25)
 
 ### Features

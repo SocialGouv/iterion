@@ -46,6 +46,34 @@ type runCredKeys struct {
 	moonshotFP  string
 	anthropicFP string
 	oauthFP     string
+	// pinnedSlots are the slots funded ONLY by a key a shared tier filled
+	// because a route pins that provider (secrets.Credentials.PinnedAPIKeys).
+	// Their fingerprint is real — a reading that NAMES such a slot is charged
+	// to it, which is the whole point of stamping one — but they are not the
+	// run's default credential: no unpinned node can spend them, so an
+	// unattributable reading must not land there either.
+	pinnedSlots map[string]bool
+	// pinnedScopes is the meter scope a PINNED slot's own readings belong to,
+	// when that differs from the run's.
+	//
+	// A pinned key exists only beside another credential on its wire, and
+	// when that other one is the TENANT's the run scope is the tenant's
+	// private ledger — which is the wrong ledger for an org's or the
+	// platform's shared key: a window refusal one borrower measures would
+	// reach no other borrower of the same account, the inversion this
+	// struct's scope exists to prevent. So the owner's scope travels with the
+	// slot instead of being re-derived from the run.
+	pinnedScopes map[string]string
+}
+
+// scopeFor returns the meter scope a reading on this slot belongs to: the
+// run's own, except a slot funded by a shared tier's pinned key, whose
+// readings belong to the ledger of whoever owns that key.
+func (k runCredKeys) scopeFor(slot string) string {
+	if s := k.pinnedScopes[slot]; s != "" {
+		return s
+	}
+	return k.scope
 }
 
 // bySlot returns the fingerprint held for one anthropic-wire slot, "" when
@@ -99,7 +127,10 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	// cross-tenant ledger, mixing its readings with every other borrower's.
 	anyTenant, anyOrg := false, false
 	for _, slot := range secrets.AnthropicWireSlotOrder {
-		present := creds.APIKey(secrets.Provider(slot)) != ""
+		// A pinned key counts as PRESENT for the scope question: it is an
+		// org's or the platform's credential riding this run, and the scope
+		// is exactly what keeps such a key metered on its owner's ledger.
+		present := creds.APIKeyForRoute(secrets.Provider(slot)) != ""
 		if secrets.OAuthKind(slot).Valid() {
 			present = creds.OAuthDir(slot) != ""
 		}
@@ -117,6 +148,25 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k.moonshotFP = creds.Fingerprint(string(secrets.ProviderMoonshot))
 	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))
 	k.oauthFP = creds.Fingerprint(delegate.BackendClaudeCode)
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if !creds.IsPinnedSlot(slot) {
+			continue
+		}
+		if k.pinnedSlots == nil {
+			k.pinnedSlots = map[string]bool{}
+			k.pinnedScopes = map[string]string{}
+		}
+		k.pinnedSlots[slot] = true
+		// Its owner's ledger, by the same rule the run scope follows: the
+		// platform's single account is one meter for every tenant it serves,
+		// an org's is one for every team of its audience.
+		switch {
+		case creds.IsPlatformSourced(slot), creds.IsPoolSourced(slot):
+			k.pinnedScopes[slot] = usagecap.ScopePlatform
+		case creds.IsOrgSourced(slot):
+			k.pinnedScopes[slot] = usagecap.OrgScope(msg.OrgID)
+		}
+	}
 	return k
 }
 
@@ -148,33 +198,44 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 // ambient env, a label from a binary that predates the stamp) names no slot at
 // all, and there the bundle default is the only answer available.
 func (k runCredKeys) forSource(source string) string {
-	fp := ""
+	fp, slot := "", ""
 	switch {
 	case strings.HasPrefix(source, "facade:"):
-		if slot := delegate.AnthropicWireFacadeSlot(source); slot != "" {
-			fp = k.bySlot(slot)
+		if s := delegate.AnthropicWireFacadeSlot(source); s != "" {
+			fp, slot = k.bySlot(s), s
 		} else {
-			fp = k.firstHeld()
+			fp, slot = k.firstHeld()
 		}
 	case source == "anthropic-direct" && k.anthropicFP != "":
-		fp = k.anthropicFP
+		fp, slot = k.anthropicFP, string(secrets.ProviderAnthropic)
 	case source == "anthropic-oauth" && k.oauthFP != "":
-		fp = k.oauthFP
+		fp, slot = k.oauthFP, string(secrets.OAuthKindClaudeCode)
 	default:
-		fp = k.firstHeld()
+		fp, slot = k.firstHeld()
 	}
-	return usagecap.Key(delegate.BackendClaudeCode, k.scope, fp)
+	// The scope travels with the SLOT, not with the run: a shared tier's
+	// pinned key is metered on its owner's ledger even when the run itself
+	// is tenant-scoped.
+	return usagecap.Key(delegate.BackendClaudeCode, k.scopeFor(slot), fp)
 }
 
 // firstHeld is the bundle-default precedence: the first slot of
 // secrets.AnthropicWireSlotOrder the run actually carries.
-func (k runCredKeys) firstHeld() string {
+func (k runCredKeys) firstHeld() (fp, slot string) {
 	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if k.pinnedSlots[slot] {
+			// Funded for the routes that NAME it and for nothing else. The
+			// default precedence in the delegate cannot reach it, so a
+			// reading with no attributable source cannot have been spent on
+			// it — charging it here would park a key this run's unpinned
+			// work never touched.
+			continue
+		}
 		if fp := k.bySlot(slot); fp != "" {
-			return fp
+			return fp, slot
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // usageCapKey is the run's DEFAULT credential key — what the pre-flight

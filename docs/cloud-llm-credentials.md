@@ -386,6 +386,14 @@ It survives log rotation, which the lines above do not:
 { "cred_fingerprints": ["1cf39b47…"], "credential_tiers": ["oauth-forfait"] }
 ```
 
+Beside it, `pinned_providers` records which providers the run's routes NAME,
+and it is the opposite kind of field: stamped **once, at launch**, and
+replayed by every resume. It is what lets a shared tier fund a pinned slot on
+an already-served wire family (above), and freezing it is the point — a bot
+whose source gained or lost a `provider:` pin between launch and resume must
+not change what the in-flight run is funded with. Absent on runs launched
+before the field existed, which reads as "nothing pinned".
+
 It is **plural** because a run is: one attempt can spend a team forfait on
 its implementer and the platform's codex key on its plan review, and naming
 one of them "the tier" would be wrong about the other. It carries no slot
@@ -795,6 +803,29 @@ Semantics worth knowing:
   the same **wire family** — a platform `anthropic` key never shadows a
   tenant's own `claude_code` forfait (the delegate ranks a ctx API key above
   a ctx OAuth dir on the same wire).
+- **…except a slot the workflow PINS**, which is fundable on its own name
+  even when another credential already fills its wire family. A run whose
+  node says `provider: "moonshot"` (or, on claw, `model: "moonshot/kimi-k2"`)
+  gets the shared tier's Moonshot key beside the Anthropic one it is already
+  served by — otherwise that node is refused while its funding sits one row
+  away, which is what happens to every second provider on a shared wire.
+  Three properties make it safe, and they are what the rule is:
+  - the one-key-per-family rule is **unchanged for a run that pins
+    nothing** — no pin, no extra slot, byte-identical behaviour;
+  - a key filled this way serves **only the routes that name its
+    provider**. It rides a separate channel (`RunBundle.PinnedAPIKeys`), so
+    the delegates' default precedence cannot see it: the unpinned nodes of
+    the same run keep the credential they had, including a tenant forfait
+    that the wire order would otherwise have put behind a facade key;
+  - the pinned set is **frozen at launch** (`store.Run.PinnedProviders`) and
+    replayed by every resume, so a source edited between launch and resume
+    cannot change what the run is funded with.
+
+  A route the launch cannot resolve — a subbot's inner nodes, an `auto`
+  hint, a `{{vars.…}}` provider — contributes no pin, so its slot stays
+  unfillable and its node is refused by name. `iterion remote credentials
+  preview` applies the same rule, so what it lists is what the launch will
+  grant.
 - **Rotation reach**: new launches and resumes re-resolve, so a
   `failed_resumable` run picks the fresh value on resume. In-flight runs
   keep the sealed snapshot they launched with.

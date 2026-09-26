@@ -3,6 +3,8 @@ package parser
 import (
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
@@ -65,7 +67,7 @@ func ImportPathError(path string) string {
 		return "the path is absolute; an import is relative to the file that imports it"
 	case len(path) >= 2 && path[1] == ':' && isASCIILetter(path[0]):
 		return "the path names a drive; an import is relative to the file that imports it"
-	case !strings.HasSuffix(path, ".bot"):
+	case !workflowfile.IsWorkflowFile(path):
 		return "a fragment is a `.bot` file"
 	}
 	for _, seg := range strings.Split(path, "/") {

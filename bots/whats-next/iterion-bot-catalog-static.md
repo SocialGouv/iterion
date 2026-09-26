@@ -98,6 +98,7 @@ Walk top-to-bottom; first match wins.
 | "is ADR-NNN still right?", "re-challenge that decision" — human-gated, ends in keep/change/addendum | `adr-rechallenge` |
 | "set up a reproducible toolchain", "we need a devbox.json" | `devbox-setup` |
 | "watch these feeds / releases and digest them for us" — recurring veille | `feed-watch` |
+| "is production healthy right now, and what just changed?" — one deployed app's logs, metrics and health endpoints on a schedule, alerts to chat, git-backed incident state | `prod-watch` |
 | "give me a live URL for this branch", "a real review environment" | `review-env` |
 | architectural choice, hiring, prioritisation meeting, alignment | `""` |
 | operator is vague or it's cross-cutting | `""` |

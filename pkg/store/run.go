@@ -656,6 +656,32 @@ type Run struct {
 	// fields; aggregation is by polling children's terminal status.
 	ParentRunID string `json:"parent_run_id,omitempty" bson:"parent_run_id,omitempty"`
 
+	// PinnedProviders are the provider names some resolved route of this
+	// run NAMES — a node's `provider:` chain, a launch-time provider
+	// override, a `provider/model` prefix, a fallback route — sorted,
+	// lower-cased, restricted to the vocabulary the publisher can fund.
+	// It lets a pinned facade provider be funded at the org and platform
+	// tiers even when another slot already fills its wire family
+	// (cloudpublisher fillFromOrg / fillFromPlatform).
+	//
+	// LAUNCH-FROZEN, unlike CredFingerprints below: stamped once by the
+	// launch that derived it, replayed from here by every resume — the
+	// same replay-from-the-doc doctrine as ModelOverrides and Fallback.
+	// A resume re-resolves its source, so re-deriving would let a source
+	// that moved between launch and resume change which credentials the
+	// run is granted: a funding decision taken from a program the launch
+	// never approved.
+	//
+	// Empty means "nothing pinned, or a run that predates this field":
+	// the tiers then fill one credential per wire family exactly as
+	// before. It is a LOWER BOUND, never a claim of completeness — a
+	// route the walk cannot resolve (a subbot's inner nodes, an `auto`
+	// hint, a `{{vars.…}}` provider) contributes nothing, so the slot it
+	// would have needed stays unfillable and its node is refused by name.
+	// That is the safe direction: a missing pin costs a loud refusal, an
+	// invented one would hand a run a credential nobody asked for.
+	PinnedProviders []string `json:"pinned_providers,omitempty" bson:"pinned_providers,omitempty"`
+
 	// CredFingerprints are the stable audit identities of the credentials
 	// the publisher sealed for this run (API-key and OAuth fingerprints —
 	// never secrets). Stamped at launch and RE-stamped at every resume,

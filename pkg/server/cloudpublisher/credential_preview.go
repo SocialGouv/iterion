@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -34,6 +35,11 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// The same canonicalisation the live walk applies, or the preview would
 	// answer for a spelling the launch never uses.
 	previewBotID := botregistry.NormalizeName(spec.Context.BotID)
+	// The same derivation the launch stamps on the run document. Derived
+	// fresh here on purpose: a preview describes a launch that has not
+	// happened, so there is no frozen set to replay — it answers for the
+	// program as it reads NOW, which is what the operator is about to run.
+	x.pinned = pinnedProviderSet(derivePinnedProviders(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback)))
 	wants, routes := wantsFor(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback))
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
@@ -165,6 +171,11 @@ type credentialPreview struct {
 	skippedOAuth  map[string]int
 	accountGroups map[string]string
 	poolGranted   bool
+	// pinned are the providers a route of the previewed launch NAMES. A
+	// shared tier may fund one of them even on a wire family another slot
+	// already fills, so the preview has to apply the same exception or it
+	// would report a credential the launch will grant as "not consulted".
+	pinned map[string]bool
 }
 
 func (x *credentialPreview) warn(s string) { x.out.Warnings = append(x.out.Warnings, s) }
@@ -175,6 +186,16 @@ func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 	c.ID = fmt.Sprintf("c%d", len(x.out.Candidates)+1)
 	x.out.Candidates = append(x.out.Candidates, c)
 	return len(x.out.Candidates) - 1
+}
+
+// familyBlocked is the preview's mirror of the tiers' `fillable`: a wire
+// family already served blocks a SHARED tier's slot, unless a route of the
+// launch pins that provider — the exception fillFromOrg/fillFromPlatform
+// apply. Separate from taken() because the restore stage reads the plain
+// question: the live restore has no pinned exception, and a preview that
+// invented one would predict a hand-out the resolver refuses.
+func (x *credentialPreview) familyBlocked(slot string) bool {
+	return x.taken(slot) && !x.pinned[strings.ToLower(slot)]
 }
 func (x *credentialPreview) taken(slot string) bool {
 	wire := secrets.WireFamily(slot)
@@ -267,7 +288,7 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 			c.State = string(credpool.StatusBotFiltered)
 			c.Reason += " This key's workload audience does not name bot " + botID + "."
 		}
-		if !active || byWire && x.taken(string(k.Provider)) {
+		if !active || byWire && x.familyBlocked(string(k.Provider)) {
 			c.Selection = "not_consulted"
 			c.Reason += " This tier is bypassed for this wire in the current launch."
 		}
@@ -290,7 +311,7 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 	// same fixed provider order as fillFromOrg/fillFromPlatform, not map order.
 	for _, provider := range providers {
 		if i, ok := winners[provider]; ok {
-			if !byWire || !x.taken(string(provider)) {
+			if !byWire || !x.familyBlocked(string(provider)) {
 				x.api[provider] = i
 			}
 		} else if i, ok := first[provider]; ok {

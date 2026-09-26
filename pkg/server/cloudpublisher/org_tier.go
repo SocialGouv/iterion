@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -78,6 +79,7 @@ func (p *Publisher) fillFromOrg(
 	skips *skipTracker,
 	skippedAPIKeys map[secrets.Provider]skippedAPIKey,
 	skippedForfaits map[string]skippedForfait,
+	pinned map[string]bool,
 ) {
 	if p.sealer == nil || !p.orgCredentialAudience(ctx, orgID, tenantID) {
 		return
@@ -93,7 +95,9 @@ func (p *Publisher) fillFromOrg(
 	for kind := range bundle.OAuthCredentials {
 		taken[secrets.WireFamily(kind)] = true
 	}
-	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] }
+	// One credential per wire family, EXCEPT a slot a route of the run
+	// pins — the same rule, and the same reasons, as fillFromPlatform.
+	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] || pinned[strings.ToLower(slot)] }
 
 	orgScope := secrets.OrgTierTenantID(orgID)
 	meter := usagecap.OrgScope(orgID)
@@ -103,6 +107,12 @@ func (p *Publisher) fillFromOrg(
 	if p.apiKeys != nil {
 		missing := make([]secrets.Provider, 0, len(allKnownProviders))
 		for _, prov := range allKnownProviders {
+			// A slot an earlier stage funded is NOT rewritten: the first
+			// tier to fill a slot owns it, and a later tier overwriting it
+			// would move the spend onto its own invoice in silence.
+			if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+				continue
+			}
 			if fillable(string(prov)) {
 				missing = append(missing, prov)
 			}
@@ -127,12 +137,15 @@ func (p *Publisher) fillFromOrg(
 					if !ok || len(r.Plaintext) == 0 || !fillable(string(prov)) {
 						continue
 					}
-					bundle.APIKeys[prov] = string(r.Plaintext)
+					pinnedOnly := fillAPIKeySlot(bundle, taken, prov, string(r.Plaintext))
 					bundle.OrgSourced[string(prov)] = true
 					apiKeyFPs[prov] = r.Fingerprint
-					taken[secrets.WireFamily(string(prov))] = true
 					usedIDs = append(usedIDs, r.KeyID)
-					p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s", runID, orgID, prov, r.Fingerprint)
+					if pinnedOnly {
+						p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s (pinned route only — its wire family is served by another credential)", runID, orgID, prov, r.Fingerprint)
+					} else {
+						p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s", runID, orgID, prov, r.Fingerprint)
+					}
 				}
 				// A provider whose every org key was refused resolves to
 				// nothing under the predicate. Remember what an unfiltered
@@ -144,7 +157,7 @@ func (p *Publisher) fillFromOrg(
 				// nothing retries. The platform tier states the same rule;
 				// omitting it here is what turned a recoverable park into an
 				// outright refusal for an org-funded team.
-				if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
+				if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
 					fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, refused, nil, p.sealer, nil, withheld.note)
 					if ferr != nil {
 						p.logger.Warn("cloudpublisher: org refused-key fallback resolve: %v", ferr)

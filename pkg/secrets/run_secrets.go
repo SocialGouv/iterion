@@ -26,6 +26,23 @@ import (
 // the shared master key.
 type RunBundle struct {
 	APIKeys map[Provider]string `json:"api_keys,omitempty"`
+	// PinnedAPIKeys carries keys a shared tier (org, platform) filled ONLY
+	// because a route of the run NAMES that provider, on a wire family
+	// another slot already fills. They are deliberately NOT in APIKeys:
+	// every default-precedence reader walks that map, and the anthropic
+	// wire ranks the facade slots FIRST — a moonshot key added there for
+	// one pinned node would silently reroute every UNPINNED node of the
+	// run onto Kimi, and past a tenant's own forfait, which is the
+	// cross-vendor substitution the one-key-per-family rule exists to
+	// prevent. Kept in their own map, they are invisible to those readers
+	// by construction rather than by a guard each would have to repeat.
+	//
+	// The rule for reading one: a pinned key serves ONLY a route that
+	// names its provider — the claude_code delegate under an explicit
+	// `provider:` hint, a claw node whose model spec carries the
+	// `<provider>/` prefix. Metering still stamps its fingerprint, so its
+	// own usage windows are attributed to it like any other credential.
+	PinnedAPIKeys map[Provider]string `json:"pinned_api_keys,omitempty"`
 	// GenericSecrets maps workflow secret names to plaintext payloads
 	// resolved from the tenant/user secret store at publish time.
 	GenericSecrets map[string]string `json:"generic_secrets,omitempty"`

@@ -311,26 +311,26 @@ func TestADocumentWhoseBotFmtWillNotWriteOverIsRefused(t *testing.T) {
 	}
 }
 
-// A document whose .bot is a name no surface reads back as a workflow file
-// — `UPPER.BOT.YAML` stands for `UPPER.BOT` — is not drawn: `fmt --to bot`
-// will not write that .bot and `diagram` would not take it, and both say so
-// in one set of words. validate reads the document, as it reads `UPPER.BOT`
-// (bundle.Detect folds the suffix's case).
-func TestDiagramRefusesADocumentWhoseBotNoSurfaceReadsBack(t *testing.T) {
+// A document named `UPPER.BOT.YAML` stands for `UPPER.BOT`, and every
+// surface takes that name now that the workflow file suffix is case-folded
+// (one rule with bundle.Detect, #1762): diagram draws the document, fmt
+// --to bot writes the .bot, and the file written is one the same binary
+// reads back — through validate, the walks and `--to yaml`.
+func TestDiagramTakesADocumentWhoseBotEverySurfaceReadsBack(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "u/UPPER.BOT.YAML", helloDocWith(""))
-	if _, err := diagramJSON(t, doc, ""); err == nil || !strings.Contains(err.Error(), "stands for u/UPPER.BOT, a name `diagram` would not read back") {
-		t.Fatalf("diagram: %v, want the refusal naming the .bot's name", err)
+	if _, err := diagramJSON(t, doc, ""); err != nil {
+		t.Fatalf("diagram refuses UPPER.BOT.YAML: %v", err)
 	}
 	jp, _ := jsonPrinter()
 	if err := RunValidate(doc, jp); err != nil {
 		t.Fatalf("validate refuses what it reads as UPPER.BOT: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); !errors.Is(err, ErrFmtToDestination) || !strings.Contains(err.Error(), "stands for u/UPPER.BOT, a name `fmt` would not read back") {
-		t.Fatalf("fmt --to bot: %v, want the refusal naming the .bot's name", err)
+	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
+		t.Fatalf("fmt --to bot on UPPER.BOT.YAML: %v, want the conversion", err)
 	}
-	if _, err := os.Stat("u/UPPER.BOT"); err == nil {
-		t.Fatal("a refused surface wrote the .bot")
+	if _, err := os.Stat("u/UPPER.BOT"); err != nil {
+		t.Fatalf("UPPER.BOT not on disk: %v", err)
 	}
 }
 

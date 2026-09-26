@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -1382,28 +1383,22 @@ func (s *Server) launchWebhookTarget(
 		delivery.FailedAt = &failedAt
 		s.updateWebhookDelivery(ctx, delivery)
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
-		// The metered slot goes back, as the trigger spine, the board
-		// dispatcher and the retry sweeper already do.
-		//
-		// Not because no run document exists — one often does. A publish
-		// failure inside cloudpublisher.SubmitLaunch deliberately KEEPS the
-		// row, flipped to `failed` with a typed code, because a vanished row
-		// explains nothing to the studio or to an operator (93 orphaned
-		// `queued` rows in one incident is why). What goes back is the
-		// monthly RUN slot, and that meters work that EXECUTES: a run failed
-		// at launch ran no node and spent no provider budget, so charging
-		// for it bills nothing. The three surfaces above draw the same line,
-		// one of them in as many words ("a run that never started consumes
-		// no monthly slot").
-		//
-		// The delivery row stays StatusLaunchError and stays RETRYABLE, and
-		// releasing the unit is what lets the redelivery meter its own
-		// instead of paying twice. Without it a repeatable failure (a
-		// required secret that cannot resolve, a bot the registry cannot
-		// load) spends one monthly run unit per delivery and never returns
-		// it — and the idempotency key carries the head SHA, so every push
-		// is a fresh charge.
-		adm.rollback(s.logger)
+		// The metered slot follows the error's own fact, read with
+		// RunMayHaveStarted (#1725) — never inferred from err != nil. A
+		// launch PROVEN not to have started (a compile refusal, a sealing
+		// failure: nothing durable exists) hands the slot back, so a
+		// repeatable failure does not burn the org's month one delivery at
+		// a time — the idempotency key carries the head SHA, so every push
+		// is a fresh charge. A publish that LANDED but reported failure
+		// keeps it: cloudpublisher.SubmitLaunch deliberately leaves the row
+		// in place (flipped to `failed` with a typed code — a vanished row
+		// explains nothing to the studio or to an operator), and refunding
+		// the unit of a run that exists or may still be claimed is the
+		// under-count the launch gate exists to prevent. The delivery row
+		// stays StatusLaunchError and stays RETRYABLE either way.
+		if !runview.RunMayHaveStarted(lerr) {
+			adm.rollback(s.logger)
+		}
 		out.Status = webhooks.StatusLaunchError
 		out.Error = fmt.Sprintf("launch failed: %v", lerr)
 		out.DeliveryID = delivery.ID

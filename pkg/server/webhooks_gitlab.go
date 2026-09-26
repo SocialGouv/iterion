@@ -1230,7 +1230,12 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		return deny.err()
 	}
 	if _, err = s.runs.Launch(ctx, spec); err != nil {
-		adm.rollback(s.logger)
+		// The slot follows the error's own fact (#1725): a launch proven
+		// not to have started hands the metered unit back; a publish that
+		// landed keeps it — the run it describes exists or may be claimed.
+		if !runview.RunMayHaveStarted(err) {
+			adm.rollback(s.logger)
+		}
 		return err
 	}
 	return nil

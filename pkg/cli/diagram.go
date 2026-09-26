@@ -40,13 +40,6 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 	if !document && !workflowfile.IsWorkflowFile(opts.File) {
 		return fmt.Errorf("diagram file %q must end in .bot, or be an author document (.bot.yaml)", opts.File)
 	}
-	// The .bot a document stands for is one `fmt --to bot` writes and
-	// `diagram` then takes by name — never `UPPER.BOT`, which neither does.
-	if document {
-		if bot, ok := twinNameReadBack("bot", opts.File); !ok {
-			return fmt.Errorf("%s", twinNameRefusal("diagram", opts.File, bot))
-		}
-	}
 	if err := requireWorkflowPathExists(opts.File); err != nil {
 		return err
 	}

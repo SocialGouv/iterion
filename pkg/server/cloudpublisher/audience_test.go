@@ -55,7 +55,7 @@ func resolveWithBot(t *testing.T, p *Publisher, sealer secrets.Sealer, runID, bo
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), "team1")
 	creds, err := p.resolveAndSealCredentials(ctx, runID, "", "team1", "owner1", botID,
-		nil, pins, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
+		nil, pins, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestTheAudienceFoldDoesNotReachBotSecretBindings(t *testing.T) {
 
 	ctx := store.WithTenant(context.Background(), "team1")
 	if _, err := p.resolveAndSealCredentials(ctx, "run-binding", "", "team1", "owner1", underscoreBot,
-		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault); err != nil {
+		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil); err != nil {
 		t.Fatalf("a binding on a bot named %q stopped resolving — the audience's fold reached a store that matches exactly: %v", underscoreBot, err)
 	}
 }

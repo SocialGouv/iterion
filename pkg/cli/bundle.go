@@ -95,7 +95,7 @@ func removeIfExists(path string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.HasSuffix(abs, ".botz") {
+	if n := len(".botz"); len(abs) < n || !strings.EqualFold(abs[len(abs)-n:], ".botz") {
 		// Defence in depth: --force only ever removes our own format.
 		return fmt.Errorf("bundle pack: refusing to remove non-.botz %s", abs)
 	}

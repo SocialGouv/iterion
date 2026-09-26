@@ -58,11 +58,10 @@ func Detect(path string) (Kind, error) {
 		}
 		return KindBot, fmt.Errorf("bundle: %s is a directory but contains no main.bot at root%s", path, noMainBotHint(path))
 	}
-	lower := strings.ToLower(path)
-	if strings.HasSuffix(lower, ".botz") {
+	if strings.HasSuffix(strings.ToLower(path), ".botz") {
 		return KindBundle, nil
 	}
-	if workflowfile.IsWorkflowFile(lower) {
+	if workflowfile.IsWorkflowFile(path) {
 		return KindBot, nil
 	}
 	return KindBot, fmt.Errorf("bundle: unsupported workflow extension for %s (expected .bot or .botz)", path)

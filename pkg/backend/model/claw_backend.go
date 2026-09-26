@@ -1300,6 +1300,20 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			env[name] = key
 		}
 	}
+	// A PINNED key (secrets.RunBundle.PinnedAPIKeys) crosses only for the
+	// node that names its provider in its model spec — `moonshot/kimi-k2`
+	// carries MOONSHOT_API_KEY into the container, an `anthropic/…` node in
+	// the same run does not see it. That spec IS the pin on this backend
+	// (claw has no `provider:` hint of its own), so it is the licence the
+	// key travels on; forwarding it to every node would put a credential
+	// provisioned for one route into the environment of all of them.
+	if prov := clawPinnedProvider(model); prov != "" {
+		if k := creds.PinnedAPIKey(prov); k != "" {
+			if name := byokEnvVar[prov]; name != "" {
+				env[name] = k
+			}
+		}
+	}
 	// A resolved ChatGPT forfait (the tenant's own, or one lent through the
 	// credential pool) is delivered into the sandbox as a file by
 	// runtime.addCodexOAuthSecretFile. Point the in-container runner at it
@@ -1318,7 +1332,14 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// …and never against the operator's explicit kill switch:
 		// ITERION_OPENAI_USE_OAUTH=0 is a machine-wide refusal to spend any
 		// subscription, which a per-run credential does not get to overrule.
-		if creds.APIKeys[secrets.ProviderOpenAI] == "" && os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" {
+		// APIKeyForRoute for the provider THIS node names: a key a shared
+		// tier funded for a pinned `openai/…` node is that node's chosen
+		// instrument, and forcing the forfait would spend the other one.
+		nodeOwnKey := creds.APIKeys[secrets.ProviderOpenAI]
+		if clawPinnedProvider(model) == secrets.ProviderOpenAI {
+			nodeOwnKey = creds.APIKeyForRoute(secrets.ProviderOpenAI)
+		}
+		if nodeOwnKey == "" && os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
@@ -1331,11 +1352,28 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// api.anthropic.com for a GLM model it cannot serve, breaking exactly the
 	// forfait-carrying tenants this change is for.
 	if !modelServedByZAI(model) {
-		if err := applyForfaitAcrossSandbox(env, creds); err != nil {
+		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
 			return nil, err
 		}
 	}
 	return env, nil
+}
+
+// clawPinnedProvider names the provider a claw model spec PINS — the
+// `<provider>/` prefix, lower-cased — or "" when the spec carries none or
+// names something no credential slot answers to. It is deliberately strict:
+// it gates a credential, so an unreadable spec must yield nothing rather
+// than a guess.
+func clawPinnedProvider(model string) secrets.Provider {
+	name, _, err := ParseModelSpec(strings.TrimSpace(model))
+	if err != nil {
+		return ""
+	}
+	prov := secrets.Provider(strings.ToLower(strings.TrimSpace(name)))
+	if !prov.Valid() {
+		return ""
+	}
+	return prov
 }
 
 // modelServedByZAI reports whether a model pinned on claw's anthropic provider
@@ -1347,7 +1385,7 @@ func modelServedByZAI(model string) bool {
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
 // the model gate above reads as one line.
-func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials) error {
+func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials, model string) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -1372,6 +1410,18 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 	// destination the operator chose, so a bearer carrying the whole Claude
 	// account does not travel there. clawAnthropicProviderSlots says which keys
 	// those are.
+	// A key pinned for THIS node's own route is as held as a BYOK slot: the
+	// pinned-key block above injected it into the env, and applying the
+	// forfait here deleted it right back — the container spent the forfait
+	// while the in-process path spent the pin, and an expired forfait
+	// refused a node whose key was good. The route-less predicate below
+	// stays pin-blind on purpose (#736): a pin for ANOTHER route must not
+	// keep the forfait out of an unpinned node.
+	for _, slot := range clawAnthropicProviderSlots {
+		if slot == clawPinnedProvider(model) && creds.PinnedAPIKey(slot) != "" {
+			return nil
+		}
+	}
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
 		!heldAnthropicWireAPIKey(creds) &&
 		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {

@@ -64,7 +64,7 @@ func TestCredentialTiers_platformThenPoolAfterTheKeyIsWithdrawn(t *testing.T) {
 
 	// 1. The launch. Every tenant tier abstained and no pledge is lending,
 	//    so the deployment's own fallback pays.
-	launch, err := p.resolveAndSealCredentials(tctx, "run-991", poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
+	launch, err := p.resolveAndSealCredentials(tctx, "run-991", poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
 	if err != nil {
 		t.Fatalf("resolve (launch): %v", err)
 	}
@@ -91,7 +91,7 @@ func TestCredentialTiers_platformThenPoolAfterTheKeyIsWithdrawn(t *testing.T) {
 
 	// 3. The resume, same run. A field written only at launch would still
 	//    say "platform" here and send an operator to the wrong door.
-	resumed, err := p.resolveAndSealCredentials(tctx, "run-991", poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
+	resumed, err := p.resolveAndSealCredentials(tctx, "run-991", poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
 	if err != nil {
 		t.Fatalf("resolve (resume): %v", err)
 	}
@@ -143,7 +143,7 @@ func TestCredentialTiers_anUnstampedCredentialStillNamesItsTier(t *testing.T) {
 		oauthForfait: oauth, logger: iterlog.New(iterlog.LevelError, nil),
 	}
 	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-unstamped",
-		poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
+		poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestCredentialTiers_nothingSealedNamesNoTier(t *testing.T) {
 func (f *poolFixture) mustResolveEmpty(t *testing.T) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, "run-empty", poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, "run-empty", poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

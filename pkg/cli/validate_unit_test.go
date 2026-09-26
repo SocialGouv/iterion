@@ -102,6 +102,7 @@ type validateDiagnosticsJSON struct {
 		Severity string `json:"severity"`
 		File     string `json:"file"`
 		Message  string `json:"message"`
+		Hint     string `json:"hint"`
 	} `json:"diagnostics"`
 }
 
@@ -150,6 +151,18 @@ func TestRunValidate_NamesAFragmentValidatedAlone(t *testing.T) {
 			t.Fatalf("a loose file was called a fragment: %+v", d)
 		}
 	}
+	// The JSON path carries the reason (#1728): a plain "no workflow found"
+	// diagnostic with its remedy, the same words the human renderer prints —
+	// an automation reading --json learns WHY, not only THAT.
+	carried := false
+	for _, d := range res.Diagnostics {
+		if d.Source == "parse" && d.Severity == "error" && strings.Contains(d.Message, "no workflow found") && d.Hint != "" {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Fatalf("the JSON result of a loose no-workflow file carries no diagnostic: %+v", res.Diagnostics)
+	}
 }
 
 // TestRunValidate_ABundleThatImportsAsksForItsFloor: a bundle in several
@@ -180,5 +193,37 @@ func TestRunValidate_ABundleThatImportsAsksForItsFloor(t *testing.T) {
 		if d.Code == "C252" {
 			t.Fatalf("C252 drawn with the floor declared: %+v", d)
 		}
+	}
+}
+
+// TestRunValidate_NamesOneCauseOnce pins the F2 boundary of #1728: a file
+// that fails to PARSE carries its parse error and no second "no workflow
+// found" error — the workflow is missing because the program did not
+// parse; one cause, one finding. The reason still reaches the JSON path
+// for a file that parses (the #1728 case), through the E006 refusal here.
+func TestRunValidate_NamesOneCauseOnce(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken.bot")
+	if err := os.WriteFile(broken, []byte("workflow w:\n  entry: a\n\nagent a:\n  backend: \"claude_code\"\n  system: \"caf\xe9\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := runValidateDiagnosticsJSON(t, broken)
+	if err == nil || res.Valid {
+		t.Fatalf("a non-UTF-8 file validated: valid=%v err=%v", res.Valid, err)
+	}
+	noWorkflow, e006 := 0, 0
+	for _, d := range res.Diagnostics {
+		if strings.Contains(d.Message, "no workflow found") {
+			noWorkflow++
+		}
+		if d.Code == "E006" {
+			e006++
+		}
+	}
+	if e006 != 1 {
+		t.Fatalf("E006 count = %d, want exactly the encoding refusal: %+v", e006, res.Diagnostics)
+	}
+	if noWorkflow != 0 {
+		t.Fatalf("a parse failure also reported %d 'no workflow found' error(s) — one cause, one finding", noWorkflow)
 	}
 }

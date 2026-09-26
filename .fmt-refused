@@ -42,6 +42,7 @@ bots/golden-master/reanchor.bot
 bots/golden-master/sync-harness.bot
 bots/instrument/main.bot
 bots/modernize/main.bot
+bots/prod-watch/main.bot
 bots/product-docs/main.bot
 bots/revi-converse/main.bot
 bots/review-env/main.bot
