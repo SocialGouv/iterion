@@ -109,11 +109,19 @@ func write(paths []string) int {
 			continue
 		}
 		pr := parser.Parse(path, string(src))
+		hasErrors := false
 		for _, d := range pr.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				fmt.Fprintln(os.Stderr, d.Error())
-				code = 1
+				hasErrors = true
 			}
+		}
+		// A refused source — not UTF-8 (E006), or anything the parser cannot
+		// shape — comes back with no program at all (File nil): there is
+		// nothing to write, the errors above are the whole answer.
+		if hasErrors || pr.File == nil {
+			code = 1
+			continue
 		}
 		out, err := author.Write(pr.File)
 		if err != nil {
