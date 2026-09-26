@@ -713,3 +713,45 @@ func TestAssessmentMeasureDropsExtractedHitsInExcludedSubtrees(t *testing.T) {
 		t.Fatalf("entrypoints = the unfiltered total instead of the perimeter's 3:\n%s", string(factsBody))
 	}
 }
+
+func TestAssessmentMeasureRefusesATruncatedPerFileList(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	scratch := t.TempDir()
+	survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef",
+		[]map[string]any{{"id": "synth", "evidence": "README.md", "supported": false, "reason": "fixture"}},
+		[]map[string]any{
+			{"id": "src-tree", "kind": "first_party", "path": "src"},
+			{"id": "vendored", "kind": "excluded", "path": "third_party", "note": "vendored"},
+		})
+	floor := writeFloor(t, scratch, map[string]int{"src/a.txt": 10})
+	outFile := filepath.Join(scratch, "go-entrypoints.json")
+	if err := os.WriteFile(outFile, []byte(`{"facts": {"entrypoints": 500}, "files": [
+		{"file": "src/a.txt", "count": 3},
+		{"file": "src/b.txt", "count": 4}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, stderr := assessmentRun(t, "measure", map[string]string{
+		"{{vars.workspace_dir}}":     ws,
+		"{{vars.scratch_dir}}":       scratch,
+		"{{vars.profile_path}}":      "",
+		"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+		"{{input.base_sha}}":         "deadbeefdeadbeef",
+		"{{input.survey_path}}":      survey,
+		"{{input.floor_path}}":       floor,
+	}, map[string]string{
+		"{{input.extractor_outputs}}":  `[{"output": "go-entrypoints.json", "path": "` + outFile + `"}]`,
+		"{{input.stacks_unsupported}}": `[]`,
+		"{{input.stacks_covered}}":     `["synth"]`,
+		"{{input.coverage_degraded}}":  `false`,
+		"{{input.coverage_missing}}":   `[]`,
+		"{{input.stacks_errored}}":     `[]`,
+	})
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a capped per-file list partition-filtered a count nobody can re-derive — measure published it")
+	}
+	reason := assessmentString(t, out, "reason")
+	if !strings.Contains(reason, "per-file list adds") && !strings.Contains(stderr, "per-file list adds") {
+		t.Errorf("the refusal does not name the truncated list: %s / %s", reason, stderr)
+	}
+}

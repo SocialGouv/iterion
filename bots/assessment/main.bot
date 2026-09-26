@@ -803,6 +803,13 @@ tool brief_read:
             missing.append("%s (a LIST of entries — a %s is iterated by its keys downstream, and "
                            "every entry inside it silently disappears)"
                            % (field, type(value).__name__))
+    targets_entries = brief.get("targets")
+    if isinstance(targets_entries, list):
+        for index, entry in enumerate(targets_entries):
+            if not isinstance(entry, dict) or not str(entry.get("component") or "").strip():
+                missing.append("targets[%d].component (every target names the component it moves — "
+                               "an entry without one disappears from the programme)"
+                               % index)
     if brief.get("version") != 1:
         missing.append("version: 1")
     if not isinstance(brief.get("objective"), str) or not brief["objective"].strip():
@@ -2494,6 +2501,15 @@ tool measure:
             if key == "entrypoints":
                 per_file = document.get("files")
                 if isinstance(per_file, list):
+                    hit_total = sum(int(h["count"]) for h in per_file
+                                    if isinstance(h, dict) and isinstance(h.get("count"), int))
+                    if hit_total != value:
+                        refuse("MEASUREMENT_REFUSED",
+                               "the extractor output %s declares %s = %d but its per-file list adds "
+                               "up to %d: the list is capped, and partition-filtering a truncated "
+                               "list publishes a count nobody can re-derive. Exclude at the source "
+                               "or declare the perimeter's count."
+                               % (name, key, value, hit_total))
                     for hit in per_file:
                         if isinstance(hit, dict) and isinstance(hit.get("count"), int) \
                                 and isinstance(hit.get("file"), str):

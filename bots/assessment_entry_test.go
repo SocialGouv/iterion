@@ -307,3 +307,19 @@ func TestAssessmentBriefSummaryCarriesTheSweepDecision(t *testing.T) {
 		t.Errorf("the summary drops the explicit crosses_major: false: %s", assessmentString(t, out, "summary"))
 	}
 }
+
+func TestAssessmentBriefRefusesATargetWithoutAComponent(t *testing.T) {
+	requireAssessmentTools(t)
+	broken := strings.Replace(aGoodBrief, `  - component: "the runtime"`,
+		"  - name: node", 1)
+	if broken == aGoodBrief {
+		t.Fatal("the mutation did not apply")
+	}
+	out := readBrief(t, broken)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a target entry without a component was accepted — it disappears from the programme")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "component") {
+		t.Errorf("the refusal does not name the missing component: %s", assessmentString(t, out, "reason"))
+	}
+}
