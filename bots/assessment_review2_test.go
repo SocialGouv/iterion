@@ -318,6 +318,12 @@ func lintContractWithDocuments(t *testing.T, dir, brief string, documents []stri
 	return out
 }
 
+// lintContractWithDigestAt pins the digest at the DEFAULT plan path.
+func lintContractWithDigestAt(t *testing.T, dir, brief, digest, baseline, scratch string) map[string]any {
+	t.Helper()
+	return lintContractWithDigestAtPlan(t, dir, brief, digest, baseline, scratch, ".modernize/plan.yaml")
+}
+
 // A PUBLISHED FACT PLURALISES ITS OWN NOUN. `plural` appends an `s`, which is
 // right only where the noun is the phrase's last word: two facts were phrases
 // with a postmodifier, and the document published "21000 line of first-party
@@ -746,9 +752,16 @@ func renderedDigest(t *testing.T, dir, scratch string) string {
 // untracked source file outside the artefact roots (path then bytes).
 func treeBaseline(t *testing.T, dir string) string {
 	t.Helper()
+	return treeBaselineExcluding(t, dir, ".modernize/plan.yaml", ".modernize/outcomes.json")
+}
+
+// treeBaselineExcluding seals the tree the way the render does, around the
+// licensed writes the caller names (relative paths).
+func treeBaselineExcluding(t *testing.T, dir, planRel, outcomesRel string) string {
+	t.Helper()
 	cmd := exec.Command("git", "-C", dir, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
-		"--binary", "HEAD", "--", ".", ":(exclude).modernize/plan.yaml",
-		":(exclude).modernize/outcomes.json")
+		"--binary", "HEAD", "--", ".", ":(exclude)"+planRel,
+		":(exclude)"+outcomesRel)
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
 	out, err := cmd.Output()
 	if err != nil {
@@ -800,7 +813,7 @@ func lintContractWithDigest(t *testing.T, dir, brief, digest string) map[string]
 	return lintContractWithDigestAt(t, dir, brief, digest, treeBaseline(t, dir), t.TempDir())
 }
 
-func lintContractWithDigestAt(t *testing.T, dir, brief, digest, baseline, scratch string) map[string]any {
+func lintContractWithDigestAtPlan(t *testing.T, dir, brief, digest, baseline, scratch, planPath string) map[string]any {
 	t.Helper()
 	encoded, err := json.Marshal(nil)
 	if err != nil {
@@ -809,7 +822,7 @@ func lintContractWithDigestAt(t *testing.T, dir, brief, digest, baseline, scratc
 	out, exit, stderr := assessmentRun(t, "contract_lint", map[string]string{
 		"{{vars.workspace_dir}}": dir,
 		"{{vars.scratch_dir}}":   scratch,
-		"{{vars.plan_path}}":     ".modernize/plan.yaml",
+		"{{vars.plan_path}}":     planPath,
 		"{{vars.survey_path}}":   ".modernize/survey.json",
 		"{{vars.out_dir}}":       "docs/assessment",
 	}, map[string]string{
