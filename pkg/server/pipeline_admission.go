@@ -746,6 +746,10 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	}
 	spec := runview.LaunchSpec{
 		Vars: iss.BotArgs,
+		// The dispatcher's shipped contract: an unknown bot_arg is warned
+		// about (pkg/dispatcher/loop.go) and the launch proceeds — the
+		// #1757 refusal would turn a typo'd card into a failed launch.
+		AllowUnknownInputs: true,
 		// Stamp the ticket onto the run IMMEDIATELY. Without this the run is
 		// undiscoverable from its ticket until SetLastRun lands below — and
 		// between the SetState above and that stamp sit compileForLaunch,

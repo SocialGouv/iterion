@@ -264,6 +264,33 @@ redis.call('PEXPIRE', key, ttl)
 return {allowed, retry}
 `)
 
+// refundScript gives one token back to the bucket allow took one from
+// (#1726): refill by elapsed*rate (capped at burst), add one (capped at
+// burst), persist. A key the limiter no longer holds — expired, never
+// written — is left alone: a fresh bucket starts full anyway, and
+// recreating one to hand it a token would mint budget out of nothing.
+// Same ARGV order as rateLimitScript.
+var refundScript = redis.NewScript(`
+local key   = KEYS[1]
+local rate  = tonumber(ARGV[1])
+local burst = tonumber(ARGV[2])
+local now   = tonumber(ARGV[3])
+local ttl   = tonumber(ARGV[4])
+local d = redis.call('HMGET', key, 'tokens', 'last')
+local tokens = tonumber(d[1])
+local last   = tonumber(d[2])
+if tokens == nil then return 0 end
+local elapsed = (now - last) / 1000.0
+if elapsed > 0 then
+  tokens = math.min(burst, tokens + elapsed * rate)
+  last = now
+end
+tokens = math.min(burst, tokens + 1)
+redis.call('HSET', key, 'tokens', tokens, 'last', last)
+redis.call('PEXPIRE', key, ttl)
+return 1
+`)
+
 type valkeyAuthRateLimiter struct {
 	rdb redis.UniversalClient
 	now func() time.Time
@@ -297,4 +324,19 @@ func (r *valkeyAuthRateLimiter) allow(key string, cfg authBucketCfg) (bool, time
 		return true, 0
 	}
 	return false, time.Duration(retryMs) * time.Millisecond
+}
+
+// refund gives one token back to the named bucket (see refundScript). An
+// error talking to Valkey is swallowed — the same fail-open direction the
+// limiter's allow takes on a blip, and a missed refund only over-charges
+// the org's per-minute budget, never under-charges it.
+func (r *valkeyAuthRateLimiter) refund(key string, cfg authBucketCfg) {
+	if cfg.rate <= 0 {
+		return
+	}
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	ttlMs := int64(cfg.burst/cfg.rate*1000) + 1000
+	_, _ = refundScript.Run(ctx, r.rdb, []string{rateLimitKeyPrefix + key},
+		cfg.rate, cfg.burst, r.now().UnixMilli(), ttlMs).Result()
 }

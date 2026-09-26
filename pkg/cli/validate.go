@@ -893,7 +893,7 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
-	inputs, err := buildRunInputs(wf, opts.Preset, vars)
+	inputs, err := buildRunInputs(wf, opts.Preset, vars, false)
 	if err != nil {
 		return nil, err
 	}
@@ -940,17 +940,10 @@ func joinErrors(errs []error) string {
 	return strings.Join(parts, "; ")
 }
 
-// declaredVars lists the workflow's var names, sorted, for an error to name.
+// declaredVars lists the workflow's var names, sorted, for an error to
+// name — the shared helper's word.
 func declaredVars(wf *ir.Workflow) []string {
-	names := make([]string, 0, len(wf.Vars))
-	for name := range wf.Vars {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		return []string{"none"}
-	}
-	return names
+	return ir.DeclaredVarNames(wf)
 }
 
 // addParseDiagnostic records a parser diagnostic — the converter's, the unit

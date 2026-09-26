@@ -46,6 +46,13 @@ type LaunchSpec struct {
 	// compatible context from the launch inputs and persists it on the run.
 	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
 	Vars             map[string]string       // --var-style overrides
+	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
+	// input check: an input that names no declared var rides the launch
+	// (warned, never silent) instead of refusing it. The forwarding channel
+	// a parent's undeclared payload key rides to a subbot ({{input.extra}}
+	// in a node's `with:`) is this opt-out's legitimate user; a typo'd key
+	// stays the default's refusal. False = the check runs.
+	AllowUnknownInputs bool
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.

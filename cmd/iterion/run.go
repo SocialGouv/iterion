@@ -19,6 +19,7 @@ var runOpts struct {
 	noInteractive       bool
 	skipMCPHealth       bool
 	varFlags            []string
+	allowUnknownInputs  bool
 	modelFor            []string
 	backendFor          []string
 	fallback            string
@@ -77,6 +78,7 @@ var runCmd = &cobra.Command{
 			SandboxDefaultImage: runOpts.sandboxDefaultImage,
 			SandboxHostState:    runOpts.sandboxHostState,
 			Compress:            runOpts.compress,
+			AllowUnknownInputs:  runOpts.allowUnknownInputs,
 			AutoMemory:          runOpts.autoMemory,
 			LoopBudgetGuard:     runOpts.loopBudgetGuard,
 			Supervisors:         runOpts.supervisors,
@@ -114,6 +116,7 @@ var runCmd = &cobra.Command{
 func init() {
 	f := runCmd.Flags()
 	f.StringArrayVar(&runOpts.varFlags, "var", nil, "Set workflow variable (key=value, repeatable)")
+	f.BoolVar(&runOpts.allowUnknownInputs, "allow-unknown-inputs", false, "Let an input that names no declared var ride the launch instead of refusing it - for forwarding an undeclared payload key to a subbot through {{input.*}}")
 	f.StringVar(&runOpts.recipe, "recipe", "", "Recipe JSON file")
 	f.StringVar(&runOpts.preset, "preset", "", "Apply a named in-source preset (presets: block) before --var overrides")
 	f.StringArrayVar(&runOpts.skills, "skill", nil, "Add a skill-library skill to this run, on top of whatever the bot declares (repeatable). Also settable machine-wide with ITERION_SKILLS=a,b. Manage the library with `iterion skill`.")
