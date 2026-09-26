@@ -952,7 +952,15 @@ func TestAssessmentGateProbeRefusesAGateThatWritesToTheTree(t *testing.T) {
 	t.Run("a gate leaving untracked build output is a check", func(t *testing.T) {
 		contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
 			`      - "bash -c 'mkdir -p build && echo out > build/out.txt; exit 1'"`, 1)
-		out := lintContractIn(t, gateRepo(t, contract), aGoodBrief)
+		dir := gateRepo(t, contract)
+		// The tree declares its build directory disposable — real repos do —
+		// and the untracked-source guard honours --exclude-standard.
+		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gittest.Run(t, dir, "add", "--", ".gitignore")
+		gittest.Run(t, dir, "commit", "-qm", "the build directory is disposable")
+		out := lintContractIn(t, dir, aGoodBrief)
 		if !assessmentBool(t, out, "ok") {
 			t.Fatalf("a gate whose only trace is untracked build output was refused: %s",
 				assessmentString(t, out, "reason"))
@@ -1232,5 +1240,22 @@ func TestAssessmentContractLintRefusesAnUntrackedSourceFileInTheWindow(t *testin
 	if assessmentString(t, out, "code") != "TREE_REWRITTEN" {
 		t.Errorf("code = %q, want TREE_REWRITTEN: %s", assessmentString(t, out, "code"),
 			assessmentString(t, out, "reason"))
+	}
+}
+
+// A gate that CREATES an untracked source file in a claimed subtree left it
+// for later probes and for the executor: the probe's state guard now sees
+// untracked files outside the artefact roots, and refuses the write.
+func TestAssessmentContractLintRefusesAGateThatCreatesASourceFile(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	contract := strings.Replace(aGoodContract, `      - "bash ci/build.sh"`,
+		`      - "bash -c 'printf injected > src/injected.py; exit 1'"`, 1)
+	dir := gateRepo(t, contract)
+	out := lintContractIn(t, dir, aGoodBrief)
+	if assessmentBool(t, out, "ok") {
+		t.Fatal("a gate that created an untracked source file was accepted and counted as proven red — the file stayed behind for every later reader")
+	}
+	if !strings.Contains(assessmentString(t, out, "reason"), "WRITES to what it checks") {
+		t.Errorf("the refusal is not the write detection's: %s", assessmentString(t, out, "reason"))
 	}
 }

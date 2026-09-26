@@ -663,3 +663,53 @@ func commitAll(t *testing.T, dir string) string {
 	gittest.Run(t, dir, "commit", "-qm", "fixture")
 	return strings.TrimSpace(gittest.Run(t, dir, "rev-parse", "HEAD"))
 }
+
+// THE PARTITION APPLIES TO EXTRACTION: a per-file hit inside an excluded
+// subtree is not a route registration of the perimeter. Counted, committed
+// fixtures and vendored code inflated the entrypoints whenever no
+// declaration overrode the total.
+func TestAssessmentMeasureDropsExtractedHitsInExcludedSubtrees(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := measureWorkspace(t)
+	scratch := t.TempDir()
+	survey := writeSurvey(t, t.TempDir(), "deadbeefdeadbeef",
+		[]map[string]any{{"id": "synth", "evidence": "README.md", "supported": false, "reason": "fixture"}},
+		[]map[string]any{
+			{"id": "src-tree", "kind": "first_party", "path": "src"},
+			{"id": "vendored", "kind": "excluded", "path": "third_party", "note": "vendored"},
+		})
+	floor := writeFloor(t, scratch, map[string]int{"src/a.txt": 10, "third_party/x.go": 900})
+	outFile := filepath.Join(scratch, "go-entrypoints.json")
+	if err := os.WriteFile(outFile, []byte(`{"facts": {"entrypoints": 43}, "files": [
+		{"file": "src/a.txt", "count": 3},
+		{"file": "third_party/x.go", "count": 40}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, exit, stderr := assessmentRun(t, "measure", map[string]string{
+		"{{vars.workspace_dir}}":     ws,
+		"{{vars.scratch_dir}}":       scratch,
+		"{{vars.profile_path}}":      "",
+		"{{vars.bundle_skills_dir}}": bundleSkills(ws),
+		"{{input.base_sha}}":         "deadbeefdeadbeef",
+		"{{input.survey_path}}":      survey,
+		"{{input.floor_path}}":       floor,
+	}, map[string]string{
+		"{{input.extractor_outputs}}":  `[{"output": "go-entrypoints.json", "path": "` + outFile + `"}]`,
+		"{{input.stacks_unsupported}}": `[]`,
+		"{{input.stacks_covered}}":     `["synth"]`,
+		"{{input.coverage_degraded}}":  `false`,
+		"{{input.coverage_missing}}":   `[]`,
+		"{{input.stacks_errored}}":     `[]`,
+	})
+	if exit != 0 {
+		t.Fatalf("measure exited %d: %s", exit, stderr)
+	}
+	factsPath := assessmentString(t, out, "facts_path")
+	factsBody, err := os.ReadFile(factsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(factsBody), `"3 entrypoints (extracted, in route registrations (40 hit(s) in excluded/test subtrees dropped))"`) {
+		t.Fatalf("entrypoints = the unfiltered total instead of the perimeter's 3:\n%s", string(factsBody))
+	}
+}

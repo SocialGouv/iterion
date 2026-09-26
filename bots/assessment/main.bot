@@ -2455,6 +2455,11 @@ tool measure:
     # survey between two passes leaves its numbers behind.
     extracted = {"entrypoints": 0, "deployables": 0, "declared_versions": []}
     extractor_files = []
+    ## THE PARTITION APPLIES TO EXTRACTION. A per-file hit inside an
+    ## excluded or tests subtree is not a route registration of the
+    ## perimeter: counted, committed fixtures and build outputs inflated
+    ## the entrypoints whenever no declaration overrode the total.
+    extracted_entrypoints_dropped = 0
     produced_paths = []
     for entry in (extractor_outputs or []):
         if isinstance(entry, dict) and entry.get("path"):
@@ -2486,6 +2491,17 @@ tool measure:
                 refuse("MEASUREMENT_REFUSED",
                        "the extractor output %s declares %s = %r; a count is a non-negative integer."
                        % (name, key, value))
+            if key == "entrypoints":
+                per_file = document.get("files")
+                if isinstance(per_file, list):
+                    for hit in per_file:
+                        if isinstance(hit, dict) and isinstance(hit.get("count"), int) \
+                                and isinstance(hit.get("file"), str):
+                            if under(str(hit["file"]), excluded + tests):
+                                extracted_entrypoints_dropped += int(hit["count"])
+                            else:
+                                extracted["entrypoints"] += int(hit["count"])
+                    continue
             extracted[key] += value
         versions = facts_block.get("declared_versions")
         if versions is not None and not isinstance(versions, list):
@@ -2518,7 +2534,9 @@ tool measure:
     sources["entrypoints"] = "declared, in route registrations"
     if not entrypoints:
         entrypoints = extracted["entrypoints"]
-        sources["entrypoints"] = "extracted, in route registrations"
+        sources["entrypoints"] = "extracted, in route registrations" + (
+            " (%d hit(s) in excluded/test subtrees dropped)" % extracted_entrypoints_dropped
+            if extracted_entrypoints_dropped else "")
     systems = identities("system")
     sources["systems"] = "declared, by distinct identity"
     sources["first_party_lines"] = "declared perimeter over the floor"
@@ -3818,8 +3836,34 @@ tool contract_lint:
                    "cannot read the tracked state of %s around the gate probe: %s" % (
                        ws, (diff.stderr or b"").decode("utf-8", "replace").strip()[-300:]
                        or (names.stderr or "").strip()[-300:]))
-        return (hashlib.sha256(diff.stdout + artefact_digest()).hexdigest(),
-                sorted(set(n for n in names.stdout.splitlines() if n)))
+        ## UNTRACKED SOURCE FILES, too: a gate that CREATES one outside the
+        ## artefact roots left it for later probes and for the executor, and
+        ## a diff against HEAD never showed it. (Ignored files -- build
+        ## outputs in the .gitignore -- are the tree's own business and stay
+        ## invisible; the artefact roots are digested beside this.)
+        others = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "ls-files",
+                                 "--others", "--exclude-standard"],
+                                capture_output=True, text=True, env=GIT_ENV, timeout=600)
+        if others.returncode != 0:
+            refuse("CONTRACT_REFUSED",
+                   "cannot list the untracked files of %s around the gate probe: %s" % (
+                       ws, others.stderr.strip()[-300:]))
+        others_hash = hashlib.sha256()
+        others_names = []
+        for path in sorted(n for n in others.stdout.splitlines() if n):
+            full = os.path.join(ws, path)
+            if any(full.startswith(root.rstrip(os.sep) + os.sep) for root in ARTEFACT_ROOTS if root):
+                continue
+            others_names.append(path)
+            others_hash.update(path.encode('utf-8'))
+            try:
+                with open(full, 'rb') as handle:
+                    others_hash.update(handle.read())
+            except OSError:
+                others_hash.update(b'MISSING')
+        return (hashlib.sha256(diff.stdout + others_hash.hexdigest().encode()
+                               + artefact_digest()).hexdigest(),
+                sorted(set(n for n in names.stdout.splitlines() if n) | set(others_names)))
 
     # One process GROUP per command, killed whole on the wall: a gate that
     # starts a build leaves children behind, and a child still writing after
