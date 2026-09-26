@@ -12,6 +12,13 @@ const (
 	DiagBadIndentation  DiagCode = "E003" // indentation mismatch (tabs, misaligned dedent, nesting depth)
 	DiagUnterminatedStr DiagCode = "E004" // unterminated string literal
 	DiagBadEscape       DiagCode = "E005" // unknown escape sequence in a quoted string (strict-escape mode)
+	// DiagNotUTF8 refuses a source holding a byte that is not UTF-8, before
+	// it lexes: the lexer reads runes, and a byte that is not UTF-8 arrives
+	// at every reader of the program as U+FFFD where its author wrote
+	// another character — measured in #1808 as misleading E002s at wrong
+	// positions instead of the cause. The author document refuses the same
+	// byte by name (E050); the .bot does so from here.
+	DiagNotUTF8 DiagCode = "E006" // the source holds a byte that is not UTF-8
 
 	// Declaration errors
 	DiagDuplicateDecl   DiagCode = "E010" // duplicate declaration name
@@ -57,6 +64,7 @@ var hints = map[DiagCode]string{
 	DiagExpectedToken:       "Give this position the shape the parser wanted: a bare name for a prompt/schema/node reference, a quoted string for a value, an indented block under a header, an inline `[a, b]` list.",
 	DiagBadIndentation:      "Indent with spaces only, by the same width at every level, and align the line with an enclosing block.",
 	DiagUnterminatedStr:     "Close the quote, or use a backtick raw string / a `|` block scalar for multi-line content.",
+	DiagNotUTF8:             "Every reader of a .bot reads UTF-8: save the file as UTF-8 — the byte named here is a character written in another encoding (Latin-1, Windows-1252), read as U+FFFD (�) where its author wrote another character.",
 	DiagBadEscape:           "In strict-escape mode a backslash only escapes `\\\"`, `\\\\`, `\\n`, `\\t`, `\\r` and `\\0`: double the backslash for a literal one, or move the text to a backtick raw string / a `|` block scalar.",
 	DiagDuplicateDecl:       "Rename one of the two declarations.",
 	DiagReservedName:        "`done` and `fail` are the reserved terminal targets; pick another name.",

@@ -18,6 +18,14 @@ func TestIsWorkflowFile(t *testing.T) {
 		{".bot", true},
 		{"foo.botz", false},
 		{"", false},
+		// One rule with bundle.Detect (#1762): the suffix is case-folded, so
+		// a file the launcher takes, the walks, fmt and the storage routes
+		// take too.
+		{"RUN.BOT", true},
+		{"path/to/RUN.BOT", true},
+		{"foo.Bot", true},
+		{"foo.bOt", true},
+		{"FOO.BOTZ", false}, // .botz is the archive's door, not IsWorkflowFile's
 	}
 	for _, tc := range cases {
 		if got := IsWorkflowFile(tc.path); got != tc.want {
