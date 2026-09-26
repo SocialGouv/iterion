@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.202.1](https://github.com/SocialGouv/iterion/compare/v3.202.0...v3.202.1) (2026-09-26)
+
+### Bug Fixes
+
+* **mcp:** the project-scoped engine server no longer squats the reserved iterion namespace ([#1870](https://github.com/SocialGouv/iterion/issues/1870)) ([c8e0d32](https://github.com/SocialGouv/iterion/commit/c8e0d32aa12bfbfbeb3bc8be4abbe9ce107d948b))
+
+    <details><summary>why</summary>
+
+    The runner refuses any project-declared MCP server whose normalized tool namespace lands on iterion's own (a project server named `iterion*` could forge infrastructure tools — ask_user, board, control — past the permission gate), so the refusal is load-bearing and stays. The repo's own `.mcp.json` predates the check and has parked every PR review on the runner's DLQ since it deployed (10 entries since 2026-09-25 21:31 UTC, this repository's reviews included). The local engine server is renamed…
+
+    </details>
+
 ## [3.202.0](https://github.com/SocialGouv/iterion/compare/v3.201.0...v3.202.0) (2026-09-25)
 
 ### Features
