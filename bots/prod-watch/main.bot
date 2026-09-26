@@ -810,7 +810,24 @@ tool poll_loki:
     os.makedirs(scratch, exist_ok=True)
     ## The scratch is per-workspace and shared between runs: the handoff
     ## names carry the run id so two runs never write each other's handoffs.
+    ## A run never lives a day, so this tick harvests the handoffs older
+    ## than one — abandoned runs cannot accumulate without bound. Best
+    ## effort: a cleanup failure is never the tick's death.
     raw_path = os.path.join(scratch, 'loki_raw-' + str({{run.id}})[-12:] + '.jsonl')
+    try:
+        cutoff = time.time() - 24 * 3600
+        prefixes = ('loki_raw-', 'signals-', 'state_next-', 'alertlog_delta-', 'tick-')
+        for name in os.listdir(scratch):
+            if not name.startswith(prefixes):
+                continue
+            p = os.path.join(scratch, name)
+            try:
+                if os.path.isfile(p) and os.stat(p).st_mtime < cutoff:
+                    os.unlink(p)
+            except OSError:
+                pass
+    except OSError:
+        pass
     queries = loki.get('queries') or {}
     windows = loki.get('windows') or {}
     max_lines = int(loki.get('max_lines') or 5000)
@@ -1334,7 +1351,12 @@ tool poll_prom:
                 res['state'] = 'no_data'
             else:
                 agg = p.get('agg') or 'max'
-                v = {'max': max, 'min': min, 'sum': sum, 'first': lambda xs: xs[0]}.get(agg, max)(samples)
+                agg_fn = {'max': max, 'min': min, 'sum': sum, 'first': lambda xs: xs[0]}.get(agg)
+                if agg_fn is None:
+                    ## plan validates agg; reaching this line means the
+                    ## normaliser or the edge was bypassed — say so, never max.
+                    raise SystemExit('prod-watch: probe ' + repr(p.get('id')) + ' carries an unknown agg ' + repr(agg))
+                v = agg_fn(samples)
                 res['value'] = v
                 res['state'] = 'breached' if compare(v, p['op'], float(p['threshold'])) else 'healthy'
         except SystemExit:
@@ -2641,6 +2663,9 @@ tool commit_state:
         if current != generation:
             raise SystemExit('prod-watch: state.json moved from generation ' + str(generation) + ' to ' + str(current) +
                              ' while this tick ran (another tick wrote it) -- refusing to overwrite; this tick replays')
+    if not os.path.exists(state_next):
+        raise SystemExit('prod-watch: the staged state file ' + repr(state_next) + ' is missing -- a resumed run on another '
+                         'runner, or a cleaned scratch; this tick replays')
     with open(state_next, encoding='utf-8') as fh:
         staged = fh.read()
     tmp = os.path.join(state_dir, 'state.json.tmp')

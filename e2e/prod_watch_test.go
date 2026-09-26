@@ -2728,6 +2728,95 @@ func TestProdWatch_DecideRefusesAMissingSignalsHandoff(t *testing.T) {
 	}
 }
 
+// TestProdWatch_AbandonedHandoffsAreHarvested: the handoff names carry the
+// run id on a scratch shared between runs — without a harvest, abandoned
+// runs accumulate without bound (the engine's sweep judges the subtree's
+// head entry, written every tick, never stale). A tick harvests the
+// handoffs older than a day and never touches fresh ones.
+func TestProdWatch_AbandonedHandoffsAreHarvested(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	stale := time.Now().Add(-25 * time.Hour)
+	staleFiles := []string{"loki_raw-deadbeefcafe.jsonl", "signals-deadbeefcafe.json", "state_next-deadbeefcafe.json",
+		"alertlog_delta-deadbeefcafe.jsonl", "tick-deadbeefcafe.json"}
+	for _, name := range staleFiles {
+		p := filepath.Join(h.scratch, name)
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fresh := filepath.Join(h.scratch, "signals-freshrun12345.json")
+	if err := os.WriteFile(fresh, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_loki").Script, map[string]any{
+		"grafana":      map[string]any{"base_url": "https://127.0.0.1:1", "loki_uid": "uid"},
+		"loki":         map[string]any{"queries": map[string]any{}, "windows": map[string]any{}, "max_lines": 5000, "page_size": 1000},
+		"timeout_secs": 5, "allow_private": true, "scratch_dir": h.scratch},
+		nil, map[string]string{"grafana_token": h.tokenFile}))
+	if err != nil {
+		t.Fatalf("poll_loki on an empty query set: %v %s", err, stderr)
+	}
+	for _, name := range staleFiles {
+		if _, err := os.Stat(filepath.Join(h.scratch, name)); !os.IsNotExist(err) {
+			t.Fatalf("a handoff abandoned 25h ago must be harvested: %s still there", name)
+		}
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("a fresh sibling run's handoff must be kept: %v", err)
+	}
+	if rf, _ := out["raw_file"].(string); !strings.Contains(rf, "loki_raw-") {
+		t.Fatalf("the tick still writes its own raw handoff: %v", out["raw_file"])
+	}
+}
+
+// TestProdWatch_CommitStateRefusesAMissingStagedState: the twin of the decide
+// handoff guard — a cleaned scratch between decide and commit fails by name,
+// never as a bare FileNotFoundError.
+func TestProdWatch_CommitStateRefusesAMissingStagedState(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "commit_state").Script, map[string]any{
+		"state_next_file": filepath.Join(h.scratch, "state_next-missingrun12.json"),
+		"alertlog_file":   filepath.Join(h.scratch, "alertlog_delta-missingrun12.jsonl"),
+		"tick_file":       filepath.Join(h.scratch, "tick-missingrun12.json"),
+		"generation":      -1, "state_commit": false, "workspace": h.ws, "state_dir": ".prod-watch"}, nil, nil))
+	if err == nil || !strings.Contains(stderr, "is missing") {
+		t.Fatalf("a missing staged state refuses by name: err=%v stderr=%s", err, stderr)
+	}
+}
+
+// TestProdWatch_UnknownAggNeverMeansMax: plan validates `agg`, so a probe
+// carrying an unknown aggregation can only reach poll_prom through a
+// bypassed edge — and there the node refuses by name; it never silently
+// aggregates as max (the round-22 defect, killed at both ends).
+func TestProdWatch_UnknownAggNeverMeansMax(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, map[string]any{
+		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
+	if err != nil {
+		t.Fatalf("plan: %v %s", err, stderr)
+	}
+	prom := plan["prometheus"].(map[string]any)
+	probes := prom["probes"].([]any)[0].(map[string]any)
+	probes["agg"] = "bogus"
+	h.prom.Store(map[string]pwProm{"restarts-q": {Value: "5"}})
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "poll_prom").Script, map[string]any{
+		"grafana": plan["grafana"], "prometheus": prom, "timeout_secs": 5, "allow_private": true},
+		nil, map[string]string{"grafana_token": h.tokenFile}))
+	if err == nil || !strings.Contains(stderr, "unknown agg") {
+		t.Fatalf("a bypassed edge must not resurrect the silent max: err=%v stderr=%s out=%v", err, stderr, out)
+	}
+}
+
 // TestProdWatch_ResolveReleaseContract: the one node no other test asserts —
 // its output contract (release filled, release_known false, the named notes)
 // and its strict-posture address guard carry their own witnesses, so a

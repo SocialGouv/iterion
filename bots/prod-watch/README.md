@@ -25,11 +25,11 @@ notify → done                                             when not consume (dr
 |---|---|---|---|
 | `plan` | config + secrets validation, Loki window from the cursor, halt check | `prod-watch.json`, `state.json` | — |
 | `resolve_release` | the deployed version from the configured source (`health_field` today); `release_known` stays false until the analysis slice verifies it in the repo | health URL | — |
-| `poll_loki` | error query + leak sweep, paged forward over `[from, to)` with `to = now − ingest_lag`; **raw lines go to scratch only** | Grafana proxy | `<scratch>/loki_raw.jsonl` |
+| `poll_loki` | error query + leak sweep, paged forward over `[from, to)` with `to = now − ingest_lag`; **raw lines go to scratch only** | Grafana proxy | `<scratch>/loki_raw-<run>.jsonl` |
 | `poll_prom` | instant queries typed `healthy \| breached \| no_data \| error` | Grafana proxy | — |
 | `probe_http` | GET the health URLs, status + latency | the app | — |
-| `leak_scan` | **the only reader of the raw lines**: redaction by class, error templates, masked samples, coverage | scratch | `<scratch>/signals.json` |
-| `decide` | incident lifecycle (new / escalated / reminder / quiet), source staleness, cap + overflow, staged next state | `signals.json`, `state.json` | scratch: `state_next.json`, `alertlog_delta.jsonl`, `tick.json` |
+| `leak_scan` | **the only reader of the raw lines**: redaction by class, error templates, masked samples, coverage | scratch | `<scratch>/signals-<run>.json` |
+| `decide` | incident lifecycle (new / escalated / reminder / quiet), source staleness, cap + overflow, staged next state | `signals-<run>.json`, `state.json` | scratch: `state_next-<run>.json`, `alertlog_delta-<run>.jsonl`, `tick-<run>.json` |
 | `notify` | Mattermost/Slack incoming webhooks, per-sink `min_severity`, `required` sinks, all-or-nothing consume | `webhooks` secret | the channel |
 | `commit_state` | `state.json` (replaced), `alertlog.jsonl` + `ticks.jsonl` (appended, `merge=union`), optional commit + push | scratch | `<state_dir>/` |
 

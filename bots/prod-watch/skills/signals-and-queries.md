@@ -97,7 +97,10 @@ re-added query re-reads.
 
 ## The redaction scan (`leak_scan`)
 
-The only node that opens `loki_raw.jsonl`. For every line, in this order
+The only node that opens the raw handoff (`loki_raw-<run>.jsonl`; every
+scratch handoff name carries the run id — the scratch is shared between
+runs — and a tick harvests the handoffs older than a day). For every line,
+in this order
 (secrets first, then validated identifiers, then contact data):
 
 | class | how it is recognised | what replaces it |
@@ -142,7 +145,7 @@ class at severity `high`; the
 policy slice adds per-class `critical` with keyword context and the
 circuit-breaker.
 
-What leaves the node (`signals.json`, scratch; counts on stdout):
+What leaves the node (`signals-<run>.json`, scratch; counts on stdout):
 
 - **templates** — for every query except `leak_sweep`: the redacted line
   with UUIDs → `<uuid>`, hex runs → `<hex>`, quoted strings → `"..."`,
