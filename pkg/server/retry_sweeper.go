@@ -227,8 +227,15 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// redeployed and the workflow hash moved). We do NOT pass Force:
 		// resuming a checkpoint against a workflow that changed underneath
 		// is how a run silently does the wrong thing. Re-arm within the
-		// attempt budget and surface the error verbatim.
-		adm.rollback(s.logger)
+		// attempt budget and surface the error verbatim. The metered slot
+		// follows the error's own fact (#1725): a resume whose publish
+		// landed and then reported failure keeps the slot — the runner may
+		// already have claimed that message, and a resume meters an
+		// execution attempt by design (the same charge handleResumeRun
+		// makes). Only a resume proven not to have started hands it back.
+		if !runview.RunMayHaveStarted(err) {
+			adm.rollback(s.logger)
+		}
 		s.reArmRetry(runCtx, retryStore, ref, err)
 		return
 	}
