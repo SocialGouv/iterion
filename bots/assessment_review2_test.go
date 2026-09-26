@@ -759,28 +759,18 @@ func treeBaseline(t *testing.T, dir string) string {
 // licensed writes the caller names (relative paths).
 func treeBaselineExcluding(t *testing.T, dir, planRel, outcomesRel string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", dir, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
+	out := gittest.Run(t, dir, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
 		"--binary", "HEAD", "--", ".", ":(exclude)"+planRel,
 		":(exclude)"+outcomesRel)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("tree baseline: %v", err)
-	}
 	h := sha256.New()
-	h.Write(out)
-	un := exec.Command("git", "-C", dir, "-c", "core.quotePath=false", "ls-files",
+	h.Write([]byte(out))
+	names := gittest.Run(t, dir, "-c", "core.quotePath=false", "ls-files",
 		"--others", "--exclude-standard")
-	un.Env = cmd.Env
-	names, err := un.Output()
-	if err != nil {
-		t.Fatalf("tree baseline untracked: %v", err)
-	}
 	roots := []string{
 		filepath.Join(dir, "docs", "assessment"),
 		filepath.Join(dir, ".modernize"),
 	}
-	for _, name := range strings.Split(strings.TrimRight(string(names), "\n"), "\n") {
+	for _, name := range strings.Split(strings.TrimRight(names, "\n"), "\n") {
 		if name == "" {
 			continue
 		}
