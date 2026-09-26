@@ -87,7 +87,7 @@
 | `pkg/brand` | embeds iterion's bot identity — the mascot avatar of the official `iterion-bot` GitHub account — so the server can upload it onto the accounts it… | — | 1 · 8 |
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — | 23 · 178 |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — | 2 · 38 |
-| `pkg/cli` | implements the iterion command-line interface. | — | 82 · 327 |
+| `pkg/cli` | implements the iterion command-line interface. | — | 82 · 326 |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` | 1 · 10 |
 | `pkg/cloud/metrics` | centralises the Prometheus metrics exposed by the cloud-mode iterion server and runner pods. | — | 1 · 7 |
 | `pkg/cloud/orgsweep` | nightly-purges organizations that were soft-deleted (Status == pending_deletion) once their grace window (Org.PurgeAfter) has elapsed. | — | 1 · 6 |
@@ -121,7 +121,7 @@
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
 | `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 46 · 474 |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — | 1 · 6 |
-| `pkg/dsl/parser` | — | — | 23 · 237 |
+| `pkg/dsl/parser` | — | — | 23 · 238 |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 9 · 77 |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — | 1 · 44 |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — | 1 · 15 |
@@ -185,7 +185,7 @@
 | `pkg/sandbox/noop` | provides the always-available passthrough sandbox driver. | — | 1 · 13 |
 | `pkg/sandbox/registry` | centralises the iterion-shipped sandbox-driver constructor list. | — | 1 · 1 |
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` | 6 · 52 |
-| `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` | 20 · 346 |
+| `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` | 20 · 350 |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | — | 1 · 5 |
 | `pkg/server` | provides an HTTP API for the iterion studio. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` | 234 · 166 |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `TeamResolver` | 9 · 14 |

@@ -190,7 +190,12 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 			return nil, false
 		}
 		return func(provider string) string {
-			return creds.APIKey(secrets.Provider(provider))
+			// APIKeyForRoute, not APIKey: ResolveWithContext calls this with
+			// the provider its MODEL SPEC names, which is the pin itself, so
+			// a key a shared tier funded for that pin must be spendable
+			// here. Without it a pinned claw node worked sandboxed (where
+			// the key crosses as an env var) and not in process.
+			return creds.APIKeyForRoute(secrets.Provider(provider))
 		}, true
 	})
 	// Per-run OAuth-forfait dirs (codex / claude_code) the runner materialised

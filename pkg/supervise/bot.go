@@ -191,7 +191,9 @@ func resolveModelWith(specModel, providerHint string, providers []detect.Provide
 // supervision on a clean ErrNoSupervisorModel.
 func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
 	return func(provider string) bool {
-		if creds.APIKeys[secrets.Provider(provider)] != "" {
+		// APIKeyForRoute: the question is per PROVIDER — the route names it
+		// — so a key a shared tier funded for that pin funds it here too.
+		if creds.APIKeyForRoute(secrets.Provider(provider)) != "" {
 			return true
 		}
 		switch provider {

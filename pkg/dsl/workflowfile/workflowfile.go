@@ -11,14 +11,25 @@ import "strings"
 var Extensions = []string{".bot"}
 
 // IsWorkflowFile reports whether path ends with one of the accepted
-// workflow file extensions.
+// workflow file extensions, case-folded as bundle.Detect folds `.BOT` and
+// `.BOTZ`: one rule for every door that names a workflow file — launch,
+// the walks, `fmt`, the storage routes, the import door and the repo
+// graph — so a file the launcher takes is not refused by a reader that
+// spells the same predicate differently. A scaffold's layout checks stay
+// literal by design: they validate the names a scaffold GENERATES.
 func IsWorkflowFile(path string) bool {
 	for _, ext := range Extensions {
-		if strings.HasSuffix(path, ext) {
+		if hasSuffixFold(path, ext) {
 			return true
 		}
 	}
 	return false
+}
+
+// hasSuffixFold reports whether path ends with ext, case-folded, without
+// allocating a lowered copy of the path.
+func hasSuffixFold(path, ext string) bool {
+	return len(path) >= len(ext) && strings.EqualFold(path[len(path)-len(ext):], ext)
 }
 
 // AuthorExtension is the suffix of an author document — the YAML twin a

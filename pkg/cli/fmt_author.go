@@ -30,12 +30,6 @@ var (
 	ErrFmtToNeedsFiles = errors.New("fmt: --to converts named files, not directories")
 	// ErrFmtToKind refuses a file of the wrong kind for the direction asked.
 	ErrFmtToKind = errors.New("fmt: --to bot converts an author document (x.bot.yaml), --to yaml a .bot")
-	// ErrFmtToDestination refuses a conversion whose destination its
-	// readers do not take by name: `UPPER.BOT.YAML` stands for `UPPER.BOT`,
-	// which `fmt`, a walk and `--to yaml` do not read (a workflow file's
-	// suffix is `.bot`, lower-case) — written, it would be a .bot only its
-	// launcher reads, and no twin.
-	ErrFmtToDestination = errors.New("fmt: --to would write a file its readers do not take by name")
 	// ErrFmtToBaseline refuses --baseline with --to: a baseline lists what a
 	// CHECK of canonical forms tolerates, and a conversion is not one.
 	ErrFmtToBaseline = errors.New("fmt: --baseline does not apply to --to")
@@ -94,9 +88,6 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 		isDoc := workflowfile.IsAuthorDocument(p)
 		if (opts.To == "bot") != isDoc || (opts.To == "yaml" && !workflowfile.IsWorkflowFile(p)) {
 			return res, fmt.Errorf("%w: %s", ErrFmtToKind, p)
-		}
-		if dest, ok := twinNameReadBack(opts.To, p); !ok {
-			return res, fmt.Errorf("%w: %s", ErrFmtToDestination, twinNameRefusal("fmt", p, dest))
 		}
 	}
 	changed := false
@@ -186,22 +177,6 @@ func twinAt(dest string) (existing []byte, there bool, why string) {
 		return nil, true, "is there and cannot be read (" + err.Error() + ")"
 	}
 	return existing, true, ""
-}
-
-// twinNameReadBack is the twin of path — the .bot a document stands for, or
-// the document of a .bot — and whether it is a name the surfaces that read
-// it take back: a document's suffix is read case-folded, a workflow file's
-// is not, so `UPPER.BOT.YAML` stands for `UPPER.BOT`, a name no .bot surface
-// reads as a workflow file.
-func twinNameReadBack(to, path string) (dest string, ok bool) {
-	dest = twinPath(to, path)
-	return dest, workflowfile.IsWorkflowFile(dest) || workflowfile.IsAuthorDocument(dest)
-}
-
-// twinNameRefusal says why surface refuses path, whose twin dest is a name
-// twinNameReadBack does not take.
-func twinNameRefusal(surface, path, dest string) string {
-	return fmt.Sprintf("%s stands for %s, a name `%s` would not read back (a workflow file ends in `.bot`, lower-case) — rename the document first", path, dest, surface)
 }
 
 // convertTwin writes the twin of one file: the .bot an author document

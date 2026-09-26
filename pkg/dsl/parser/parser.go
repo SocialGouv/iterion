@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
@@ -18,7 +20,25 @@ type ParseResult struct {
 }
 
 // Parse parses an iterion DSL source file and returns the AST and any diagnostics.
+//
+// A source holding a byte that is not UTF-8 is refused before it lexes
+// (E006), with the byte's line: the lexer reads runes, so the byte would
+// otherwise arrive everywhere as U+FFFD where its author wrote another
+// character, and the errors the parser reports then name positions the
+// author never wrote. The author document refuses the same byte by name
+// (E050, pkg/dsl/author/guard.go) — one rule at both doors.
 func Parse(filename, src string) *ParseResult {
+	if at := invalidUTF8(src); at >= 0 {
+		return &ParseResult{Diagnostics: []Diagnostic{{
+			Code:     DiagNotUTF8,
+			Severity: SeverityError,
+			Message:  fmt.Sprintf("the source is not UTF-8 text (byte %d): it is read as U+FFFD where its author wrote another character", at),
+			File:     filename,
+			Line:     1 + strings.Count(src[:at], "\n"),
+			Column:   1,
+			Hint:     HintFor(DiagNotUTF8),
+		}}}
+	}
 	p := &parser{
 		lex:  NewLexer(filename, src),
 		file: filename,
@@ -28,6 +48,21 @@ func Parse(filename, src string) *ParseResult {
 	// with the address the writer reads to put it back (comments.go).
 	attachComments(filename, f, p.lex.All())
 	return &ParseResult{File: f, Diagnostics: p.diags, ProfileReads: p.lex.ProfileReads()}
+}
+
+// invalidUTF8 is the offset of src's first byte that is not UTF-8, -1 when
+// every byte is. The parser's own twin of the author document's guard
+// (pkg/dsl/author/guard.go): parser cannot import author — author imports
+// parser — so the ten lines live on both sides of that seam.
+func invalidUTF8(src string) int {
+	for i := 0; i < len(src); {
+		r, size := utf8.DecodeRuneInString(src[i:])
+		if r == utf8.RuneError && size == 1 {
+			return i
+		}
+		i += size
+	}
+	return -1
 }
 
 // parser is the recursive-descent parser state.
