@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.203.1](https://github.com/SocialGouv/iterion/compare/v3.203.0...v3.203.1) (2026-09-26)
+
+### Bug Fixes
+
+* **launch:** admission gives back what it takes; unknown inputs refuse, not drop ([#1726](https://github.com/SocialGouv/iterion/issues/1726) [#1757](https://github.com/SocialGouv/iterion/issues/1757)) ([#1872](https://github.com/SocialGouv/iterion/issues/1872)) ([74f4035](https://github.com/SocialGouv/iterion/commit/74f403519907c14b91a9659ebcd22ca781cc4bcd))
+
+    <details><summary>why</summary>
+
+    gateLaunchRate consumed a token from the org's per-minute launch bucket, but launchAdmission carried only the monthly usage key — so a client looping a malformed body emptied the bucket while every 400 handed the monthly unit back, and the FIRST well-formed launch was 429'd with nothing running (measured, #1726).
+
+    </details>
+
 ## [3.203.0](https://github.com/SocialGouv/iterion/compare/v3.202.3...v3.203.0) (2026-09-26)
 
 ### Features
