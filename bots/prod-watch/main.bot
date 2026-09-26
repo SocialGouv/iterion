@@ -1,0 +1,2817 @@
+## ─────────────────────────────────────────────────────────────────
+## prod_watch — "Argus", a production watchdog for one deployed app.
+##
+## One scheduled run mode today (mode=watch), ZERO LLM: the compiled
+## workflow contains no agent/judge node, so a tick can neither spend a
+## token nor show a log line to a model. The analysis agent (a later
+## slice) sits BEHIND a deterministic scrub and only ever reads derived,
+## redacted signals.
+##
+##   mode=watch
+##     plan             (tool) read + validate the workspace config and
+##                             the mounted secrets; compute the Loki
+##                             window from the persisted cursor; refuse
+##                             to run while a halt is armed
+##     resolve_release  (tool) the deployed version, from the source the
+##                             config names (a health field today)
+##     poll_loki        (tool) Loki through the Grafana datasource proxy:
+##                             the error query + the leak sweep, paged
+##                             forward over a frozen window — RAW LINES GO
+##                             TO SCRATCH ONLY, stdout carries counts
+##     poll_prom        (tool) Prometheus probes through the same proxy,
+##                             each typed healthy | breached | no_data |
+##                             error
+##     probe_http       (tool) the app's own health URLs
+##     leak_scan        (tool) the ONLY reader of the raw lines: redacts
+##                             every class of secret / personal data,
+##                             fingerprints the error lines into
+##                             templates, and writes DERIVED signals to
+##                             scratch — nothing raw ever reaches a node
+##                             output, an artifact, a checkpoint or an
+##                             error message
+##     decide           (tool) the incident lifecycle, every tick: new /
+##                             escalated / reminded / quiet, source health,
+##                             the staged next state (nothing persisted)
+##     notify           (tool) deterministic delivery to the webhook sinks
+##     commit_state     (tool) persist the state under flock and — with
+##                             state_commit=true — commit + push it (git as
+##                             the state store: runners are ephemeral)
+##
+## State lives in `<state_dir>/` inside the workspace (the ops repo, never
+## the application repo):
+##   state.json      cursors + incidents + source health (watch is its
+##                   ONLY writer — other modes own other files)
+##   alertlog.jsonl  append-only history of every alert posted (merge=union)
+##   ticks.jsonl     append-only tick ledger (merge=union)
+##
+## Universal by design: no host, namespace, metric name, language or
+## channel is baked in — everything comes from the workspace config
+## (prod-watch.json, see skills/argus-config.md) plus the `webhooks`
+## and `grafana_token` secrets. Requires python3 (stdlib only) on the
+## execution host. See skills/signals-and-queries.md for the lanes.
+## ─────────────────────────────────────────────────────────────────
+
+dsl: 2
+
+secrets:
+  ## JSON map of webhook name → incoming-webhook URL (the same contract
+  ## as feed-watch and vuln-watch, so one team secret serves the three
+  ## bots). Config sinks reference entries by NAME so URLs never appear
+  ## in the repo. Mounted read-only as a file; optional so dry-runs and
+  ## sink-less runs need no binding.
+  webhooks:
+    as: file
+    optional: true
+
+  ## Grafana service-account token (Viewer is enough to query
+  ## datasources). Read ONLY by the two proxy lanes, never into a
+  ## prompt. Optional so a probe-only deployment runs without it; a
+  ## configured Grafana with no usable token is a lane error on every
+  ## query and probe, named in the coverage note — never the tick's death
+  ## while another lane answers.
+  grafana_token:
+    as: file
+    optional: true
+
+  ## Forge API token, mounted read-only as a FILE. Used by
+  ## state_commit=true runs so the runner injects it into the clone URL
+  ## and the bot's `git push` of the state dir authenticates; a later
+  ## slice reads it to open issues. optional: true — a local run
+  ## authenticates git through the host.
+  forge_token:
+    as: file
+    optional: true
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+  ## watch = poll the lanes, run the incident lifecycle, deliver, commit.
+  ## (Single mode in this slice; digest / session / ack / doctor follow.)
+  mode: string [enum: "watch"] = "watch"
+
+  ## Workspace-relative config file (JSON). See skills/argus-config.md.
+  config_path: string = "prod-watch.json"
+
+  ## Workspace-relative state root (gitignore it, or set
+  ## state_commit=true to version it — required on ephemeral runners).
+  state_dir: string = ".prod-watch"
+
+  ## Prepare + print every message, deliver nothing, persist nothing (the
+  ## next real run recomputes the same alerts).
+  dry_run: bool = false
+
+  ## Commit (and push) the state dir after each tick. Needs the
+  ## state_dir NOT gitignored and push credentials on the workspace.
+  state_commit: bool = false
+
+  ## Out-of-tree scratch for the inter-node handoff files. The RAW log
+  ## lines live here and nowhere else.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/prod-watch"
+
+  ## Per-request HTTP timeout (Grafana proxy, health probes).
+  fetch_timeout_secs: int = 20
+
+  ## SSRF posture for every outbound fetch. Default (false) is strict:
+  ## http/https only, and any host resolving to a private / loopback /
+  ## link-local / cloud-metadata address is refused, up-front and on
+  ## every redirect hop. true relaxes it for trusted on-prem deployments
+  ## and hermetic tests ONLY — metadata and link-local stay refused.
+  allow_private_sources: bool = false
+
+  ## Widest Loki window one tick may cover (a first tick, or a catch-up
+  ## after an outage). Older lines are NOT fetched; the gap is reported.
+  max_window_minutes: int = 60
+
+  ## The window's upper bound is now − ingest_lag: Loki ingestion is not
+  ## instantaneous, and a line arriving after the cursor moved past its
+  ## timestamp would be lost for good.
+  ingest_lag_seconds: int = 120
+
+  ## Cap on lines fetched per Loki query per tick. Reaching it is
+  ## reported as a truncated window (coverage: partial), never silently.
+  max_lines: int = 5000
+
+  ## Incident lifecycle windows (hours). An open incident is reminded
+  ## once per renotify window; one not observed for quiet_after_hours
+  ## gets a single "not seen" note; forget_after_days prunes it.
+  renotify_hours: int = 24
+  quiet_after_hours: int = 48
+  forget_after_days: int = 14
+
+  ## Hours without a successful poll of a configured lane before the
+  ## bot announces the silence on the sinks (at most once per window).
+  ## 0 disables.
+  source_stale_hours: int = 6
+
+  ## Per-run cap on posted alerts. Overflow incidents stay OPEN and
+  ## re-fire next tick; the overflow is announced explicitly.
+  max_alerts_per_run: int = 20
+
+  ## Per-MESSAGE character budget at delivery (under Mattermost's
+  ## 16383-char post limit).
+  max_message_chars: int = 14000
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema plan_output:
+  ## Normalized config sections, ready for the lanes.
+  app: json
+  release: json
+  grafana: json
+  ## {queries: {name: logql}, from_ns, to_ns, max_lines, overlap_seconds}
+  loki: json
+  ## {probes: [{id, query, op, threshold, severity, title}]}
+  prometheus: json
+  ## [{id, url, expect_status, timeout_secs, severity}]
+  probes: json
+  sinks: json
+  ## Message labels: built-in English defaults merged with the config's
+  ## `labels` map (any language without touching the bot).
+  labels: json
+  ## Which lanes the config actually enables — the zero-façade guard
+  ## and the staleness net read this, not the raw config.
+  lanes: json
+  halted: bool
+  halt: json
+  ## The operator-facing reason the typed fail node renders ("" when not halted).
+  halt_reason: string
+  summary: string
+
+schema release_input:
+  release: json
+  timeout_secs: int
+  allow_private: bool
+
+schema release_output:
+  ## The deployed version string as the configured source reports it
+  ## ("" when unresolved). release_known is FALSE until a later slice
+  ## verifies the value resolves to a commit of the application repo:
+  ## a string found somewhere is not a verified deployment.
+  release: string
+  release_source: string
+  release_known: bool
+  note: string
+
+schema loki_input:
+  grafana: json
+  loki: json
+  timeout_secs: int
+  scratch_dir: string
+  allow_private: bool
+
+schema loki_output:
+  ## Scratch file holding the raw lines (one JSON per line). The ONLY
+  ## consumer is leak_scan; the path is the handoff, never the content.
+  raw_file: string
+  lines: int
+  ## True when any query hit max_lines: the window is only partially
+  ## covered and the cursor stops at the last line actually fetched.
+  truncated: bool
+  ## {query: {lines, truncated, covered_to_ns, error}}
+  per_query: json
+  ## [{query, error}] — a failed query, a refused token (401/403)
+  ## included, is reported, not fatal: it degrades the lane.
+  errors: json
+  ok: bool
+
+schema prom_input:
+  grafana: json
+  prometheus: json
+  timeout_secs: int
+  allow_private: bool
+
+schema prom_output:
+  ## [{id, state (healthy|breached|no_data|error), value, op, threshold,
+  ##   severity, title, warnings (a count), error}]
+  results: json
+  ok: bool
+  errors: json
+
+schema http_input:
+  probes: json
+  timeout_secs: int
+  allow_private: bool
+
+schema http_output:
+  ## [{id, url, ok, status, ms, error, severity}]
+  results: json
+
+schema leak_input:
+  raw_file: string
+  per_query: json
+  app: json
+  scratch_dir: string
+
+schema leak_output:
+  ## Scratch file holding the DERIVED, REDACTED signals: error templates
+  ## (fingerprint, count, first/last ts, redacted sample, streams) and
+  ## the leak findings per class (counts and masked samples only).
+  signals_file: string
+  templates: int
+  lines_scanned: int
+  ## [{class, severity, count, distinct, sources, sample_masked}] — the
+  ## same list also lives in signals_file; here for the summary and the
+  ## edge conditions. NEVER carries a raw value.
+  leak_findings: json
+  ## full | partial — partial when a query was truncated or failed, so a
+  ## reader never mistakes "nothing found" for "nothing there".
+  coverage: string
+  summary: string
+
+schema decide_input:
+  signals_file: string
+  prom_results: json
+  http_results: json
+  loki_ok: bool
+  loki_truncated: bool
+  loki_errors: json
+  loki_per_query: json
+  prom_ok: bool
+  prom_errors: json
+  release: string
+  release_known: bool
+  lanes: json
+  app: json
+  workspace: string
+  state_dir: string
+  scratch_dir: string
+  renotify_hours: int
+  quiet_after_hours: int
+  forget_after_days: int
+  source_stale_hours: int
+  max_alerts: int
+
+schema decide_output:
+  ## Alerts to post this tick, rendered by notify: [{fingerprint, kind,
+  ## severity, title, detail, state (new|escalated|reminder|quiet),
+  ## count, first_seen, evidence}]
+  alerts: json
+  alert_count: int
+  overflow_count: int
+  ## [{source, hours, last_ok}] — lanes silent beyond the window and not
+  ## yet announced this window.
+  stale_sources: json
+  ## True when a new or escalated incident would benefit from the
+  ## analysis agent (a later slice branches on it).
+  needs_analysis: bool
+  ## The next state, staged out-of-tree; commit_state persists it only
+  ## after delivery so a failed post replays instead of losing alerts.
+  state_next_file: string
+  alertlog_file: string
+  tick_file: string
+  bootstrap: bool
+  ## The state generation decide read; commit_state refuses to overwrite a
+  ## state another tick rewrote since.
+  generation: int
+  summary: string
+
+schema notify_input:
+  alerts: json
+  overflow_count: int
+  stale_sources: json
+  sinks: json
+  labels: json
+  app: json
+  ## The deployed version as resolved ("" when unknown) and whether it was
+  ## verified: every message says which.
+  release: string
+  release_known: bool
+  dry_run: bool
+  max_message_chars: int
+
+schema notify_output:
+  posted: bool
+  dry_run: bool
+  ## The rendered messages (webhook/channel/text) — the run artifact IS
+  ## the dry-run review surface. Stdout carries ONLY the final JSON.
+  messages: json
+  delivered: int
+  ## True when the run may persist the staged state: not a dry-run, and
+  ## either nothing needed posting or every message reached at least
+  ## one sink (at-least-once: a delivered alert may repeat once, which is
+  ## strictly better than a silent loss).
+  consume: bool
+  targets: string[]
+  summary: string
+
+schema commit_input:
+  state_next_file: string
+  alertlog_file: string
+  tick_file: string
+  ## The generation decide read: refused under the lock if the file moved on.
+  generation: int
+  state_commit: bool
+  workspace: string
+  state_dir: string
+
+schema commit_output:
+  committed: bool
+  summary: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+## Deterministic entry: validate mode + config + secrets, normalize the
+## sections the lanes read, compute the Loki window from the persisted
+## cursor, and refuse to run while a halt is armed. Config problems fail
+## HERE, loudly, before any network work.
+tool plan:
+  output: plan_output
+  language: py
+  script: |
+    import json, os, sys, time, datetime
+    from urllib.parse import urlsplit
+    ws = {{vars.workspace_dir}}
+    cfg_path = {{vars.config_path}}
+    mode = {{vars.mode}}
+    state_dir = {{vars.state_dir}}
+    max_window_min = int({{vars.max_window_minutes}})
+    ingest_lag = int({{vars.ingest_lag_seconds}})
+    max_lines = int({{vars.max_lines}})
+    os.chdir(ws)
+    if mode != 'watch':
+        raise SystemExit('prod-watch: invalid mode ' + repr(mode) + ' -- only mode=watch exists in this slice')
+    if not os.path.exists(cfg_path):
+        raise SystemExit('prod-watch: config file ' + repr(cfg_path) + ' not found in ' + os.getcwd() +
+                         ' -- create it (see the argus-config skill) or pass --var config_path=...')
+    with open(cfg_path, encoding='utf-8') as fh:
+        cfg = json.load(fh)
+    if not isinstance(cfg, dict):
+        raise SystemExit('prod-watch: config must be a JSON object')
+
+    def section(name, default):
+        v = cfg.get(name)
+        if v is None:
+            return default
+        if not isinstance(v, type(default)):
+            raise SystemExit('prod-watch: config.' + name + ' must be a ' + type(default).__name__)
+        return v
+
+    app = section('app', {})
+    if not app.get('name'):
+        raise SystemExit('prod-watch: config.app.name is required (the application this watchdog covers)')
+    app.setdefault('environment', '')
+    app.setdefault('context', '')
+
+    ## ── release source ─────────────────────────────────────────────
+    release = section('release', {})
+    src = release.get('source') or 'none'
+    if src not in ('none', 'health_field'):
+        raise SystemExit('prod-watch: config.release.source must be none|health_field in this slice, got ' + repr(src))
+    if src == 'health_field' and not (release.get('health_url') and release.get('field')):
+        raise SystemExit('prod-watch: release.source=health_field needs release.health_url and release.field')
+    release['source'] = src
+
+    ## ── grafana + loki + prometheus ────────────────────────────────
+    grafana = section('grafana', {})
+    loki = section('loki', {})
+    prom = section('prometheus', {})
+    queries = loki.get('queries') or {}
+    if not isinstance(queries, dict) or any(not isinstance(v, str) or not v.strip() for v in queries.values()):
+        raise SystemExit('prod-watch: config.loki.queries must be a map name -> LogQL string')
+    probes_cfg = prom.get('probes') or []
+    if isinstance(probes_cfg, dict):
+        probes_cfg = [dict(v, id=k) for k, v in probes_cfg.items()]
+    norm_probes = []
+    for p in probes_cfg:
+        if not isinstance(p, dict) or not p.get('id') or not p.get('query'):
+            raise SystemExit('prod-watch: each prometheus probe needs an id and a query')
+        op = p.get('op') or '>'
+        if op not in ('>', '>=', '<', '<=', '==', '!='):
+            raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' has an unknown op ' + repr(op))
+        sev = str(p.get('severity') or 'high').lower()
+        if sev not in ('critical', 'high', 'medium', 'low'):
+            raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' has an unknown severity ' + repr(sev))
+        agg = str(p.get('agg') or 'max').lower()
+        if agg not in ('max', 'min', 'sum', 'first'):
+            raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' has an unknown agg ' + repr(agg) +
+                             ' (max, min, sum, first) -- an unknown word would silently mean max')
+        ## The title is text wherever it lands (the state, the messages): a
+        ## number written in the config is its text, anything else a mistake.
+        title = p.get('title')
+        if isinstance(title, bool) or not isinstance(title, (str, int, float, type(None))):
+            raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' title must be text, got ' + repr(title)[:60])
+        try:
+            thr = float(p.get('threshold') if p.get('threshold') is not None else 0)
+        except (TypeError, ValueError):
+            raise SystemExit('prod-watch: prometheus probe ' + repr(p['id']) + ' threshold must be a number')
+        norm_probes.append({'id': str(p['id']), 'query': p['query'], 'op': op, 'threshold': thr,
+                            'severity': sev, 'title': str(title) if title not in (None, '') else str(p['id']),
+                            'agg': agg})
+    uses_grafana = bool(queries) or bool(norm_probes)
+    if uses_grafana:
+        if not grafana.get('base_url'):
+            raise SystemExit('prod-watch: loki queries / prometheus probes are configured but config.grafana.base_url is missing')
+        try:
+            parts = urlsplit(grafana['base_url']) if isinstance(grafana['base_url'], str) else None
+        except ValueError:
+            parts = None
+        if not parts or parts.scheme not in ('http', 'https') or not parts.hostname:
+            raise SystemExit('prod-watch: config.grafana.base_url is not an http(s) URL with a host, got ' + repr(grafana['base_url'])[:80])
+        if queries and not grafana.get('loki_uid'):
+            raise SystemExit('prod-watch: loki queries are configured but config.grafana.loki_uid is missing')
+        if norm_probes and not grafana.get('prometheus_uid'):
+            raise SystemExit('prod-watch: prometheus probes are configured but config.grafana.prometheus_uid is missing')
+    grafana['base_url'] = (grafana.get('base_url') or '').rstrip('/')
+
+    ## ── http probes ────────────────────────────────────────────────
+    http_probes = []
+    for p in section('probes', []):
+        if not isinstance(p, dict) or not p.get('id') or not isinstance(p.get('url'), str) or not p['url']:
+            raise SystemExit('prod-watch: each http probe needs an id and a url (text)')
+        sev = str(p.get('severity') or 'critical').lower()
+        if sev not in ('critical', 'high', 'medium', 'low'):
+            raise SystemExit('prod-watch: http probe ' + repr(p['id']) + ' has an unknown severity ' + repr(sev))
+        http_probes.append({'id': str(p['id']), 'url': p['url'],
+                            'expect_status': int(p['expect_status'] if p.get('expect_status') is not None else 200),
+                            'timeout_secs': max(1, int(p['timeout_secs'] if p.get('timeout_secs') is not None else 10)), 'severity': sev})
+
+    sinks = section('sinks', [])
+    for s in sinks:
+        if not isinstance(s, dict) or not isinstance(s.get('webhook'), str) or not s['webhook']:
+            raise SystemExit('prod-watch: each sink needs a `webhook` NAME (text, looked up in the webhooks secret)')
+        ## Every field the payload carries is text (Mattermost answers 400 to
+        ## any other type, and the tick would replay): a channel or a username
+        ## written as a number is its name, the icon is text, anything else a
+        ## mistake.
+        for field in ('channel', 'username'):
+            v = s.get(field)
+            if isinstance(v, bool) or not isinstance(v, (str, int, type(None))):
+                raise SystemExit('prod-watch: sink ' + repr(s['webhook']) + ' ' + field + ' must be text, got ' + repr(v)[:60])
+            s[field] = '' if v is None else str(v)
+        if s.get('icon_emoji') is not None and not isinstance(s['icon_emoji'], str):
+            raise SystemExit('prod-watch: sink ' + repr(s['webhook']) + ' icon_emoji must be text, got ' + repr(s['icon_emoji'])[:60])
+        kind = s.get('kind') or 'mattermost'
+        if kind != 'mattermost':
+            raise SystemExit('prod-watch: sink kind ' + repr(kind) + ' is not supported in this slice (mattermost only)')
+        s['kind'] = kind
+        ms = str(s.get('min_severity') or 'low').lower()
+        if ms not in ('critical', 'high', 'medium', 'low'):
+            raise SystemExit('prod-watch: sink min_severity must be critical|high|medium|low, got ' + repr(ms))
+        s['min_severity'] = ms
+        s['required'] = bool(s.get('required', True))
+
+    ## English defaults; the config's `labels` map overrides any subset —
+    ## this bot bakes in no language (deterministic messages included).
+    labels = {
+        'alert': 'production alert',
+        'reminder': 'still open',
+        'escalated': 'escalated',
+        'quiet': 'not observed any more',
+        'new_since': 'first seen {date}',
+        'count': '{n} occurrence(s)',
+        'release': 'release',
+        'release_unverified': 'unverified',
+        'probe_down': 'health probe failing',
+        'probe_detail': '{url} answered {status} in {ms} ms (expected {expected})',
+        'prom_breached': 'metric threshold breached',
+        'prom_detail': '{title}: {value} {op} {threshold}',
+        'prom_no_data': 'metric probe returned no data',
+        'loki_template': 'new error pattern in the logs',
+        'loki_detail': '{count} line(s) since {first}, containers: {streams}',
+        'leak': 'personal data or secret detected in the logs',
+        'leak_detail': '{count} match(es) of class {class} ({distinct} distinct) in {sources}',
+        'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
+        'overflow': '{n} more alert(s) exceeded the per-run cap; they stay open and will fire on the next tick',
+        'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
+        'halted': 'watchdog halted since {since}: {reason}',
+        'severity': 'severity',
+        'sample': 'masked sample',
+    }
+    for k, v in (cfg.get('labels') or {}).items():
+        if k in labels and isinstance(v, str) and v:
+            labels[k] = v
+
+    ## ── halt + cursor ──────────────────────────────────────────────
+    state = {}
+    spath = os.path.join(state_dir, 'state.json')
+    if os.path.exists(spath):
+        try:
+            with open(spath, encoding='utf-8') as fh:
+                state = json.load(fh)
+        except ValueError:
+            raise SystemExit('prod-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
+    ## The state is validated here, before any lane runs — decide reads it
+    ## after every lane ran, and a foreign value must be a named refusal,
+    ## never a traceback. An ABSENT key reads as empty; a PRESENT one has
+    ## its shape, null included (the bot writes null for `halt` only). What
+    ## a node needs is typed — the containers, what decide computes with
+    ## (generation, count, kind, severity, sources, the dates retention
+    ## reads) and what notify renders through a lookup (title_key,
+    ## detail_key, fields, first_seen); a value no node breaks on is left
+    ## alone, since a check stricter than its writer bricks the watchdog on
+    ## a state it wrote.
+    ## Every cursor of the Loki map — configured or not: decide trims the
+    ## dropped ones — parses below.
+    def refuse_state(where, value, what):
+        raise SystemExit('prod-watch: state.' + where + ' is not ' + what + ' (' + repr(value)[:60] +
+                         ') -- repair it or remove the state file')
+    def is_iso(v):
+        try:
+            datetime.datetime.fromisoformat(v)
+            return True
+        except (TypeError, ValueError):
+            return False
+    def is_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+    if not isinstance(state, dict):
+        raise SystemExit('prod-watch: state file ' + spath + ' is not a JSON object -- repair or remove it')
+    for key in ('cursors', 'incidents', 'health', 'coverage_posted'):
+        if key in state and not isinstance(state[key], dict):
+            refuse_state(key, state[key], 'an object')
+    if state.get('halt') is not None and not isinstance(state['halt'], dict):
+        refuse_state('halt', state['halt'], 'an object')
+    if 'generation' in state and not is_int(state['generation']):
+        refuse_state('generation', state['generation'], 'an integer')
+    for ifp, rec in (state.get('incidents') or {}).items():
+        where = 'incidents[' + repr(ifp)[:40] + ']'
+        if not isinstance(rec, dict):
+            refuse_state(where, rec, 'an object')
+        for f in ('kind', 'severity', 'title_key', 'detail_key'):
+            if rec.get(f) is not None and not isinstance(rec[f], str):
+                refuse_state(where + '.' + f, rec[f], 'a string')
+        if rec.get('sources') is not None and (not isinstance(rec['sources'], list) or not all(isinstance(x, str) for x in rec['sources'])):
+            refuse_state(where + '.sources', rec['sources'], 'a list of names')
+        for f in ('first_seen', 'last_seen'):
+            if rec.get(f) is not None and not is_iso(rec[f]):
+                refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
+        if rec.get('count') is not None and not is_int(rec['count']):
+            refuse_state(where + '.count', rec['count'], 'an integer')
+        if rec.get('fields') is not None and not isinstance(rec['fields'], dict):
+            refuse_state(where + '.fields', rec['fields'], 'an object')
+    for src, hrec in (state.get('health') or {}).items():
+        if not isinstance(hrec, dict):
+            refuse_state('health[' + repr(src)[:40] + ']', hrec, 'an object')
+    halt = state.get('halt') or None
+    halted = bool(halt)
+    halt_reason = ''
+    if halted:
+        halt_reason = (labels['halted'].replace('{since}', str(halt.get('since') or '?'))
+                       .replace('{reason}', str(halt.get('reason') or '?')))
+
+    now_ns = time.time_ns()
+    to_ns = now_ns - ingest_lag * 10 ** 9
+    floor_ns = to_ns - max_window_min * 60 * 10 ** 9
+    overlap_s = int(loki['overlap_seconds'] if loki.get('overlap_seconds') is not None else 60)
+    if overlap_s < 0:
+        print('prod-watch: loki.overlap_seconds ' + str(overlap_s) + ' is negative -- using 0 (a window may not start after its own cursor)', file=sys.stderr)
+        overlap_s = 0
+    boot_min = int(loki['bootstrap_window_minutes'] if loki.get('bootstrap_window_minutes') is not None else 10)
+    if boot_min < 0:
+        print('prod-watch: loki.bootstrap_window_minutes ' + str(boot_min) + ' is negative -- using 0 (a first window may not start after its own end)', file=sys.stderr)
+        boot_min = 0
+    lane_cursors = state.get('cursors') or {}
+    if 'loki' in lane_cursors and not isinstance(lane_cursors['loki'], dict):
+        refuse_state('cursors.loki', lane_cursors['loki'], 'an object')
+    cursors = lane_cursors.get('loki') or {}
+    windows = {}
+
+    def cursor_int(c, name, field, default=0):
+        ## A cursor field is a number or absent — a foreign value (an edited
+        ## state, another format) is refused by name, never swapped for a
+        ## default, and never a traceback.
+        v = c.get(field)
+        if v is None:
+            return default
+        if isinstance(v, bool) or not isinstance(v, (int, str)):
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': ' + field + ' is not a number (' + repr(v)[:60] +
+                             ') -- delete that cursor (or the state file) and let the query bootstrap')
+        try:
+            return int(v)
+        except ValueError:
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': ' + field + ' is not a number (' + repr(v)[:60] +
+                             ') -- delete that cursor (or the state file) and let the query bootstrap')
+
+    def parse_cursor(name, c):
+        if not isinstance(c, dict):
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ' is not an object (' + repr(c)[:60] +
+                             ') -- delete that cursor (or the state file) and let the query bootstrap')
+        prev = cursor_int(c, name, 'covered_to_ns')
+        band = c.get('band')
+        if band is None:
+            band = []
+        def offset_ok(e):
+            try:
+                int(e.split(':', 1)[0])
+                return True
+            except ValueError:
+                return False
+        if not isinstance(band, list) or any(not isinstance(e, str) or ':' not in e or not offset_ok(e) for e in band):
+            raise SystemExit('prod-watch: cursor of loki query ' + repr(name) + ': band is not a list of offset:hash strings -- '
+                             'delete that cursor (or the state file) and let the query bootstrap')
+        return {'prev': prev, 'prev_bound': cursor_int(c, name, 'overlap_from_ns'), 'frontier': cursor_int(c, name, 'frontier_ns', prev),
+                'band_base': cursor_int(c, name, 'band_base_ns'), 'history_to': cursor_int(c, name, 'history_to_ns'), 'band': band}
+
+    parsed = {name: parse_cursor(name, c) for name, c in cursors.items()}
+    for name in queries:
+        pc = parsed.get(name) or parse_cursor(name, {})
+        prev, prev_bound, frontier = pc['prev'], pc['prev_bound'], pc['frontier']
+        band_base, history_to, band = pc['band_base'], pc['history_to'], pc['band']
+        if prev > 0:
+            ## The window reopens where the last walk stopped (its frontier,
+            ## below the high-water mark after a truncated walk) or at the
+            ## overlap below the mark, whichever is earlier — but never
+            ## before the band's lower bound: lines below it are no longer
+            ## known and would be counted again.
+            frm = max(floor_ns, prev_bound, min(frontier, prev - overlap_s * 10 ** 9))
+            gap = frontier < floor_ns
+            if to_ns < frm <= to_ns + max_window_min * 60 * 10 ** 9:
+                ## The cursor is ahead of `now - ingest_lag` (a lag raised
+                ## between two ticks): nothing to read yet — an empty window,
+                ## the cursor stays. Further ahead than a full window is a
+                ## clock or an edited state: left inverted, poll_loki says so.
+                print('prod-watch: loki query ' + name + ': cursor ' + str((frm - to_ns) // 10 ** 9) +
+                      's ahead of the window end (ingest lag raised?) -- empty window this tick', file=sys.stderr)
+                frm = to_ns
+        else:
+            ## Bootstrap: a short first window, so an install does not
+            ## replay an hour of history as if it were news. A first walk
+            ## that failed left where it opened (the band's bound): the
+            ## retry reopens THERE, not at a window that slid with the clock.
+            ## The end of the first window is the query's HISTORY boundary:
+            ## a line below it is history whichever tick reads it (a
+            ## truncated or failed first walk reads the rest later), and it
+            ## travels in the cursor until the walk passes it.
+            boot_from = to_ns - min(max_window_min, boot_min) * 60 * 10 ** 9
+            history_to = history_to or to_ns
+            frm = max(floor_ns, prev_bound) if prev_bound else boot_from
+            gap = bool(prev_bound) and prev_bound < floor_ns
+            if frm > to_ns:
+                frm = to_ns
+        ## The overlap re-reads the tail of the previous window on purpose
+        ## (late ingestion); the lines already seen there travel as
+        ## (timestamp, hash) pairs so they are not counted twice.
+        windows[name] = {'from_ns': str(frm), 'to_ns': str(to_ns), 'gap': gap, 'bootstrap': prev == 0,
+                         'prev_covered_to_ns': str(prev), 'frontier_ns': str(frontier),
+                         'band': list(band), 'band_base_ns': str(band_base),
+                         'overlap_from_ns': str(prev_bound), 'history_to_ns': str(history_to),
+                         'overlap_ns': str(overlap_s * 10 ** 9)}
+    loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
+                 'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
+                 'stream_labels': loki.get('stream_labels') or ['namespace', 'container', 'pod', 'app', 'job']}
+
+    lanes = {'loki': bool(queries), 'prometheus': bool(norm_probes), 'probes': bool(http_probes)}
+    if not any(lanes.values()):
+        raise SystemExit('prod-watch: config declares no lane at all (loki.queries, prometheus.probes and probes all empty)')
+
+    summary = ('watch: app=' + app['name'] + ('/' + app['environment'] if app['environment'] else '') +
+               ', loki ' + str(len(queries)) + ' query(ies), prometheus ' + str(len(norm_probes)) +
+               ' probe(s), http ' + str(len(http_probes)) + ' probe(s), ' + str(len(sinks)) + ' sink(s)' +
+               (', HALTED' if halted else ''))
+    print(json.dumps({'app': app, 'release': release, 'grafana': grafana, 'loki': loki_plan,
+                      'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sinks': sinks,
+                      'labels': labels, 'lanes': lanes, 'halted': halted, 'halt': halt or {},
+                      'halt_reason': halt_reason, 'summary': summary}, ensure_ascii=False))
+
+## The deployed version, from the source the config names. This slice
+## reads a field of the health endpoint; release_known stays FALSE until
+## a later slice verifies the value resolves to a commit of the
+## application repository — a string found in a JSON body is not a
+## verified deployment, and every message says so.
+tool resolve_release:
+  input: release_input
+  output: release_output
+  language: py
+  script: |
+    import json, re, socket, ipaddress
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    release = {{input.release}} or {}
+    timeout = int({{input.timeout_secs}})
+    allow_private = {{input.allow_private}}
+    src = release.get('source') or 'none'
+    if src == 'none':
+        print(json.dumps({'release': '', 'release_source': 'none', 'release_known': False,
+                          'note': 'no release source configured'}))
+        raise SystemExit(0)
+
+    def _addr_ok(ip):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        ## Metadata and link-local stay refused even for on-prem: no
+        ## deployment legitimately reads its release from 169.254.0.0/16.
+        if a.is_link_local:
+            return False
+        if allow_private:
+            return not a.is_multicast and not a.is_unspecified
+        return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
+
+    def _validate_host(host):
+        if not host:
+            raise ValueError('URL has no host')
+        for info in socket.getaddrinfo(host, None):
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    url = release.get('health_url') or ''
+    field = release.get('field') or 'version'
+    note, value = '', ''
+    try:
+        parts = urlsplit(url)
+        if parts.scheme not in ('http', 'https'):
+            raise ValueError('unsupported URL scheme ' + repr(parts.scheme))
+        _validate_host(parts.hostname or '')
+        req = urllib.request.Request(url, headers={'User-Agent': 'prod-watch/0.1 (iterion)', 'Accept': 'application/json'})
+        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout) as r:
+            body = json.loads(r.read(1024 * 1024).decode('utf-8'))
+        cur = body
+        for key in field.split('.'):
+            cur = cur.get(key) if isinstance(cur, dict) else None
+        value = str(cur).strip() if cur not in (None, '') else ''
+        if value and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,119}', value):
+            ## A version is one token; anything else is the server's text.
+            note, value = 'field ' + repr(field) + ' is not a version token (its text is withheld)', ''
+        elif not value:
+            note = 'field ' + repr(field) + ' absent or empty in the health body'
+    except urllib.error.HTTPError as e:
+        note = 'HTTPError: HTTP Error ' + str(e.code) + ' (the reason phrase is withheld)'
+    except Exception as e:
+        ## The transport's message and the node's own travel; anything else
+        ## — a malformed status line — is named by its type.
+        note = type(e).__name__ + (': ' + str(e)[:200] if isinstance(e, (OSError, ValueError))
+                                   else ': the answer did not parse (its text is withheld)')
+    print(json.dumps({'release': value[:120], 'release_source': src, 'release_known': False,
+                      'note': note or 'unverified until the analysis slice resolves it in the repository'},
+                     ensure_ascii=False))
+
+## Loki through the Grafana datasource proxy. Each configured query is
+## paged FORWARD over its frozen window [from, to): a page is `page_size`
+## lines, the next page resumes AT the last timestamp (inclusive, the
+## re-read deduplicated), and the walk stops at the window's end or at
+## max_lines (then the window is TRUNCATED: the cursor's frontier stays at
+## the last line fetched and the tick says so). The lines go to a scratch
+## file and nowhere else — this node's stdout carries counts and paths.
+## Per-query failures — a refused token (401/403) included — degrade the
+## lane: decide refuses the tick only when every configured lane failed,
+## so a Grafana credential gone stale never silences the health probes.
+tool poll_loki:
+  input: loki_input
+  output: loki_output
+  language: py
+  script: |
+    import json, os, socket, ipaddress, time, sys, hashlib, http
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit, urlencode
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    grafana = {{input.grafana}} or {}
+    loki = {{input.loki}} or {}
+    timeout = int({{input.timeout_secs}})
+    scratch = {{input.scratch_dir}}
+    allow_private = {{input.allow_private}}
+    token_file = {{secrets.grafana_token.path}}
+    os.makedirs(scratch, exist_ok=True)
+    ## The scratch is per-workspace and shared between runs: the handoff
+    ## names carry the run id so two runs never write each other's handoffs.
+    ## A run never lives a day, so this tick harvests the handoffs older
+    ## than one — abandoned runs cannot accumulate without bound. Best
+    ## effort: a cleanup failure is never the tick's death.
+    raw_path = os.path.join(scratch, 'loki_raw-' + str({{run.id}})[-12:] + '.jsonl')
+    try:
+        cutoff = time.time() - 24 * 3600
+        prefixes = ('loki_raw-', 'signals-', 'state_next-', 'alertlog_delta-', 'tick-')
+        for name in os.listdir(scratch):
+            if not name.startswith(prefixes):
+                continue
+            p = os.path.join(scratch, name)
+            try:
+                if os.path.isfile(p) and os.stat(p).st_mtime < cutoff:
+                    os.unlink(p)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    queries = loki.get('queries') or {}
+    windows = loki.get('windows') or {}
+    max_lines = int(loki.get('max_lines') or 5000)
+    page_size = max(1, min(int(loki.get('page_size') or 1000), max_lines))
+    keep_labels = loki.get('stream_labels') or []
+    ## Always leave a fresh raw file behind, even with no query: leak_scan
+    ## opens it unconditionally.
+    open(raw_path, 'w', encoding='utf-8').close()
+    if not queries:
+        print(json.dumps({'raw_file': raw_path, 'lines': 0, 'truncated': False, 'per_query': {}, 'errors': [], 'ok': True}))
+        raise SystemExit(0)
+
+    base = (grafana.get('base_url') or '').rstrip('/')
+    uid = grafana.get('loki_uid') or ''
+    origin = urlsplit(base)
+
+    def _addr_ok(ip):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        if a.is_link_local:
+            return False
+        if allow_private:
+            return not a.is_multicast and not a.is_unspecified
+        return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
+    def _validate_host(host):
+        ## Same body in resolve_release, poll_loki, poll_prom and probe_http —
+        ## edit all four. No proxy exemption: the TARGET host is what is
+        ## validated here, whatever an egress proxy in the environment says.
+        if not host:
+            raise ValueError('URL has no host')
+        for info in socket.getaddrinfo(host, None):
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    class CredentialRefused(Exception):
+        pass
+
+    class LaneError(Exception):
+        pass
+
+    def lane_error(e):
+        ## What an exception says about an upstream answer can quote it — a
+        ## value that did not parse, a line where a number belongs, a header
+        ## holding the token, an HTTP reason phrase (the server's words): only
+        ## the lane's own messages and the transport's travel, an HTTP error
+        ## as its code and the standard phrase; anything else is named by its
+        ## type.
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                phrase = http.HTTPStatus(e.code).phrase
+            except ValueError:
+                phrase = 'unknown status'
+            return 'HTTPError: HTTP Error ' + str(e.code) + ': ' + phrase
+        if isinstance(e, (CredentialRefused, LaneError, OSError)):
+            return type(e).__name__ + ': ' + str(e)[:200]
+        return type(e).__name__ + ': the answer did not parse (its text is withheld)'
+
+    ## What the lane needs from its environment — a usable token, a scheme
+    ## the bearer credential can ride, a Grafana host resolving to an
+    ## allowed address — is checked once: a failure is reported on every
+    ## query or probe of the lane (a Loki cursor stays), never the tick's
+    ## death, so a secret rotated wrong, an http:// base URL, or a Grafana
+    ## gone from the DNS never silences the health probes.
+    token, setup_exc = '', None
+    try:
+        if token_file and os.path.exists(token_file):
+            with open(token_file, encoding='utf-8-sig') as fh:
+                token = fh.read().strip()
+        if not token:
+            raise CredentialRefused('the grafana_token secret is not bound or empty -- bind a service-account token (Viewer) '
+                                    'to the secret name grafana_token')
+        if not (token.isascii() and token.isprintable()) or ' ' in token:
+            ## Never quoted: the text is the secret, or holds it.
+            raise CredentialRefused('the grafana_token secret is not one token on one line (whitespace or a control '
+                                    'character inside) -- bind the token alone')
+        if origin.scheme != 'https' and not allow_private:
+            ## Refused before the host resolves: a public-name http:// Grafana
+            ## fails by NAME, not by a DNS miss that reads like an outage.
+            raise LaneError('grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
+        try:
+            _validate_host(origin.hostname or '')
+        except (OSError, ValueError) as e:
+            raise OSError('Grafana host ' + repr(origin.hostname) + ': ' + str(e)) from None
+    except Exception as e:
+        setup_exc = e
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        ## The bearer token rides every request: a redirect — to any host,
+        ## even a public one — is refused outright rather than followed.
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    _opener = urllib.request.build_opener(_NoRedirect())
+
+    def get(path, params):
+        url = base + path + '?' + urlencode(params)
+        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
+                                                   'User-Agent': 'prod-watch/0.1 (iterion)'})
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            try:
+                with _opener.open(req, timeout=timeout) as r:
+                    return json.loads(r.read(32 * 1024 * 1024).decode('utf-8'))
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
+                                            'lacks datasource query rights, or the token expired (' + path + ')')
+                last = e
+                if e.code < 500 and e.code != 429:
+                    raise
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                last = e
+        raise last
+
+    def word(v):
+        ## An upstream enum (a status) travels; any other text is withheld.
+        v = str(v if v is not None else '')
+        return v if 0 < len(v) <= 40 and v.isascii() and v.replace('_', '').isalnum() else '(withheld)'
+
+    BAND_CAP = 4000
+    total, truncated_any, errors, per_query, ok_count = 0, False, [], {}, 0
+
+    def encode(pairs):
+        ## One short string per entry, timestamps as offsets from a base
+        ## carried once: the state is committed every tick, and a list of
+        ## stable lines packs 17x smaller in git than nested pairs.
+        base = pairs[0][0] if pairs else 0
+        return [str(ts - base) + ':' + h for ts, h in pairs], str(base)
+
+    def decode(w, name):
+        base = int(w.get('band_base_ns') or 0)
+        out = []
+        try:
+            for e in (w.get('band') or []):
+                off, h = str(e).split(':', 1)
+                out.append((base + int(off), h))
+        except (ValueError, TypeError, AttributeError):
+            raise SystemExit('prod-watch: the cursor band of query ' + repr(name) + ' is not in the offset:hash format -- '
+                             'delete that cursor (or the state file) and let the query bootstrap')
+        return out
+
+    def hand_over(band_prev, seen, covered, frontier, overlap_ns, known_from):
+        ## The band the next tick dedups against, as (ts, hash) pairs: every
+        ## line this walk SAW plus what the previous band still knew inside
+        ## the next window (a truncated or a failed walk does not re-read
+        ## all it inherited), windowed at the earliest point the next window
+        ## can open — and never below `known_from`, the earliest point the
+        ## band is complete from (this walk's window start, or what it
+        ## inherited): a bound that fell back below a cut, or below what an
+        ## overlap raised afterwards would reach, reopens the window over
+        ## lines nobody knows. Bounded to about BAND_CAP entries, cut only on
+        ## a TIMESTAMP boundary — never inside a group sharing one
+        ## nanosecond — and never at or above the frontier, where the next
+        ## window reopens. `overlap_from` is the band's lower bound: the
+        ## next window never opens before it.
+        low = max(min(frontier, covered - overlap_ns), known_from)
+        merged = {}
+        for ts, h in band_prev:
+            if ts >= low:
+                merged[h] = ts
+        for ts, h in seen:
+            if ts >= low:
+                merged[h] = ts
+        pairs = sorted(((ts, h) for h, ts in merged.items()))
+        overlap_from = low
+        if len(pairs) > BAND_CAP:
+            cut = len(pairs) - BAND_CAP
+            cut = min(cut, next((k for k, pr in enumerate(pairs) if pr[0] >= frontier), len(pairs)))
+            while cut > 0 and pairs[cut][0] == pairs[cut - 1][0]:
+                cut -= 1
+            if cut > 0:
+                overlap_from = pairs[cut - 1][0] + 1
+                pairs = pairs[cut:]
+        band, base = encode(pairs)
+        return band, base, overlap_from
+
+    with open(raw_path, 'w', encoding='utf-8') as raw:
+        for name, logql in queries.items():
+            w = windows.get(name) or {}
+            frm, to = int(w.get('from_ns') or 0), int(w.get('to_ns') or 0)
+            prev_to = int(w.get('prev_covered_to_ns') or 0)
+            frontier_prev = int(w.get('frontier_ns') or prev_to)
+            overlap_ns = int(w.get('overlap_ns') or 0)
+            band_prev = decode(w, name)
+            inherited_from = int(w.get('overlap_from_ns') or 0)
+            meta = {'from_ns': str(frm), 'to_ns': str(to), 'gap': bool(w.get('gap')), 'bootstrap': bool(w.get('bootstrap')),
+                    'history_to_ns': str(int(w.get('history_to_ns') or 0))}
+            if not frm or not to or frm > to:
+                ## A window that does not exist, or that starts after its own
+                ## end (the cursor ahead of `now - ingest_lag`: a lag raised
+                ## between two ticks, a clock): the query's error — the lane
+                ## degrades, the cursor stays where it is, time heals it.
+                err = 'missing window' if not frm or not to else 'inverted window: from ' + str(frm) + ' > to ' + str(to)
+                errors.append({'query': name, 'error': err})
+                band, bbase = encode(band_prev)
+                per_query[name] = dict(meta, lines=0, truncated=False, error=err, covered_to_ns=str(prev_to),
+                                       frontier_ns=str(frontier_prev), band=band, band_base_ns=bbase,
+                                       overlap_from_ns=str(inherited_from), skipped_overlap=0)
+                continue
+            if frm == to and setup_exc is None:
+                ## A zero-width window (a bootstrap of 0 minutes, or a window
+                ## floor at `to`) is fully covered: nothing to read, the
+                ## high-water mark moves to `to`, the band is kept. On a lane
+                ## that cannot be used it is a failed walk instead: the
+                ## query's error, the frontier where the window opened.
+                covered = max(to, prev_to)
+                ## Nothing was walked: the frontier stays where the last walk
+                ## stopped (below the mark after a truncated walk — the
+                ## unread region reopens there, whatever the overlap becomes).
+                frontier = max(frontier_prev, to)
+                band, bbase, overlap_from = hand_over(band_prev, [], covered, frontier, overlap_ns, inherited_from or to)
+                per_query[name] = dict(meta, lines=0, truncated=False, error='', covered_to_ns=str(covered),
+                                       frontier_ns=str(frontier), band=band, band_base_ns=bbase,
+                                       overlap_from_ns=str(overlap_from), skipped_overlap=0)
+                ok_count += 1
+                continue
+            start, n, truncated, last_ts, err = frm, 0, False, 0, ''
+            known = set(h for ts, h in band_prev)
+            seen = []      # (ts, hash) of every line SEEN this walk
+            walk_seen = set()
+            seen_at = {}   # ts -> lines already seen at that timestamp (the re-read allowance)
+            skipped = 0
+            page_limit = page_size
+            try:
+                if setup_exc is not None:
+                    raise setup_exc
+                while True:
+                    remaining = max_lines - n
+                    if remaining <= 0:
+                        truncated = True
+                        break
+                    ## The inclusive resume re-reads the lines already seen at
+                    ## `start`; they are not charged against the cap.
+                    limit = min(page_limit, remaining + seen_at.get(start, 0))
+                    data = get('/api/datasources/proxy/uid/' + uid + '/loki/api/v1/query_range',
+                               {'query': logql, 'start': str(start), 'end': str(to), 'limit': str(limit), 'direction': 'forward'})
+                    if data.get('status') != 'success':
+                        raise LaneError('Loki answered status ' + word(data.get('status')))
+                    entries = []
+                    for stream in ((data.get('data') or {}).get('result') or []):
+                        labels = stream.get('stream') or {}
+                        kept = {k: str(labels[k])[:120] for k in keep_labels if k in labels}
+                        for ts, line in (stream.get('values') or []):
+                            entries.append((int(ts), str(line), kept))
+                    entries.sort(key=lambda e: e[0])
+                    fresh, new_written = 0, 0
+                    for ts, line, kept in entries:
+                        h = hashlib.sha1((str(ts) + chr(0) + line).encode('utf-8', 'replace')).hexdigest()[:16]
+                        last_ts = max(last_ts, ts)
+                        if h in walk_seen:
+                            continue   # re-read by the inclusive resume below
+                        walk_seen.add(h)
+                        seen_at[ts] = seen_at.get(ts, 0) + 1
+                        fresh += 1
+                        seen.append((ts, h))
+                        if h in known:
+                            skipped += 1
+                            continue
+                        new_written += 1
+                        raw.write(json.dumps({'q': name, 'ts': str(ts), 'line': line[:4000], 'stream': kept}, ensure_ascii=False) + chr(10))
+                    ## Only lines WRITTEN count against the cap: the band is
+                    ## re-read every tick, and charging it would freeze the
+                    ## walk on the same page.
+                    n += new_written
+                    if fresh == 0:
+                        if len(entries) < limit:
+                            break
+                        ## A group sharing one nanosecond wider than the page:
+                        ## the resume at `start` cannot get past it with this
+                        ## page size. Widen — the re-read lines are not charged,
+                        ## so the page may grow beyond max_lines by the number
+                        ## already seen at `start`; a group wider than the cap
+                        ## drains across ticks, max_lines new lines a tick.
+                        allowance = max_lines + seen_at.get(start, 0)
+                        if page_limit >= allowance:
+                            raise LaneError('a group of lines at one timestamp (' + str(start) + ') did not fit a page of ' +
+                                             str(allowance) + ' -- raise max_lines')
+                        page_limit = min(page_limit * 2, allowance)
+                        continue
+                    if len(entries) < limit:
+                        break
+                    ## A page full to the brim: resume AT its last timestamp
+                    ## (Loki's start is inclusive). Several lines share one
+                    ## nanosecond routinely (a promtail timestamp stage at ms
+                    ## precision), and `last_ts + 1` would skip the ones the
+                    ## page cut off; the re-read is deduplicated by walk_seen.
+                    start = last_ts
+                    if start >= to:
+                        break
+            except SystemExit:
+                raise
+            except Exception as e:
+                err = lane_error(e)
+                errors.append({'query': name, 'error': err})
+            if err:
+                ## The high-water mark does not move on a failed walk; the
+                ## frontier does — to where the walk stopped (its window
+                ## start when it read nothing), like a truncated walk — so
+                ## the retry reopens THERE whatever the overlap becomes, not
+                ## at an overlap that may have shrunk above the failed
+                ## window. The lines written before the failure are scanned
+                ## this tick, and the band knows them, so the retry does not
+                ## write them again; the cut is clamped at that frontier
+                ## (everything below was read), so a query failing past a
+                ## page depth every tick does not grow the band without bound.
+                frontier = max(frm, last_ts)
+                band, bbase, overlap_from = hand_over(band_prev, seen, prev_to, frontier, overlap_ns, frm)
+                per_query[name] = dict(meta, lines=n, truncated=truncated, error=err, covered_to_ns=str(prev_to),
+                                       frontier_ns=str(frontier), band=band, band_base_ns=bbase,
+                                       overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
+                total += n
+                continue
+            ## Two marks travel: the high-water mark `covered` (never moves
+            ## backwards — a truncated walk among late-arriving lines stops
+            ## below the previous mark) and the `frontier` where THIS walk
+            ## stopped, which is where the next window reopens.
+            if truncated:
+                frontier = last_ts
+                covered = max(prev_to, last_ts)
+            else:
+                ## The walk read its whole window: the frontier moves to its
+                ## end — never up to the mark, which lies above `to` when the
+                ## ingest lag was raised after a walk that stopped below it:
+                ## the unread stretch between `to` and the mark reopens next
+                ## tick.
+                covered = max(prev_to, to)
+                frontier = max(frontier_prev, to)
+            band, bbase, overlap_from = hand_over(band_prev, seen, covered, frontier, overlap_ns, frm)
+            per_query[name] = dict(meta, lines=n, truncated=truncated, error='', covered_to_ns=str(covered),
+                                   frontier_ns=str(frontier), band=band, band_base_ns=bbase,
+                                   overlap_from_ns=str(overlap_from), skipped_overlap=skipped)
+            total += n
+            truncated_any = truncated_any or truncated
+            ok_count += 1
+    ## The history boundary is handed on while the walk is still below it
+    ## (a truncated or failed first walk reads the rest of the first window
+    ## later — still as history); once the frontier passed it, it is over.
+    for info in per_query.values():
+        boundary = int(info.get('history_to_ns') or 0)
+        info['history_next_ns'] = str(boundary if int(info.get('frontier_ns') or 0) < boundary else 0)
+    ## Per-query failures degrade the lane; the run itself is refused only
+    ## by decide, when EVERY configured lane failed (a Loki outage must not
+    ## silence a probe that sees production down).
+    print(json.dumps({'raw_file': raw_path, 'lines': total, 'truncated': truncated_any, 'per_query': per_query,
+                      'errors': errors, 'ok': ok_count > 0, 'queries_ok': ok_count, 'queries_failed': len(errors)}, ensure_ascii=False))
+
+## Prometheus probes through the Grafana datasource proxy. Each probe is
+## an instant query whose samples are aggregated (max by default) and
+## compared to its threshold — and the RESULT IS TYPED: healthy,
+## breached, no_data (an empty vector is not "healthy": the metric may
+## simply not exist on this cluster) or error. Warnings the API returns
+## ride along. A failing probe — a refused token (401/403) included, every
+## probe at once included — is reported, not fatal: it degrades the lane.
+tool poll_prom:
+  input: prom_input
+  output: prom_output
+  language: py
+  script: |
+    import json, os, socket, ipaddress, time, math, http
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit, urlencode
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    grafana = {{input.grafana}} or {}
+    prom = {{input.prometheus}} or {}
+    timeout = int({{input.timeout_secs}})
+    allow_private = {{input.allow_private}}
+    token_file = {{secrets.grafana_token.path}}
+    probes = prom.get('probes') or []
+    if not probes:
+        print(json.dumps({'results': [], 'ok': True, 'errors': []}))
+        raise SystemExit(0)
+    base = (grafana.get('base_url') or '').rstrip('/')
+    uid = grafana.get('prometheus_uid') or ''
+    origin = urlsplit(base)
+
+    def _addr_ok(ip):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        if a.is_link_local:
+            return False
+        if allow_private:
+            return not a.is_multicast and not a.is_unspecified
+        return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
+    def _validate_host(host):
+        ## Same body in resolve_release, poll_loki, poll_prom and probe_http —
+        ## edit all four. No proxy exemption: the TARGET host is what is
+        ## validated here, whatever an egress proxy in the environment says.
+        if not host:
+            raise ValueError('URL has no host')
+        for info in socket.getaddrinfo(host, None):
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    class CredentialRefused(Exception):
+        pass
+
+    class LaneError(Exception):
+        pass
+
+    def lane_error(e):
+        ## What an exception says about an upstream answer can quote it — a
+        ## value that did not parse, a line where a number belongs, a header
+        ## holding the token, an HTTP reason phrase (the server's words): only
+        ## the lane's own messages and the transport's travel, an HTTP error
+        ## as its code and the standard phrase; anything else is named by its
+        ## type.
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                phrase = http.HTTPStatus(e.code).phrase
+            except ValueError:
+                phrase = 'unknown status'
+            return 'HTTPError: HTTP Error ' + str(e.code) + ': ' + phrase
+        if isinstance(e, (CredentialRefused, LaneError, OSError)):
+            return type(e).__name__ + ': ' + str(e)[:200]
+        return type(e).__name__ + ': the answer did not parse (its text is withheld)'
+
+    ## What the lane needs from its environment — a usable token, a scheme
+    ## the bearer credential can ride, a Grafana host resolving to an
+    ## allowed address — is checked once: a failure is reported on every
+    ## query or probe of the lane (a Loki cursor stays), never the tick's
+    ## death, so a secret rotated wrong, an http:// base URL, or a Grafana
+    ## gone from the DNS never silences the health probes.
+    token, setup_exc = '', None
+    try:
+        if token_file and os.path.exists(token_file):
+            with open(token_file, encoding='utf-8-sig') as fh:
+                token = fh.read().strip()
+        if not token:
+            raise CredentialRefused('the grafana_token secret is not bound or empty -- bind a service-account token (Viewer) '
+                                    'to the secret name grafana_token')
+        if not (token.isascii() and token.isprintable()) or ' ' in token:
+            ## Never quoted: the text is the secret, or holds it.
+            raise CredentialRefused('the grafana_token secret is not one token on one line (whitespace or a control '
+                                    'character inside) -- bind the token alone')
+        if origin.scheme != 'https' and not allow_private:
+            ## Refused before the host resolves: a public-name http:// Grafana
+            ## fails by NAME, not by a DNS miss that reads like an outage.
+            raise LaneError('grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
+        try:
+            _validate_host(origin.hostname or '')
+        except (OSError, ValueError) as e:
+            raise OSError('Grafana host ' + repr(origin.hostname) + ': ' + str(e)) from None
+    except Exception as e:
+        setup_exc = e
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    _opener = urllib.request.build_opener(_NoRedirect())
+
+    def get(path, params):
+        url = base + path + '?' + urlencode(params)
+        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
+                                                   'User-Agent': 'prod-watch/0.1 (iterion)'})
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            try:
+                with _opener.open(req, timeout=timeout) as r:
+                    return json.loads(r.read(8 * 1024 * 1024).decode('utf-8'))
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
+                                            'lacks datasource query rights, or the token expired (' + path + ')')
+                last = e
+                if e.code < 500 and e.code != 429:
+                    raise
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                last = e
+        raise last
+
+    def word(v):
+        ## An upstream enum (a status, an error type) travels; any other
+        ## text is withheld.
+        v = str(v if v is not None else '')
+        return v if 0 < len(v) <= 40 and v.isascii() and v.replace('_', '').isalnum() else '(withheld)'
+
+    def compare(v, op, thr):
+        return {'>': v > thr, '>=': v >= thr, '<': v < thr, '<=': v <= thr, '==': v == thr, '!=': v != thr}[op]
+
+    now = int(time.time())
+    results, errors = [], []
+    for p in probes:
+        res = {'id': p['id'], 'title': p.get('title') or p['id'], 'op': p['op'], 'threshold': p['threshold'],
+               'severity': p['severity'], 'state': 'error', 'value': None, 'warnings': 0, 'error': ''}
+        try:
+            if setup_exc is not None:
+                raise setup_exc
+            data = get('/api/datasources/proxy/uid/' + uid + '/api/v1/query', {'query': p['query'], 'time': str(now)})
+            if data.get('status') != 'success':
+                ## The error TEXT may quote label values — personal data in a
+                ## label set: only the status and the error type travel.
+                raise LaneError('Prometheus answered status ' + word(data.get('status')) + ' (' + word(data.get('errorType')) + ')')
+            ## The server's text (label values in it): counted, never quoted.
+            res['warnings'] = len(data.get('warnings') or [])
+            d = data.get('data') or {}
+            rtype = d.get('resultType')
+            samples = []
+            if rtype == 'scalar':
+                samples = [float(d.get('result', [0, 'nan'])[1])]
+            elif rtype == 'vector':
+                for s in (d.get('result') or []):
+                    try:
+                        samples.append(float((s.get('value') or [0, 'nan'])[1]))
+                    except (TypeError, ValueError):
+                        pass
+            else:
+                raise LaneError('unsupported resultType ' + word(rtype) + ' (use an instant vector or scalar query)')
+            samples = [v for v in samples if not (math.isnan(v) or math.isinf(v))]
+            if not samples:
+                res['state'] = 'no_data'
+            else:
+                agg = p.get('agg') or 'max'
+                agg_fn = {'max': max, 'min': min, 'sum': sum, 'first': lambda xs: xs[0]}.get(agg)
+                if agg_fn is None:
+                    ## plan validates agg; reaching this line means the
+                    ## normaliser or the edge was bypassed — say so, never max.
+                    raise SystemExit('prod-watch: probe ' + repr(p.get('id')) + ' carries an unknown agg ' + repr(agg))
+                v = agg_fn(samples)
+                res['value'] = v
+                res['state'] = 'breached' if compare(v, p['op'], float(p['threshold'])) else 'healthy'
+        except SystemExit:
+            raise
+        except Exception as e:
+            res['error'] = lane_error(e)
+            errors.append({'probe': p['id'], 'error': res['error']})
+        results.append(res)
+    ## Every probe failing is the LANE failing — reported like one probe:
+    ## decide refuses the tick only when every configured lane failed.
+    print(json.dumps({'results': results, 'ok': not errors, 'errors': errors}, ensure_ascii=False))
+
+## The application's own health URLs — the one signal that needs no
+## observability stack at all. A probe is OK when the status matches;
+## the body is never stored. Redirects are followed only hop by hop
+## through the same address guard.
+tool probe_http:
+  input: http_input
+  output: http_output
+  language: py
+  script: |
+    import json, socket, ipaddress, time
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    probes = {{input.probes}} or []
+    default_timeout = int({{input.timeout_secs}})
+    allow_private = {{input.allow_private}}
+    if not probes:
+        print(json.dumps({'results': []}))
+        raise SystemExit(0)
+
+    def _addr_ok(ip):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        if a.is_link_local:
+            return False
+        if allow_private:
+            return not a.is_multicast and not a.is_unspecified
+        return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
+    def _validate_host(host):
+        if not host:
+            raise ValueError('URL has no host')
+        for info in socket.getaddrinfo(host, None):
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            parts = urlsplit(newurl)
+            if parts.scheme not in ('http', 'https'):
+                return None
+            _validate_host(parts.hostname or '')
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+    _opener = urllib.request.build_opener(_SafeRedirect())
+
+    results = []
+    for p in probes:
+        url = p['url']
+        res = {'id': p['id'], 'url': url, 'ok': False, 'status': 0, 'ms': 0, 'error': '',
+               'expected': int(p.get('expect_status') or 200), 'severity': p.get('severity') or 'critical'}
+        t0 = time.monotonic()
+        try:
+            parts = urlsplit(url)
+            if parts.scheme not in ('http', 'https'):
+                raise ValueError('unsupported URL scheme ' + repr(parts.scheme))
+            _validate_host(parts.hostname or '')
+            req = urllib.request.Request(url, headers={'User-Agent': 'prod-watch/0.1 (iterion health probe)'})
+            ## One retry on a transport error or a 5xx: a dropped SYN on a
+            ## scheduled tick must not post a critical about a healthy app.
+            for attempt in (0, 1):
+                if attempt:
+                    time.sleep(2)
+                try:
+                    with _opener.open(req, timeout=int(p.get('timeout_secs') or default_timeout)) as r:
+                        res['status'] = r.status
+                        r.read(64 * 1024)
+                    break
+                except urllib.error.HTTPError as e:
+                    res['status'] = e.code
+                    if e.code < 500:
+                        break
+                except (TimeoutError, socket.timeout, urllib.error.URLError):
+                    if attempt:
+                        raise
+            res['ok'] = res['status'] == res['expected']
+            if not res['ok']:
+                res['error'] = 'HTTP ' + str(res['status'])
+        except Exception as e:
+            ## The transport's message and the node's own travel; anything
+            ## else — a malformed status line is the server's text — is named
+            ## by its type.
+            res['error'] = type(e).__name__ + (': ' + str(e)[:200] if isinstance(e, (OSError, ValueError))
+                                               else ': the answer did not parse (its text is withheld)')
+        res['ms'] = int((time.monotonic() - t0) * 1000)
+        results.append(res)
+    print(json.dumps({'results': results}, ensure_ascii=False))
+
+## The ONLY reader of the raw lines. Every line is redacted class by
+## class (secrets first, then the validated identifiers, then contact
+## data), the error-query lines are fingerprinted into templates, and
+## what leaves this node is DERIVED and REDACTED: a scratch file of
+## templates + leak findings, and counts on stdout. A raw value never
+## reaches stdout, stderr, an exception message, an artifact or a
+## checkpoint — the persistence layers of the engine are outside the
+## redaction, so the boundary has to be here.
+##
+## Detection is HEURISTIC and says so: a validator (NIR key, IBAN mod-97,
+## Luhn) narrows the false positives; this slice reports every class at
+## severity `high`; the policy slice adds per-class critical/halt with
+## keyword context. Coverage is `partial` whenever a query was truncated
+## or failed, so "no finding" is never read as "nothing there".
+tool leak_scan:
+  input: leak_input
+  output: leak_output
+  language: py
+  script: |
+    import json, os, re, hashlib, unicodedata, base64
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    raw_path = {{input.raw_file}}
+    per_query = {{input.per_query}} or {}
+    app = {{input.app}} or {}
+    scratch = {{input.scratch_dir}}
+    os.makedirs(scratch, exist_ok=True)
+    ## Shared scratch: the handoff name carries the run id.
+    signals_path = os.path.join(scratch, 'signals-' + str({{run.id}})[-12:] + '.json')
+
+    def nir_ok(m):
+        ## 13 digits + a 2-digit key = 97 - (number mod 97); Corsica maps
+        ## 2A -> 19 and 2B -> 18 in the number before the modulus.
+        raw = ''.join(m.groups()[:6]).replace('2A', '19').replace('2B', '18')
+        key = m.group(7)
+        if not raw.isdigit() or len(raw) != 13:
+            return False
+        return (97 - int(raw) % 97) == int(key)
+    ## The IBAN registry: each country's IBAN length. A run of host names and
+    ## short words whose prefix happens to pass the checksum has the wrong
+    ## country or the wrong length.
+    IBAN_LEN = {'AD': 24, 'AE': 23, 'AL': 28, 'AT': 20, 'AZ': 28, 'BA': 20, 'BE': 16, 'BG': 22, 'BH': 22, 'BR': 29, 'BY': 28,
+                'CH': 21, 'CR': 22, 'CY': 28, 'CZ': 24, 'DE': 22, 'DK': 18, 'DO': 28, 'EE': 20, 'EG': 29, 'ES': 24, 'FI': 18,
+                'FO': 18, 'FR': 27, 'GB': 22, 'GE': 22, 'GI': 23, 'GL': 18, 'GR': 27, 'GT': 28, 'HR': 21, 'HU': 28, 'IE': 22,
+                'IL': 23, 'IQ': 23, 'IS': 26, 'IT': 27, 'JO': 30, 'KW': 30, 'KZ': 20, 'LB': 28, 'LC': 32, 'LI': 21, 'LT': 20,
+                'LU': 20, 'LV': 21, 'LY': 25, 'MC': 27, 'MD': 24, 'ME': 22, 'MK': 19, 'MR': 27, 'MT': 31, 'MU': 30, 'NL': 18,
+                'NO': 15, 'PK': 24, 'PL': 28, 'PS': 29, 'PT': 25, 'QA': 29, 'RO': 24, 'RS': 22, 'SA': 24, 'SC': 31, 'SE': 24,
+                'SI': 19, 'SK': 24, 'SM': 27, 'ST': 25, 'SV': 28, 'TL': 23, 'TN': 24, 'TR': 26, 'UA': 29, 'VA': 22, 'VG': 24,
+                'XK': 20}
+    def iban_ok(s):
+        s = re.sub(r'\s+', '', s).upper()
+        if not s.isascii() or not s.isalnum() or IBAN_LEN.get(s[:2]) != len(s):
+            return False
+        moved = s[4:] + s[:4]
+        digits = ''.join(str(int(ch, 36)) for ch in moved)
+        return int(digits) % 97 == 1
+    def luhn_ok(s):
+        d = [int(ch) for ch in re.sub(r'\D', '', s)]
+        if len(d) < 15 or len(d) > 19 or len(set(d)) == 1:
+            return False
+        total = 0
+        for i, x in enumerate(reversed(d)):
+            if i % 2 == 1:
+                x *= 2
+                if x > 9:
+                    x -= 9
+            total += x
+        return total % 10 == 0
+    ## Every class of names, tokens and phone numbers is bounded in ASCII
+    ## (`a`): a value glued to a letter of another script, an accented letter
+    ## or an emoji is still found (under Unicode rules those are word
+    ## characters and `\b` would not hold), and IGNORECASE folds ASCII
+    ## letters only — it would also let `İ` into [A-Z], which NFKC keeps and
+    ## no base-36 digit is. The NIR, card and belt classes read any digit
+    ## NFKC leaves.
+    CARD_CONTEXT = re.compile(r'(?ai)\b(?:card|carte|pan|cb|visa|mastercard|amex|cvv|cvc|payment|paiement)\b')
+    def iin_ok(d):
+        ## The issuer prefix of a real card network: Visa 4, Mastercard
+        ## 51-55 and 2221-2720, Amex 34/37, JCB 3528-3589, Discover
+        ## 6011 / 644-649 / 65, Diners 300-305 / 36 / 38 / 39, UnionPay 62,
+        ## Maestro's own BINs. A Luhn-valid 4-4-4-4 run of counters starting
+        ## with 88 or 99 is not a card.
+        n = len(d)
+        p2, p3, p4 = int(d[:2]), int(d[:3]), int(d[:4])
+        if n == 15:
+            return p2 in (34, 37)
+        if n in (16, 17, 18, 19):
+            return (d[0] == '4' or 51 <= p2 <= 55 or 2221 <= p4 <= 2720 or 3528 <= p4 <= 3589 or p2 == 62 or
+                    p4 == 6011 or 644 <= p3 <= 649 or p2 == 65 or 300 <= p3 <= 305 or p2 in (36, 38, 39) or
+                    p4 in (5018, 5020, 5038, 5893, 6304, 6759, 6761, 6762, 6763))
+        return False
+    def card_shape(raw):
+        ## A card's own grouping — 4-4-4-4 with a 1-3 digit tail for 17-19
+        ## digits, or the Amex 4-6-5 — under one repeated separator. A
+        ## decimal, a dashed build id or a list of counters is separated
+        ## too, and Luhn alone passes one run in ten of them.
+        groups = [len(g) for g in re.split(r'\D+', raw) if g]
+        if groups == [4, 6, 5]:
+            return True
+        return groups[:4] == [4, 4, 4, 4] and (len(groups) == 4 or (len(groups) == 5 and 1 <= groups[4] <= 3))
+    def card_ok(m):
+        ## Luhn over a context-free digit run is a coin flip on trace ids,
+        ## references and epoch timestamps — so a run is a card when Luhn
+        ## holds, the issuer prefix is a card network's, AND either it has a
+        ## card's own grouping, or a card word stands within 40 chars before
+        ## it (which then outranks every other heuristic: a 2-series
+        ## Mastercard or a JCB reads like a timestamp by value).
+        raw = m.group(0)
+        if not luhn_ok(raw) or not iin_ok(re.sub(r'\D', '', raw)):
+            return False
+        if card_shape(raw):
+            return True
+        window = m.string[max(0, m.start() - 40):m.start()]
+        return bool(CARD_CONTEXT.search(window))
+    ## The belt under the card class: a run of 12+ digits, bare or under
+    ## non-alphanumeric separators (mixed or not — broader than the card
+    ## class on purpose: a PAN under mixed separators must still never
+    ## reach a sample), that no class claimed is masked before the contact
+    ## classes run — a PAN in pairs must not be read as a phone number.
+    BELT_BARE = re.compile(r'(?<!\d)\d{12,}(?!\d)')
+    BELT_GROUPED = re.compile(r'(?<![A-Za-z0-9])\d{1,8}(?:([^A-Za-z0-9\n])\d{1,8}){1,12}(?![A-Za-z0-9])')
+    def belt(text):
+        text = BELT_BARE.sub('<num>', text)
+        return BELT_GROUPED.sub(lambda m: '<num>' if sum(ch.isdigit() for ch in m.group(0)) >= 12 else m.group(0), text)
+
+    PLACEHOLDER = re.compile(r'[*xX•#.]+|\[[^\]]*\]|<[^>]*>|\([^)]*\)|\{+[^}]*\}+|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%\([^)]*\)s')
+    PAGING = re.compile(r'(?ai)(?:next|page|continuation|sync|resume|cursor|marker|pagination)[_.-]?$')
+    def secret_ok(m):
+        ## What a secret key can hold that is no secret: a logger's own mask
+        ## or a placeholder (`[Redacted]`, `********`, `${DB_PASSWORD}`, a
+        ## shout-case placeholder `CHANGE_ME`), a word of 12 letters or
+        ## fewer (a status or a usage text: `expired`, `requires`,
+        ## `PASSWORD`), a lowercase snake_case value (a status feed:
+        ## `closed_for_winter` under a `*_pass` key), a path to the secret
+        ## (a relative prefix or one of the system prefixes — a base64
+        ## token may start with `/` and hold more slashes), a count of
+        ## tokens (`"prompt_token": 1234`), an API page token (`NextToken=`),
+        ## and, on a quote never closed, a tail that reads as code or as a
+        ## sentence quoting the key (a CI line, a parse error).
+        raw = m.group(m.lastindex)
+        v = raw.strip()
+        w = v.rstrip(')]}')   # an unquoted value may run into the brackets closing it
+        ## The shape rules read the first token of an unquoted value: the
+        ## plain tokens after it ride the match only to be redacted with it.
+        k = w.split(' ', 1)[0] if m.lastindex == 5 else w
+        ## A head-based refusal (a path, a prefix, a word, a placeholder, a
+        ## page token) may fire only while the head IS the value or the tail
+        ## is plain lowercase words — a credential riding behind a benign
+        ## head is scanned like any other. The floor of the quoted arms is
+        ## character-based (an escape pair counts its two characters).
+        first = w.split(' ', 1)[0]
+        rest = w[len(first):].strip()
+        tail_plain = not rest or bool(re.fullmatch(r'[a-z]+(?: [a-z]+)*', rest))
+        if m.lastindex not in (5, 10, 15) and len(v) < (4 if m.lastindex in (11, 12, 13, 14) else 6):
+            return False
+        if PLACEHOLDER.fullmatch(v):
+            return False
+        if tail_plain and (PLACEHOLDER.fullmatch(k) or re.fullmatch(r'[A-Za-z]{1,12}', k)
+                or v.startswith(('./', '../', '~/'))
+                or v.startswith(('/etc/', '/home/', '/root/', '/run/', '/var/', '/tmp/', '/opt/', '/usr/', '/srv/', '/mnt/', '/proc/', '/dev/'))):
+            return False
+        p = v.split(' ', 1)[0]
+        if tail_plain and p.startswith('/') and p.count('/') >= 2:
+            segs = [s for s in p.split('/') if s]
+            if segs and all(s.isalpha() and s.islower() for s in segs):
+                return False   # a filesystem path and plain words only — a value holding
+                # anything else (an uppercase, a digit, an `=`) is scanned, and a
+                # base64 token of lowercase letters alone reads as a path (documented)
+        if m.lastindex == 5 and tail_plain and re.search(r'(?i)pass[\'"\]]?\s*(?:=>|[=:])\s*$',
+                                                         m.group(0)[:m.start(m.lastindex) - m.start(0)]) \
+                and re.fullmatch(r'[a-z]+(?:_[a-z0-9]+)+', k):
+            return False   # a status feed under a bare `*pass` key — quoted, DSN and flag values are credentials
+        if m.lastindex in (6, 7, 8, 9, 10) and re.fullmatch(r'[A-Z0-9_]+_[A-Z0-9_]+', k):
+            return False   # a shout-case placeholder after a flag (`--pass CHANGE_ME`)
+        if m.lastindex in (3, 4, 8, 9, 13, 14) and (raw[:1] == ' ' or ';' in v or re.search(r'[)}\]]', v) or v.count(' ') >= 3):
+            ## A quote never closed: the tail must read like the rest of a
+            ## secret, not like code (`;)}]`, even glued: `+tok);`) or a
+            ## sentence quoting the key (three spaces). Base64's `+` is a
+            ## value character.
+            return False
+        glued = m.start() > 0 and (m.string[m.start() - 1].isalnum() or m.string[m.start() - 1] in '_.-')
+        if w.isdigit() and glued and m.group(0)[:5].lower() == 'token' and tail_plain:
+            return False
+        if tail_plain:
+            return not PAGING.search(m.string[max(0, m.start() - 16):m.start()])
+        return True
+    def basic_ok(m):
+        ## Basic credentials outside an Authorization header are base64 of
+        ## `user:password`: `basic` followed by an ordinary word is prose.
+        ## A credential may be unpadded and hold non-ASCII letters (`latin-1`
+        ## passwords): pad it, then accept an encoding whose decode is a
+        ## printable `user:password`; undecodable noise, a credential with
+        ## no password part and a snake_case status word after a scheme
+        ## stay prose.
+        b = m.group(1)
+        if b is None:
+            ## A scheme credential: a snake_case status word after the
+            ## scheme (`token authentication_required`) is prose.
+            val = m.group(0).rsplit(' ', 1)[-1] if ' ' in m.group(0) else m.group(0)
+            return not re.fullmatch(r'[a-z]+(?:_[a-z]+)+', val)
+        try:
+            d = base64.b64decode(b + '=' * (-len(b) % 4), validate=True)
+        except ValueError:
+            return False
+        for enc in ('utf-8', 'latin-1'):
+            try:
+                t = d.decode(enc)
+            except UnicodeDecodeError:
+                continue
+            if ':' in t and not t.endswith(':') and t.isprintable() and sum(not c.isascii() for c in t) <= 2:
+                return True
+        return False
+
+    ## Order matters: a JWT contains digit runs, a bearer value may look
+    ## like an email's local part. Secrets first, then validated
+    ## identifiers, then contact data.
+    CLASSES = [
+        ('private_key', re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,4000}?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----'), None),
+        ('jwt', re.compile(r'(?a)\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'), None),
+        ('bearer', re.compile(r'(?ai)\bauthorization\s*:\s*(?:basic|token|apikey|api-key|bot|ssws)\s+[A-Za-z0-9._~+/=-]{16,}'
+                              r'|\bbearer\s+[A-Za-z0-9._~+/=-]{16,}|\bbasic\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])'), basic_ok),
+        ('cloud_or_forge_token', re.compile(r'(?a)\b(?:AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{16,}|glsa_[A-Za-z0-9_-]{16,}|glrt-[A-Za-z0-9_-]{16,}|sntry[su]_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{24,}|xox[bpa]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{35}|hf_[A-Za-z0-9]{30,}|npm_[A-Za-z0-9]{36}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b'), None),
+        ## A secret by its key: a secret word starting a name part — snake,
+        ## kebab, dotted, quoted or bracketed (`DB_PASSWORD=`, `"api_key":`,
+        ## `[password] =>`) — or a camelCase part (`dbPassword:`,
+        ## `DBPassword:`), with only the suffixes a secret name takes (`_KEY`,
+        ## `_VALUE`, a number, an environment: `SECRET_KEY`, `PASSWORD_2`,
+        ## `PASSWORD_2_PROD`, `TOKEN_PROD`; not `PASSWORD_FILE`,
+        ## `total_tokens`), then `=`, `:` or `=>`; a quoted value runs to its
+        ## closing quote (an escaped `\"` stays inside; a quote never closed
+        ## runs to the end of the line unless the tail reads as code or a
+        ## sentence), and an unquoted value rides the plain tokens after it.
+        ## Or a command-line flag (`--password …`, `--db-pass …`,
+        ## `--passphrase …`), SQL (`IDENTIFIED BY '…'`), a URL's credentials
+        ## (`scheme://user:…@`). The value is redacted, the key kept;
+        ## `secret_ok` refuses what is no secret.
+        ('secret_kv', re.compile(
+            r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
+            r'|(?<=[a-z])(?:Password|Passwd|Pwd|Pass|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Pass|Secret|Token))'
+            r'(?i:[_-]?(?:key|value|phrase|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,})$|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^\s=])\S+)*))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,})$|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
+            r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,})$|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,})$)'
+            r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
+        ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
+        ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
+        ## Bare, or grouped under ONE repeated separator of any kind; a run
+        ## that continues past the match with the same separator is a row
+        ## of numbers, not a card.
+        ('card', re.compile(r'(?<!\d)(?:\d{15,19}|\d{1,6}(?:([^A-Za-z0-9\n])\d{1,6})(?:\1\d{1,6}){1,8})(?!\d|\.\d|\1\d)'), lambda m: card_ok(m)),
+        ('num', None, None),
+        ('email', re.compile(r'(?a)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
+        ('phone_fr', re.compile(r'(?a)(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
+    ]
+    def mask(cls, value):
+        v = re.sub(r'\s+', '', value)
+        if cls in ('nir', 'iban', 'card'):
+            return cls + ':***' + v[-2:]
+        if cls in ('private_key',):
+            return 'private key block'
+        if cls in ('secret_kv', 'bearer', 'jwt', 'cloud_or_forge_token'):
+            ## A secret shows none of its characters, only its length.
+            return '*** (' + str(len(v)) + ' chars)'
+        if len(v) <= 4:
+            return '***'
+        return v[:2] + '***' + v[-1]
+    def normalize(line):
+        ## Fold full-width and other Unicode digits/letters to ASCII so a
+        ## "０６１２…" phone or a decorative NIR is still seen, and every run
+        ## of blanks (tabs, double spaces) to one space so a PAN's groups
+        ## keep their shape for every class. Bounded: one NFKC pass, no
+        ## decoding of encodings (the policy slice adds them).
+        return re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFKC', line))
+
+    findings = {}
+    def note(cls, value, q, stream, ts, qs=()):
+        f = findings.setdefault(cls, {'class': cls, 'severity': 'high', 'count': 0, 'hashes': set(),
+                                       'sources': {}, 'queries': set(), 'sample_masked': mask(cls, value)})
+        f['count'] += 1
+        f['queries'].update(qs or (q,))
+        f['hashes'].add(hashlib.sha1(value.encode('utf-8', 'replace')).hexdigest()[:16])
+        key = q + '|' + '/'.join(str(stream.get(k)) for k in ('container', 'pod') if stream.get(k))
+        s = f['sources'].setdefault(key, {'query': q, 'stream': key.split('|', 1)[1], 'first': ts, 'last': ts, 'count': 0})
+        s['count'] += 1
+        s['first'] = min(s['first'], ts)
+        s['last'] = max(s['last'], ts)
+
+    MARKER = re.compile(r'\[REDACTED:[a-z_]+\]')
+    def scrub(line, q, stream, ts, qs=()):
+        ## A marker LITERALLY present in the log (attacker-influenced text
+        ## can spell one) is neutralised first, so no class can hide behind it.
+        out = MARKER.sub('[literal-marker]', normalize(line))
+        for cls, rx, validate in CLASSES:
+            if cls == 'num':
+                out = belt(out)
+                continue
+            def repl(m):
+                if validate is not None and not validate(m):
+                    if cls != 'iban':
+                        return m.group(0)
+                    ## An IBAN followed by a word: the optional groups ran on
+                    ## into it. The longest space-bounded prefix that
+                    ## validates is the IBAN.
+                    parts = m.group(0).split(' ')
+                    for k in range(len(parts) - 1, 0, -1):
+                        head = ' '.join(parts[:k])
+                        if iban_ok(head):
+                            note(cls, head, q, stream, ts, qs)
+                            ## What follows the IBAN may hold another one.
+                            return '[REDACTED:' + cls + ']' + rx.sub(repl, m.group(0)[len(head):])
+                    return m.group(0)
+                g = m.lastindex if cls == 'secret_kv' else None   # the value group of whichever form matched
+                value = m.group(g) if g else m.group(0)
+                if MARKER.fullmatch(value):
+                    ## A marker left by an earlier class is not a second value.
+                    return m.group(0)
+                note(cls, value, q, stream, ts, qs)
+                if cls == 'secret_kv':
+                    ## The key before the value and what closes it (a quote,
+                    ## the `@` of a URL) are kept.
+                    return m.group(0)[:m.start(g) - m.start(0)] + '[REDACTED:' + cls + ']' + m.group(0)[m.end(g) - m.start(0):]
+                return '[REDACTED:' + cls + ']'
+            out = rx.sub(repl, out)
+        return out
+
+    def template(scrubbed):
+        t = re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b', '<uuid>', scrubbed)
+        t = re.sub(r'\b0x[0-9a-fA-F]+\b|\b[0-9a-f]{12,}\b', '<hex>', t)
+        t = re.sub(r'"[^"]{0,200}"', '"..."', t)
+        t = re.sub(r"'[^']{0,200}'", "'...'", t)
+        t = re.sub(r'\d+(?:[.,]\d+)?', '#', t)
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t[:240]
+
+    templates = {}
+    scanned = 0
+    counted = [info for info in per_query.values() if isinstance(info, dict) and 'lines' in info]
+    expected = sum(int(info.get('lines') or 0) for info in counted)
+    if not os.path.exists(raw_path):
+        if expected > 0:
+            raise SystemExit('prod-watch: the raw file ' + repr(raw_path) + ' is missing although the lanes reported ' +
+                             str(expected) + ' line(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
+    records = 0
+    ## One record per (timestamp, line) whatever the queries that returned
+    ## it: the sweep returns every line, and the first record must not
+    ## decide whether a line makes a template or is live — the fact travels
+    ## with the line, not with the order of the queries. Two passes keep
+    ## memory flat: the first maps each line's hash to the queries that
+    ## returned it, the second scans each line once, at its first record.
+    def raw_records():
+        with open(raw_path, encoding='utf-8') as fh:
+            for ln in fh:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    rec = json.loads(ln)
+                except ValueError:
+                    continue
+                ts, line = str(rec.get('ts') or ''), rec.get('line') or ''
+                yield rec, ts, line, hashlib.sha1((ts + chr(0) + line).encode('utf-8', 'replace')).hexdigest()
+    queries_of = {}
+    if os.path.exists(raw_path):
+        for rec, ts, line, pair in raw_records():
+            records += 1
+            queries_of.setdefault(pair, set()).add(rec.get('q') or '')
+    if counted and records != expected:
+        raise SystemExit('prod-watch: the raw file holds ' + str(records) + ' record(s) but the lanes reported ' + str(expected) +
+                         ' -- the handoff is inconsistent; refusing to score a partial read as an observation')
+    def history_to(q):
+        return int((per_query.get(q) or {}).get('history_to_ns') or 0)
+    for rec, ts, line, pair in (raw_records() if os.path.exists(raw_path) else []):
+        qs = queries_of.pop(pair, None)
+        if qs is None:
+            continue   # a later record of a line already scanned
+        stream = rec.get('stream') or {}
+        ## The template queries of the line, on a stable key (sorted names)
+        ## — never the arrival order; a line only the sweep returned is
+        ## scanned for leaks and makes no template.
+        tqs = sorted(x for x in qs if x != 'leak_sweep')
+        q = tqs[0] if tqs else 'leak_sweep'
+        scanned += 1
+        scrubbed = scrub(line, q, stream, ts, sorted(qs))
+        if not tqs:
+            continue
+        tpl = template(scrubbed)
+        tid = hashlib.sha1(tpl.encode('utf-8')).hexdigest()[:12]
+        ## The sample is the scrubbed line: every class ran on it, the belt
+        ## included.
+        sample = scrubbed[:300]
+        t = templates.setdefault(tid, {'template_id': tid, 'query': q, 'template': tpl, 'count': 0, 'count_live': 0,
+                                       'first_ts': ts, 'last_ts': ts, 'sample': sample, 'streams': set(),
+                                       'first_ts_live': '', 'sample_live': '', 'streams_live': set(), 'query_live': '',
+                                       'queries': set(), 'queries_live': set()})
+        t['count'] += 1
+        t['queries'].update(tqs)
+        ## A line read while its query's first window is still being read —
+        ## below the end of that window, the history boundary — is history,
+        ## not news, whichever query returned it; the template counts its
+        ## LIVE lines apart and keeps their own first-seen, sample and
+        ## streams, so a live alert never shows history.
+        live_qs = [x for x in tqs if int(ts) >= history_to(x)]
+        if live_qs:
+            t['queries_live'].update(live_qs)
+            t['count_live'] += 1
+            if not t['first_ts_live'] or ts < t['first_ts_live']:
+                t['first_ts_live'] = ts
+            if not t['sample_live']:
+                t['sample_live'] = sample
+                t['query_live'] = live_qs[0]
+        t['first_ts'] = min(t['first_ts'], ts)
+        t['last_ts'] = max(t['last_ts'], ts)
+        for k in ('container', 'pod'):
+            if stream.get(k):
+                t['streams'].add(k + '=' + str(stream[k]))
+                if live_qs:
+                    t['streams_live'].add(k + '=' + str(stream[k]))
+    tpl_list = []
+    for t in templates.values():
+        t['streams'] = sorted(t['streams'])[:6]
+        t['streams_live'] = sorted(t['streams_live'])[:6]
+        t['queries'] = sorted(t['queries'])
+        t['queries_live'] = sorted(t['queries_live'])
+        tpl_list.append(t)
+    ## The live templates first: history must never crowd a live alert out
+    ## of the list, and a cut list is partial coverage — decide learns it.
+    tpl_list.sort(key=lambda t: (t['count_live'], t['count']), reverse=True)
+    templates_cut = len(tpl_list) > 200
+    ## A cut drops the templates with the fewest live lines (history-only
+    ## ones first); the newest line of each still moves a known incident's
+    ## clock, live or not.
+    cut_last_ts = {t['template_id']: t['last_ts'] for t in tpl_list[200:]}
+    leak_list = []
+    for f in findings.values():
+        leak_list.append({'class': f['class'], 'severity': f['severity'], 'count': f['count'],
+                          'distinct': len(f['hashes']), 'sources': sorted(f['sources'].values(), key=lambda s: -s['count'])[:8],
+                          'queries': sorted(f['queries']), 'sample_masked': f['sample_masked']})
+    leak_list.sort(key=lambda f: -f['count'])
+    coverage = 'full'
+    for q, info in per_query.items():
+        if info.get('truncated') or info.get('error') or info.get('gap'):
+            coverage = 'partial'
+    if templates_cut:
+        coverage = 'partial'
+    signals = {'app': app.get('name') or '', 'coverage': coverage, 'lines_scanned': scanned,
+               'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list), 'cut_last_ts': cut_last_ts,
+               'leak': leak_list, 'per_query': per_query}
+    with open(signals_path, 'w', encoding='utf-8') as fh:
+        json.dump(signals, fh, ensure_ascii=False, indent=1)
+    summary = ('scanned ' + str(scanned) + ' line(s), ' + str(len(tpl_list)) + ' error template(s), ' +
+               str(len(leak_list)) + ' leak class(es) hit, coverage ' + coverage)
+    print(json.dumps({'signals_file': signals_path, 'templates': len(tpl_list), 'lines_scanned': scanned,
+                      'leak_findings': leak_list, 'coverage': coverage, 'summary': summary}, ensure_ascii=False))
+
+## The incident lifecycle — pure computation over the derived signals and
+## the persisted state, EVERY tick (not only when something is new): a
+## failing probe, a breached metric, an error template or a leak class
+## becomes an incident keyed by a stable fingerprint; an incident is
+## alerted when NEW, when its severity ESCALATES, and once per renotify
+## window as a REMINDER; one not observed for quiet_after_hours gets a
+## single "not observed" note; a dead lane is NOT an absence of
+## observation (its incidents keep their clocks). The next state is
+## staged out-of-tree and persisted by commit_state only after delivery.
+tool decide:
+  input: decide_input
+  output: decide_output
+  language: py
+  script: |
+    import json, os, re, datetime
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    signals_file = {{input.signals_file}}
+    prom_results = {{input.prom_results}} or []
+    http_results = {{input.http_results}} or []
+    loki_ok = bool({{input.loki_ok}})
+    loki_truncated = bool({{input.loki_truncated}})
+    loki_errors = {{input.loki_errors}} or []
+    loki_per_query = {{input.loki_per_query}} or {}
+    prom_ok = bool({{input.prom_ok}})
+    prom_errors = {{input.prom_errors}} or []
+    release = {{input.release}} or ''
+    release_known = bool({{input.release_known}})
+    lanes = {{input.lanes}} or {}
+    app = {{input.app}} or {}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    scratch = {{input.scratch_dir}}
+    renotify_h = int({{input.renotify_hours}})
+    quiet_h = int({{input.quiet_after_hours}})
+    forget_d = int({{input.forget_after_days}})
+    stale_h = int({{input.source_stale_hours}})
+    max_alerts = int({{input.max_alerts}})
+    os.chdir(ws)
+    os.makedirs(scratch, exist_ok=True)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    now_iso = now.isoformat()
+    RANK = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
+
+    def jload(path, default):
+        if path and os.path.exists(path):
+            with open(path, encoding='utf-8') as fh:
+                return json.load(fh)
+        return default
+    def age_h(iso):
+        try:
+            return (now - datetime.datetime.fromisoformat(iso)).total_seconds() / 3600
+        except (TypeError, ValueError):
+            return 10 ** 6
+    def said_within(iso, hours):
+        ## A stamp that silences a message — a component said, an incident
+        ## notified, a source warned — counts only in the past: one a clock
+        ## running ahead wrote reads as not said.
+        return 0 <= age_h(iso) < hours
+
+    def iso_of_ns(ts):
+        try:
+            return datetime.datetime.fromtimestamp(int(ts) / 1e9, datetime.timezone.utc).isoformat(timespec='seconds')
+        except (TypeError, ValueError, OverflowError, OSError):
+            return ''
+
+    def follow_clock(rec, last_ts):
+        ## A pattern seen this tick without a counted sighting — history
+        ## lines, or a template cut from the list — moves its incident's
+        ## clock to its newest line when that is later than the incident
+        ## knew, never back: no "not observed any more" is concluded against
+        ## it, and retention does not forget it.
+        last = iso_of_ns(last_ts)
+        if last and age_h(last) < age_h(rec.get('last_seen') or ''):
+            rec['last_seen'] = last
+
+    if loki_per_query and not os.path.exists(signals_file):
+        expected = sum(int((i or {}).get('lines') or 0) for i in loki_per_query.values())
+        if expected > 0:
+            raise SystemExit('prod-watch: the signals file ' + repr(signals_file) + ' is missing although the lanes reported ' +
+                             str(expected) + ' line(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
+    signals = jload(signals_file, {})
+    spath = os.path.join(state_dir, 'state.json')
+    bootstrap = not os.path.exists(spath)
+    state = jload(spath, {'version': 1, 'generation': 0, 'cursors': {'loki': {}}, 'incidents': {}, 'health': {}, 'halt': None})
+    incidents = state.setdefault('incidents', {})
+    health = state.setdefault('health', {})
+    cursors = state.setdefault('cursors', {}).setdefault('loki', {})
+    ## The generation read HERE is what commit_state compares under its
+    ## lock: a state rewritten by another tick in between is refused, not
+    ## overwritten.
+    generation_seen = int(state.get('generation') or 0)
+    state['generation'] = generation_seen + 1
+    def ns_to_iso(ts):
+        try:
+            return datetime.datetime.fromtimestamp(int(ts) / 1e9, datetime.timezone.utc).isoformat(timespec='minutes')
+        except (TypeError, ValueError, OverflowError, OSError):
+            return str(ts)[:16]
+
+    ## ── this tick's candidates ─────────────────────────────────────
+    ## Each candidate: fingerprint, kind, severity, title key, detail
+    ## fields, evidence (already redacted upstream), lane.
+    cands = []
+    for r in http_results:
+        if not r.get('ok'):
+            cands.append({'fp': 'probe:' + r['id'], 'kind': 'probe', 'sources': [r['id']], 'severity': r.get('severity') or 'critical',
+                          'title_key': 'probe_down', 'title_arg': r['id'], 'detail_key': 'probe_detail',
+                          'fields': {'url': r.get('url'), 'status': r.get('status'), 'ms': r.get('ms'), 'expected': r.get('expected')},
+                          'evidence': {'error': r.get('error')}, 'lane': 'probes', 'tick_count': 1})
+    for r in prom_results:
+        if r.get('state') == 'breached':
+            cands.append({'fp': 'prom:' + r['id'], 'kind': 'prom', 'sources': [r['id']], 'severity': r.get('severity') or 'high',
+                          'title_key': 'prom_breached', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
+                          'fields': {'title': r.get('title') or r['id'], 'value': r.get('value'), 'op': r.get('op'), 'threshold': r.get('threshold')},
+                          'evidence': {'warnings': r.get('warnings') or 0}, 'lane': 'prometheus', 'tick_count': 1})
+        elif r.get('state') == 'no_data':
+            cands.append({'fp': 'prom:' + r['id'] + ':no_data', 'kind': 'prom_no_data', 'sources': [r['id']], 'severity': 'medium',
+                          'title_key': 'prom_no_data', 'title_arg': r.get('title') or r['id'], 'detail_key': 'prom_detail',
+                          'fields': {'title': r.get('title') or r['id'], 'value': 'no data', 'op': r.get('op'), 'threshold': r.get('threshold')},
+                          'evidence': {'warnings': r.get('warnings') or 0}, 'lane': 'prometheus', 'tick_count': 1})
+    ## Only a template's LIVE lines (read outside a query's first window)
+    ## count and post; the history lines are observed. The scan counted
+    ## them apart, per line — whichever query created the template.
+    for t in (signals.get('templates') or []):
+        if 'count_live' not in t:
+            raise SystemExit('prod-watch: a template without count_live in the signals -- a scan from another version of the bot; relaunch the tick')
+        cnt = int(t.get('count_live') or 0)
+        live = cnt > 0
+        cands.append({'fp': 'loki:' + t['template_id'], 'kind': 'loki', 'sources': list((t.get('queries_live') if live else t.get('queries')) or []),
+                      'last_ts': t.get('last_ts'), 'severity': 'high' if cnt >= 50 else 'medium',
+                      'title_key': 'loki_template', 'title_arg': (t.get('template') or '')[:120], 'detail_key': 'loki_detail',
+                      'fields': {'count': cnt, 'first': ns_to_iso((t.get('first_ts_live') if live else t.get('first_ts')) or 0),
+                                 'streams': ', '.join((t.get('streams_live') if live else t.get('streams')) or []) or '-'},
+                      'evidence': {'sample': (t.get('sample_live') if live else t.get('sample')), 'template': t.get('template'),
+                                   'query': (t.get('query_live') if live else t.get('query'))},
+                      'lane': 'loki', 'tick_count': cnt})
+    for f in (signals.get('leak') or []):
+        cands.append({'fp': 'leak:' + f['class'], 'kind': 'leak', 'sources': sorted(f.get('queries') or []),
+                      'severity': f.get('severity') or 'high',
+                      'title_key': 'leak', 'title_arg': f['class'], 'detail_key': 'leak_detail',
+                      'fields': {'count': f.get('count'), 'class': f['class'], 'distinct': f.get('distinct'),
+                                 'sources': ', '.join(s.get('stream') or s.get('query') or '?' for s in (f.get('sources') or [])[:4]) or '-'},
+                      'evidence': {'sample_masked': f.get('sample_masked'), 'sources': f.get('sources')}, 'lane': 'loki',
+                      'tick_count': int(f.get('count') or 0)})
+
+    ## `prom_ok` is the Prometheus lane's health (every probe answered);
+    ## the tick may be reported when one probe answered, like one Loki
+    ## query covered.
+    prom_answered = any(r.get('state') != 'error' for r in prom_results)
+    lane_ok = {'loki': loki_ok, 'prometheus': prom_answered, 'probes': True}
+    seen_fps = set()
+    alerts, observed_new = [], 0
+    for c in cands:
+        fp = c['fp']
+        prev = incidents.get(fp)
+        if c['kind'] == 'loki' and int(c['tick_count'] or 0) == 0 and prev is not None:
+            ## A known template seen only in history lines (a first window)
+            ## is not a recurrence: its count, fields and quiet note stay as
+            ## they are; only its clock follows those lines.
+            follow_clock(prev, c.get('last_ts'))
+            observed_new += 1
+            continue
+        seen_fps.add(fp)
+        rec = dict(prev or {})
+        rec.update({'fp': fp, 'kind': c['kind'], 'sources': c.get('sources') or [], 'severity': c['severity'], 'title_key': c['title_key'],
+                    'title_arg': c['title_arg'], 'detail_key': c['detail_key'], 'fields': c['fields'],
+                    'last_seen': now_iso, 'count': int((prev or {}).get('count') or 0) + int(c['tick_count'] or 0),
+                    'quiet_noted': False})
+        rec.setdefault('first_seen', now_iso)
+        rec.setdefault('last_notified', None)
+        rec.setdefault('alerted', False)
+        prev_sev = (prev or {}).get('severity') or ''
+        if prev is not None and RANK.get(c['severity'], 0) < RANK.get(prev_sev or 'low', 0):
+            ## A severity never goes DOWN on its own: a template that spiked
+            ## to high keeps its rank until the incident is forgotten.
+            rec['severity'] = prev_sev
+        state_word = None
+        if c['kind'] == 'loki' and (bootstrap or int(c['tick_count'] or 0) == 0):
+            ## The first window is history, not news: observe, do not post.
+            ## The template re-fires as NEW the first time it recurs.
+            observed_new += 1
+        elif prev is None or not prev.get('alerted'):
+            state_word = 'new'
+        elif RANK.get(c['severity'], 0) > RANK.get(prev.get('severity') or 'low', 0):
+            state_word = 'escalated'
+        elif prev.get('last_notified') and not said_within(prev['last_notified'], renotify_h):
+            state_word = 'reminder'
+        if state_word:
+            alerts.append({'fingerprint': fp, 'kind': c['kind'], 'severity': rec['severity'], 'state': state_word,
+                           'title_key': c['title_key'], 'title_arg': c['title_arg'], 'detail_key': c['detail_key'],
+                           'fields': c['fields'], 'evidence': c['evidence'], 'count': rec['count'],
+                           'first_seen': rec['first_seen'], 'prev_severity': prev_sev})
+        incidents[fp] = rec
+
+    for tid, last_ts in (signals.get('cut_last_ts') or {}).items():
+        if incidents.get('loki:' + tid) is not None:
+            follow_clock(incidents['loki:' + tid], last_ts)
+
+    ## ── incidents NOT seen this tick ───────────────────────────────
+    ## Three questions, three predicates: `lane_ok` — may this tick be
+    ## reported (one Loki query covered, one probe answered is enough);
+    ## `loki_healthy` / `prom_ok` — did every query or probe answer (the
+    ## lane's health record); `loki_complete` / `prom_ok` — did the lane
+    ## read EVERYTHING it could have seen this tick. A
+    ## truncated walk, an empty window, a declared gap or a failed query
+    ## observed less than the window: nothing is concluded about what was
+    ## not seen. (A truncated walk, a gap or a failed query also make the
+    ## tick's coverage partial; an empty window does not — nothing was there
+    ## to read, and the next window reads what comes.) Template incidents
+    ## need at least one template query: the sweep alone yields none.
+    loki_healthy = bool(loki_ok and not loki_errors)
+    def partial(i):
+        return bool(i.get('error') or i.get('truncated') or i.get('gap') or int(i.get('to_ns') or 0) <= int(i.get('from_ns') or 0))
+    loki_complete = loki_healthy and not any(partial(i) for i in loki_per_query.values())
+    ## Template incidents are observed by the template queries alone: the
+    ## sweep query yields no template, and a sweep running behind must not
+    ## freeze every template incident's lifecycle; a cut template list is
+    ## not complete either.
+    tpl_complete = (bool(loki_ok) and not signals.get('templates_cut')
+                    and any(q != 'leak_sweep' for q in loki_per_query)
+                    and not any(partial(i) for q, i in loki_per_query.items() if q != 'leak_sweep'))
+    observe_ok = dict(lane_ok, loki=loki_complete, prometheus=prom_ok)
+    sources = {'prometheus': {r.get('id') for r in prom_results}, 'probes': {r.get('id') for r in http_results}, 'loki': set(loki_per_query)}
+    for fp, rec in list(incidents.items()):
+        if fp in seen_fps:
+            continue
+        gone_h = age_h(rec.get('last_seen') or rec.get('first_seen') or now_iso)
+        if gone_h >= forget_d * 24:
+            ## Retention, not a conclusion: an incident unseen for
+            ## forget_after_days goes whatever the lane observed, or the
+            ## state grows for ever behind a lane that never completes.
+            del incidents[fp]
+            continue
+        lane = {'probe': 'probes', 'prom': 'prometheus', 'prom_no_data': 'prometheus', 'loki': 'loki', 'leak': 'loki'}.get(rec.get('kind'), 'loki')
+        observed = tpl_complete if rec.get('kind') == 'loki' else observe_ok.get(lane, True)
+        if not observed or not lanes.get(lane, False):
+            ## The lane that would observe it did not observe everything
+            ## (or is no longer configured): nothing is concluded.
+            continue
+        if not any(src in sources.get(lane, ()) for src in (rec.get('sources') or [])):
+            ## Every source that saw it — its probe, the queries that last
+            ## counted its template or found its leak — left the config:
+            ## nothing looks at it any more, nothing is concluded; retention
+            ## forgets it.
+            continue
+        if rec.get('alerted') and gone_h >= quiet_h and not rec.get('quiet_noted'):
+            ## The note is STAGED here and stamped only once it is posted
+            ## (below, after the cap) — a note the cap cuts must re-fire.
+            alerts.append({'fingerprint': fp, 'kind': rec.get('kind'), 'severity': 'low', 'state': 'quiet',
+                           'title_key': rec.get('title_key'), 'title_arg': rec.get('title_arg'), 'detail_key': rec.get('detail_key'),
+                           'fields': rec.get('fields') or {}, 'evidence': {}, 'count': rec.get('count'),
+                           'first_seen': rec.get('first_seen'), 'prev_severity': rec.get('severity') or ''})
+
+    ## ── source health + staleness ──────────────────────────────────
+    def mark(source, ok, err=''):
+        h = health.setdefault(source, {})
+        if ok:
+            h['last_ok'] = now_iso
+            h.pop('last_error', None)
+        elif err:
+            h['last_error'] = err[:300]
+    if lanes.get('loki'):
+        ## `loki_ok` answers "may this tick be reported" (one query covered
+        ## is enough); the lane's HEALTH asks another question: a query
+        ## dark for good must not be washed by its healthy neighbour, or
+        ## the staleness note never fires for it.
+        mark('loki', loki_healthy, json.dumps(loki_errors)[:300] if loki_errors else '')
+    if lanes.get('prometheus'):
+        mark('prometheus', prom_ok, json.dumps(prom_errors)[:300] if prom_errors else '')
+    if lanes.get('probes'):
+        mark('probes', True)
+    for source in [k for k in health if not lanes.get(k, False)]:
+        del health[source]
+    stale = []
+    if stale_h > 0 and not bootstrap:
+        for source, h in sorted(health.items()):
+            last_ok = h.get('last_ok') or ''
+            a = age_h(last_ok) if last_ok else 10 ** 6
+            if a < stale_h:
+                continue
+            warned = h.get('last_warned') or ''
+            if warned and said_within(warned, stale_h):
+                continue
+            stale.append({'source': source, 'hours': int(a) if a < 10 ** 6 else -1, 'last_ok': last_ok, 'error': h.get('last_error') or ''})
+            h['last_warned'] = now_iso
+
+    ## ── coverage note, once per component and interval ────────────
+    ## A tick's partiality is made of components: a query's gap (lines
+    ## skipped — named, it is a loss), a lane's error kind (digits folded
+    ## before any cut: an inverted window carries fresh timestamps every
+    ## tick, and a number gaining a digit must not move what a cut keeps;
+    ## the source left out: queries or probes failing in turn with one error
+    ## are one kind), a truncation (queries truncated in turn are one — it
+    ## loses nothing, the next tick reads on), a cut. The note posts when a
+    ## component is new or its last mention is older than renotify_hours,
+    ## whatever the combination: a lane flapping, or kinds coming and going
+    ## together, never re-post it every tick.
+    coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors) else 'full'
+    gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
+    truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
+    lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
+                                   for e in (loki_errors + prom_errors)))[:600]
+    ## The note's pieces, each with the component it says — the loss first:
+    ## a gap, then the errors, then what is only behind.
+    pieces = [('gap: ' + q, q + ': gap — the cursor fell out of the max window, the lines in between were skipped') for q in gapped]
+    pieces += [(c, text) for text, c in sorted(
+        (str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160],
+         lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160])
+        for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors)) for e in errs)]
+    pieces += [('truncated', q + ': truncated at max_lines') for q in truncated_qs]
+    if signals.get('templates_cut'):
+        pieces.append(('cut', 'template list cut: ' + str(signals.get('templates_total') or '?') +
+                       ' templates, the 200 with the most live lines kept'))
+    components = sorted({c for c, _ in pieces})
+    posted_kinds = {k: v for k, v in (state.get('coverage_posted') or {}).items() if said_within(v, renotify_h)}
+    coverage_note = coverage == 'partial' and any(c not in posted_kinds for c in components)
+    coverage_reasons = ''
+    if coverage_note:
+        ## The 600-character budget takes what is new first, then what was
+        ## said already — one piece per component —, then the other queries
+        ## of an error kind. A component counts as said only when a piece of
+        ## it is in the text: what the budget left out is said next tick.
+        firsts, seen = [], set()
+        for c, text in pieces:
+            if c not in seen:
+                seen.add(c)
+                firsts.append((c, text))
+        ordered = [x for x in firsts if x[0] not in posted_kinds] + [x for x in firsts if x[0] in posted_kinds]
+        ordered += [x for x in pieces if x not in firsts]
+        said = set()
+        for c, text in ordered:
+            joined = coverage_reasons + '; ' + text if coverage_reasons else text
+            if len(joined) <= 600:
+                coverage_reasons = joined
+                said.add(c)
+        for c in said:
+            posted_kinds[c] = now_iso
+    state['coverage_posted'] = posted_kinds
+
+    ## ── priority, cap, staging ────────────────────────────────────
+    order = {'new': 3, 'escalated': 3, 'reminder': 2, 'quiet': 1}
+    alerts.sort(key=lambda a: (RANK.get(a['severity'], 0), order.get(a['state'], 0)), reverse=True)
+    overflow = max(0, len(alerts) - max_alerts)
+    posted, deferred = alerts[:max_alerts], alerts[max_alerts:]
+    ## Stamps happen HERE, on what was actually selected: a deferred alert
+    ## keeps its previous notification stamp, its previous severity and an
+    ## un-noted quiet flag, so the same rule re-selects it next tick.
+    for a in posted:
+        rec = incidents.get(a['fingerprint'])
+        if rec is None:
+            continue
+        if a['state'] == 'quiet':
+            rec['quiet_noted'] = True
+        else:
+            rec['last_notified'] = now_iso
+            rec['alerted'] = True
+    for a in deferred:
+        rec = incidents.get(a['fingerprint'])
+        if rec is not None and a['state'] == 'escalated' and a.get('prev_severity'):
+            rec['severity'] = a['prev_severity']
+    if lanes.get('loki'):
+        for q in [q for q in cursors if q not in loki_per_query]:
+            ## A query absent this tick keeps its high-water mark (a
+            ## re-added query reopens there instead of replaying a bootstrap
+            ## window) and loses its band (the bulk of the state); a cursor
+            ## untouched for longer than forget_after_days goes.
+            c = cursors[q]
+            if not isinstance(c, dict):
+                raise SystemExit('prod-watch: cursor of loki query ' + repr(q) + ' is not an object -- delete that cursor (or the state file)')
+            def cint(field, default=0):
+                v = c.get(field)
+                if v is None:
+                    return default
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    raise SystemExit('prod-watch: cursor of loki query ' + repr(q) + ': ' + field + ' is not a number -- delete that cursor (or the state file)')
+            if c.get('at') and age_h(c['at']) >= forget_d * 24:
+                del cursors[q]
+                continue
+            ## The band is trimmed, not dropped: what lies at or above
+            ## min(frontier, mark) is exactly what a re-added query re-reads
+            ## (the frontier group of a truncated or failed walk, the mark
+            ## line of a truncated one); after a complete walk nothing stays.
+            cov, fr = cint('covered_to_ns'), cint('frontier_ns', cint('covered_to_ns'))
+            lo = min(fr, cov) if cov else fr
+            bb = cint('band_base_ns')
+            kept = []
+            for e in (c.get('band') or []):
+                try:
+                    if bb + int(str(e).split(':', 1)[0]) >= lo:
+                        kept.append(e)
+                except ValueError:
+                    raise SystemExit('prod-watch: cursor of loki query ' + repr(q) + ': band is not offset:hash strings -- delete that cursor (or the state file)')
+            cursors[q] = {'covered_to_ns': str(cov), 'frontier_ns': str(fr), 'at': c.get('at') or now_iso, 'band': kept, 'band_base_ns': str(bb),
+                          'overlap_from_ns': str(max(cint('overlap_from_ns'), lo)), 'history_to_ns': str(cint('history_to_ns'))}
+    for q, info in loki_per_query.items():
+        ## Persisted on a failed walk too: poll_loki hands back the previous
+        ## marks untouched and a band that knows the lines written before
+        ## the failure — dropping it would write them again on the retry.
+        if info.get('covered_to_ns') is not None:
+            cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'frontier_ns': str(info.get('frontier_ns') or info['covered_to_ns']),
+                          'at': now_iso, 'band': list(info.get('band') or []), 'band_base_ns': str(info.get('band_base_ns') or 0),
+                          'overlap_from_ns': str(info.get('overlap_from_ns') or 0), 'history_to_ns': str(info.get('history_next_ns') or 0)}
+    needs_analysis = any(a['state'] in ('new', 'escalated') and a['kind'] in ('probe', 'prom', 'loki') for a in posted)
+
+    ## Zero-façade guard: if EVERY configured lane errored this tick there
+    ## is no basis to claim "nothing to report" — fail loudly instead.
+    cfg_lanes = [k for k, v in lanes.items() if v]
+    dead = [k for k in cfg_lanes if not lane_ok.get(k, True)]
+    if cfg_lanes and len(dead) == len(cfg_lanes):
+        raise SystemExit('prod-watch: every configured lane failed this tick (' + ', '.join(dead) + ') -- refusing to report a quiet tick' +
+                         (': ' + lane_errors if lane_errors else ''))
+
+    ## Shared scratch: the handoff names carry the run id.
+    state_next = os.path.join(scratch, 'state_next-' + str({{run.id}})[-12:] + '.json')
+    with open(state_next, 'w', encoding='utf-8') as fh:
+        json.dump(state, fh, ensure_ascii=False, indent=1, sort_keys=True)
+    alertlog = os.path.join(scratch, 'alertlog_delta-' + str({{run.id}})[-12:] + '.jsonl')
+    with open(alertlog, 'w', encoding='utf-8') as fh:
+        for a in posted:
+            fh.write(json.dumps({'at': now_iso, 'fp': a['fingerprint'], 'kind': a['kind'], 'severity': a['severity'],
+                                 'state': a['state'], 'title': a['title_arg'], 'count': a['count'], 'release': release},
+                                ensure_ascii=False) + chr(10))
+    tick = os.path.join(scratch, 'tick-' + str({{run.id}})[-12:] + '.json')
+    with open(tick, 'w', encoding='utf-8') as fh:
+        json.dump({'at': now_iso, 'generation': state['generation'], 'lines': signals.get('lines_scanned', 0),
+                   'templates': len(signals.get('templates') or []), 'alerts': len(posted), 'overflow': overflow,
+                   'lanes_ok': lane_ok, 'coverage': coverage, 'release': release, 'release_known': release_known,
+                   'bootstrap': bootstrap}, fh, ensure_ascii=False)
+    summary = ('alerts: ' + str(len(posted)) + ' to post (' + str(overflow) + ' overflow), ' + str(observed_new) +
+               ' observed, ' + str(len(incidents)) + ' open incident(s), coverage ' + coverage +
+               (', BOOTSTRAP' if bootstrap else '') +
+               ((' -- lane errors: ' + json.dumps(loki_errors + prom_errors)[:400]) if (loki_errors or prom_errors) else ''))
+    print(json.dumps({'alerts': posted, 'alert_count': len(posted), 'overflow_count': overflow, 'generation': generation_seen,
+                      'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage, 'reasons': coverage_reasons}] if coverage_note else []),
+                      'needs_analysis': needs_analysis, 'state_next_file': state_next, 'alertlog_file': alertlog,
+                      'tick_file': tick, 'bootstrap': bootstrap, 'summary': summary}, ensure_ascii=False))
+
+## Deterministic delivery: render each alert from the label templates
+## (language comes from config, structure from here) and POST one
+## message per alert + one overflow note + one staleness/coverage note
+## to the configured sinks. Every rendered field is flattened and bounded
+## — the text comes from log lines and metric titles that an attacker can
+## influence, so nothing can span lines or forge a second alert block.
+## Delivery consumes the staged state only when every message reached
+## at least one sink AND every REQUIRED sink took every message.
+tool notify:
+  input: notify_input
+  output: notify_output
+  language: py
+  script: |
+    import json, os, re, sys, urllib.request
+    from urllib.parse import urlsplit
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    alerts = {{input.alerts}} or []
+    overflow = int({{input.overflow_count}} or 0)
+    stale = {{input.stale_sources}} or []
+    sinks = {{input.sinks}} or []
+    labels = {{input.labels}} or {}
+    app = {{input.app}} or {}
+    release = {{input.release}} or ''
+    release_known = bool({{input.release_known}})
+    dry_run = {{input.dry_run}}
+    max_chars = int({{input.max_message_chars}} or 14000)
+    webhooks_file = {{secrets.webhooks.path}}
+    RANK = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
+    ICON = {'critical': ':rotating_light:', 'high': ':red_circle:', 'medium': ':large_orange_diamond:', 'low': ':white_check_mark:'}
+
+    def out(o):
+        print(json.dumps(o, ensure_ascii=False))
+        raise SystemExit(0)
+    def flat(s, cap=300):
+        return re.sub(r'\s+', ' ', str(s if s is not None else '')).strip()[:cap]
+    def inert(s, cap=300):
+        ## Untrusted text (a log line, a metric title, a container name) is
+        ## rendered with every markdown active escaped and bare URL schemes
+        ## defanged: a line an attacker influenced must never become a
+        ## clickable link, a heading or a second alert block in the channel.
+        t = re.sub(r'([\\`*_\[\]()~>|#!-])', lambda m: '\\' + m.group(1), flat(s, cap))
+        return re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t)
+    def code(s, cap=300):
+        ## Inline code renders no markdown; a URL scheme is still defanged so
+        ## nothing a reader copies out of the span is a live link either.
+        t = flat(s, cap).replace('`', "'")
+        return '`' + re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
+    def fmt(label, /, **kw):
+        t = labels.get(label) or label
+        for k, v in kw.items():
+            t = t.replace('{' + k + '}', inert(v, 200))
+        return t
+
+    scope = flat(app.get('name'), 60) + ('/' + flat(app.get('environment'), 40) if app.get('environment') else '')
+    messages = []
+    for a in alerts:
+        sev = a.get('severity') or 'medium'
+        state = a.get('state') or 'new'
+        head = fmt(a.get('title_key') or 'alert')
+        marker = {'new': labels.get('alert'), 'escalated': labels.get('escalated'), 'reminder': labels.get('reminder'), 'quiet': labels.get('quiet')}.get(state) or state
+        lines = [ICON.get(sev, ':bell:') + ' **' + inert(marker, 40).upper() + ' · ' + inert(scope, 100) + ' — ' + inert(head, 120) + '**']
+        if a.get('title_arg'):
+            lines.append(code(a['title_arg'], 200))
+        fields = a.get('fields') or {}
+        if a.get('detail_key'):
+            lines.append(fmt(a['detail_key'], **{k: v for k, v in fields.items()}))
+        meta = [labels.get('severity', 'severity') + ' ' + sev.upper(),
+                fmt('new_since', date=(a.get('first_seen') or '')[:16]),
+                fmt('count', n=a.get('count') or 0)]
+        if release:
+            meta.append(labels.get('release', 'release') + ' ' + inert(release, 60) +
+                        ('' if release_known else ' (' + inert(labels.get('release_unverified', 'unverified'), 40) + ')'))
+        lines.append('_' + ' · '.join(meta) + '_')
+        ev = a.get('evidence') or {}
+        if ev.get('sample'):
+            lines.append('> ' + code(ev['sample'], 300))
+        if ev.get('sample_masked'):
+            lines.append('> ' + inert(labels.get('sample', 'masked sample'), 40) + ': ' + code(ev['sample_masked'], 120))
+        messages.append((sev, chr(10).join(lines), False))
+    ## Meta notices — overflow, a silent source, partial coverage — are
+    ## about the WATCHDOG's own sight, not an incident's severity: they
+    ## bypass the per-sink threshold and reach every sink, so a config that
+    ## only pages for high incidents still learns that the bot went blind.
+    if overflow > 0:
+        messages.append(('medium', ':warning: ' + fmt('overflow', n=overflow), True))
+    for s in stale:
+        if s.get('source') == 'coverage':
+            text = ':warning: ' + inert(labels.get('coverage_partial', 'coverage partial'), 300)
+            if s.get('reasons'):
+                text += chr(10) + '> ' + code(str(s.get('reasons')), 600)
+            messages.append(('medium', text, True))
+        else:
+            text = ':warning: ' + fmt('stale', source=s.get('source'), hours=s.get('hours'), last=s.get('last_ok') or 'never')
+            if s.get('error'):
+                text += chr(10) + '> ' + code(str(s.get('error')), 400)
+            messages.append(('medium', text, True))
+
+    if not messages:
+        out({'posted': False, 'dry_run': bool(dry_run), 'messages': [], 'delivered': 0,
+             'consume': not dry_run, 'targets': [], 'summary': 'nothing to deliver'})
+    if not sinks:
+        raise SystemExit('prod-watch: ' + str(len(messages)) + ' message(s) to deliver but NO sinks are configured -- add a `sinks` entry '
+                         'to the workspace config (or run with --var dry_run=true to preview). Nothing was consumed: these alerts '
+                         'will be re-computed on the next tick.')
+    payloads = []  # (msg_index, sink, payload)
+    for idx, (sev, text, meta_notice) in enumerate(messages):
+        for s in sinks:
+            if not meta_notice and RANK.get(sev, 0) < RANK.get(s.get('min_severity') or 'low', 1):
+                continue
+            payloads.append((idx, s, {'text': text[:max_chars], 'channel': str(s.get('channel') or ''),
+                                      'username': str(s.get('username') or 'Argus'), 'icon_emoji': str(s.get('icon_emoji') or ':eye:')}))
+    rendered = [{'webhook': s.get('webhook'), 'channel': p['channel'], 'text': p['text']} for _, s, p in payloads]
+    if dry_run:
+        for _, s, p in payloads:
+            print('DRY-RUN -> webhook=' + str(s.get('webhook')) + ' channel=' + p['channel'] + chr(10) + p['text'] + chr(10) + '---', file=sys.stderr)
+        out({'posted': False, 'dry_run': True, 'messages': rendered, 'delivered': 0, 'consume': False,
+             'targets': sorted({str(s.get('webhook')) for _, s, _ in payloads}),
+             'summary': 'dry-run: ' + str(len(payloads)) + ' payload(s) prepared, nothing posted, nothing consumed'})
+    if not payloads:
+        ## Every message fell under every sink's min_severity: a legitimate
+        ## routing outcome, and the state may advance.
+        out({'posted': False, 'dry_run': False, 'messages': [], 'delivered': 0, 'consume': True, 'targets': [],
+             'summary': str(len(messages)) + ' message(s) below every sink threshold; nothing posted'})
+    whmap = {}
+    if webhooks_file and os.path.exists(webhooks_file):
+        with open(webhooks_file, encoding='utf-8') as fh:
+            whmap = json.load(fh)
+    missing = sorted({str(s.get('webhook')) for _, s, _ in payloads if not whmap.get(s.get('webhook'))})
+    if missing:
+        raise SystemExit('prod-watch: webhook name(s) [' + ', '.join(missing) + '] not found in the bound `webhooks` secret (JSON map name -> url)')
+    delivered, failures, targets = 0, [], []
+    msgs_ok, required_failed = set(), []
+    def usable(url):
+        ## A webhook URL is a secret (its path is the key): it must be one
+        ## printable http(s) URL with a host, no credentials and a port that
+        ## parses before any use (the HTTP client quotes those parts in its
+        ## errors) — a failure names the webhook, never quotes the URL.
+        try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            port_ok = parts is not None and (parts.port is None or parts.port > 0)
+        except ValueError:
+            return False
+        return bool(parts and parts.scheme in ('http', 'https') and parts.hostname and parts.username is None and parts.password is None
+                    and port_ok and url.isascii() and url.isprintable() and ' ' not in url)
+    for idx, s, p in payloads:
+        url = whmap[s['webhook']]
+        try:
+            if not usable(url):
+                raise ValueError('the URL of this webhook in the webhooks secret is not one http(s) URL')
+            req = urllib.request.Request(url, data=json.dumps(p).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json', 'User-Agent': 'prod-watch (iterion)'}, method='POST')
+            with urllib.request.urlopen(req, timeout=20):
+                delivered += 1
+                msgs_ok.add(idx)
+                targets.append(str(s['webhook']) + '->' + str(p['channel'] or 'default'))
+        except Exception as e:
+            failures.append(str(s['webhook']) + ': ' + type(e).__name__ + ': ' + str(e).replace(str(url), '<the webhook URL>')[:200])
+            if s.get('required', True):
+                required_failed.append(str(s['webhook']))
+    if delivered == 0:
+        raise SystemExit('prod-watch: all ' + str(len(payloads)) + ' webhook post(s) failed: ' + '; '.join(failures))
+    consume = len(msgs_ok) == len({idx for idx, _, _ in payloads}) and not required_failed
+    summary = 'delivered ' + str(delivered) + '/' + str(len(payloads))
+    if failures:
+        summary += ' -- FAILED: ' + '; '.join(failures)
+    if not consume:
+        print(json.dumps({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered, 'consume': False,
+                          'targets': sorted(set(targets)), 'summary': summary}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit('prod-watch: delivery incomplete (' + ('required sink(s) down: ' + ', '.join(sorted(set(required_failed))) if required_failed else
+                         str(len(messages) - len(msgs_ok)) + ' message(s) reached NO sink') +
+                         ') -- the state is NOT consumed, so this tick replays in full on the next run. ' + summary)
+    out({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered, 'consume': True,
+         'targets': sorted(set(targets)), 'summary': summary})
+
+## Persist the staged state under flock: replace state.json (watch is its
+## only writer), append the alert log and the tick ledger, and — with
+## state_commit=true — commit+push the state dir with the rebase-retry
+## discipline (ephemeral cloud runners share the branch). Runs ONLY after
+## delivery succeeded (or nothing needed delivering).
+tool commit_state:
+  input: commit_input
+  output: commit_output
+  language: py
+  script: |
+    import json, os, fcntl, subprocess
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    state_next = {{input.state_next_file}}
+    alertlog_delta = {{input.alertlog_file}}
+    tick_file = {{input.tick_file}}
+    generation = int({{input.generation}} or 0)
+    state_commit = {{input.state_commit}}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    os.chdir(ws)
+
+    STATE_FILES = ['state.json', 'alertlog.jsonl', 'ticks.jsonl']
+    ## Everything the node stages, by explicit path: the bot commits what it
+    ## writes, never a stray file an operator left in the state dir.
+    STAGED_FILES = STATE_FILES + ['.gitignore', '.gitattributes']
+
+    def _repo_frame(sdir):
+        ## The state dir in the REPOSITORY's frame: `git diff --cached
+        ## --name-only --no-relative` prints repo-root-relative paths whatever
+        ## `diff.relative` says, and the workspace may be a subdirectory.
+        prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'], capture_output=True, text=True).stdout.strip()
+        return (prefix + sdir.rstrip('/')).lstrip('/')
+
+    def _staged_outside(sdir):
+        ## The bot may ONLY ever commit the state dir. A staged path outside
+        ## it (the config, .github/**, an operator's WIP) would be a bug or an
+        ## injection — refused by name, never carried under the bot's identity.
+        sdir_repo = _repo_frame(sdir)
+        staged = subprocess.run(['git', 'diff', '--cached', '--name-only', '--no-relative'],
+                                capture_output=True, text=True).stdout.split(chr(10))
+        return [q for q in staged if q.strip() and q != sdir_repo and not q.startswith(sdir_repo + '/')]
+
+    def _ignored_state_paths(sdir):
+        ## Judge the FILES the node stages, not the directory: a repo-wide
+        ## `*.json` rule lets the dir through and would drop state.json.
+        ## Tracked files are not subject to ignore rules (`git add` carries
+        ## them), so this asks exactly what `git add` would refuse: the
+        ## paths still untracked under a rule.
+        paths = [os.path.join(sdir, f) for f in STAGED_FILES]
+        out = subprocess.run(['git', 'check-ignore'] + paths, capture_output=True, text=True).stdout
+        return [ln.strip() for ln in out.split(chr(10)) if ln.strip()]
+
+    def _commit_push_state(sdir, msg):
+        paths = [os.path.join(sdir, f) for f in STAGED_FILES]
+        added = subprocess.run(['git', 'add', '--'] + paths, capture_output=True, text=True)
+        said = ((added.stderr or added.stdout or '')[-400:]).strip()
+        ## Judged by the INDEX, never by the exit code: under a rule that
+        ## ignores the state dir itself, `git add` stages the tracked files
+        ## and still exits 1 for the directory it walked. What git actually
+        ## took: every state file tracked, with the content just written —
+        ## or "pushed" would describe a commit without the cursor in it.
+        missing = [f for f in STAGED_FILES
+                   if subprocess.run(['git', 'ls-files', '--error-unmatch', os.path.join(sdir, f)], capture_output=True).returncode != 0]
+        if missing:
+            raise SystemExit('prod-watch: git did not take ' + ', '.join(missing) + ' from the state dir ' + repr(sdir) +
+                             ' (an ignore rule?) -- refusing to push a state commit without them. git said: ' + said)
+        if subprocess.run(['git', 'diff', '--quiet', '--'] + paths).returncode != 0:
+            raise SystemExit('prod-watch: git add left state files unstaged in ' + repr(sdir) +
+                             ' -- refusing to commit a partial state. git said: ' + said)
+        outside = _staged_outside(sdir)
+        if outside:
+            raise SystemExit('prod-watch: refusing to commit path(s) outside the state dir ' + repr(sdir) + ': ' + ', '.join(outside[:10]))
+        if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
+            return False
+        before = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+        committed = subprocess.run(['git', 'commit', '-m', msg], capture_output=True, text=True)
+        if committed.returncode != 0:
+            raise SystemExit('prod-watch: git commit of the state dir failed -- if git reports an unknown identity, set '
+                             'user.email/user.name on the workspace clone (or in the runner image). git said: ' +
+                             ((committed.stderr or committed.stdout or '')[-400:]).strip())
+        br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'HEAD'
+        for _ in range(5):
+            pushed = subprocess.run(['git', 'push', 'origin', 'HEAD'], capture_output=True, text=True)
+            if pushed.returncode == 0:
+                return True
+            err = (pushed.stderr or '')[-400:]
+            if 'could not read Username' in err or 'Authentication failed' in err or 'terminal prompts disabled' in err or 'Permission denied' in err:
+                raise SystemExit('prod-watch: git push was refused for lack of credentials -- the state was committed locally and is '
+                                 'NOT pushed, so this tick may replay next run. Bind the forge_token secret (or run with '
+                                 'state_commit=false). git said: ' + err.strip())
+            rebased = subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br], capture_output=True, text=True)
+            if rebased.returncode != 0:
+                subprocess.run(['git', 'rebase', '--abort'], capture_output=True)
+                if before:
+                    subprocess.run(['git', 'reset', '--soft', before], capture_output=True)
+                raise SystemExit('prod-watch: could not rebase onto origin/' + br + ' to retry the push -- aborting; the tick '
+                                 'replays. git said: ' + (rebased.stderr or '')[-400:].strip())
+        raise SystemExit('prod-watch: git push failed after 5 retries (non-fast-forward or network)')
+
+    os.makedirs(state_dir, exist_ok=True)
+    if state_commit:
+        ## Preflight BEFORE a byte of state is written: a misconfiguration
+        ## must not leave a consumed tick on disk that git will never carry.
+        ignored = _ignored_state_paths(state_dir)
+        if ignored:
+            raise SystemExit('prod-watch: state_commit=true but git ignores ' + ', '.join(ignored) + ' -- un-ignore the state '
+                             'dir and its files (git is the state store on ephemeral runners) or run with state_commit=false')
+        outside = _staged_outside(state_dir)
+        if outside:
+            raise SystemExit('prod-watch: refusing to commit path(s) outside the state dir ' + repr(state_dir) +
+                             ' already staged in this checkout: ' + ', '.join(outside[:10]))
+    ga = os.path.join(state_dir, '.gitattributes')
+    want = ['alertlog.jsonl merge=union', 'ticks.jsonl merge=union']
+    have = open(ga, encoding='utf-8').read() if os.path.exists(ga) else ''
+    missing = [w for w in want if w not in have]
+    if missing:
+        with open(ga, 'a', encoding='utf-8') as fh:
+            for w in missing:
+                fh.write(w + chr(10))
+    ## The lock file is host-local plumbing, never state: keep it out of git.
+    gi = os.path.join(state_dir, '.gitignore')
+    if not os.path.exists(gi) or '.lock' not in open(gi, encoding='utf-8').read():
+        with open(gi, 'a', encoding='utf-8') as fh:
+            fh.write('.lock' + chr(10))
+    lock = open(os.path.join(state_dir, '.lock'), 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    ## The read-modify-write spans two nodes: decide read the state minutes
+    ## ago. Under the lock, refuse to overwrite a state another tick has
+    ## rewritten since (its generation moved) — the tick replays.
+    spath = os.path.join(state_dir, 'state.json')
+    if os.path.exists(spath):
+        try:
+            with open(spath, encoding='utf-8') as fh:
+                current = int((json.load(fh) or {}).get('generation') or 0)
+        except ValueError:
+            current = -1
+        if current != generation:
+            raise SystemExit('prod-watch: state.json moved from generation ' + str(generation) + ' to ' + str(current) +
+                             ' while this tick ran (another tick wrote it) -- refusing to overwrite; this tick replays')
+    if not os.path.exists(state_next):
+        raise SystemExit('prod-watch: the staged state file ' + repr(state_next) + ' is missing -- a resumed run on another '
+                         'runner, or a cleaned scratch; this tick replays')
+    with open(state_next, encoding='utf-8') as fh:
+        staged = fh.read()
+    tmp = os.path.join(state_dir, 'state.json.tmp')
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        fh.write(staged)
+    os.replace(tmp, os.path.join(state_dir, 'state.json'))
+    ## The ledgers exist after every tick, empty or not: the node stages them
+    ## by name, and a quiet tick (nothing posted) has nothing to append.
+    for _f in ('alertlog.jsonl', 'ticks.jsonl'):
+        open(os.path.join(state_dir, _f), 'a', encoding='utf-8').close()
+    appended = 0
+    if alertlog_delta and os.path.exists(alertlog_delta):
+        with open(alertlog_delta, encoding='utf-8') as src:
+            delta = [ln for ln in src.read().split(chr(10)) if ln.strip()]
+        if delta:
+            with open(os.path.join(state_dir, 'alertlog.jsonl'), 'a', encoding='utf-8') as dst:
+                for ln in delta:
+                    dst.write(ln + chr(10))
+            appended = len(delta)
+    if tick_file and os.path.exists(tick_file):
+        with open(tick_file, encoding='utf-8') as src:
+            tick = src.read().strip()
+        if tick:
+            with open(os.path.join(state_dir, 'ticks.jsonl'), 'a', encoding='utf-8') as dst:
+                dst.write(tick + chr(10))
+    committed = False
+    if state_commit:
+        committed = _commit_push_state(state_dir, 'chore(prod-watch): watch tick, ' + str(appended) + ' alert(s)')
+    print(json.dumps({'committed': committed,
+                      'summary': 'state persisted (' + str(appended) + ' alert(s) logged)' + (', pushed' if committed else '')},
+                     ensure_ascii=False))
+
+## ─── Terminal refusal ───────────────────────────────────────────
+
+## A halt is a deliberate refusal to keep watching until an operator
+## acknowledges the leak that armed it: a typed terminal failure, never a
+## Python exception, so the run reads as a decision on every surface.
+fail watch_halted:
+  description: "the watchdog is halted until an operator acknowledges the leak that armed it"
+  code: PROD_WATCH_HALTED
+  message: "prod-watch refused to run — {{outputs.plan.halt_reason}}"
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow prod_watch:
+  entry: plan
+
+  ## The state (cursors, incidents, health + the ledgers) IS the product
+  ## and must persist in the workspace across runs — a run worktree would
+  ## isolate the writes and discard them at finalization. Never auto.
+  worktree: none
+
+  ## This bot never builds the target repo: it reads one JSON file and
+  ## talks to an observability stack. Realising the workspace's toolchain
+  ## would buy nothing and slow the tick.
+  repo_devbox: off
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "12m"
+    ## Belt only — the workflow has no LLM node to spend anything.
+    max_cost_usd: 0.5
+
+  plan -> watch_halted when halted
+  plan -> resolve_release with {
+    release: "{{outputs.plan.release}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    allow_private: "{{vars.allow_private_sources}}"
+  }
+
+  resolve_release -> poll_loki with {
+    grafana: "{{outputs.plan.grafana}}",
+    loki: "{{outputs.plan.loki}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    allow_private: "{{vars.allow_private_sources}}"
+  }
+
+  poll_loki -> poll_prom with {
+    grafana: "{{outputs.plan.grafana}}",
+    prometheus: "{{outputs.plan.prometheus}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    allow_private: "{{vars.allow_private_sources}}"
+  }
+
+  poll_prom -> probe_http with {
+    probes: "{{outputs.plan.probes}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    allow_private: "{{vars.allow_private_sources}}"
+  }
+
+  probe_http -> leak_scan with {
+    raw_file: "{{outputs.poll_loki.raw_file}}",
+    per_query: "{{outputs.poll_loki.per_query}}",
+    app: "{{outputs.plan.app}}",
+    scratch_dir: "{{vars.scratch_dir}}"
+  }
+
+  leak_scan -> decide with {
+    signals_file: "{{outputs.leak_scan.signals_file}}",
+    prom_results: "{{outputs.poll_prom.results}}",
+    http_results: "{{outputs.probe_http.results}}",
+    loki_ok: "{{outputs.poll_loki.ok}}",
+    loki_truncated: "{{outputs.poll_loki.truncated}}",
+    loki_errors: "{{outputs.poll_loki.errors}}",
+    loki_per_query: "{{outputs.poll_loki.per_query}}",
+    prom_ok: "{{outputs.poll_prom.ok}}",
+    prom_errors: "{{outputs.poll_prom.errors}}",
+    release: "{{outputs.resolve_release.release}}",
+    release_known: "{{outputs.resolve_release.release_known}}",
+    lanes: "{{outputs.plan.lanes}}",
+    app: "{{outputs.plan.app}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{vars.state_dir}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    renotify_hours: "{{vars.renotify_hours}}",
+    quiet_after_hours: "{{vars.quiet_after_hours}}",
+    forget_after_days: "{{vars.forget_after_days}}",
+    source_stale_hours: "{{vars.source_stale_hours}}",
+    max_alerts: "{{vars.max_alerts_per_run}}"
+  }
+
+  decide -> notify with {
+    alerts: "{{outputs.decide.alerts}}",
+    overflow_count: "{{outputs.decide.overflow_count}}",
+    stale_sources: "{{outputs.decide.stale_sources}}",
+    sinks: "{{outputs.plan.sinks}}",
+    labels: "{{outputs.plan.labels}}",
+    app: "{{outputs.plan.app}}",
+    release: "{{outputs.resolve_release.release}}",
+    release_known: "{{outputs.resolve_release.release_known}}",
+    dry_run: "{{vars.dry_run}}",
+    max_message_chars: "{{vars.max_message_chars}}"
+  }
+
+  ## Only a completed delivery (or a nothing-to-deliver tick) consumes
+  ## the staged state; dry-runs and partial deliveries keep the old
+  ## state so the SAME alerts recompute next tick (at-least-once).
+  notify -> done when not consume
+  notify -> commit_state when consume with {
+    state_next_file: "{{outputs.decide.state_next_file}}",
+    alertlog_file: "{{outputs.decide.alertlog_file}}",
+    tick_file: "{{outputs.decide.tick_file}}",
+    generation: "{{outputs.decide.generation}}",
+    state_commit: "{{vars.state_commit}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{vars.state_dir}}"
+  }
+  commit_state -> done

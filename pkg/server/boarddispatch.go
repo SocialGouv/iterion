@@ -1891,9 +1891,14 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	}
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
-		adm.rollback(s.logger)
-		// Every error out of Launch means no run was started — the class is
-		// decidable here, at the boundary, without reading the error's text.
+		// The fact travels on the error (RunPersistedError, or a queue
+		// publish that landed and then reported failure — the publisher
+		// leaves that doc flipped to a terminal `failed`): a run that
+		// exists or may be claimed keeps its metered slot. Only a run
+		// proven not to have started hands the slot back.
+		if !runview.RunMayHaveStarted(err) {
+			adm.rollback(s.logger)
+		}
 		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
 	runID := res.RunID

@@ -43,21 +43,24 @@ denial path is only the deliberate "this would exceed the cap" case.
 ## Which surfaces are gated
 
 Every launch a cloud instance performs passes `gateLaunch` with the
-identity of whoever is launching, meters one monthly run at step 5, and
-hands the slot back when the run service then refuses the launch (a
-sealing failure, a queue outage, a bot that does not compile — no run
-exists, so nothing was consumed):
+identity of whoever is launching and meters one monthly run at step 5.
+The slot goes back only when the refusal PROVES nothing started (a
+sealing failure, a bot that does not compile — no document, no queue
+message). When the error says a run may exist or a landed message may be
+claimed (a publish that reported failure after landing), the slot STAYS
+— refunding the unit of a real run is the under-count the gate exists to
+prevent (#1725, `runview.RunMayHaveStarted`):
 
 | Surface | Identity on the ctx | Gated | Metered |
 |---|---|---|---|
 | `POST /api/runs`, the studio, `iterion remote runs launch`, the MCP `remote_runs_launch` | the caller's | yes | yes, rolled back on a refused launch |
 | `POST /api/runs/{id}/resume`, the WS answer that resumes a run | the caller's | yes | yes |
-| Inbound webhooks, direct launch (`insertAndLaunchWebhook`) — including the merge-gate auto-fix and relaunch lanes, which reuse that tail | the token's synthetic `webhook` identity | yes | yes, rolled back on a refused launch and for the idempotency loser |
+| Inbound webhooks, direct launch (`insertAndLaunchWebhook`) — including the merge-gate auto-fix and relaunch lanes, which reuse that tail | the token's synthetic `webhook` identity | yes | yes — refunded when the refusal proves nothing started (and for the idempotency loser); kept on a landed-but-failed publish |
 | Inbound webhooks, **board mode** (the command creates a card; the dispatcher launches it) | the token's | pre-check only, at card creation | **no** — a card is not a run; the pre-check's slot is handed back at once and the dispatcher meters the launch when it claims the card |
-| **Board dispatcher** (`processBoardCard`) | `board-dispatcher` on the card's team | yes | yes, rolled back on a refused launch |
-| Retry sweeper (automatic resume of a `failed_resumable` run) | the run's owner | yes | yes, rolled back on a failed resume |
+| **Board dispatcher** (`processBoardCard`) | `board-dispatcher` on the card's team | yes | yes — refunded when the refusal proves nothing started; kept on a landed-but-failed publish |
+| Retry sweeper (automatic resume of a `failed_resumable` run) | the run's owner | yes | yes — refunded when the resume proves nothing started; kept on a landed-but-failed publish |
 | `POST /api/v1/triggers/emit` (custom event) | the caller's | pre-check only, per request | **no** — an emit is one EVENT and fans out to 0..N launches; the pre-check's slot is handed back at once and the spine meters each launch it performs |
-| Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes, rolled back on a refused launch |
+| Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes — refunded when the refusal proves nothing started; kept on a landed-but-failed publish |
 | `cloudsched` scheduled launches (`launchScheduledBot`) | `cloud-scheduler` on the schedule's team | yes | yes, rolled back on a refused launch |
 | Local mode (`iterion studio` / `iterion dispatch` with no identity store, the pipelines admission) | — | no gate exists | — |
 
