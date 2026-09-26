@@ -19,7 +19,7 @@ import (
 // in scope here. An unknown preset name returns a user-readable error
 // listing the available names, since this is a CLI argument mistake
 // the operator can correct.
-func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string) (map[string]any, error) {
+func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string, allowUnknown bool) (map[string]any, error) {
 	inputs := make(map[string]any)
 	if presetName != "" {
 		preset, ok := wf.Presets[presetName]
@@ -40,6 +40,18 @@ func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string) 
 	}
 	for k, v := range vars {
 		inputs[k] = v
+	}
+	// A --var that names no var of the workflow is refused, not dropped:
+	// the run would execute on defaults while the operator believes it was
+	// parameterised (#1757). The same refusal lives at the cloud chokepoint
+	// (pkg/runview) and again at the runner — one rule at every door, one
+	// helper. allowUnknown is the operator's explicit opt-out
+	// (--allow-unknown-inputs): the keys ride, said — forwarding an
+	// undeclared payload key to a subbot through {{input.*}} is their
+	// legitimate use (C149).
+	if unknown := ir.UnknownInputNames(wf, vars); len(unknown) > 0 && !allowUnknown {
+		return nil, fmt.Errorf("--var %s names no var of the workflow (declared: %s)",
+			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 	}
 	return inputs, nil
 }

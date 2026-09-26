@@ -480,6 +480,9 @@ func (r *EngineRunner) dispatchViaService(ctx context.Context, spec DispatchSpec
 		FilePath: r.workflowPath,
 		RunID:    spec.RunID,
 		Vars:     stringifyVars(spec.Vars),
+		// The daemon's own warn-and-proceed contract on unknown bot_args
+		// (loop.go): the launch proceeds, the warning already fired.
+		AllowUnknownInputs: true,
 		WorkDir:  spec.WorkspacePath,
 		DailyCap: spec.DailyCap,
 	}

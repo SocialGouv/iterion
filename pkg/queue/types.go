@@ -190,6 +190,13 @@ type RunMessage struct {
 	// pass instead of deleting still-declared files.
 	Contributions *Contributions `json:"contributions,omitempty"`
 	Vars          map[string]any `json:"vars,omitempty"`
+	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
+	// input check (CLI --allow-unknown-inputs, the dispatcher's warn-and-
+	// proceed contract): inputs that name no declared var ride the launch
+	// instead of refusing it. It rides the wire because the runner
+	// re-applies the check before engine.Run — a queued run cannot skip it
+	// by having been admitted on an older build. False = the check runs.
+	AllowUnknownInputs bool `json:"allow_unknown_inputs,omitempty"`
 	SecretsRef    string         `json:"secrets_ref,omitempty"`
 	TimeoutSec    int            `json:"timeout_sec,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,

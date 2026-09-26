@@ -2168,6 +2168,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// One inputs map shared by the run doc and the RunMessage, so the
 	// credential-derived topology injection below reaches both carriers.
 	inputs := varsAsAny(spec.Vars)
+	// The #1757 input check, cloud side: refused HERE, synchronously —
+	// before a run doc is persisted or anything is queued — so the
+	// operator's 202 is never a lie about a run that would only fail (or
+	// worse, run on defaults) at runner pickup. The runner re-applies the
+	// check on its side; spec.AllowUnknownInputs is the operator's opt-out
+	// (--allow-unknown-inputs, the dispatcher's warn-and-proceed contract).
+	if unknown := ir.UnknownInputNames(wf, inputs); len(unknown) > 0 && !spec.AllowUnknownInputs {
+		return 0, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
+			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+	}
 	r := &store.Run{
 		FormatVersion: store.RunFormatVersion,
 		ID:            runID,
@@ -2390,6 +2400,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		ExecutionContext: r.ExecutionContext.Clone(),
 		IRCompiled:       body,
 		Vars:             inputs,
+		AllowUnknownInputs: spec.AllowUnknownInputs,
 		SecretsRef:       creds.secretsRef,
 		// The stored-bundle ref THREADED from the launch surface's own
 		// resolution (never re-fetched here — a push racing the launch must

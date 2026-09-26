@@ -2524,7 +2524,24 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if msg.Resume != nil {
 		runErr = engine.ResumeWithHostInputs(ctx, msg.RunID, msg.Resume.Answers, msg.Resume.HostInputs)
 	} else {
-		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+		// The #1757 input check, runner side: the wire check for the launch
+		// the publisher admitted — an old queued message, or one admitted
+		// before this check existed, cannot skip it by being old. Late but
+		// effective: the run fails naming the key, never runs on defaults
+		// as if parameterised. msg.AllowUnknownInputs is the operator's
+		// opt-out riding the wire (CLI --allow-unknown-inputs, the
+		// dispatcher's warn-and-proceed contract).
+		if unknown := ir.UnknownInputNames(wf, msg.Vars); len(unknown) > 0 && !msg.AllowUnknownInputs {
+			runErr = fmt.Errorf("launch input %s names no var of the workflow (declared: %s) — re-launch, or pass allow_unknown_inputs to ride it",
+				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+			runLogger.Error("%s", runErr.Error())
+		} else {
+			if len(unknown) > 0 {
+				runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
+					strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+			}
+			runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+		}
 	}
 	if runErr == nil {
 		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)

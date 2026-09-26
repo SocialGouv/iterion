@@ -1859,6 +1859,9 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	}
 	spec := runview.LaunchSpec{
 		Vars:            lc.Vars,
+		// Same warn-and-proceed contract as pipeline admission: the
+		// unknown-key warning was emitted upstream, the launch proceeds.
+		AllowUnknownInputs: true,
 		RepoURL:         lc.RepoURL,
 		RepoRef:         lc.RepoRef,
 		KeyOverrides:    lc.KeyOverrides,
