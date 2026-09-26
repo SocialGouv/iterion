@@ -34,19 +34,24 @@ import (
 
 // RunOptions holds the configuration for the run command.
 type RunOptions struct {
-	File          string               // .bot file path or .botz bundle path
-	Recipe        string               // recipe JSON file path (alternative to File)
-	BundleDir     string               // the bundle File belongs to when it is not at its main.bot path (a studio buffer materialised under the store): the detached runner hands over both, so the subprocess compiles what the pre-flight admitted
-	Vars          map[string]string    // --var key=value overrides
-	Preset        string               // --preset <name>: applies an in-source named preset before --var
-	Skills        []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
-	RunID         string               // explicit run ID (auto-generated if empty)
-	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
-	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
-	Timeout       time.Duration        // maximum run duration (0 = no limit)
-	LogLevel      string               // log level (default: "info", env: ITERION_LOG_LEVEL)
-	NoInteractive bool                 // disable interactive TTY prompting on human pause
-	Executor      runtime.NodeExecutor // pluggable executor (nil = stub)
+	File      string            // .bot file path or .botz bundle path
+	Recipe    string            // recipe JSON file path (alternative to File)
+	BundleDir string            // the bundle File belongs to when it is not at its main.bot path (a studio buffer materialised under the store): the detached runner hands over both, so the subprocess compiles what the pre-flight admitted
+	Vars      map[string]string // --var key=value overrides
+	// AllowUnknownInputs passes --allow-unknown-inputs: an input that names
+	// no declared var rides the launch instead of refusing it (#1757) — the
+	// forwarding channel a parent's undeclared payload key rides to a subbot
+	// ({{input.extra}} in a node's `with:`) is its legitimate user.
+	AllowUnknownInputs bool
+	Preset             string               // --preset <name>: applies an in-source named preset before --var
+	Skills             []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
+	RunID              string               // explicit run ID (auto-generated if empty)
+	Source             *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
+	StoreDir           string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
+	Timeout            time.Duration        // maximum run duration (0 = no limit)
+	LogLevel           string               // log level (default: "info", env: ITERION_LOG_LEVEL)
+	NoInteractive      bool                 // disable interactive TTY prompting on human pause
+	Executor           runtime.NodeExecutor // pluggable executor (nil = stub)
 	// Background marks this invocation as a managed-runner subprocess
 	// spawned by the studio server. The CLI writes a .pid file so the
 	// server can detect liveness across its own restart, and forces
@@ -390,7 +395,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// backstop and logs any malformed preset files.
 	runtime.MergeBundlePresets(wf, bundleHandle, nil)
 
-	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars)
+	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars, opts.AllowUnknownInputs)
 	if err != nil {
 		return err
 	}

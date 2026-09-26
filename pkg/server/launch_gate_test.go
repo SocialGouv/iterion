@@ -368,3 +368,28 @@ func TestGateLaunch_CostCapAcrossTeams(t *testing.T) {
 		t.Fatalf("denial = %+v, want %s (org-keyed spend must trip the org cap)", d, denyMonthlyCostCap)
 	}
 }
+
+// TestGateLaunch_RateTokenRefundedOnRollback pins #1726: a launch the
+// caller refuses after the gate gives the org's per-minute token back.
+// Measured defect: two malformed bodies left the bucket empty and the
+// FIRST well-formed launch was 429'd with nothing running.
+func TestGateLaunch_RateTokenRefundedOnRollback(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.orgUsage = orgusage.NewMemoryCounter()
+	s.authLimiter = newAuthRateLimiter()
+	ctx := seedGate(t, s, gateSpec{id: "t1", launchRatePerMin: 1})
+
+	adm, d := s.gateLaunch(ctx)
+	if d != nil {
+		t.Fatalf("first launch denied: %+v", d)
+	}
+	if adm == nil || adm.rateKey == "" {
+		t.Fatalf("admission = %+v, want it to carry the rate bucket it consumed", adm)
+	}
+	adm.rollback(nil)
+
+	// The bucket has its token back: the next launch passes the rate gate.
+	if _, d := s.gateLaunch(ctx); d != nil {
+		t.Fatalf("launch after a rolled-back admission denied: %+v — the rate token was not refunded", d)
+	}
+}

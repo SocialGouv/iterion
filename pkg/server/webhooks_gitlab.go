@@ -1278,12 +1278,17 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 // stamps the BotID for the publisher's credential-resolution path.
 func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy) runview.LaunchSpec {
 	return runview.LaunchSpec{
-		FilePath: path,
-		Source:   source,
-		BotID:    sb.BotID,
-		Vars:     sb.Vars,
-		RepoURL:  sb.RepoURL,
-		RepoRef:  sb.RepoRef,
+		// Tenant-configured vars ride blind (#1725's opt-out): the schedule
+		// editor owns them, the runview refusal is for operator-typed
+		// launches, and this warn-and-proceed keeps every scheduled bot
+		// launchable whether or not it declares each key.
+		AllowUnknownInputs: true,
+		FilePath:           path,
+		Source:             source,
+		BotID:              sb.BotID,
+		Vars:               sb.Vars,
+		RepoURL:            sb.RepoURL,
+		RepoRef:            sb.RepoRef,
 		// Resolved by the caller across the schedule row, the bot manifest
 		// and the machine default — the schedule is the layer an operator
 		// reaches for when one bot's cadence needs different retry limits
@@ -1329,6 +1334,13 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 		RepoURL:     repoURL,
 		RepoRef:     repoRef,
 		ProjectPath: projectPath,
+		// This lane injects server-computed keys blindly (forge_publish_*,
+		// canonical PR vars — the contract forge_publish.go documents), so
+		// the #1757 unknown-input refusal does not apply to it: a launched
+		// bot that declares none of them is legitimate. The opt-out still
+		// says what rode (runview warns), and a TYPO in the webhook's own
+		// configured vars is caught by the config render upstream.
+		AllowUnknownInputs: true,
 		// Stamped onto the run document, which is what a resume, a
 		// usage-window retry and a forked child read their credentials
 		// from — this launch's verdict has to outlive this launch.
