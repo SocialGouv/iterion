@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -179,18 +181,44 @@ func (e *Engine) resourceDirForRun() string {
 	return bundleResourceDir(e.bundle, e.filePath)
 }
 
+// noopChildCleanup is the provisioning cleanup that owns nothing.
+var noopChildCleanup = func() {}
+
+// childDevboxStagingPath is where THIS provisioning stages a child's
+// devbox install: the run id keeps it readable, the random suffix makes it
+// this provisioning's alone. Keyed by the run id alone, two stagers of one
+// run shared one directory and whichever finished first deleted the
+// other's install while it was still in use (#1787 — measured on the
+// runtime tests: every process staging for the run id "child" raced on
+// /tmp/iterion-devbox/child-<sha256("child")>). The path sits in the
+// sandbox's own /tmp: the install and the cleanup both run through the
+// child's handle.
+func childDevboxStagingPath(runID string) (string, error) {
+	var nonce [8]byte
+	if _, err := cryptorand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("runtime: stage child devbox: %w", err)
+	}
+	sum := sha256.Sum256([]byte(runID))
+	return fmt.Sprintf("/tmp/iterion-devbox/child-%x-%s", sum[:6], hex.EncodeToString(nonce[:])), nil
+}
+
 // Child provisioning is staged at a unique path, then attached to the child's
 // handle only. Neither the parent's botDevboxDir nor its environment changes.
 func (e *Engine) provisionSharedChildDevbox(ctx context.Context, runID string, inherited sandbox.Run) (sandbox.Run, func()) {
 	dir := e.resourceDirForRun()
 	config := devboxConfigIn(dir, "child bundle", e.logger)
-	noop := func() {}
 	if config == "" {
-		return inherited, noop
+		return inherited, noopChildCleanup
 	}
 	inline, err := readInlineDevbox(dir)
-	staged := fmt.Sprintf("/tmp/iterion-devbox/child-%x", sha256.Sum256([]byte(runID)))
-	bin := path.Join(staged, devboxProfileBin)
+	staged, stageErr := childDevboxStagingPath(runID)
+	if stageErr != nil {
+		err = errors.Join(err, stageErr)
+	}
+	var bin string
+	if staged != "" {
+		bin = path.Join(staged, devboxProfileBin)
+	}
 	if err == nil {
 		script := devboxInstallSnippet([]devboxProject{{label: "child bot", hostConfig: config, dir: staged, inline: inline}}) + "\ntest -d " + shellquote.Quote(bin)
 		installCtx, cancel := context.WithTimeout(ctx, hostDevboxInstallTimeout)
@@ -201,11 +229,14 @@ func (e *Engine) provisionSharedChildDevbox(ctx context.Context, runID string, i
 			err = fmt.Errorf("child devbox install exit %d: %s", res.ExitCode, res.Stderr)
 		}
 	}
-	cleanup := func() {
-		cctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
-		defer cancel()
-		if res, err := inherited.Exec(cctx, []string{"rm", "-rf", staged}, sandbox.ExecOpts{}); (err != nil || res.ExitCode != 0) && e.logger != nil {
-			e.logger.Warn("runtime: child devbox cleanup %s: %v (exit %d)", staged, err, res.ExitCode)
+	cleanup := noopChildCleanup
+	if staged != "" {
+		cleanup = func() {
+			cctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
+			defer cancel()
+			if res, err := inherited.Exec(cctx, []string{"rm", "-rf", staged}, sandbox.ExecOpts{}); (err != nil || res.ExitCode != 0) && e.logger != nil {
+				e.logger.Warn("runtime: child devbox cleanup %s: %v (exit %d)", staged, err, res.ExitCode)
+			}
 		}
 	}
 	data := map[string]any{"target": "shared_sandbox", "sources": []string{"bot"}, "configs": []string{config}}
