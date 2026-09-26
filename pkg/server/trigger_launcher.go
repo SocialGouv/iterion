@@ -72,6 +72,11 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		SecretOverrides: plan.SecretOverrides,
 		SourceRef:       plan.SourceRef,
 		RetryPolicy:     l.retryPolicyFor(ctx, plan),
+		// The spine's vars are subscription-computed and may blind-carry
+		// keys (an ArgsVar payload, forge plumbing) the launched bot does
+		// not declare — the #1725 opt-out is the wiring for that (#1872
+		// review). Operator-typed launches keep the default refusal.
+		AllowUnknownInputs: true,
 	}
 	if l.resolveBot == nil {
 		return "", errors.New("trigger: no bot resolver wired for direct launch")

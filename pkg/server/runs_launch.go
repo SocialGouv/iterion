@@ -58,6 +58,11 @@ type launchRunRequest struct {
 	// filesystem; FilePath is then advisory (used for display + as the
 	// AST parserPath). When both are set, Source wins.
 	Source string `json:"source,omitempty"`
+	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
+	// input check (--allow-unknown-inputs' API twin): an input naming no
+	// declared var rides the launch instead of refusing it. Absent = the
+	// refusal, the default the endpoint exists to give.
+	AllowUnknownInputs bool `json:"allow_unknown_inputs,omitempty"`
 	// RunSource is typed launch provenance. Deliberately not named `source`:
 	// that wire key already carries inline workflow DSL. The public endpoint
 	// admits only studio_chat; dispatcher/schedule provenance is stamped by
@@ -598,26 +603,27 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	retryTeamID := retryID.TeamID
 
 	spec := runview.LaunchSpec{
-		FilePath:          absPath,
-		Source:            req.Source,
-		BotID:             botID,
-		SourceRef:         runSource,
-		RunID:             req.RunID,
-		Vars:              req.Vars,
-		Preset:            req.Preset,
-		Timeout:           timeout,
-		MergeInto:         req.MergeInto,
-		BranchName:        req.BranchName,
-		MergeStrategy:     store.MergeStrategy(req.MergeStrategy),
-		AutoMerge:         req.AutoMerge,
-		AttachmentPromote: promote,
-		Backend:           req.Backend,
-		Compress:          req.Compress,
-		AutoMemory:        req.AutoMemory,
-		LoopBudgetGuard:   req.LoopBudgetGuard,
-		Supervisors:       req.Supervisors,
-		Permission:        req.Permission,
-		ReviewMode:        req.ReviewMode,
+		FilePath:           absPath,
+		Source:             req.Source,
+		BotID:              botID,
+		SourceRef:          runSource,
+		RunID:              req.RunID,
+		Vars:               req.Vars,
+		Preset:             req.Preset,
+		AllowUnknownInputs: req.AllowUnknownInputs,
+		Timeout:            timeout,
+		MergeInto:          req.MergeInto,
+		BranchName:         req.BranchName,
+		MergeStrategy:      store.MergeStrategy(req.MergeStrategy),
+		AutoMerge:          req.AutoMerge,
+		AttachmentPromote:  promote,
+		Backend:            req.Backend,
+		Compress:           req.Compress,
+		AutoMemory:         req.AutoMemory,
+		LoopBudgetGuard:    req.LoopBudgetGuard,
+		Supervisors:        req.Supervisors,
+		Permission:         req.Permission,
+		ReviewMode:         req.ReviewMode,
 		// The manual path resolves the retry chain like every automated
 		// one. Skipping it here would let a bot declaring
 		// `retry: usage_window: off` be auto-retried anyway whenever a
