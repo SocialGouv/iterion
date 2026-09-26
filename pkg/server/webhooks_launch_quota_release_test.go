@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -75,6 +76,24 @@ func TestLaunchWebhookTarget_ReleasesTheMeteredSlotWhenTheLaunchFails(t *testing
 		}
 		if u.Runs != 0 {
 			t.Fatalf("monthly runs = %d after a launch that created no run, want 0 — an attacker who can make the launch fail repeatably would otherwise exhaust the org's monthly quota one delivery at a time", u.Runs)
+		}
+	})
+
+	// The keep-direction (#1725): a publish that LANDED and then reported
+	// failure leaves a run the runner may claim — the slot stays. A plain
+	// failure above still refunds; the error's own fact decides.
+	t.Run("a landed-but-failed publish keeps the slot", func(t *testing.T) {
+		s, counter, ctx := newCase(t, &runview.QueueUnavailableError{Cause: errors.New("PROBE: ack timeout after the message landed")})
+		res := run(t, s, ctx, "idem-queue")
+		if res.Status != webhooks.StatusLaunchError {
+			t.Fatalf("status = %q, want %q (res: %+v)", res.Status, webhooks.StatusLaunchError, res)
+		}
+		u, err := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Runs != 1 {
+			t.Fatalf("monthly runs = %d after a publish that landed, want 1 — the slot of a run the runner may be executing must not be handed back", u.Runs)
 		}
 	})
 

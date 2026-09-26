@@ -18,9 +18,9 @@ import "errors"
 // and every metering surface reads it with errors.As.
 //
 // Three sibling surfaces (the trigger spine, the board dispatcher, the retry
-// sweeper) still infer it, and infer it wrong — they refund on any error, on
-// the strength of a comment saying "every error out of Launch means no run
-// started". Filed separately; they adopt this fact in their own change.
+// sweeper) used to infer it, and infer it wrong — they refunded on any error,
+// on the strength of a comment saying "every error out of Launch means no run
+// started". They now read the same fact through RunMayHaveStarted (#1725).
 //
 // Absence is the claim "this call started nothing", so a new error return that
 // follows the creation of a run, or a publish that may have landed, has to
