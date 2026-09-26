@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.202.3](https://github.com/SocialGouv/iterion/compare/v3.202.2...v3.202.3) (2026-09-26)
+
+### Bug Fixes
+
+* **server:** the metering surfaces read the slot's fact off the error, not off err != nil ([#1875](https://github.com/SocialGouv/iterion/issues/1875)) ([6414f2a](https://github.com/SocialGouv/iterion/commit/6414f2acc695f437fb018cb4fa1f494fef5e12f8)), closes [#1725](https://github.com/SocialGouv/iterion/issues/1725), references [#1725](https://github.com/SocialGouv/iterion/issues/1725)
+
+    <details><summary>why</summary>
+
+    Three sibling surfaces (the trigger spine, the board dispatcher, the retry sweeper) refunded the metered slot on ANY error out of Launch/Resume, on the strength of a comment saying "every error means no run started" — and the repo already knew that sentence was false (RunPersistedError, #1638's own aftermath). The ticket measured it: a publish that reports failure AFTER the message landed leaves a run the runner may claim, and the refund under-counts it.
+
+    </details>
+
 ## [3.202.2](https://github.com/SocialGouv/iterion/compare/v3.202.1...v3.202.2) (2026-09-26)
 
 ### Bug Fixes
