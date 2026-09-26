@@ -1,8 +1,10 @@
 {
   "mcpServers": {
-    "iterion": {
+    "dev-iterion": {
       "command": "iterion",
-      "args": ["mcp"]
+      "args": [
+        "mcp"
+      ]
     },
     "sentry": {
       "command": "npx",
