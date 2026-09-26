@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "iterion-mcp": {
+    "dev-iterion": {
       "command": "iterion",
       "args": [
         "mcp"
