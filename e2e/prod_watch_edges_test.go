@@ -2566,6 +2566,10 @@ func TestProdWatch_NoRawValueEscapesWhateverSurroundsIt(t *testing.T) {
 		{"CREATE USER app IDENTIFIED BY 'a\\bc' ok", "a\\bc"},
 		{"job.token=12345678 Zq7h9xAb3cZq", "Zq7h9xAb3cZq"},
 		{"mountain_pass=closed_for_winter Zq7h9xAb3cZq", "Zq7h9xAb3cZq"},
+		// A value ending in an escaped backslash before its closing quote:
+		// the closed arm closes on the pair, the EOL arm takes whole values.
+		{`password="tr0ub4dor&3\" rotated`, `tr0ub4dor&3\`},
+		{`password='abcd\" ok`, `abcd\"`},
 		// A credential riding behind a path-shaped head is scanned; an
 		// escaped quote inside a never-closed value (after a key, a flag,
 		// in SQL) no longer defeats the arms.
