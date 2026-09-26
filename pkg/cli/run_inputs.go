@@ -50,7 +50,7 @@ func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string, 
 	// undeclared payload key to a subbot through {{input.*}} is their
 	// legitimate use (C149).
 	if unknown := ir.UnknownInputNames(wf, vars); len(unknown) > 0 && !allowUnknown {
-		return nil, fmt.Errorf("--var %s names no var of the workflow (declared: %s)",
+		return nil, fmt.Errorf("--var %q, which names no var of the workflow (declared: %s)",
 			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 	}
 	return inputs, nil
