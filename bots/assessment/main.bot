@@ -3359,9 +3359,10 @@ tool contract_lint:
         out["refusals"].append({"where": where, "why": why})
 
     tree_baseline = {{input.tree_baseline}}
+    outcomes_rel = os.path.join(os.path.dirname(plan_rel), "outcomes.json")
     tracked_now = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "diff", "--no-ext-diff",
-                                  "--binary", "HEAD", "--", ".", ":(exclude).modernize/plan.yaml",
-                                  ":(exclude).modernize/outcomes.json"],
+                                  "--binary", "HEAD", "--", ".", ":(exclude)" + plan_rel,
+                                  ":(exclude)" + outcomes_rel],
                                  capture_output=True, timeout=600,
                                  env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
     if tracked_now.returncode != 0:
@@ -3386,10 +3387,12 @@ tool contract_lint:
             except OSError:
                 sealed_now.update(b'MISSING')
     if tree_baseline != sealed_now.hexdigest():
-        refuse("TREE_REWRITTEN", "the source tree changed between the render and this lint: the drafting "
-               "step is licensed to write the contract and the outcomes file, nothing else — a source "
-               "edit in that window became the gate probes' accepted baseline, and a gate green on a "
-               "rewritten tree is green whatever the lot does. Restore the tree the render measured.")
+        refuse("TREE_REWRITTEN", "the source tree changed between the render and this lint (sealed "
+               "%s, found %s): the drafting step is licensed to write the contract and the outcomes "
+               "file, nothing else — a source edit in that window became the gate probes' accepted "
+               "baseline, and a gate green on a rewritten tree is green whatever the lot does. "
+               "Restore the tree the render measured."
+               % (tree_baseline, sealed_now.hexdigest()))
     ## THE RENDER'S HAND, VERIFIED. Between the render and this lint, the
     ## drafting agent holds write tools: the held judgement and the state
     ## document are what this validation reasons over, and a hand on them in
