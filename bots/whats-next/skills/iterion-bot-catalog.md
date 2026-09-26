@@ -98,6 +98,7 @@ Walk top-to-bottom; first match wins.
 | "is ADR-NNN still right?", "re-challenge that decision" — human-gated, ends in keep/change/addendum | `adr-rechallenge` |
 | "set up a reproducible toolchain", "we need a devbox.json" | `devbox-setup` |
 | "watch these feeds / releases and digest them for us" — recurring veille | `feed-watch` |
+| "is production healthy right now, and what just changed?" — one deployed app's logs, metrics and health endpoints on a schedule, alerts to chat, git-backed incident state | `prod-watch` |
 | "give me a live URL for this branch", "a real review environment" | `review-env` |
 | architectural choice, hiring, prioritisation meeting, alignment | `""` |
 | operator is vague or it's cross-cutting | `""` |
@@ -369,6 +370,7 @@ dispatcher routes on it), never the persona.
 | Morphy | `modernize` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
+| Argus | `prod-watch` |
 | Prody | `product-docs` |
 | Revi (converse) | `revi-converse` |
 | Envy | `review-env` |
@@ -1082,6 +1084,53 @@ human / subbot only — no API keys, runs in seconds.
   produced-elements aggregation (image/audio preview) across the whole run
   tree. Not a production workflow.
 - **Path**: `examples/pipeline-board-demo/main.bot`
+
+### `prod-watch` — Argus
+
+Production watchdog for ONE deployed application (a scheduled tick,
+zero LLM in this slice — the compiled workflow contains no agent or
+judge node, so a tick can neither spend a token nor show a log line to
+a model). One deterministic run mode over a git-versioned state in the
+target workspace (an ops repository, never the application's own):
+
+- Loki through the Grafana datasource proxy: the configured error query
+  and a full leak sweep, paged FORWARD over a frozen window with an
+  ingestion lag, a persisted cursor and an explicit "partial coverage"
+  flag whenever the window was truncated or a query failed.
+- Prometheus probes through the same proxy, each result typed
+  healthy | breached | no_data | error — an absent metric is never read
+  as a healthy one.
+- The application's own health URLs.
+- A redaction scan that is the ONLY reader of the raw lines: secrets,
+  JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
+  (Luhn), emails and phone numbers are replaced before anything is
+  derived; error lines are fingerprinted into templates; raw values
+  never reach a node output, an artifact, a checkpoint or an error.
+- An incident lifecycle that runs EVERY tick: new / escalated /
+  reminder / not-observed, source-health staleness, a per-tick cap
+  with an explicit overflow, and a dead lane that never counts as an
+  absence of observation.
+- Deterministic delivery to Mattermost/Slack incoming webhooks with
+  per-sink severity thresholds and required/optional sinks; the state
+  advances only after delivery (at-least-once, never a silent loss).
+
+Universal by design: no host, namespace, metric name, language or
+channel is baked in — everything comes from the workspace config
+(prod-watch.json) plus the `webhooks` and `grafana_token` secrets.
+Requires python3 (stdlib only) on the execution host.
+
+- **Use when**:
+  Use to watch ONE production (or production-like) deployment of an
+  application from its logs (Loki), metrics (Prometheus) and health
+  endpoints, with deterministic alerting to chat and a git-backed
+  incident state — the "is prod healthy, and what just changed" tick.
+  Requires the target workspace (an ops repo) to carry a prod-watch.json
+  (see skills/argus-config.md) and a Grafana service-account token. Not a
+  vulnerability watch (use vuln-watch), not an editorial digest (use
+  feed-watch), not the instrumentation of the application itself (use
+  instrument); it never edits code.
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/prod-watch/main.bot`
 
 ### `product-docs` — Prody
 

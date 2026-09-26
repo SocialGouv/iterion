@@ -1,0 +1,83 @@
+name: prod-watch
+display_name: Argus
+icon: 👁️
+version: 0.1.0
+## 0.1.0 — first slice: the deterministic, zero-LLM watch tick (Loki +
+## Prometheus through the Grafana proxy, the app's own health probes, the
+## redaction scan, the incident lifecycle, webhook delivery, git-backed
+## state). The leak policy with its circuit-breaker, the analysis agent,
+## Telegram, the forge issue reporter, the daily digest and the session
+## mode are the next slices of the same epic.
+description: |
+  Production watchdog for ONE deployed application (a scheduled tick,
+  zero LLM in this slice — the compiled workflow contains no agent or
+  judge node, so a tick can neither spend a token nor show a log line to
+  a model). One deterministic run mode over a git-versioned state in the
+  target workspace (an ops repository, never the application's own):
+
+  - Loki through the Grafana datasource proxy: the configured error query
+    and a full leak sweep, paged FORWARD over a frozen window with an
+    ingestion lag, a persisted cursor and an explicit "partial coverage"
+    flag whenever the window was truncated or a query failed.
+  - Prometheus probes through the same proxy, each result typed
+    healthy | breached | no_data | error — an absent metric is never read
+    as a healthy one.
+  - The application's own health URLs.
+  - A redaction scan that is the ONLY reader of the raw lines: secrets,
+    JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
+    (Luhn), emails and phone numbers are replaced before anything is
+    derived; error lines are fingerprinted into templates; raw values
+    never reach a node output, an artifact, a checkpoint or an error.
+  - An incident lifecycle that runs EVERY tick: new / escalated /
+    reminder / not-observed, source-health staleness, a per-tick cap
+    with an explicit overflow, and a dead lane that never counts as an
+    absence of observation.
+  - Deterministic delivery to Mattermost/Slack incoming webhooks with
+    per-sink severity thresholds and required/optional sinks; the state
+    advances only after delivery (at-least-once, never a silent loss).
+
+  Universal by design: no host, namespace, metric name, language or
+  channel is baked in — everything comes from the workspace config
+  (prod-watch.json) plus the `webhooks` and `grafana_token` secrets.
+  Requires python3 (stdlib only) on the execution host.
+when_to_use: |
+  Use to watch ONE production (or production-like) deployment of an
+  application from its logs (Loki), metrics (Prometheus) and health
+  endpoints, with deterministic alerting to chat and a git-backed
+  incident state — the "is prod healthy, and what just changed" tick.
+  Requires the target workspace (an ops repo) to carry a prod-watch.json
+  (see skills/argus-config.md) and a Grafana service-account token. Not a
+  vulnerability watch (use vuln-watch), not an editorial digest (use
+  feed-watch), not the instrumentation of the application itself (use
+  instrument); it never edits code.
+author: SocialGouv (devthejo) — bots/prod-watch/main.bot
+schema_version: 1
+
+invocations:
+  ## The idle-profile tick: poll the lanes, run the incident lifecycle,
+  ## deliver, commit the state. Zero LLM.
+  - kind: schedule
+    mode: direct
+    context_vars: { mode: watch }
+    schedule: { suggested_cron: "*/30 * * * *", default_vars: { state_commit: "true" } }
+
+## A watch tick is a perishable observation: one that died on a provider
+## quota window must NOT come back hours later carrying stale signals —
+## the next tick produces a fresh one. (This slice has no LLM node; the
+## setting is declared now so the analysis slice inherits it.)
+retry:
+  usage_window: off
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [mode, dry_run]
+  hidden: [scratch_dir]
+
+## Profile 2 (`dsl: 2`) and the typed `fail` node exist since 3.141.0; the
+## floor is the release the bot was authored and verified against, not a
+## named engine feature. A runner older than this release refuses the
+## bundle at admission instead of failing mid-run.
+requires:
+  iterion: ">= 3.192.0"
