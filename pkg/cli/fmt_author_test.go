@@ -649,19 +649,26 @@ func TestFmtToRefusesADestinationThatIsNotAFile(t *testing.T) {
 	}
 }
 
-// A document whose .bot name fmt would not read back — `UPPER.BOT.YAML`
-// stands for `UPPER.BOT`, and a workflow file's suffix is `.bot`, lower-case
-// — is refused before anything is written: a .bot only its launcher reads
-// is no twin.
-func TestFmtToBotRefusesADestinationFmtWouldNotRead(t *testing.T) {
+// The .bot twin's name reads back everywhere the .bot is read: the workflow
+// file suffix is case-folded (one rule with bundle.Detect, #1762), so
+// `UPPER.BOT.YAML` converts to `UPPER.BOT`, and the file fmt writes is one
+// fmt, the walks and `--to yaml` all read.
+func TestFmtToBotWritesADestinationFmtReadsBack(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "u/UPPER.BOT.YAML", authorHelloDoc)
 	jp, _ := jsonPrinter()
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); !errors.Is(err, ErrFmtToDestination) || !strings.Contains(err.Error(), "u/UPPER.BOT") {
-		t.Fatalf("--to bot on UPPER.BOT.YAML: %v, want ErrFmtToDestination naming the .bot", err)
+	res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	if err != nil {
+		t.Fatalf("--to bot on UPPER.BOT.YAML: %v, want the conversion to UPPER.BOT", err)
 	}
-	if _, err := os.Stat("u/UPPER.BOT"); err == nil {
-		t.Fatal("a .bot fmt does not read back was written")
+	if len(res.Files) != 1 || res.Files[0].Path != "u/UPPER.BOT" || !res.Files[0].Written {
+		t.Fatalf("the .bot was not written under its own name: %+v", res.Files)
+	}
+	if _, err := os.Stat("u/UPPER.BOT"); err != nil {
+		t.Fatalf("UPPER.BOT not on disk: %v", err)
+	}
+	if _, err := RunFmt(FmtOptions{Paths: []string{"u/UPPER.BOT"}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("--to yaml refuses the UPPER.BOT fmt wrote: %v", err)
 	}
 }
 

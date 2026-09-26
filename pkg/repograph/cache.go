@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+
 	"github.com/SocialGouv/iterion/internal/treeskip"
 )
 
@@ -84,8 +86,11 @@ func save(root string, g *Graph) error {
 // are not source files anyone would think to list: `CompileWorkflowPath`
 // reads a bundle's `manifest.yaml` and probes its `.mcp.json`.
 func fingerprinted(name string) bool {
+	// The `.bot` door folds its case (#1762): a builder that reads
+	// RUN.BOT must fingerprint it, or the cache reports "current" for a
+	// tree that changed.
 	if strings.HasSuffix(name, ".go") || strings.HasSuffix(name, ".md") ||
-		strings.HasSuffix(name, ".bot") {
+		workflowfile.IsWorkflowFile(name) {
 		return true
 	}
 	return name == "go.mod" || name == "manifest.yaml" || name == ".mcp.json"

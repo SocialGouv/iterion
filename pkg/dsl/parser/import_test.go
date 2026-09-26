@@ -100,6 +100,20 @@ func TestAnImportPathIsHeldToItsRules(t *testing.T) {
 	if why := ImportPathError("x/../y.bot"); !strings.Contains(why, "..") {
 		t.Fatalf("`..` not named: %q", why)
 	}
+	// The fragment door folds its case (#1762), one rule with bundle.Detect:
+	// a fragment the launcher takes by name is one the import takes too.
+	res := Parse("x.bot", "dsl: 2\nimport \"lib/X.BOT\"\nagent a:\n  description: \"d\"\n")
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagBadImportPath {
+			t.Fatalf("an upper-case fragment refused where the launcher takes it: %v", d)
+		}
+	}
+	if len(res.File.Imports) != 1 {
+		t.Fatalf("imports = %v, want the upper-case fragment recorded", res.File.Imports)
+	}
+	if why := ImportPathError("lib/X.BOT"); why != "" {
+		t.Fatalf("an upper-case fragment refused: %s", why)
+	}
 }
 
 // `import` is a keyword like `dsl`: a node, a schema field or a property may
