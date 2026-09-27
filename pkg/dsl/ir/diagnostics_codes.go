@@ -81,6 +81,12 @@ const (
 	// Review-gate diagnostics (interaction: review).
 	DiagReviewNeedsWorktree DiagCode = "C100" // interaction: review without worktree: auto — nothing to merge (error)
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
+	// C156 is allocated from the free C156-C159 band: C100/C101 above and the
+	// enum-value errors around them leave no contiguous room. Same shape as
+	// C142 (worktree:): an unknown value used to read as the DEFAULT
+	// (human_required / squash), silently replacing the author's explicit
+	// choice — refused at compile, the IR keeps the fail-safe default.
+	DiagInvalidReviewGateValue DiagCode = "C156" // review posture not one of human_required|agent_verdict_ok, or merge_strategy not one of squash|merge (error)
 
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)

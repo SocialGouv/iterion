@@ -51,6 +51,10 @@ var compileProbes = map[string]map[string]string{
 	"secret": {
 		"as": "secrets:\n  s:\n    as: %s\nagent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  a -> done\n",
 	},
+	"human": {
+		"posture":        "schema v:\n  decision: string\nhuman a:\n  interaction: review\n  model: \"m\"\n  output: v\n  posture: %s\nworkflow w:\n  entry: a\n  worktree: auto\n  a -> done\n",
+		"merge_strategy": "schema v:\n  decision: string\nhuman a:\n  interaction: review\n  model: \"m\"\n  output: v\n  merge_strategy: %s\nworkflow w:\n  entry: a\n  worktree: auto\n  a -> done\n",
+	},
 }
 
 // hostCompileProbes is compileProbes for the properties of a block hosted
@@ -112,12 +116,12 @@ var hostCompileProbes = map[string]map[string]map[string]string{
 
 // notValidated are the listed values the registry documents as NOT checked
 // by the compiler; the list is still rendered, so it is still compiled, but
-// a bogus value drawing no error is not a finding for them. Both fail SAFE
-// at run time, which is why the gap is tolerated rather than closed here: a
-// posture is compared to agent_verdict_ok and anything else keeps the human
-// gate; a merge_strategy that is not merge falls back to squash. The set is
+// a bogus value drawing no error is not a finding for them. The set is
 // held to the registry's own wording by TestNotValidatedIsWhatTheRegistryTellsAuthors.
-var notValidated = map[string]bool{"human.posture": true, "human.merge_strategy": true}
+// It is EMPTY today: the two founding exemptions — the review gate's
+// posture and merge_strategy, both fail-safe at run time — closed with C156,
+// which refuses a value outside the list at compile.
+var notValidated = map[string]bool{}
 
 // warningOnly are the checks that report a bogus value as a WARNING by
 // design (the value still flows into the IR): a fallback trigger the engine

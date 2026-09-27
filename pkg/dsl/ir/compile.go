@@ -1294,11 +1294,34 @@ func (c *compiler) compileHumans() {
 
 		// Review-gate configuration: defaults + ReviewURL ref parsing.
 		if interaction == InteractionReview {
+			// An unknown posture/merge_strategy used to read as the DEFAULT
+			// (human_required / squash): fail-safe for the tree, but a silent
+			// replacement of the author's explicit choice — the shape C142
+			// refuses for worktree:. Refused here, at the choke point where
+			// the default is applied; the IR keeps the fail-safe value so a
+			// launch surface that ignores compile errors still gates on a
+			// human and still squashes.
 			node.Posture = h.Posture
+			switch node.Posture {
+			case "", PostureHumanRequired, PostureAgentVerdictOK:
+			default:
+				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+					"human %q has invalid posture %q; valid values are %s, %s",
+					h.Name, h.Posture, PostureHumanRequired, PostureAgentVerdictOK)
+				node.Posture = ""
+			}
 			if node.Posture == "" {
 				node.Posture = PostureHumanRequired
 			}
 			node.MergeStrategy = h.MergeStrategy
+			switch node.MergeStrategy {
+			case "", "squash", "merge":
+			default:
+				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+					"human %q has invalid merge_strategy %q; valid values are squash, merge",
+					h.Name, h.MergeStrategy)
+				node.MergeStrategy = ""
+			}
 			if node.MergeStrategy == "" {
 				node.MergeStrategy = "squash"
 			}
