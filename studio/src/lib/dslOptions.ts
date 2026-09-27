@@ -146,12 +146,14 @@ const REASONING_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultrac
 export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "", label: "(default)" },
   ...orderedFrom(iterDslEnumValuesByProperty.reasoning_effort, REASONING_EFFORT_ORDER, {
+    none: "none (no reasoning)",
     ultracode: "ultracode (xhigh + orchestration)",
   }),
 ];
 
 export const REASONING_EFFORT_HELP =
   "For reasoning-capable models (e.g. o-series, claude-extended-thinking). " +
+  "none disables reasoning on the models that carry it (GPT-6 Sol/Luna) and clamps to the lowest real level elsewhere. " +
   "ultracode = xhigh + standing consent to orchestrate multi-agent workflows; reliable only on claude-opus-4-8.";
 
 // No registry enum counterpart: a fallback route's `on:` is an IdentList

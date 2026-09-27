@@ -319,7 +319,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 //
 //	router -> agent with {_reasoning_effort: "high"}
 //
-// Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, xhigh, max.
+// Valid values are defined in ir.ValidReasoningEfforts: none, low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
 func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
 	if v, ok := input["_reasoning_effort"]; ok {

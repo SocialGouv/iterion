@@ -63,6 +63,7 @@ func TestPiResolveModel(t *testing.T) {
 func TestPiMapEffort(t *testing.T) {
 	cases := map[string][]string{
 		"":          nil,
+		"none":      {"--thinking", "off"}, // pi spells no-thinking "off"
 		"low":       {"--thinking", "low"},
 		"medium":    {"--thinking", "medium"},
 		"high":      {"--thinking", "high"},
