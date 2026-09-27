@@ -323,7 +323,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
 	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback,
-		runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault))
+		runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault),
+		spec.Vars)
 	for _, refusal := range fallbackRefusals {
 		spec.Logger.Warn("run-level fallback not applied — %s", refusal)
 	}

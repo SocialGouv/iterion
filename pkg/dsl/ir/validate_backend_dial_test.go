@@ -228,7 +228,7 @@ func TestApplyRunFallback_ReadsDialsOnBothSides(t *testing.T) {
 		{Backend: "claude_code", Model: "claude-opus-5"},
 		{Backend: "${C1389_UNSET:-claude_code}", Model: "claude-opus-5"},
 	} {
-		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false)
+		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil)
 		if len(refusals) != 1 {
 			t.Errorf("route %q: %d refusals, want 1 (the claw node has no tools: list)", route.Backend, len(refusals))
 			continue
@@ -244,7 +244,7 @@ func TestApplyRunFallback_ReadsDialsOnBothSides(t *testing.T) {
 		{Backend: "claw", Model: "anthropic/glm-5.2"},
 		{Backend: "${C1389_UNSET:-claw}", Model: "anthropic/glm-5.2"},
 	} {
-		if refusals := ApplyRunFallback(fresh(), []Fallback{route}, false); len(refusals) != 0 {
+		if refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil); len(refusals) != 0 {
 			t.Errorf("route %q to the node's OWN backend was refused: %v", route.Backend, refusals)
 		}
 	}
@@ -401,7 +401,7 @@ func TestApplyRunFallback_RefusesADialledCodexRouteInASandbox(t *testing.T) {
 		if w == nil {
 			t.Fatal("the fixture does not compile")
 		}
-		refusals := ApplyRunFallback(w, []Fallback{{Backend: spelling, Model: "gpt-5"}}, true)
+		refusals := ApplyRunFallback(w, []Fallback{{Backend: spelling, Model: "gpt-5"}}, true, nil)
 		if len(refusals) != 1 {
 			t.Errorf("route %q in a sandbox: %d refusals, want 1", spelling, len(refusals))
 			continue
@@ -502,7 +502,7 @@ func TestApplyRunFallback_UsesTheRunReadingNotTheSourceOne(t *testing.T) {
 	if got := sourceBackend.name("${C1389_LAUNCH:-claw}"); got != "claw" {
 		t.Fatalf("the source reading = %q, want claw — the fixture proves nothing", got)
 	}
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false)
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals, want 1: %v", len(refusals), refusals)
 	}
@@ -523,7 +523,7 @@ func TestApplyRunFallback_UsesTheRunReadingNotTheSourceOne(t *testing.T) {
 	if got := sourceBackend.routeName("${C1389_LAUNCH_ROUTE:-claw}"); got != "claw" {
 		t.Fatalf("the source reading of the route = %q, want claw — the fixture proves nothing", got)
 	}
-	routed := ApplyRunFallback(clawNode, []Fallback{{Backend: "${C1389_LAUNCH_ROUTE:-claw}", Model: "claude-opus-5"}}, false)
+	routed := ApplyRunFallback(clawNode, []Fallback{{Backend: "${C1389_LAUNCH_ROUTE:-claw}", Model: "claude-opus-5"}}, false, nil)
 	if len(routed) != 1 {
 		t.Fatalf("%d refusals for a dialled route, want 1: %v", len(routed), routed)
 	}
@@ -553,5 +553,188 @@ func TestWorkflowDefaultReachesTheNodeLevelScreens(t *testing.T) {
 	}
 	if got := countCode(compileFallbackSrc(t, src("claude_code", hint)), DiagProviderChainIgnored); got != 0 {
 		t.Errorf("C088 count = %d with default_backend: claude_code, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #1606 — a backend written as `{{vars.x}}` is screened by what the LAUNCH
+// resolves, the way a dial is screened by what the environment resolves
+// ---------------------------------------------------------------------------
+
+// The RUN reading with the launch's vars: the template resolves first, the
+// field's own `${…}` expansion after — resolveRoutingField's order — and a
+// reference the launch cannot answer stays a field nothing decided. A nil
+// view is the compiler's reading, unchanged.
+func TestRunBackendReading_WithVars(t *testing.T) {
+	t.Setenv("C1606_SET", "kimi")
+	view := map[string]string{
+		"b":    "claw",
+		"dial": "${C1606_SET:-claw}",
+		"raw":  "${C1606_SET}",
+	}
+	run := runBackend.withVars(view)
+	cases := []struct{ in, want string }{
+		{"{{vars.b}}", "claw"},
+		{"{{ vars.b }}", "claw"},
+		// The template-then-env order: the var's VALUE is expanded as the
+		// field's own text would be, by default and by the environment.
+		{"{{vars.dial}}", "kimi"},
+		{"{{vars.raw}}", "kimi"},
+		// What the view cannot answer is not a backend name.
+		{"{{vars.missing}}", ""},
+		{"{{vars.cfg.on}}", ""},
+		// A literal and a dial read exactly as without the view — vars do
+		// not leak into a field that names no var.
+		{"claw", "claw"},
+		{"${C1606_UNSET:-claw}", "claw"},
+	}
+	for _, c := range cases {
+		if got := run.name(c.in); got != c.want {
+			t.Errorf("runBackend.withVars(view).name(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// The launch vars view: the declared defaults under the launch's overrides,
+// and a launch value for a var the workflow does not declare is dropped —
+// the two rules resolveVars runs the run itself by.
+func TestLaunchVarsView(t *testing.T) {
+	w := &Workflow{Vars: map[string]*Var{
+		"b":         {Name: "b", Type: VarString, HasDefault: true, Default: "claw"},
+		"nodefault": {Name: "nodefault", Type: VarString},
+		"n":         {Name: "n", Type: VarInt, HasDefault: true, Default: int64(3)},
+	}}
+	if got := launchVarsView(&Workflow{}, map[string]string{"b": "x"}); got != nil {
+		t.Errorf("no vars declared: view = %v, want nil — nothing may change hands", got)
+	}
+	view := launchVarsView(w, map[string]string{"b": "codex", "nodefault": "claude_code", "zz": "grok"})
+	want := map[string]string{"b": "codex", "nodefault": "claude_code", "n": "3"}
+	if len(view) != len(want) {
+		t.Fatalf("view = %v, want %v", view, want)
+	}
+	for k, v := range want {
+		if view[k] != v {
+			t.Errorf("view[%q] = %q, want %q (full view %v)", k, view[k], v, view)
+		}
+	}
+}
+
+// The screen reads a `{{vars.x}}` node backend by what the launch resolves —
+// the crossing refusals C176 applies to a literal apply to the reference, on
+// the node's side and on the route's.
+func TestApplyRunFallback_ReadsVarsOnBothSides(t *testing.T) {
+	src := "vars:\n  b: string = \"claw\"\n  route_b: string = \"claude_code\"\n\n" +
+		"agent x:\n  backend: \"{{vars.b}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	// A FRESH workflow per route: ApplyRunFallback writes the accepted route
+	// into the IR, and a node that carries one is then skipped.
+	fresh := func() *Workflow {
+		w := compileFallbackSrc(t, src).Workflow
+		if w == nil {
+			t.Fatal("the fixture does not compile")
+		}
+		return w
+	}
+	// A CLI route crosses the boundary — spelled literally, or through a
+	// var on the ROUTE's side.
+	for _, route := range []Fallback{
+		{Backend: "claude_code", Model: "claude-opus-5"},
+		{Backend: "{{vars.route_b}}", Model: "claude-opus-5"},
+	} {
+		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil)
+		if len(refusals) != 1 {
+			t.Errorf("route %q: %d refusals, want 1 (the claw node has no tools: list)", route.Backend, len(refusals))
+			continue
+		}
+		if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+			t.Errorf("route %q refused for the wrong reason: %s", route.Backend, refusals[0])
+		}
+	}
+	// A route to the SAME backend is not a crossing.
+	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil); len(refusals) != 0 {
+		t.Errorf("a route to the node's own (vars-resolved) backend was refused: %v", refusals)
+	}
+}
+
+// The launch's override, not the declared default, is the run's reading:
+// the same source screens as claude_code when `--var b=claude_code` launches
+// it, and as claw when `--var b=claw` does.
+func TestApplyRunFallback_LaunchVarDecidesWhatTheSourceLeftOpen(t *testing.T) {
+	src := func(def string) string {
+		return "vars:\n  b: string = \"" + def + "\"\n\n" +
+			"agent x:\n  backend: \"{{vars.b}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	}
+	fresh := func(def string) *Workflow {
+		w := compileFallbackSrc(t, src(def)).Workflow
+		if w == nil {
+			t.Fatal("the fixture does not compile")
+		}
+		return w
+	}
+	// The source's default is claw, the launch says claude_code: the run
+	// dispatches claude_code, so a claude_code route crosses nothing.
+	agent := fresh("claw")
+	if refusals := ApplyRunFallback(agent, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"b": "claude_code"}); len(refusals) != 0 {
+		t.Errorf("the launch's reading (claude_code) was overridden by the source's default: %v", refusals)
+	}
+	// And the other direction: the source's default is claude_code, the
+	// launch says claw — a CLI route on the tools-less claw node is the
+	// refusal, and it is invisible to whoever reads only the default.
+	refusals := ApplyRunFallback(fresh("claude_code"), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"b": "claw"})
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1: %v", len(refusals), refusals)
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The session-continuity refusal is one of the four predicates that used to
+// short-circuit on the empty reading: inherit across a backend change has no
+// cross-backend meaning, vars-resolved or not.
+func TestApplyRunFallback_SessionContinuityCrossingOnAVarsBackend(t *testing.T) {
+	agent := applyAgent("work", "{{vars.b}}", "", []string{"read_file"}, nil)
+	agent.Session = SessionInherit
+	w := &Workflow{
+		Nodes: map[string]Node{"work": agent},
+		Vars:  map[string]*Var{"b": {Name: "b", Type: VarString, HasDefault: true, Default: "claude_code"}},
+	}
+	// A declared tools: list makes the CLI→claw direction no inversion, so
+	// only the session predicate can fire.
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil)
+	if len(refusals) == 0 {
+		t.Fatal("no refusal — a session: inherit node changed backend through a vars-resolved crossing")
+	}
+	if !strings.Contains(refusals[0], "session continuity has no cross-backend meaning") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// What the launch cannot decide stays undecided — never a guess. A var the
+// workflow does not declare is dropped by the run itself (resolveVars), so
+// the screen must not resolve it either; a declared var with no default and
+// no launch value resolves to nothing either. Both screen exactly as before
+// the vars reached ApplyRunFallback.
+func TestApplyRunFallback_WhatTheLaunchCannotAnswerStaysUndecided(t *testing.T) {
+	src := "agent x:\n  backend: \"{{vars.zz}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	w := compileFallbackSrc(t, src).Workflow
+	if w == nil {
+		t.Fatal("the fixture does not compile")
+	}
+	// zz is undeclared: the launch value never reaches the run's vars, so
+	// the node screens as undecided — and an undecided field does NOT fall
+	// through to default_backend: (that rule is
+	// TestEffectiveNodeBackend_DoesNotSubstituteForAnUndecidedField's).
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"zz": "claw"})
+	if len(refusals) != 0 {
+		t.Errorf("an undeclared var resolved for the screen: %v", refusals)
+	}
+	if got := runBackend.withVars(launchVarsView(w, map[string]string{"zz": "claw"})).name("{{vars.zz}}"); got != "" {
+		t.Errorf("undeclared {{vars.zz}} resolved to %q, want undecided", got)
 	}
 }
