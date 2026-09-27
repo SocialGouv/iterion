@@ -218,6 +218,17 @@ func (b *schemaBuilder) def(name string, build func() obj) obj {
 const (
 	identPattern       = `^[A-Za-z_][A-Za-z0-9_]*$`
 	dottedIdentPattern = `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`
+
+	// noLineBreakPattern is a word-valued property's pattern: a backend, a
+	// model id, a URL carries no line break — anchored, a schema pattern
+	// being a search (an unanchored class matches the empty prefix of any
+	// string). The class names the folds both spellings can say: LF, CR
+	// and the NEL `\x85`. LS and PS fold too (the vendored yaml.v3's
+	// is_break), but no escape spells them in both dialects the pattern
+	// must live in — JSON Schema mandates ECMA-262, the repo's own
+	// validator compiles RE2 — so they are the converter's alone
+	// (author.carriesBreak refuses them at compile).
+	noLineBreakPattern = `^[^\n\r\x85]*$`
 )
 
 // EnvFormPattern is the environment form a quoted EnumOrEnv value takes,
@@ -340,6 +351,13 @@ func (b *schemaBuilder) propertiesObject(props []Property, extra obj) obj {
 // property is the fragment of one property, from its Form.
 func (b *schemaBuilder) property(p Property) obj {
 	o := b.form(p.Form, p.Values, p.Body)
+	// WordValued marks String and StringOrIdent properties; an EnumOrEnv
+	// marked too takes the same pattern (an env form cannot carry a break
+	// either), so the schema and the converter's word gate say the same
+	// thing.
+	if p.WordValued && (p.Form == String || p.Form == EnumOrEnv || p.Form == StringOrIdent) {
+		o["pattern"] = noLineBreakPattern
+	}
 	if p.Doc != "" {
 		o["description"] = p.Doc
 	}

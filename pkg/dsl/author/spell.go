@@ -1016,7 +1016,7 @@ func (s *speller) head(pairs []pair) {
 	default:
 		v, ok := intOf(dsl)
 		if !ok || v < 1 {
-			s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got '"+dsl.Value+"'", "")
+			s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got "+strconv.Quote(dsl.Value), "")
 			break
 		}
 		if msg, write := numberSpelling(dsl, false); msg != "" {
@@ -1366,7 +1366,7 @@ func (s *speller) body(kind spec.Kind, pairs []pair, indent int, host string) {
 			s.entry(kind, p.key, p.val, indent)
 			continue
 		}
-		s.refuseHint(p.key, parser.DiagUnknownProperty, "unknown "+kind.Name+" property '"+name+"'", spec.UnknownPropertyHintIn(kind.Name, host, name))
+		s.refuseHint(p.key, parser.DiagUnknownProperty, "unknown "+kind.Name+" property "+strconv.Quote(name)+"", spec.UnknownPropertyHintIn(kind.Name, host, name))
 	}
 }
 
@@ -1396,10 +1396,52 @@ func (s *speller) property(kind spec.Kind, p spec.Property, k, v *yaml.Node, ind
 	case spec.Map:
 		s.stringMap(p.Name, k, v, indent)
 	default:
+		if wordForm(p.Form) || p.WordValued {
+			// A word's value cannot carry a line break, however it is
+			// spelled: a `|`/`>` block whose reading keeps one (a strip
+			// chomping takes the scalar's own back off), or a quoted (or
+			// any) scalar holding one. Refused where the author looks —
+			// the run would refuse the value the converter spelled.
+			if v != nil && v.Kind == yaml.ScalarNode && carriesBreak(v.Value) {
+				if isBlockScalar(v) {
+					s.refuse(k, what+" takes a word on the key's line, not a `|` or `>` block")
+				} else {
+					s.refuse(k, what+" takes a word on the key's line; this value carries a line break")
+				}
+				return
+			}
+		}
 		if text, ok := s.scalar(p.Form, p.Values, what, v); ok {
 			s.kv(indent, p.Name, text, k, v)
 		}
 	}
+}
+
+// wordForm reports whether the form's value is one word: a block scalar
+// whose reading keeps a line break under it can never read back as the
+// word the .bot takes.
+func wordForm(f spec.Form) bool {
+	switch f {
+	case spec.Enum, spec.EnumOrEnv, spec.Ident, spec.DottedIdent, spec.TypeRef:
+		return true
+	}
+	return false
+}
+
+// isBlockScalar reports whether the node is a `|` or `>` block: whether
+// its reading keeps a break is the chomping's (blockCarriesBreak).
+func isBlockScalar(v *yaml.Node) bool {
+	return v != nil && v.Kind == yaml.ScalarNode && v.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0
+}
+
+// carriesBreak reports whether a value's READING keeps a line break —
+// any of the five yaml.v3 folds (is_break: LF, CR, NEL, LS, PS). Under a
+// word form it is the reading, not the spelling, that decides: a
+// `|-`/`>-` strip takes the scalar's break back off, so a one-line chomped
+// block reads exactly the word, while a quoted scalar holding a fold is
+// as broken as a clip block.
+func carriesBreak(value string) bool {
+	return strings.ContainsAny(value, "\n\r\u0085\u2028\u2029")
 }
 
 // block writes a property whose value is a kind's body: `key:` and the
@@ -2129,7 +2171,7 @@ func (s *speller) workflow(v *yaml.Node) {
 				s.property(kind, prop, p.key, p.val, 2)
 				continue
 			}
-			s.refuseHint(p.key, parser.DiagUnknownProperty, "unknown workflow property '"+p.key.Value+"'", spec.UnknownPropertyHintIn("workflow", "", p.key.Value))
+			s.refuseHint(p.key, parser.DiagUnknownProperty, "unknown workflow property "+strconv.Quote(p.key.Value)+"", spec.UnknownPropertyHintIn("workflow", "", p.key.Value))
 		}
 	}
 	if len(s.lines) == mark {

@@ -34,7 +34,7 @@ func (p *parser) contractProperties(host string, span *ast.Span, property func(T
 	seen := map[string]bool{}
 	p.contractMembers(span, func(t Token) {
 		if seen[t.Value] {
-			p.addErrorHint(DiagDuplicateBlock, t, "duplicate '"+t.Value+"' in "+host, "Each property appears once per block: keep one and delete the other.")
+			p.addErrorHint(DiagDuplicateBlock, t, "duplicate "+strconv.Quote(t.Value)+" in "+host, "Each property appears once per block: keep one and delete the other.")
 		}
 		seen[t.Value] = true
 		if !property(t) {
@@ -61,7 +61,7 @@ func (p *parser) endOfValue(what string) bool {
 	if valueEnds(t) || t.Type == TokenIndent {
 		return true
 	}
-	p.addError(DiagExpectedToken, t, what+" takes one value on its line, got '"+t.Value+"'")
+	p.addError(DiagExpectedToken, t, what+" takes one value on its line, got "+strconv.Quote(t.Value))
 	p.skipToNewline()
 	return false
 }
@@ -85,7 +85,7 @@ func (p *parser) contractInt(name string) (int, bool) {
 	}
 	n, err := strconv.Atoi(t.Value)
 	if err != nil {
-		p.addError(DiagExpectedToken, t, name+" takes an integer, got '"+t.Value+"'")
+		p.addError(DiagExpectedToken, t, name+" takes an integer, got "+strconv.Quote(t.Value))
 		return 0, false
 	}
 	if !p.endOfValue(name) {
@@ -325,7 +325,7 @@ func (p *parser) contractJSON() json.RawMessage {
 		return nil
 	}
 	if t := p.peek(); !valueEnds(t) {
-		p.addError(DiagExpectedToken, t, jsonValueRule+" (got '"+t.Value+"' after the value)")
+		p.addError(DiagExpectedToken, t, jsonValueRule+" (got "+strconv.Quote(t.Value)+" after the value)")
 		p.skipToNewline()
 		return nil
 	}
@@ -384,7 +384,7 @@ func (p *parser) contractJSONValue() (any, bool) {
 			}
 			key := p.expectStringOrIdent()
 			if _, exists := values[key]; exists {
-				p.addErrorHint(DiagDuplicateBlock, keyTok, "duplicate JSON key '"+key+"'", "A JSON object names each key once: keep one and delete the other.")
+				p.addErrorHint(DiagDuplicateBlock, keyTok, "duplicate JSON key "+strconv.Quote(key)+"", "A JSON object names each key once: keep one and delete the other.")
 			}
 			if _, ok := p.expect(TokenColon); !ok {
 				return nil, false

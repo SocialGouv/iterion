@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strconv"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
@@ -319,7 +321,7 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 	case "llm":
 		return ast.RouterLLM
 	default:
-		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, fan_out_each, condition, round_robin, llm), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, fan_out_each, condition, round_robin, llm), got "+strconv.Quote(t.Value)+"")
 		return ast.RouterFanOutAll
 	}
 }
@@ -334,7 +336,7 @@ func (p *parser) parseAwaitMode() ast.AwaitMode {
 	case "best_effort":
 		return ast.AwaitBestEffort
 	default:
-		p.addError(DiagInvalidValue, t, "expected await mode (wait_all, best_effort), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected await mode (wait_all, best_effort), got "+strconv.Quote(t.Value)+"")
 		return ast.AwaitWaitAll
 	}
 }
@@ -454,7 +456,7 @@ func (p *parser) parseInteractionMode() ast.InteractionMode {
 	case "human_or_host":
 		return ast.InteractionHumanOrHost
 	default:
-		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review, async, human_or_host), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review, async, human_or_host), got "+strconv.Quote(t.Value))
 		return ast.InteractionNone
 	}
 }
@@ -612,7 +614,7 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 			break
 		}
 		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
-			p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in recovery block")
+			p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in recovery block")
 			p.next()
 			p.skipToNewline()
 			continue
@@ -962,7 +964,7 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 				// source of an edge and ask for the arrow; its body goes
 				// with it. A node NAMED like a keyword is still an edge
 				// endpoint — that shape has no `<name>:` after the keyword.
-				p.addErrorHint(DiagUnexpectedToken, t, "'"+t.Value+"' cannot be declared inside a group — a group holds agent, judge, router, human, tool and compute declarations, and edges",
+				p.addErrorHint(DiagUnexpectedToken, t, strconv.Quote(t.Value)+" cannot be declared inside a group — a group holds agent, judge, router, human, tool and compute declarations, and edges",
 					"Move the `"+t.Value+"` declaration to the top level, outside the group.")
 				p.next()
 				p.skipUnknownProperty()
@@ -971,7 +973,7 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
 				gd.Edges = append(gd.Edges, p.parseEdge()...)
 			} else {
-				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in group body")
+				p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in group body")
 				p.next()
 			}
 		}

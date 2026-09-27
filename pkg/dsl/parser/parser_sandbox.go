@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strconv"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
@@ -75,7 +77,7 @@ func (p *parser) parseSandboxBlock(host string) *ast.SandboxBlock {
 // names collide with existing top-level keywords.
 func (p *parser) parseSandboxProp(sb *ast.SandboxBlock, propTok Token) {
 	if propTok.Type != TokenIdent && !isKeywordToken(propTok.Type) {
-		p.addError(DiagUnexpectedToken, propTok, "unexpected token '"+propTok.Value+"' in sandbox block")
+		p.addError(DiagUnexpectedToken, propTok, "unexpected token "+strconv.Quote(propTok.Value)+" in sandbox block")
 		p.next()
 		p.skipToNewline()
 		return
@@ -141,7 +143,7 @@ func (p *parser) parseSandboxBuildBody(startTok, colon Token) *ast.SandboxBuildB
 			break
 		}
 		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
-			p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in sandbox.build block")
+			p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in sandbox.build block")
 			p.next()
 			p.skipToNewline()
 			continue
@@ -190,7 +192,7 @@ func (p *parser) parseSandboxNetworkBody(startTok, colon Token) *ast.SandboxNetw
 			break
 		}
 		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
-			p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in sandbox.network block")
+			p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in sandbox.network block")
 			p.next()
 			p.skipToNewline()
 			continue

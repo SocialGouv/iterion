@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -477,9 +478,13 @@ func literalNode(l *ast.Literal) *yaml.Node {
 		return intNode(l.IntVal)
 	case ast.LitFloat:
 		// The .bot's spelling when YAML reads it as the same number — the
-		// reader refuses any other (a leading 0: `01.5`).
+		// reader refuses any other (a leading 0: `01.5`). Raw may be stale
+		// after an AST edit, so it rides only while it still names FloatVal
+		// (unparse.floatLiteral's contract, the .bot writer's twin).
 		if botNumberRe.MatchString(l.Raw) {
-			return floatNode(l.Raw)
+			if v, err := strconv.ParseFloat(l.Raw, 64); err == nil && math.Float64bits(v) == math.Float64bits(l.FloatVal) {
+				return floatNode(l.Raw)
+			}
 		}
 		return floatNode(strconv.FormatFloat(l.FloatVal, 'f', -1, 64))
 	case ast.LitBool:

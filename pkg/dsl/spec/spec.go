@@ -85,6 +85,13 @@ type Property struct {
 	// window but no longer the way to write the thing: the rendered
 	// documents and the author schema annotate it, nothing refuses it.
 	Deprecated bool
+	// WordValued marks a property whose value is one word — a backend, a
+	// model id, a timeout, a URL. Such a value cannot carry a line break:
+	// the document reader refuses a `|`/`>` block whose reading keeps one
+	// under it (a block's break is the scalar's; a strip chomping takes
+	// it back off), and the author schema carries a pattern without line
+	// breaks.
+	WordValued bool
 }
 
 // Field is one named part of a declaration header or of an entry line:
@@ -247,6 +254,13 @@ func prop(name string, form Form, doc string) Property {
 	return Property{Name: name, Form: form, Doc: doc}
 }
 
+// word marks a String property whose value is one word (see
+// Property.WordValued).
+func word(p Property) Property {
+	p.WordValued = true
+	return p
+}
+
 func enum(name, doc string, values ...string) Property {
 	return Property{Name: name, Form: Enum, Values: values, Doc: doc}
 }
@@ -288,19 +302,19 @@ var (
 	pAwait           = enum("await", "Convergence rule when several incoming branches reach the node", "wait_all", "best_effort")
 	pDescription     = prop("description", String, "Free-text description shown by the studio and the reports")
 	pNeeds           = prop("needs", IdentOrList, "Resource(s) leased from the workflow's resources: block for the node's duration")
-	pModel           = prop("model", String, "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
-	pBackend         = prop("backend", String, "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
-	pProvider        = prop("provider", String, "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
-	pSupervisorModel = prop("model", String, "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars")
+	pModel           = word(prop("model", String, "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pBackend         = word(prop("backend", String, "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pProvider        = word(prop("provider", String, "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pSupervisorModel = word(prop("model", String, "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars"))
 	pSystem          = prop("system", PromptRef, "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)")
 	pUser            = prop("user", PromptRef, "The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)")
-	pTimeout         = prop("timeout", String, "Duration the node may run, e.g. \"20m\"")
+	pTimeout         = word(prop("timeout", String, "Duration the node may run, e.g. \"20m\""))
 	pCompress        = checked("compress", "Command-output compression: on, ultra or off (C102)", "on", "ultra", "off")
 	pPermission      = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
 	pAutoMemory      = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
 	pInteraction     = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
 	pInteractionP    = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
-	pInteractionM    = prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")
+	pInteractionM    = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
 	pReasoning       = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"low", "medium", "high", "xhigh", "max", "ultracode"},
 		Doc: "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
 	pSandbox = Property{Name: "sandbox", Form: BlockOrIdent, Body: "sandbox", Values: []string{"none", "auto"},
@@ -318,7 +332,7 @@ func llmOnly(p Property) Property {
 var llmProperties = []Property{
 	pDescription,
 	pModel, pBackend, pProvider,
-	prop("command", String, "Executable that drives a CLI backend, overriding its default binary"),
+	word(prop("command", String, "Executable that drives a CLI backend, overriding its default binary")),
 	pInput, pOutput, pPublish, pArtifactLabels,
 	pSystem, pUser,
 	enum("session", "How the node's LLM session relates to the previous node's", "fresh", "inherit", "inherit_if_available", "fork", "artifacts_only", "persist"),
@@ -376,25 +390,25 @@ var Kinds = append([]Kind{
 			prop("watches", IdentList, "Agent nodes the supervisor is armed for"),
 			pSupervisorModel,
 			pSystem,
-			prop("cooldown", String, "Minimum delay between two evaluations, e.g. \"2m\""),
+			word(prop("cooldown", String, "Minimum delay between two evaluations, e.g. \"2m\"")),
 			prop("max_evals", Int, "Upper bound on evaluations per run"),
 			prop("monitors", StringList, "Event patterns armed from the first event (the CLI --monitor grammar)"),
 		}},
 	{Name: "mcp_server", Role: Declaration, Doc: "An MCP server the workflow may activate: stdio (command/args) or http/sse (url), optionally OAuth2.",
 		Properties: []Property{
 			enum("transport", "How the server is reached", "stdio", "http", "sse"),
-			prop("command", String, "stdio: the executable"),
+			word(prop("command", String, "stdio: the executable")),
 			prop("args", StringList, "stdio: its arguments"),
-			prop("url", String, "http / sse: the endpoint"),
+			word(prop("url", String, "http / sse: the endpoint")),
 			block("auth", "auth", "OAuth2 authorization-code/PKCE settings"),
 		}},
 	{Name: "auth", Role: BlockRole, Opener: "auth", Hosts: []string{"mcp_server"}, Doc: "OAuth2 settings of an MCP server (only authorization-code/PKCE is wired).",
 		Properties: []Property{
-			prop("type", String, "\"oauth2\""),
-			prop("auth_url", String, "Authorization endpoint"),
-			prop("token_url", String, "Token endpoint"),
-			prop("revoke_url", String, "Revocation endpoint (optional)"),
-			prop("client_id", String, "OAuth client id"),
+			word(prop("type", String, "\"oauth2\"")),
+			word(prop("auth_url", String, "Authorization endpoint")),
+			word(prop("token_url", String, "Token endpoint")),
+			word(prop("revoke_url", String, "Revocation endpoint (optional)")),
+			word(prop("client_id", String, "OAuth client id")),
 			prop("scopes", StringList, "Scopes requested"),
 		}},
 	{Name: "group", Role: Declaration, Doc: "A reusable node cluster with parameters, whose body holds agent/judge/router/human/tool/compute declarations and edges; instantiated by `use`, expanded at compile time (C141 warns on a use of an empty group). Prompts read `{{params.name}}`; nodes are addressed as <prefix>.<node> once instantiated.",
@@ -437,8 +451,8 @@ var Kinds = append([]Kind{
 		Properties: []Property{
 			prop("value", String, "Inline value — prefer the stored secret, resolved by name"),
 			Property{Name: "as", Form: StringOrIdent, Values: []string{"value", "file"}, Doc: "How the secret is materialised: value (env/template) or file"},
-			prop("mount_path", String, "as: file — the path inside the sandbox"),
-			prop("env", StringOrIdent, "Environment variable that receives the value"),
+			word(prop("mount_path", String, "as: file — the path inside the sandbox")),
+			word(prop("env", StringOrIdent, "Environment variable that receives the value")),
 			prop("optional", Bool, "A missing secret does not fail the launch"),
 			prop("hosts", StringList, "Hosts the secret may be sent to"),
 			pDescription,
@@ -454,7 +468,7 @@ var Kinds = append([]Kind{
 			llmOnly(pModel), llmOnly(pBackend), pProvider, llmOnly(pSystem), llmOnly(pUser),
 			prop("multi", Bool, "llm mode only (C023 otherwise): the model may select several outgoing edges"),
 			llmOnly(pReasoning),
-			prop("over", String, "fan_out_each: expression naming the collection to iterate"),
+			word(prop("over", String, "fan_out_each: expression naming the collection to iterate")),
 			prop("as", Ident, "fan_out_each: alias each item is bound to ({{each.<as>}})"),
 			prop("key", Ident, "fan_out_each: item field that names each branch"),
 			prop("depends_on", Ident, "fan_out_each: item field naming the branch this one waits for (requires key)"),
@@ -469,12 +483,12 @@ var Kinds = append([]Kind{
 			pInteraction, pInteractionP, pInteractionM,
 			prop("min_answers", Int, "Answers required before the node resumes"),
 			pAwait,
-			prop("review_url", String, "review: the PR/MR the gate reviews (a {{…}} reference is accepted)"),
+			word(prop("review_url", String, "review: the PR/MR the gate reviews (a {{…}} reference is accepted)")),
 			Property{Name: "posture", Form: StringOrIdent, Values: []string{"human_required", "agent_verdict_ok"},
 				Doc: "review: who may merge — human_required (default) or agent_verdict_ok; not validated at compile, another word reads as the default"},
 			Property{Name: "merge_strategy", Form: StringOrIdent, Values: []string{"squash", "merge"},
 				Doc: "review: squash (default) or merge; not validated at compile"},
-			prop("merge_into", StringOrIdent, "review: current (default), none or a branch name"),
+			word(prop("merge_into", StringOrIdent, "review: current (default), none or a branch name")),
 			prop("max_turns", Int, "review: conversation turns before the gate escalates"),
 		}},
 	{Name: "tool", Role: Node, Doc: "The deterministic node, no LLM. One of three recipes: `command:` runs through bash -c, `script:` through the interpreter `language:` names, `action:` calls a connector operation (ADR-098). With `output:` a command prints schema-shaped JSON on stdout. A Verified Action adds goal + postcondition + policy + recovery (ADR-044), which an `action:` refuses (C262/C263).",
@@ -494,11 +508,11 @@ var Kinds = append([]Kind{
 			prop("postcondition", String, "Verified action: command whose exit code is the truth oracle at every rung"),
 			checked("policy", "Verified action: required (default), recover or best_effort (C103–C106)", "required", "recover", "best_effort"),
 			block("recovery", "recovery", "Verified action: the self-heal ladder's bounds"),
-			prop("action", StringOrIdent, "Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260)"),
-			prop("connection", StringOrIdent, "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)"),
+			word(prop("action", StringOrIdent, "Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260)")),
+			word(prop("connection", StringOrIdent, "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)")),
 			block("params", "params", "The action's arguments, by the operation's own parameter keys"),
 			prop("retry", StringOrNumber, "Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266)"),
-			prop("timeout", StringOrNumber, "Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266)"),
+			word(prop("timeout", StringOrNumber, "Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266)")),
 		}},
 	{Name: "params", Role: BlockRole, Opener: "params", Hosts: []string{"tool"}, Doc: "The arguments of a connector action, keyed by the operation's own parameter names.",
 		Entries: &Entries{Key: StringOrIdent, KeyName: "key", Doc: "The key is the operation's own parameter name, quoted when it is not an identifier (`\"user-id\"`); a {{…}} template is rendered and then coerced to the type the operation declares, so an integer field receives a number",
@@ -523,7 +537,7 @@ var Kinds = append([]Kind{
 	{Name: "subbot", Role: Node, Doc: "Runs another .bot as a nested child run; its outputs read back as {{outputs.<subbot>.<field>}} (C119).",
 		Properties: []Property{
 			pDescription,
-			prop("source", String, "Path of the child .bot, relative to this file"),
+			word(prop("source", String, "Path of the child .bot, relative to this file")),
 			prop("with", WithMap, "Child vars; {{…}} references are allowed in the values"),
 			pOutput,
 			pNeeds,
@@ -532,26 +546,26 @@ var Kinds = append([]Kind{
 	{Name: "emit", Role: Node, Doc: "Publishes a named run-scoped event with an immutable payload (ADR-051).",
 		Properties: []Property{
 			pDescription,
-			prop("event", String, "Event name"),
+			word(prop("event", String, "Event name")),
 			prop("with", WithMap, "Payload fields"),
 		}},
 	{Name: "wait", Role: Node, Doc: "Blocks its branch until the named event fires; the timeout is mandatory (ADR-051, C196–C198).",
 		Properties: []Property{
 			pDescription,
-			prop("event", String, "Event name awaited"),
-			prop("timeout", String, "Duration after which the wait fails, e.g. \"30s\" (mandatory)"),
+			word(prop("event", String, "Event name awaited")),
+			word(prop("timeout", String, "Duration after which the wait fails, e.g. \"30s\" (mandatory)")),
 			pOutput,
 		}},
 	{Name: "await_answers", Role: Node, Doc: "Parks its branch until every pending ask_user_async question of `from:` (or the whole run) is answered; output {answers: […]} (ADR-081, C241/C242).",
 		Properties: []Property{
 			pDescription,
-			prop("from", StringOrIdent, "Node whose async questions are awaited; omit for the whole run"),
-			prop("timeout", String, "Duration after which the node fails, e.g. \"30m\" (mandatory)"),
+			word(prop("from", StringOrIdent, "Node whose async questions are awaited; omit for the whole run")),
+			word(prop("timeout", String, "Duration after which the node fails, e.g. \"30m\" (mandatory)")),
 		}},
 	{Name: "fail", Role: Node, Doc: "A named terminal failure with a typed code and a message (C247 checks the UPPER_SNAKE code, C248 refuses a reserved one).",
 		Properties: []Property{
 			pDescription,
-			prop("code", StringOrIdent, "Error code, UPPER_SNAKE (bare or quoted)"),
+			word(prop("code", StringOrIdent, "Error code, UPPER_SNAKE (bare or quoted)")),
 			prop("message", String, "Message; {{…}} references are rendered"),
 			prop("resumable", Bool, "Leaves the run failed_resumable instead of failed"),
 		}},
@@ -569,7 +583,7 @@ var Kinds = append([]Kind{
 			block("compaction", "compaction", "Default compaction thresholds"),
 			pSandbox,
 			checked("worktree", "auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place", "auto", "none"),
-			prop("default_backend", String, "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"),
+			word(prop("default_backend", String, "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")),
 			pCompress, pAutoMemory,
 			checked("loop_budget_guard", "Decline a loop's back-edge the budget cannot fund: on (default) or off (C133)", "on", "off"),
 			checked("repo_devbox", "Load the target repo's devbox.json toolchain: on (default) or off (C134)", "on", "off"),
@@ -586,7 +600,7 @@ var Kinds = append([]Kind{
 	{Name: "budget", Role: BlockRole, Opener: "budget", Hosts: []string{"workflow"}, Doc: "Run caps; a zero or absent cap is the engine default, and each is overridable per run without editing the .bot.",
 		Properties: []Property{
 			prop("max_parallel_branches", Int, "Concurrent branches (0 = engine default)"),
-			prop("max_duration", String, "Wall-clock cap, e.g. \"4h\""),
+			word(prop("max_duration", String, "Wall-clock cap, e.g. \"4h\"")),
 			prop("max_cost_usd", Number, "Spend cap in USD"),
 			prop("max_tokens", Int, "Total token cap"),
 			prop("warn_tokens", Int, "Advisory: crossing it emits budget_warning"),
@@ -603,7 +617,7 @@ var Kinds = append([]Kind{
 	{Name: "memory", Role: BlockRole, Opener: "memory", Hosts: []string{"agent", "judge"}, Doc: "iterion's shared-memory tools for a node (docs/memory-and-knowledge.md); distinct from auto_memory.",
 		Properties: []Property{
 			prop("enabled", Bool, "Open the memory tools to the node"),
-			prop("scope", String, "Memory scope the tools read and write"),
+			word(prop("scope", String, "Memory scope the tools read and write")),
 			prop("autoload", StringList, "Documents injected at node start"),
 			prop("read", Bool, "Allow memory_read"),
 			prop("write", Bool, "Allow memory_write"),
@@ -623,10 +637,10 @@ var Kinds = append([]Kind{
 	{Name: "sandbox", Role: BlockRole, Opener: "sandbox", Hosts: []string{"workflow", "agent", "judge", "tool"}, Doc: "Per-run container isolation (docs/sandbox.md): the short form names a mode, the block form is inline and needs image: or build: (C044).",
 		Properties: []Property{
 			checked("mode", "none, auto (devcontainer.json or the published slim image) or inline (C044 on another word)", "none", "auto", "inline"),
-			prop("image", String, "Container image (exclusive with build)"),
+			word(prop("image", String, "Container image (exclusive with build)")),
 			block("build", "sandbox.build", "Dockerfile build, local docker only (V2-6)"),
-			prop("user", String, "Container user"),
-			prop("workspace_folder", String, "Mount point of the workspace inside the container"),
+			word(prop("user", String, "Container user")),
+			word(prop("workspace_folder", String, "Mount point of the workspace inside the container")),
 			checked("host_state", "Mount ~/.iterion and ~/.claude into the container: auto or none", "auto", "none"),
 			prop("post_create", String, "Command run once after the container starts"),
 			prop("env", Map, "Environment variables"),
@@ -635,14 +649,14 @@ var Kinds = append([]Kind{
 		}},
 	{Name: "sandbox.build", Role: BlockRole, Opener: "build", Hosts: []string{"sandbox"}, Doc: "A Dockerfile build of the sandbox image (docker driver only).",
 		Properties: []Property{
-			prop("dockerfile", String, "Dockerfile path"),
-			prop("context", String, "Build context"),
+			word(prop("dockerfile", String, "Dockerfile path")),
+			word(prop("context", String, "Build context")),
 			prop("args", Map, "Build arguments"),
 		}},
 	{Name: "sandbox.network", Role: BlockRole, Opener: "network", Hosts: []string{"sandbox"}, Doc: "Network egress of the sandbox, enforced by a CONNECT proxy on the host.",
 		Properties: []Property{
 			checked("mode", "open (no proxy), allowlist or denylist (C044 on another word)", "open", "allowlist", "denylist"),
-			prop("preset", StringOrIdent, "Rule preset, e.g. \"iterion-default\""),
+			word(prop("preset", StringOrIdent, "Rule preset, e.g. \"iterion-default\"")),
 			checked("inherit", "How a node's rules compose with the workflow's: omit to merge (the default), or replace / append (C044 on another word)", "replace", "append"),
 			prop("rules", MixedList, "Hosts and globs; a leading ! negates"),
 		}},
@@ -661,6 +675,6 @@ var Kinds = append([]Kind{
 				Doc: "Failure classes that take this route (default usage_window, unavailable; never any or auth by default)"},
 			prop("metered", Bool, "The route spends a metered API key (credential hint)"),
 			Property{Name: "action", Form: StringOrIdent, Values: []string{"skip"}, Doc: "skip: complete the node with a zero-value output stamped _skipped instead of failing"},
-			prop("when", String, "Expression over vars that gates the route"),
+			word(prop("when", String, "Expression over vars that gates the route")),
 		}},
 }, contractKinds...)

@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -55,7 +56,7 @@ func ParseEdgeLine(profile int, line string) ([]*ast.Edge, []Diagnostic) {
 		case TokenNewline, TokenComment, TokenDedent:
 			p.next()
 		default:
-			p.addError(DiagExpectedToken, t, "an edge line ends after its clauses, got '"+t.Value+"'")
+			p.addError(DiagExpectedToken, t, "an edge line ends after its clauses, got "+strconv.Quote(t.Value))
 			return edges, p.diags
 		}
 	}
