@@ -29,11 +29,14 @@ func Document(name string, src []byte) ([]byte, error) {
 	if errs := diagnosticsOf(res.Diagnostics, parser.SeverityError); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: does not read: %s", ErrRefused, strings.Join(errs, "; "))
 	}
-	if read := diagnosticsOf(res.Diagnostics, parser.SeverityWarning); len(read) > 0 {
-		return nil, fmt.Errorf("%w: the .bot reads it otherwise than it is written, and a rewrite would put that reading in the author's place: %s", ErrRefused, strings.Join(read, "; "))
-	}
 	if comments := author.Comments(text); len(comments) > 0 {
 		return nil, fmt.Errorf("%w: carries %d YAML comment line(s) the writer does not keep (the first: %s)", ErrRefused, len(comments), comments[0])
+	}
+	// A commented document is already refused above: a ` #` that ends a
+	// plain value IS a comment, so the reads-otherwise reason is reached
+	// only by documents whose reading differs without one.
+	if read := diagnosticsOf(res.Diagnostics, parser.SeverityWarning); len(read) > 0 {
+		return nil, fmt.Errorf("%w: the .bot reads it otherwise than it is written, and a rewrite would put that reading in the author's place: %s", ErrRefused, strings.Join(read, "; "))
 	}
 	out, err := author.Write(res.File)
 	if err != nil {

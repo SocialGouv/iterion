@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -26,7 +27,7 @@ func (p *parser) parseImportDecl(f *ast.File, declared bool) {
 	}
 	p.next()
 	if rest := p.peek(); !lineEnds(rest) && rest.Type != TokenEOF {
-		p.addError(DiagBadImportPath, rest, "import takes one path, alone on its line, got '"+rest.Value+"' after it")
+		p.addError(DiagBadImportPath, rest, "import takes one path, alone on its line, got "+strconv.Quote(rest.Value)+" after it")
 		p.skipToNewline()
 		return
 	}

@@ -212,14 +212,17 @@
       "properties": {
         "auth_url": {
           "description": "Authorization endpoint",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "client_id": {
           "description": "OAuth client id",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "revoke_url": {
           "description": "Revocation endpoint (optional)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "scopes": {
@@ -231,10 +234,12 @@
         },
         "token_url": {
           "description": "Token endpoint",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "type": {
           "description": "\"oauth2\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -598,6 +603,7 @@
           },
           "backend": {
             "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           },
           "metered": {
@@ -606,6 +612,7 @@
           },
           "model": {
             "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           },
           "on": {
@@ -618,6 +625,7 @@
           },
           "provider": {
             "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           },
           "route": {
@@ -822,6 +830,7 @@
         },
         "url": {
           "description": "http / sse: the endpoint",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -913,6 +922,7 @@
         },
         "backend": {
           "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "capabilities": {
@@ -984,6 +994,7 @@
         },
         "interaction_model": {
           "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "interaction_prompt": {
@@ -1007,6 +1018,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "needs": {
@@ -1037,6 +1049,7 @@
         },
         "provider": {
           "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "publish": {
@@ -1101,6 +1114,7 @@
         },
         "timeout": {
           "description": "Duration the node may run, e.g. \"20m\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "tool_max_steps": {
@@ -1152,6 +1166,7 @@
         },
         "timeout": {
           "description": "Duration after which the node fails, e.g. \"30m\" (mandatory)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -1333,6 +1348,7 @@
         },
         "interaction_model": {
           "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "interaction_prompt": {
@@ -1362,6 +1378,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "output": {
@@ -1380,6 +1397,7 @@
         },
         "review_url": {
           "description": "review: the PR/MR the gate reviews (a {{…}} reference is accepted)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "system": {
@@ -1431,6 +1449,7 @@
         },
         "backend": {
           "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "capabilities": {
@@ -1502,6 +1521,7 @@
         },
         "interaction_model": {
           "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "interaction_prompt": {
@@ -1530,6 +1550,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "needs": {
@@ -1560,6 +1581,7 @@
         },
         "provider": {
           "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "publish": {
@@ -1624,6 +1646,7 @@
         },
         "timeout": {
           "description": "Duration the node may run, e.g. \"20m\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "tool_max_steps": {
@@ -1667,6 +1690,7 @@
         },
         "backend": {
           "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "depends_on": {
@@ -1695,6 +1719,7 @@
         },
         "model": {
           "description": "llm mode only (C023 otherwise): Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "multi": {
@@ -1719,10 +1744,12 @@
         },
         "over": {
           "description": "fan_out_each: expression naming the collection to iterate",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "provider": {
           "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "reasoning_effort": {
@@ -2000,6 +2027,7 @@
         },
         "timeout": {
           "description": "Duration after which the wait fails, e.g. \"30s\" (mandatory)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "wait": {
@@ -2086,6 +2114,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -2302,6 +2331,7 @@
               },
               "mount_path": {
                 "description": "as: file — the path inside the sandbox",
+                "pattern": "^[^\\n\\r\\x85]*$",
                 "type": "string"
               },
               "optional": {
@@ -2333,6 +2363,7 @@
       "properties": {
         "cooldown": {
           "description": "Minimum delay between two evaluations, e.g. \"2m\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "max_evals": {
@@ -2343,6 +2374,7 @@
         },
         "model": {
           "description": "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "monitors": {
@@ -2810,14 +2842,17 @@
       "properties": {
         "auth_url": {
           "description": "Authorization endpoint",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "client_id": {
           "description": "OAuth client id",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "revoke_url": {
           "description": "Revocation endpoint (optional)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "scopes": {
@@ -2829,10 +2864,12 @@
         },
         "token_url": {
           "description": "Token endpoint",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "type": {
           "description": "\"oauth2\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -3196,6 +3233,7 @@
           },
           "backend": {
             "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           },
           "metered": {
@@ -3204,6 +3242,7 @@
           },
           "model": {
             "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           },
           "on": {
@@ -3216,6 +3255,7 @@
           },
           "provider": {
             "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           },
           "route": {
@@ -3420,6 +3460,7 @@
         },
         "url": {
           "description": "http / sse: the endpoint",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -3507,6 +3548,7 @@
         },
         "backend": {
           "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "capabilities": {
@@ -3578,6 +3620,7 @@
         },
         "interaction_model": {
           "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "interaction_prompt": {
@@ -3601,6 +3644,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "needs": {
@@ -3631,6 +3675,7 @@
         },
         "provider": {
           "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "publish": {
@@ -3695,6 +3740,7 @@
         },
         "timeout": {
           "description": "Duration the node may run, e.g. \"20m\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "tool_max_steps": {
@@ -3746,6 +3792,7 @@
         },
         "timeout": {
           "description": "Duration after which the node fails, e.g. \"30m\" (mandatory)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -3927,6 +3974,7 @@
         },
         "interaction_model": {
           "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "interaction_prompt": {
@@ -3956,6 +4004,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "output": {
@@ -3974,6 +4023,7 @@
         },
         "review_url": {
           "description": "review: the PR/MR the gate reviews (a {{…}} reference is accepted)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "system": {
@@ -4025,6 +4075,7 @@
         },
         "backend": {
           "description": "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "capabilities": {
@@ -4096,6 +4147,7 @@
         },
         "interaction_model": {
           "description": "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "interaction_prompt": {
@@ -4124,6 +4176,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "needs": {
@@ -4154,6 +4207,7 @@
         },
         "provider": {
           "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "publish": {
@@ -4218,6 +4272,7 @@
         },
         "timeout": {
           "description": "Duration the node may run, e.g. \"20m\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "tool_max_steps": {
@@ -4261,6 +4316,7 @@
         },
         "backend": {
           "description": "llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "depends_on": {
@@ -4289,6 +4345,7 @@
         },
         "model": {
           "description": "llm mode only (C023 otherwise): Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "multi": {
@@ -4313,10 +4370,12 @@
         },
         "over": {
           "description": "fan_out_each: expression naming the collection to iterate",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "provider": {
           "description": "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "reasoning_effort": {
@@ -4594,6 +4653,7 @@
         },
         "timeout": {
           "description": "Duration after which the wait fails, e.g. \"30s\" (mandatory)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "wait": {
@@ -4680,6 +4740,7 @@
         },
         "model": {
           "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -4896,6 +4957,7 @@
               },
               "mount_path": {
                 "description": "as: file — the path inside the sandbox",
+                "pattern": "^[^\\n\\r\\x85]*$",
                 "type": "string"
               },
               "optional": {
@@ -4927,6 +4989,7 @@
       "properties": {
         "cooldown": {
           "description": "Minimum delay between two evaluations, e.g. \"2m\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "max_evals": {
@@ -4937,6 +5000,7 @@
         },
         "model": {
           "description": "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "monitors": {

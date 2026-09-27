@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strconv"
+
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -188,7 +190,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 				p.backup()
 				wd.Edges = append(wd.Edges, p.parseEdge()...)
 			} else {
-				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in workflow")
+				p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in workflow")
 				p.next()
 			}
 		}

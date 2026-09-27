@@ -34,6 +34,8 @@ var yamlLineRe = regexp.MustCompile(`line (\d+):`)
 // node, or the diagnostics that refuse it: a source too large, text that
 // is not YAML, no document at all, a second document (a `---` separator
 // among them), and — on the tree — every construct guardTree refuses.
+// When the document reads, the second return carries the guard's warnings,
+// never refusals.
 func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 	if len(src) > maxSourceSize {
 		return nil, []parser.Diagnostic{docDiag(name, 1, 1, fmt.Sprintf("the document exceeds the maximum size (%d bytes > %d)", len(src), maxSourceSize))}
@@ -74,11 +76,13 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 		return nil, []parser.Diagnostic{docDiag(name, line, 1, msg)}
 	}
 	root := doc.Content[0]
-	diags := guardTree(name, root, src)
-	if len(diags) > 0 {
-		return nil, diags
+	errs, warns := guardTree(name, root, src)
+	if len(errs) > 0 {
+		return nil, errs
 	}
-	return root, nil
+	// The document reads: the guard's warnings ride back beside the
+	// converter's and the parser's (a warning never refuses).
+	return root, warns
 }
 
 // yamlRemedy names, for the YAML syntax errors an author of a .bot twin
@@ -114,11 +118,14 @@ func yamlRemedy(msg string) string {
 // drops without marking the node (read off src: a `!` where the scalar
 // starts) — a merge key, a key that is not a plain string, a key
 // repeated in one mapping (yaml.v3 keeps both; the .bot has one), a tree
-// deeper or larger than the lexer's bounds.
-func guardTree(name string, root *yaml.Node, src []byte) []parser.Diagnostic {
+// deeper or larger than the lexer's bounds. It also warns on a `#` that
+// starts a comment at a plain text value's tail — the one placement where
+// the comment may be a value cut short — and carries the warnings back
+// apart from the refusals: a warning never refuses a document.
+func guardTree(name string, root *yaml.Node, src []byte) (diags, warns []parser.Diagnostic) {
 	g := &guard{name: name, lines: sourceLines(src)}
 	g.walk(root, 0)
-	return g.diags
+	return g.diags, g.warns
 }
 
 // sourceLines cuts src into the lines yaml.v3's positions count: a UTF-8
@@ -147,6 +154,7 @@ type guard struct {
 	lines []string
 	count int
 	diags []parser.Diagnostic
+	warns []parser.Diagnostic
 }
 
 // at is the source from node n's position to the end of its line, "" when
@@ -184,6 +192,36 @@ func excerpt(v string) string {
 
 func (g *guard) refuse(n *yaml.Node, msg string) {
 	g.diags = append(g.diags, docDiag(g.name, n.Line, n.Column, msg))
+}
+
+// warn says what the document reads otherwise without refusing it: the
+// author may have meant the reading. The message carries its own remedy —
+// the code's generic hint (a prompt body's) would not fit every case.
+func (g *guard) warn(n *yaml.Node, msg string) {
+	line, col := n.Line, n.Column
+	if line < 1 {
+		line = 1
+	}
+	if col < 1 {
+		col = 1
+	}
+	g.warns = append(g.warns, parser.Diagnostic{
+		Code: parser.DiagAuthorPromptBody, Severity: parser.SeverityWarning,
+		Message: msg, File: g.name, Line: line, Column: col,
+	})
+}
+
+// plainValueComment says a ` #` that starts a comment at a plain text
+// VALUE's tail: the value ends there and the rest of the line is dropped —
+// the one placement where a comment may be a value cut short. A number, a
+// bool, a null or a quoted/block scalar cannot carry the `#`, so their
+// trailing comment is the note it reads as. Called on value positions only:
+// a comment after a mapping key hangs on the key, which is no value.
+func (g *guard) plainValueComment(v *yaml.Node) {
+	if v == nil || v.Kind != yaml.ScalarNode || v.Style != 0 || v.LineComment == "" || v.ShortTag() != "!!str" {
+		return
+	}
+	g.warn(v, "a ` #` starts a comment: the value reads as "+strconv.Quote(v.Value)+", the rest of the line is dropped — quote the whole value if the `#` is part of it")
 }
 
 func (g *guard) walk(n *yaml.Node, depth int) {
@@ -237,10 +275,12 @@ func (g *guard) walk(n *yaml.Node, depth int) {
 				}
 			}
 			g.walk(k, depth+1)
+			g.plainValueComment(v)
 			g.walk(v, depth+1)
 		}
 	case yaml.SequenceNode:
 		for _, c := range n.Content {
+			g.plainValueComment(c)
 			g.walk(c, depth+1)
 		}
 	case yaml.DocumentNode:

@@ -22,7 +22,7 @@ func (p *parser) parseReasoningEffort() string {
 	case "low", "medium", "high", "xhigh", "max", "ultracode":
 		return value
 	default:
-		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, xhigh, max, ultracode) or a quoted env-substituted string, got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, xhigh, max, ultracode) or a quoted env-substituted string, got "+strconv.Quote(t.Value))
 		return ""
 	}
 }
@@ -57,7 +57,7 @@ func (p *parser) parseSessionMode() ast.SessionMode {
 	case "persist":
 		return ast.SessionPersist
 	default:
-		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only, persist), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only, persist), got "+strconv.Quote(t.Value))
 		return ast.SessionFresh
 	}
 }
