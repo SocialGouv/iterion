@@ -33,8 +33,9 @@ type effortCapabilitiesResponse struct {
 }
 
 // codexEffortFallback is the static list emitted when the Codex CLI is
-// unavailable. Mirrors the codex SDK's Effort constants (low/medium/high/max).
-var codexEffortFallback = []string{"low", "medium", "high", "max"}
+// unavailable. Mirrors the codex SDK's Effort constants a workflow can name
+// (none/low/medium/high/max — the SDK's "minimal" has no iterion spelling).
+var codexEffortFallback = []string{"none", "low", "medium", "high", "max"}
 
 // codexCacheTTL is how long a Codex ListModels response is reused before
 // re-querying the CLI. Codex doesn't change models mid-session in
@@ -216,11 +217,12 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 		})
 	case "pi":
 		// pi's own dial is off|minimal|low|medium|high|xhigh|max — a strict
-		// superset of iterion's, minus the two levels iterion has no way to
-		// express. It is model-independent: pi maps the level onto each
+		// superset of iterion's, minus the level iterion has no way to
+		// express (minimal; iterion's none maps onto pi's off — see
+		// piMapEffort). It is model-independent: pi maps the level onto each
 		// provider's own thinking budget, so there is nothing to look up.
 		writeJSON(w, effortCapabilitiesResponse{
-			Supported: []string{"low", "medium", "high", "xhigh", "max"},
+			Supported: []string{"none", "low", "medium", "high", "xhigh", "max"},
 			Default:   "medium",
 			Source:    "pi-thinking",
 		})

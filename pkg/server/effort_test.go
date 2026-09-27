@@ -109,6 +109,38 @@ func TestEffortCapabilities_ClawOpenAI(t *testing.T) {
 	)
 }
 
+// TestEffortCapabilities_GPT6SolLunaCarryNone proves the GPT-6 effort
+// matrices come through with the split the provider documents: Sol and
+// Luna accept reasoning_effort `none`, Astra does not. The studio picker
+// reads this list verbatim, so a registry regression that dropped none
+// would silently remove the level from the only models that honour it.
+func TestEffortCapabilities_GPT6SolLunaCarryNone(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
+		got := getEffortCaps(t, hs.URL, "claw", model)
+		assertEffortLevels(t, got.Supported,
+			[]string{"none"},      // required
+			[]string{"ultracode"}, // forbidden
+		)
+	}
+	got := getEffortCaps(t, hs.URL, "claw", "gpt-6-astra")
+	assertEffortLevels(t, got.Supported,
+		nil,              // required
+		[]string{"none"}, // forbidden
+	)
+}
+
+// TestCodexEffortFallbackCarriesNone guards the static matrix emitted
+// when the Codex CLI is unreachable: it must mirror the SDK's Effort
+// constants a workflow can name, which now include none (GPT-6 Sol/Luna).
+func TestCodexEffortFallbackCarriesNone(t *testing.T) {
+	assertEffortLevels(t, codexEffortFallback,
+		[]string{"none", "low", "medium", "high", "max"}, // required
+		[]string{"ultracode", "xhigh"},                   // forbidden
+	)
+}
+
 // TestEffortCapabilities_Pi proves the pi backend returns its static
 // model-independent matrix — the levels iterion can express, dropped
 // down from pi's full off|minimal|low|medium|high|xhigh|max dial. This
@@ -125,7 +157,7 @@ func TestEffortCapabilities_Pi(t *testing.T) {
 		t.Errorf("Default=%q, want %q", got.Default, "medium")
 	}
 	assertEffortLevels(t, got.Supported,
-		[]string{"low", "medium", "high", "xhigh", "max"},
+		[]string{"none", "low", "medium", "high", "xhigh", "max"},
 		nil,
 	)
 
@@ -239,6 +271,22 @@ func TestResolveEffort_EnvSubstitutionUsesSetValue(t *testing.T) {
 	got := getResolveEffort(t, hs.URL, "${_ITERION_EFFORT_TEST_SET:-low}")
 	if got.Resolved != "xhigh" {
 		t.Errorf("Resolved=%q, want %q (env value should win over fallback)", got.Resolved, "xhigh")
+	}
+}
+
+// TestResolveEffort_EnvExpandsToNone proves an env expansion to `none`
+// survives resolution instead of being erased to "" — the regression
+// from issue #1837, where ResolveEffortLiteral rejected a level the
+// DSL did not yet enumerate and the studio canvas showed no effort at
+// all for a node that explicitly asked for none.
+func TestResolveEffort_EnvExpandsToNone(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_EFFORT_TEST_NONE", "none")
+
+	got := getResolveEffort(t, hs.URL, "${_ITERION_EFFORT_TEST_NONE:-low}")
+	if got.Resolved != "none" {
+		t.Errorf("Resolved=%q, want %q (a resolved none must not be erased)", got.Resolved, "none")
 	}
 }
 

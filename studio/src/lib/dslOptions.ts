@@ -142,16 +142,18 @@ export const PERMISSION_RULES_HELP =
   "A non-empty list REPLACES the workflow's list of this kind — never a union, and independently per kind. Restate anything from the workflow's list of this kind you still want. Empty inherits it. Tool(pattern) syntax, e.g. Bash(git diff:*).";
 
 // Curated order: ascending effort, the orchestration tier last.
-const REASONING_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultracode"] as const;
+const REASONING_EFFORT_ORDER = ["none", "low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "", label: "(default)" },
   ...orderedFrom(iterDslEnumValuesByProperty.reasoning_effort, REASONING_EFFORT_ORDER, {
+    none: "none (no reasoning)",
     ultracode: "ultracode (xhigh + orchestration)",
   }),
 ];
 
 export const REASONING_EFFORT_HELP =
   "For reasoning-capable models (e.g. o-series, claude-extended-thinking). " +
+  "none disables reasoning on the models that carry it (GPT-6 Sol/Luna) and clamps to the lowest real level elsewhere. " +
   "ultracode = xhigh + standing consent to orchestrate multi-agent workflows; reliable only on claude-opus-4-8.";
 
 // No registry enum counterpart: a fallback route's `on:` is an IdentList

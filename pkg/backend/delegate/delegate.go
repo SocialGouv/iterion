@@ -547,7 +547,7 @@ type Task struct {
 	RepoRoot string
 
 	// ReasoningEffort is the reasoning effort level sent on the wire.
-	// Valid values: "low", "medium", "high", "xhigh", "max". The DSL also
+	// Valid values: "none", "low", "medium", "high", "xhigh", "max". The DSL also
 	// accepts "ultracode", but the runtime remaps that to "xhigh" before
 	// populating this field (see model.wireEffort) and sets Ultracode below.
 	ReasoningEffort string

@@ -22,10 +22,11 @@ import type {
   UseSessionModelPrefResult,
 } from "@/hooks/useSessionModelPref";
 
-// The `reasoning_effort` ladder (ir.ValidReasoningEfforts). ultracode is a
+// The `reasoning_effort` ladder (ir.ValidReasoningEfforts). none disables
+// reasoning on the models that carry it (GPT-6 Sol/Luna). ultracode is a
 // mode, not a wire value, and holds only on claude-opus-4-8 — the picker says
 // so rather than letting it degrade quietly.
-const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultracode"] as const;
+const EFFORTS = ["none", "low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 
 function summarise(choice: SessionModelChoice): string {
   const bits = [choice.model, choice.backend, choice.effort].filter(Boolean);
