@@ -2099,7 +2099,22 @@ func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) ma
 		// read is the map's either way. Walked over the slice, not the
 		// map, so the diagnostics keep a deterministic order.
 		for _, pv := range entry.Values {
-			if landed[pv.Key] != pv {
+			winner := landed[pv.Key]
+			if winner != pv {
+				// Every earlier occurrence of a written-twice key is dead
+				// text — a duplicate var is E010, a duplicate preset NAME
+				// C072, a duplicate enum value C127; this one used to be
+				// silence. A warning like C127's: the last value wins, so
+				// the program is unambiguous and nothing is broken — the
+				// author has written a line that does nothing (#1661).
+				// A nil winner means EVERY occurrence of the key was
+				// already refused above (unknown var or type mismatch) —
+				// there is no third thing to say about it.
+				if winner != nil {
+					c.warnfAtSpan(DiagPresetKeyShadowed, pv.Span,
+						"preset %q sets %q more than once — this value is replaced by the one at line %d",
+						entry.Name, pv.Key, winner.Span.Start.Line)
+				}
 				continue
 			}
 			c.checkPresetConstraint(entry.Name, pv, vars[pv.Key], values[pv.Key])
