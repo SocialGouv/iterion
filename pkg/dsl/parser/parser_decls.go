@@ -19,7 +19,7 @@ func (p *parser) parseBool() *bool {
 		v := false
 		return &v
 	default:
-		p.addError(DiagInvalidValue, t, "expected true or false, got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected true or false, got "+strconv.Quote(t.Value))
 		return nil
 	}
 }
@@ -369,7 +369,7 @@ func (p *parser) parseAttachmentType() ast.AttachmentTypeExpr {
 	case TokenTypeImage:
 		return ast.AttachmentTypeImage
 	default:
-		p.addError(DiagInvalidType, t, "expected attachment type (file, image), got '"+t.Value+"'")
+		p.addError(DiagInvalidType, t, "expected attachment type (file, image), got "+strconv.Quote(t.Value))
 		return ast.AttachmentTypeFile
 	}
 }
@@ -390,7 +390,7 @@ func (p *parser) parseTypeExpr() ast.TypeExpr {
 	case TokenTypeStringArray:
 		return ast.TypeStringArray
 	default:
-		p.addError(DiagInvalidType, t, "expected type (string, bool, int, float, json, string[]), got '"+t.Value+"'")
+		p.addError(DiagInvalidType, t, "expected type (string, bool, int, float, json, string[]), got "+strconv.Quote(t.Value))
 		return ast.TypeString
 	}
 }
@@ -408,7 +408,7 @@ func (p *parser) parseLiteral() *ast.Literal {
 		// producing data corruption from authored input.
 		v, err := strconv.ParseInt(t.Value, 10, 64)
 		if err != nil {
-			p.addError(DiagInvalidValue, t, "invalid integer literal '"+t.Value+"': "+err.Error())
+			p.addError(DiagInvalidValue, t, "invalid integer literal "+strconv.Quote(t.Value)+": "+err.Error())
 		}
 		return &ast.Literal{Kind: ast.LitInt, Raw: t.Value, IntVal: v}
 	case TokenFloat:
@@ -417,7 +417,7 @@ func (p *parser) parseLiteral() *ast.Literal {
 		// JSON as `null` and breaks downstream comparisons and budgets.
 		v, err := strconv.ParseFloat(t.Value, 64)
 		if err != nil {
-			p.addError(DiagInvalidValue, t, "invalid float literal '"+t.Value+"': "+err.Error())
+			p.addError(DiagInvalidValue, t, "invalid float literal "+strconv.Quote(t.Value)+": "+err.Error())
 		}
 		return &ast.Literal{Kind: ast.LitFloat, Raw: t.Value, FloatVal: v}
 	case TokenTrue:
@@ -560,7 +560,7 @@ func (p *parser) parseFieldType() ast.FieldType {
 		// as does the degenerate `file: file`.
 		return ast.FieldTypeFile
 	default:
-		p.addError(DiagInvalidType, t, "expected field type, got '"+t.Value+"'")
+		p.addError(DiagInvalidType, t, "expected field type, got "+strconv.Quote(t.Value))
 		return ast.FieldTypeString
 	}
 }

@@ -11,19 +11,19 @@ func TestUnknownPropertyCarriesTheRegistryRemedy(t *testing.T) {
 	cases := []struct {
 		name, src, msg, hint string
 	}{
-		{"typo on a tool", "tool t:\n  comand: \"x\"\n", "unknown tool property 'comand'", "Did you mean `command`?"},
-		{"network property on the sandbox", "workflow w:\n  entry: a\n  sandbox:\n    rules: [\"a\"]\n", "unknown sandbox property 'rules'", "indent it under `network:`"},
-		{"workflow property inside budget", "workflow w:\n  budget:\n    entry: a\n", "unknown budget property 'entry'", "belongs to the enclosing `workflow`"},
-		{"another kind's property", "compute c:\n  command: \"x\"\n", "unknown compute property 'command'", "compute does not take it"},
-		{"agent list", "agent a:\n  zzz: 1\n", "unknown agent property 'zzz'", "agent accepts: description, model"},
+		{"typo on a tool", "tool t:\n  comand: \"x\"\n", "unknown tool property \"comand\"", "Did you mean `command`?"},
+		{"network property on the sandbox", "workflow w:\n  entry: a\n  sandbox:\n    rules: [\"a\"]\n", "unknown sandbox property \"rules\"", "indent it under `network:`"},
+		{"workflow property inside budget", "workflow w:\n  budget:\n    entry: a\n", "unknown budget property \"entry\"", "belongs to the enclosing `workflow`"},
+		{"another kind's property", "compute c:\n  command: \"x\"\n", "unknown compute property \"command\"", "compute does not take it"},
+		{"agent list", "agent a:\n  zzz: 1\n", "unknown agent property \"zzz\"", "agent accepts: description, model"},
 		// A block with several hosts names the host it is IN, never another:
 		// an mcp: block under a workflow is not an agent's.
-		{"agent property in a workflow's mcp", "workflow w:\n  entry: a\n  mcp:\n    model: \"x\"\n", "unknown mcp property 'model'", "`model` is a property of agent/fallback/human/judge/"},
-		{"agent property in an agent's mcp", "agent a:\n  mcp:\n    model: \"x\"\n", "unknown mcp property 'model'", "belongs to the enclosing `agent`"},
-		{"workflow property in an agent's mcp", "agent a:\n  mcp:\n    entry: x\n", "unknown mcp property 'entry'", "`entry` is a property of workflow"},
-		{"tool property in a tool's sandbox", "tool t:\n  command: \"x\"\n  sandbox:\n    goal: \"g\"\n", "unknown sandbox property 'goal'", "belongs to the enclosing `tool`"},
+		{"agent property in a workflow's mcp", "workflow w:\n  entry: a\n  mcp:\n    model: \"x\"\n", "unknown mcp property \"model\"", "`model` is a property of agent/fallback/human/judge/"},
+		{"agent property in an agent's mcp", "agent a:\n  mcp:\n    model: \"x\"\n", "unknown mcp property \"model\"", "belongs to the enclosing `agent`"},
+		{"workflow property in an agent's mcp", "agent a:\n  mcp:\n    entry: x\n", "unknown mcp property \"entry\"", "`entry` is a property of workflow"},
+		{"tool property in a tool's sandbox", "tool t:\n  command: \"x\"\n  sandbox:\n    goal: \"g\"\n", "unknown sandbox property \"goal\"", "belongs to the enclosing `tool`"},
 		// A nested single-host block names its own host even under another.
-		{"sandbox property in a network under a workflow", "workflow w:\n  entry: a\n  sandbox:\n    image: \"i\"\n    network:\n      image: \"x\"\n", "unknown sandbox.network property 'image'", "belongs to the enclosing `sandbox`"},
+		{"sandbox property in a network under a workflow", "workflow w:\n  entry: a\n  sandbox:\n    image: \"i\"\n    network:\n      image: \"x\"\n", "unknown sandbox.network property \"image\"", "belongs to the enclosing `sandbox`"},
 	}
 	for _, c := range cases {
 		res := Parse("t.bot", c.src)
@@ -60,7 +60,7 @@ func TestUnknownWorkflowPropertyIsE012NotAMissingArrow(t *testing.T) {
 		t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
 	}
 	d := res.Diagnostics[0]
-	if d.Code != DiagUnknownProperty || d.Message != "unknown workflow property 'budjet'" {
+	if d.Code != DiagUnknownProperty || d.Message != "unknown workflow property \"budjet\"" {
 		t.Fatalf("got %s %q", d.Code, d.Message)
 	}
 	if !strings.Contains(d.Hint, "Did you mean `budget`?") {

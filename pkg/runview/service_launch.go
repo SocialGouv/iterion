@@ -403,6 +403,27 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		inputs[k] = v
 	}
 
+	// An input that names no var of the workflow is refused, not dropped:
+	// the run would execute on defaults while the operator believes it was
+	// parameterised (#1757) — the verdict, the report and the journal would
+	// all be about a configuration that was never applied. Naming the key
+	// and the declared set. Spec.AllowUnknownInputs is the operator's
+	// explicit opt-out (CLI --allow-unknown-inputs, the dispatcher's
+	// warn-and-proceed contract): the keys ride, said at warn — forwarding
+	// an undeclared payload key to a subbot through {{input.*}} is their
+	// legitimate use (C149), a typo'd key is the default's refusal. The
+	// runner re-applies the same check on the queued path, so a cloud run
+	// cannot skip it by having been admitted here.
+	if unknown := ir.UnknownInputNames(wf, spec.Vars); len(unknown) > 0 {
+		if !spec.AllowUnknownInputs {
+			s.dropRunLog(runID)
+			return nil, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
+				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		}
+		runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
+			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+	}
+
 	// Resolve the credential-derived topology vars (review_mode +
 	// mono_family, plan_review, llm_families; no-op unless the workflow
 	// declares the matching var). Mirrors the CLI so studio/API/dispatcher

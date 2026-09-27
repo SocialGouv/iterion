@@ -21,6 +21,7 @@ var spawnModelKeys = []string{"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT
 type modelDefaultsRun struct {
 	sandbox.Run
 	env    map[string]string
+	argv   []string
 	script string
 }
 
@@ -30,6 +31,7 @@ func (r *modelDefaultsRun) Command(ctx context.Context, argv []string, opts sand
 	for k, v := range opts.Env {
 		r.env[k] = v
 	}
+	r.argv = append([]string(nil), argv...)
 	cmd := exec.CommandContext(ctx, r.script)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	for k, v := range opts.Env {
@@ -60,6 +62,7 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 		{name: "ambient-all-overrides", defaults: true, env: map[string]string{"ANTHROPIC_DEFAULT_OPUS_MODEL": "operator-opus", "ANTHROPIC_DEFAULT_SONNET_MODEL": "operator-sonnet", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "operator-haiku", "ANTHROPIC_DEFAULT_FABLE_MODEL": "operator-fable", "CLAUDE_CODE_SUBAGENT_MODEL": "operator-subagent"}, override: map[string]string{"ANTHROPIC_DEFAULT_OPUS_MODEL": "operator-opus", "ANTHROPIC_DEFAULT_SONNET_MODEL": "operator-sonnet", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "operator-haiku", "ANTHROPIC_DEFAULT_FABLE_MODEL": "operator-fable", "CLAUDE_CODE_SUBAGENT_MODEL": "operator-subagent"}},
 		{name: "explicit-empties", defaults: true, env: map[string]string{"ANTHROPIC_DEFAULT_HAIKU_MODEL": "", "CLAUDE_CODE_SUBAGENT_MODEL": ""}, extra: []string{"ANTHROPIC_DEFAULT_OPUS_MODEL=", "ANTHROPIC_DEFAULT_SONNET_MODEL="}, override: map[string]string{"ANTHROPIC_DEFAULT_OPUS_MODEL": "", "ANTHROPIC_DEFAULT_SONNET_MODEL": "", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "", "CLAUDE_CODE_SUBAGENT_MODEL": ""}},
 		{name: "task-beats-ambient-and-duplicate", defaults: true, env: map[string]string{"ANTHROPIC_DEFAULT_HAIKU_MODEL": "ambient-haiku"}, extra: []string{"ANTHROPIC_DEFAULT_HAIKU_MODEL=first", "ANTHROPIC_DEFAULT_HAIKU_MODEL=task-haiku"}, override: map[string]string{"ANTHROPIC_DEFAULT_HAIKU_MODEL": "task-haiku"}},
+		{name: "provider-prefixed-zai", defaults: true, model: "zai/glm-5.3"},
 	}
 	for _, tc := range cases {
 		for _, sand := range []bool{false, true} {
@@ -76,7 +79,7 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 					dir := t.TempDir()
 					capture := filepath.Join(dir, "capture")
 					script := filepath.Join(dir, "fake-claude")
-					body := "#!/bin/sh\n: > \"$MODEL_DEFAULTS_CAPTURE\"\nfor key in " + strings.Join(spawnModelKeys, " ") + "; do\n if value=$(printenv \"$key\"); then printf '%s=%s\\n' \"$key\" \"$value\" >> \"$MODEL_DEFAULTS_CAPTURE\"; fi\ndone\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"{}\",\"num_turns\":1,\"duration_ms\":1,\"duration_api_ms\":1,\"session_id\":\"review\"}'\n"
+					body := "#!/bin/sh\n: > \"$MODEL_DEFAULTS_CAPTURE\"\nfor a in \"$@\"; do printf 'argv=%s\\n' \"$a\" >> \"$MODEL_DEFAULTS_CAPTURE\"; done\nfor key in " + strings.Join(spawnModelKeys, " ") + "; do\n if value=$(printenv \"$key\"); then printf '%s=%s\\n' \"$key\" \"$value\" >> \"$MODEL_DEFAULTS_CAPTURE\"; fi\ndone\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"{}\",\"num_turns\":1,\"duration_ms\":1,\"duration_api_ms\":1,\"session_id\":\"review\"}'\n"
 					if err := os.WriteFile(script, []byte(body), 0755); err != nil {
 						t.Fatal(err)
 					}
@@ -118,10 +121,37 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 						t.Fatal(err)
 					}
 					got := map[string]string{}
+					var gotArgv []string
 					for _, line := range strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n") {
 						if k, v, ok := strings.Cut(line, "="); ok {
+							if k == "argv" {
+								gotArgv = append(gotArgv, v)
+								continue
+							}
 							got[k] = v
 						}
+					}
+					// The prefixed spec must reach the CLI as the BARE code:
+					// the facade's endpoint rejects the provider prefix
+					// ("[1211] Unknown Model"). On the host path the fake
+					// script dumps its own argv; on the sandbox path the
+					// driver callback receives the wrapped argv — assert
+					// both spines.
+					bareModel := func(argv []string) bool {
+						for i, a := range argv {
+							if a == "--model" {
+								return i+1 < len(argv) && argv[i+1] == "glm-5.3"
+							}
+						}
+						return false
+					}
+					if !sand && tc.model != "" {
+						if !bareModel(gotArgv) {
+							t.Fatalf("--model must carry the bare code glm-5.3 on the host path: argv %v", gotArgv)
+						}
+					}
+					if sand && tc.model != "" && !bareModel(fake.argv) {
+						t.Fatalf("--model must carry the bare code glm-5.3 on the sandbox path: argv %v", fake.argv)
 					}
 					wantDefaults := tc.defaults
 					for _, key := range spawnModelKeys {

@@ -52,7 +52,7 @@ const (
 	DiagAuthorDocument      DiagCode = "E050" // the YAML document itself is refused: not exactly one document, an anchor, an alias, a merge key or an explicit tag, a duplicate or non-string key, too deep or too large
 	DiagAuthorValue         DiagCode = "E051" // a value that is not the shape its property or part takes, or one the .bot cannot write: a negative or non-finite number, a float where an integer, a word where a bool, a key the document's top level does not have
 	DiagAuthorHeader        DiagCode = "E052" // no `dsl:` key — the author document names its syntax profile, always
-	DiagAuthorPromptBody    DiagCode = "E053" // a text the .bot reads otherwise than the document wrote it — a prompt body the lexer settles, a block scalar holding a line separator: a warning names what changed, an error what has no written form
+	DiagAuthorPromptBody    DiagCode = "E053" // a text the .bot reads otherwise than the document wrote it — a prompt body the lexer settles, a block scalar holding a line separator, a ` #` that ends a plain text value in a comment: a warning names what changed, an error what has no written form
 	DiagAuthorNoWrittenForm DiagCode = "E054" // the document reads, but the program it describes has no written .bot form: the text the writer produces reads back as another program (unparse.Verify names the cause)
 )
 

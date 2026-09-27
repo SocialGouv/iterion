@@ -3,6 +3,66 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.204.2](https://github.com/SocialGouv/iterion/compare/v3.204.1...v3.204.2) (2026-09-27)
+
+### Bug Fixes
+
+* **delegate:** the claude_code model id reaches the wire bare — the facade trio's prefixes are stripped ([#1885](https://github.com/SocialGouv/iterion/issues/1885)) ([8b1f51e](https://github.com/SocialGouv/iterion/commit/8b1f51e3a7aabe8ccbd6adbad43abe4a2e917148))
+
+    <details><summary>why</summary>
+
+    `teams switch <slug>` minted a PAT with the slug stored verbatim as the team pin. A PAT identity resolves its team on every use — GetMembership(user, "pic-graal") finds nothing — so the token answered 401 "token team unavailable" on every call, and the CLI (sharing one credential file with the MCP server) carried the break into every surface. Paid in production: two studio re-logins and a blocked phase.
+
+    </details>
+
+## [3.204.1](https://github.com/SocialGouv/iterion/compare/v3.204.0...v3.204.1) (2026-09-27)
+
+### Bug Fixes
+
+* **author:** the document reads as it is written — stale floats, block scalars under words, a comment that ends a value ([#1881](https://github.com/SocialGouv/iterion/issues/1881)) ([c157dc3](https://github.com/SocialGouv/iterion/commit/c157dc3598ed493a74cf9b8d6de07f34a691b5e7)), references [#1821](https://github.com/SocialGouv/iterion/issues/1821) [#1781](https://github.com/SocialGouv/iterion/issues/1781) [#1781](https://github.com/SocialGouv/iterion/issues/1781) [#1780](https://github.com/SocialGouv/iterion/issues/1780)
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 2 (opus-5.5: 6 + 4 verified findings, all fixed) Adversarial-Model: claude-opus-5-5
+
+    </details>
+
+## [3.204.0](https://github.com/SocialGouv/iterion/compare/v3.203.2...v3.204.0) (2026-09-27)
+
+### Features
+
+* **product-docs:** prove exhaustiveness in a gate, not on the agent's word ([#1774](https://github.com/SocialGouv/iterion/issues/1774)) ([c5f4dcb](https://github.com/SocialGouv/iterion/commit/c5f4dcbe0b62941093fc719eed9ef53dad5e97b1))
+
+    <details><summary>why</summary>
+
+    Prody's convergence rested on `scope_ok ∧ lint_ok ∧ docs_aligned`, and `docs_aligned` is the agent's own answer to the one question it cannot honestly answer about itself: did I document EVERYTHING, and does everything I documented EXIST? Surface coverage was an advisory hint. The catalog's doctrine is that the truth lives in the gates.
+
+    </details>
+
+## [3.203.2](https://github.com/SocialGouv/iterion/compare/v3.203.1...v3.203.2) (2026-09-27)
+
+### Bug Fixes
+
+* **server,cli:** a team-pinned token cannot be minted for a team that does not exist ([#1880](https://github.com/SocialGouv/iterion/issues/1880)) ([8efbe48](https://github.com/SocialGouv/iterion/commit/8efbe481ba4c474e43a5ca2f44faf3bf68b13f61))
+
+    <details><summary>why</summary>
+
+    `teams switch <slug>` minted a PAT with the slug stored verbatim as the team pin. A PAT identity resolves its team on every use — GetMembership(user, "pic-graal") finds nothing — so the token answered 401 "token team unavailable" on every call, and the CLI (sharing one credential file with the MCP server) carried the break into every surface. Paid in production: two studio re-logins and a blocked phase.
+
+    </details>
+
+## [3.203.1](https://github.com/SocialGouv/iterion/compare/v3.203.0...v3.203.1) (2026-09-26)
+
+### Bug Fixes
+
+* **launch:** admission gives back what it takes; unknown inputs refuse, not drop ([#1726](https://github.com/SocialGouv/iterion/issues/1726) [#1757](https://github.com/SocialGouv/iterion/issues/1757)) ([#1872](https://github.com/SocialGouv/iterion/issues/1872)) ([74f4035](https://github.com/SocialGouv/iterion/commit/74f403519907c14b91a9659ebcd22ca781cc4bcd))
+
+    <details><summary>why</summary>
+
+    gateLaunchRate consumed a token from the org's per-minute launch bucket, but launchAdmission carried only the monthly usage key — so a client looping a malformed body emptied the bucket while every 400 handed the monthly unit back, and the FIRST well-formed launch was 429'd with nothing running (measured, #1726).
+
+    </details>
+
 ## [3.203.0](https://github.com/SocialGouv/iterion/compare/v3.202.3...v3.203.0) (2026-09-26)
 
 ### Features

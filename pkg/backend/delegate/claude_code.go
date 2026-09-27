@@ -18,10 +18,31 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
+
+// claudeCodeModelID strips the provider prefix a model spec carries when
+// that provider rides the SAME Anthropic-compatible wire this backend
+// drives — derived from secrets.AnthropicWireSlotOrder (whose docs
+// mandate adding a provider HERE, once): the claude CLI forwards the
+// value verbatim, and a prefixed code ("zai/glm-5.3") reaches z.ai whole
+// and dies with "[1211] Unknown Model". A genuinely foreign prefix
+// ("openai/…") stays and fails fast as the non-Anthropic model it is.
+func claudeCodeModelID(spec string) string {
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if slot == string(secrets.OAuthKindClaudeCode) {
+			// An OAuth kind is a credential slot, not a model prefix.
+			continue
+		}
+		if after, ok := strings.CutPrefix(spec, slot+"/"); ok {
+			return after
+		}
+	}
+	return spec
+}
 
 // defaultClaudeCodeModel is the model iterion forces on the claude_code
 // backend when the workflow doesn't specify one. Mirrors the official
@@ -458,12 +479,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	if model == "" {
 		model = defaultClaudeCodeModel
 	}
-	// The DSL's canonical model spec is provider-prefixed
-	// ("anthropic/claude-…", the form claw parses), but the claude CLI
-	// only accepts bare model names and rejects the prefixed form as an
-	// unknown model. Strip the anthropic prefix; any other provider
-	// prefix stays and fails fast as a genuinely non-Anthropic model.
-	model = strings.TrimPrefix(model, "anthropic/")
+	model = claudeCodeModelID(model)
 	opts = append(opts, claudesdk.WithModel(model))
 
 	// CLI binary path: the per-node task override (DSL `command:`, an
@@ -1542,12 +1558,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	if model == "" {
 		model = defaultClaudeCodeModel
 	}
-	// The DSL's canonical model spec is provider-prefixed
-	// ("anthropic/claude-…", the form claw parses), but the claude CLI
-	// only accepts bare model names and rejects the prefixed form as an
-	// unknown model. Strip the anthropic prefix; any other provider
-	// prefix stays and fails fast as a genuinely non-Anthropic model.
-	model = strings.TrimPrefix(model, "anthropic/")
+	model = claudeCodeModelID(model)
 	opts = append(opts, claudesdk.WithModel(model))
 	// CLI binary path: the per-node task override (DSL `command:`, an
 	// alternate claude-code-compatible CLI) wins over the backend-level

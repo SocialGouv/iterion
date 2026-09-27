@@ -112,9 +112,9 @@ func TestDSLHeaderRefusals(t *testing.T) {
 		msg  string
 	}{
 		{"newer profile", "dsl: 3\nagent a:\n  description: \"x\"\n", DiagUnknownProfile, "unknown dsl profile 3 — this build reads profiles 1 to 2"},
-		{"not an integer", "dsl: two\n", DiagUnknownProfile, "got 'two'"},
-		{"zero", "dsl: 0\n", DiagUnknownProfile, "got '0'"},
-		{"quoted", "dsl: \"2\"\n", DiagUnknownProfile, "got '2'"},
+		{"not an integer", "dsl: two\n", DiagUnknownProfile, "got \"two\""},
+		{"zero", "dsl: 0\n", DiagUnknownProfile, "got \"0\""},
+		{"quoted", "dsl: \"2\"\n", DiagUnknownProfile, "got \"2\""},
 		{"nothing", "dsl:\nagent a:\n  description: \"x\"\n", DiagUnknownProfile, "got nothing"},
 		{"after a declaration", "vars:\n  x: string\ndsl: 2\n", DiagMisplacedHeader, "must be the first declaration"},
 		{"twice", "dsl: 2\ndsl: 2\n", DiagMisplacedHeader, "duplicate dsl: header"},

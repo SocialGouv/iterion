@@ -44,6 +44,8 @@ func Parse(name string, src []byte) *Result {
 		res.Diagnostics = diags
 		return res
 	}
+	// On a document that reads, decode's second return is its warnings,
+	// not refusals — they ride beside the converter's and the parser's.
 	text, lines, sdiags, _ := spell(name, src, root)
 	res.Text = text
 	pr := parser.Parse(name, text)
