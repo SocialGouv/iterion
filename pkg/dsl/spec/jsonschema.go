@@ -351,10 +351,11 @@ func (b *schemaBuilder) propertiesObject(props []Property, extra obj) obj {
 // property is the fragment of one property, from its Form.
 func (b *schemaBuilder) property(p Property) obj {
 	o := b.form(p.Form, p.Values, p.Body)
-	// WordValued marks String properties; an EnumOrEnv marked too takes
-	// the same pattern (an env form cannot carry a break either), so the
-	// schema and the converter's word gate say the same thing.
-	if p.WordValued && (p.Form == String || p.Form == EnumOrEnv) {
+	// WordValued marks String and StringOrIdent properties; an EnumOrEnv
+	// marked too takes the same pattern (an env form cannot carry a break
+	// either), so the schema and the converter's word gate say the same
+	// thing.
+	if p.WordValued && (p.Form == String || p.Form == EnumOrEnv || p.Form == StringOrIdent) {
 		o["pattern"] = noLineBreakPattern
 	}
 	if p.Doc != "" {

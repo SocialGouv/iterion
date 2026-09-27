@@ -229,3 +229,34 @@ func TestAChompedSingleLineBlockStillReadsAsTheWord(t *testing.T) {
 		})
 	}
 }
+
+
+// The workflow's default_backend is the twin of a node's backend: the same
+// word gate covers it (the gate's round-1 finding on #1881).
+func TestADefaultBackendBlockIsRefused(t *testing.T) {
+	nl := string(rune(10))
+	src := strings.Join([]string{
+		"dsl: 2",
+		"workflow:",
+		"  name: w",
+		"  default_backend: |",
+		"    claw",
+		"  entry: done",
+	}, nl) + nl
+	res := Parse("x.yaml", []byte(src))
+	if !res.HasErrors() {
+		t.Fatalf("the block under default_backend is accepted:%s%s", nl, src)
+	}
+	found := false
+	for _, d := range res.Diagnostics {
+		if strings.Contains(d.Message, "takes a word on the key's line, not a `|` or `>` block") {
+			found = true
+			if d.Line != 4 {
+				t.Errorf("the refusal sits on line %d, want the key's line 4", d.Line)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no refusal names the block:%s%v", nl, res.Diagnostics)
+	}
+}

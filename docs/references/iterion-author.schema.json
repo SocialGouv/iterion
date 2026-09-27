@@ -257,6 +257,7 @@
         },
         "max_duration": {
           "description": "Wall-clock cap, e.g. \"4h\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "max_iterations": {
@@ -635,6 +636,7 @@
           },
           "when": {
             "description": "Expression over vars that gates the route",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           }
         },
@@ -818,6 +820,7 @@
         },
         "command": {
           "description": "stdio: the executable",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "transport": {
@@ -865,6 +868,7 @@
         },
         "scope": {
           "description": "Memory scope the tools read and write",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "visibility": {
@@ -934,6 +938,7 @@
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "compaction": {
@@ -1162,6 +1167,7 @@
         },
         "from": {
           "description": "Node whose async questions are awaited; omit for the whole run",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "timeout": {
@@ -1242,6 +1248,7 @@
         },
         "event": {
           "description": "Event name",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "with": {
@@ -1273,6 +1280,7 @@
       "properties": {
         "code": {
           "description": "Error code, UPPER_SNAKE (bare or quoted)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "description": {
@@ -1364,6 +1372,7 @@
         },
         "merge_into": {
           "description": "review: current (default), none or a branch name",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "merge_strategy": {
@@ -1461,6 +1470,7 @@
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "compaction": {
@@ -1818,6 +1828,7 @@
         },
         "source": {
           "description": "Path of the child .bot, relative to this file",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "subbot": {
@@ -1854,6 +1865,7 @@
       "properties": {
         "action": {
           "description": "Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "artifact_labels": {
@@ -1881,6 +1893,7 @@
         },
         "connection": {
           "description": "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "description": {
@@ -2018,6 +2031,7 @@
         },
         "event": {
           "description": "Event name awaited",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "output": {
@@ -2164,6 +2178,7 @@
         },
         "image": {
           "description": "Container image (exclusive with build)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "mode": {
@@ -2188,10 +2203,12 @@
         },
         "user": {
           "description": "Container user",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "workspace_folder": {
           "description": "Mount point of the workspace inside the container",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -2210,10 +2227,12 @@
         },
         "context": {
           "description": "Build context",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "dockerfile": {
           "description": "Dockerfile path",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -2235,6 +2254,7 @@
         },
         "preset": {
           "description": "Rule preset, e.g. \"iterion-default\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "rules": {
@@ -2320,6 +2340,7 @@
               },
               "env": {
                 "description": "Environment variable that receives the value",
+                "pattern": "^[^\\n\\r\\x85]*$",
                 "type": "string"
               },
               "hosts": {
@@ -2522,6 +2543,7 @@
         },
         "default_backend": {
           "description": "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "deny": {
@@ -2887,6 +2909,7 @@
         },
         "max_duration": {
           "description": "Wall-clock cap, e.g. \"4h\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "max_iterations": {
@@ -3265,6 +3288,7 @@
           },
           "when": {
             "description": "Expression over vars that gates the route",
+            "pattern": "^[^\\n\\r\\x85]*$",
             "type": "string"
           }
         },
@@ -3448,6 +3472,7 @@
         },
         "command": {
           "description": "stdio: the executable",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "transport": {
@@ -3491,6 +3516,7 @@
         },
         "scope": {
           "description": "Memory scope the tools read and write",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "visibility": {
@@ -3560,6 +3586,7 @@
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "compaction": {
@@ -3788,6 +3815,7 @@
         },
         "from": {
           "description": "Node whose async questions are awaited; omit for the whole run",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "timeout": {
@@ -3868,6 +3896,7 @@
         },
         "event": {
           "description": "Event name",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "with": {
@@ -3899,6 +3928,7 @@
       "properties": {
         "code": {
           "description": "Error code, UPPER_SNAKE (bare or quoted)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "description": {
@@ -3990,6 +4020,7 @@
         },
         "merge_into": {
           "description": "review: current (default), none or a branch name",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "merge_strategy": {
@@ -4087,6 +4118,7 @@
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "compaction": {
@@ -4444,6 +4476,7 @@
         },
         "source": {
           "description": "Path of the child .bot, relative to this file",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "subbot": {
@@ -4480,6 +4513,7 @@
       "properties": {
         "action": {
           "description": "Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "artifact_labels": {
@@ -4507,6 +4541,7 @@
         },
         "connection": {
           "description": "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "description": {
@@ -4644,6 +4679,7 @@
         },
         "event": {
           "description": "Event name awaited",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "output": {
@@ -4790,6 +4826,7 @@
         },
         "image": {
           "description": "Container image (exclusive with build)",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "mode": {
@@ -4814,10 +4851,12 @@
         },
         "user": {
           "description": "Container user",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "workspace_folder": {
           "description": "Mount point of the workspace inside the container",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -4836,10 +4875,12 @@
         },
         "context": {
           "description": "Build context",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "dockerfile": {
           "description": "Dockerfile path",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         }
       },
@@ -4861,6 +4902,7 @@
         },
         "preset": {
           "description": "Rule preset, e.g. \"iterion-default\"",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "rules": {
@@ -4946,6 +4988,7 @@
               },
               "env": {
                 "description": "Environment variable that receives the value",
+                "pattern": "^[^\\n\\r\\x85]*$",
                 "type": "string"
               },
               "hosts": {
@@ -5148,6 +5191,7 @@
         },
         "default_backend": {
           "description": "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
+          "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
         "deny": {
