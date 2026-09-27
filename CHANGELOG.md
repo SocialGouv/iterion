@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.205.1](https://github.com/SocialGouv/iterion/compare/v3.205.0...v3.205.1) (2026-09-27)
+
+### Bug Fixes
+
+* **author:** the author twin's remaining lows — raw folds, remedies that exist, one mistake one message ([#1884](https://github.com/SocialGouv/iterion/issues/1884)) ([ac2a192](https://github.com/SocialGouv/iterion/commit/ac2a192444dc519331f60d5d8c69a207f28239ba))
+
+    <details><summary>why</summary>
+
+    Eight of #1814's ten items, each with its witness:
+
+    </details>
+* **runtime:** the engine writes only what is its own — the wip bank proves its worktree, the finish hook carries the run's context, no test mirror lands in the checkout ([#1889](https://github.com/SocialGouv/iterion/issues/1889)) ([3e2ede4](https://github.com/SocialGouv/iterion/commit/3e2ede4eb2235a9d6a726dbbbec893e3c6e314b8)), references [#1805](https://github.com/SocialGouv/iterion/issues/1805)
+
+    <details><summary>why</summary>
+
+    Three tickets, one seam: nothing the engine writes may land in a repository or a directory that is not the run's.
+
+    </details>
+
 ## [3.205.0](https://github.com/SocialGouv/iterion/compare/v3.204.2...v3.205.0) (2026-09-27)
 
 ### Features
