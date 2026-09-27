@@ -742,6 +742,12 @@ func (s *speller) integer(what string, n *yaml.Node, t site) (string, bool) {
 func (s *speller) number(what string, n *yaml.Node, t site) (string, bool) {
 	switch n.ShortTag() {
 	case "!!int":
+		if v, ok := intOf(n); ok && v < 0 {
+			// A number takes the sign's refusal in its own name: "integer"
+			// would name the wrong shape (0.5 is a legal number).
+			s.refuse(n, what+" takes a non-negative number: the .bot has no signed number, got "+n.Value+t.textRemedy())
+			return "", false
+		}
 		if _, ok := intOf(n); !ok && t == valueSite && botNumberRe.MatchString(n.Value) {
 			// Digits beyond every integer: the .bot's number reads them as
 			// the float they are, and so does the document.
@@ -1020,7 +1026,13 @@ func (s *speller) head(pairs []pair) {
 			break
 		}
 		if msg, write := numberSpelling(dsl, false); msg != "" {
-			s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: "+msg+" — write "+write, "")
+			remedy := " — write " + write
+			if n, err := strconv.Atoi(strings.Trim(write, "`")); err == nil && n > parser.MaxProfile {
+				// The remedy names a profile this build does not read: it
+				// names the ones that exist instead of a second refusal.
+				remedy = fmt.Sprintf(" — this build reads profiles 1 to %d", parser.MaxProfile)
+			}
+			s.refuseHint(dsl, parser.DiagUnknownProfile, "dsl: "+msg+remedy, "")
 			if v <= parser.MaxProfile {
 				// Refused, the rest is still read in the profile YAML reads.
 				headerText, s.profile = "dsl: "+strconv.FormatInt(v, 10), int(v)
@@ -1908,8 +1920,30 @@ func (s *speller) subEntry(kind spec.Kind, k, v *yaml.Node, indent int) {
 		s.bare(indent, k.Value+":", k)
 		return
 	}
+	// A refusal inside the body takes the entry with it: the parser reads
+	// no empty form of a criterion or an effect, and a half entry left
+	// behind would have the compiler add a second refusal of its own —
+	// the C302 a criterion without its required params draws (#1814).
+	mark := len(s.lines)
+	errs := 0
+	for _, d := range s.diags {
+		if d.Severity == parser.SeverityError {
+			errs++
+		}
+	}
 	s.header(indent, k.Value+":", k)
 	s.body(body, pairs, indent+2, kind.Name)
+	if len(s.lines) > mark {
+		now := 0
+		for _, d := range s.diags {
+			if d.Severity == parser.SeverityError {
+				now++
+			}
+		}
+		if now > errs {
+			s.lines = s.lines[:mark]
+		}
+	}
 }
 
 // ---- nodes, groups, uses, workflow ----

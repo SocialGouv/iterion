@@ -123,7 +123,7 @@ func yamlRemedy(msg string) string {
 // the comment may be a value cut short — and carries the warnings back
 // apart from the refusals: a warning never refuses a document.
 func guardTree(name string, root *yaml.Node, src []byte) (diags, warns []parser.Diagnostic) {
-	g := &guard{name: name, lines: sourceLines(src)}
+	g := &guard{name: name, lines: sourceLines(src), rawLines: strings.Split(strings.TrimPrefix(string(src), "\ufeff"), "\n")}
 	g.walk(root, 0)
 	return g.diags, g.warns
 }
@@ -152,9 +152,12 @@ func invalidUTF8(src []byte) int {
 type guard struct {
 	name  string
 	lines []string
-	count int
-	diags []parser.Diagnostic
-	warns []parser.Diagnostic
+	// rawLines is the source split on "\n" only: a raw CR, NEL, LS or PS
+	// stays in its line's bytes, where sourceLines had folded it away.
+	rawLines []string
+	count    int
+	diags    []parser.Diagnostic
+	warns    []parser.Diagnostic
 }
 
 // at is the source from node n's position to the end of its line, "" when
@@ -211,6 +214,50 @@ func (g *guard) warn(n *yaml.Node, msg string) {
 	})
 }
 
+// rawFoldBreak refuses a quoted scalar whose SOURCE line carries a raw
+// CR or NEL byte inside the quotes — the two breaks yaml.v3 folds to a
+// space, so the .bot writes the fold in the value's place and nothing
+// else says so (#1814). An LS or a PS is kept as written: it reads back
+// byte for byte, and stays the author's.
+func (g *guard) rawFoldBreak(n *yaml.Node) {
+	if n.Line < 1 || n.Line > len(g.rawLines) {
+		return
+	}
+	line := strings.TrimSuffix(g.rawLines[n.Line-1], "\r")
+	runes := []rune(line)
+	if n.Column < 1 || n.Column-1 >= len(runes) {
+		return
+	}
+	tail := string(runes[n.Column-1:])
+	// The scan stops at the value's closing quote: everything past it is
+	// the rest of the document, and a CR or NEL there is a LINE TERMINATOR
+	// yaml.v3 honours, not a fold inside the value.
+	if quote := tail[0]; quote == '"' || quote == '\'' {
+		end := 1
+		for end < len(tail) {
+			if quote == '"' && tail[end] == '\\' {
+				end += 2
+				continue
+			}
+			if tail[end] == quote {
+				if quote == '\'' && end+1 < len(tail) && tail[end+1] == '\'' {
+					end += 2
+					continue
+				}
+				break
+			}
+			end++
+		}
+		if end >= len(tail) {
+			return
+		}
+		tail = tail[:end+1]
+	}
+	if strings.ContainsAny(tail, "\r\u0085") {
+		g.refuse(n, "a raw CR or NEL byte sits inside the quoted value: YAML folds it to a space and the .bot writes the fold in its place — replace it with a space or delete it")
+	}
+}
+
 // plainValueComment says a ` #` that starts a comment at a plain text
 // VALUE's tail: the value ends there and the rest of the line is dropped —
 // the one placement where a comment may be a value cut short. A number, a
@@ -247,6 +294,9 @@ func (g *guard) walk(n *yaml.Node, depth int) {
 	}
 	if g.droppedBang(n) {
 		g.refuse(n, "YAML reads a `!` before a value as a tag and drops it — `"+excerpt(g.at(n))+"` would be read without it: quote the whole value if the `!` is part of it")
+	}
+	if n.Kind == yaml.ScalarNode && n.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0 {
+		g.rawFoldBreak(n)
 	}
 	switch n.Kind {
 	case yaml.AliasNode:
@@ -337,7 +387,7 @@ func tagWord(tag string) string {
 	case "!!null":
 		return "null (no value)"
 	case "!!timestamp":
-		return "a timestamp (a bare date)"
+		return "a timestamp (a bare date) — quote it if the date is the text you mean"
 	case "!!binary":
 		return "binary data"
 	case "!!merge":
