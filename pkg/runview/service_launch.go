@@ -1485,7 +1485,7 @@ func consumeArtifactResumePreflight(opts []runtime.EngineOption, ex *launchExtra
 // future board transitions back to this run. The convention lives here,
 // not in the generic engine, so the runtime stays decoupled from a
 // bot-specific schema field.
-func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]any) {
+func (s *Service) stampWatchedFromOutput(ctx context.Context, runID, _ string, output map[string]any) {
 	if output == nil {
 		return
 	}
@@ -1493,7 +1493,14 @@ func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]any)
 	if len(ids) == 0 {
 		return
 	}
-	if _, err := s.store.AddWatchedIssues(context.Background(), runID, ids); err != nil {
+	if ctx == nil {
+		// A nil ctx here would be a wiring bug, and Background is the
+		// valueless call a tenant-filtered store panics on (#1805): drop
+		// the stamp loudly instead of smuggling a bypass through.
+		s.logger.Warn("runview: stamp watched issues on run %s: no context — not stamped", runID)
+		return
+	}
+	if _, err := s.store.AddWatchedIssues(ctx, runID, ids); err != nil {
 		s.logger.Warn("runview: stamp watched issues on run %s: %v", runID, err)
 	}
 }

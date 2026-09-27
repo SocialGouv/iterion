@@ -182,7 +182,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// de zéro sur un enfant `failed`, la reprise du dispatcher repaierait
 			// tout son travail déjà fait.
 			runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
-			runtime.WithOnNodeFinished(func(_, nodeID string, out map[string]any) {
+			runtime.WithOnNodeFinished(func(_ context.Context, _, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
 			}),
 		}

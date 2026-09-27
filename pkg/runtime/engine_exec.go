@@ -737,7 +737,7 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 		return "", err
 	}
 	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, currentNodeID, output)
+		e.onNodeFinished(rs.ctx, rs.runID, currentNodeID, output)
 	}
 
 	// Best-effort checkpoint for resume-from-failed.

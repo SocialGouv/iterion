@@ -77,7 +77,7 @@ func (e *Engine) execSpecialNode(
 		return "", err
 	}
 	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
+		e.onNodeFinished(rs.ctx, rs.runID, nodeID, output)
 	}
 	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
 		e.logger.Error("failed to save checkpoint after %s %q: %v", kind, nodeID, err)

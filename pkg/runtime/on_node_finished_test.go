@@ -47,7 +47,7 @@ func TestOnNodeFinished_ReceivesRunIDAndRawOutput(t *testing.T) {
 	)
 
 	s := tmpStore(t)
-	eng := New(wf, s, exec, WithOnNodeFinished(func(runID, nodeID string, output map[string]any) {
+	eng := New(wf, s, exec, WithOnNodeFinished(func(_ context.Context, runID, nodeID string, output map[string]any) {
 		mu.Lock()
 		got = append(got, capture{runID: runID, nodeID: nodeID, output: output})
 		mu.Unlock()
@@ -74,5 +74,56 @@ func TestOnNodeFinished_ReceivesRunIDAndRawOutput(t *testing.T) {
 	raw, ok := dispatch.output["dispatched_ids"].([]any)
 	if !ok || len(raw) != 2 {
 		t.Fatalf("raw dispatched_ids not delivered to hook: %#v", dispatch.output)
+	}
+}
+
+// The hook carries the engine's own run context — the one the launch
+// wired, whose values (a tenant, a request scope) every store call of the
+// run shares. It never arrives as a fresh background context: a
+// tenant-filtered store would panic on it, the exact #1805 defect.
+func TestOnNodeFinished_CarriesTheRunsContext(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "on_finished_ctx_test",
+		Entry: "dispatch",
+		Nodes: map[string]ir.Node{
+			"dispatch": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dispatch"}},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "dispatch", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+	exec := newStubExecutor()
+	exec.on("dispatch", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	type ctxKey struct{}
+	key := ctxKey{}
+	var (
+		mu   sync.Mutex
+		have bool
+	)
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithOnNodeFinished(func(ctx context.Context, _, _ string, _ map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if ctx.Value(key) == "run-onfin-ctx" {
+			have = true
+		}
+	}))
+
+	runCtx := context.WithValue(context.Background(), key, "run-onfin-ctx")
+	if err := eng.Run(runCtx, "run-onfin-ctx", nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !have {
+		t.Fatalf("the hook's context is not the run's own context (the sentinel value is missing)")
 	}
 }

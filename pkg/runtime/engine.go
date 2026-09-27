@@ -168,8 +168,12 @@ type Engine struct {
 	// seamWarnOnce keeps the "this executor cannot answer the seams
 	// admission reads" warning to one line per engine: admission asks per
 	// node, per branch, on every fan-out.
-	seamWarnOnce             sync.Once
-	onNodeFinished           func(runID, nodeID string, output map[string]any)
+	seamWarnOnce   sync.Once
+	onNodeFinished func(ctx context.Context, runID, nodeID string, output map[string]any)
+	// workDirTemp is the throw-away directory defaultWorkDir created under
+	// `go test` when the process cwd was the package directory (#1803); its
+	// owner removes it when the run is done.
+	workDirTemp              string
 	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
 	workflowHash             string                               // SHA-256 of the .bot source, set via WithWorkflowHash
