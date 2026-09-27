@@ -1,0 +1,209 @@
+---
+name: assessment-survey
+description: What a survey declaration is, the kinds it may take, the evidence each kind owes the lint, and the machine-readable extractor block a stack-<id> skill carries. Read before declaring anything an assessment will publish.
+---
+
+# The survey, and why a declaration is a number
+
+The assessment measures a repository in two layers. The **floor** is agnostic
+and always runs: it reads git objects at one pinned commit and counts what
+every repository has — files, lines by extension, history, tags, the presence
+of continuous integration. It needs no knowledge of any stack and it must
+produce output on any tree; when it does not, the tool failed.
+
+Everything above the floor needs a judgement no walk can make: which files are
+first-party and which are vendored, what counts as a deployable, which module
+is a test harness rather than a product. That judgement is the **survey**, and
+it is where you come in.
+
+Here is the thing to understand before writing a single entry, because it
+decides the shape of every rule below.
+
+**A declaration is not documentation. It is an input to an arithmetic whose
+result is published.** Measured on this bundle's own fixture: declaring ONE
+deployable four times — repository untouched, evidence unchanged, every
+consistency check green — moves the size index from 0.658 to 0.931, a third of
+the way up the scale, and across a band wherever the repository sits near one.
+Nothing lied. A number was simply counted four times.
+
+So the lint refuses, rather than warns, on four things: a declaration whose
+evidence it cannot re-verify at the pinned commit, two declarations naming the
+same artefact, two declarations whose file sets overlap, and a file that no
+declaration and no exclusion accounts for. And there is one failure no lint
+can catch, which is why this skill exists: **omission**. A deployable you never
+declared has no declaration to refuse. Nothing goes red. The document simply
+describes a smaller project than the one in front of you.
+
+## What you return
+
+```json
+{
+  "stacks": [
+    {"id": "<stack id>", "evidence": "<path that proves it>",
+     "supported": true, "reason": ""}
+  ],
+  "declarations": [
+    {"id": "<canonical id>", "kind": "<kind>", "path": "<path in the tree>",
+     "identity": "<the thing's own name — deployable and system only>",
+     "count": 0, "pattern": "<optional regexp>", "note": "<one line>"}
+  ],
+  "notes": "<one paragraph: what you could not establish, and why>"
+}
+```
+
+`stacks` is an OPEN list. Name every stack you see, including the ones this
+bundle ships no `stack-<id>.md` for: mark those `"supported": false` with the
+reason, and the coverage gate reports them as **unsupported**. Unsupported and
+zero are different results — a stack measured at zero and a stack never
+measured read identically in a table, and only one of them is a fact about the
+repository.
+
+**`supported` is an observation, and the listing you are given carries the
+fact.** It names the stack extractor skills this bundle ships; a stack is
+`supported: true` exactly when its id appears there, spelled as it is spelled
+there. `go` and `golang`, `node` and `nodejs` are different ids, and only the
+shipped spelling is covered. A deterministic gate re-derives the same answer
+from the same skills seconds later and refuses a run where the two disagree —
+so `supported` is never a guess about what this bundle can probably do, and a
+stack you know well is `false` when no skill ships for it.
+
+## The kinds, and the evidence each owes
+
+| kind | what it declares | evidence the lint re-verifies |
+|---|---|---|
+| `deployable` | one artefact that is deployed and runs on its own | `path` exists at the pinned commit; `pattern` matches inside it when given; `identity` names the SERVICE |
+| `system` | one distinct system the application talks to — a datastore, a broker, an external service | `path` exists; `pattern` matches; `identity` names the SYSTEM |
+| `first_party` | what IS the product's own source — a subtree, or a file where the source sits at the root | `path` is a file OR a directory in the tree |
+| `excluded` | anything that is NOT first-party — vendored, generated, locked, data, fixtures, documentation | `path` is a file OR a directory in the tree, and `note` says which of those it is |
+| `tests` | what holds tests — a subtree, or a file | `path` is a file OR a directory in the tree |
+| `entrypoint` | the ways in that one artefact exposes — HTTP routes, CLI commands, scheduled jobs, queue consumers | `path` exists; `pattern` matches when given; `count` says HOW MANY |
+
+**Every top-level entry of the tree must be claimed** by a `first_party`,
+`excluded` or `tests` declaration whose `path` IS that entry — files at the
+repository root included. Only those three kinds partition, and only at the top
+level: an `entrypoint` inside `src/` is evidence about one artefact, never an
+account of `src/`, and a `first_party` on `src/app` accounts for `src/app` and
+not for its root. The lint refuses a survey that leaves one unclaimed, and the
+reason is in the next section: it is the only mechanical handle anybody has on
+omission.
+
+**A FLAT repository is declared file by file.** Where the source sits at the
+root, `first_party` names those files — `main.py`, `app.rb` — one declaration
+each. Do not fall back on declaring them `excluded` because the kind reads like
+a subtree: the measurement counts what `first_party` claims, so a root file left
+out is counted as nothing, and the document then publishes zero lines of
+first-party source over a tree full of code.
+
+**The exclusion rate is published.** The document states how many of the tree's
+lines fall outside the counted perimeter, and names the largest exclusions.
+Excluding is legitimate and often right; excluding quietly is how a repository
+gets smaller without changing.
+
+## Two kinds are counted as THINGS, one in registrations
+
+`deployable` and `system` are deduplicated on `identity`, not on `path`. One
+service described by a container file, a compose entry and a chart is ONE
+deployable — the lint counts ONE declaration per identity, so name the
+strongest proof as the declaration's `path` and let the survey's prose carry
+the others: a second declaration with the same identity is refused, by design
+(one artefact, one declaration, one count). Conversely, one compose file
+legitimately declares two services: same path, two identities, two
+declarations.
+
+`entrypoint` carries `count` — how many ways in that artefact exposes, in the
+same unit every extractor here emits, which is route registrations. Forty
+routes laid out one per file and forty routes in one file are the same
+repository; a metric that answers 40 or 1 depending on the layout is two scales
+under one name, and the size profile's anchor is expressed in registrations.
+
+`id` is lower-case, dash-separated, stable, and unique across the whole list.
+Stable means: the same repository surveyed twice yields the same id for the
+same artefact. An id derived from the path is usually the right answer; an id
+carrying a count, a date or a version is never one.
+
+## Three ways a survey goes wrong, all of them quiet
+
+- **Declaring the same thing twice under two spellings.** A service declared
+  once by its directory and once by its manifest file is one deployable
+  counted twice. The lint catches the exact duplicate; it catches the
+  overlapping file set; it cannot catch two declarations of the same *concept*
+  whose paths are disjoint. That one is yours.
+- **Declaring a subtree first-party because it compiles.** Generated code,
+  vendored dependencies and lock files all compile. If a file declares itself
+  generated in its own header, it is not first-party, and counting it inflates
+  the lines and therefore the published size.
+- **Declaring nothing where you saw nothing.** An empty `entrypoint` list on a
+  repository that clearly serves traffic is the omission failure. Say so in
+  `notes`: "entrypoints not established — the routing appears to be configured
+  at runtime from <path>, which this survey cannot resolve". A stated gap is
+  worth a great deal; an unstated one is worth less than nothing, because the
+  document reads as complete.
+
+## The manifest shapes the floor looks for
+
+The agnostic floor hands you a listing, and part of that listing is the BUILD
+AND PACKAGING MANIFESTS it found near the root. What one of those looks like is
+stack knowledge, so it lives here and in the `stack-<id>.md` skills rather than
+in the workflow: the floor takes the union of every `iterion:manifests` block
+the bundle ships, and adding an ecosystem is editing a file, never the DSL.
+
+The block below is the ecosystem-agnostic half — container, orchestration and
+toolchain descriptors that say how a repository is built and shipped whatever
+it is written in. A stack skill adds the names its own ecosystem uses.
+
+If the listing shows no manifest at all on a repository that clearly builds
+something, that is an observation for `notes` and probably a missing block, not
+a repository that builds itself.
+
+<!-- iterion:manifests
+[
+  "Dockerfile", "Dockerfile.*", "*.dockerfile",
+  "docker-compose.yml", "docker-compose.yaml", "docker-compose.*.yml", "docker-compose.*.yaml",
+  "compose.yml", "compose.yaml",
+  "Chart.yaml", "Chart.yml",
+  "Makefile", "GNUmakefile", "CMakeLists.txt", "Taskfile.yml", "Taskfile.yaml", "justfile",
+  "devbox.json", "flake.nix", "shell.nix", "default.nix", ".tool-versions", "mise.toml", "asdf.toml",
+  "Procfile", "*.nomad", "*.tf"
+]
+-->
+
+## The extractor block a `stack-<id>.md` carries
+
+A stack skill ends with a machine-readable block, plus one fenced script per
+extractor. The workflow — not you — reads them for every stack you named, runs
+each script with `$WORKSPACE_DIR`, `$SCRATCH_DIR` and `$BASE_SHA` in the
+environment and cwd at the workspace, captures its standard output into
+`output`, and then verifies that the file exists and parses as JSON. A script
+that exits 0 and writes nothing is a silent coverage gap, which is why the
+artefact is what gets checked rather than the exit code.
+
+````
+<!-- iterion:extractors
+[
+  {"id":"<extractor id>",
+   "output":"<file name written under $SCRATCH_DIR>",
+   "emits":["<fact key this extractor is responsible for>"],
+   "interpreter":"python3"}
+]
+-->
+
+<!-- iterion:script <extractor id> -->
+
+```python
+# writes one JSON document to standard output
+```
+````
+
+The script lives in the fenced block that FOLLOWS its anchor. An extractor
+declared in the spec block with no script block after it is an error the
+runner reports by name — never a silently skipped extractor.
+
+The same block is the coverage gate's expectation, which is what keeps the
+per-stack check in lockstep with what actually ran without a list of languages
+anywhere in the workflow. **Adding a stack is dropping a `stack-<id>.md`
+file** — there is no DSL edit in that sentence, and if you ever find yourself
+wanting one, the design has gone wrong.
+
+Write the `cmd` to be deterministic and to write valid JSON. It runs against
+the tree at the pinned commit; it must not fetch anything over the network,
+and it must not depend on the time of day.

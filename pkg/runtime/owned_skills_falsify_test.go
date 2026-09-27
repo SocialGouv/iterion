@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -145,6 +146,13 @@ func TestLangScannersReadTheEngineOwnedCopy(t *testing.T) {
 	}
 }
 
+// workspaceSkillsRead is a recipe naming the workspace skills directory, in
+// the spellings a script builds it with: one path string, or its two
+// segments joined by the language (`".claude", "skills"` in either quote
+// style). Matching one quote style only let a bot that spelled it the other
+// way read its blocks from the checkout with this guard green.
+var workspaceSkillsRead = regexp.MustCompile(`\.claude/skills|\.claude["']\s*,\s*["']skills`)
+
 // The class, not the site a report names: across EVERY shipped bot, no
 // deterministic recipe may parse an `iterion:` comment block out of the
 // workspace skills directory — that is the directory the audited checkout
@@ -161,6 +169,7 @@ func TestNoBotParsesIterionBlocksFromTheWorkspaceSkills(t *testing.T) {
 	wantWired := map[string]bool{
 		"sec-audit-source": false, "sec-audit-deps": false,
 		"supply-shield": false, "supply-shield-cve": false, "secured-renovacy": false,
+		"assessment": false,
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -197,7 +206,7 @@ func TestNoBotParsesIterionBlocksFromTheWorkspaceSkills(t *testing.T) {
 				if !strings.Contains(body, "iterion:") || !strings.Contains(body, "<!--") {
 					continue
 				}
-				if strings.Contains(body, ".claude', 'skills'") || strings.Contains(body, ".claude/skills") {
+				if workspaceSkillsRead.MatchString(body) {
 					t.Errorf("%s node %q parses an iterion: block from the workspace skills directory (%s)", name, tool.ID, path)
 				}
 			}
