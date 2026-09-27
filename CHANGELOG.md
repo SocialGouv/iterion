@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.205.2](https://github.com/SocialGouv/iterion/compare/v3.205.1...v3.205.2) (2026-09-27)
+
+### Bug Fixes
+
+* **author:** the flow comment counts — one physical comment, one entry ([#1892](https://github.com/SocialGouv/iterion/issues/1892)) ([7819d88](https://github.com/SocialGouv/iterion/commit/7819d880e01c777ef24a6f067fbda98769c820f4)), references [#1814](https://github.com/SocialGouv/iterion/issues/1814)
+
+    <details><summary>why</summary>
+
+    The last two items of #1814. author.Comments read a flow collection's comments off its source AND listed the copies yaml.v3 hung on the node's head, line and foot: `[a: # c` + a line break counted "# c" twice. And the old text-based dedupe swallowed a same-text comment written on ANOTHER line — the head's lines are now derived from the source (the contiguous block ending above the opening bracket, blanks skipped), and only a sourced read ON those lines is the head's copy.
+
+    </details>
+
 ## [3.205.1](https://github.com/SocialGouv/iterion/compare/v3.205.0...v3.205.1) (2026-09-27)
 
 ### Bug Fixes
