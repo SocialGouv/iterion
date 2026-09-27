@@ -26,6 +26,8 @@ func authorFencePolicy(info string) (policy string, isAuthor bool, err error) {
 		return "", true, nil
 	case info == "author invalid" || strings.HasPrefix(info, "author invalid:"):
 		return strings.TrimPrefix(info, "author "), true, nil
+	case info == "invalid author" || strings.HasPrefix(info, "invalid author"):
+		return "", false, fmt.Errorf("reversed author fence tag %q — use `yaml author`, `yaml author invalid` or `yaml author invalid:<CODE>`", info)
 	case strings.HasPrefix(info, "author"):
 		return "", false, fmt.Errorf("unknown author fence tag %q — use `yaml author`, `yaml author invalid` or `yaml author invalid:<CODE>`", info)
 	}
