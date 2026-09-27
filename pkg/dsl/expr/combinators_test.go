@@ -300,9 +300,10 @@ func TestExpr_LambdaRefsExcludeParams(t *testing.T) {
 
 // TestExpr_BracketArrowBackwardCompat verifies the new tokens are still parse
 // errors outside their valid positions, so no previously-invalid expression
-// silently changes meaning.
+// silently changes meaning. (`[1, 2]` left this list with #1525: the list
+// literal made a leading `[` a primary — literal_test.go pins what it means.)
 func TestExpr_BracketArrowBackwardCompat(t *testing.T) {
-	for _, src := range []string{"1 => 2", "a = b", "[1, 2]"} {
+	for _, src := range []string{"1 => 2", "a = b", "1 {a: 2}"} {
 		if _, err := Parse(src); err == nil {
 			t.Errorf("Parse(%q) expected error, got nil", src)
 		}

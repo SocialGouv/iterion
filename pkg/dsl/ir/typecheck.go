@@ -74,6 +74,7 @@ func (c *compiler) validateExprTypes(w *Workflow) {
 			loc := fmt.Sprintf("compute %q field %q", cn.ID, ce.Key)
 			c.walkExprTypes(expr.ToSnapshot(ce.AST), env, cn.ID, "", loc)
 			c.checkIntDivision(w, cn, ce, env)
+			c.checkCollectionLiteralConform(w, cn, ce)
 		}
 	}
 }
@@ -145,12 +146,13 @@ func (c *compiler) walkExprTypes(n *expr.Snapshot, env exprEnv, nodeID, eid, loc
 	}
 	if n.Kind == expr.SnapBinary && len(n.Children) == 2 {
 		l, r := n.Children[0], n.Children[1]
-		switch n.Op {
-		case "==", "!=":
+		if n.Op == "==" || n.Op == "!=" {
 			c.checkEnumPair(l, r, env, nodeID, eid, loc)
 			c.checkEnumPair(r, l, env, nodeID, eid, loc)
 			c.checkOperandCompat(l, r, n.Op, env, nodeID, eid, loc)
-		case "<", "<=", ">", ">=":
+			c.checkCollectionCompare(l, r, n.Op, env, nodeID, eid, loc)
+		}
+		if n.Op == "<" || n.Op == "<=" || n.Op == ">" || n.Op == ">=" {
 			c.checkOperandCompat(l, r, n.Op, env, nodeID, eid, loc)
 		}
 	}
@@ -165,6 +167,95 @@ func (c *compiler) walkExprTypes(n *expr.Snapshot, env exprEnv, nodeID, eid, loc
 	}
 	for _, ch := range n.Children {
 		c.walkExprTypes(ch, env, nodeID, eid, loc)
+	}
+}
+
+// checkCollectionCompare flags `==` / `!=` where a collection is on either
+// side (C306): the evaluator's equals() never walks into a slice or a map,
+// so the comparison is CONSTANT — `==` is false and `!=` true even between
+// identical contents (`[1] == [1]` is false, `xs != xs` true). The trigger
+// is a literal on either side (always a collection, whatever it holds), or
+// two operands the compiler knows as collections (the schema vocabulary's
+// one collection type is string[]; a json field bails to no-opinion like
+// everywhere else).
+func (c *compiler) checkCollectionCompare(l, r *expr.Snapshot, op string, env exprEnv, nodeID, eid, loc string) {
+	isLit := func(s *expr.Snapshot) bool { return s.Kind == expr.SnapList || s.Kind == expr.SnapObject }
+	knownColl := func(s *expr.Snapshot) bool {
+		t := env.inferType(s)
+		return t.known && t.t == FieldTypeStringArray
+	}
+	if !isLit(l) && !isLit(r) && (!knownColl(l) || !knownColl(r)) {
+		return
+	}
+	// When both operands are statically known AND incompatible, C107 owns
+	// the comparison — one finding per site, and the type-mismatch wording
+	// already says the comparison will not behave as written.
+	if !compatibleOperands(env.inferType(l), env.inferType(r)) {
+		return
+	}
+	c.warnfAt(DiagCollectionCompare, nodeID, eid,
+		"%s: operator %q never compares collections by value — `==` is false and `!=` true even for identical contents (`[1] == [1]` is false): compare what you mean — length(...), an element ([0]), keys(...) / values(...), or join(...) against a string",
+		loc, op)
+}
+
+// checkCollectionLiteralConform warns when a compute field's expression IS a
+// collection literal the declared field type cannot hold (C307) — the mirror
+// of checkIntDivision for the collection types: the runtime conforms the
+// value to the schema and a value that cannot conform fails the node
+// (SCHEMA_VALIDATION), and only there. An element the compiler cannot type —
+// a ref, a call, an arithmetic — is not held against the author; a literal
+// scalar, a nested collection or (under a scalar field) the collection
+// itself is, because its kind is known from the source alone.
+func (c *compiler) checkCollectionLiteralConform(w *Workflow, cn *ComputeNode, ce *ComputeExpr) {
+	schema := w.Schemas[cn.OutputSchema]
+	if schema == nil {
+		return
+	}
+	var field *SchemaField
+	for _, f := range schema.Fields {
+		if f != nil && f.Name == ce.Key {
+			field = f
+			break
+		}
+	}
+	if field == nil {
+		return
+	}
+	root := expr.ToSnapshot(ce.AST)
+	if root == nil {
+		return
+	}
+	if field.Type == FieldTypeStringArray {
+		switch root.Kind {
+		case expr.SnapList:
+			for i, el := range root.Children {
+				var what string
+				switch el.Kind {
+				case expr.SnapString:
+					continue
+				case expr.SnapBool, expr.SnapInt, expr.SnapFloat:
+					what = "a scalar literal"
+				case expr.SnapList, expr.SnapObject:
+					what = "a nested collection"
+				default:
+					continue // a path, a call, an arithmetic: no opinion
+				}
+				c.warnfAt(DiagCollectionLiteralConformance, cn.ID, "",
+					"compute %q field %q is a string[] but its list literal's element %d is %s — it fails SCHEMA_VALIDATION at run time (`field[%d]: expected string, got ...`): quote it ('42'), or type the field json",
+					cn.ID, ce.Key, i, what, i)
+				return // one warning per field names the shape
+			}
+		case expr.SnapObject:
+			c.warnfAt(DiagCollectionLiteralConformance, cn.ID, "",
+				"compute %q field %q is a string[] but its expression is an object literal — the run fails SCHEMA_VALIDATION (`expected string array, got map[string]interface {}`): write a list `[...]`, or type the field json",
+				cn.ID, ce.Key)
+		}
+		return
+	}
+	if isScalarType(field.Type) && (root.Kind == expr.SnapList || root.Kind == expr.SnapObject) {
+		c.warnfAt(DiagCollectionLiteralConformance, cn.ID, "",
+			"compute %q field %q is a %s but its expression is a collection literal — the run fails SCHEMA_VALIDATION (`expected %s, got ...`): type the field json (or string[] for a list of strings)",
+			cn.ID, ce.Key, field.Type, conformExpectation(field.Type))
 	}
 }
 
@@ -308,6 +399,23 @@ func (env exprEnv) inferType(n *expr.Snapshot) inferredType {
 		return knownT(FieldTypeFloat)
 	case expr.SnapString:
 		return knownT(FieldTypeString)
+	case expr.SnapList:
+		// A list literal whose every element is statically a string IS the
+		// vocabulary's one collection type; the empty literal conforms to it
+		// too ([]any{} passes the field check). Anything else bails — a
+		// mixed or non-string literal has no name here, and the run says
+		// what it was at conformance (C307 covers the provable cases).
+		for _, ch := range n.Children {
+			if ct := env.inferType(ch); !ct.known || ct.t != FieldTypeString {
+				return unknownType
+			}
+		}
+		return knownT(FieldTypeStringArray)
+	case expr.SnapObject:
+		// An object literal is definitely a map, and the schema vocabulary
+		// types that json — whose doctrine is "no opinion": equality on it
+		// is C306's business, conformance C307's, both syntactic.
+		return unknownType
 	case expr.SnapPath:
 		if n.Namespace == "vars" && len(n.Path) == 1 {
 			if v, ok := env.w.Vars[n.Path[0]]; ok {
