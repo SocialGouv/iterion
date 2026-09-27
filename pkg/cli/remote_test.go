@@ -430,6 +430,10 @@ func TestRemoteRunsFollow_FailureIsError(t *testing.T) {
 
 func TestRemoteTokensCreate_PrintsPlaintextOnce(t *testing.T) {
 	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/me" {
+			fmt.Fprint(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"team-1","team_name":"Team 1","team_slug":"team-1"}]}]}`)
+			return
+		}
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req["name"] != "ci" || req["team_id"] != "team-1" {
@@ -449,6 +453,53 @@ func TestRemoteTokensCreate_PrintsPlaintextOnce(t *testing.T) {
 
 // --- teams switch ---
 
+// TestRemoteTeamsSwitch_ResolvesSlugToTheUUID: the mint pins the token to
+// the VERBATIM team id — a slug stored raw resolves to no membership and
+// the token can never authenticate. The switch resolves the argument
+// against the account's org tree and pins the UUID.
+func TestRemoteTeamsSwitch_ResolvesSlugToTheUUID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ITERION_REMOTE_URL", "")
+
+	var mintedWith string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"87a2ee99-6b91-43ca-bb51-659a8ce7f705","team_name":"PIC GRAAL","team_slug":"pic-graal"}]}]}`)
+	})
+	mux.HandleFunc("POST /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mintedWith, _ = req["team_id"].(string)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"pat":{"id":"p-slug"},"token":"iap_slug","org_id":"o1"}`)
+	})
+	mux.HandleFunc("GET /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":"gone"}]}`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	if err := cli.SaveRemoteConfig(cli.RemoteConfig{BaseURL: ts.URL, Token: "iap_old"}); err != nil {
+		t.Fatal(err)
+	}
+	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: "iap_old"})
+	p, _ := remotePrinter(cli.OutputHuman)
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "pic-graal", "cli"); err != nil {
+		t.Fatalf("switch by slug: %v", err)
+	}
+	if mintedWith != "87a2ee99-6b91-43ca-bb51-659a8ce7f705" {
+		t.Fatalf("the mint received team_id %q, want the UUID the slug resolves to", mintedWith)
+	}
+	cfg, err := cli.LoadRemoteConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TeamID != "87a2ee99-6b91-43ca-bb51-659a8ce7f705" {
+		t.Errorf("persisted TeamID = %q, want the UUID", cfg.TeamID)
+	}
+}
+
 func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -459,6 +510,9 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 	var revoked string
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"team-b","team_name":"Team B","team_slug":"team-b"}]}]}`)
+	})
 	mux.HandleFunc("POST /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
