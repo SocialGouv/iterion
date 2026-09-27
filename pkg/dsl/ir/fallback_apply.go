@@ -48,10 +48,19 @@ const RunFallbackName = "run-fallback"
 // once: it honoured a node-level `sandbox:` tier the engine does not
 // have (one sandbox per run), advertising an escape hatch that
 // re-created the exact dispatch failure it claimed to prevent.
-func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
+//
+// vars carries the launch's `--var` overrides, so a node whose
+// `backend:` is a `{{vars.<name>}}` reference is screened by what THIS
+// run resolves — the same reading the dispatch makes (resolveRoutingField:
+// template first, `${…}` after) — rather than passing unscreened as a
+// field nothing decided. The declared defaults under the overrides come
+// from the workflow itself; a reference neither answers stays undecided,
+// as the compiler reads it.
+func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[string]string) []string {
 	if w == nil || len(routes) == 0 {
 		return nil
 	}
+	run := runBackend.withVars(launchVarsView(w, vars))
 
 	var refusals []string
 	for _, n := range w.Nodes {
@@ -69,8 +78,9 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 		// The RUN's reading on both sides: this screen runs in the process
 		// that will dispatch the node, so a dial set in that process's
 		// environment IS the route, where the compiler may only read what
-		// the source declares.
-		nodeBackend := runBackend.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		// the source declares — and the launch's vars decide a `{{vars.x}}`
+		// the source deliberately left open.
+		nodeBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
 		perm := EffectivePermission(nn.GetPermission(), w.Permission)
 		for stage, route := range routes {
 			if route.Backend == "" && route.Model == "" && route.Provider == "" {
@@ -79,7 +89,7 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 			// The route's backend as the run reads it, so an operator's
 			// `--fallback '${DIAL:-claw} …'` is screened by what it
 			// resolves to rather than by its spelling.
-			routeBackend := runBackend.routeName(route.Backend)
+			routeBackend := run.routeName(route.Backend)
 			route.Name = RunFallbackName
 			route.RunStage = stage
 			route.RunStageSet = true
@@ -132,6 +142,55 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 		}
 	}
 	return refusals
+}
+
+// launchVarsView is the vars reading the launch-time screen resolves
+// `{{vars.<name>}}` routing fields against: the declared defaults under
+// the launch's overrides — the two layers resolveVars stacks, in its
+// order, and with its rule that a launch value for a var the workflow
+// does not declare is dropped. Values stay RAW text: the reader's own
+// `${…}` expansion runs after the substitution (the runtime's
+// template-then-env order), so a var holding `${X:-claw}` is screened
+// by what the run resolves, not by its spelling. Nil when nothing
+// declares or overrides a var, which reads exactly as before.
+func launchVarsView(w *Workflow, overrides map[string]string) map[string]string {
+	if len(w.Vars) == 0 {
+		return nil
+	}
+	var view map[string]string
+	put := func(name, value string) {
+		if view == nil {
+			view = make(map[string]string, len(w.Vars))
+		}
+		view[name] = value
+	}
+	for name, v := range w.Vars {
+		if v == nil || !v.HasDefault {
+			continue
+		}
+		if s, ok := varDefaultText(v.Default); ok {
+			put(name, s)
+		}
+	}
+	for name, s := range overrides {
+		if _, declared := w.Vars[name]; declared {
+			put(name, s)
+		}
+	}
+	return view
+}
+
+// varDefaultText renders a declared default as the text a routing field
+// substitutes — a string as written, a scalar the way the template
+// resolver's JSON-ish formatting prints it.
+func varDefaultText(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case int64, float64, bool:
+		return fmt.Sprintf("%v", t), true
+	}
+	return "", false
 }
 
 // ParseRunFallbackFlag parses the `--fallback` / launch-row value into a

@@ -582,6 +582,20 @@ type backendReader struct {
 	// `${X}` with no `:-` reads as a field the SOURCE does not decide
 	// rather than as an absent one.
 	asWritten bool
+	// vars is the launch's vars view a `{{vars.<name>}}` reference
+	// resolves against — nil for a reading that has no vars (the
+	// compiler's, where a launch may still override the var, so the
+	// reference stays undecided). The launch-time screen carries it:
+	// there the vars are as fixed as the process environment.
+	vars map[string]string
+}
+
+// withVars returns the reading resolved against a launch's vars — the
+// runtime's own order (resolveRoutingField): the `{{vars.<name>}}`
+// template first, the field's `${…}` expansion after.
+func (r backendReader) withVars(vars map[string]string) backendReader {
+	r.vars = vars
+	return r
 }
 
 var (
@@ -618,12 +632,52 @@ func (r backendReader) field(name string) (string, bool) {
 // naming a backend `$MY_BACKEND` refused a gated workflow that was fine
 // and passed a claw⇄CLI crossing that was not.
 func (r backendReader) resolve(name string) (string, bool) {
-	expanded, _ := expandWithDefault(name, r.lookup, expandPolicy{keepUnresolved: r.asWritten})
+	expanded := expandVarsRefs(name, r.vars)
+	expanded, _ = expandWithDefault(expanded, r.lookup, expandPolicy{keepUnresolved: r.asWritten})
 	expanded = strings.TrimSpace(expanded)
 	if strings.ContainsRune(expanded, '$') || strings.Contains(expanded, "{{") {
 		return "", false
 	}
 	return expanded, true
+}
+
+// expandVarsRefs substitutes the `{{vars.<name>}}` spans of a routing
+// field from the launch's vars view — the one namespace a routing field
+// resolves (DiagRoutingFieldRef). A span the view cannot answer — an
+// undeclared var, a drilled `{{vars.cfg.on}}` with no flat leaf — is
+// kept as written, so the residual-`{{` check above still reads the
+// field as one nothing decided. A nil view resolves nothing, which is
+// exactly the compiler's reading.
+func expandVarsRefs(s string, vars map[string]string) string {
+	if len(vars) == 0 || !strings.Contains(s, "{{") {
+		return s
+	}
+	var b strings.Builder
+	remaining := s
+	for {
+		start := strings.Index(remaining, "{{")
+		if start == -1 {
+			b.WriteString(remaining)
+			break
+		}
+		end := strings.Index(remaining[start:], "}}")
+		if end == -1 {
+			b.WriteString(remaining)
+			break
+		}
+		end += start + 2
+		b.WriteString(remaining[:start])
+		if name, ok := strings.CutPrefix(strings.TrimSpace(remaining[start+2:end-2]), "vars."); ok {
+			if v, found := vars[name]; found {
+				b.WriteString(v)
+				remaining = remaining[end:]
+				continue
+			}
+		}
+		b.WriteString(remaining[start:end])
+		remaining = remaining[end:]
+	}
+	return b.String()
 }
 
 // name is field without the decision bit, for a site that only screens a

@@ -685,7 +685,7 @@ workflow w:
 		agent.Permission = "deny"
 		w := &Workflow{Name: "w", Nodes: map[string]Node{"work": agent}}
 
-		refusals := ApplyRunFallback(w, []Fallback{{Backend: "grok"}}, false)
+		refusals := ApplyRunFallback(w, []Fallback{{Backend: "grok"}}, false, nil)
 		if len(refusals) == 0 {
 			t.Fatal("a node-declared ask: rule must refuse a run-level grok fallback")
 		}
@@ -696,7 +696,7 @@ workflow w:
 		// And the workflow's own list still refuses when the node declares none.
 		agent.PermissionAsk = nil
 		w.PermissionAsk = []string{"Bash(git push:*)"}
-		if got := ApplyRunFallback(w, []Fallback{{Backend: "grok"}}, false); len(got) == 0 {
+		if got := ApplyRunFallback(w, []Fallback{{Backend: "grok"}}, false, nil); len(got) == 0 {
 			t.Error("a workflow ask: rule must still refuse a run-level grok fallback")
 		}
 	})

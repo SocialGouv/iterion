@@ -933,6 +933,13 @@ analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
 crossings the compiler refuses in the `.bot`.
 
+The screen reads a node's backend the way the run itself will: a
+`${VAR:-default}` dial by the launching process's environment, and a
+`{{vars.<name>}}` reference by the launch's vars (the declared defaults
+under that launch's `--var` overrides) — the same template-then-env
+reading `resolveRoutingField` makes at dispatch. A reference neither
+answers stays undecided and is screened as before: no opinion, no guess.
+
 The route does **not** propagate into a `subbot:` child. A subbot is a
 different bot with its own routes, its own judges and its own permission
 posture; the launch route applies to the run you launched, and a child
