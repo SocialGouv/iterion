@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.204.1](https://github.com/SocialGouv/iterion/compare/v3.204.0...v3.204.1) (2026-09-27)
+
+### Bug Fixes
+
+* **author:** the document reads as it is written — stale floats, block scalars under words, a comment that ends a value ([#1881](https://github.com/SocialGouv/iterion/issues/1881)) ([c157dc3](https://github.com/SocialGouv/iterion/commit/c157dc3598ed493a74cf9b8d6de07f34a691b5e7)), references [#1821](https://github.com/SocialGouv/iterion/issues/1821) [#1781](https://github.com/SocialGouv/iterion/issues/1781) [#1781](https://github.com/SocialGouv/iterion/issues/1781) [#1780](https://github.com/SocialGouv/iterion/issues/1780)
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 2 (opus-5.5: 6 + 4 verified findings, all fixed) Adversarial-Model: claude-opus-5-5
+
+    </details>
+
 ## [3.204.0](https://github.com/SocialGouv/iterion/compare/v3.203.2...v3.204.0) (2026-09-27)
 
 ### Features
