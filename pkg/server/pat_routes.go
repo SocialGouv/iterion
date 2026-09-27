@@ -82,6 +82,24 @@ func (s *Server) handleCreatePAT(w http.ResponseWriter, r *http.Request) {
 		}
 		req.TeamID = id.TeamID
 	}
+	// The pin is stored verbatim and a PAT identity resolves its team on
+	// every use — a team id that names no team (a slug, a typo, a team
+	// deleted after the caller's access token was issued) minted 201 and
+	// then never authenticated. Membership and existence are different
+	// facts, and a super-admin passes the first for any string — so the
+	// gate sits AFTER the default pin: it judges the team that will
+	// actually ride the token, from whichever path set it. Only
+	// "not found" is the caller's fault; a store outage says so.
+	if req.TeamID != "" {
+		if _, err := s.authStore().GetTeam(r.Context(), req.TeamID); err != nil {
+			if errors.Is(err, identity.ErrNotFound) {
+				httpError(w, http.StatusBadRequest, "unknown team %q — pass the team UUID (see `iterion remote teams list`)", req.TeamID)
+				return
+			}
+			httpError(w, http.StatusInternalServerError, "check team %q: %v", req.TeamID, err)
+			return
+		}
+	}
 	now := time.Now().UTC()
 	var expiresAt *time.Time
 	if req.ExpiresInDays > 0 {
