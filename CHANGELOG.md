@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.204.0](https://github.com/SocialGouv/iterion/compare/v3.203.2...v3.204.0) (2026-09-27)
+
+### Features
+
+* **product-docs:** prove exhaustiveness in a gate, not on the agent's word ([#1774](https://github.com/SocialGouv/iterion/issues/1774)) ([c5f4dcb](https://github.com/SocialGouv/iterion/commit/c5f4dcbe0b62941093fc719eed9ef53dad5e97b1))
+
+    <details><summary>why</summary>
+
+    Prody's convergence rested on `scope_ok ∧ lint_ok ∧ docs_aligned`, and `docs_aligned` is the agent's own answer to the one question it cannot honestly answer about itself: did I document EVERYTHING, and does everything I documented EXIST? Surface coverage was an advisory hint. The catalog's doctrine is that the truth lives in the gates.
+
+    </details>
+
 ## [3.203.2](https://github.com/SocialGouv/iterion/compare/v3.203.1...v3.203.2) (2026-09-27)
 
 ### Bug Fixes
