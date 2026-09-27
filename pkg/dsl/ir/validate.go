@@ -68,5 +68,6 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateEvents(w)
 	c.validateAwaitAnswers(w)
 	c.validateAsyncBackends(w)
+	c.validateTreeNoiseChannels(w)
 	c.validateSandboxOptOut(w)
 }
