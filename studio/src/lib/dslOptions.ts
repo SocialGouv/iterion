@@ -92,6 +92,7 @@ export const PERMISSION_RULES_HELP =
 
 export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "", label: "(default)" },
+  { value: "none", label: "none (no reasoning)" },
   { value: "low", label: "low" },
   { value: "medium", label: "medium" },
   { value: "high", label: "high" },
@@ -102,6 +103,7 @@ export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
 
 export const REASONING_EFFORT_HELP =
   "For reasoning-capable models (e.g. o-series, claude-extended-thinking). " +
+  "none disables reasoning on the models that carry it (GPT-6 Sol/Luna) and clamps to the lowest real level elsewhere. " +
   "ultracode = xhigh + standing consent to orchestrate multi-agent workflows; reliable only on claude-opus-4-8.";
 
 export const FALLBACK_ON_OPTIONS: SelectOption[] = [

@@ -495,7 +495,8 @@ func piMapProvider(name string) string {
 
 // piMapEffort maps iterion's reasoning_effort dial onto pi's --thinking
 // flag. pi accepts off|minimal|low|medium|high|xhigh|max, a strict superset
-// of iterion's levels, so every level passes through unchanged.
+// of iterion's levels, so every level passes through unchanged — except
+// `none`, which pi spells `off`.
 //
 // `ultracode` is remapped to `xhigh` defensively: the runtime already does
 // this on the wire, and pi has no subagent tool, so ultracode's
@@ -505,6 +506,8 @@ func piMapEffort(effort string) []string {
 	switch effort {
 	case "":
 		return nil
+	case "none":
+		effort = "off"
 	case "ultracode":
 		effort = "xhigh"
 	}

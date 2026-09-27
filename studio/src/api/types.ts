@@ -445,10 +445,12 @@ export type AwaitMode = "none" | "wait_all" | "best_effort";
 // the old editor-only `HumanMode` and adds llm/llm_or_human surfaces.
 export type InteractionMode = "none" | "human" | "llm" | "llm_or_human";
 
+// "none" disables reasoning entirely; only the models whose matrix carries it
+// (GPT-6 Sol/Luna) honour it — other routes clamp to their lowest real level.
 // "ultracode" is a mode, not a wire effort: xhigh + a standing prerogative to
 // orchestrate multi-agent workflows (reliable only on claude-opus-4-8). The
 // runtime remaps it to xhigh before the provider. See docs/ultracode.md.
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
 // FallbackDecl is one named route of an agent/judge `fallbacks:` block
 // (ADR-087). Entries are tried in declaration order when the primary

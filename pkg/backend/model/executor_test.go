@@ -1999,6 +1999,18 @@ func TestResolveReasoningEffort(t *testing.T) {
 			expected:   "high",
 		},
 		{
+			name:       "static none passes through",
+			nodeEffort: "none",
+			input:      map[string]any{},
+			expected:   "none",
+		},
+		{
+			name:       "dynamic none",
+			nodeEffort: "low",
+			input:      map[string]any{"_reasoning_effort": "none"},
+			expected:   "none",
+		},
+		{
 			name:       "no value set",
 			nodeEffort: "",
 			input:      map[string]any{},
@@ -2048,6 +2060,13 @@ func TestResolveReasoningEffortEnvSubst(t *testing.T) {
 			envKey:     "ITERION_TEST_EFFORT",
 			envValue:   "low",
 			expected:   "low",
+		},
+		{
+			name:       "env expansion to none is not erased",
+			nodeEffort: "${ITERION_TEST_EFFORT:-max}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "none",
+			expected:   "none",
 		},
 		{
 			name:       "bare env var, set",

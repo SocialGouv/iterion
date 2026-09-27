@@ -907,8 +907,9 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "description": "Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) and clamps to the lowest real level elsewhere; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
           "examples": [
+            "none",
             "low",
             "medium",
             "high",
@@ -1444,8 +1445,9 @@
           "type": "boolean"
         },
         "reasoning_effort": {
-          "description": "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "description": "Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) and clamps to the lowest real level elsewhere; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
           "examples": [
+            "none",
             "low",
             "medium",
             "high",
@@ -1603,8 +1605,9 @@
           "type": "string"
         },
         "reasoning_effort": {
-          "description": "llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
+          "description": "llm mode only (C023 otherwise): Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) and clamps to the lowest real level elsewhere; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime",
           "examples": [
+            "none",
             "low",
             "medium",
             "high",

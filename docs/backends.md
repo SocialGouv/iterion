@@ -408,7 +408,7 @@ that drives it, and how hard it is asked to think.
 
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
   backend, effort}]`. An `effort` outside
-  `low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
+  `none|low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
   reaches the provider verbatim.
 
 The **effort** override outranks both the node's static `reasoning_effort:`

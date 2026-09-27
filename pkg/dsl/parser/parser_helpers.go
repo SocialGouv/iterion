@@ -19,10 +19,10 @@ func (p *parser) parseReasoningEffort() string {
 	}
 	value := tokenAsIdent(t)
 	switch value {
-	case "low", "medium", "high", "xhigh", "max", "ultracode":
+	case "none", "low", "medium", "high", "xhigh", "max", "ultracode":
 		return value
 	default:
-		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, xhigh, max, ultracode) or a quoted env-substituted string, got "+strconv.Quote(t.Value))
+		p.addError(DiagInvalidValue, t, "expected reasoning effort (none, low, medium, high, xhigh, max, ultracode) or a quoted env-substituted string, got "+strconv.Quote(t.Value))
 		return ""
 	}
 }
