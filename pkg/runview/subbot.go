@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -187,6 +188,11 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		}, childWf, hash, s.executionContextPolicy, s.workDir)
 		childContext.LaunchSurface = "runview-subbot"
 		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{}, childBundle)
+		// A child executes in its own bot's directory: its mirrors, skills
+		// and plugin files land beside the .bot they belong to — never in
+		// the server's process cwd, where every child shared one mirror
+		// and a test binary wrote into the checkout (#1803).
+		opts = append(opts, runtime.WithWorkDir(filepath.Dir(childPath)))
 		// The child works in the parent's EFFECTIVE workdir (its worktree when
 		// it swapped to one), not the service's repo root: that is the tree
 		// the parent's sandbox mounts and the parent's gate judges.
@@ -205,9 +211,9 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// run them (grandchild sources resolve relative to the CHILD's dir);
 			// the ctx-carried depth keeps the recursion bounded.
 			runtime.WithSubbotRunner(s.subbotRunnerFor(childPath, runLogger)),
-			runtime.WithOnNodeFinished(func(runID, nodeID string, out map[string]any) {
+			runtime.WithOnNodeFinished(func(ctx context.Context, runID, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
-				s.stampWatchedFromOutput(runID, nodeID, out)
+				s.stampWatchedFromOutput(ctx, runID, nodeID, out)
 			}),
 		)
 		// The operator-pause signal (if the manager registered the child) so

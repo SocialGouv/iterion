@@ -350,7 +350,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 		t.Fatalf("Failed to create snapshots dir: %v", err)
 	}
 
-	onFinished := func(_ string, nodeID string, output map[string]any) {
+	onFinished := func(_ context.Context, _ string, nodeID string, output map[string]any) {
 		if nodeID != "claude_implement" && nodeID != "gpt_implement" {
 			return
 		}
@@ -693,7 +693,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		t.Fatalf("Failed to create snapshots dir: %v", err)
 	}
 
-	onFinished := func(_ string, nodeID string, output map[string]any) {
+	onFinished := func(_ context.Context, _ string, nodeID string, output map[string]any) {
 		if nodeID != "implement" && nodeID != "claude_fix" && nodeID != "gpt_fix" {
 			return
 		}

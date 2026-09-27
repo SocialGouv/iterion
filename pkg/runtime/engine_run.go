@@ -8,9 +8,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"sort"
 	"strings"
+	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -194,10 +196,10 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	}
 
 	// Default workDir to process cwd if not set explicitly.
-	if e.workDir == "" {
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			e.workDir = cwd
-		}
+	e.defaultWorkDir()
+	if e.workDirTemp != "" {
+		defer os.RemoveAll(e.workDirTemp)
+		e.workDirTemp = ""
 	}
 
 	// Registered FIRST so it runs LAST, after finalize and after the
@@ -1175,4 +1177,43 @@ func (e *Engine) evictRunSessions(runID string, loopErr error) {
 	if ev, ok := e.executor.(interface{ EvictRun(string) }); ok {
 		ev.EvictRun(runID)
 	}
+}
+
+// defaultWorkDir fills an engine's missing workDir with the process cwd —
+// the `iterion run` contract, at every layer including a t.Chdir'd test
+// workspace. ONE cwd is refused: the package directory itself under `go
+// test`, where a skill or plugin mirror would write into the developer's
+// checkout (pkg/runtime/.claude, seen 2026-09-24) — that engine gets a
+// throw-away directory instead, recorded in workDirTemp for the caller to
+// clean up (#1803). A test that wants a known workDir passes
+// runtime.WithWorkDir itself.
+func (e *Engine) defaultWorkDir() {
+	if e.workDir != "" {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	e.workDir = cwd
+	if testing.Testing() && cwd == runtimePackageDir() {
+		dir, dirErr := os.MkdirTemp("", "iterion-test-workdir")
+		if dirErr != nil {
+			e.logger.Error("no workDir and the test workdir could not be created: %v — the engine keeps the package directory as its workDir, mirrors will write into the checkout", dirErr)
+			return
+		}
+		e.workDir = dir
+		e.workDirTemp = dir
+	}
+}
+
+// runtimePackageDir is the directory holding this package's source, from
+// the compile-time path of this file — how an engine test's cwd (the
+// package dir under `go test`) is recognised (#1803).
+func runtimePackageDir() string {
+	_, file, _, ok := goruntime.Caller(0)
+	if !ok {
+		return ""
+	}
+	return filepath.Dir(file)
 }

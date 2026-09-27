@@ -1588,10 +1588,20 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// a resumed paused run reads the v0.1.0 skill content even though
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
+	e.defaultWorkDir()
+	if e.workDirTemp != "" {
+		defer os.RemoveAll(e.workDirTemp)
+		e.workDirTemp = ""
+	}
 	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
+	}
+	e.defaultWorkDir()
+	if e.workDirTemp != "" {
+		defer os.RemoveAll(e.workDirTemp)
+		e.workDirTemp = ""
 	}
 	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
 	if err != nil {
@@ -1980,6 +1990,11 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 // selected sous-bot.
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
+	e.defaultWorkDir()
+	if e.workDirTemp != "" {
+		defer os.RemoveAll(e.workDirTemp)
+		e.workDirTemp = ""
+	}
 	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
@@ -2099,9 +2114,11 @@ func pinBackendRehydration(rs *runState, cp *store.Checkpoint) {
 func (e *Engine) restoreRunEnv(r *store.Run) {
 	if r.WorkDir != "" {
 		e.workDir = r.WorkDir
-	} else if e.workDir == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			e.workDir = cwd
+	} else {
+		e.defaultWorkDir()
+		if e.workDirTemp != "" {
+			defer os.RemoveAll(e.workDirTemp)
+			e.workDirTemp = ""
 		}
 	}
 	// Mirror the run's repo root onto the engine so resolveVars's
@@ -2255,7 +2272,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		return false, err
 	}
 	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
+		e.onNodeFinished(rs.ctx, rs.runID, nodeID, output)
 	}
 
 	// Best-effort checkpoint for resume-from-failed (parity with execLoopAfterExec).
@@ -2935,7 +2952,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		return err
 	}
 	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
+		e.onNodeFinished(rs.ctx, rs.runID, nodeID, output)
 	}
 
 	// Checkpoint.

@@ -271,7 +271,9 @@ func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *test
 	// optional capabilities from the engine's own probes.
 	eng := runtime.New(wf, st, authRejectingExecutor{},
 		runtime.WithEventObserver(usage.observe),
-		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())))
+		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
+		// The skill mirror lands here, not in the package directory (#1803).
+		runtime.WithWorkDir(t.TempDir()))
 	_ = eng.Run(ctx, "run-1", map[string]any{})
 
 	if !usage.SawAuthFailure() {
