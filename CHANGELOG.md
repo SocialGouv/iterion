@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.205.0](https://github.com/SocialGouv/iterion/compare/v3.204.2...v3.205.0) (2026-09-27)
+
+### Features
+
+* **assessment:** the bot that writes the contract a campaign executes ([#1776](https://github.com/SocialGouv/iterion/issues/1776)) ([8c7a130](https://github.com/SocialGouv/iterion/commit/8c7a1309a8118f8b9126c873adb20bdb5880e94e))
+
+    <details><summary>why</summary>
+
+    A modernisation campaign starts from a contract an operator writes by hand. This bundle is the step that writes it: survey the repository, measure it against a versioned profile, propose the programme, and emit `.modernize/plan.yaml` validated lot by lot.
+
+    </details>
+
 ## [3.204.2](https://github.com/SocialGouv/iterion/compare/v3.204.1...v3.204.2) (2026-09-27)
 
 ### Bug Fixes
