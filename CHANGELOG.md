@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.204.2](https://github.com/SocialGouv/iterion/compare/v3.204.1...v3.204.2) (2026-09-27)
+
+### Bug Fixes
+
+* **delegate:** the claude_code model id reaches the wire bare — the facade trio's prefixes are stripped ([#1885](https://github.com/SocialGouv/iterion/issues/1885)) ([8b1f51e](https://github.com/SocialGouv/iterion/commit/8b1f51e3a7aabe8ccbd6adbad43abe4a2e917148))
+
+    <details><summary>why</summary>
+
+    `teams switch <slug>` minted a PAT with the slug stored verbatim as the team pin. A PAT identity resolves its team on every use — GetMembership(user, "pic-graal") finds nothing — so the token answered 401 "token team unavailable" on every call, and the CLI (sharing one credential file with the MCP server) carried the break into every surface. Paid in production: two studio re-logins and a blocked phase.
+
+    </details>
+
 ## [3.204.1](https://github.com/SocialGouv/iterion/compare/v3.204.0...v3.204.1) (2026-09-27)
 
 ### Bug Fixes
