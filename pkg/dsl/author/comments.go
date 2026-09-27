@@ -1,6 +1,7 @@
 package author
 
 import (
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -40,29 +41,11 @@ func Comments(src []byte) []string {
 		if n == nil {
 			return
 		}
-		add(n.HeadComment)
 		if n.Style&yaml.FlowStyle != 0 && (n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode) {
-			before, inside := flowComments(lines, n)
-			// Between a tag and its bracket, yaml.v3 hangs a comment of its
-			// own line on the collection's head (listed above) and drops one
-			// on the tag's line: only the dropped ones are added here — a
-			// comment on the tag's line is never the head's.
-			head := map[string]int{}
-			for _, h := range strings.Split(n.HeadComment, "\n") {
-				head[strings.TrimSpace(h)]++
-			}
-			for _, c := range before {
-				if c.ownLine && head[c.text] > 0 {
-					head[c.text]--
-					continue
-				}
-				out = append(out, c.text)
-			}
-			out = append(out, inside...)
-			add(n.LineComment)
-			add(n.FootComment)
+			out = append(out, walkFlow(n, lines)...)
 			return
 		}
+		add(n.HeadComment)
 		add(n.LineComment)
 		if n.Kind == yaml.MappingNode {
 			for i := 0; i+1 < len(n.Content); i += 2 {
@@ -92,6 +75,94 @@ func Comments(src []byte) []string {
 		out = append(out[:at], append(dc, out[at:]...)...)
 	}
 	return out
+}
+
+// walkFlow lists a flow collection's comments from its SOURCE, in written
+// order — the source is the single source of truth, and no comment is
+// listed twice. yaml.v3 hangs some of these comments on the node's head,
+// line and foot as well; the sourced line each one physically sits on is
+// what tells a hung copy (already listed from its own source line) from a
+// distinct comment:
+//
+//   - the head's lines are the contiguous comment block ending above the
+//     OPENING bracket's line (blanks skipped — a head comment may carry
+//     them); a sourced read on one of those lines is the head's, emitted
+//     there and nowhere else;
+//   - a line or foot comment whose text the sourced read already emitted
+//     is the moved inside comment (the `[a: # c` + break shapes) — UNLESS
+//     a copy of it also sits at or after the CLOSING bracket's line, where
+//     it is the author's own separate comment, listed;
+//   - anything else — a comment between a `!` tag and its bracket the head
+//     never carried, a same-text comment on another line — is listed, same
+//     text or not (the one-short fuzz case).
+//
+// A head whose block cannot be found above the opening bracket is still
+// listed, from the hung text: failing to find it must not lose it.
+func walkFlow(n *yaml.Node, lines []string) []string {
+	before, inside, openLine, closeLine := flowComments(lines, n)
+	headLines := headCommentLines(lines, openLine, n.HeadComment)
+	sourced := append(append([]flowComment{}, before...), inside...)
+	sort.Slice(sourced, func(i, j int) bool { return sourced[i].line < sourced[j].line })
+	var out []string
+	if len(headLines) > 0 {
+		heads := make([]int, 0, len(headLines))
+		for l := range headLines {
+			heads = append(heads, l)
+		}
+		sort.Ints(heads)
+		for _, l := range heads {
+			if t := strings.TrimSpace(lines[l-1]); t != "" {
+				out = append(out, t)
+			}
+		}
+	} else {
+		add := func(block string) {
+			for _, line := range strings.Split(block, "\n") {
+				if strings.TrimSpace(line) != "" {
+					out = append(out, strings.TrimSpace(line))
+				}
+			}
+		}
+		add(n.HeadComment)
+	}
+	sourcedText := map[string]bool{}
+	for _, c := range sourced {
+		if headLines[c.line] {
+			continue
+		}
+		out = append(out, c.text)
+		sourcedText[c.text] = true
+	}
+	for _, hung := range []string{n.LineComment, n.FootComment} {
+		for _, l := range strings.Split(hung, "\n") {
+			t := strings.TrimSpace(l)
+			if t == "" {
+				continue
+			}
+			if sourcedText[t] && !commentAfterClose(t, lines, closeLine) {
+				continue
+			}
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// commentAfterClose reports whether a comment of this text is written on a
+// line at or after the closing bracket's own — a physical comment the
+// sourced read (which stops at that bracket) never saw. A same-text
+// comment with no such line is the inside comment yaml.v3 moved onto the
+// node's line or foot (#1814).
+func commentAfterClose(text string, lines []string, closeLine int) bool {
+	for li := closeLine - 1; li < len(lines); li++ {
+		r := []rune(lines[li])
+		for ci := 0; ci+1 < len(r); ci++ {
+			if r[ci] == '#' && (ci == 0 || r[ci-1] == ' ' || r[ci-1] == '\t') {
+				return strings.TrimSpace(string(r[ci:])) == text
+			}
+		}
+	}
+	return false
 }
 
 // directiveComments reads the comments on the directive lines that open a
@@ -135,9 +206,11 @@ func directiveComments(lines []string) (above int, comments []string) {
 // the end of its line, and goes on across blanks and line breaks otherwise.
 // The comments before the opening bracket — the node starts at its `!` tag
 // when it has one — are listed apart (before) from those inside it, each
-// with whether it is written on its own line.
-func flowComments(lines []string, n *yaml.Node) (before []flowComment, out []string) {
+// with whether it is written on its own line. The 1-based lines of the
+// opening and closing brackets come back with them.
+func flowComments(lines []string, n *yaml.Node) (before []flowComment, out []flowComment, openLine int, closeLine int) {
 	depth, started, plain := 0, false, false
+	openLine, closeLine = 0, 0
 	var quote rune
 	for li := n.Line - 1; li >= 0 && li < len(lines); li++ {
 		line := []rune(lines[li])
@@ -173,16 +246,17 @@ func flowComments(lines []string, n *yaml.Node) (before []flowComment, out []str
 					before = append(before, flowComment{
 						text:    strings.TrimSpace(string(line[ci:])),
 						ownLine: strings.TrimSpace(string(line[:ci])) == "",
+						line:    li + 1,
 					})
 					ci = len(line)
 				} else if r == '[' || r == '{' {
-					started, depth = true, 1
+					started, depth, openLine = true, 1, li+1
 				}
 				continue
 			case r == ' ' || r == '\t':
 				continue
 			case r == '#' && (!plain || ci == 0 || line[ci-1] == ' ' || line[ci-1] == '\t'):
-				out = append(out, strings.TrimSpace(string(line[ci:])))
+				out = append(out, flowComment{text: strings.TrimSpace(string(line[ci:])), line: li + 1})
 				plain = false
 				ci = len(line)
 				continue
@@ -199,7 +273,7 @@ func flowComments(lines []string, n *yaml.Node) (before []flowComment, out []str
 			case ']', '}':
 				depth--
 				if depth == 0 {
-					return before, out
+					return before, out, openLine, li + 1
 				}
 			case ',', ':', '?':
 			default:
@@ -207,13 +281,47 @@ func flowComments(lines []string, n *yaml.Node) (before []flowComment, out []str
 			}
 		}
 	}
-	return before, out
+	return before, out, openLine, closeLine
 }
 
-// flowComment is a comment read before a flow collection's bracket.
+// flowComment is a comment read off a flow collection's source: before
+// its opening bracket, or inside it — with the 1-based line its `#` sits
+// on, the position a yaml.v3-hung copy is told apart from (#1814).
 type flowComment struct {
 	text    string
 	ownLine bool // nothing but blanks before it on its line
+	line    int
+}
+
+// headCommentLines maps the source lines the node's HEAD comment occupies:
+// the contiguous block of comment lines whose texts are the head's, ending
+// above the OPENING bracket's line, blanks skipped (a head comment may
+// carry them). An empty map when the head is not written there — the
+// caller falls back to the hung text, which it then lists alone.
+func headCommentLines(lines []string, openLine int, head string) map[int]bool {
+	out := map[int]bool{}
+	if head == "" || openLine < 2 || openLine > len(lines) {
+		return out
+	}
+	want := []string{}
+	for _, l := range strings.Split(head, "\n") {
+		t := strings.TrimSpace(l)
+		if t != "" {
+			want = append(want, t)
+		}
+	}
+	li := openLine - 2 // the 0-based line above the opening bracket's line
+	for i := len(want) - 1; i >= 0; i-- {
+		for li >= 0 && strings.TrimSpace(lines[li]) == "" {
+			li-- // a blank inside the head block is the head's too
+		}
+		if li < 0 || strings.TrimSpace(lines[li]) != want[i] {
+			return map[int]bool{}
+		}
+		out[li+1] = true
+		li--
+	}
+	return out
 }
 
 // endsPlain reports whether the rune at ci ends a plain scalar inside a
