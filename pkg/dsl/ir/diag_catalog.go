@@ -165,7 +165,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagTreeNoiseRefInExecBody:     {"Tree-noise ref in an executable body", "Write `{{!run.tree_noise}}` for a verbatim substitution, or read `$ITERION_TREE_NOISE` unquoted (the engine exports it to every tool process) — a plain `{{run.tree_noise}}` shell-escapes into ONE argument no file matches, and the exclusion vanishes in silence."},
 	DiagTreeNoiseEnvQuoted:         {"Tree-noise env var quoted", "Drop the quotes around `$ITERION_TREE_NOISE` — the value is pre-quoted pathspecs meant to word-split; quoted, the list collapses into ONE pathspec that matches nothing and the gate silently stops excluding."},
 	DiagInvalidNodeTimeout:         {"Invalid node timeout", "Use a positive Go duration string, e.g. `timeout: \"20m\"`."},
-	DiagInvalidReviewGateValue:    {"Unknown review-gate posture or merge strategy", "Write `posture: human_required` / `agent_verdict_ok` and `merge_strategy: squash` / `merge` — any other word read as the default (`human_required` / `squash`), silently replacing the choice made; the IR keeps the fail-safe default."},
+	DiagInvalidReviewGateValue:     {"Unknown review-gate posture or merge strategy", "Write `posture: human_required` / `agent_verdict_ok` and `merge_strategy: squash` / `merge` — any other word read as the default (`human_required` / `squash`), silently replacing the choice made; the IR keeps the fail-safe default."},
 	DiagFileFieldNotHuman:          {"file field outside a human pause", "Move the `file` field to a human node's `output:` with `interaction: human` (or `llm_or_human`), or use `string` for a path the node computes."},
 	DiagReservedAnswerKey:          {"Reserved answer key", "Rename the field — `_attachments` is written by the engine on resume."},
 	DiagVarEnumNonString:           {"Var enum on non-string type", "Declare the var as `string`, or drop the `[enum: ...]` constraint."},
@@ -187,6 +187,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagForeachConflictsLoop:       {"foreach conflicts with loop", "Use one iteration form per edge: `as foreach` OR `as <loop>(N)`."},
 	DiagDuplicateForeach:           {"Conflicting foreach definitions", "Edges sharing a foreach name must agree on its element binding and collection; give one of them its own name."},
 	DiagEmptyToolsNotEnforced:      {"Declared-empty tools: not enforced", "Bound the node with `deny:` rules (on kimi/grok those need `sandbox: none`, C136), or run it on a backend that receives the list (claw, claude_code, codex)."},
+	DiagSyncInteractionInert:       {"Sync interaction inert on this backend", "Use a backend whose ask_user is wired — claude_code, claw, or pi on its RPC transport — or drop `interaction:`: on codex, kimi, grok and opencode no ask_user tool reaches the agent, so the node never pauses and the interaction protocol is prompt text only."},
 	DiagSubbotNoSource:             {"subbot without source", "Add `source: \"<child>.bot\"` (relative to this file)."},
 	DiagSubbotAuthorSource:         {"subbot source is an author document", "Write the child's .bot (`iterion fmt --to bot <child>.bot.yaml`) and name it in `source:`; a draft is never launched."},
 

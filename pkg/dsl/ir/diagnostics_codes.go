@@ -242,6 +242,14 @@ const (
 	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:`/`timeout:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
 
 	DiagAsyncBackendUnsupported DiagCode = "C267" // interaction: async on a backend without async question tools (error)
+	// The SYNC half of the same capability screen (#1644): no ask_user tool
+	// reaches the agent on these backends, so a node declaring interaction:
+	// human / llm / llm_or_human / human_or_host runs to completion without
+	// ever pausing. A warning, not C267's error: the async pair is
+	// type-asserted at dispatch and fails without it, while the sync form
+	// degrades to prompt text — the requirement is "not silence", not a
+	// break at upgrade.
+	DiagSyncInteractionInert DiagCode = "C271" // interaction: (sync) on a backend no ask_user tool reaches (warning — the node never pauses)
 
 	DiagSubbotAuthorSource DiagCode = "C305" // subbot `source:` names an author document (.bot.yaml): a child is a .bot (error)
 
