@@ -1,5 +1,5 @@
 import type { languages } from "monaco-editor";
-import { iterDslDeclarations, iterDslKeywords, iterDslProperties } from "./iterDsl.generated";
+import { iterDslDeclarations, iterDslEnumValues, iterDslKeywords, iterDslProperties } from "./iterDsl.generated";
 
 export const ITER_LANGUAGE_ID = "iter";
 
@@ -32,23 +32,10 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
     "string", "bool", "int", "float", "json", "string[]",
   ],
   valueKeywords: [
-    // Session
-    "fresh", "inherit", "fork", "artifacts_only",
-    // Router mode
-    "fan_out_all", "condition", "round_robin",
-    // Await
-    "wait_all", "best_effort", "none",
-    // Worktree
-    "auto",
-    // Interaction (replaces the legacy human "mode" values
-    // pause_until_answers / auto_answer / auto_or_pause)
-    "human", "llm", "llm_or_human",
-    // Reasoning effort
-    "low", "medium", "high", "xhigh", "max", "ultracode",
-    // MCP transport
-    "stdio", "http", "sse",
-    // OAuth
-    "oauth2",
+    // The enum words of every enum / enum|env property, generated from the
+    // registry (iterDsl.generated.ts), plus the bool literals — a bool is
+    // a JSON literal, not a registry enum value.
+    ...iterDslEnumValues,
     "true", "false",
   ],
   builtinNodes: ["done", "fail"],

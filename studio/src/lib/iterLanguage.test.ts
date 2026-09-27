@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "./iterLanguage";
 import { tokenizeLines, typeAt } from "./monarchTokenize";
-import { iterDslKeywords, iterDslPropertiesByKind } from "./iterDsl.generated";
+import { iterDslEnumValuesByProperty, iterDslKeywords, iterDslPropertiesByKind } from "./iterDsl.generated";
 
 // Every assertion below runs monaco's REAL Monarch engine on the shipped
 // definition (see monarchTokenize.ts), so it certifies what the editor
@@ -22,6 +22,17 @@ describe("iter tokenizer", () => {
       for (const property of properties) {
         const [line] = paint([`  ${property}: value`]);
         expect(typeAt(line, 2), `${kind}.${property}`).toContain("keyword");
+      }
+    }
+  });
+
+  it("paints every enum value word of the generated vocabulary in value position", () => {
+    for (const [property, values] of Object.entries(iterDslEnumValuesByProperty)) {
+      for (const value of values) {
+        const [line] = paint([`  ${property}: ${value}`]);
+        // `human` and `llm` are also declaration/lexer keywords and win the
+        // word rule's earlier cases; both colours say "recognised word".
+        expect(typeAt(line, property.length + 4), `${property}: ${value}`).toMatch(/keyword|constant/);
       }
     }
   });

@@ -538,4 +538,49 @@ export const iterDslPropertiesByKind = {
   ]
 } as const;
 
+export const iterDslEnumValuesByProperty = {
+  "await": [
+    "best_effort",
+    "wait_all"
+  ],
+  "interaction": [
+    "async",
+    "human",
+    "human_or_host",
+    "llm",
+    "llm_or_human",
+    "none",
+    "review"
+  ],
+  "mode": [
+    "condition",
+    "fan_out_all",
+    "fan_out_each",
+    "llm",
+    "round_robin"
+  ],
+  "reasoning_effort": [
+    "high",
+    "low",
+    "max",
+    "medium",
+    "ultracode",
+    "xhigh"
+  ],
+  "session": [
+    "artifacts_only",
+    "fork",
+    "fresh",
+    "inherit",
+    "inherit_if_available",
+    "persist"
+  ],
+  "transport": [
+    "http",
+    "sse",
+    "stdio"
+  ]
+} as const;
+
 export const iterDslProperties = [...new Set(Object.values(iterDslPropertiesByKind).flat())];
+export const iterDslEnumValues = [...new Set(Object.values(iterDslEnumValuesByProperty).flat())];

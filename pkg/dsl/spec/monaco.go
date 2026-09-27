@@ -10,20 +10,30 @@ import (
 // MonacoFile is generated alongside the reference and checked by dsl:check.
 const MonacoFile = "studio/src/lib/iterDsl.generated.ts"
 
-// Monaco renders the editor's lexical and property vocabulary. The caller
-// supplies parser.Keywords(): spec stays a leaf, since the parser itself
-// imports this registry to diagnose property names.
+// Monaco renders the editor's lexical and property vocabulary, plus the
+// enum words of every Enum / EnumOrEnv property, keyed by property name —
+// the words the studio highlights as value constants, so the editor's copy
+// of the registry cannot drift (#1627). The caller supplies
+// parser.Keywords(): spec stays a leaf, since the parser itself imports
+// this registry to diagnose property names.
 func Monaco(lexicalKeywords []string) string {
 	keywords := append([]string{}, lexicalKeywords...)
 	sort.Strings(keywords)
 	declarations := []string{}
 	properties := make(map[string][]string, len(Kinds))
+	enumValues := map[string][]string{}
 	for _, kind := range Kinds {
 		if kind.Role == Declaration || kind.Role == Node {
 			declarations = append(declarations, kind.Name)
 		}
 		properties[kind.Name] = append([]string{}, kind.Names()...)
 		sort.Strings(properties[kind.Name])
+		for _, p := range kind.Properties {
+			if p.Form != Enum && p.Form != EnumOrEnv {
+				continue
+			}
+			enumValues[p.Name] = unionWords(enumValues[p.Name], p.Values)
+		}
 	}
 	sort.Strings(declarations)
 	var b strings.Builder
@@ -35,11 +45,32 @@ func Monaco(lexicalKeywords []string) string {
 		{"iterDslKeywords", keywords},
 		{"iterDslDeclarations", declarations},
 		{"iterDslPropertiesByKind", properties},
+		{"iterDslEnumValuesByProperty", enumValues},
 	} {
 		// These values contain only strings/slices/maps, so encoding cannot fail.
 		raw, _ := json.MarshalIndent(item.value, "", "  ")
 		fmt.Fprintf(&b, "export const %s = %s as const;\n\n", item.name, raw)
 	}
 	b.WriteString("export const iterDslProperties = [...new Set(Object.values(iterDslPropertiesByKind).flat())];\n")
+	b.WriteString("export const iterDslEnumValues = [...new Set(Object.values(iterDslEnumValuesByProperty).flat())];\n")
 	return b.String()
+}
+
+// unionWords merges the enum words of every property that shares a name
+// across kinds (interaction is declared on agent, judge, human and
+// workflow), sorted so the rendering is deterministic.
+func unionWords(into, words []string) []string {
+	seen := make(map[string]bool, len(into)+len(words))
+	out := append([]string{}, into...)
+	for _, w := range into {
+		seen[w] = true
+	}
+	for _, w := range words {
+		if !seen[w] {
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

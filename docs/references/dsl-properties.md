@@ -1,7 +1,7 @@
 # Iterion `.bot` property reference
 
 The same `iterion dsl spec --write` command generates Monaco's lexical
-keywords and properties per kind in
+keywords, properties per kind and enum values per property in
 [`iterDsl.generated.ts`](../../studio/src/lib/iterDsl.generated.ts), and the
 author JSON Schema of the YAML twin of a `.bot` (lot 5 of #1010):
 [`iterion-author.v1.schema.json`](iterion-author.v1.schema.json),
