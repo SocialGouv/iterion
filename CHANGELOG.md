@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.203.2](https://github.com/SocialGouv/iterion/compare/v3.203.1...v3.203.2) (2026-09-27)
+
+### Bug Fixes
+
+* **server,cli:** a team-pinned token cannot be minted for a team that does not exist ([#1880](https://github.com/SocialGouv/iterion/issues/1880)) ([8efbe48](https://github.com/SocialGouv/iterion/commit/8efbe481ba4c474e43a5ca2f44faf3bf68b13f61))
+
+    <details><summary>why</summary>
+
+    `teams switch <slug>` minted a PAT with the slug stored verbatim as the team pin. A PAT identity resolves its team on every use — GetMembership(user, "pic-graal") finds nothing — so the token answered 401 "token team unavailable" on every call, and the CLI (sharing one credential file with the MCP server) carried the break into every surface. Paid in production: two studio re-logins and a blocked phase.
+
+    </details>
+
 ## [3.203.1](https://github.com/SocialGouv/iterion/compare/v3.203.0...v3.203.1) (2026-09-26)
 
 ### Bug Fixes
