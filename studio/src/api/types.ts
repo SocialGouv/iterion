@@ -51,6 +51,12 @@ export interface UnitFileInfo {
   rel: string;
   profile?: number;
   imports?: string[];
+  /** sha256 of the file's content as the server last read it. The unit's
+   *  revision covers the files the unit HOLDS; a file a per-file edit
+   *  newly imports is none of them, so the claim carries this back and the
+   *  save compares — a colleague's edit since the apply is a conflict,
+   *  never a silent overwrite. */
+  digest?: string;
 }
 
 /** A declared terminal failure: `fail <name>:` with a typed code the run's

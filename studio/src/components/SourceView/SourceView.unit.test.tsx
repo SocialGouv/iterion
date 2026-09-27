@@ -132,6 +132,10 @@ describe("the Source view of a bot in several files", () => {
       expect.anything(),
       "bots/demo/main.bot",
       "lib/nodes.bot",
+      // The file list the client holds: a per-file edit may have changed a
+      // file's `import` lines or its `dsl:` profile, and the render must
+      // follow the claim, not the stored header.
+      unit.files,
     );
   });
 

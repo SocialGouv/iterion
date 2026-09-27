@@ -1,4 +1,4 @@
-import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo } from "./types";
+import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo, UnitFileInfo } from "./types";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
 import { isWorkflowFile } from "@/lib/workflowFile";
 
@@ -343,6 +343,7 @@ export async function unparseUnitFile(
   document: IterDocument,
   editorPath: string,
   rel: string,
+  unitFiles?: UnitFileInfo[],
 ): Promise<UnparsedSource> {
   const bs = parseBotSourceEditorPath(editorPath);
   if (bs) {
@@ -351,12 +352,12 @@ export async function unparseUnitFile(
     );
     return request("/unparse", {
       method: "POST",
-      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel }),
+      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
     });
   }
   return request("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document, path: editorPath, file: rel }),
+    body: JSON.stringify({ document, path: editorPath, file: rel, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
   });
 }
 
@@ -430,10 +431,11 @@ export async function unparseUnit(
   files: Record<string, string>,
   main: string,
   revision: string,
+  unitFiles?: UnitFileInfo[],
 ): Promise<{ source: string; files: Record<string, string>; revision?: string }> {
   const res = await request<{ source: string; files?: Record<string, string>; revision?: string }>("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document, files, main, revision }),
+    body: JSON.stringify({ document, files, main, revision, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
   });
   return { source: res.source, files: res.files ?? {}, revision: res.revision };
 }
@@ -635,7 +637,7 @@ export async function openFile(
 export async function saveFile(
   path: string,
   document: IterDocument,
-  options?: { createOnly?: boolean; revision?: string },
+  options?: { createOnly?: boolean; revision?: string; unitFiles?: UnitFileInfo[] },
 ): Promise<SaveFileResponse> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
@@ -656,8 +658,11 @@ export async function saveFile(
       // — only the files whose program changed come back — patched into
       // the whole bundle the store holds, and written as ONE versioned
       // PUT, so manifest, prompts, skills and every other file survive and
-      // a concurrent editor is a conflict, never a silent overwrite.
-      const rewritten = await unparseUnit(document, current.files ?? {}, bs.rel, options.revision);
+      // a concurrent editor is a conflict, never a silent overwrite. The
+      // file list the client holds (unit.files) goes with it: a per-file
+      // edit may have changed a file's `import` lines or its `dsl:`
+      // profile, which the document does not carry.
+      const rewritten = await unparseUnit(document, current.files ?? {}, bs.rel, options.revision, options.unitFiles);
       const files = { ...(current.files ?? {}), ...rewritten.files };
       await apiRequest(
         `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
@@ -679,6 +684,7 @@ export async function saveFile(
       document,
       ...(options?.createOnly ? { create_only: true } : {}),
       ...(options?.revision ? { revision: options.revision } : {}),
+      ...(options?.unitFiles ? { unit_files: options.unitFiles } : {}),
     }),
   });
 }

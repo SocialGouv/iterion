@@ -97,6 +97,13 @@ type unparseRequest struct {
 	Files    map[string]string `json:"files,omitempty"`
 	Main     string            `json:"main,omitempty"`
 	Revision string            `json:"revision,omitempty"`
+	// UnitFiles is the file list the client last holds for the unit (its
+	// unit.files): each file's profile and import lines AS THE CLIENT
+	// KNOWS them, which a per-file edit of the Source view may have changed
+	// — the two header fields the merged document does not carry. With it,
+	// the write-back and the per-file render follow the claim; without it,
+	// both rebuild every file's header from the stored files.
+	UnitFiles []unitFileInfo `json:"unit_files,omitempty"`
 	// Flatten renders the merged program of a bot in several files as one
 	// text for DISPLAY — the Source view — which is never written back:
 	// without it a document whose declarations name their files is
