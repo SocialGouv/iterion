@@ -230,7 +230,6 @@ func TestAChompedSingleLineBlockStillReadsAsTheWord(t *testing.T) {
 	}
 }
 
-
 // The workflow's default_backend is the twin of a node's backend: the same
 // word gate covers it (the gate's round-1 finding on #1881).
 func TestADefaultBackendBlockIsRefused(t *testing.T) {
