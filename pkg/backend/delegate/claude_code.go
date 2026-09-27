@@ -26,18 +26,18 @@ import (
 
 // claudeCodeModelID strips the provider prefix a model spec carries when
 // that provider rides the SAME Anthropic-compatible wire this backend
-// drives — the facades: Anthropic itself, z.ai, Moonshot (the slots whose
-// WireFamily is anthropic-wire). The claude CLI forwards the value
-// verbatim, and a prefixed code ("zai/glm-5.3") reaches z.ai whole and
-// dies with "[1211] Unknown Model". A genuinely foreign prefix
+// drives — derived from secrets.AnthropicWireSlotOrder (whose docs
+// mandate adding a provider HERE, once): the claude CLI forwards the
+// value verbatim, and a prefixed code ("zai/glm-5.3") reaches z.ai whole
+// and dies with "[1211] Unknown Model". A genuinely foreign prefix
 // ("openai/…") stays and fails fast as the non-Anthropic model it is.
 func claudeCodeModelID(spec string) string {
-	for _, prefix := range []string{
-		string(secrets.ProviderAnthropic) + "/",
-		string(secrets.ProviderZAI) + "/",
-		string(secrets.ProviderMoonshot) + "/",
-	} {
-		if after, ok := strings.CutPrefix(spec, prefix); ok {
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if slot == string(secrets.OAuthKindClaudeCode) {
+			// An OAuth kind is a credential slot, not a model prefix.
+			continue
+		}
+		if after, ok := strings.CutPrefix(spec, slot+"/"); ok {
 			return after
 		}
 	}
