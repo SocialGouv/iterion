@@ -1009,3 +1009,21 @@ func TestLaunchVarsView_ConsultedButDiscardedStaysUndecided(t *testing.T) {
 		t.Errorf("{{vars.b}} = %q, want undecided — the probe cannot see that dispatch discards the inner expansion", got)
 	}
 }
+
+// The probe sees an engine-supplied name reached through an INDIRECTION:
+// resolveBracedSegment parses the outer name from the resolved inner text,
+// so `${${A}}` with A=PROJECT_DIR in the environment consults PROJECT_DIR in
+// dispatch's varExpandFn. A probe lookup answering "" for everything
+// resolved the inner segment to nothing and never saw it — the screen then
+// read the var as decided-empty where dispatch reads a path. The probe
+// answers non-listed names from the process environment (the one the screen
+// itself expands with); a listed name's consult is still recorded.
+func TestLaunchVarsView_IndirectEngineNameStaysUndecided(t *testing.T) {
+	t.Setenv("C1606_INDIRECT", "PROJECT_DIR")
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${${C1606_INDIRECT}}"},
+	}}
+	if _, ok := launchVarsView(w, nil)["b"]; ok {
+		t.Errorf("view[b] present — dispatch resolves ${${C1606_INDIRECT}} to the PROJECT_DIR path; the var must stay undecided")
+	}
+}
