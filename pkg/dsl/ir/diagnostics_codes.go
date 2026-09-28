@@ -190,12 +190,14 @@ const (
 	DiagUnknownLoopRef   DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (warning; the runtime renders no value for it)
 	DiagUnknownRunMember DiagCode = "C153" // {{run.<member>.…}} names a member the namespace has not (warning; the runtime renders no value for it — and an exclusion list that renders empty turns a tree gate off in silence, #1464)
 	// The tree-noise channel in an EXECUTABLE body (#1555, the #1464/#1530
-	// class): the prompt rendering shell-escapes into one argument no file
-	// matches, and the quoted env var collapses the same way. Both warnings
-	// — the catalogue carries zero instances (the tree_noise_channel tests
-	// prove it), so the change is additive.
-	DiagTreeNoiseRefInExecBody DiagCode = "C157" // {{run.tree_noise}} (not the bang form) in a tool command/script/postcondition (warning; use {{!run.tree_noise}} or $ITERION_TREE_NOISE unquoted)
-	DiagTreeNoiseEnvQuoted     DiagCode = "C158" // "$ITERION_TREE_NOISE" quoted in a shell-bound tool body (warning; the list collapses into one pathspec that matches nothing)
+	// class): the prompt rendering lands as ONE word no file matches
+	// (shell-escaped in a command, JSON-quoted in a shell script), and the
+	// quoted env var collapses the same way — or never expands at all under
+	// single quotes. Both shell bodies only: a js/py script consumes the ref
+	// as data. Both warnings — the catalogue carries zero instances (the
+	// tree_noise_channel tests prove it), so the change is additive.
+	DiagTreeNoiseRefInExecBody DiagCode = "C157" // {{run.tree_noise}} (not the bang form) in a shell-bound tool command/script/postcondition (warning; use {{!run.tree_noise}} or $ITERION_TREE_NOISE unquoted)
+	DiagTreeNoiseEnvQuoted     DiagCode = "C158" // a quoted span referencing $ITERION_TREE_NOISE in a shell-bound tool body (warning; double quotes collapse the list to one pathspec, single quotes never expand — [ … ] tests and assignment RHS suppressed, quoting is mandatory there)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).
