@@ -8,21 +8,24 @@ description: Reading the run's optional product-context material (reference repo
 Some runs carry PRODUCT CONTEXT: reference material an operator attached
 to the run (via `context_git` repos and/or a tracker board snapshot),
 materialized deterministically before pass 1 under
-`${scratch_dir}/context/`. When the user prompt's "Product context"
+`${scratch_dir}/context-<run id>/` (per-run — concurrent runs of the
+same repo do not share it). When the user prompt's "Product context"
 line is empty, this skill does not apply — run without it.
 
 ## What it is
 
-- `context/<slug>/…` — shallow clones of the reference repositories
-  named in `context_git`. They hold whatever the operator committed
-  there: reference PDFs, functional specs, online-help exports. PDFs
-  have been pre-extracted at ingest: each `<file>.pdf` has a
-  `<file>.pdf.txt` sidecar next to it (`pdftotext -layout`).
-- `context/jira/board-<id>.md` — the tracker board snapshot: one
-  section per issue (key, type, status, summary, trimmed description).
-- `context/manifest.json` — what was materialized, and any source
-  that failed (a failed configured source fails the node loudly, so
-  an entry here means the run refused to start under-grounded).
+- `context-<run id>/<slug>/…` — shallow clones of the reference
+  repositories named in `context_git`. They hold whatever the operator
+  committed there: reference PDFs, functional specs, online-help
+  exports. PDFs have been pre-extracted at ingest: each `<file>.pdf`
+  has a `<file>.pdf.txt` sidecar next to it (`pdftotext -layout`).
+- `context-<run id>/jira/board-<id>.md` — the tracker board snapshot:
+  one section per issue (key, type, status, summary, trimmed
+  description).
+- `context-<run id>/manifest.json` — what was materialized, and any
+  source that failed (a failed configured source fails the node
+  loudly, so an entry here means the run refused to start
+  under-grounded).
 
 ## What it grounds
 
@@ -51,7 +54,10 @@ code, never the reverse); the context steers the ENRICHMENT half:
 
 1. **Read-only.** Never copy, move, or commit a context file into the
    target repository. The writeable set is `.md` in the repo
-   (doc-scope-enumeration); reference material is not content.
+   (doc-scope-enumeration); reference material is not content. This
+   includes TRANSCRIBING content: tracker issues and spec text can be
+   more confidential than the repo they would land in — a doc cites
+   the product's behaviour, not the context's wording.
 2. **Code still wins.** A context fact the code contradicts is drift
    in the CONTEXT (stale spec, closed issue still open elsewhere) —
    do not write it into the docs; surface it in `drift_remaining`.

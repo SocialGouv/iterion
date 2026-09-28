@@ -45,13 +45,24 @@ reported the corpus aligned.
 ## Shape (v3)
 
 ```
-scan_hints ──▶ campaign ──▶ scope_check ──▶ gate
+context_gate ──(context configured)──▶ context_ingest ──▶ scan_hints ──▶ campaign ──▶ scope_check ──▶ gate
+context_gate ──(no context)─────────────────────────────────▶ scan_hints
 gate ──(converged)────────────────▶ mr_gate
 gate ──▶ scan_hints   as continuation_loop(max_passes)  — fresh hints, next pass
 mr_gate ──(open_mr)──▶ forge_auth_probe ──(credential)──▶ finalize_mr ──▶ surface_pr_link ──▶ done
 mr_gate ──(not open_mr)──────────────────────────────────────────────▶ done
 ```
 
+- **`context_gate`** — entry gate (mr_gate shape): at least one context
+  source configured (`context_git` / `context_jira_base`) → materialize;
+  none → the run never executes the ingest node and is unchanged.
+- **`context_ingest`** — deterministic materialization of the OPTIONAL
+  product context (runs ONCE, before the loop, per-run namespaced under
+  `${scratch_dir}/context-<run id>/`): shallow-clones `context_git`
+  repos (forge_token via GIT_ASKPASS — never argv; PDFs pre-extracted
+  to `.txt` sidecars so claw reads them through bash) and renders the
+  Jira board snapshot to markdown. A configured source that fails fails
+  the node explicitly. See `skills/context-sources.md`.
 - **`scan_hints`** — ONE deterministic producer of **advisory** hints:
   missing repo-rooted paths cited in docs, dead internal links /
   heading anchors, code areas no doc mentions, plus coverage
@@ -64,7 +75,8 @@ mr_gate ──(not open_mr)─────────────────�
   entries are excluded, so the campaign's settled adjudications never
   re-surface. A repo with no docs in scope is not special-cased — the
   campaign authors the initial set itself.
-- **`campaign`** — one adaptive claude_code agent. The hints are a
+- **`campaign`** — one adaptive agent, backend per-run selectable via
+  `llm_backend` (default `claude_code`). The hints are a
   starting point, never its scope: it explores beyond them (reads the
   code, hunts the semantic drift no regex sees), adjudicates every
   issue to exactly one of **four outcomes** — fix+commit /
@@ -95,7 +107,7 @@ mr_gate ──(not open_mr)─────────────────�
 | `pr_url` / `base_ref` | `""` | GENERIC PR-context vars iterion sets for ANY bot launched on a PR (webhook / `/doki`). Non-empty `pr_url` ⇒ Doki self-switches to AMEND: aligns the PR's own diff (incremental, base = `base_ref`) and pushes onto the PR head + comments, instead of opening a new PR. No docs-refresh-specific engine code |
 | `mr_branch` / `mr_base` | `""` | New-PR branch (default `iterion/docs-refresh/<run-id>`) / base; in amend mode `mr_branch` overrides the push target (default: the checked-out PR head) |
 | `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
-| `context_git` | `""` | Comma-separated https URLs of reference repos to shallow-clone into `${scratch_dir}/context/<slug>/` before pass 1 (e.g. a repo holding the product's reference PDFs). Auth via the mounted `forge_token` (never argv); PDFs are pre-extracted to `.txt` sidecars (poppler ships in the bundle's devbox) so any backend reads them through bash |
+| `context_git` | `""` | Comma-separated https URLs of reference repos to shallow-clone into `${scratch_dir}/context-<run id>/<slug>/` before pass 1 (e.g. a repo holding the product's reference PDFs). Auth via the mounted `forge_token` (never argv); PDFs are pre-extracted to `.txt` sidecars (poppler ships in the bundle's devbox) so any backend reads them through bash |
 | `context_jira_base` / `_project` / `_board` / `_user` | `""` | Tracker snapshot: fetch the board's issues once and render `context/jira/board-<board>.md` (key, type, status, summary, trimmed description — Jira Cloud v3 ADF flattened). Auth = Basic `context_jira_user` + the `tracker_token` file secret (same name review-pr binds). A configured source that fails fails the run explicitly |
 | `llm_backend` | `claude_code` | Backend running the campaign node (`--var llm_backend=claw` for a claw run; pass `ITERION_DOC_ALIGN_EFFORT_CLAUDE=high` then — `ultracode` is Claude-family and degrades to `xhigh` elsewhere) |
 

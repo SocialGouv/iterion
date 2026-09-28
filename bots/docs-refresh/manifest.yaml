@@ -333,4 +333,8 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.141.0"
+  ## >= 3.168.0: routing-field `{{vars.*}}` resolution in `backend:`
+  ## (the campaign node's llm_backend) shipped with v3.168.0; on an
+  ## older runner the bundle would admit and die at its first
+  ## delegation. The 3.141 floor predates this feature.
+  iterion: ">= 3.168.0"

@@ -234,11 +234,12 @@ vars:
   ## Reference material the campaign reads as GROUNDING (product
   ## background a repo's code alone cannot tell it: functional specs,
   ## online-help PDFs, the tracker board). context_ingest materializes
-  ## everything under `${scratch_dir}/context/` — deliberately OUT of
-  ## the worktree, so the .md-only writeable set never sees it — before
-  ## the first pass. Both channels are independent; all vars empty
-  ## (the default) → context_ingest is a no-op and existing users see
-  ## zero change.
+  ## everything under `${scratch_dir}/context-<run id>/` — deliberately
+  ## OUT of the worktree, so the .md-only writeable set never sees it,
+  ## and per-RUN (PROJECT_SCRATCH_DIR is shared by concurrent runs of
+  ## the same repo) — before the first pass. Both channels are
+  ## independent; all vars empty (the default) → the gate skips the
+  ## node and existing users see zero change.
   ## Comma-separated https URLs of reference repositories to
   ## shallow-clone (e.g. a docs repo holding the product's reference
   ## PDFs). Cloned read-only via the mounted `forge_token` (never on
@@ -301,8 +302,9 @@ prompt campaign_system:
       areas that exist in the repo but appear in no doc.
   You correct and author documentation, never code.
 
-  LOAD YOUR SKILLS FIRST. The bundle ships seven skills under
-  `.claude/skills/` describing the discipline you MUST follow:
+  LOAD YOUR SKILLS FIRST. The bundle ships seven editorial skills
+  under `.claude/skills/` describing the discipline you MUST follow
+  (the eighth, `forge-mr-create.md`, belongs to the PR tail):
     - `docs-refresh.md` — operating playbook, the why and the
       inviolable rules
     - `doc-mismatch-taxonomy.md` — the mismatch kinds that tell you
@@ -824,18 +826,22 @@ schema finalize_mr_output:
 ## context_ingest — deterministic materialization of the OPTIONAL
 ## product-context sources (v3.6.0), run ONCE before the loop. Git
 ## reference repos are shallow-cloned and a Jira board is snapshotted
-## to markdown, all under ${scratch_dir}/context/ — deliberately
+## to markdown, all under ${scratch_dir}/context-<run id>/ — deliberately
 ## OUTSIDE the worktree so the .md-only writeable set never sees it.
 ## No source configured → a no-op that reports zero sources (existing
 ## users see no change). A configured source that fails FAILS the node
 ## explicitly: a half-materialized context must never look like a
 ## complete one. No LLM.
 tool context_ingest:
-  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
 import os, json, re, subprocess, shutil, urllib.request, urllib.error, base64
 
 scratch = os.environ.get('SCRATCH', '')
-ctx = os.path.join(scratch, 'context')
+# Per-RUN namespace: PROJECT_SCRATCH_DIR is keyed off the repo root and
+# SHARED by concurrent runs of the same repo (worktree: auto lets them
+# proceed in parallel) — a shared context/ dir would let one run's
+# re-clone rmtree another run's live grounding mid-campaign.
+ctx = os.path.join(scratch, 'context-' + (os.environ.get('RUN_ID', '') or 'shared'))
 os.makedirs(ctx, exist_ok=True)
 notes = []
 errors = []
@@ -854,7 +860,7 @@ if raw:
         errors.append('forge_token: unexpected mount path, refusing to wire it into the askpass helper')
     with open(askpass, 'w') as f:
         f.write('#!/bin/sh\n')
-        f.write('case $1 in\n')
+        f.write('case ' + chr(36) + '1 in\n')
         f.write('  Username*) echo oauth2 ;;\n')
         f.write('  Password*) cat ' + (forge_token_file if have_token else '/nonexistent-iterion-askpass') + ' ;;\n')
         f.write('esac\n')
@@ -880,18 +886,24 @@ if raw:
             # them through bash (claw's read_file is workspace-bound and
             # text-only). Poppler ships in the bot's devbox.json; a PDF
             # without pdftotext is an explicit, actionable failure.
+            # Separate try: a conversion failure must not read as a
+            # clone failure.
             pdfs = 0
             pdftotext = shutil.which('pdftotext')
-            for root, _, fs in os.walk(dest):
-                for f in fs:
-                    if f.lower().endswith('.pdf'):
-                        pdfs += 1
-                        if not pdftotext:
-                            continue
-                        pp = os.path.join(root, f)
-                        subprocess.run(['pdftotext', '-layout', pp, pp + '.txt'], capture_output=True, timeout=120)
-            if pdfs and not pdftotext:
-                errors.append(slug + ': ' + str(pdfs) + ' PDF(s) found but pdftotext is missing — the bot devbox (poppler_utils) did not apply')
+            try:
+                for root, _, fs in os.walk(dest):
+                    for f in fs:
+                        if f.lower().endswith('.pdf'):
+                            pdfs += 1
+                            if not pdftotext:
+                                continue
+                            pp = os.path.join(root, f)
+                            subprocess.run(['pdftotext', '-layout', pp, pp + '.txt'], capture_output=True, timeout=120)
+                if pdfs and not pdftotext:
+                    errors.append(slug + ': ' + str(pdfs) + ' PDF(s) found but pdftotext is missing — the bot devbox (poppler_utils) did not apply')
+                    continue
+            except Exception as e:
+                errors.append(slug + ': pdf pre-extraction error: ' + str(e)[:200])
                 continue
             n = sum(len(fs) for _, _, fs in os.walk(dest))
             sources += 1
@@ -952,10 +964,11 @@ if jbase:
                 lines.append('')
             jdir = os.path.join(ctx, 'jira')
             os.makedirs(jdir, exist_ok=True)
-            with open(os.path.join(jdir, 'board-' + jboard + '.md'), 'w') as f:
+            jbsafe = re.sub(r'[^a-z0-9._-]', '-', jboard.lower()) or 'board'
+            with open(os.path.join(jdir, 'board-' + jbsafe + '.md'), 'w') as f:
                 f.write(chr(10).join(lines))
             sources += 1
-            notes.append('jira board ' + jboard + ' (' + str(len(issues)) + ' of ' + str(total) + ' issues) at ' + os.path.join(jdir, 'board-' + jboard + '.md'))
+            notes.append('jira board ' + jboard + ' (' + str(len(issues)) + ' of ' + str(total) + ' issues) at ' + os.path.join(jdir, 'board-' + jbsafe + '.md'))
         except urllib.error.HTTPError as e:
             body = ''
             try:
