@@ -3174,11 +3174,18 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
 ## cited by no page is a served screen no document describes, and the gate
 ## would stay green over the hole. It runs ONCE, after every anchor line has
 ## been read: a route first cited on page 12 must not be refused while the
-## gate is still reading page 3.
+## gate is still reading page 3. A citation is matched WITHOUT its query
+## and fragment: cited_paths carries the raw token -- '/items?status=open'
+## -- the gate verifies cited parameters separately, and pattern_matches
+## compares segments literally -- a route whose only citation carries a
+## query would be refused for a screen the documentation already
+## describes. partition, never urlsplit: refuse only accumulates, so
+## malformed tokens already refused upstream stay in the set and
+## urlsplit could raise on them.
 for route in declared:
     if not route_proves(route):
         continue
-    covered = any(pattern_matches(route, path) for path in cited_paths)
+    covered = any(pattern_matches(route, path.partition('?')[0].partition('#')[0]) for path in cited_paths)
     if not covered:
         refuse('ROUTE_UNDOCUMENTED', route, 'the declared route ' + route
                + ' is cited by NO page of the documentation -- a route the'

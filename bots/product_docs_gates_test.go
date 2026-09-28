@@ -2358,6 +2358,20 @@ func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *
 			t.Fatalf("routes_declared = %d, want 5 (four real routes plus the catch-all)", got.RoutesTotal)
 		}
 	})
+	t.Run("a route cited only through a query-bearing citation is covered", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		// Drop the plain citation of /dashboard/items: the only path
+		// citation left that could cover the route carries a query —
+		// the shape the gate verifies parameters for. The heading keeps
+		// its corpus anchor, so no chapter goes unanchored.
+		mutate(t, ws, "docs/demo/README.md",
+			"## The item list — [[ref:/dashboard/items]] [[ref:026]]",
+			"## The item list — [[ref:026]]")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a route whose only citation carries a query was refused — the screen the documentation already describes:\n%s", got.Log)
+		}
+	})
 	t.Run("a concrete citation covers its parameterized route", func(t *testing.T) {
 		ws := newCoverageFixture(t)
 		writeRoutes(t, ws)
