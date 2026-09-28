@@ -567,7 +567,7 @@ func TestWorkflowDefaultReachesTheNodeLevelScreens(t *testing.T) {
 // view is the compiler's reading, unchanged.
 func TestRunBackendReading_WithVars(t *testing.T) {
 	t.Setenv("C1606_SET", "kimi")
-	view := map[string]string{
+	view := map[string]any{
 		"b":    "claw",
 		"dial": "${C1606_SET:-claw}",
 		"raw":  "${C1606_SET}",
@@ -608,13 +608,15 @@ func TestLaunchVarsView(t *testing.T) {
 		t.Errorf("no vars declared: view = %v, want nil — nothing may change hands", got)
 	}
 	view := launchVarsView(w, map[string]string{"b": "codex", "nodefault": "claude_code", "zz": "grok"})
-	want := map[string]string{"b": "codex", "nodefault": "claude_code", "n": "3"}
+	// Values are typed as resolveVars types them — ResolveVarText is the
+	// shared reading — so the int default is an int64, not its text.
+	want := map[string]any{"b": "codex", "nodefault": "claude_code", "n": int64(3)}
 	if len(view) != len(want) {
 		t.Fatalf("view = %v, want %v", view, want)
 	}
 	for k, v := range want {
 		if view[k] != v {
-			t.Errorf("view[%q] = %q, want %q (full view %v)", k, view[k], v, view)
+			t.Errorf("view[%q] = %v, want %v (full view %v)", k, view[k], v, view)
 		}
 	}
 }
@@ -826,5 +828,95 @@ func TestApplyRunFallback_VarsBackendReadThroughTheProcessEnvNotTheOverlay(t *te
 	}
 	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
 		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The RUN reading drills a dotted reference into a json var's document,
+// exactly as dispatch's TemplateResolver does (drillTemplatePath: maps only,
+// a missing member or a non-map segment is not found — kept as written).
+// A flat-name-only view left the node undecided while dispatch resolved it.
+func TestRunBackendReading_DrillsJSONVars(t *testing.T) {
+	t.Setenv("C1606_JSON_LEAF", "kimi")
+	w := &Workflow{Vars: map[string]*Var{
+		"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend": "claw"}`},
+		"env": {Name: "env", Type: VarJSON, HasDefault: true, Default: `{"backend": "${C1606_JSON_LEAF:-claw}"}`},
+		"s":   {Name: "s", Type: VarString, HasDefault: true, Default: "claw"},
+	}}
+	view := launchVarsView(w, map[string]string{"cfg": `{"backend": "claude_code"}`})
+	run := runBackend.withVars(view)
+	cases := []struct{ in, want string }{
+		// The launch override — parsed as the document it is — wins over
+		// the declared default, and the drill reads its member.
+		{"{{vars.cfg.backend}}", "claude_code"},
+		// A json leaf is env-expanded the way resolveVars expands leaves
+		// (braced-only, the process environment).
+		{"{{vars.env.backend}}", "kimi"},
+		// drillTemplatePath's misses: no such member, and a scalar holds
+		// no members at all — both kept as written, hence undecided.
+		{"{{vars.cfg.nope}}", ""},
+		{"{{vars.s.backend}}", ""},
+		// The whole document formats the way formatValue prints it.
+		{"{{vars.env}}", `{"backend":"kimi"}`},
+	}
+	for _, c := range cases {
+		if got := run.name(c.in); got != c.want {
+			t.Errorf("runBackend.withVars(view).name(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// The reviewer's executed bypass: a node whose backend is a drilled json
+// reference screened as undecided, so the tools-inversion refusal was
+// SKIPPED — while dispatch resolved "claw" and the crossing was real.
+// (IR built directly: the launchVarsView contract is on the compiled Var,
+// and a json object default's .bot spelling rides the escape profiles —
+// irrelevant to what the screen does with the parsed document.)
+func TestApplyRunFallback_DrilledJSONVarIsScreened(t *testing.T) {
+	fresh := func() *Workflow {
+		return &Workflow{
+			Nodes: map[string]Node{"x": applyAgent("x", "{{vars.cfg.backend}}", "", nil, nil)},
+			Vars: map[string]*Var{
+				"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend": "claw"}`},
+			},
+		}
+	}
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil)
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1 — dispatch resolves the node to claw and the crossing is real", len(refusals))
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil); len(refusals) != 0 {
+		t.Errorf("a route to the node's own (drilled) backend was refused: %v", refusals)
+	}
+}
+
+// The five names varExpandFn answers from engine state — PROJECT_DIR,
+// BUNDLE_DIR, BUNDLE_SKILLS_DIR, PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR —
+// read "" through the screen's process-env expansion, where dispatch reads
+// a path: decided-empty where the run is decided-full is a disagreement.
+// A var whose text references one stays UNDECIDED for the screen — the same
+// posture as a var nothing answers anywhere else.
+func TestLaunchVarsView_EngineSuppliedNamesStayUndecided(t *testing.T) {
+	for _, name := range []string{"PROJECT_DIR", "BUNDLE_DIR", "BUNDLE_SKILLS_DIR", "PROJECT_MEMORY_DIR", "PROJECT_SCRATCH_DIR"} {
+		w := &Workflow{Vars: map[string]*Var{
+			"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${" + name + "}/x"},
+		}}
+		if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+			t.Errorf("{{vars.b}} with ${%s} in its text = %q, want undecided — the path comes from engine state the screen does not have", name, got)
+		}
+	}
+	// Nested behind a default: the engine name is consulted inside-out.
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_UNSET:-${PROJECT_DIR}}"},
+	}}
+	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+		t.Errorf("a nested ${PROJECT_DIR} = %q, want undecided", got)
+	}
+	// Control: an ordinary dial still decides, on its default.
+	w.Vars["d"] = &Var{Name: "d", Type: VarString, HasDefault: true, Default: "${C1606_UNSET:-claw}"}
+	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.d}}"); got != "claw" {
+		t.Errorf("a plain dial = %q, want claw — the guard must not swallow ordinary expansions", got)
 	}
 }
