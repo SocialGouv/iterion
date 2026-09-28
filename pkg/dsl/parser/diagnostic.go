@@ -54,6 +54,7 @@ const (
 	DiagAuthorHeader        DiagCode = "E052" // no `dsl:` key — the author document names its syntax profile, always
 	DiagAuthorPromptBody    DiagCode = "E053" // a text the .bot reads otherwise than the document wrote it — a prompt body the lexer settles, a block scalar holding a line separator, a ` #` that ends a plain text value in a comment: a warning names what changed, an error what has no written form
 	DiagAuthorNoWrittenForm DiagCode = "E054" // the document reads, but the program it describes has no written .bot form: the text the writer produces reads back as another program (unparse.Verify names the cause)
+	DiagAuthorSeparators    DiagCode = "E055" // the document holds invisible line separators (U+0085 NEL, U+2028 LS, U+2029 PS): the scanner ends a line at each — inside a block body one is read as a newline, on a trailing line it is chomped like a blank line; a document-level warning lists every line that holds one (#1663)
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -89,6 +90,7 @@ var hints = map[DiagCode]string{
 	DiagAuthorHeader:        "Add `dsl: 2` (or `dsl: 1`) at the top of the document: the syntax profile the .bot is written in. The author document never guesses one.",
 	DiagAuthorNoWrittenForm: "The .bot this document describes cannot be written so that it reads back as the same program; the message names the cause — a prompt body the .bot syntax cannot hold, a fallback route without a name, a profile-1 catalog long enough to push the strict-escape directive out of the lexer's window while a value needs it. Change what it names (`dsl: 2`, a shorter catalog, a named route, a reindented body): the written .bot would otherwise mean another program.",
 	DiagAuthorPromptBody:    "A prompt's text is read as the .bot lexer reads a body: leading and trailing blank lines dropped, the first line's indentation taken off every line, interior blank lines dropped in profile 1. A block scalar's line separator (U+2028, U+2029) is read as the line break the scanner meant, in a literal block; a folded block cannot say it. Write the text as it will be read, or accept the reading.",
+	DiagAuthorSeparators:    "Write a newline, or remove the invisible character: the lines the message names hold a U+0085 (NEL), U+2028 (LS) or U+2029 (PS), which an editor shows as nothing.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is

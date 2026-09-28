@@ -111,7 +111,7 @@
 | `pkg/dispatcher/tracker` | defines the issue-tracker abstraction used by the dispatcher (`iterion dispatch`). | `ClaimLeaser`, `ClaimReaper`, `LaunchStateLister`, `Tracker` | 13 · 63 |
 | `pkg/dryrun` | executes a compiled workflow without the world: a NodeExecutor that renders what each node would send and answers with a schema-shaped output, an… | `ShellChecker` | 6 · 44 |
 | `pkg/dsl/ast` | MarshalFile / UnmarshalFile provide JSON serialization and deserialization for File types, converting Go iota-based enums to human-readable string… | — | 8 · 137 |
-| `pkg/dsl/author` | reads and writes the YAML twin of a `.bot` file — the author document of lot 5 of #1010: the same declarations as the `.bot`, in the `.bot`'s… | — | 7 · 5 |
+| `pkg/dsl/author` | reads and writes the YAML twin of a `.bot` file — the author document of lot 5 of #1010: the same declarations as the `.bot`, in the `.bot`'s… | — | 8 · 5 |
 | `pkg/dsl/author/internal/probecheck` | Command probecheck is the harness of the F20 authoring probe for the YAML twin (docs/references/dsl-authoring-probe.md): it reads author documents… | — | 1 · 0 |
 | `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program AND to carry the same… | — | 3 · 8 |
 | `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 29 |
@@ -121,11 +121,11 @@
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
 | `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 48 · 485 |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — | 1 · 6 |
-| `pkg/dsl/parser` | — | — | 23 · 238 |
+| `pkg/dsl/parser` | — | — | 23 · 239 |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 9 · 77 |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — | 1 · 44 |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — | 1 · 15 |
-| `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 4 · 5 |
+| `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — | 4 · 8 |
 | `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — | 2 · 12 |
 | `pkg/errtrack` | iterion's optional error-tracking seam. | — | 7 · 26 |
 | `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` | 3 · 16 |
