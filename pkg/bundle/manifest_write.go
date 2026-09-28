@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
+
+	yamlv2 "go.yaml.in/yaml/v2"
 
 	// The loader (manifest.go) parses with go.yaml.in/yaml/v2, which
 	// cannot round-trip comments or preserve key order on marshal. The
@@ -102,10 +106,64 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bundle: rewritten manifest invalid: %w", err)
 	}
+	// Decoding cleanly is not enough: the bytes must READ BACK as the patch
+	// (the round-1 lesson — a block-valued key's old body survived the
+	// splice and decoded INTO the new value, valid YAML and all). The gate
+	// turns any span misread into a loud refusal, never a corrupted file.
+	if err := manifestPatchReadBack(m, patch); err != nil {
+		return nil, fmt.Errorf("bundle: rewritten manifest does not read back the patch: %w", err)
+	}
 	if err := store.WriteFileAtomic(path, out, 0o644); err != nil {
 		return nil, fmt.Errorf("bundle: write manifest %s: %w", path, err)
 	}
 	return m, nil
+}
+
+// manifestPatchReadBack is the read-back gate: every field the patch sets
+// must decode as exactly the patched value.
+func manifestPatchReadBack(m *Manifest, patch ManifestPatch) error {
+	checks := []struct {
+		name string
+		want *string
+	}{
+		{"name", patch.Name},
+		{"display_name", patch.DisplayName},
+		{"icon", patch.Icon},
+		{"version", patch.Version},
+		{"description", patch.Description},
+		{"author", patch.Author},
+		{"when_to_use", patch.WhenToUse},
+	}
+	got := map[string]*string{
+		"name": &m.Name, "display_name": &m.DisplayName, "icon": &m.Icon,
+		"version": &m.Version, "description": &m.Description, "author": &m.Author,
+		"when_to_use": &m.WhenToUse,
+	}
+	for _, c := range checks {
+		if c.want == nil {
+			continue
+		}
+		if *got[c.name] != *c.want {
+			return fmt.Errorf("%s reads %q, patched %q", c.name, *got[c.name], *c.want)
+		}
+	}
+	if patch.Enabled != nil {
+		if m.Enabled == nil || *m.Enabled != *patch.Enabled {
+			return fmt.Errorf("enabled reads %v, patched %v", m.Enabled, *patch.Enabled)
+		}
+	}
+	if patch.Triggers != nil && !slices.Equal(m.Triggers, *patch.Triggers) {
+		return fmt.Errorf("triggers read %v, patched %v", m.Triggers, *patch.Triggers)
+	}
+	if patch.Requires != nil {
+		if m.Requires == nil || m.Requires.Iterion != patch.Requires.Iterion {
+			return fmt.Errorf("requires read %+v, patched %+v", m.Requires, patch.Requires)
+		}
+	}
+	if patch.Forge != nil && !reflect.DeepEqual(m.Forge, patch.Forge) {
+		return fmt.Errorf("forge read %+v, patched %+v", m.Forge, patch.Forge)
+	}
+	return nil
 }
 
 // manifestEdit is one replacement of the source lines [start, end)
@@ -139,6 +197,16 @@ func patchManifestText(body []byte, patch ManifestPatch) ([]byte, error) {
 			return nil, err
 		}
 		edits = append(edits, manifestEdit{start: appendPos(lines), end: appendPos(lines), text: line})
+	}
+
+	// A patch on a manifest holding anchors or aliases is refused outright:
+	// the tree parse RESOLVES them, so the text span an anchored value came
+	// from is not the value's — splicing there would rewrite the anchor's
+	// body as if it were the alias's. The pre-surgical writer silently
+	// unrolled them, which was no better; a loud refusal it is (round 1).
+	// A no-op patch (nothing to write) is still allowed through.
+	if (len(edits) > 0 || !manifestPatchEmpty(patch)) && treeHoldsAnchor(root) {
+		return nil, fmt.Errorf("the manifest holds YAML anchors or aliases: edit it by hand, the patch writer cannot follow them")
 	}
 
 	apply := func(key string, value any, literal bool, afterKey string) error {
@@ -251,52 +319,83 @@ func appendPos(lines []string) int {
 }
 
 // replaceKeyLines is the edit for a key the file already holds. A scalar
-// value on the key's own line is replaced INSIDE the line — the authored
-// key spelling, its spacing and a line comment are kept; a value over
-// several lines (a block scalar, a block mapping) is replaced over its
-// whole span, the key line's comment carried onto the new head line.
+// value written wholly on the key's own line is replaced INSIDE the line —
+// the authored key spelling, its spacing and a line comment are kept;
+// anything else (a block scalar — whose value node ALSO points at the
+// key's line, at the `|` — a quoted scalar spanning lines, a flow
+// collection, a block mapping) is replaced over its whole span, the key
+// line's comment carried onto the new head line. The fast path used to
+// trust `val.Line == key.Line` alone, and a block-valued key kept its old
+// body on disk, absorbed into the new value (#1349, round 1).
 func replaceKeyLines(lines []string, name string, key, val *yamlv3.Node, text []string) manifestEdit {
 	start := key.Line - 1
-	if val.Line == key.Line && val.Kind == yamlv3.ScalarNode {
+	end := entryEnd(lines, key, val)
+	comment := val.LineComment
+	if comment == "" {
+		comment = key.LineComment // a block scalar's `| # note` rides the key
+	}
+	if end == key.Line && len(text) == 1 && !strings.Contains(text[0], "\n") {
 		line := lines[start]
 		head := line[:val.Column-1]
-		if len(text) == 1 && !strings.Contains(text[0], "\n") {
-			// The rendered form is `key: value`; take the value, keep the line.
-			rendered := text[0][len(name)+2:]
-			return manifestEdit{start: start, end: start + 1,
-				text: []string{head + rendered + lineCommentSuffix(line[val.Column-1:], val.LineComment)}}
-		}
-		// A scalar that now wants a block form (a description that gained
-		// lines): the whole line goes.
-		text[0] = line[:key.Column-1] + text[0] + lineCommentSuffix(line[val.Column-1:], val.LineComment)
-		return manifestEdit{start: start, end: start + 1, text: text}
+		// The rendered form is `key: value`; take the value, keep the line.
+		rendered := text[0][len(name)+2:]
+		return manifestEdit{start: start, end: start + 1,
+			text: []string{head + rendered + lineCommentSuffix(line[val.Column-1:], comment)}}
 	}
-	end := entryEnd(lines, key, val)
-	text[0] = lines[start][:key.Column-1] + text[0] + lineCommentSuffix(lines[start][key.Column-1:], val.LineComment)
+	text[0] = lines[start][:key.Column-1] + text[0] + lineCommentSuffix(lines[start][key.Column-1:], comment)
 	return manifestEdit{start: start, end: end, text: text}
 }
 
 // entryEnd is the 0-based line index just past a key's entry: its own line
-// for a value written on it, else the first following line not indented
-// under the key (blank lines between entries are separators, not the
-// entry's — except the ones a `|+`/`>+` block keeps).
+// for a single-line value, the closing quote's for a quoted scalar spanning
+// lines (whose continuation owes no indentation), the line its brackets
+// balance on for a flow collection, else the first following line not
+// indented under the key — with two refinements: a comment line is a block
+// SCALAR's content but never a mapping's or sequence's, so it ends those
+// spans (a foot note under a replaced `requires:` block stays on disk), and
+// blank lines between entries are separators, not the entry's — except the
+// ones a `|+`/`>+` block keeps.
 func entryEnd(lines []string, key, val *yamlv3.Node) int {
-	if val.Line == key.Line && (val.Kind == yamlv3.ScalarNode || val.Style&yamlv3.FlowStyle != 0) {
-		return key.Line
-	}
 	keyIndent := key.Column - 1
-	end := key.Line // 0-based index of the line after the key's
-	keepBlanks := false
 	if val.Kind == yamlv3.ScalarNode {
-		keepBlanks = strings.Contains(lines[key.Line-1], "|+") || strings.Contains(lines[key.Line-1], ">+")
+		switch {
+		case val.Style&(yamlv3.LiteralStyle|yamlv3.FoldedStyle) != 0:
+			// A block scalar: the walk below, where `#` is content.
+		case val.Style&(yamlv3.DoubleQuotedStyle|yamlv3.SingleQuotedStyle) != 0:
+			return quotedSpanEnd(lines, val.Line-1, val.Column, val.Style) + 1
+		default:
+			// A plain scalar: a deeper-indented non-blank, non-comment line
+			// below it is its folded continuation, not the next entry.
+			if key.Line < len(lines) {
+				next := lines[key.Line]
+				if t := strings.TrimSpace(next); t != "" && !strings.HasPrefix(t, "#") && yamlIndent(next) > keyIndent {
+					break // to the walk
+				}
+			}
+			return key.Line
+		}
+	} else if val.Style&yamlv3.FlowStyle != 0 {
+		return flowSpanEnd(lines, val.Line-1, val.Column-1)
 	}
+	blockScalar := val.Kind == yamlv3.ScalarNode && val.Style&(yamlv3.LiteralStyle|yamlv3.FoldedStyle) != 0
+	end := key.Line // 0-based index of the line after the key's
+	keepBlanks := blockScalar && (strings.Contains(lines[key.Line-1], "|+") || strings.Contains(lines[key.Line-1], ">+"))
 	for end < len(lines) {
 		l := lines[end]
-		if strings.TrimSpace(l) == "" {
+		t := strings.TrimSpace(l)
+		if t == "" {
 			end++
 			continue
 		}
 		if yamlIndent(l) <= keyIndent {
+			break
+		}
+		if !blockScalar && strings.HasPrefix(t, "#") {
+			// A comment is content only of a block scalar: anywhere else it
+			// is not the span's to take, and it stays, below the replaced
+			// span. (An INTERIOR comment with children after it leaves the
+			// old tail on disk — the read-back gate refuses that loudly
+			// rather than delete the comment in silence.)
 			break
 		}
 		end++
@@ -307,6 +406,81 @@ func entryEnd(lines []string, key, val *yamlv3.Node) int {
 		}
 	}
 	return end
+}
+
+// quotedSpanEnd is the 0-based line a quoted scalar ends on: the line of
+// its closing quote. The scan opens at col (1-based, on the quote itself)
+// and honors the style's escapes — `\\` and `\"` in double quotes, `”` in
+// single — so a quote inside the value does not close it. An unterminated
+// scalar runs to the last line; the read-back gate refuses the result.
+func quotedSpanEnd(lines []string, lineIdx, col int, style yamlv3.Style) int {
+	quote := byte('"')
+	if style&yamlv3.SingleQuotedStyle != 0 {
+		quote = '\''
+	}
+	for i := lineIdx; i < len(lines); i++ {
+		s := lines[i]
+		j := 0
+		if i == lineIdx {
+			j = col
+		}
+		for j < len(s) {
+			c := s[j]
+			if quote == '"' && c == '\\' {
+				j += 2
+				continue
+			}
+			if c == quote {
+				if quote == '\'' && j+1 < len(s) && s[j+1] == '\'' {
+					j += 2
+					continue
+				}
+				return i
+			}
+			j++
+		}
+	}
+	return len(lines) - 1
+}
+
+// flowSpanEnd is the 0-based line index just past a flow collection: the
+// line its brackets balance on. Quoted strings inside are skipped, so a
+// bracket in a string does not count.
+func flowSpanEnd(lines []string, lineIdx, col int) int {
+	depth := 0
+	var quote byte
+	for i := lineIdx; i < len(lines); i++ {
+		s := lines[i]
+		j := 0
+		if i == lineIdx {
+			j = col - 1 // col is 1-based, on the opening bracket
+		}
+		for ; j < len(s); j++ {
+			c := s[j]
+			if quote != 0 {
+				if quote == '"' && c == '\\' {
+					j++
+					continue
+				}
+				if c == quote {
+					quote = 0
+				}
+				continue
+			}
+			switch c {
+			case '"', '\'':
+				quote = c
+			case '[', '{':
+				depth++
+			case ']', '}':
+				depth--
+				if depth == 0 {
+					return i + 1
+				}
+			}
+		}
+	}
+	return len(lines) // unbalanced: the read-back gate refuses the result
 }
 
 // lineCommentSuffix is the ` # …` suffix of a replaced line, kept verbatim
@@ -435,8 +609,16 @@ func manifestScalar(v string) string {
 }
 
 // manifestPlainSafe reports whether v, written bare after `key: `, reads
-// back as exactly v — probed through yaml.v3 itself, so the rule cannot
-// drift from the reader's.
+// back as exactly v — probed through BOTH readers the file has: yaml.v3
+// (YAML 1.2 core schema, what the writer's own tree parse uses) and
+// go.yaml.in/yaml/v2 (YAML 1.1, the loader's). The v2 pass is what refuses
+// the 1.1 spellings v3 reads back equal — `yes`/`no`/`on`/`off` are strings
+// to v3 and bools to the loader — so a plain form that would fool the gate
+// is never written (round 1). The probe is the reader itself, not a
+// denylist: it cannot drift from the reader, and it covers the whole class
+// (hex, octal, exponents, .inf) rather than the two spellings someone
+// listed. (`1:20` reads as a string in BOTH — the v2 fork has no
+// sexagesimal — so it may stay plain.)
 func manifestPlainSafe(v string) bool {
 	if v == "" {
 		return false
@@ -454,29 +636,44 @@ func manifestPlainSafe(v string) bool {
 		return false
 	}
 	val := root.Content[idx+1]
-	return val.Tag == "!!str" && val.Value == v
+	if val.Tag != "!!str" || val.Value != v {
+		return false
+	}
+	var m2 map[string]any
+	if err := yamlv2.Unmarshal([]byte("k: "+v+"\n"), &m2); err != nil {
+		return false
+	}
+	got, ok := m2["k"]
+	return ok && got == v
 }
 
 // manifestLiteralLines renders a multi-line string as a `|` block under its
-// key, with the chomping indicator the value's trailing newlines call for.
-// ok is false when the form would not read back as exactly the value — a
-// whitespace-only line (one reads as a blank line, its spaces lost), a
-// first content line indented deeper than a later one (the strip level the
-// first line sets would end the block early) — and the caller falls back
-// to the double-quoted form, which always reads back exactly.
+// key, with the chomping indicator the value's trailing newlines call for
+// (`|` clips to one, `|-` strips, `|+` keeps). ok is false when the form
+// would not read back as exactly the value — a whitespace-only line (one
+// reads as a blank line, its spaces lost), a first content line indented
+// deeper than a later one (the strip level the first line sets would end
+// the block early), or no content line at all (an all-newline value reads
+// back empty) — and the caller falls back to the double-quoted form, which
+// always reads back exactly. The strings.Split artifact (the element after
+// the last newline) is dropped in EVERY branch: kept under `|+`, it grew
+// the value by one newline on every patch (round 1).
 func manifestLiteralLines(key string, v string) ([]string, bool) {
 	lines := strings.Split(v, "\n")
 	indicator := "|"
+	var body []string
 	switch {
 	case strings.HasSuffix(v, "\n\n"):
 		indicator = "|+"
+		body = lines[:len(lines)-1]
 	case !strings.HasSuffix(v, "\n"):
 		indicator = "|-"
+		body = lines
 	default:
-		lines = lines[:len(lines)-1] // the clip newline is the form's own
+		indicator = "|"
+		body = lines[:len(lines)-1] // the clip newline is the form's own
 	}
-	body := lines
-	first := -1
+	content := -1
 	for i, l := range body {
 		if l == "" {
 			continue
@@ -484,13 +681,16 @@ func manifestLiteralLines(key string, v string) ([]string, bool) {
 		if strings.Trim(l, " \t") == "" {
 			return nil, false
 		}
-		if first < 0 {
-			first = i
+		if content < 0 {
+			content = i
 			continue
 		}
-		if yamlIndent(l) < yamlIndent(body[first]) {
+		if yamlIndent(l) < yamlIndent(body[content]) {
 			return nil, false
 		}
+	}
+	if content < 0 {
+		return nil, false // no content line: the block reads back empty
 	}
 	out := []string{key + ": " + indicator}
 	for _, l := range body {
@@ -577,6 +777,27 @@ func scaffoldManifest(patch ManifestPatch) ([]byte, error) {
 		}
 	}
 	return []byte(strings.Join(lines, "\n") + "\n"), nil
+}
+
+// manifestPatchEmpty reports whether the patch sets nothing.
+func manifestPatchEmpty(p ManifestPatch) bool {
+	return p.Name == nil && p.DisplayName == nil && p.Icon == nil && p.Version == nil &&
+		p.Description == nil && p.Author == nil && p.WhenToUse == nil && p.Enabled == nil &&
+		p.Triggers == nil && p.Forge == nil && p.Requires == nil
+}
+
+// treeHoldsAnchor reports whether any node of the tree carries an anchor or
+// is an alias — the two shapes a text-splicing patch cannot follow.
+func treeHoldsAnchor(n *yamlv3.Node) bool {
+	if n.Anchor != "" || n.Kind == yamlv3.AliasNode {
+		return true
+	}
+	for _, c := range n.Content {
+		if treeHoldsAnchor(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // findMapKey returns the index of key's scalar node within a mapping's

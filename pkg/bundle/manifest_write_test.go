@@ -135,6 +135,224 @@ func TestWriteManifest_AppendsNewKeysAfterDescription(t *testing.T) {
 	if m.WhenToUse == "" || m.IsEnabled() {
 		t.Errorf("reload: WhenToUse=%q IsEnabled=%v, want set + disabled", m.WhenToUse, m.IsEnabled())
 	}
+	// The anchor computation must see the block scalar's WHOLE span: the
+	// inserted keys belong below it, and the anchored value is intact.
+	// (Round 1: the insert landed between `description: |` and its body,
+	// the body decoded into when_to_use, and description came back empty —
+	// a placement-only assertion never saw it.)
+	if m.Description != "A test bot.\nSecond line.\n" {
+		t.Errorf("reload: Description=%q, want the authored block intact", m.Description)
+	}
+	if m.WhenToUse != "Use when testing.\nSecond hint." {
+		t.Errorf("reload: WhenToUse=%q, want exactly the patched value", m.WhenToUse)
+	}
+}
+
+// Patching a block-valued key replaces its WHOLE span: the old body does
+// not survive the splice (round 1: it did, and decoded into the new value).
+func TestWriteManifest_PatchesABlockValuedKeyWhole(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte(manifestWithComments), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{Description: ptr("A new blurb.\nTwo lines.\n")})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Description != "A new blurb.\nTwo lines.\n" {
+		t.Fatalf("Description=%q — the old body was absorbed", m.Description)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	if strings.Contains(got, "A test bot.") {
+		t.Errorf("the old body is still on disk\n---\n%s", got)
+	}
+	if !strings.Contains(got, "# the catalogue blurb") {
+		t.Errorf("the block's head comment was lost\n---\n%s", got)
+	}
+}
+
+// `|+` keeps the value's trailing newlines — exactly them: the strings.Split
+// artifact is not a content line, and a value of only newlines takes the
+// double-quoted form (a contentless block reads back empty).
+func TestWriteManifest_KeepChompingRoundTripsExactly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte(manifestWithComments), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Description: ptr("Line one.\n\n")}); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "description: |+") {
+		t.Fatalf("two trailing newlines want keep chomping:\n%s", raw)
+	}
+	m, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if m.Description != "Line one.\n\n" {
+		t.Fatalf("Description=%q, want %q", m.Description, "Line one.\n\n")
+	}
+	// A second patch of the same value must not grow it.
+	if _, err := WriteManifest(path, ManifestPatch{Description: ptr("Line one.\n\n")}); err != nil {
+		t.Fatalf("WriteManifest 2: %v", err)
+	}
+	m, _ = LoadManifest(path)
+	if m.Description != "Line one.\n\n" {
+		t.Fatalf("Description grew on re-patch: %q", m.Description)
+	}
+
+	// An all-newline value has no content line for a block: double-quoted.
+	if _, err := WriteManifest(path, ManifestPatch{Description: ptr("\n\n")}); err != nil {
+		t.Fatalf("WriteManifest all-newline: %v", err)
+	}
+	m, _ = LoadManifest(path)
+	if m.Description != "\n\n" {
+		t.Fatalf("all-newline Description=%q", m.Description)
+	}
+}
+
+// A comment on a block MAPPING's own line (`requires: # floor note`) rides
+// the key node, not the value: it is coalesced onto the new head line.
+// (A block scalar's `| # note` rides the value node instead — yaml.v3's
+// split, probed; both are covered.)
+func TestWriteManifest_BlockKeyLineCommentSurvives(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: testbot\nschema_version: 1\nrequires: # floor note\n  iterion: \">= 3.141.0\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Requires: &Requires{Iterion: ">= 3.205.2"}}); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "requires: # floor note") {
+		t.Errorf("the key-line comment was dropped\n---\n%s", raw)
+	}
+}
+
+// A foot comment under a block mapping is not the mapping's content: a
+// patch of the block leaves it in place (round 1: the span swallowed it).
+func TestWriteManifest_BlockFootCommentSurvives(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: testbot\nschema_version: 1\nrequires:\n  iterion: \">= 3.141.0\"\n  # why the floor is here\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Requires: &Requires{Iterion: ">= 3.205.2"}}); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	if !strings.Contains(got, "# why the floor is here") {
+		t.Errorf("the block's foot comment was deleted\n---\n%s", got)
+	}
+	if !strings.Contains(got, `iterion: ">= 3.205.2"`) {
+		t.Errorf("the floor was not raised\n---\n%s", got)
+	}
+}
+
+// YAML 1.1 spellings are never written plain: `yes` is a string to yaml.v3
+// but a bool to the v2 loader the gate uses. The probe is the v2 decoder
+// itself — not a denylist — so the rule cannot drift from the reader, and
+// it covers the whole class (hex, octal, exponents, .inf) rather than the
+// two spellings someone listed. `1:20` reads as a string in BOTH readers
+// (the v2 fork has no sexagesimal), so it may stay plain.
+func TestWriteManifest_Yaml11WordsStayQuoted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte("name: testbot\nschema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"yes", "Off", "n", "0x10", "010"} {
+		if _, err := WriteManifest(path, ManifestPatch{DisplayName: ptr(v)}); err != nil {
+			t.Fatalf("WriteManifest(%q): %v", v, err)
+		}
+		m, err := LoadManifest(path)
+		if err != nil {
+			t.Fatalf("reload(%q): %v", v, err)
+		}
+		if m.DisplayName != v {
+			t.Errorf("DisplayName=%q, want %q", m.DisplayName, v)
+		}
+		raw, _ := os.ReadFile(path)
+		if strings.Contains(string(raw), "display_name: "+v+"\n") {
+			t.Errorf("%q was written plain\n---\n%s", v, raw)
+		}
+	}
+	// The probe must not over-quote: a shape both readers read as the
+	// string stays plain.
+	if _, err := WriteManifest(path, ManifestPatch{DisplayName: ptr("1:20")}); err != nil {
+		t.Fatalf("WriteManifest(1:20): %v", err)
+	}
+	m, _ := LoadManifest(path)
+	if m.DisplayName != "1:20" {
+		t.Errorf("DisplayName=%q, want %q", m.DisplayName, "1:20")
+	}
+}
+
+// A quoted scalar spanning lines owes its continuation no indentation, and
+// a flow collection's brackets balance where they balance: both are
+// replaced over their WHOLE span, not to their first line.
+func TestWriteManifest_SpanningValuesPatchWhole(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := `name: testbot
+description: "A long blurb that
+  wraps over a second line"
+triggers: [refactor,
+  review]
+author: me
+schema_version: 1
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{
+		Description: ptr("Short."),
+		Triggers:    ptr([]string{"triage"}),
+	})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Description != "Short." {
+		t.Errorf("Description=%q — the quoted continuation survived the splice", m.Description)
+	}
+	if len(m.Triggers) != 1 || m.Triggers[0] != "triage" {
+		t.Errorf("Triggers=%v — the flow tail survived the splice", m.Triggers)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	if strings.Contains(got, "wraps over") || strings.Contains(got, "  review") {
+		t.Errorf("the old span is still on disk\n---\n%s", got)
+	}
+}
+
+// A manifest holding anchors or aliases cannot be text-patched (the tree
+// parse resolves them, so a span is not the value's): a patch is refused by
+// name and the file is untouched; a no-op patch still goes through.
+func TestWriteManifest_AnchoredManifestIsRefusedByName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: testbot\nschema_version: 1\ndescription: &d |\n  Anchored.\nauthor: me\nwhen_to_use: *d\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Author: ptr("someone")}); err == nil || !strings.Contains(err.Error(), "anchors or aliases") {
+		t.Fatalf("an anchored manifest must refuse the patch by name: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != src {
+		t.Errorf("the refused patch landed anyway\n---\n%s", raw)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{}); err != nil {
+		t.Fatalf("a no-op patch on an anchored manifest: %v", err)
+	}
 }
 
 func TestWriteManifest_IconRoundTrip(t *testing.T) {
