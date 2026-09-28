@@ -450,7 +450,7 @@ func TestAssessmentExtractorsRefuseAnUnpinnedPass(t *testing.T) {
 func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 	requireAssessmentTools(t)
 	skills := map[string]string{}
-	for _, name := range []string{"stack-go.md", "stack-node.md"} {
+	for _, name := range []string{"stack-go.md", "stack-node.md", "stack-java.md"} {
 		body, err := os.ReadFile(filepath.Join("assessment", "skills", name))
 		if err != nil {
 			t.Fatal(err)
@@ -474,7 +474,14 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 	}
 	write("go.mod", "module example.test/app\n\ngo 1.21\n")
 	write("package.json", `{"name": "app", "engines": {"node": "20.0.0"}}`)
-	gittest.Run(t, ws, "add", "go.mod", "package.json")
+	write("build.gradle", "plugins { id 'org.springframework.boot' version '3.3.4' }\njava { sourceCompatibility = '17' }\n")
+	write("src/main/java/demo/ThingController.java", "@RestController\npublic class ThingController {\n    @GetMapping\n    public Object list() { return null; }\n    @PostMapping\n    public Object create() { return null; }\n}\n")
+	// A build output COMMITTED to the tree — legacy repositories carry
+	// them, and only the extractor's output exclusion keeps them out of
+	// the declared surface. Untracked, git objects would hide it and the
+	// assertion would pass for the wrong reason.
+	write("build/generated/Gen.java", "@RestController\npublic class Gen {\n    @GetMapping\n    public Object g() { return null; }\n}\n")
+	gittest.Run(t, ws, "add", "go.mod", "package.json", "build.gradle", "src/main/java/demo/ThingController.java", "build/generated/Gen.java")
 	gittest.Run(t, ws, "commit", "-qm", "the commit under assessment")
 	sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
 
@@ -483,11 +490,13 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 	write("go.mod", "module example.test/app\n\ngo 9.99\n")
 	write("node_modules/left-pad/package.json", `{"name": "left-pad", "engines": {"node": "0.1.0"}}`)
 	write("vendored-build/go.mod", "module example.test/build\n\ngo 8.88\n")
+	write("build.gradle", "plugins { id 'org.springframework.boot' version '3.3.4' }\njava { sourceCompatibility = '9.99' }\n")
 
 	scratch := t.TempDir()
 	out := runExtractorsAt(t, ws, scratch, []map[string]any{
 		{"id": "go", "evidence": "go.mod", "supported": true},
 		{"id": "node", "evidence": "package.json", "supported": true},
+		{"id": "java", "evidence": "build.gradle", "supported": true},
 	}, sha)
 	if !assessmentBool(t, out, "ok") {
 		t.Fatalf("the shipped extractors refused a pinned pass: %s", assessmentString(t, out, "reason"))
@@ -498,6 +507,7 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 
 	for name, wantVersion := range map[string]string{
 		"go-modules.json": "1.21", "node-packages.json": "20.0.0",
+		"java-versions.json": "17",
 	} {
 		body, err := os.ReadFile(filepath.Join(scratch, name))
 		if err != nil {
@@ -514,6 +524,19 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 					name, fromTheCheckout)
 			}
 		}
+	}
+	// The HTTP surface is read the same way: the committed controller is
+	// counted, the build output carrying its own mappings never is.
+	entry, err := os.ReadFile(filepath.Join(scratch, "java-entrypoints.json"))
+	if err != nil {
+		t.Fatalf("java-entrypoints.json: %v", err)
+	}
+	if !strings.Contains(string(entry), "src/main/java/demo/ThingController.java") {
+		t.Errorf("java-entrypoints.json does not name the committed controller:\n%s", entry)
+	}
+	if strings.Contains(string(entry), "Gen.java") {
+		t.Errorf("java-entrypoints.json counts build/generated/Gen.java — a build output the "+
+			"commit may hold but no one declares: an over-count nobody can correct\n%s", entry)
 	}
 }
 
@@ -744,7 +767,7 @@ func TestAssessmentFloorTakesItsManifestShapesFromTheSkills(t *testing.T) {
 	// skills for are both discoverable from the listing alone.
 	t.Run("the shipped skills declare the shapes their stacks are detected by", func(t *testing.T) {
 		skills := map[string]string{}
-		for _, name := range []string{"assessment-survey.md", "stack-go.md", "stack-node.md"} {
+		for _, name := range []string{"assessment-survey.md", "stack-go.md", "stack-node.md", "stack-java.md"} {
 			body, err := os.ReadFile(filepath.Join("assessment", "skills", name))
 			if err != nil {
 				t.Fatal(err)
@@ -755,6 +778,7 @@ func TestAssessmentFloorTakesItsManifestShapesFromTheSkills(t *testing.T) {
 		writeSkills(t, bundleSkills(ws), skills)
 		for path, body := range map[string]string{
 			"go.mod": "module x\n", "package.json": "{}\n", "Dockerfile": "FROM scratch\n",
+			"build.gradle": "plugins { id 'java' }\n",
 		} {
 			if err := os.WriteFile(filepath.Join(ws, path), []byte(body), 0o644); err != nil {
 				t.Fatal(err)
@@ -764,12 +788,12 @@ func TestAssessmentFloorTakesItsManifestShapesFromTheSkills(t *testing.T) {
 		gittest.Run(t, ws, "config", "user.email", "t@example.com")
 		gittest.Run(t, ws, "config", "user.name", "t")
 		gittest.Run(t, ws, "config", "commit.gpgsign", "false")
-		gittest.Run(t, ws, "add", "go.mod", "package.json", "Dockerfile")
+		gittest.Run(t, ws, "add", "go.mod", "package.json", "Dockerfile", "build.gradle")
 		gittest.Run(t, ws, "commit", "-qm", "fixture")
 		sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
 
 		listing := assessmentString(t, runFloor(t, ws, t.TempDir(), sha), "listing")
-		for _, want := range []string{"go.mod", "package.json", "Dockerfile"} {
+		for _, want := range []string{"go.mod", "package.json", "Dockerfile", "build.gradle"} {
 			if !strings.Contains(listing, want) {
 				t.Errorf("the bundle ships a skill for the stack %q proves and does not declare its "+
 					"shape:\n%s", want, listing)
