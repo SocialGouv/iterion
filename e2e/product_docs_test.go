@@ -104,11 +104,29 @@ func stubProductDocs(exec *scenarioExecutor, st *productDocsState) {
 		st.gateInputs["scope_check"] = in
 		return map[string]any{"scope_ok": true, "out_of_scope": []any{}, "log": "", "_tokens": 1}, nil
 	})
+	// The map step runs once before the loop, and the map lint sits in
+	// the tail between page_lint and coverage_check — a rewiring the
+	// gate's fail_log reads, so BOTH must answer or the gate concatenates
+	// a nil.
+	exec.on("diagram", func(in map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"diagrams_written": []any{"documentation_produits/demo/diagrams/README.md"},
+			"pages":            1, "summary": "context map drawn", "_tokens": 5,
+		}, nil
+	})
 	exec.on("page_lint", func(in map[string]any) (map[string]any, error) {
 		st.gateInputs["page_lint"] = in
 		return map[string]any{
 			"lint_ok": true, "violations": []any{}, "violation_count": 0,
 			"pages_linted": 4, "log": "", "_tokens": 1,
+		}, nil
+	})
+	exec.on("diagram_lint", func(in map[string]any) (map[string]any, error) {
+		st.gateInputs["diagram_lint"] = in
+		return map[string]any{
+			"diagram_ok": true, "causes": []any{}, "cause_count": 0,
+			"diagram_pages": 1, "mermaid_blocks": 1, "routes_on_map": 2,
+			"routes_unverified": false, "log": "", "_tokens": 1,
 		}, nil
 	})
 	// The baseline is the NO-NET shape: the product carries no golden-master
