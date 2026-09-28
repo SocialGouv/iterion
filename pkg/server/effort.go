@@ -40,15 +40,24 @@ type effortCapabilitiesResponse struct {
 // see codexEffortFallbackFor.
 var codexEffortFallback = []string{"low", "medium", "high", "max"}
 
+// codexModelCarriesNone reports whether the model is a known none-carrier.
+// The claw registry (apikit) is the catalogue of record for which models
+// carry none — and it agrees with the runtime: codex accepts none for
+// GPT-6 Sol/Luna (and 400s it elsewhere) even though the CLI's model/list
+// response omits the level (verified on codex 0.156.1).
+func codexModelCarriesNone(model string) bool {
+	supported, _ := apikit.EffortCapabilities(model)
+	return slices.Contains(supported, "none")
+}
+
 // codexEffortFallbackFor is codexEffortFallback plus "none" when the model
 // is a known none-carrier. The live list comes from the CLI's per-model
 // capabilities; the fallback path exists precisely because that CLI is
 // unreachable, so the per-model truth it carries is unavailable — and
 // offering none for every codex model would promise a level the CLI refuses
-// at run time. The claw registry (apikit) is the catalogue of record for
-// which models carry none.
+// at run time.
 func codexEffortFallbackFor(model string) []string {
-	if supported, _ := apikit.EffortCapabilities(model); slices.Contains(supported, "none") {
+	if codexModelCarriesNone(model) {
 		return append([]string{"none"}, codexEffortFallback...)
 	}
 	return codexEffortFallback
@@ -105,9 +114,15 @@ func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesRes
 		if m.ID != model && m.Model != model {
 			continue
 		}
-		supported := make([]string, 0, len(m.SupportedReasoningEfforts))
+		supported := make([]string, 0, len(m.SupportedReasoningEfforts)+1)
 		for _, opt := range m.SupportedReasoningEfforts {
 			supported = append(supported, opt.Value)
+		}
+		// The CLI's model/list omits none even for the models that accept
+		// it (codex 0.156.1); union it in from the catalogue of record so
+		// the live path and the fallback agree with the runtime.
+		if codexModelCarriesNone(model) && !slices.Contains(supported, "none") {
+			supported = append([]string{"none"}, supported...)
 		}
 		return effortCapabilitiesResponse{
 			Supported: supported,
