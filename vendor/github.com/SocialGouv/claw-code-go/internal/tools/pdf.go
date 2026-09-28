@@ -20,8 +20,6 @@ import (
 // a budget, the document broke it, the extraction fails whole.
 var ErrBudgetExceeded = errors.New("pdf extraction past the caller's budget")
 
-// (document-wide: see ExtractTextFromBytes)
-
 // DefaultDecompressionBudget bounds what one FlateDecode stream may
 // inflate to when the caller has no opinion. zlib holds roughly 1000:1,
 // so a budget is the only thing standing between a small compressed
@@ -31,9 +29,11 @@ const DefaultDecompressionBudget = 64 << 20
 // ExtractText reads a PDF file and extracts all readable text from BT/ET
 // operators across all content streams. Non-text pages or encrypted PDFs
 // yield an empty string rather than an error. maxDecompressed is the
-// document budget: any single FlateDecode stream inflating past it, or
-// the sum of all streams' text, fails the extraction with
-// ErrBudgetExceeded instead of allocating.
+// INFLATION budget: any single FlateDecode stream inflating past it, or
+// the document-wide sum of inflated streams doing the same through many
+// small ones, fails with ErrBudgetExceeded instead of allocating. The
+// path form reads the whole file unbounded — size-bound it yourself or
+// use ExtractTextFromBytes.
 func ExtractText(path string, maxDecompressed int64) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -54,12 +54,24 @@ func ExtractTextFromBytes(data []byte, maxDecompressed int64) (string, error) {
 	offset := 0
 
 	for offset < len(data) {
-		// "\nstream", never bare "stream": "endstream" contains the
-		// bare token and a multi-stream document used to have every
-		// stream after the first consumed as mis-aligned garbage (the
-		// dict window then still said FlateDecode, inflate failed on
-		// the "endobj…" prefix, and the lenient skip ate the data).
-		streamStart := bytes.Index(data[offset:], []byte("\nstream"))
+		// "stream" with a NON-ALPHANUMERIC byte before it. Bare
+		// "stream" matches inside "endstream" (a multi-stream document
+		// had every stream after the first consumed as mis-aligned
+		// garbage), and the "\nstream" form excluded spec-tolerated
+		// delimiters ("<< … >>stream" glued, lone \r, space, tab).
+		streamStart := bytes.Index(data[offset:], []byte("stream"))
+		for streamStart >= 0 {
+			prev := offset + streamStart - 1
+			if prev < 0 || !isPDFNameByte(data[prev]) {
+				break
+			}
+			next := bytes.Index(data[offset+streamStart+1:], []byte("stream"))
+			if next < 0 {
+				streamStart = -1
+				break
+			}
+			streamStart += next + 1
+		}
 		if streamStart < 0 {
 			break
 		}
@@ -121,11 +133,18 @@ func ExtractTextFromBytes(data []byte, maxDecompressed int64) (string, error) {
 	return allText.String(), nil
 }
 
+// isPDFNameByte reports whether b is a PDF name character — the ones a
+// longer word like "endstream" (or "downstream" in a dict string) puts
+// immediately before a "stream" token it should absorb.
+func isPDFNameByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
+}
+
 // inflate decompresses zlib/deflate data. Tries zlib first, falls back to
 // raw deflate for PDFs that omit the zlib header. The read is capped at
 // limit+1 bytes: a stream inflating past limit fails with
-// ErrDecompressionBudget instead of allocating (zlib holds ~1000:1, so
-// an uncapped ReadAll here turned a 1 MiB file into a 1 GiB slice).
+// ErrBudgetExceeded instead of allocating (zlib holds ~1000:1, so an
+// uncapped ReadAll here turned a 1 MiB file into a 1 GiB slice).
 func inflate(data []byte, limit int64) ([]byte, error) {
 	// Try zlib first.
 	r, err := zlib.NewReader(bytes.NewReader(data))
