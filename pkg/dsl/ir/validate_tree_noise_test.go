@@ -478,3 +478,68 @@ func TestTreeNoiseRefFiresOncePerBody(t *testing.T) {
 		t.Fatalf("C157 count = %d, want 1 (deduped per body)\ndiagnostics: %v", got, r.Diagnostics)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round-5 probes — the case region's `in`-gating, parens as command context,
+// and the xargs suppression's bounds
+// ---------------------------------------------------------------------------
+
+// TestTreeNoiseScannerRound5Probes pins the re-attack of the case and xargs
+// special cases: casePattern arms only from the "case word consumed,
+// awaiting in" state; `(`/`$(` open a fresh command context; `esac` closes
+// only at command position with a depth counter for nesting; and the xargs
+// suppression is bounded to a double-quoted span whose producer is
+// echo/printf feeding a flag-free xargs.
+func TestTreeNoiseScannerRound5Probes(t *testing.T) {
+	c158count := func(r *CompileResult) int { return countCode(r, DiagTreeNoiseEnvQuoted) }
+	for name, tc := range map[string]struct {
+		line string
+		want int
+	}{
+		// HIGH 1 — a bare `in` inside an arm is not `case … in`.
+		"h1a: a for-list inside a case arm still fires": {
+			"  command: |\n    case \"$MODE\" in\n      staged) for f in \"$ITERION_TREE_NOISE\"; do git add \"$f\"; done ;;\n    esac", 1},
+		"h1b: a bare `in` argument inside an arm arms nothing": {
+			"  command: |\n    case x in\n      a) grep -w in log.txt; git add -- \"$ITERION_TREE_NOISE\" ;;\n    esac", 1},
+		// HIGH 2 — $( opens a fresh command context.
+		"h2: a case word inside $( )": {
+			"  command: |\n    OUT=$(case \"$ITERION_TREE_NOISE\" in \"\") exit 1 ;; esac)", 0},
+		"h2b: a case word inside $( ) after a plain command": {
+			"  command: |\n    echo $(case \"$ITERION_TREE_NOISE\" in \"\") exit 1 ;; esac)", 0},
+		// MEDIUM 3 — paren-less patterns, nesting, esac-as-argument.
+		"m3a: a paren-less case pattern inside $( )": {
+			"  command: |\n    OUT=$(case x in \"$ITERION_TREE_NOISE\") echo m;; *) echo no;; esac)", 0},
+		"m3b: an outer pattern after a nested case": {
+			"  command: |\n    case a in\n      x) case \"$MODE\" in y) echo ok ;; esac ;;\n      \"$ITERION_TREE_NOISE\") git add -A ;;\n    esac", 0},
+		"m3c: esac as an arm argument closes nothing": {
+			"  command: |\n    case x in\n      a) echo esac ;;\n      \"$ITERION_TREE_NOISE\") exit 1 ;;\n    esac", 0},
+		"m3d: a hit inside a nested case's body still fires": {
+			"  command: |\n    case a in\n      x) case \"$MODE\" in y) git add -- \"$ITERION_TREE_NOISE\" ;; esac ;;\n    esac", 1},
+		// MEDIUM 4 — the xargs suppression's bounds.
+		"m4a: a single-quoted span feeding xargs is literal — fires": {
+			"  command: |\n    echo '$ITERION_TREE_NOISE' | xargs git add --", 1},
+		"m4b: a collapse upstream of the pipe fires": {
+			"  command: |\n    git add -A -- \"$ITERION_TREE_NOISE\" | xargs echo staged", 1},
+		"m4c: xargs -0 does not re-split — fires": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -0 git add --", 1},
+		"m4d: xargs -I{} does not re-split — fires": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -I{} git add {}", 1},
+		"m4e: xargs -d does not re-split — fires": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -d ' ' git add --", 1},
+		// LOW 5 — the pipe may end its line.
+		"low5: a pipe continued on the next line": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" |\n      xargs git add --", 0},
+		// …and the suppression itself survives its narrowing.
+		"the plain echo | xargs shape still suppresses": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs git add --", 0},
+		"a printf producer still suppresses": {
+			"  command: |\n    printf '%s\\n' \"$ITERION_TREE_NOISE\" | xargs git add --", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileText(t, treeNoiseSrc(tc.line))
+			if got := c158count(r); got != tc.want {
+				t.Fatalf("C158 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
+			}
+		})
+	}
+}

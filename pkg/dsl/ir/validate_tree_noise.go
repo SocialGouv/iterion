@@ -247,7 +247,14 @@ func shellKeyword(w string) bool {
 // Suppression regions are BOUNDED: a `test …` command ends at the first
 // `&&`/`||`/`;`/`|` or newline; a bracket form (`[ … ]` / `[[ … ]]`) ends at
 // its closing word `]` / `]]`, found with the same quote/comment awareness
-// — a stray `]` inside an echo'd string or a comment closes nothing.
+// — a stray `]` inside an echo'd string or a comment closes nothing. A
+// `case` compound is tracked with a depth counter (nesting survives): the
+// case word and the pattern positions never word-split, the pattern region
+// opens only from the "case word consumed, awaiting in" state, and `esac`
+// closes only at command position. Arithmetic `$(( … ))` is a paren-depth
+// region: no splitting, and `<<` is a shift, never a heredoc. `(` and `)`
+// open a fresh command context (a `case` inside `$( … )` is still read as
+// one).
 //
 // A heredoc body is data, never argv: its lines are consumed until the
 // delimiter line and nothing inside is scanned. Command substitution
@@ -264,11 +271,18 @@ func scanShellBody(body string) shellScan {
 		wordStart = -1   // offset of the unquoted word under construction (-1: none)
 		cmdStart  = true // at command position
 
-		testCloser  string // "]" / "]]" while inside a bracket test
-		testCmd     bool   // inside a `test …` command
-		casePending bool   // a `case` at command position: the NEXT quoted span is the case word, which never word-splits
-		caseRegion  bool   // between `case` and `esac`
+		testCloser string // "]" / "]]" while inside a bracket test
+		testCmd    bool   // inside a `test …` command
+		// case tracking: a `case` at command position arms the compound
+		// (depth, for nesting); the NEXT span is the case word, which never
+		// word-splits; the pattern region opens ONLY from the
+		// "case word consumed, awaiting in" state — a bare `in` inside an
+		// arm (`for f in …`, `grep -w in …`) arms nothing.
+		caseDepth   int
+		casePending bool
+		awaitingIn  bool
 		casePattern bool   // in a case PATTERN position (between `in` and the arm's `)`, and after each `;;`/`;&`) — patterns never word-split either
+		cmdName     string // first word of the current command (the echo|xargs suppression reads it)
 
 		arithDepth int // inside $(( … )) / (( … )): no word-splitting, no heredocs
 
@@ -286,6 +300,11 @@ func scanShellBody(body string) shellScan {
 		wordStart = -1
 		// A bare case word consumed the pending flag before this word.
 		casePending = false
+		// Command-name tracking: the first non-keyword, non-assignment
+		// word of a command (`FOO=bar echo …` leaves the position open).
+		if cmdStart && cmdName == "" && !shellKeyword(w) && !isShellAssignWord(w) {
+			cmdName = w
+		}
 		switch w {
 		case "[":
 			testCloser = "]"
@@ -306,21 +325,31 @@ func scanShellBody(body string) shellScan {
 		case "case":
 			if cmdStart {
 				casePending = true
-				caseRegion = true
+				awaitingIn = true
+				caseDepth++
 			}
 		case "in":
-			// `case … in` opens the pattern list; a `for … in` list DOES
-			// word-split, which is why this is gated on the case region.
-			if caseRegion {
+			// `case <word> in` opens the pattern list — and ONLY that
+			// shape: a `for f in …` list DOES word-split, and a bare `in`
+			// inside an arm is just an argument.
+			if awaitingIn {
 				casePattern = true
+				awaitingIn = false
 			}
 		case "esac":
-			caseRegion = false
-			casePattern = false
+			// A closer only at command position: `echo esac` in an arm is
+			// an argument and closes nothing.
+			if cmdStart && caseDepth > 0 {
+				caseDepth--
+				if caseDepth == 0 {
+					casePattern = false
+				}
+			}
 		}
-		// Command-position tracking: a keyword keeps it, any other word
-		// ends it; the separators set it again below.
-		cmdStart = shellKeyword(w)
+		// Command-position tracking: a keyword or an assignment prefix
+		// keeps it, any other word ends it; the separators set it again
+		// below.
+		cmdStart = shellKeyword(w) || isShellAssignWord(w)
 	}
 
 	// closeSpan records the span ending at the closing quote i and judges
@@ -342,10 +371,15 @@ func scanShellBody(body string) shellScan {
 		if !treeNoiseEnvOnlyVar(content) {
 			return
 		}
-		if pipedToXargs(body, close+1) {
+		if quote == '"' && (cmdName == "echo" || cmdName == "printf") && pipedToXargs(body, close+1) {
 			// echo "$V" | xargs git add — xargs re-splits the one word
 			// downstream, so the exclusion survives end to end; naming the
-			// collapse here would be a false mechanism.
+			// collapse here would be a false mechanism. Bounded on purpose:
+			// only a DOUBLE-quoted span (a single-quoted one is literal
+			// text, argc=1), only a producer whose stdout IS the var
+			// (echo/printf — `git add "$V" | xargs echo` collapses at git
+			// add, upstream of the pipe), only a flag-free xargs (-I/-0/-d
+			// do not re-split).
 			return
 		}
 		sc.hits = append(sc.hits, treeNoiseQuote{body[spanStart : close+1], spanLine, quote == '"'})
@@ -443,6 +477,7 @@ func scanShellBody(body string) shellScan {
 				line++
 				cmdStart = true
 				testCmd = false
+				cmdName = ""
 				i++
 				if heredocDelim != "" {
 					heredocFrom = i
@@ -454,10 +489,11 @@ func scanShellBody(body string) shellScan {
 				flushWord(i)
 				cmdStart = true
 				testCmd = false
+				cmdName = ""
 				i++
 				// A case arm terminator (`;;` or `;&`) returns to pattern
 				// position. `||` is not one.
-				if caseRegion && ch == ';' && i < len(body) && (body[i] == ';' || body[i] == '&') {
+				if caseDepth > 0 && ch == ';' && i < len(body) && (body[i] == ';' || body[i] == '&') {
 					casePattern = true
 					i++
 				}
@@ -468,12 +504,19 @@ func scanShellBody(body string) shellScan {
 				arithDepth = 2
 				i += 2
 			case ch == '(':
+				// A subshell or a $( opens a FRESH command context:
+				// `OUT=$(case "$V" in …` reads `case` at command position.
 				flushWord(i)
+				cmdStart = true
+				cmdName = ""
 				i++
 			case ch == ')':
 				flushWord(i)
-				// The `)` after a pattern list: the arm body begins.
+				// The `)` after a pattern list: the arm body begins, at
+				// command position.
 				casePattern = false
+				cmdStart = true
+				cmdName = ""
 				i++
 			case ch == '<' && i+1 < len(body) && body[i+1] == '<' && (i+2 >= len(body) || body[i+2] != '<'):
 				flushWord(i)
@@ -506,10 +549,23 @@ func scanShellBody(body string) shellScan {
 	return sc
 }
 
+// isShellAssignWord reports whether w starts as an assignment word
+// (`NAME=` prefix) — `FOO=bar echo …` leaves command position open for the
+// word that follows.
+func isShellAssignWord(w string) bool {
+	i := 0
+	for i < len(w) && (w[i] == '_' ||
+		(w[i] >= 'a' && w[i] <= 'z') || (w[i] >= 'A' && w[i] <= 'Z') ||
+		(i > 0 && w[i] >= '0' && w[i] <= '9')) {
+		i++
+	}
+	return i > 0 && i < len(w) && w[i] == '='
+}
+
 // pipedToXargs reports whether the span ending at off feeds a pipe whose
-// next command is xargs: `echo "$V" | xargs git add`. xargs re-splits on
-// blanks, so the one-word expansion is split again downstream — the
-// collapse the check names never reaches argv.
+// next command is a FLAG-FREE xargs: `echo "$V" | xargs git add` (the pipe
+// may end its line — `| \n xargs …` re-splits the same). xargs -I, -0 and
+// -d do NOT re-split on blanks, so a flagged form is not a suppression.
 func pipedToXargs(body string, off int) bool {
 	j := off
 	for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
@@ -522,14 +578,25 @@ func pipedToXargs(body string, off int) bool {
 		return false // || is not a pipe
 	}
 	j++
-	for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
+	for j < len(body) && (body[j] == ' ' || body[j] == '\t' || body[j] == '\n') {
 		j++
 	}
 	start := j
 	for j < len(body) && !isShellBoundaryOpen(body[j]) && body[j] != '(' && body[j] != ')' {
 		j++
 	}
-	return body[start:j] == "xargs"
+	if body[start:j] != "xargs" {
+		return false
+	}
+	for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
+		j++
+	}
+	start = j
+	for j < len(body) && !isShellBoundaryOpen(body[j]) && body[j] != '(' && body[j] != ')' {
+		j++
+	}
+	flag := body[start:j]
+	return !strings.HasPrefix(flag, "-I") && !strings.HasPrefix(flag, "-0") && !strings.HasPrefix(flag, "-d")
 }
 
 // parseHeredocDelim reads the delimiter of a `<<` operator: an optional `-`
