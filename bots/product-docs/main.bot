@@ -2605,7 +2605,7 @@ if not pages:
 FENCE = chr(96) * 3
 blocks_total = 0
 routes_on_map = set()
-ROUTE_RE = re.compile(r'(?<![A-Za-z0-9_:/-])/[A-Za-z0-9_{}:*]+(?:/[A-Za-z0-9_{}:*]+)*(?:[?]([A-Za-z0-9_%-]+=[^ ]+))?')
+ROUTE_RE = re.compile(r'(?<![A-Za-z0-9_:/-])/[A-Za-z0-9_{}:*-]+(?:/[A-Za-z0-9_{}:*-]+)*(?:[?]([A-Za-z0-9_%-]+=[^ ]+))?')
 for page in pages:
     with open(page, encoding='utf-8') as fh:
         lines = fh.read().split(chr(10))
@@ -2673,7 +2673,8 @@ def is_map_shape(tok):
 for tok in sorted(routes_on_map):
     if not is_map_shape(tok):
         continue
-    if any(pattern_matches(r, tok) for r in declared):
+    path_only = tok.split('?', 1)[0].split('#', 1)[0]
+    if any(pattern_matches(r, path_only) for r in declared):
         continue
     if declared:
         refuse('PHANTOM_MAP', tok, 'the mapped path ' + tok + ' matches NO declared route -- a box on the map the application does not serve; ground it on a route the sources declare or take it off the map')

@@ -4577,6 +4577,46 @@ func TestProductDocsDiagramLintFalsification(t *testing.T) {
 	}
 }
 
+// TestProductDocsDiagramLintGroundsHyphenatedAndQueryTokens: a map draws
+// REAL screens, and real routes carry hyphens and query strings. A token
+// truncated at its hyphen or matched WITH its query can never match its
+// declared route — the faithful rendering of the screen reddens as a
+// phantom, and the campaign's only repair is deleting the truth.
+func TestProductDocsDiagramLintGroundsHyphenatedAndQueryTokens(t *testing.T) {
+	requireGitPython(t)
+	t.Run("a hyphenated route is grounded whole", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		// NO catch-all in the table: /{slug} would match the token the
+		// truncated regex extracts (/user), and the mutant would ride it
+		// to green.
+		writeFile(t, ws, ".golden-master/routes.txt",
+			"GET /\nGET /dashboard/items\nGET /user-settings\n")
+		writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+			"\n"+
+			"```mermaid\n"+
+			"flowchart TD\n"+
+			"  prefs[\"/user-settings — les préférences\"]\n"+
+			"```\n")
+		got := runDiagramLint(t, ws)
+		if !got.OK {
+			t.Fatalf("a hyphenated route was truncated and refused as a phantom:\n%s", got.Log)
+		}
+	})
+	t.Run("a query-bearing map token is grounded on its path", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+			"\n"+
+			"```mermaid\n"+
+			"flowchart TD\n"+
+			"  page2[\"/dashboard/items?page=2 — la deuxième page\"]\n"+
+			"```\n")
+		got := runDiagramLint(t, ws)
+		if !got.OK {
+			t.Fatalf("a legitimate screen drawn with its query was refused as a phantom:\n%s", got.Log)
+		}
+	})
+}
+
 // TestProductDocsDiagramLintNamesAnEscapedRoutesFile: the route table is
 // read from inside the net, never from an absolute path or a dot-dot
 // escape — same rule, same refusal shape as the coverage gate.
