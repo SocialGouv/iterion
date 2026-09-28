@@ -95,6 +95,16 @@ mr_gate ──(not open_mr)─────────────────�
 | `pr_url` / `base_ref` | `""` | GENERIC PR-context vars iterion sets for ANY bot launched on a PR (webhook / `/doki`). Non-empty `pr_url` ⇒ Doki self-switches to AMEND: aligns the PR's own diff (incremental, base = `base_ref`) and pushes onto the PR head + comments, instead of opening a new PR. No docs-refresh-specific engine code |
 | `mr_branch` / `mr_base` | `""` | New-PR branch (default `iterion/docs-refresh/<run-id>`) / base; in amend mode `mr_branch` overrides the push target (default: the checked-out PR head) |
 | `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
+| `context_git` | `""` | Comma-separated https URLs of reference repos to shallow-clone into `${scratch_dir}/context/<slug>/` before pass 1 (e.g. a repo holding the product's reference PDFs). Auth via the mounted `forge_token` (never argv); PDFs are pre-extracted to `.txt` sidecars (poppler ships in the bundle's devbox) so any backend reads them through bash |
+| `context_jira_base` / `_project` / `_board` / `_user` | `""` | Tracker snapshot: fetch the board's issues once and render `context/jira/board-<board>.md` (key, type, status, summary, trimmed description — Jira Cloud v3 ADF flattened). Auth = Basic `context_jira_user` + the `tracker_token` file secret (same name review-pr binds). A configured source that fails fails the run explicitly |
+| `llm_backend` | `claude_code` | Backend running the campaign node (`--var llm_backend=claw` for a claw run; pass `ITERION_DOC_ALIGN_EFFORT_CLAUDE=high` then — `ultracode` is Claude-family and degrades to `xhigh` elsewhere) |
+
+Context is **read-only grounding** for the campaign's enrichment half
+(`skills/context-sources.md`): it steers what deserves a page and what
+business rule a code path implements; it is never copied into the
+target repo (the `.md`-only scope gate refuses it anyway), the code
+still wins over a stale spec, and a claim only the context supports is
+marked `[à confirmer]` or omitted. |
 
 Retired in v3 (the obligation machinery): `coverage_target_pct`,
 `cli_surface_globs`, `diagnostic_surface_globs`,
