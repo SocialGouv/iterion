@@ -2024,6 +2024,16 @@ func runCoverage(t *testing.T, ws string) coverageOut {
 	t.Helper()
 	var got coverageOut
 	runJSON(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), &got)
+	// The log quotes the oracle dir, whose path carries the RANDOM temp-dir
+	// number — and assertions on the log grep it for SHORT NUMERIC spans
+	// ("999", "250", "404"): a temp dir like ...126250226 named the code
+	// span "250" and ...38999964916 "verified" "999" (measured in CI,
+	// 2026-09-28). Scrub the fixture's plumbing out of the verdict text so
+	// every assertion judges what the gate SAID, not where the fixture
+	// happened to live.
+	if got.OracleUsed != "" {
+		got.Log = strings.ReplaceAll(got.Log, got.OracleUsed, "<oracle>")
+	}
 	return got
 }
 
@@ -2669,6 +2679,23 @@ func TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem(t *testing.T)
 		if strings.Contains(got.Log, tok) {
 			t.Fatalf("the gate verified %q, a citation inside an HTML comment:\n%s", tok, got.Log)
 		}
+	}
+}
+
+// TestProductDocsCoverageGateLogCarriesNoFixturePath: the log quotes the
+// oracle dir, whose temp path carries RANDOM digits that substring-match the
+// short numeric spans some assertions scan for. The fixture's plumbing is
+// scrubbed at the ONE door every assertion reads through; this test reddens
+// deterministically if the scrub is dropped, where the assertions it protects
+// only redden by chance.
+func TestProductDocsCoverageGateLogCarriesNoFixturePath(t *testing.T) {
+	requireGitPython(t)
+	got := runCoverage(t, newCoverageFixture(t))
+	if got.OracleUsed == "" {
+		t.Fatalf("oracle_dir_used is empty — the scrub has nothing to key on")
+	}
+	if strings.Contains(got.Log, got.OracleUsed) {
+		t.Fatalf("the log still carries the fixture's temp path %q — assertions on the log substring-match its random digits:\n%s", got.OracleUsed, got.Log)
 	}
 }
 
