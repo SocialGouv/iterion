@@ -452,7 +452,8 @@ export type AwaitMode = "none" | "wait_all" | "best_effort";
 export type InteractionMode = "none" | "human" | "llm" | "llm_or_human";
 
 // "none" disables reasoning entirely; only the models whose matrix carries it
-// (GPT-6 Sol/Luna) honour it — other routes clamp to their lowest real level.
+// (GPT-6 Sol/Luna) honour it — claw and claude_code clamp it to low elsewhere,
+// pi spells it off, codex's CLI refuses it on a model without it.
 // "ultracode" is a mode, not a wire effort: xhigh + a standing prerogative to
 // orchestrate multi-agent workflows (reliable only on claude-opus-4-8). The
 // runtime remaps it to xhigh before the provider. See docs/ultracode.md.
