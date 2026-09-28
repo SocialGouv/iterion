@@ -920,3 +920,92 @@ func TestLaunchVarsView_EngineSuppliedNamesStayUndecided(t *testing.T) {
 		t.Errorf("a plain dial = %q, want claw — the guard must not swallow ordinary expansions", got)
 	}
 }
+
+// A coercion failure does not drop the var at dispatch: resolveVars logs and
+// runs the RAW value, env-expanded (engine_resolve.go's read fallback), and a
+// FLAT {{vars.b}} reads it fine. Omitting the var from the view read the node
+// as undecided — and let a real crossing sail through a launch the pre-drill
+// screen refused.
+func TestLaunchVarsView_CoercionFailureFallsBackLikeResolveVars(t *testing.T) {
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarInt, HasDefault: true, Default: int64(1)},
+	}}
+	// --var b=claw cannot coerce to int: dispatch stores the raw "claw".
+	if got := runBackend.withVars(launchVarsView(w, map[string]string{"b": "claw"})).name("{{vars.b}}"); got != "claw" {
+		t.Errorf("{{vars.b}} with a non-coercible override = %q, want claw — dispatch falls back to the raw value", got)
+	}
+}
+
+func TestApplyRunFallback_CoercionFailureKeepsTheFlatReading(t *testing.T) {
+	fresh := func() *Workflow {
+		return &Workflow{
+			Nodes: map[string]Node{"x": applyAgent("x", "{{vars.b}}", "", nil, nil)},
+			Vars:  map[string]*Var{"b": {Name: "b", Type: VarInt, HasDefault: true, Default: int64(1)}},
+		}
+	}
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"b": "claw"})
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1 — dispatch runs the node on claw, the crossing is real", len(refusals))
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The engine-name probe reads a var's text the way dispatch expands THAT
+// TYPE: a json var's string leaves get the braced-only reading and its keys
+// are never expanded, so a bare `$PROJECT_DIR` in a leaf is DATA — the var
+// stays, the drill resolves. Probing the raw text with the full reading
+// omitted the whole var and took the screen off a real crossing.
+func TestLaunchVarsView_JSONProbeReadsLeavesBracedOnly(t *testing.T) {
+	w := &Workflow{Vars: map[string]*Var{
+		"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend":"claw","note":"$PROJECT_DIR"}`},
+		"doc": {Name: "doc", Type: VarJSON, HasDefault: true, Default: `{"backend":"${PROJECT_DIR}"}`},
+	}}
+	run := runBackend.withVars(launchVarsView(w, nil))
+	if got := run.name("{{vars.cfg.backend}}"); got != "claw" {
+		t.Errorf("{{vars.cfg.backend}} = %q, want claw — a bare $NAME in a json leaf is data, the var must not be omitted", got)
+	}
+	// A braced ${…} in a leaf IS an expansion dispatch runs (on the leaf) —
+	// the engine-supplied name keeps the whole var undecided.
+	if got := run.name("{{vars.doc.backend}}"); got != "" {
+		t.Errorf("{{vars.doc.backend}} = %q, want undecided — the leaf expands ${PROJECT_DIR} at dispatch", got)
+	}
+}
+
+func TestApplyRunFallback_JSONLeafHoldingDataKeepsTheScreen(t *testing.T) {
+	fresh := func() *Workflow {
+		return &Workflow{
+			Nodes: map[string]Node{"x": applyAgent("x", "{{vars.cfg.backend}}", "", nil, nil)},
+			Vars: map[string]*Var{
+				"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend":"claw","note":"$PROJECT_DIR"}`},
+			},
+		}
+	}
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil)
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1 — the note is data, the backend member resolves to claw, the crossing is real", len(refusals))
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The accepted over-conservatism, pinned so it is a choice rather than an
+// accident: a name CONSULTED but discarded — `${SET:-${PROJECT_DIR}}` with
+// SET in the environment — omits the var all the same, where dispatch
+// decides the outer value. The inside-out expansion consults the inner
+// segment before the outer short-circuits, and tracking whether a consulted
+// name's value reaches the result would price the fix above the shape's
+// frequency. Undecided never refuses a route the run would take; it only
+// screens less, which is the pre-#1606 posture for every var.
+func TestLaunchVarsView_ConsultedButDiscardedStaysUndecided(t *testing.T) {
+	t.Setenv("C1606_OUTER_SET", "claw")
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_OUTER_SET:-${PROJECT_DIR}}"},
+	}}
+	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+		t.Errorf("{{vars.b}} = %q, want undecided — the probe cannot see that dispatch discards the inner expansion", got)
+	}
+}

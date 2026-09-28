@@ -490,7 +490,11 @@ fields, a verified action's `recovery.model`, the workflow's
 first — a dotted `{{vars.<doc>.<member>}}` included, drilled into a `json`
 var's document; the run's vars are the one namespace that exists before the node
 runs; any other template warns C148 at compile time and reaches the backend
-as text — then `${VAR}` / `${VAR:-default}` expansion.
+as text — then `${VAR}` / `${VAR:-default}` expansion. A dotted reference
+whose var holds a scalar at run time (a `--var cfg=claw` override replacing
+the declared document) resolves nothing on either side of the launch screen:
+the value holds no members to drill, the text reaches the backend as written
+and the node fails at its first delegation.
 
 Known hints:
 
