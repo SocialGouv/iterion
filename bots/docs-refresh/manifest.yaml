@@ -1,7 +1,35 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.10
+version: 3.6.0
+## 3.6.0 — OPTIONAL CONTEXT SOURCES: reference material materialized
+## deterministically BEFORE the campaign. Until now Doki read only the
+## cloned target repo + scope_notes; enrichment grounding (a product
+## reference-PDF repo, a tracker board) had to be paraphrased by hand
+## into the notes. Two opt-in channels: `context_git` (comma-separated
+## https URLs, shallow-cloned into ${scratch_dir}/context-<run id>/<slug>/ —
+## auth via the mounted forge_token through a GIT_ASKPASS shim, never
+## argv, never a prompt; PDFs are pre-extracted to .txt sidecars with
+## poppler from the bundle's new devbox.json so ANY backend can read
+## them through bash) and the Jira quartet (`context_jira_base/project/
+## board/user` + a NEW optional file secret `tracker_token`, same name
+## and shape review-pr binds; Jira Cloud Basic auth, ADF descriptions
+## flattened) rendered to context-<run id>/jira/board-<id>.md. A new entry gate
+## (`context_gate`, the mr_gate pattern) runs `context_ingest` ONLY
+## when a source is configured — both empty means the node never
+## executes and the run is unchanged. A requested source that fails
+## FAILS the node (explicit — context is grounding the operator
+## declared; a silently ungrounded campaign is the failure mode we
+## refuse). The campaign reads context as READ-ONLY grounding for
+## enrichment (skills/context-sources.md): never copied into the repo
+## (the .md-only scope gate would refuse it anyway), code still wins
+## over a stale spec, and a claim only the context supports gets
+## `[à confirmer]`. Per-run backend: the campaign node's `backend:`
+## now resolves `{{vars.llm_backend}}` (default claude_code) — the one
+## form routing fields accept; effort stays the env knob
+## (reasoning_effort is an enum, vars-templates are C027), so a claw
+## run passes ITERION_DOC_ALIGN_EFFORT_CLAUDE=high (ultracode is
+## Claude-family) and, if wanted, ITERION_DOC_ALIGN_MODEL_CLAUDE.
 ## 3.5.9 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside four prompts (campaign_system 16,
 ## campaign_user 7, finalize_mr_system 6, finalize_mr_user 4 — 33 in all) now
@@ -305,4 +333,8 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.141.0"
+  ## >= 3.168.0: routing-field `{{vars.*}}` resolution in `backend:`
+  ## (the campaign node's llm_backend) shipped with v3.168.0; on an
+  ## older runner the bundle would admit and die at its first
+  ## delegation. The 3.141 floor predates this feature.
+  iterion: ">= 3.168.0"

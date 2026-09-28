@@ -246,8 +246,8 @@ func TestDocsRefresh_Structural(t *testing.T) {
 	t.Parallel()
 	wf := compileFixtureStubSafe(t, "docs-refresh/main.bot")
 
-	if wf.Entry != "scan_hints" {
-		t.Errorf("workflow entry = %q, want %q (the advisory scan leads)", wf.Entry, "scan_hints")
+	if wf.Entry != "context_gate" {
+		t.Errorf("workflow entry = %q, want %q (the opt-in context gate leads; with no source configured it branches straight to scan_hints)", wf.Entry, "context_gate")
 	}
 	// the ONE adaptive agent
 	if node, ok := wf.Nodes["campaign"]; !ok {
@@ -255,7 +255,13 @@ func TestDocsRefresh_Structural(t *testing.T) {
 	} else if _, ok := node.(*ir.AgentNode); !ok {
 		t.Errorf("node campaign is %T, want *ir.AgentNode (adaptive)", node)
 	}
-	for _, id := range []string{"scan_hints", "scope_check", "forge_auth_probe", "surface_pr_link"} {
+	// the context front door: one compute gate + one deterministic ingest
+	if node, ok := wf.Nodes["context_gate"]; !ok {
+		t.Fatalf("workflow missing compute node context_gate")
+	} else if _, ok := node.(*ir.ComputeNode); !ok {
+		t.Errorf("node context_gate is %T, want *ir.ComputeNode", node)
+	}
+	for _, id := range []string{"context_ingest", "scan_hints", "scope_check", "forge_auth_probe", "surface_pr_link"} {
 		node, ok := wf.Nodes[id]
 		if !ok {
 			t.Fatalf("workflow missing expected tool node %q", id)

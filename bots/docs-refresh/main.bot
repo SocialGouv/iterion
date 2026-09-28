@@ -230,6 +230,41 @@ vars:
   ## current branch, else reports it could not determine the head.
   source_branch: string = ""
 
+  ## ─── Product context sources (opt-in) ────────────────────────────
+  ## Reference material the campaign reads as GROUNDING (product
+  ## background a repo's code alone cannot tell it: functional specs,
+  ## online-help PDFs, the tracker board). context_ingest materializes
+  ## everything under `${scratch_dir}/context-<run id>/` — deliberately
+  ## OUT of the worktree, so the .md-only writeable set never sees it,
+  ## and per-RUN (PROJECT_SCRATCH_DIR is shared by concurrent runs of
+  ## the same repo) — before the first pass. Both channels are
+  ## independent; all vars empty (the default) → the gate skips the
+  ## node and existing users see zero change.
+  ## Comma-separated https URLs of reference repositories to
+  ## shallow-clone (e.g. a docs repo holding the product's reference
+  ## PDFs). Cloned read-only via the mounted `forge_token` (never on
+  ## argv); anonymous clone for public repos.
+  context_git: string = ""
+  ## Jira Cloud board snapshot. `context_jira_base` non-empty arms the
+  ## channel: the board's issues are fetched once and rendered to
+  ## `context-<run id>/jira/board-<board>.md` (key, type, status, summary,
+  ## description truncated). Auth = Basic `context_jira_user` +
+  ## the `tracker_token` file secret (same name and shape review-pr
+  ## binds; Jira Cloud API token). A configured source that fails
+  ## FAILS the node explicitly — no silent degradation.
+  context_jira_base: string = ""
+  context_jira_project: string = ""
+  context_jira_board: string = ""
+  context_jira_user: string = ""
+
+  ## Backend running the campaign node. Resolved at launch from vars
+  ## (`--var llm_backend=claw`), per the routing-field rule: only
+  ## `{{vars.*}}` resolves in `backend:`. Default stays claude_code
+  ## (full native toolset); the effort env
+  ## (`ITERION_DOC_ALIGN_EFFORT_CLAUDE`) still applies as-is — a claw
+  ## run inherits the documented degradation of ultracode off opus.
+  llm_backend: string = "claude_code"
+
 secrets:
   ## Forge access for push + PR creation + the issue back-link.
   ## Mounted as a read-only file the gh/glab CLI authenticates from;
@@ -237,6 +272,15 @@ secrets:
   ## token bound) and host-authenticated gh/glab setups work
   ## unchanged.
   forge_token:
+    as: file
+    optional: true
+
+  ## Tracker API token for the context Jira snapshot (context_ingest).
+  ## Same secret name and shape review-pr binds (tracker_token) so one
+  ## team secret serves both bots; mounted as a file, consumed only by
+  ## the deterministic fetch, never read into a prompt. The egress
+  ## lock lives on the binding (`allowed_hosts`), not in the DSL.
+  tracker_token:
     as: file
     optional: true
 
@@ -258,8 +302,9 @@ prompt campaign_system:
       areas that exist in the repo but appear in no doc.
   You correct and author documentation, never code.
 
-  LOAD YOUR SKILLS FIRST. The bundle ships six skills under
-  `.claude/skills/` describing the discipline you MUST follow:
+  LOAD YOUR SKILLS FIRST. The bundle ships seven editorial skills
+  under `.claude/skills/` describing the discipline you MUST follow
+  (the eighth, `forge-mr-create.md`, belongs to the PR tail):
     - `docs-refresh.md` — operating playbook, the why and the
       inviolable rules
     - `doc-mismatch-taxonomy.md` — the mismatch kinds that tell you
@@ -271,6 +316,9 @@ prompt campaign_system:
     - `doc-verification-checklist.md` — the verification preamble to
       run before declaring anything aligned
     - `anti-facade-fix-rules.md` — what a façade fix looks like
+    - `context-sources.md` — the product-context material (when the
+      run carries any): what it is, how to read it per backend,
+      what it may and may not ground
 
   THE SCAN IS AN AID, NOT YOUR SCOPE. Your user prompt carries an
   ADVISORY report from a deterministic scan: probable drift sorted by
@@ -467,6 +515,23 @@ prompt campaign_user:
   Scope notes (operator's attention pin, may be empty):
   {{vars.scope_notes}}
 
+  ## Product context (may be empty)
+  {{input.context_note}}
+  When the line above is non-empty, the directory it names holds
+  READ-ONLY reference material (spec PDFs, tracker snapshots,
+  functional exports) describing what this product IS for its users —
+  grounding the code alone cannot give you. Read it BEFORE planning
+  the pass; let it steer doc-enrichment (what deserves a page, which
+  business rule a cryptic code path implements) and verify claims it
+  makes against the code as usual. Backend note: claude_code reads
+  PDFs natively (Read tool); under a backend whose file reader is
+  text-only or workspace-bound (claw), reach PDFs and scratch files
+  through bash (`pdftotext -layout <file> -`). NEVER copy context
+  files into the repository — the writeable set is `.md` only and
+  reference material is not content. A context fact the code
+  contradicts is DRIFT IN THE CONTEXT, not a licence to write it into
+  the docs; flag it in drift_remaining instead.
+
   ## Pass scope — mode: {{input.mode}}
   FULL: sweep the WHOLE corpus — plan it, then align exhaustively. The
   periodic reconciliation that catches cross-cutting drift a per-file
@@ -610,6 +675,24 @@ prompt finalize_mr_user:
 ## (kinds: missing_path, dead_link, dead_anchor, unmentioned_area);
 ## every *_count field is TELEMETRY (report/events), never a gate
 ## condition.
+## context_gate lifts the context vars into one bool so the two
+## outgoing edges use the C012-exhaustive simple form (mr_gate shape):
+## at least one source configured → materialize; none → the node never
+## executes and the run is unchanged (mr_gate verbatim pattern).
+schema context_gate_state:
+  has_context: bool
+
+## context_ingest materializes the optional product-context sources
+## before the first pass. context_note is the campaign-facing line:
+## empty when no source is configured, else the context root + a
+## one-line-per-source inventory. A configured source that failed is
+## an explicit node failure (errors non-empty AND exit non-zero), so
+## a half-materialized context never passes silently.
+schema context_ingest_output:
+  context_note: string
+  sources: int
+  errors: string
+
 schema hints_output:
   doc_files: string[]
   doc_count: int
@@ -640,6 +723,7 @@ schema campaign_input:
   pr_url: string
   recently_changed_code_files: string[]
   fail_log: string
+  context_note: string
 
 ## campaign's TERMINATION CONTRACT (G2): a machine-checkable output
 ## the engine keys convergence on. docs_aligned is the done-oracle;
@@ -739,6 +823,182 @@ schema finalize_mr_output:
 ##
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks (BT = chr(96)); values flow via shell env vars.
+## context_ingest — deterministic materialization of the OPTIONAL
+## product-context sources (v3.6.0), run ONCE before the loop. Git
+## reference repos are shallow-cloned and a Jira board is snapshotted
+## to markdown, all under ${scratch_dir}/context-<run id>/ — deliberately
+## OUTSIDE the worktree so the .md-only writeable set never sees it.
+## No source configured → a no-op that reports zero sources (existing
+## users see no change). A configured source that fails FAILS the node
+## explicitly: a half-materialized context must never look like a
+## complete one. No LLM.
+tool context_ingest:
+  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
+import os, json, re, subprocess, shutil, urllib.request, urllib.error, base64
+
+scratch = os.environ.get('SCRATCH', '')
+# Per-RUN namespace: PROJECT_SCRATCH_DIR is keyed off the repo root and
+# SHARED by concurrent runs of the same repo (worktree: auto lets them
+# proceed in parallel) — a shared context/ dir would let one run's
+# re-clone rmtree another run's live grounding mid-campaign.
+ctx = os.path.join(scratch, 'context-' + (os.environ.get('RUN_ID', '') or 'shared'))
+os.makedirs(ctx, exist_ok=True)
+notes = []
+errors = []
+sources = 0
+
+# ── git reference repos ──────────────────────────────────────────
+raw = os.environ.get('CTX_GIT', '').strip()
+forge_token_file = os.environ.get('FORGE_TOKEN_FILE', '')
+if raw:
+    have_token = bool(forge_token_file) and os.path.isfile(forge_token_file)
+    askpass = os.path.join(ctx, '.git-askpass.sh')
+    # The token file path comes from the engine's secret mount (no
+    # spaces); refuse anything that could break out of the script.
+    if have_token and not set(forge_token_file) <= set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-'):
+        have_token = False
+        errors.append('forge_token: unexpected mount path, refusing to wire it into the askpass helper')
+    with open(askpass, 'w') as f:
+        f.write('#!/bin/sh\n')
+        f.write('case ' + chr(36) + '1 in\n')
+        f.write('  Username*) echo oauth2 ;;\n')
+        f.write('  Password*) cat ' + (forge_token_file if have_token else '/nonexistent-iterion-askpass') + ' ;;\n')
+        f.write('esac\n')
+    os.chmod(askpass, 0o700)
+    env = dict(os.environ)
+    env['GIT_ASKPASS'] = askpass
+    env['GIT_TERMINAL_PROMPT'] = '0'
+    for url in [u.strip() for u in raw.split(',') if u.strip()]:
+        if not url.startswith('https://'):
+            errors.append('context_git: only https URLs are supported, got ' + url)
+            continue
+        slug = re.sub(r'[^a-z0-9._-]', '-', url.rstrip('/').split('/')[-1].lower().removesuffix('.git')) or 'repo'
+        dest = os.path.join(ctx, slug)
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        cmd = ['git', 'clone', '--depth', '1', '--single-branch', '-c', 'credential.helper=', url, dest]
+        try:
+            p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
+            if p.returncode != 0:
+                errors.append(slug + ': clone failed: ' + ((p.stderr or p.stdout).strip() or 'no output')[-400:])
+                continue
+            # Pre-extract PDFs to .txt sidecars so ANY backend can read
+            # them through bash (claw's read_file is workspace-bound and
+            # text-only). Poppler ships in the bot's devbox.json; a PDF
+            # without pdftotext is an explicit, actionable failure.
+            # Separate try: a conversion failure must not read as a
+            # clone failure.
+            pdfs = 0
+            pdftotext = shutil.which('pdftotext')
+            try:
+                for root, _, fs in os.walk(dest):
+                    for f in fs:
+                        if f.lower().endswith('.pdf'):
+                            pdfs += 1
+                            if not pdftotext:
+                                continue
+                            pp = os.path.join(root, f)
+                            subprocess.run(['pdftotext', '-layout', pp, pp + '.txt'], capture_output=True, timeout=120)
+                if pdfs and not pdftotext:
+                    errors.append(slug + ': ' + str(pdfs) + ' PDF(s) found but pdftotext is missing — the bot devbox (poppler_utils) did not apply')
+                    continue
+            except Exception as e:
+                errors.append(slug + ': pdf pre-extraction error: ' + str(e)[:200])
+                continue
+            n = sum(len(fs) for _, _, fs in os.walk(dest))
+            sources += 1
+            notes.append('git repo ' + slug + ' (' + str(n) + ' files' + (', ' + str(pdfs) + ' PDF pre-extracted' if pdfs else '') + ') at ' + dest)
+        except Exception as e:
+            errors.append(slug + ': clone error: ' + str(e)[:200])
+
+# ── Jira board snapshot ──────────────────────────────────────────
+jbase = os.environ.get('JIRA_BASE', '').strip()
+if jbase:
+    jboard = os.environ.get('JIRA_BOARD', '').strip()
+    juser = os.environ.get('JIRA_USER', '').strip()
+    tfile = os.environ.get('TRACKER_TOKEN_FILE', '')
+    missing = [n for n, v in [('context_jira_board', jboard), ('context_jira_user', juser)] if not v]
+    if not tfile or not os.path.isfile(tfile):
+        missing.append('tracker_token secret (file ' + (tfile or 'UNSET') + ' absent)')
+    if missing:
+        errors.append('jira: ' + jbase + ' configured but missing: ' + ', '.join(missing))
+    else:
+        try:
+            token = open(tfile).read().strip()
+            basic = base64.b64encode((juser + ':' + token).encode()).decode()
+            base = jbase.rstrip('/')
+            issues, total, start_at = [], None, 0
+            for _ in range(5):
+                url = base + '/rest/agile/1.0/board/' + jboard + '/issue?maxResults=100&startAt=' + str(start_at) + '&fields=summary,status,issuetype,description'
+                req = urllib.request.Request(url)
+                req.add_header('Authorization', 'Basic ' + basic)
+                req.add_header('Accept', 'application/json')
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    data = json.load(r)
+                total = data.get('total', 0)
+                issues.extend(data.get('issues', []))
+                start_at = len(issues)
+                if start_at >= total:
+                    break
+            lines = ['# Jira board ' + jboard + ' (project ' + os.environ.get('JIRA_PROJECT', '?') + ') — ' + str(len(issues)) + ' of ' + str(total) + ' issues', '']
+            def adf_text(node):
+                # Jira Cloud v3 descriptions are Atlassian Document Format
+                # JSON; flatten to plain text (a dict or a raw string both work).
+                if isinstance(node, str):
+                    return node
+                if isinstance(node, dict):
+                    if node.get('type') == 'text':
+                        return node.get('text', '')
+                    return ''.join(adf_text(c) for c in node.get('content', []))
+                if isinstance(node, list):
+                    return ''.join(adf_text(c) for c in node)
+                return ''
+            for iss in issues:
+                fld = iss.get('fields', {})
+                status = ((fld.get('status') or {}).get('name') or '?')
+                itype = ((fld.get('issuetype') or {}).get('name') or '?')
+                lines.append('## ' + iss.get('key', '?') + ' — ' + (fld.get('summary') or '').replace(chr(10), ' ') + '  [' + itype + ' / ' + status + ']')
+                desc = re.sub(r'\s+', ' ', adf_text(fld.get('description'))).strip()
+                if desc:
+                    lines.append(desc[:1500] + (' …[truncated]' if len(desc) > 1500 else ''))
+                lines.append('')
+            jdir = os.path.join(ctx, 'jira')
+            os.makedirs(jdir, exist_ok=True)
+            jbsafe = re.sub(r'[^a-z0-9._-]', '-', jboard.lower()) or 'board'
+            with open(os.path.join(jdir, 'board-' + jbsafe + '.md'), 'w') as f:
+                f.write(chr(10).join(lines))
+            sources += 1
+            notes.append('jira board ' + jboard + ' (' + str(len(issues)) + ' of ' + str(total) + ' issues) at ' + os.path.join(jdir, 'board-' + jbsafe + '.md'))
+        except urllib.error.HTTPError as e:
+            body = ''
+            try:
+                body = e.read()[:200].decode('utf-8', 'replace')
+            except Exception:
+                pass
+            errors.append('jira: HTTP ' + str(e.code) + ' on ' + jbase + ' — ' + body)
+        except Exception as e:
+            errors.append('jira: ' + str(e)[:200])
+
+# ── manifest + campaign note ─────────────────────────────────────
+with open(os.path.join(ctx, 'manifest.json'), 'w') as f:
+    json.dump({'sources': sources, 'errors': errors}, f, indent=1)
+if errors:
+    print(json.dumps({'context_note': '', 'sources': sources, 'errors': ' | '.join(errors)}))
+    raise SystemExit(1)
+note = '' if sources == 0 else 'Product context materialized at ' + ctx + ' — ' + '; '.join(notes) + '.'
+print(json.dumps({'context_note': note, 'sources': sources, 'errors': ''}))
+"`
+  output: context_ingest_output
+
+## context_gate — the entry gate that keeps context_ingest a true opt-in
+## (mr_gate verbatim shape): at least one source configured →
+## materialize; none → skip straight to scan_hints and existing runs
+## never execute the node. No LLM, no shell.
+compute context_gate:
+  output: context_gate_state
+  expr:
+    has_context: "!!(vars.context_git || vars.context_jira_base)"
+
 tool scan_hints:
   command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
 import os, json, glob, re, subprocess
@@ -1011,16 +1271,17 @@ print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, '
 "`
   output: hints_output
 
-## campaign — the one adaptive agent. claude_code with the full native
-## toolset so it works exactly like a native session: survey docs +
-## code (the advisory report is a starting point, never the scope),
-## verify in the code, fix or write the doc, commit each aligned doc
-## in stride. session: fresh — a fresh pass re-derives its todo from a
-## fresh advisory report + `git log` (git is the durable state). Board
+## campaign — the one adaptive agent. Backend is per-run selectable via
+## `llm_backend` (default claude_code: the full native toolset so it
+## works exactly like a native session — survey docs + code (the
+## advisory report is a starting point, never the scope), verify in the
+## code, fix or write the doc, commit each aligned doc in stride).
+## session: fresh — a fresh pass re-derives its todo from a fresh
+## advisory report + `git log` (git is the durable state). Board
 ## capabilities power the findings handoff (code bugs found while
 ## verifying claims → inbox).
 agent campaign:
-  backend: "claude_code"
+  backend: "{{vars.llm_backend}}"
   model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
   ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
   ## tool + the orchestration prerogative — so it can fan out its own
@@ -1207,7 +1468,7 @@ if u:
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow docs_refresh:
-  entry: scan_hints
+  entry: context_gate
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/ —
   ## the campaign commits doc alignments in stride; the worktree +
@@ -1240,6 +1501,14 @@ workflow docs_refresh:
     threshold: 0.9
     preserve_recent: 8
 
+  ## Entry: optional product context materialized ONCE before the loop
+  ## (the continuation loop back-edge re-enters scan_hints, never
+  ## context_ingest); with no source configured the gate branches
+  ## straight to scan_hints and the run is unchanged.
+  context_gate -> context_ingest when has_context
+  context_gate -> scan_hints when not has_context
+  context_ingest -> scan_hints
+
   ## Each pass: the fresh advisory report is handed to the campaign as
   ## HELP (+ the previous gate's feedback — empty on pass 1,
   ## outputs.gate resolves nil-safe before the gate has run). A repo
@@ -1254,7 +1523,8 @@ workflow docs_refresh:
     incremental_base: "{{outputs.scan_hints.incremental_base}}",
     pr_url: "{{vars.pr_url}}",
     recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}",
-    fail_log: "{{outputs.gate.fail_log}}"
+    fail_log: "{{outputs.gate.fail_log}}",
+    context_note: "{{outputs.context_ingest.context_note}}"
   }
 
   ## Deterministic TRUTH gate after every campaign pass: writeable-set
