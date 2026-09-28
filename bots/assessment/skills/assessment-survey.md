@@ -78,6 +78,22 @@ stack you know well is `false` when no skill ships for it.
 | `tests` | what holds tests — a subtree, or a file | `path` is a file OR a directory in the tree |
 | `entrypoint` | the ways in that one artefact exposes — HTTP routes, CLI commands, scheduled jobs, queue consumers | `path` exists; `pattern` matches when given; `count` says HOW MANY |
 
+**The rules the lint re-verifies, and the shapes it demands — read before
+declaring anything, because a refused declaration stops the run:**
+
+- A `pattern`-bearing declaration names a **FILE**: the lint compiles the
+  pattern and counts its matches inside that one file (`count` must equal
+  the matches, so the published figure re-derives from the evidence). A
+  directory as `path` is refused — survey the files that carry the routes
+  and declare one declaration per file.
+- An `identity` is lower-case words joined by dashes (`geo-api-gouv-fr`):
+  it is the key two declarations are compared on, so dots and host
+  spellings are refused — name the SERVICE, not its host.
+- A `count` is never a guess: it is the pattern's match count over the
+  file, or the figure the extractor emitted. The evidence is what a
+  reader can re-derive; anything else publishes a number nobody can
+  audit.
+
 **Every top-level entry of the tree must be claimed** by a `first_party`,
 `excluded` or `tests` declaration whose `path` IS that entry — files at the
 repository root included. Only those three kinds partition, and only at the top
