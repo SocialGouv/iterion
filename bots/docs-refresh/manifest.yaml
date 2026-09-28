@@ -7,14 +7,14 @@ version: 3.6.0
 ## cloned target repo + scope_notes; enrichment grounding (a product
 ## reference-PDF repo, a tracker board) had to be paraphrased by hand
 ## into the notes. Two opt-in channels: `context_git` (comma-separated
-## https URLs, shallow-cloned into ${scratch_dir}/context/<slug>/ —
+## https URLs, shallow-cloned into ${scratch_dir}/context-<run id>/<slug>/ —
 ## auth via the mounted forge_token through a GIT_ASKPASS shim, never
 ## argv, never a prompt; PDFs are pre-extracted to .txt sidecars with
 ## poppler from the bundle's new devbox.json so ANY backend can read
 ## them through bash) and the Jira quartet (`context_jira_base/project/
 ## board/user` + a NEW optional file secret `tracker_token`, same name
 ## and shape review-pr binds; Jira Cloud Basic auth, ADF descriptions
-## flattened) rendered to context/jira/board-<id>.md. A new entry gate
+## flattened) rendered to context-<run id>/jira/board-<id>.md. A new entry gate
 ## (`context_gate`, the mr_gate pattern) runs `context_ingest` ONLY
 ## when a source is configured — both empty means the node never
 ## executes and the run is unchanged. A requested source that fails

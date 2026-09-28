@@ -247,7 +247,7 @@ vars:
   context_git: string = ""
   ## Jira Cloud board snapshot. `context_jira_base` non-empty arms the
   ## channel: the board's issues are fetched once and rendered to
-  ## `context/jira/board-<board>.md` (key, type, status, summary,
+  ## `context-<run id>/jira/board-<board>.md` (key, type, status, summary,
   ## description truncated). Auth = Basic `context_jira_user` +
   ## the `tracker_token` file secret (same name and shape review-pr
   ## binds; Jira Cloud API token). A configured source that fails
