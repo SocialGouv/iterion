@@ -372,10 +372,19 @@ func (e *editor) addTrail(l parser.CodeLine, text string) {
 	}
 	// The statement's last TOKEN line, never its extent: a `prompt`
 	// header reaches to the end of its body, and a comment written there
-	// would be body text.
+	// would be body text. A block scalar's statement reaches the end of
+	// its body the same way (TokenEnd spans it): written there the comment
+	// would become VALUE text, and on the opener line it is no comment at
+	// all — the lexer skips what follows a `|` (#1612). It goes BELOW the
+	// body, at the property's indent, where the next read carries it on
+	// the same declaration.
 	at := l.TokenEnd
 	if at < l.Line {
 		at = l.End
+	}
+	if e.blockBody[at] {
+		e.addAfter(at, indentOf(l.Col), text, false)
+		return
 	}
 	if _, taken := e.trail[at]; taken {
 		e.addAfter(at, indentOf(l.Col), text, false)
@@ -422,12 +431,14 @@ func (e *editor) render() string {
 }
 
 // appendTailComments puts the file's tail comments after its last line of
-// text, keeping the single trailing newline the writer ends on. When that
-// last line is a block scalar's body the separating blank is skipped: the
-// next read would absorb it into the value.
+// text, keeping the single trailing newline the writer ends on. A blank
+// line that IS a block scalar's body line (blockBody) is the value's own
+// trailing newline, not the writer's: it is never trimmed, and when the
+// text ends on a body line the separating blank is skipped — the next read
+// would absorb it into the value.
 func appendTailComments(lines, tail []string, blockBody map[int]bool) []string {
 	last := len(lines)
-	for last > 0 && strings.TrimSpace(lines[last-1]) == "" {
+	for last > 0 && strings.TrimSpace(lines[last-1]) == "" && !blockBody[last] {
 		last--
 	}
 	out := make([]string, 0, len(lines)+len(tail)+1)

@@ -50,6 +50,11 @@ func TestMultiLineFormsDivideAndFoldAllOrNothing(t *testing.T) {
 		{"a blank first line", "raw", "\necho a\n"},
 		{"a whitespace-only line", "raw", "echo a\n  \necho b\n"},
 		{"a line de-denting below the first", "raw", "  deep\nless\n"},
+		// The reader's strip prefix is the first content line's TOTAL
+		// indent: a first line with its own leading spaces would read EVERY
+		// line back de-dented — `"  a\n  b\n"` came back `"a\nb\n"` before
+		// the first-line-indent check.
+		{"a first line with its own indent", "raw", "  a\n  b\n"},
 		{"a backtick and no trailing newline", "folds", "echo `a`\necho b"},
 		{"a carriage return", "folds", "echo a\r\necho b\n"},
 	}
@@ -164,8 +169,10 @@ func TestAGroupMemberKeepsItsScriptOverLines(t *testing.T) {
 // value on the next parse.
 func TestABlockScalarAtFileEndKeepsItsTailComment(t *testing.T) {
 	f := &ast.File{
-		Comments: []*ast.Comment{{Text: "the file's tail", Place: ast.CommentAtEnd}},
-		Tools:    []*ast.ToolNodeDecl{{Name: "t", Command: "echo a\necho b\n"}},
+		Profile:   2,
+		Comments:  []*ast.Comment{{Text: "the file's tail", Place: ast.CommentAtEnd}},
+		Tools:     []*ast.ToolNodeDecl{{Name: "t", Command: "echo a\necho b\n"}},
+		Workflows: []*ast.WorkflowDecl{{Name: "w", Entry: "t", Edges: []*ast.Edge{{From: "t", To: "done"}}}},
 	}
 	text := unparse.Unparse(f)
 	if err := unparse.Verify(f, text); err != nil {
@@ -180,6 +187,50 @@ func TestABlockScalarAtFileEndKeepsItsTailComment(t *testing.T) {
 	}
 	if again := unparse.Unparse(pr.File); again != text {
 		t.Fatalf("not a fixed point:\n%s\n---\n%s", text, again)
+	}
+
+	// A value whose OWN trailing blank line ends the text: the tail pass
+	// must not trim it as the writer's trailing newline — that read the
+	// value back one newline short ("echo a\n\n" became "echo a\n").
+	f.Tools[0].Command = "echo a\n\n"
+	text = unparse.Unparse(f)
+	if err := unparse.Verify(f, text); err != nil {
+		t.Fatalf("Verify with a trailing blank body line: %v\n%s", err, text)
+	}
+	pr = parser.Parse("t.bot", text)
+	if got := pr.File.Tools[0].Command; got != "echo a\n\n" {
+		t.Fatalf("the body's own trailing blank was trimmed: %q\n%s", got, text)
+	}
+	if !strings.Contains(text, "## the file's tail") {
+		t.Fatalf("the tail comment is gone:\n%s", text)
+	}
+}
+
+// The same hole on a field the compiled program does not carry (a
+// sandbox's env entry is text, not IR): before the first-line-indent check
+// it corrupted in SILENCE — no Verify refusal — because the document mirror
+// is only compared when nothing compiles.
+func TestAFirstLineIndentIsNoBlockScalarOnSandboxFields(t *testing.T) {
+	v := "  a\n  b\n"
+	f := &ast.File{
+		Profile: 2,
+		Tools: []*ast.ToolNodeDecl{{Name: "t", Command: "echo ok\n",
+			Sandbox: &ast.SandboxBlock{Mode: "inline", Image: "img", Env: map[string]string{"SETUP": v}}}},
+		Workflows: []*ast.WorkflowDecl{{Name: "w", Entry: "t", Edges: []*ast.Edge{{From: "t", To: "done"}}}},
+	}
+	text := unparse.Unparse(f)
+	if strings.Contains(text, "SETUP: |") {
+		t.Fatalf("a first line with its own indent took the block scalar form:\n%s", text)
+	}
+	pr := parser.Parse("t.bot", text)
+	if parseErrsOf(pr) != "" {
+		t.Fatalf("does not parse back: %s\n%s", parseErrsOf(pr), text)
+	}
+	if got := pr.File.Tools[0].Sandbox.Env["SETUP"]; got != v {
+		t.Fatalf("the env value came back as %q, want %q\n%s", got, v, text)
+	}
+	if err := unparse.Verify(f, text); err != nil {
+		t.Fatalf("Verify: %v\n%s", err, text)
 	}
 }
 
@@ -215,6 +266,38 @@ func TestProfile1WritesABlockScalarForAValueTheRawStringCannotHold(t *testing.T)
 	}
 	if err := unparse.Verify(f, text); err != nil {
 		t.Fatalf("Verify: %v\n%s", err, text)
+	}
+}
+
+// A trailing comment anchored at a block-scalar property — the transport's
+// form of `command: | ## note` — goes BELOW the body: written at the
+// statement's extent it would land on the body's last line and become value
+// text, and on the opener line it is no comment at all (the lexer skips
+// what follows a `|`). Below the body the next read carries it on the same
+// declaration — kept, never a refusal: there is a form that keeps both.
+func TestATrailingCommentOnABlockScalarGoesOnTheOpenerLine(t *testing.T) {
+	f := &ast.File{
+		Profile: 2,
+		Tools: []*ast.ToolNodeDecl{{
+			Name:     "t",
+			Command:  "echo a\necho b\n",
+			Comments: []*ast.Comment{{Text: "about the command", Place: ast.CommentTrailing, Anchor: "command"}},
+		}},
+		Workflows: []*ast.WorkflowDecl{{Name: "w", Entry: "t", Edges: []*ast.Edge{{From: "t", To: "done"}}}},
+	}
+	text := unparse.Unparse(f)
+	if !strings.Contains(text, "    echo b\n  ## about the command\n") {
+		t.Fatalf("the trailing comment is not below the body:\n%s", text)
+	}
+	if err := unparse.Verify(f, text); err != nil {
+		t.Fatalf("Verify: %v\n%s", err, text)
+	}
+	pr := parser.Parse("t.bot", text)
+	if got := pr.File.Tools[0].Command; got != "echo a\necho b\n" {
+		t.Fatalf("the comment became value text: %q\n%s", got, text)
+	}
+	if again := unparse.Unparse(pr.File); again != text {
+		t.Fatalf("not a fixed point:\n%s\n---\n%s", text, again)
 	}
 }
 

@@ -294,15 +294,17 @@ func (b *buf) str(v string) string {
 
 // blockScalarable reports whether the `key: |` block scalar reads back as
 // exactly v (parser.scanBlockScalar): the reader strips the indent the
-// first content line sets and closes every line with one newline, so v
-// must hold a newline (else the quoted form is the form), end with one,
-// hold no carriage return (the lexer folds CRLF before anything is read),
-// open with content (blank lines before the first content line are
-// dropped), hold no whitespace-only line (one reads as a blank line — its
-// spaces are lost), and never de-dent: the first line's leading spaces set
-// the strip prefix, so no later content line may open with fewer. A value
-// that fails this and holds a newline is the fold #1612 refuses by name
-// (canon.ErrRefused).
+// first content line sets — the TOTAL leading spaces of that line as
+// written, the writer's indent plus the value's own — and closes every
+// line with one newline, so v must hold a newline (else the quoted form is
+// the form), end with one, hold no carriage return (the lexer folds CRLF
+// before anything is read), open with content (blank lines before the
+// first content line are dropped) at column 0 (a first line with its own
+// leading spaces would pull the strip prefix past the writer's indent and
+// read EVERY line back de-dented), and hold no whitespace-only line (one
+// reads as a blank line — its spaces are lost). A value that fails this
+// and holds a newline takes the raw string, or — when that cannot hold it
+// either — is the fold #1612 refuses by name (canon.ErrRefused).
 func blockScalarable(v string) bool {
 	if !strings.Contains(v, "\n") || !strings.HasSuffix(v, "\n") ||
 		strings.HasPrefix(v, "\n") || strings.ContainsRune(v, '\r') {
@@ -312,15 +314,11 @@ func blockScalarable(v string) bool {
 	if strings.Trim(lines[0], " \t") == "" {
 		return false // a first line of only spaces reads as a dropped blank line
 	}
-	base := leadingSpaces(lines[0])
+	if leadingSpaces(lines[0]) != 0 {
+		return false // the reader's strip prefix is the first line's TOTAL indent
+	}
 	for _, line := range lines[1 : len(lines)-1] {
-		if line == "" {
-			continue
-		}
-		if strings.Trim(line, " \t") == "" {
-			return false
-		}
-		if leadingSpaces(line) < base {
+		if line != "" && strings.Trim(line, " \t") == "" {
 			return false
 		}
 	}
