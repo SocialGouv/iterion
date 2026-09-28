@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.207.0](https://github.com/SocialGouv/iterion/compare/v3.206.0...v3.207.0) (2026-09-28)
+
+### Features
+
+* **backends:** claw read_file extracts PDFs instead of returning mangled bytes ([#1913](https://github.com/SocialGouv/iterion/issues/1913)) ([fa9bc6d](https://github.com/SocialGouv/iterion/commit/fa9bc6db9dbbe0bedfe76a6733e46e3a5d94d1b2)), references [claw-code-go#11](https://github.com/claw-code-go/issues/11) [claw#11](https://github.com/claw/issues/11)
+
+    <details><summary>why</summary>
+
+    A .pdf in the workspace reached the text-lines windowing as binary and came back mangled — on the one backend whose read tool has no native PDF path. When the file carries the %PDF magic, extract its text (claw-code-go's BT/ET scraper, newly exported as ExtractPDFText — pin bumped in the parent commit) and window THE TEXT with the same chunk semantics as a regular file: line retention, byte cap, continuation marker. A .pdf-named file without the magic reads as text (misnamed export); the 64 MiB…
+
+    </details>
+
 ## [3.206.0](https://github.com/SocialGouv/iterion/compare/v3.205.3...v3.206.0) (2026-09-28)
 
 ### Features
