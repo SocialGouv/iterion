@@ -603,6 +603,19 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if len(spec.Vars) > 0 {
 		v := make(map[string]any, len(spec.Vars))
 		for k, val := range spec.Vars {
+			// resolveVars' rule: a launch value naming no var of the
+			// workflow never enters the run's vars — the launch surfaces
+			// refuse unknown keys (ir.UnknownInputNames), and the explicit
+			// --allow-unknown-inputs opt-out carries them as run INPUTS for
+			// subbot {{input.*}} forwarding, not as vars. Seeding them here
+			// anyway leaked them past resolveVars' drop into the executor's
+			// vars, where dispatch resolved a {{vars.zz}} the launch-time
+			// fallback screen — reading declared vars only — took no
+			// opinion on: the screen refused nothing and dispatch took the
+			// crossing.
+			if _, declared := spec.Workflow.Vars[k]; !declared {
+				continue
+			}
 			v[k] = val
 		}
 		executor.SetVars(v)
