@@ -226,3 +226,112 @@ func TestWorkspaceReadFileRejectsOversizedSparseFile(t *testing.T) {
 		}
 	}
 }
+
+// writeSimplePDF writes a minimal VALID one-page PDF (proper /Length,
+// xref and startxref — the BT/ET scraper is stricter than poppler)
+// whose single content stream is contentStream, into dir.
+func writeSimplePDF(t *testing.T, dir, name, contentStream string) string {
+	t.Helper()
+
+	p := filepath.Join(dir, name)
+	var pdf strings.Builder
+	pdf.WriteString("%PDF-1.4\n")
+	obj1 := pdf.Len()
+	pdf.WriteString("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+	obj2 := pdf.Len()
+	pdf.WriteString("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+	obj3 := pdf.Len()
+	pdf.WriteString("3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n")
+	obj4 := pdf.Len()
+	pdf.WriteString(fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(contentStream), contentStream))
+	xref := pdf.Len()
+	pdf.WriteString("xref\n0 5\n0000000000 65535 f \n")
+	for _, off := range []int{obj1, obj2, obj3, obj4} {
+		pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", off))
+	}
+	pdf.WriteString("trailer\n<< /Size 5 /Root 1 0 R >>\n")
+	pdf.WriteString(fmt.Sprintf("startxref\n%d\n%%%%EOF\n", xref))
+
+	if err := os.WriteFile(p, []byte(pdf.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestWorkspaceReadFile_ExtractsAPdfInsteadOfReturningMangledBytes(t *testing.T) {
+	workspace := t.TempDir()
+	writeSimplePDF(t, workspace, "spec.pdf", "BT\n/F1 12 Tf\n(reference spec text for the reader) Tj\nET")
+
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "spec.pdf"}, workspace)
+	if err != nil {
+		t.Fatalf("read_file on a workspace pdf: %v", err)
+	}
+	if !strings.Contains(out, "reference spec text for the reader") {
+		t.Fatalf("read_file did not return the extracted text: %q", out)
+	}
+	if strings.Contains(out, "%PDF") || strings.Contains(out, "endobj") {
+		t.Fatalf("read_file leaked raw PDF structure: %q", out)
+	}
+}
+
+func TestWorkspaceReadFile_PdfTextWindowsAndPaginates(t *testing.T) {
+	workspace := t.TempDir()
+	// The scraper reads operators line-oriented (a real poppler/Word
+	// export puts BT/Tj/ET on their own lines) and joins Tj with spaces —
+	// only the ' / " show operators emit newlines. The fixture uses them
+	// so the extraction is three lines.
+	writeSimplePDF(t, workspace, "lines.pdf", "BT\n/F1 12 Tf\n(first line) Tj\n(second line) '\n(third line) '\nET")
+
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2)}, workspace)
+	if err != nil {
+		t.Fatalf("read_file start_line=2 on a pdf: %v", err)
+	}
+	if !strings.Contains(out, "second line") || !strings.Contains(out, "third line") {
+		t.Fatalf("window from line 2 missing later lines: %q", out)
+	}
+	if strings.Contains(out, "first line") {
+		t.Fatalf("window from line 2 leaked line 1: %q", out)
+	}
+	if strings.Contains(out, "read_file partial") {
+		t.Fatalf("lines 2-3 of 3 is the whole window — no continuation marker expected: %q", out)
+	}
+
+	// A bounded window IS partial: the marker must name the next line.
+	out, err = executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2), "line_count": float64(1)}, workspace)
+	if err != nil {
+		t.Fatalf("read_file line_count=1 on a pdf: %v", err)
+	}
+	if !strings.Contains(out, "second line") || strings.Contains(out, "third line") {
+		t.Fatalf("line_count=1 window wrong: %q", out)
+	}
+	if !strings.Contains(out, "read_file partial") || !strings.Contains(out, "start_line 3") {
+		t.Fatalf("a partial extraction must print the continuation marker naming the next line: %q", out)
+	}
+}
+
+func TestWorkspaceReadFile_MisnamedTextPdfReadsAsText(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "notes.pdf"), []byte("plain notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "notes.pdf"}, workspace)
+	if err != nil {
+		t.Fatalf("read_file on a misnamed text file: %v", err)
+	}
+	if out != "plain notes\n" {
+		t.Fatalf("read_file output = %q, want the text body", out)
+	}
+}
+
+func TestWorkspaceReadFile_TextlessPdfReadsEmpty(t *testing.T) {
+	workspace := t.TempDir()
+	writeSimplePDF(t, workspace, "blank.pdf", "")
+
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "blank.pdf"}, workspace)
+	if err != nil {
+		t.Fatalf("read_file on a text-less pdf: %v", err)
+	}
+	if out != "" {
+		t.Fatalf("read_file output = %q, want empty for a text-less pdf", out)
+	}
+}

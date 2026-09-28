@@ -27,6 +27,7 @@ const workspaceReadMaxFileBytes = 64 * 1024 * 1024
 func workspaceReadFileTool() api.Tool {
 	t := clawtools.ReadFileTool()
 	t.Description = "Read a file inside the active workspace. Credential files and internal run stores are excluded. " +
+		"PDF files (.pdf) are returned as their extracted text (BT/ET content streams); a text-less PDF reads empty. " +
 		"Large files are returned in explicit line chunks; " +
 		"when the result is partial, call it again with the next start_line printed in the marker."
 	t.InputSchema.Properties["start_line"] = api.Property{
@@ -88,9 +89,30 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 
-	lines, total, err := workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
-	if err != nil {
-		return "", fmt.Errorf("read_file: %w", err)
+	// A PDF is binary: text-lines windowing would return mangled bytes.
+	// When the file really is one (magic — a misnamed text file reads as
+	// text), extract its text and window THE TEXT with the same chunk
+	// semantics. Parity with the claude_code backend, whose Read tool
+	// opens PDFs natively (docs/backends.md, the claw ↔ claude_code
+	// doctrine).
+	var lines []string
+	var total int
+	if strings.EqualFold(filepath.Ext(path), ".pdf") && hasPDFMagic(path) {
+		if info, statErr := os.Stat(path); statErr != nil {
+			return "", fmt.Errorf("read_file: %w", statErr)
+		} else if info.Size() > workspaceReadMaxFileBytes {
+			return "", fmt.Errorf("read_file: %q is %d bytes, past the %d-byte read ceiling; search it with grep instead", filepath.Base(path), info.Size(), workspaceReadMaxFileBytes)
+		}
+		text, extractErr := clawtools.ExtractPDFText(path)
+		if extractErr != nil {
+			return "", fmt.Errorf("read_file: pdf extraction failed: %w", extractErr)
+		}
+		lines, total = textWindowLines(text, start, workspaceReadMaxBytes)
+	} else {
+		lines, total, err = workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+		if err != nil {
+			return "", fmt.Errorf("read_file: %w", err)
+		}
 	}
 	if total == 0 {
 		return "", nil
@@ -132,6 +154,48 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 			start, end, total, reason, rawPath, end+1)
 	}
 	return out.String(), nil
+}
+
+// hasPDFMagic reports whether the file starts with the %PDF- signature.
+// A .pdf-suffixed file without it (misnamed export) is not a PDF and
+// reads as text.
+func hasPDFMagic(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [5]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return string(magic[:]) == "%PDF-"
+}
+
+// textWindowLines returns the newline-kept lines of extracted PDF text
+// from `start` on — the same contract workspaceFileWindow returns for a
+// regular file: at most maxBytes+1 bytes retained overall, plus the
+// total line count. (The text is the extraction of a file already under
+// the read ceiling, so materializing the slice is proportionate.)
+func textWindowLines(text string, start, maxBytes int) ([]string, int) {
+	all := strings.SplitAfter(text, "\n")
+	if n := len(all); n > 0 && all[n-1] == "" {
+		all = all[:n-1]
+	}
+	total := len(all)
+	var window []string
+	retained := 0
+	for i, line := range all {
+		if i+1 < start {
+			continue
+		}
+		if retained > maxBytes {
+			break
+		}
+		window = append(window, line)
+		retained += len(line)
+	}
+	return window, total
 }
 
 // workspaceFileWindow streams path once and returns the lines from `start`
