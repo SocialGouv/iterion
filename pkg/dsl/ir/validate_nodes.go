@@ -771,9 +771,10 @@ func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
 // and the CLAUDE_CODE_EFFORT_LEVEL env var (code.claude.com/docs/en/model-config).
 // Per-model availability is curated upstream in claw-code-go's ModelEntry; this
 // set is the union across all models — "none" (no reasoning at all) is only
-// honoured by the models whose matrix carries it (GPT-6 Sol/Luna today);
-// every other route coerces it to its lowest real level (see
-// model.coerceEffort and the CLI adapter mappings).
+// honoured by the models whose matrix carries it (GPT-6 Sol/Luna today). Per
+// route when the model lacks it: claw and claude_code clamp to the lowest
+// real level (see model.coerceEffort and the claudeCodeEffort mapping), pi
+// spells it off, codex's CLI refuses it, opencode passes it through.
 var ValidReasoningEfforts = map[string]bool{
 	"none":   true,
 	"low":    true,

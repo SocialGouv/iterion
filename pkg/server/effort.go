@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -33,9 +34,25 @@ type effortCapabilitiesResponse struct {
 }
 
 // codexEffortFallback is the static list emitted when the Codex CLI is
-// unavailable. Mirrors the codex SDK's Effort constants a workflow can name
-// (none/low/medium/high/max — the SDK's "minimal" has no iterion spelling).
-var codexEffortFallback = []string{"none", "low", "medium", "high", "max"}
+// unavailable. Mirrors the codex SDK's Effort constants every codex model
+// accepts (low/medium/high/max — the SDK's "minimal" has no iterion
+// spelling). "none" is NOT in this list: only known none-carriers get it,
+// see codexEffortFallbackFor.
+var codexEffortFallback = []string{"low", "medium", "high", "max"}
+
+// codexEffortFallbackFor is codexEffortFallback plus "none" when the model
+// is a known none-carrier. The live list comes from the CLI's per-model
+// capabilities; the fallback path exists precisely because that CLI is
+// unreachable, so the per-model truth it carries is unavailable — and
+// offering none for every codex model would promise a level the CLI refuses
+// at run time. The claw registry (apikit) is the catalogue of record for
+// which models carry none.
+func codexEffortFallbackFor(model string) []string {
+	if supported, _ := apikit.EffortCapabilities(model); slices.Contains(supported, "none") {
+		return append([]string{"none"}, codexEffortFallback...)
+	}
+	return codexEffortFallback
+}
 
 // codexCacheTTL is how long a Codex ListModels response is reused before
 // re-querying the CLI. Codex doesn't change models mid-session in
@@ -70,7 +87,7 @@ func fetchCodexModels(ctx context.Context) ([]codexsdk.ModelInfo, error) {
 }
 
 // codexCapabilities resolves the effort matrix for a Codex model by name.
-// Falls back to codexEffortFallback when the CLI is unreachable or the
+// Falls back to codexEffortFallbackFor when the CLI is unreachable or the
 // model is not listed.
 func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesResponse, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -79,7 +96,7 @@ func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesRes
 	models, err := fetchCodexModels(queryCtx)
 	if err != nil {
 		return effortCapabilitiesResponse{
-			Supported: codexEffortFallback,
+			Supported: codexEffortFallbackFor(model),
 			Source:    "codex-fallback",
 		}, nil
 	}
@@ -102,7 +119,7 @@ func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesRes
 	// Model not in the live list — return fallback rather than empty so
 	// the studio still shows something sensible.
 	return effortCapabilitiesResponse{
-		Supported: codexEffortFallback,
+		Supported: codexEffortFallbackFor(model),
 		Source:    "codex-fallback",
 	}, nil
 }

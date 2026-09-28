@@ -131,14 +131,28 @@ func TestEffortCapabilities_GPT6SolLunaCarryNone(t *testing.T) {
 	)
 }
 
-// TestCodexEffortFallbackCarriesNone guards the static matrix emitted
-// when the Codex CLI is unreachable: it must mirror the SDK's Effort
-// constants a workflow can name, which now include none (GPT-6 Sol/Luna).
-func TestCodexEffortFallbackCarriesNone(t *testing.T) {
+// TestCodexEffortFallbackGatesNone pins the static matrix emitted when the
+// Codex CLI is unreachable: it mirrors the SDK's Effort constants every
+// codex model accepts, and offers none ONLY for the models the claw
+// registry (the catalogue of record) marks as none-carriers — promising it
+// for every codex model would sell a level the CLI refuses at run time.
+func TestCodexEffortFallbackGatesNone(t *testing.T) {
 	assertEffortLevels(t, codexEffortFallback,
-		[]string{"none", "low", "medium", "high", "max"}, // required
-		[]string{"ultracode", "xhigh"},                   // forbidden
+		[]string{"low", "medium", "high", "max"}, // required
+		[]string{"none", "ultracode", "xhigh"},   // forbidden
 	)
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna", "openai/gpt-6-sol"} {
+		assertEffortLevels(t, codexEffortFallbackFor(model),
+			[]string{"none", "low", "medium", "high", "max"}, // required
+			nil, // forbidden
+		)
+	}
+	for _, model := range []string{"gpt-6-astra", "gpt-5.5", "totally-unknown-model"} {
+		assertEffortLevels(t, codexEffortFallbackFor(model),
+			[]string{"low", "medium", "high", "max"}, // required
+			[]string{"none"},                         // forbidden
+		)
+	}
 }
 
 // TestEffortCapabilities_Pi proves the pi backend returns its static

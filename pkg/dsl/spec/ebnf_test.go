@@ -65,14 +65,7 @@ func loadProductions(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lines []string
-	for _, l := range strings.Split(string(raw), "\n") {
-		if i := strings.Index(l, "(*"); i >= 0 && strings.Contains(l, "*)") {
-			l = l[:i] + l[strings.Index(l, "*)")+2:]
-		}
-		lines = append(lines, l)
-	}
-	text := strings.Join(lines, "\n")
+	text := stripEBNFComments(string(raw))
 	out := map[string]string{}
 	locs := productionRe.FindAllStringSubmatchIndex(text, -1)
 	for i, loc := range locs {
@@ -90,6 +83,35 @@ func loadProductions(t *testing.T) map[string]string {
 		t.Fatalf("only %d productions read from the EBNF", len(out))
 	}
 	return out
+}
+
+// stripEBNFComments removes (* … *) comments, which may span lines. The
+// previous line-at-a-time stripper only fired when both delimiters shared a
+// line, so a multi-line comment survived intact — and its quoted words were
+// then read as production values, letting a dropped enum word hide behind a
+// comment from TestEBNFValueProductionsMatchTheRegistry. An unterminated
+// comment swallows the rest of the file; the <50-productions floor in
+// loadProductions turns that into a loud failure.
+func stripEBNFComments(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	depth := 0
+	for i := 0; i < len(text); i++ {
+		if i+1 < len(text) && text[i] == '(' && text[i+1] == '*' {
+			depth++
+			i++
+			continue
+		}
+		if depth > 0 {
+			if i+1 < len(text) && text[i] == '*' && text[i+1] == ')' {
+				depth--
+				i++
+			}
+			continue
+		}
+		b.WriteByte(text[i])
+	}
+	return b.String()
 }
 
 // alternatives splits a production body on its top-level `|`.
@@ -234,5 +256,33 @@ func TestEBNFValueProductionsMatchTheRegistry(t *testing.T) {
 				t.Errorf("%s.%s: an enum property with no EBNF value production mapped", k.Name, p.Name)
 			}
 		}
+	}
+}
+
+// TestStripEBNFComments proves the comment stripper cannot be used to hide
+// a value from the value-production guard: a word inside a comment — even
+// one spanning several lines — must never reach the production body. The
+// previous line-at-a-time stripper let exactly this bypass through.
+func TestStripEBNFComments(t *testing.T) {
+	in := "reasoning_effort = \"low\" | \"medium\"\n" +
+		"  (* \"none\" was dropped here\n" +
+		"     and this line closes it *)\n" +
+		"  | \"high\" ;\n"
+	got := stripEBNFComments(in)
+	if strings.Contains(got, "none") {
+		t.Errorf("multi-line comment survived stripping: %q", got)
+	}
+	if quoted := quotedWordRe.FindAllString(got, -1); strings.Join(quoted, ",") != `"low","medium","high"` {
+		t.Errorf("quoted words after stripping = %v, want only the real values", quoted)
+	}
+
+	// Single-line comments keep working, and text around them survives.
+	if got := stripEBNFComments(`a = "x" (* note *) | "y" ;`); strings.TrimSpace(got) != `a = "x"  | "y" ;` {
+		t.Errorf("single-line comment stripping broke the line: %q", got)
+	}
+	// An unterminated comment swallows the rest of the file rather than
+	// leaking its words into the guard.
+	if got := stripEBNFComments("a = \"x\" ;\n(* never closed \"ghost\""); strings.Contains(got, "ghost") {
+		t.Errorf("unterminated comment leaked its body: %q", got)
 	}
 }
