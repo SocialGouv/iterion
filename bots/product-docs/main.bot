@@ -3168,6 +3168,23 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
         for k, _v in parse_qsl(parts.query, keep_blank_values=True):
             if k not in observed:
                 refuse('PHANTOM_DOC', where + ':' + str(no), 'the parameter ' + k + ' of ' + path + ' is observed on NO corpus entry of that path -- a documented filter the net does not exercise')
+## THE OTHER DIRECTION: the declared routes must be CITED. The loop above
+## validates citations against the route table; nothing yet required the
+## table's own routes to appear in the documentation -- a declared route
+## cited by no page is a served screen no document describes, and the gate
+## would stay green over the hole. It runs ONCE, after every anchor line has
+## been read: a route first cited on page 12 must not be refused while the
+## gate is still reading page 3.
+for route in declared:
+    if not route_proves(route):
+        continue
+    covered = any(pattern_matches(route, path) for path in cited_paths)
+    if not covered:
+        refuse('ROUTE_UNDOCUMENTED', route, 'the declared route ' + route
+               + ' is cited by NO page of the documentation -- a route the'
+               ' application serves that no screen describes. Document the'
+               ' screen that serves it, or move it out of the declared'
+               ' route table with the reason named.')
 ## GAP -- every covered feature is DOCUMENTED by one block: a paragraph, a
 ## list item or a table row with ONE line citing its id AND one of its own
 ## inventory entries -- the documented screen is anchored on the reference
