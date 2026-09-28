@@ -36,13 +36,13 @@ func TestC160_VarMatchingNonString(t *testing.T) {
 	}
 }
 
-// TestC161_VarDefaultNotMatching: a default is checked on the literal text
+// TestC161_VarDefaultNotMatching: a LITERAL default is checked on the text
 // as written, exactly as C126 checks an enum default.
 //
-// The `${...}` case is the one that matters and it is deliberately an
-// ERROR, not a skip: a default NEVER reaches the launch gate (the gate
-// judges the operator's values), so a default excused here would be
-// checked on no path at all while its declaration reads as constrained.
+// A default carrying an env reference is no longer judged here at all
+// (#1610): `${...}` expands at run start, so the verbatim comparison was
+// a false error — the shape moved to C181/C182, pinned in
+// compile_var_default_test.go.
 func TestC161_VarDefaultNotMatching(t *testing.T) {
 	cases := []struct {
 		varsLine string
@@ -50,9 +50,9 @@ func TestC161_VarDefaultNotMatching(t *testing.T) {
 	}{
 		{`  agent: string [matching: "^[a-z]+$"] = "Code X"`, 1},
 		{`  agent: string [matching: "^[a-z]+$"] = "codex"`, 0},
-		{`  agent: string [matching: "^[a-z]+$"]`, 0}, // no default, nothing to check
-		{`  agent: string [matching: "^[a-z]+$"] = "${AGENT}"`, 1},
-		{`  agent: string [matching: "^[a-z]+$"] = 5`, 0}, // wrong type → C109
+		{`  agent: string [matching: "^[a-z]+$"]`, 0},              // no default, nothing to check
+		{`  agent: string [matching: "^[a-z]+$"] = "${AGENT}"`, 0}, // env reference → C181, not C161
+		{`  agent: string [matching: "^[a-z]+$"] = 5`, 0},          // wrong type → C109
 	}
 	for _, tc := range cases {
 		t.Run(tc.varsLine, func(t *testing.T) {
