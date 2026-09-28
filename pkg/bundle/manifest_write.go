@@ -87,6 +87,15 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: read manifest %s: %w", path, err)
 	}
 
+	// The icon is stored in its loader-normalized form: decodeManifest
+	// trims it on every read (manifest.go), so rendering the trimmed value
+	// is a fixed point where the padded one would read back as another
+	// string (round 2).
+	if patch.Icon != nil {
+		trimmed := strings.TrimSpace(*patch.Icon)
+		patch.Icon = &trimmed
+	}
+
 	var out []byte
 	if len(bytes.TrimSpace(body)) > 0 {
 		out, err = patchManifestText(body, patch)
@@ -204,8 +213,10 @@ func patchManifestText(body []byte, patch ManifestPatch) ([]byte, error) {
 	// from is not the value's — splicing there would rewrite the anchor's
 	// body as if it were the alias's. The pre-surgical writer silently
 	// unrolled them, which was no better; a loud refusal it is (round 1).
-	// A no-op patch (nothing to write) is still allowed through.
-	if (len(edits) > 0 || !manifestPatchEmpty(patch)) && treeHoldsAnchor(root) {
+	// The gate is the PATCH alone: a no-op patch has nothing to splice, and
+	// the schema_version guarantee is a pure append at the file's end,
+	// which touches no span and is anchor-safe by construction (round 2).
+	if !manifestPatchEmpty(patch) && treeHoldsAnchor(root) {
 		return nil, fmt.Errorf("the manifest holds YAML anchors or aliases: edit it by hand, the patch writer cannot follow them")
 	}
 
@@ -691,6 +702,15 @@ func manifestLiteralLines(key string, v string) ([]string, bool) {
 	}
 	if content < 0 {
 		return nil, false // no content line: the block reads back empty
+	}
+	if yamlIndent(body[content]) != 0 {
+		// The block's indentation is auto-detected from the first content
+		// line's TOTAL indent — the writer's plus the value's own: a first
+		// line with its own leading spaces reads every line back de-dented
+		// (the same hole the .bot writer had). The double-quoted form
+		// carries the value exactly, where the read-back gate would only
+		// refuse the save (#1349, round 2).
+		return nil, false
 	}
 	out := []string{key + ": " + indicator}
 	for _, l := range body {

@@ -333,6 +333,75 @@ schema_version: 1
 	}
 }
 
+// A first content line with its own leading spaces has no block form: the
+// block's indentation is auto-detected from that line's TOTAL indent, so
+// the value's own spaces would be eaten and the read-back gate would
+// refuse the whole save. The double-quoted form carries the value exactly.
+func TestWriteManifest_PaddedFirstLineFallsBackToQuotes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte(manifestWithComments), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{Description: ptr("  padded  \n")})
+	if err != nil {
+		t.Fatalf("WriteManifest must not refuse a value the quoted form carries: %v", err)
+	}
+	if m.Description != "  padded  \n" {
+		t.Errorf("Description=%q, want the value exact", m.Description)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "description: |") {
+		t.Errorf("a first-line-indented value took the block form\n---\n%s", raw)
+	}
+}
+
+// The anchor refusal gates on the patch alone: a no-op patch splices
+// nothing, and the schema_version guarantee is a pure append at the file's
+// end, anchor-safe by construction.
+func TestWriteManifest_NoOpPatchAppendsSchemaVersionPastAnchors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: testbot\ndescription: &d |\n  Anchored.\nauthor: me\nwhen_to_use: *d\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{})
+	if err != nil {
+		t.Fatalf("a no-op patch must not trip the anchor refusal: %v", err)
+	}
+	if m.SchemaVersion != CurrentManifestSchema {
+		t.Errorf("SchemaVersion=%d, want the guaranteed append", m.SchemaVersion)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	if !strings.Contains(got, "&d |") || !strings.Contains(got, "*d") {
+		t.Errorf("the anchors did not survive byte for byte\n---\n%s", got)
+	}
+}
+
+// The icon is stored in its loader-normalized form: decodeManifest trims
+// it on every read, so the padded patch is rendered trimmed — a fixed
+// point, where storing the padding reads back as another string.
+func TestWriteManifest_PaddedIconIsStoredTrimmed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte("name: testbot\nschema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{Icon: ptr(" 🧭 ")})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Icon != "🧭" {
+		t.Errorf("Icon=%q, want the loader-normalized form", m.Icon)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "icon: 🧭") {
+		t.Errorf("the stored icon keeps its padding\n---\n%s", raw)
+	}
+}
+
 // A manifest holding anchors or aliases cannot be text-patched (the tree
 // parse resolves them, so a span is not the value's): a patch is refused by
 // name and the file is untouched; a no-op patch still goes through.
