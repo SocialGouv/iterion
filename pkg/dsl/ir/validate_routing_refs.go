@@ -15,7 +15,10 @@ import (
 // or loop exists to read. An undeclared var is C033 like everywhere; every
 // other `{{…}}` span is C148 — a foreign namespace, a misspelt one
 // (`{{var.m}}`, `{{Vars.m}}`, `{{env.HOME}}`), a span with no path, a dotted
-// var path, the `{{!…}}` raw form, an opening with no close. The scan
+// var path, the `{{!…}}` raw form, an opening with no close. A span that
+// DOES resolve joins them when the var it names is declared `string[]` or
+// `json` (checkRoutingVarListType, #1605): a list var resolves to its JSON
+// spelling, a backend name nobody registered. The scan
 // mirrors the executor's resolver, which treats any `{{…}}` as a reference
 // and keeps what it cannot resolve as written: left alone, that text reached
 // the backend (an invalid spec on claw, a model literally named `{{var.m}}`
@@ -43,6 +46,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 				refs, err := ParseRefs(span)
 				if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 && !refs[0].Unquoted {
 					c.validateVarsRef(w, refContext{Ref: refs[0], NodeID: node.NodeID(), Location: loc})
+					c.checkRoutingVarListType(w, node.NodeID(), loc, rf.name, refs[0].Path[0])
 					continue
 				}
 				c.warnfAt(DiagRoutingFieldRef, node.NodeID(), "",
@@ -62,6 +66,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 		refs, err := ParseRefs(span)
 		if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 && !refs[0].Unquoted {
 			c.validateVarsRef(w, refContext{Ref: refs[0], Location: "workflow default_backend"})
+			c.checkRoutingVarListType(w, "", "workflow default_backend", "default_backend", refs[0].Path[0])
 			continue
 		}
 		c.warnf(DiagRoutingFieldRef,
@@ -82,6 +87,30 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 				sup.Name, sup.Model)
 		}
 	}
+}
+
+// checkRoutingVarListType completes the arm that accepts a declared vars
+// reference (#1605): the var's NAME resolves, but its declared TYPE can
+// still be unroutable. A routing field is a scalar by nature — its text
+// becomes a name at dispatch — and a `string[]`/`json` var resolves to
+// the list's JSON spelling (`["claw","claude_code"]`), which the backend
+// registry rejects only after the workspace and the sandbox have been
+// paid for. That is exactly the failure C148 exists to describe for the
+// other unresolvable shapes, so it is C148 too, and a warning for the
+// same reason the whole family is: the launch may still override the var
+// with a scalar — the compiler cannot know the VALUE, but it can know the
+// declared TYPE, and a list type is never a routable name.
+func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string) {
+	v := w.Vars[varName]
+	if v == nil {
+		return // C033 owns the undeclared name
+	}
+	if v.Type != VarStringArray && v.Type != VarJSON {
+		return
+	}
+	c.warnfAt(DiagRoutingFieldRef, nodeID, "",
+		"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list var resolves to its JSON spelling ([\"a\",\"b\"]), a name no backend, model or provider answers to; the node fails at its first delegation (declare the var `string`, or override it at launch with a scalar)",
+		loc, varName, v.Type, field)
 }
 
 // templateSpans returns every `{{…}}` span of s as written, the way the
