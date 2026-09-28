@@ -166,9 +166,12 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 // for the extraction to race against. isPDF=false (nil err) means "not
 // actually a PDF" — a misnamed text file, or a non-regular file — and
 // the caller reads it as text instead, with the regular path's own
-// semantics. maxDecompressed bounds what any FlateDecode stream may
-// inflate to: zlib holds ~1000:1, so a compressed bomb must error, not
-// allocate.
+// semantics. maxFile doubles as the extraction's INFLATION budget
+// (document-wide: any stream inflating past it, or the sum of streams
+// doing so, errors) — zlib holds ~1000:1, so a compressed bomb must
+// error, not allocate. Peak in-process memory is bounded at roughly
+// 3x maxFile (the bytes read + one inflated stream + the accumulated
+// text), all under the caller's own ceiling.
 func workspacePDFWindow(workspace, path string, start int, maxBytes, maxFile int64) (lines []string, total int, isPDF bool, err error) {
 	f, err := openWorkspaceFile(workspace, path)
 	if err != nil {
@@ -210,28 +213,31 @@ func workspacePDFWindow(workspace, path string, start int, maxBytes, maxFile int
 // at most maxBytes+1 bytes retained overall, at most maxBytes+1 bytes of
 // any single line (the scraper only breaks lines on ' / " show
 // operators, so one physical stream line can extract arbitrarily long).
-// The text is the extraction of a file already under the read ceiling,
-// so materializing the slice is proportionate.
+// The scan is index-based ON PURPOSE: strings.SplitAfter would
+// materialize a slice header + string header per line — on adversarial
+// newline-heavy text under the budget that alone reaches gigabytes of
+// headers in-process.
 func textWindowLines(text string, start, maxBytes int) ([]string, int) {
-	all := strings.SplitAfter(text, "\n")
-	if n := len(all); n > 0 && all[n-1] == "" {
-		all = all[:n-1]
-	}
-	total := len(all)
 	var window []string
-	retained := 0
-	for i, line := range all {
-		if i+1 < start {
-			continue
+	total, retained, pos := 0, 0, 0
+	for pos < len(text) {
+		end := strings.IndexByte(text[pos:], '\n')
+		var line string
+		if end < 0 {
+			line = text[pos:]
+			pos = len(text)
+		} else {
+			line = text[pos : pos+end+1]
+			pos += end + 1
 		}
-		if retained > maxBytes {
-			break
+		total++
+		if total >= start && retained <= maxBytes {
+			if len(line) > maxBytes+1 {
+				line = line[:maxBytes+1]
+			}
+			window = append(window, line)
+			retained += len(line)
 		}
-		if len(line) > maxBytes+1 {
-			line = line[:maxBytes+1]
-		}
-		window = append(window, line)
-		retained += len(line)
 	}
 	return window, total
 }
