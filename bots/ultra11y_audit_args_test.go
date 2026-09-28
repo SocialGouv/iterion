@@ -18,7 +18,7 @@ func TestUltra11yAuditArgsIsStringArray(t *testing.T) {
 		t.Fatalf("read ultra11y/main.bot: %v", err)
 	}
 	src := string(data)
-	if !strings.Contains(src, "audit_args:     string[]") && !strings.Contains(src, "audit_args:    string[]") {
+	if !strings.Contains(src, "audit_args: string[]") {
 		t.Fatal("ultra11y/main.bot: audit_args must be string[] on prepare_output / audit_input — a joined string is interpolated as one shell token and the engine reports 0 files")
 	}
 	if strings.Contains(src, `'audit_args': ' '.join(args)`) || strings.Contains(src, `"audit_args": " ".join(args)`) {

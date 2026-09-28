@@ -24,42 +24,33 @@ vars:
   ## the engine to the worktree (worktree: auto). Omit the override so it
   ## points at the clean, fully-mounted tree.
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## Output wiki tree, repo-relative. The agent writes ONLY here; the
   ## deterministic scope gate fails the run if anything outside it (or a
   ## declared pointer file) changed. Changing this from "wiki" also means
   ## adjusting any external tooling that expects the default location.
   wiki_dir: string = "wiki"
-
   ## OKF spec version stamped on the ROOT index.md.
   okf_version: string = "0.1"
-
   ## Code-survey scope. Empty = the whole workspace (the agent explores
   ## adaptively). A glob narrows the survey for a large monorepo.
   code_scope_globs: string = ""
-
   ## Dirs never surveyed or documented (build/vendor/VCS/tooling noise).
   excluded_dirs: string = ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out,.next,target,coverage"
-
   ## Operator focus / brief. Free-form; a HINT that shapes what the wiki
   ## emphasises, never a scope reduction. An explicit request (this or
   ## issue_id) disables the noop short-circuit.
   scope_notes: string = ""
-
   ## Dispatched tracker issue id. Empty outside dispatch. When set, the
   ## run transitions the ticket on finish AND never noop-skips.
   issue_id: string = ""
-
   ## The bot's own bundle path, auto-excluded from the survey so Wikky
   ## never documents itself into a target repo.
   bundle_self_path: string = ""
-
   ## Persistent, OUT-OF-TREE inter-run cache (git_head + per-page shas),
   ## keyed off the original repo root so it survives across runs. A
   ## repo-root dotfile would NOT survive under worktree: auto (the fresh
   ## worktree omits untracked files). Empty disables the noop gate.
   wiki_cache_path: string = "${PROJECT_SCRATCH_DIR}/wiki-gen-cache.json"
-
   ## Bounded continuation passes (validation feedback → author). Wiki
   ## generation converges fast; N loop-BACKS = N+1 total passes.
   max_passes: int = 3
@@ -260,6 +251,25 @@ schema update_cache_output:
 schema gate_state:
   converged: bool
   fail_log: string
+
+## ─── Agent + gate ────────────────────────────────────────────────
+
+## author — the one adaptive agent. claude_code with the full native
+## toolset so it works like a native session: survey the repo, plan, write
+## the OKF wiki pages grounded in source, commit each in stride. session:
+## fresh — a fresh pass re-derives its todo from the fresh scan + git log.
+## board caps power the code-bug findings handoff (documenting the code
+## surfaces real bugs → inbox, never fixed here).
+agent author:
+  model: "${ITERION_WIKI_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: author_input
+  output: author_output
+  system: author_system
+  user: author_user
+  capabilities: [board.read, board.create]
+  reasoning_effort: "${ITERION_WIKI_EFFORT_CLAUDE:-high}"
+  interaction: human
 
 ## ─── Tools ───────────────────────────────────────────────────────
 
@@ -617,7 +627,7 @@ print(json.dumps({'frontmatter_valid': frontmatter_valid, 'links_ok': links_ok, 
 ## (manual/scheduled). Routes through the dispatcher daemon HTTP API so
 ## its in-memory cache stays consistent.
 tool mark_issue_for_review:
-  command: `if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=$(printf '%s' "$ID" | sed 's/^native://'); curl -sf -X POST "http://127.0.0.1:4891/api/v1/issues/$ID_SHORT/move" -H 'Content-Type: application/json' -d '{"state":"review"}' >/dev/null 2>&1 && printf '{"text":"{\\"id\\":\\"%s\\",\\"state\\":\\"review\\"}"}' "$ID_SHORT" || printf '{"text":"{\\"skipped\\":\\"move failed or dispatcher down\\"}"}'; else printf '{"text":"{\\"skipped\\":\\"no issue_id\\"}"}'; fi`
+  command: "if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=$(printf '%s' \"$ID\" | sed 's/^native://'); curl -sf -X POST \"http://127.0.0.1:4891/api/v1/issues/$ID_SHORT/move\" -H 'Content-Type: application/json' -d '{\"state\":\"review\"}' >/dev/null 2>&1 && printf '{\"text\":\"{\\\\\"id\\\\\":\\\\\"%s\\\\\",\\\\\"state\\\\\":\\\\\"review\\\\\"}\"}' \"$ID_SHORT\" || printf '{\"text\":\"{\\\\\"skipped\\\\\":\\\\\"move failed or dispatcher down\\\\\"}\"}'; else printf '{\"text\":\"{\\\\\"skipped\\\\\":\\\\\"no issue_id\\\\\"}\"}'; fi"
   output: mark_issue_output
 
 ## update_cache — persist git_head + per-page shas so the NEXT run's
@@ -657,26 +667,6 @@ print(json.dumps({'cache_path': str(out), 'entries_written': len(pages), 'git_he
   input: update_cache_input
   output: update_cache_output
 
-## ─── Agent + gate ────────────────────────────────────────────────
-
-## author — the one adaptive agent. claude_code with the full native
-## toolset so it works like a native session: survey the repo, plan, write
-## the OKF wiki pages grounded in source, commit each in stride. session:
-## fresh — a fresh pass re-derives its todo from the fresh scan + git log.
-## board caps power the code-bug findings handoff (documenting the code
-## surfaces real bugs → inbox, never fixed here).
-agent author:
-  backend: "claude_code"
-  model: "${ITERION_WIKI_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_WIKI_EFFORT_CLAUDE:-high}"
-  input: author_input
-  output: author_output
-  system: author_system
-  user: author_user
-  session: fresh
-  interaction: human
-  capabilities: [board.read, board.create]
-
 ## gate — deterministic continuation decision (no LLM, no shell).
 ## converged = the agent reports complete AND the wiki validates
 ## (frontmatter + links) AND nothing was written outside the wiki tree.
@@ -689,12 +679,12 @@ compute gate:
 
 ## ─── Workflow ────────────────────────────────────────────────────
 workflow wiki_gen:
-  entry: scan_repo
-
   ## Isolated worktree: the author commits pages in stride; finalize FF
   ## keeps the operator's checkout untouched and lands the series on a
   ## persistent branch on convergence.
   worktree: auto
+
+  entry: scan_repo
 
   budget:
     max_parallel_branches: 1
@@ -709,6 +699,7 @@ workflow wiki_gen:
   ## explicit request → skip the whole run at zero LLM cost. Highest
   ## priority; the else fallback carries the normal generate/update path.
   scan_repo -> done when noop_skip
+
   scan_repo -> author else with {
     workspace_dir: "{{vars.workspace_dir}}",
     wiki_dir: "{{vars.wiki_dir}}",
@@ -718,7 +709,7 @@ workflow wiki_gen:
     changed_code_files: "{{outputs.scan_repo.changed_code_files}}",
     repo_top: "{{outputs.scan_repo.repo_top}}",
     scope_notes: "{{vars.scope_notes}}",
-    fail_log: ""
+    fail_log: "",
   }
 
   ## After every author pass: regenerate indexes deterministically, then
@@ -726,18 +717,21 @@ workflow wiki_gen:
   author -> gen_indexes with {
     workspace_dir: "{{vars.workspace_dir}}",
     wiki_dir: "{{vars.wiki_dir}}",
-    okf_version: "{{vars.okf_version}}"
+    okf_version: "{{vars.okf_version}}",
   }
+
   gen_indexes -> validate_wiki with {
     workspace_dir: "{{vars.workspace_dir}}",
     wiki_dir: "{{vars.wiki_dir}}",
-    base: "{{outputs.scan_repo.git_head}}"
+    base: "{{outputs.scan_repo.git_head}}",
   }
+
   validate_wiki -> gate
 
   ## Converged → transition the dispatcher issue (no-op without issue_id)
   ## and refresh the inter-run cache, then finish.
   gate -> mark_issue_for_review when converged
+
   ## Not converged → another author pass with the validator's feedback.
   gate -> author as continuation_loop("{{vars.max_passes}}") with {
     workspace_dir: "{{vars.workspace_dir}}",
@@ -748,8 +742,9 @@ workflow wiki_gen:
     changed_code_files: "{{outputs.scan_repo.changed_code_files}}",
     repo_top: "{{outputs.scan_repo.repo_top}}",
     scope_notes: "{{vars.scope_notes}}",
-    fail_log: "{{outputs.gate.fail_log}}"
+    fail_log: "{{outputs.gate.fail_log}}",
   }
+
   ## continuation_loop exhausted → finish anyway, shipping what is banked
   ## (every committed page is real work; validate_wiki.log tells the
   ## operator what still fails).
@@ -758,6 +753,7 @@ workflow wiki_gen:
   mark_issue_for_review -> update_cache with {
     workspace_dir: "{{vars.workspace_dir}}",
     wiki_dir: "{{vars.wiki_dir}}",
-    cache_path: "{{vars.wiki_cache_path}}"
+    cache_path: "{{vars.wiki_cache_path}}",
   }
+
   update_cache -> done

@@ -53,7 +53,7 @@ func (w *fileWriter) writeContracts(contracts []*ast.ContractDecl) {
 				fmt.Fprintf(&w.b, "    %s:\n", declName(&w.b, e.Name))
 				entry := w.b.Len()
 				if e.Description != "" {
-					fmt.Fprintf(&w.b, "      description: %s\n", w.b.str(e.Description))
+					writeStrProp(&w.b, "      ", "description", e.Description)
 				}
 				if e.Paid {
 					w.b.WriteString("      paid: true\n")
@@ -77,7 +77,7 @@ func (w *fileWriter) writeContractPorts(key string, ports []*ast.PortDecl) {
 	for _, p := range ports {
 		fmt.Fprintf(&w.b, "    %s: %s\n", declName(&w.b, p.Name), portTypeText(&w.b, p.Type))
 		if p.Description != "" {
-			fmt.Fprintf(&w.b, "      description: %s\n", w.b.str(p.Description))
+			writeStrProp(&w.b, "      ", "description", p.Description)
 		}
 		if p.Required != nil {
 			fmt.Fprintf(&w.b, "      required: %t\n", *p.Required)
@@ -101,7 +101,7 @@ func (w *fileWriter) writeContractPorts(key string, ports []*ast.PortDecl) {
 			w.b.WriteString("      file:\n")
 			mark := w.b.Len()
 			if p.FileSpec.MediaType != "" {
-				fmt.Fprintf(&w.b, "        media_type: %s\n", w.b.str(p.FileSpec.MediaType))
+				writeStrProp(&w.b, "        ", "media_type", p.FileSpec.MediaType)
 			}
 			if p.FileSpec.MinBytes != 0 {
 				fmt.Fprintf(&w.b, "        min_bytes: %d\n", p.FileSpec.MinBytes)

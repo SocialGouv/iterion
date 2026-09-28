@@ -31,7 +31,7 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-  oracle_dir:    string = ".golden-master"
+  oracle_dir: string = ".golden-master"
   ## Which lot requested the extensions — context for the work, never
   ## authority: the requests themselves are read from the ledger.
   lot_id: string = ""
@@ -42,11 +42,10 @@ vars:
   ## sets it, extend_verify checks it and restores the previous one): the
   ## parent's gate attributes every act to its author. Prose could set an
   ## author too — attribution, not the lock; the lock is `acted_commits`.
-  actor_name:  string = "golden-master extend"
+  actor_name: string = "golden-master extend"
   actor_email: string = "extend@golden-master.iterion"
 
 ## ─── Prompts ───────────────────────────────────────────────────────
-
 prompt extend_system:
   You extend a behavioural non-regression net by PURE ADDITION, acting
   requests its owner's ledger carries.
@@ -148,7 +147,6 @@ prompt extend_user:
   read was false. When you refuse everything, commit nothing at all.
 
 ## ─── Schemas ───────────────────────────────────────────────────────
-
 schema campaign_input:
   pending: string
   fail_log: string
@@ -222,6 +220,28 @@ schema extend_result:
   acted_ids: string
   acted_blobs: string
 
+schema verify_input:
+  head: string
+  pending: json
+  clean: bool
+  ## The agent's own one-line report, carried through so the verdict can
+  ## publish it as a string (see extend_result.notice).
+  agent_summary: string
+
+schema restore_report:
+  restored: bool
+  notice: string
+
+agent extend_campaign:
+  model: "${ITERION_GOLDEN_MASTER_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: campaign_input
+  output: campaign_output
+  system: extend_system
+  user: extend_user
+  skills: ["golden-master", "surface-discovery"]
+  reasoning_effort: "${ITERION_GOLDEN_MASTER_EFFORT:-high}"
+
 ## ─── Nodes ─────────────────────────────────────────────────────────
 
 ## extend_base — the commit this run starts from, and the requests to act.
@@ -232,8 +252,6 @@ schema extend_result:
 ## party that decides what is pending is the harness, and asking twice
 ## invites two answers.
 tool extend_base:
-  output: base_state
-  language: py
   script: |
     import json
     import os
@@ -464,16 +482,8 @@ tool extend_base:
                       "pending": pending, "notice": notice, "clean": clean,
                       "prev_name": prev_name, "prev_email": prev_email}))
 
-agent extend_campaign:
-  backend: "claude_code"
-  model: "${ITERION_GOLDEN_MASTER_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_GOLDEN_MASTER_EFFORT:-high}"
-  input: campaign_input
-  output: campaign_output
-  system: extend_system
-  user: extend_user
-  session: fresh
-  skills: ["golden-master", "surface-discovery"]
+  language: py
+  output: base_state
 
 ## extend_verify — the whole verdict, deterministic, in one node.
 ##
@@ -482,9 +492,6 @@ agent extend_campaign:
 ## did afterwards matters. Then the additions-only verdict, decided by the
 ## HARNESS's code — the same code that will refuse at the gate.
 tool extend_verify:
-  input: verify_input
-  output: verify_report
-  language: py
   script: |
     import json
     import os
@@ -743,45 +750,9 @@ tool extend_verify:
     report["log_tail"] = "\n".join(problems)[-6000:]
     print(json.dumps(report))
 
-schema verify_input:
-  head: string
-  pending: json
-  clean: bool
-  ## The agent's own one-line report, carried through so the verdict can
-  ## publish it as a string (see extend_result.notice).
-  agent_summary: string
-
-## A pure CONJUNCTION, never an aggregate. An extension that is additions-ok
-## but out of scope is not "mostly fine" — it is a lot writing in the judge's
-## territory through the net's own bot.
-## A pure conjunction, and a request still PENDING is a term of it: this bot
-## acts every request it was handed, so one it refused (with its reason
-## written) leaves the run not converged — the parent's gate keeps refusing
-## on the pending term either way, and this verdict must not read greener
-## than that gate will.
-## A start REFUSED before the agent leaves by its own door.
-##
-## `clean` is read once, in extend_base, and carried unchanged onto every
-## pass — so the conjunct it feeds is false forever and no pass can flip it.
-## Routing it through the campaign anyway paid a full claude_code run, then
-## `max_passes` more of them, to report a refusal node 1 already knew (review
-## finding, executed). Worse than the cost: extend_base says "the agent
-## receives no pending request", and the agent still got the workspace with
-## commit access — that half rested on the prompt line "act nothing and end",
-## which is prose.
-##
-## No identity was set on this path (extend_base only sets it when clean), so
-## there is nothing to restore either.
-compute extend_refused:
-  output: extend_result
-  publish: notice
-  expr:
-    converged: "false"
-    extended: "0"
-    notice: "'the extension was REFUSED before the agent ran. ' + outputs.extend_base.notice"
-    acted_commits: "''"
-    acted_ids: "''"
-    acted_blobs: "''"
+  language: py
+  input: verify_input
+  output: verify_report
 
 ## The identity comes back ONCE, on the way out — the only place both exits
 ## of the gate pass through. Its source is the marker extend_base wrote, not
@@ -789,8 +760,6 @@ compute extend_refused:
 ## reaches this node, and the next extend_base repairs from it), and reading
 ## it here makes the restore idempotent whatever path the run took.
 tool extend_restore:
-  output: restore_report
-  language: py
   script: |
     import json
     import os
@@ -856,9 +825,40 @@ tool extend_restore:
 
     print(json.dumps(report))
 
-schema restore_report:
-  restored: bool
-  notice: string
+  language: py
+  output: restore_report
+
+## A pure CONJUNCTION, never an aggregate. An extension that is additions-ok
+## but out of scope is not "mostly fine" — it is a lot writing in the judge's
+## territory through the net's own bot.
+## A pure conjunction, and a request still PENDING is a term of it: this bot
+## acts every request it was handed, so one it refused (with its reason
+## written) leaves the run not converged — the parent's gate keeps refusing
+## on the pending term either way, and this verdict must not read greener
+## than that gate will.
+## A start REFUSED before the agent leaves by its own door.
+##
+## `clean` is read once, in extend_base, and carried unchanged onto every
+## pass — so the conjunct it feeds is false forever and no pass can flip it.
+## Routing it through the campaign anyway paid a full claude_code run, then
+## `max_passes` more of them, to report a refusal node 1 already knew (review
+## finding, executed). Worse than the cost: extend_base says "the agent
+## receives no pending request", and the agent still got the workspace with
+## commit access — that half rested on the prompt line "act nothing and end",
+## which is prose.
+##
+## No identity was set on this path (extend_base only sets it when clean), so
+## there is nothing to restore either.
+compute extend_refused:
+  output: extend_result
+  publish: notice
+  expr:
+    converged: "false"
+    extended: "0"
+    notice: "'the extension was REFUSED before the agent ran. ' + outputs.extend_base.notice"
+    acted_commits: "''"
+    acted_ids: "''"
+    acted_blobs: "''"
 
 compute extend_gate:
   output: gate_state
@@ -897,11 +897,11 @@ compute extend_result:
     acted_blobs: "outputs.extend_verify.acted_blobs"
 
 workflow extend:
+
   entry: extend_base
 
   ## No `sandbox:` block (ADR-082): this runs inside the parent lot's
   ## workspace, on the toolchain the target repository declares for itself.
-
   budget:
     max_parallel_branches: 1
     max_duration: "1h"
@@ -911,15 +911,15 @@ workflow extend:
   extend_base -> extend_refused when not clean
 
   extend_base -> extend_campaign with {
-    pending:  "{{outputs.extend_base.pending}}",
-    fail_log: ""
+    pending: "{{outputs.extend_base.pending}}",
+    fail_log: "",
   }
 
   extend_campaign -> extend_verify with {
-    head:          "{{outputs.extend_base.head}}",
-    pending:       "{{outputs.extend_base.pending}}",
-    clean:         "{{outputs.extend_base.clean}}",
-    agent_summary: "{{outputs.extend_campaign.summary}}"
+    head: "{{outputs.extend_base.head}}",
+    pending: "{{outputs.extend_base.pending}}",
+    clean: "{{outputs.extend_base.clean}}",
+    agent_summary: "{{outputs.extend_campaign.summary}}",
   }
 
   extend_verify -> extend_gate
@@ -932,8 +932,8 @@ workflow extend:
   ## Refused → one more pass, carrying the deterministic refusal so the agent
   ## fixes the cause instead of re-deriving it.
   extend_gate -> extend_campaign as repair_loop("{{vars.max_passes}}") with {
-    pending:  "{{outputs.extend_base.pending}}",
-    fail_log: "{{outputs.extend_gate.fail_log}}"
+    pending: "{{outputs.extend_base.pending}}",
+    fail_log: "{{outputs.extend_gate.fail_log}}",
   }
 
   ## Loop exhausted → report the refusal rather than swallow it. The parent's
@@ -942,5 +942,7 @@ workflow extend:
   extend_gate -> extend_restore
 
   extend_restore -> extend_result
+
   extend_refused -> done
+
   extend_result -> done

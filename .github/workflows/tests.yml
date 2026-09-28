@@ -955,7 +955,8 @@ jobs:
     # It is GREEN today, and red only on something worth acting on: a
     # formattable bot that drifted, a file that newly cannot be formatted,
     # or a line in `.fmt-refused` that nothing refuses any more (the
-    # ratchet — #1612 landing must shrink that list). `task fmt:check` runs
+    # ratchet — the list stands empty since #1612 gave the writer its
+    # multi-line forms, and stays as the guard). `task fmt:check` runs
     # exactly this command.
     # The org's runners, like every other pure-Go job that stays in the
     # queue: a GitHub-hosted slot is one of the 20 the org shares, and this

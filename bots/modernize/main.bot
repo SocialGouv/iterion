@@ -74,11 +74,10 @@ secrets:
   ## none reports that, instead of passing in silence.
   deploy_credential:
     as: file
-    env: DEPLOY_CREDENTIAL
+    env: "DEPLOY_CREDENTIAL"
     optional: true
 
 ## ─── Prompts ───────────────────────────────────────────────────────
-
 prompt campaign_system:
   You carry a repository through ONE lot of a modernisation programme, and you
   are judged by a deterministic gate you cannot edit or argue with.
@@ -142,7 +141,6 @@ prompt campaign_user:
   diff — not in a control-plane message that must parse strictly.
 
 ## ─── Schemas ───────────────────────────────────────────────────────
-
 schema campaign_input:
   lot_id: string
   lot_title: string
@@ -312,6 +310,32 @@ schema mark_state:
   ## here, typed, with the lot's work banked — never a tool error.
   refused: bool
 
+schema reanchor_result:
+  converged: bool
+  repaired: int
+  notice: string
+
+schema extend_result:
+  converged: bool
+  extended: int
+  notice: string
+  ## The net subbot's provenance, handed to the harness at this bot's gate:
+  ## the commits it made, the request ids it acted, the blob it certified
+  ## per surface path. Strings, so they travel through edges as text.
+  acted_commits: string
+  acted_ids: string
+  acted_blobs: string
+
+agent upgrade_campaign:
+  model: "${ITERION_MODERNIZE_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  skills: ["modernize-lots", "plan-contract"]
+  reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
+
 ## ─── Nodes ─────────────────────────────────────────────────────────
 
 ## plan_read — parse the contract, pick the lot, and record the base commit.
@@ -320,8 +344,6 @@ schema mark_state:
 ## refs_immutable_gate compares against it. Reading it later would compare the
 ## work against itself and always pass.
 tool plan_read:
-  output: plan_state
-  language: py
   script: |
     import json
     import os
@@ -635,42 +657,8 @@ tool plan_read:
     out["exit_gate"] = "\n".join(gate)
     print(json.dumps(out))
 
-## work_gate lifts the reader's verdict into a routable bool.
-compute work_gate:
+  language: py
   output: plan_state
-  expr:
-    nothing_to_do: "outputs.plan_read.nothing_to_do"
-    lot_id: "outputs.plan_read.lot_id"
-    lot_title: "outputs.plan_read.lot_title"
-    lot_intent: "outputs.plan_read.lot_intent"
-    exit_gate: "outputs.plan_read.exit_gate"
-    base_sha: "outputs.plan_read.base_sha"
-    refs_dir: "outputs.plan_read.refs_dir"
-    notice: "outputs.plan_read.notice"
-    lot_not_actionable: "outputs.plan_read.lot_not_actionable"
-    lot_status: "outputs.plan_read.lot_status"
-    refused: "outputs.plan_read.refused"
-
-## lot_not_actionable — an EXPLICIT only_lot request naming a lot the
-## reader resolved as done / blocked / absent (native:670). Terminal by
-## design: the answer only changes when the contract does, so a resume
-## would re-read the same lot and refuse identically.
-fail lot_not_actionable:
-  description: "only_lot named a lot that cannot be actioned"
-  code: LOT_NOT_ACTIONABLE
-  message: "lot '{{vars.only_lot}}' is {{outputs.work_gate.lot_status}} — {{outputs.work_gate.notice}}"
-  resumable: false
-
-agent upgrade_campaign:
-  backend: "claude_code"
-  model: "${ITERION_MODERNIZE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
-  input: campaign_input
-  output: campaign_output
-  system: campaign_system
-  user: campaign_user
-  session: fresh
-  skills: ["modernize-lots", "plan-contract"]
 
 ## lot_verify — the whole verdict, deterministic, in one node.
 ##
@@ -678,9 +666,6 @@ agent upgrade_campaign:
 ## still behave, and did anyone move the yardstick. The third is last because
 ## it is the one an agent under pressure is tempted to solve first.
 tool lot_verify:
-  input: verify_input
-  output: lot_report
-  language: py
   script: |
     import json
     import os
@@ -1438,129 +1423,9 @@ tool lot_verify:
     report["log_tail"] = "\n".join(problems)[-6000:]
     emit()
 
-## A pure CONJUNCTION, never an aggregate. Two of three green is not "mostly
-## done" — it is a lot that built and lies, or one that behaves and cheated.
-compute lot_gate:
-  output: gate_state
-  expr:
-    converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
-    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
-    refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0 || outputs.lot_verify.extension_forged"
-    ## Its own term, because it takes its own door: a refusal no pass can
-    ## repair must not be paid for max_passes times (see the edge below).
-    forged: "outputs.lot_verify.extension_forged"
-    timed_out: "outputs.lot_verify.gate_timed_out"
-    oracle_not_run: "outputs.lot_verify.oracle_not_run"
-    unreadable: "outputs.lot_verify.contract_unreadable"
-    fail_log: "outputs.lot_verify.log_tail"
-    ## Read on EVERY outcome, including a converged one, and that is the point.
-    ## An invalidated mutant does not fail the gate: its verdict is excluded
-    ## from the score, so the figure looks no worse and the surface it probed
-    ## stops being covered in silence. A lot can therefore go green while the
-    ## net gets narrower — which is the one failure mode a green cannot report.
-    needs_reanchor: "vars.reanchor && length(outputs.lot_verify.oracle_invalid) > 0"
-    ## Unlike needs_reanchor, a pending extension CANNOT ride a green: the
-    ## oracle gate refuses on it, so this only routes the repair — it never
-    ## decides the verdict.
-    needs_extend: "vars.extend && length(outputs.lot_verify.extension_pending) > 0"
-
-## gate_timeout — a gate command outlived the contract's `gate_timeout_s`.
-## The verdict is in the tree; ending on the bare `fail` reported the same
-## FAIL_NODE as a forged `done`, and the wall is what the operator must
-## act on. Terminal: a resume would replay the same hour against the same
-## wall — raise gate_timeout_s or shorten the gate, then relaunch.
-fail gate_timeout:
-  description: "a gate command outlived the contract's gate_timeout_s"
-  code: GATE_TIMEOUT
-  message: "{{outputs.lot_verify.block_reason}}"
-  resumable: false
-
-## oracle_environment — the oracle delivered no verdict: the gate wrapper or
-## the harness died before printing a report. An environment failure of the
-## run, never a verdict over the tree — reported under its own code so the
-## operator repairs the environment instead of reading a RED. Terminal: a
-## resume would replay the gate in the same environment; relaunch on the
-## bank once it is fixed.
-fail oracle_environment:
-  description: "the behavioural oracle delivered no verdict"
-  code: ORACLE_NOT_RUN
-  message: "{{outputs.lot_verify.block_reason}}"
-  resumable: false
-
-## extension_provenance — an act in the extension ledger was not the net
-## subbot's, or the net's harness could not say it applied the provenance
-## rule. Typed rather than left on the bare `fail`, because the operator's
-## action differs per shape and the code is what routes it: a forged act is a
-## finding about the lot, an uncertified one is a net whose harness is behind
-## the bot. Terminal: no pass produces the missing commit or the missing sync.
-fail extension_provenance:
-  description: "an extension act was refused on provenance"
-  code: EXTENSION_PROVENANCE
-  message: "{{outputs.lot_verify.block_reason}}"
-  resumable: false
-
-## contract_unreadable — the verifier could not READ the contract. Never a
-## verdict over the lot (every conjunct stays false), so it must not read
-## as one on the run either. Terminal: the contract has to be fixed.
-fail contract_unreadable:
-  description: "the verifier could not read the programme contract"
-  code: CONTRACT_UNREADABLE
-  message: "{{outputs.lot_gate.fail_log}}"
-  resumable: false
-
-## reanchor — the net's OWN bot, run as a subbot, to repair a mutant this lot
-## invalidated.
-##
-## The child is `golden-master`'s, not this bundle's, and that placement is the
-## design: the format of a mutant, the archetypes it must cover and the skills
-## that explain both belong to the party that owns the net. A copy here would be
-## a second declaration of the same thing, and two declarations drift.
-##
-## `isolated:` is deliberately ABSENT. The child works on THIS lot's checkout —
-## that is what it is for — so the workspace-safety guard is right to treat it as
-## mutating and to serialise it. What keeps it honest is not isolation but its
-## own deterministic check: every path it touched must sit under the mutants
-## directory, verified in git. Anything it may write, this lot may write through
-## it, so the check is the boundary, not the prompt.
-subbot reanchor:
-  source: "../golden-master/reanchor.bot"
-  with {
-    invalid: "{{outputs.lot_verify.oracle_invalid}}",
-    lot_id:  "{{outputs.work_gate.lot_id}}"
-  }
-  output: reanchor_result
-
-schema reanchor_result:
-  converged: bool
-  repaired: int
-  notice: string
-
-## extend — the net's OWN bot, run as a subbot, to act the extension requests
-## this lot wrote in the ledger.
-##
-## Same placement logic as reanchor, and the same missing `isolated:`: the
-## child works on THIS lot's checkout, and what keeps it honest is its own
-## deterministic check — every path it touches must be a pure ADDITION on the
-## extension surface, judged by the harness's code. The lot may ASK for an
-## observation point; only the net's bot may grant one, and only additively —
-## a rewrite, a delete or a rename goes to the re-baseline ledger and a human.
-subbot extend:
-  source: "../golden-master/extend.bot"
-  with {
-    lot_id: "{{outputs.work_gate.lot_id}}"
-  }
-  output: extend_result
-
-schema extend_result:
-  converged: bool
-  extended: int
-  notice: string
-  ## The net subbot's provenance, handed to the harness at this bot's gate:
-  ## the commits it made, the request ids it acted, the blob it certified
-  ## per surface path. Strings, so they travel through edges as text.
-  acted_commits: string
-  acted_ids: string
-  acted_blobs: string
+  language: py
+  input: verify_input
+  output: lot_report
 
 ## mark_done — `done` is the GATE's word, and this is where it is written.
 ##
@@ -1572,9 +1437,6 @@ schema extend_result:
 ## proved. Idempotent: a contract that already reads `done` is left as it is,
 ## with nothing committed.
 tool mark_done:
-  input: mark_input
-  output: mark_state
-  language: py
   script: |
     import json
     import os
@@ -1778,14 +1640,147 @@ tool mark_done:
     out["commit"] = sha
     finish("lot %s marked `done` by the gate in %s" % (lot_id, sha[:12]))
 
+  language: py
+  input: mark_input
+  output: mark_state
+
+## work_gate lifts the reader's verdict into a routable bool.
+compute work_gate:
+  output: plan_state
+  expr:
+    nothing_to_do: "outputs.plan_read.nothing_to_do"
+    lot_id: "outputs.plan_read.lot_id"
+    lot_title: "outputs.plan_read.lot_title"
+    lot_intent: "outputs.plan_read.lot_intent"
+    exit_gate: "outputs.plan_read.exit_gate"
+    base_sha: "outputs.plan_read.base_sha"
+    refs_dir: "outputs.plan_read.refs_dir"
+    notice: "outputs.plan_read.notice"
+    lot_not_actionable: "outputs.plan_read.lot_not_actionable"
+    lot_status: "outputs.plan_read.lot_status"
+    refused: "outputs.plan_read.refused"
+
+## A pure CONJUNCTION, never an aggregate. Two of three green is not "mostly
+## done" — it is a lot that built and lies, or one that behaves and cheated.
+compute lot_gate:
+  output: gate_state
+  expr:
+    converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
+    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
+    refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0 || outputs.lot_verify.extension_forged"
+    ## Its own term, because it takes its own door: a refusal no pass can
+    ## repair must not be paid for max_passes times (see the edge below).
+    forged: "outputs.lot_verify.extension_forged"
+    timed_out: "outputs.lot_verify.gate_timed_out"
+    oracle_not_run: "outputs.lot_verify.oracle_not_run"
+    unreadable: "outputs.lot_verify.contract_unreadable"
+    fail_log: "outputs.lot_verify.log_tail"
+    ## Read on EVERY outcome, including a converged one, and that is the point.
+    ## An invalidated mutant does not fail the gate: its verdict is excluded
+    ## from the score, so the figure looks no worse and the surface it probed
+    ## stops being covered in silence. A lot can therefore go green while the
+    ## net gets narrower — which is the one failure mode a green cannot report.
+    needs_reanchor: "vars.reanchor && length(outputs.lot_verify.oracle_invalid) > 0"
+    ## Unlike needs_reanchor, a pending extension CANNOT ride a green: the
+    ## oracle gate refuses on it, so this only routes the repair — it never
+    ## decides the verdict.
+    needs_extend: "vars.extend && length(outputs.lot_verify.extension_pending) > 0"
+
+## lot_not_actionable — an EXPLICIT only_lot request naming a lot the
+## reader resolved as done / blocked / absent (native:670). Terminal by
+## design: the answer only changes when the contract does, so a resume
+## would re-read the same lot and refuse identically.
+fail lot_not_actionable:
+  description: "only_lot named a lot that cannot be actioned"
+  code: LOT_NOT_ACTIONABLE
+  message: "lot '{{vars.only_lot}}' is {{outputs.work_gate.lot_status}} — {{outputs.work_gate.notice}}"
+
+## gate_timeout — a gate command outlived the contract's `gate_timeout_s`.
+## The verdict is in the tree; ending on the bare `fail` reported the same
+## FAIL_NODE as a forged `done`, and the wall is what the operator must
+## act on. Terminal: a resume would replay the same hour against the same
+## wall — raise gate_timeout_s or shorten the gate, then relaunch.
+fail gate_timeout:
+  description: "a gate command outlived the contract's gate_timeout_s"
+  code: GATE_TIMEOUT
+  message: "{{outputs.lot_verify.block_reason}}"
+
+## oracle_environment — the oracle delivered no verdict: the gate wrapper or
+## the harness died before printing a report. An environment failure of the
+## run, never a verdict over the tree — reported under its own code so the
+## operator repairs the environment instead of reading a RED. Terminal: a
+## resume would replay the gate in the same environment; relaunch on the
+## bank once it is fixed.
+fail oracle_environment:
+  description: "the behavioural oracle delivered no verdict"
+  code: ORACLE_NOT_RUN
+  message: "{{outputs.lot_verify.block_reason}}"
+
+## extension_provenance — an act in the extension ledger was not the net
+## subbot's, or the net's harness could not say it applied the provenance
+## rule. Typed rather than left on the bare `fail`, because the operator's
+## action differs per shape and the code is what routes it: a forged act is a
+## finding about the lot, an uncertified one is a net whose harness is behind
+## the bot. Terminal: no pass produces the missing commit or the missing sync.
+fail extension_provenance:
+  description: "an extension act was refused on provenance"
+  code: EXTENSION_PROVENANCE
+  message: "{{outputs.lot_verify.block_reason}}"
+
+## contract_unreadable — the verifier could not READ the contract. Never a
+## verdict over the lot (every conjunct stays false), so it must not read
+## as one on the run either. Terminal: the contract has to be fixed.
+fail contract_unreadable:
+  description: "the verifier could not read the programme contract"
+  code: CONTRACT_UNREADABLE
+  message: "{{outputs.lot_gate.fail_log}}"
+
+## reanchor — the net's OWN bot, run as a subbot, to repair a mutant this lot
+## invalidated.
+##
+## The child is `golden-master`'s, not this bundle's, and that placement is the
+## design: the format of a mutant, the archetypes it must cover and the skills
+## that explain both belong to the party that owns the net. A copy here would be
+## a second declaration of the same thing, and two declarations drift.
+##
+## `isolated:` is deliberately ABSENT. The child works on THIS lot's checkout —
+## that is what it is for — so the workspace-safety guard is right to treat it as
+## mutating and to serialise it. What keeps it honest is not isolation but its
+## own deterministic check: every path it touched must sit under the mutants
+## directory, verified in git. Anything it may write, this lot may write through
+## it, so the check is the boundary, not the prompt.
+subbot reanchor:
+  source: "../golden-master/reanchor.bot"
+  with {
+    invalid: "{{outputs.lot_verify.oracle_invalid}}",
+    lot_id: "{{outputs.work_gate.lot_id}}",
+  }
+  output: reanchor_result
+
+## extend — the net's OWN bot, run as a subbot, to act the extension requests
+## this lot wrote in the ledger.
+##
+## Same placement logic as reanchor, and the same missing `isolated:`: the
+## child works on THIS lot's checkout, and what keeps it honest is its own
+## deterministic check — every path it touches must be a pure ADDITION on the
+## extension surface, judged by the harness's code. The lot may ASK for an
+## observation point; only the net's bot may grant one, and only additively —
+## a rewrite, a delete or a rename goes to the re-baseline ledger and a human.
+subbot extend:
+  source: "../golden-master/extend.bot"
+  with {
+    lot_id: "{{outputs.work_gate.lot_id}}",
+  }
+  output: extend_result
+
 workflow modernize:
+
   entry: plan_read
 
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default. The
   ## target's toolchain comes from ITS OWN devbox/devcontainer — this bundle
   ## declares only yq and python3, so the bot stays repo-agnostic. Every
   ## command it runs is declared in the target's own contract.
-
   budget:
     max_parallel_branches: 1
     max_duration: "4h"
@@ -1808,32 +1803,34 @@ workflow modernize:
   ## LOT_UNEDITABLE) and a named fail may only stamp one; plan_read's
   ## notice names which.
   work_gate -> fail when refused
+
   work_gate -> lot_not_actionable when lot_not_actionable
 
   ## Exhaustive pair on one bool (C012): an already-finished programme is a
   ## clean no-op, not an error — running a done programme must cost nothing and
   ## say why.
   work_gate -> done when nothing_to_do
+
   work_gate -> upgrade_campaign when not nothing_to_do with {
-    lot_id:     "{{outputs.work_gate.lot_id}}",
-    lot_title:  "{{outputs.work_gate.lot_title}}",
+    lot_id: "{{outputs.work_gate.lot_id}}",
+    lot_title: "{{outputs.work_gate.lot_title}}",
     lot_intent: "{{outputs.work_gate.lot_intent}}",
-    exit_gate:  "{{outputs.work_gate.exit_gate}}",
-    fail_log:   ""
+    exit_gate: "{{outputs.work_gate.exit_gate}}",
+    fail_log: "",
   }
 
   ## base_sha is the commit the RUN started from, captured before any agent
   ## touched the tree. Comparing the references against anything later would
   ## compare the work with itself and always pass.
   upgrade_campaign -> lot_verify with {
-    lot_id:        "{{outputs.work_gate.lot_id}}",
-    plan_path:     "{{vars.plan_path}}",
-    base_sha:      "{{outputs.work_gate.base_sha}}",
-    refs_dir:      "{{outputs.work_gate.refs_dir}}",
-    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    lot_id: "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha: "{{outputs.work_gate.base_sha}}",
+    refs_dir: "{{outputs.work_gate.refs_dir}}",
+    exit_gate: "{{outputs.work_gate.exit_gate}}",
     acted_commits: "{{outputs.extend.acted_commits}}",
-    acted_ids:     "{{outputs.extend.acted_ids}}",
-    acted_blobs:   "{{outputs.extend.acted_blobs}}"
+    acted_ids: "{{outputs.extend.acted_ids}}",
+    acted_blobs: "{{outputs.extend.acted_blobs}}",
   }
 
   lot_verify -> lot_gate
@@ -1847,7 +1844,9 @@ workflow modernize:
   ## also carry an invalidated mutant or a pending extension — routed to a
   ## subbot, it would replay the same gate before failing.
   lot_gate -> gate_timeout when timed_out
+
   lot_gate -> oracle_environment when oracle_not_run
+
   lot_gate -> contract_unreadable when unreadable
 
   ## An extension act refused on PROVENANCE — written by the constrained
@@ -1879,20 +1878,20 @@ workflow modernize:
   ## to a single attempt: the child has its own repair loop, and a second attempt
   ## here would only re-run a full oracle to learn what the first one already
   ## said.
-  lot_gate -> reanchor when needs_reanchor as reanchor_loop("1")
+  lot_gate -> reanchor when needs_reanchor as reanchor_loop(1)
 
   ## The verdict is re-taken on the repaired net, never patched. `oracle_invalid`
   ## is part of that verdict, so reading it again is what stops a failed repair
   ## from looking like a successful one.
   reanchor -> lot_verify with {
-    lot_id:        "{{outputs.work_gate.lot_id}}",
-    plan_path:     "{{vars.plan_path}}",
-    base_sha:      "{{outputs.work_gate.base_sha}}",
-    refs_dir:      "{{outputs.work_gate.refs_dir}}",
-    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    lot_id: "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha: "{{outputs.work_gate.base_sha}}",
+    refs_dir: "{{outputs.work_gate.refs_dir}}",
+    exit_gate: "{{outputs.work_gate.exit_gate}}",
     acted_commits: "{{outputs.extend.acted_commits}}",
-    acted_ids:     "{{outputs.extend.acted_ids}}",
-    acted_blobs:   "{{outputs.extend.acted_blobs}}"
+    acted_ids: "{{outputs.extend.acted_ids}}",
+    acted_blobs: "{{outputs.extend.acted_blobs}}",
   }
 
   ## Act the lot's extension requests, after any reanchor and before the lot
@@ -1901,20 +1900,20 @@ workflow modernize:
   ## granted it — or refused it in writing, which stays pending and loud.
   ## Bounded to a single attempt for the same reason as reanchor: the child
   ## has its own repair loop.
-  lot_gate -> extend when needs_extend as extend_loop("1")
+  lot_gate -> extend when needs_extend as extend_loop(1)
 
   ## The verdict is re-taken on the extended net. The harness re-certifies
   ## the additions inside lot_verify — exemption is re-derived every pass,
   ## never remembered.
   extend -> lot_verify with {
-    lot_id:        "{{outputs.work_gate.lot_id}}",
-    plan_path:     "{{vars.plan_path}}",
-    base_sha:      "{{outputs.work_gate.base_sha}}",
-    refs_dir:      "{{outputs.work_gate.refs_dir}}",
-    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    lot_id: "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha: "{{outputs.work_gate.base_sha}}",
+    refs_dir: "{{outputs.work_gate.refs_dir}}",
+    exit_gate: "{{outputs.work_gate.exit_gate}}",
     acted_commits: "{{outputs.extend.acted_commits}}",
-    acted_ids:     "{{outputs.extend.acted_ids}}",
-    acted_blobs:   "{{outputs.extend.acted_blobs}}"
+    acted_ids: "{{outputs.extend.acted_ids}}",
+    acted_blobs: "{{outputs.extend.acted_blobs}}",
   }
 
   ## Converged: the gate writes `done` — one line, one commit — then the run
@@ -1922,12 +1921,15 @@ workflow modernize:
   ## Both end the run; looping against a wall the agent has already described
   ## and proven costs money and produces nothing.
   lot_gate -> mark_done when converged with {
-    lot_id:    "{{outputs.work_gate.lot_id}}",
+    lot_id: "{{outputs.work_gate.lot_id}}",
     plan_path: "{{vars.plan_path}}",
-    base_sha:  "{{outputs.work_gate.base_sha}}"
+    base_sha: "{{outputs.work_gate.base_sha}}",
   }
+
   mark_done -> fail when refused
+
   mark_done -> done
+
   lot_gate -> done when stop
 
   ## Not converged → another pass on the SAME lot, carrying the deterministic
@@ -1937,11 +1939,11 @@ workflow modernize:
   ## so the loop, while it lasts, must beat the `fail when refused` edge below,
   ## and only an EXHAUSTED loop (skipped by the engine) lets that edge fire.
   lot_gate -> upgrade_campaign when not stop as repair_loop("{{vars.max_passes}}") with {
-    lot_id:     "{{outputs.work_gate.lot_id}}",
-    lot_title:  "{{outputs.work_gate.lot_title}}",
+    lot_id: "{{outputs.work_gate.lot_id}}",
+    lot_title: "{{outputs.work_gate.lot_title}}",
     lot_intent: "{{outputs.work_gate.lot_intent}}",
-    exit_gate:  "{{outputs.work_gate.exit_gate}}",
-    fail_log:   "{{outputs.lot_gate.fail_log}}"
+    exit_gate: "{{outputs.work_gate.exit_gate}}",
+    fail_log: "{{outputs.lot_gate.fail_log}}",
   }
 
   ## A refusal that outlived the loop — the worker kept its `done`, or its

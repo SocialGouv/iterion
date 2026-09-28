@@ -612,11 +612,11 @@ func TestDeepsecCoverageTravelsWithoutTheLogTail(t *testing.T) {
 	// errors[] carries up to 3 KB of log tail, and the scanner echoes
 	// target-controlled text into its logs — so the node that files findings
 	// receives the scalars, never the envelope.
-	if strings.Contains(bot, `deepsec_coverage:   "{{outputs.scan_join.deepsec_scan}}"`) {
+	if strings.Contains(bot, `deepsec_coverage: "{{outputs.scan_join.deepsec_scan}}"`) {
 		t.Error("report_card is fed the whole deepsec envelope: its errors[] carries a log tail " +
 			"the audited repository can write into, and report_card holds bash and board.create")
 	}
-	if !strings.Contains(bot, `deepsec_coverage:   "{{outputs.scan_join.deepsec_coverage}}"`) {
+	if !strings.Contains(bot, `deepsec_coverage: "{{outputs.scan_join.deepsec_coverage}}"`) {
 		t.Error("report_card is not fed the projected coverage scalars")
 	}
 

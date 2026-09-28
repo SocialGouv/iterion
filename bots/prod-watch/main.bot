@@ -53,6 +53,60 @@
 
 dsl: 2
 
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## watch = poll the lanes, run the incident lifecycle, deliver, commit.
+  ## (Single mode in this slice; digest / session / ack / doctor follow.)
+  mode: string [enum: "watch"] = "watch"
+  ## Workspace-relative config file (JSON). See skills/argus-config.md.
+  config_path: string = "prod-watch.json"
+  ## Workspace-relative state root (gitignore it, or set
+  ## state_commit=true to version it — required on ephemeral runners).
+  state_dir: string = ".prod-watch"
+  ## Prepare + print every message, deliver nothing, persist nothing (the
+  ## next real run recomputes the same alerts).
+  dry_run: bool = false
+  ## Commit (and push) the state dir after each tick. Needs the
+  ## state_dir NOT gitignored and push credentials on the workspace.
+  state_commit: bool = false
+  ## Out-of-tree scratch for the inter-node handoff files. The RAW log
+  ## lines live here and nowhere else.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/prod-watch"
+  ## Per-request HTTP timeout (Grafana proxy, health probes).
+  fetch_timeout_secs: int = 20
+  ## SSRF posture for every outbound fetch. Default (false) is strict:
+  ## http/https only, and any host resolving to a private / loopback /
+  ## link-local / cloud-metadata address is refused, up-front and on
+  ## every redirect hop. true relaxes it for trusted on-prem deployments
+  ## and hermetic tests ONLY — metadata and link-local stay refused.
+  allow_private_sources: bool = false
+  ## Widest Loki window one tick may cover (a first tick, or a catch-up
+  ## after an outage). Older lines are NOT fetched; the gap is reported.
+  max_window_minutes: int = 60
+  ## The window's upper bound is now − ingest_lag: Loki ingestion is not
+  ## instantaneous, and a line arriving after the cursor moved past its
+  ## timestamp would be lost for good.
+  ingest_lag_seconds: int = 120
+  ## Cap on lines fetched per Loki query per tick. Reaching it is
+  ## reported as a truncated window (coverage: partial), never silently.
+  max_lines: int = 5000
+  ## Incident lifecycle windows (hours). An open incident is reminded
+  ## once per renotify window; one not observed for quiet_after_hours
+  ## gets a single "not seen" note; forget_after_days prunes it.
+  renotify_hours: int = 24
+  quiet_after_hours: int = 48
+  forget_after_days: int = 14
+  ## Hours without a successful poll of a configured lane before the
+  ## bot announces the silence on the sinks (at most once per window).
+  ## 0 disables.
+  source_stale_hours: int = 6
+  ## Per-run cap on posted alerts. Overflow incidents stay OPEN and
+  ## re-fire next tick; the overflow is announced explicitly.
+  max_alerts_per_run: int = 20
+  ## Per-MESSAGE character budget at delivery (under Mattermost's
+  ## 16383-char post limit).
+  max_message_chars: int = 14000
+
 secrets:
   ## JSON map of webhook name → incoming-webhook URL (the same contract
   ## as feed-watch and vuln-watch, so one team secret serves the three
@@ -62,7 +116,6 @@ secrets:
   webhooks:
     as: file
     optional: true
-
   ## Grafana service-account token (Viewer is enough to query
   ## datasources). Read ONLY by the two proxy lanes, never into a
   ## prompt. Optional so a probe-only deployment runs without it; a
@@ -72,7 +125,6 @@ secrets:
   grafana_token:
     as: file
     optional: true
-
   ## Forge API token, mounted read-only as a FILE. Used by
   ## state_commit=true runs so the runner injects it into the clone URL
   ## and the bot's `git push` of the state dir authenticates; a later
@@ -82,77 +134,7 @@ secrets:
     as: file
     optional: true
 
-vars:
-  workspace_dir: string = "${PROJECT_DIR}"
-
-  ## watch = poll the lanes, run the incident lifecycle, deliver, commit.
-  ## (Single mode in this slice; digest / session / ack / doctor follow.)
-  mode: string [enum: "watch"] = "watch"
-
-  ## Workspace-relative config file (JSON). See skills/argus-config.md.
-  config_path: string = "prod-watch.json"
-
-  ## Workspace-relative state root (gitignore it, or set
-  ## state_commit=true to version it — required on ephemeral runners).
-  state_dir: string = ".prod-watch"
-
-  ## Prepare + print every message, deliver nothing, persist nothing (the
-  ## next real run recomputes the same alerts).
-  dry_run: bool = false
-
-  ## Commit (and push) the state dir after each tick. Needs the
-  ## state_dir NOT gitignored and push credentials on the workspace.
-  state_commit: bool = false
-
-  ## Out-of-tree scratch for the inter-node handoff files. The RAW log
-  ## lines live here and nowhere else.
-  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/prod-watch"
-
-  ## Per-request HTTP timeout (Grafana proxy, health probes).
-  fetch_timeout_secs: int = 20
-
-  ## SSRF posture for every outbound fetch. Default (false) is strict:
-  ## http/https only, and any host resolving to a private / loopback /
-  ## link-local / cloud-metadata address is refused, up-front and on
-  ## every redirect hop. true relaxes it for trusted on-prem deployments
-  ## and hermetic tests ONLY — metadata and link-local stay refused.
-  allow_private_sources: bool = false
-
-  ## Widest Loki window one tick may cover (a first tick, or a catch-up
-  ## after an outage). Older lines are NOT fetched; the gap is reported.
-  max_window_minutes: int = 60
-
-  ## The window's upper bound is now − ingest_lag: Loki ingestion is not
-  ## instantaneous, and a line arriving after the cursor moved past its
-  ## timestamp would be lost for good.
-  ingest_lag_seconds: int = 120
-
-  ## Cap on lines fetched per Loki query per tick. Reaching it is
-  ## reported as a truncated window (coverage: partial), never silently.
-  max_lines: int = 5000
-
-  ## Incident lifecycle windows (hours). An open incident is reminded
-  ## once per renotify window; one not observed for quiet_after_hours
-  ## gets a single "not seen" note; forget_after_days prunes it.
-  renotify_hours: int = 24
-  quiet_after_hours: int = 48
-  forget_after_days: int = 14
-
-  ## Hours without a successful poll of a configured lane before the
-  ## bot announces the silence on the sinks (at most once per window).
-  ## 0 disables.
-  source_stale_hours: int = 6
-
-  ## Per-run cap on posted alerts. Overflow incidents stay OPEN and
-  ## re-fire next tick; the overflow is announced explicitly.
-  max_alerts_per_run: int = 20
-
-  ## Per-MESSAGE character budget at delivery (under Mattermost's
-  ## 16383-char post limit).
-  max_message_chars: int = 14000
-
 ## ─── Schemas ────────────────────────────────────────────────────
-
 schema plan_output:
   ## Normalized config sections, ready for the lanes.
   app: json
@@ -355,8 +337,6 @@ schema commit_output:
 ## cursor, and refuse to run while a halt is armed. Config problems fail
 ## HERE, loudly, before any network work.
 tool plan:
-  output: plan_output
-  language: py
   script: |
     import json, os, sys, time, datetime
     from urllib.parse import urlsplit
@@ -702,15 +682,15 @@ tool plan:
                       'labels': labels, 'lanes': lanes, 'halted': halted, 'halt': halt or {},
                       'halt_reason': halt_reason, 'summary': summary}, ensure_ascii=False))
 
+  language: py
+  output: plan_output
+
 ## The deployed version, from the source the config names. This slice
 ## reads a field of the health endpoint; release_known stays FALSE until
 ## a later slice verifies the value resolves to a commit of the
 ## application repository — a string found in a JSON body is not a
 ## verified deployment, and every message says so.
 tool resolve_release:
-  input: release_input
-  output: release_output
-  language: py
   script: |
     import json, re, socket, ipaddress
     import urllib.request, urllib.error
@@ -782,6 +762,10 @@ tool resolve_release:
                       'note': note or 'unverified until the analysis slice resolves it in the repository'},
                      ensure_ascii=False))
 
+  language: py
+  input: release_input
+  output: release_output
+
 ## Loki through the Grafana datasource proxy. Each configured query is
 ## paged FORWARD over its frozen window [from, to): a page is `page_size`
 ## lines, the next page resumes AT the last timestamp (inclusive, the
@@ -793,9 +777,6 @@ tool resolve_release:
 ## lane: decide refuses the tick only when every configured lane failed,
 ## so a Grafana credential gone stale never silences the health probes.
 tool poll_loki:
-  input: loki_input
-  output: loki_output
-  language: py
   script: |
     import json, os, socket, ipaddress, time, sys, hashlib, http
     import urllib.request, urllib.error
@@ -1179,6 +1160,10 @@ tool poll_loki:
     print(json.dumps({'raw_file': raw_path, 'lines': total, 'truncated': truncated_any, 'per_query': per_query,
                       'errors': errors, 'ok': ok_count > 0, 'queries_ok': ok_count, 'queries_failed': len(errors)}, ensure_ascii=False))
 
+  language: py
+  input: loki_input
+  output: loki_output
+
 ## Prometheus probes through the Grafana datasource proxy. Each probe is
 ## an instant query whose samples are aggregated (max by default) and
 ## compared to its threshold — and the RESULT IS TYPED: healthy,
@@ -1187,9 +1172,6 @@ tool poll_loki:
 ## ride along. A failing probe — a refused token (401/403) included, every
 ## probe at once included — is reported, not fatal: it degrades the lane.
 tool poll_prom:
-  input: prom_input
-  output: prom_output
-  language: py
   script: |
     import json, os, socket, ipaddress, time, math, http
     import urllib.request, urllib.error
@@ -1369,14 +1351,15 @@ tool poll_prom:
     ## decide refuses the tick only when every configured lane failed.
     print(json.dumps({'results': results, 'ok': not errors, 'errors': errors}, ensure_ascii=False))
 
+  language: py
+  input: prom_input
+  output: prom_output
+
 ## The application's own health URLs — the one signal that needs no
 ## observability stack at all. A probe is OK when the status matches;
 ## the body is never stored. Redirects are followed only hop by hop
 ## through the same address guard.
 tool probe_http:
-  input: http_input
-  output: http_output
-  language: py
   script: |
     import json, socket, ipaddress, time
     import urllib.request, urllib.error
@@ -1459,6 +1442,10 @@ tool probe_http:
         results.append(res)
     print(json.dumps({'results': results}, ensure_ascii=False))
 
+  language: py
+  input: http_input
+  output: http_output
+
 ## The ONLY reader of the raw lines. Every line is redacted class by
 ## class (secrets first, then the validated identifiers, then contact
 ## data), the error-query lines are fingerprinted into templates, and
@@ -1474,9 +1461,6 @@ tool probe_http:
 ## keyword context. Coverage is `partial` whenever a query was truncated
 ## or failed, so "no finding" is never read as "nothing there".
 tool leak_scan:
-  input: leak_input
-  output: leak_output
-  language: py
   script: |
     import json, os, re, hashlib, unicodedata, base64
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1912,6 +1896,10 @@ tool leak_scan:
     print(json.dumps({'signals_file': signals_path, 'templates': len(tpl_list), 'lines_scanned': scanned,
                       'leak_findings': leak_list, 'coverage': coverage, 'summary': summary}, ensure_ascii=False))
 
+  language: py
+  input: leak_input
+  output: leak_output
+
 ## The incident lifecycle — pure computation over the derived signals and
 ## the persisted state, EVERY tick (not only when something is new): a
 ## failing probe, a breached metric, an error template or a leak class
@@ -1922,9 +1910,6 @@ tool leak_scan:
 ## observation (its incidents keep their clocks). The next state is
 ## staged out-of-tree and persisted by commit_state only after delivery.
 tool decide:
-  input: decide_input
-  output: decide_output
-  language: py
   script: |
     import json, os, re, datetime
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -2350,6 +2335,10 @@ tool decide:
                       'needs_analysis': needs_analysis, 'state_next_file': state_next, 'alertlog_file': alertlog,
                       'tick_file': tick, 'bootstrap': bootstrap, 'summary': summary}, ensure_ascii=False))
 
+  language: py
+  input: decide_input
+  output: decide_output
+
 ## Deterministic delivery: render each alert from the label templates
 ## (language comes from config, structure from here) and POST one
 ## message per alert + one overflow note + one staleness/coverage note
@@ -2359,9 +2348,6 @@ tool decide:
 ## Delivery consumes the staged state only when every message reached
 ## at least one sink AND every REQUIRED sink took every message.
 tool notify:
-  input: notify_input
-  output: notify_output
-  language: py
   script: |
     import json, os, re, sys, urllib.request
     from urllib.parse import urlsplit
@@ -2524,15 +2510,16 @@ tool notify:
     out({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered, 'consume': True,
          'targets': sorted(set(targets)), 'summary': summary})
 
+  language: py
+  input: notify_input
+  output: notify_output
+
 ## Persist the staged state under flock: replace state.json (watch is its
 ## only writer), append the alert log and the tick ledger, and — with
 ## state_commit=true — commit+push the state dir with the rebase-retry
 ## discipline (ephemeral cloud runners share the branch). Runs ONLY after
 ## delivery succeeded (or nothing needed delivering).
 tool commit_state:
-  input: commit_input
-  output: commit_output
-  language: py
   script: |
     import json, os, fcntl, subprocess
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -2698,6 +2685,10 @@ tool commit_state:
                       'summary': 'state persisted (' + str(appended) + ' alert(s) logged)' + (', pushed' if committed else '')},
                      ensure_ascii=False))
 
+  language: py
+  input: commit_input
+  output: commit_output
+
 ## ─── Terminal refusal ───────────────────────────────────────────
 
 ## A halt is a deliberate refusal to keep watching until an operator
@@ -2709,19 +2700,17 @@ fail watch_halted:
   message: "prod-watch refused to run — {{outputs.plan.halt_reason}}"
 
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow prod_watch:
-  entry: plan
-
   ## The state (cursors, incidents, health + the ledgers) IS the product
   ## and must persist in the workspace across runs — a run worktree would
   ## isolate the writes and discard them at finalization. Never auto.
   worktree: none
-
   ## This bot never builds the target repo: it reads one JSON file and
   ## talks to an observability stack. Realising the workspace's toolchain
   ## would buy nothing and slow the tick.
   repo_devbox: off
+
+  entry: plan
 
   budget:
     max_parallel_branches: 1
@@ -2730,10 +2719,11 @@ workflow prod_watch:
     max_cost_usd: 0.5
 
   plan -> watch_halted when halted
+
   plan -> resolve_release with {
     release: "{{outputs.plan.release}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
-    allow_private: "{{vars.allow_private_sources}}"
+    allow_private: "{{vars.allow_private_sources}}",
   }
 
   resolve_release -> poll_loki with {
@@ -2741,27 +2731,27 @@ workflow prod_watch:
     loki: "{{outputs.plan.loki}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     scratch_dir: "{{vars.scratch_dir}}",
-    allow_private: "{{vars.allow_private_sources}}"
+    allow_private: "{{vars.allow_private_sources}}",
   }
 
   poll_loki -> poll_prom with {
     grafana: "{{outputs.plan.grafana}}",
     prometheus: "{{outputs.plan.prometheus}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
-    allow_private: "{{vars.allow_private_sources}}"
+    allow_private: "{{vars.allow_private_sources}}",
   }
 
   poll_prom -> probe_http with {
     probes: "{{outputs.plan.probes}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
-    allow_private: "{{vars.allow_private_sources}}"
+    allow_private: "{{vars.allow_private_sources}}",
   }
 
   probe_http -> leak_scan with {
     raw_file: "{{outputs.poll_loki.raw_file}}",
     per_query: "{{outputs.poll_loki.per_query}}",
     app: "{{outputs.plan.app}}",
-    scratch_dir: "{{vars.scratch_dir}}"
+    scratch_dir: "{{vars.scratch_dir}}",
   }
 
   leak_scan -> decide with {
@@ -2785,7 +2775,7 @@ workflow prod_watch:
     quiet_after_hours: "{{vars.quiet_after_hours}}",
     forget_after_days: "{{vars.forget_after_days}}",
     source_stale_hours: "{{vars.source_stale_hours}}",
-    max_alerts: "{{vars.max_alerts_per_run}}"
+    max_alerts: "{{vars.max_alerts_per_run}}",
   }
 
   decide -> notify with {
@@ -2798,13 +2788,14 @@ workflow prod_watch:
     release: "{{outputs.resolve_release.release}}",
     release_known: "{{outputs.resolve_release.release_known}}",
     dry_run: "{{vars.dry_run}}",
-    max_message_chars: "{{vars.max_message_chars}}"
+    max_message_chars: "{{vars.max_message_chars}}",
   }
 
   ## Only a completed delivery (or a nothing-to-deliver tick) consumes
   ## the staged state; dry-runs and partial deliveries keep the old
   ## state so the SAME alerts recompute next tick (at-least-once).
   notify -> done when not consume
+
   notify -> commit_state when consume with {
     state_next_file: "{{outputs.decide.state_next_file}}",
     alertlog_file: "{{outputs.decide.alertlog_file}}",
@@ -2812,6 +2803,7 @@ workflow prod_watch:
     generation: "{{outputs.decide.generation}}",
     state_commit: "{{vars.state_commit}}",
     workspace: "{{vars.workspace_dir}}",
-    state_dir: "{{vars.state_dir}}"
+    state_dir: "{{vars.state_dir}}",
   }
+
   commit_state -> done
