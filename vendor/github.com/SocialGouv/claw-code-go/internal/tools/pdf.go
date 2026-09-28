@@ -13,9 +13,14 @@ import (
 	"unicode/utf8"
 )
 
-// ErrDecompressionBudget is returned when a FlateDecode stream inflates
-// past the caller's budget — a compressed bomb, not a corrupt stream.
-var ErrDecompressionBudget = errors.New("pdf stream inflates past the decompression budget")
+// ErrBudgetExceeded is returned when the extraction blows the caller's
+// budget — a single FlateDecode stream inflating past it (a compressed
+// bomb), or the document-wide sum of streams doing the same through
+// many small ones. Neither is a corrupt stream to skip: the caller set
+// a budget, the document broke it, the extraction fails whole.
+var ErrBudgetExceeded = errors.New("pdf extraction past the caller's budget")
+
+// (document-wide: see ExtractTextFromBytes)
 
 // DefaultDecompressionBudget bounds what one FlateDecode stream may
 // inflate to when the caller has no opinion. zlib holds roughly 1000:1,
@@ -25,9 +30,10 @@ const DefaultDecompressionBudget = 64 << 20
 
 // ExtractText reads a PDF file and extracts all readable text from BT/ET
 // operators across all content streams. Non-text pages or encrypted PDFs
-// yield an empty string rather than an error. maxDecompressed bounds what
-// any single FlateDecode stream may inflate to — exceeding it fails the
-// extraction with ErrDecompressionBudget instead of allocating.
+// yield an empty string rather than an error. maxDecompressed is the
+// document budget: any single FlateDecode stream inflating past it, or
+// the sum of all streams' text, fails the extraction with
+// ErrBudgetExceeded instead of allocating.
 func ExtractText(path string, maxDecompressed int64) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -40,17 +46,28 @@ func ExtractText(path string, maxDecompressed int64) (string, error) {
 // extraction function, useful for testing without touching the filesystem.
 func ExtractTextFromBytes(data []byte, maxDecompressed int64) (string, error) {
 	var allText strings.Builder
+	// The budget's consumers are TWO: any single inflate (bounded inside
+	// inflate) and the document-wide sum of inflated bytes — many small
+	// streams, each under the cap, allocate the same memory one bomb
+	// would, whether or not any of it is text.
+	var inflatedTotal int64
 	offset := 0
 
 	for offset < len(data) {
-		streamStart := bytes.Index(data[offset:], []byte("stream"))
+		// "\nstream", never bare "stream": "endstream" contains the
+		// bare token and a multi-stream document used to have every
+		// stream after the first consumed as mis-aligned garbage (the
+		// dict window then still said FlateDecode, inflate failed on
+		// the "endobj…" prefix, and the lenient skip ate the data).
+		streamStart := bytes.Index(data[offset:], []byte("\nstream"))
 		if streamStart < 0 {
 			break
 		}
 		absStart := offset + streamStart
 
-		// Skip past "stream\r\n" or "stream\n".
-		contentStart := skipStreamEOL(data, absStart+len("stream"))
+		// Skip past "stream\r\n" or "stream\n" (the leading \n of the
+		// needle is not part of the stream content).
+		contentStart := skipStreamEOL(data, absStart+len("\nstream"))
 
 		endRel := bytes.Index(data[contentStart:], []byte("endstream"))
 		if endRel < 0 {
@@ -71,7 +88,7 @@ func ExtractTextFromBytes(data []byte, maxDecompressed int64) (string, error) {
 		if isFlate {
 			decompressed, err := inflate(raw, maxDecompressed)
 			if err != nil {
-				if errors.Is(err, ErrDecompressionBudget) {
+				if errors.Is(err, ErrBudgetExceeded) {
 					// A compressed bomb is not a corrupt stream to
 					// skip: the caller asked for a budget and the
 					// document blew through it — fail the whole
@@ -80,6 +97,10 @@ func ExtractTextFromBytes(data []byte, maxDecompressed int64) (string, error) {
 				}
 				offset = contentEnd
 				continue
+			}
+			inflatedTotal += int64(len(decompressed))
+			if inflatedTotal > maxDecompressed {
+				return "", ErrBudgetExceeded
 			}
 			streamBytes = decompressed
 		} else {
@@ -113,7 +134,7 @@ func inflate(data []byte, limit int64) ([]byte, error) {
 		r.Close()
 		if readErr == nil {
 			if int64(len(buf)) > limit {
-				return nil, fmt.Errorf("%w (limit %d)", ErrDecompressionBudget, limit)
+				return nil, fmt.Errorf("%w (limit %d)", ErrBudgetExceeded, limit)
 			}
 			return buf, nil
 		}
@@ -126,7 +147,7 @@ func inflate(data []byte, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("flate inflate error: %w", err)
 	}
 	if int64(len(buf)) > limit {
-		return nil, fmt.Errorf("%w (limit %d)", ErrDecompressionBudget, limit)
+		return nil, fmt.Errorf("%w (limit %d)", ErrBudgetExceeded, limit)
 	}
 	return buf, nil
 }
