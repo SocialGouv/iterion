@@ -225,6 +225,7 @@ index and contribution rule: **[docs/agents/README.md](docs/agents/README.md)**.
 | Launching a catalog bot against this repo for real | [dogfood.md](docs/agents/dogfood.md) |
 | Running the security bots on iterion itself | [security-selfaudit.md](docs/agents/security-selfaudit.md) |
 | "How do I configure / operate / debug X" — the operational index | [runbooks.md](docs/agents/runbooks.md) |
+| A codebase/architecture question the knowledge graph should answer first — or refreshing `graphify-out/` | [graphify.md](docs/agents/graphify.md) |
 
 Engine and product references stay in [docs/](docs/) proper —
 [dsl.md](docs/dsl.md), [backends.md](docs/backends.md),
