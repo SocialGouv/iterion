@@ -247,14 +247,14 @@ func writeSimplePDF(t *testing.T, dir, name, contentStream string) string {
 	obj3 := pdf.Len()
 	pdf.WriteString("3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n")
 	obj4 := pdf.Len()
-	pdf.WriteString(fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(contentStream), contentStream))
+	fmt.Fprintf(&pdf, "4 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(contentStream), contentStream)
 	xref := pdf.Len()
 	pdf.WriteString("xref\n0 5\n0000000000 65535 f \n")
 	for _, off := range []int{obj1, obj2, obj3, obj4} {
-		pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", off))
+		fmt.Fprintf(&pdf, "%010d 00000 n \n", off)
 	}
 	pdf.WriteString("trailer\n<< /Size 5 /Root 1 0 R >>\n")
-	pdf.WriteString(fmt.Sprintf("startxref\n%d\n%%%%EOF\n", xref))
+	fmt.Fprintf(&pdf, "startxref\n%d\n%%%%EOF\n", xref)
 
 	if err := os.WriteFile(p, []byte(pdf.String()), 0o600); err != nil {
 		t.Fatal(err)
