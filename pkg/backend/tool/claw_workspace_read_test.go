@@ -1,11 +1,15 @@
 package tool
 
 import (
+	"bytes"
+	"compress/zlib"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // read_file is registered for every claw agent node (RegisterClawBuiltins),
@@ -333,5 +337,57 @@ func TestWorkspaceReadFile_TextlessPdfReadsEmpty(t *testing.T) {
 	}
 	if out != "" {
 		t.Fatalf("read_file output = %q, want empty for a text-less pdf", out)
+	}
+}
+
+// The .pdf branch must not reopen the hole the regular path closed: a
+// FIFO named *.pdf used to hang the call forever (os.Open with no
+// O_NONBLOCK), because the magic check ran before any regular-file
+// check. The safe open is workspacePDFWindow's, and a non-regular file
+// falls through to the text path's own refusal.
+func TestWorkspaceReadFile_DoesNotBlockOnAPdfNamedFIFO(t *testing.T) {
+	workspace := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(workspace, "report.pdf"), 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := executeWorkspaceReadFile(map[string]any{"path": "report.pdf"}, workspace)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("error = %v, want the regular-file refusal", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("read_file blocked on a .pdf-named FIFO — the .pdf branch bypassed the safe open")
+	}
+}
+
+// The decompression budget must FLOW THROUGH the wiring: a PDF whose
+// FlateDecode stream inflates past the read ceiling errors explicitly
+// instead of allocating (the claw-side test proves the budget is
+// honored; this one proves the wiring passes it).
+func TestWorkspaceReadFile_PdfBombIsRefusedNotAllocated(t *testing.T) {
+	workspace := t.TempDir()
+	var raw bytes.Buffer
+	zw, _ := zlib.NewWriterLevel(&raw, zlib.BestCompression)
+	if _, err := zw.Write(bytes.Repeat([]byte("0"), (workspaceReadMaxFileBytes/1024+1)*1024)); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+
+	var pdf strings.Builder
+	pdf.WriteString("%PDF-1.4\n1 0 obj\n<< /Length " + fmt.Sprint(raw.Len()) + " /Filter /FlateDecode >>\nstream\n")
+	pdf.Write(raw.Bytes())
+	pdf.WriteString("\nendstream\nendobj\ntrailer\n<< /Size 2 /Root 1 0 R >>\n%%EOF\n")
+	if err := os.WriteFile(filepath.Join(workspace, "bomb.pdf"), []byte(pdf.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := executeWorkspaceReadFile(map[string]any{"path": "bomb.pdf"}, workspace)
+	if err == nil || !strings.Contains(err.Error(), "decompression budget") {
+		t.Fatalf("error = %v, want the decompression-budget refusal", err)
 	}
 }
