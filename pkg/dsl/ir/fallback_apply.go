@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -148,11 +149,19 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 // `{{vars.<name>}}` routing fields against: the declared defaults under
 // the launch's overrides — the two layers resolveVars stacks, in its
 // order, and with its rule that a launch value for a var the workflow
-// does not declare is dropped. Values stay RAW text: the reader's own
-// `${…}` expansion runs after the substitution (the runtime's
-// template-then-env order), so a var holding `${X:-claw}` is screened
-// by what the run resolves, not by its spelling. Nil when nothing
-// declares or overrides a var, which reads exactly as before.
+// does not declare is dropped.
+//
+// The values are expanded the way dispatch expands them — TWICE, and the
+// first pass is resolveVars': var text resolves through the PROCESS
+// environment (varExpandFn ends in os.Getenv), never through the ITERION_
+// settings overlay, which is LookupEnv's alone. The view stores that first
+// expansion; the reader's own `${…}` pass then runs on the substituted
+// field, resolveRoutingField's second. Storing the raw text instead read
+// every var-held `${…}` once too few and through the wrong environment —
+// an overlay-only `ITERION_X` answered the screen "claw" where dispatch
+// stored "", and the screen refused a route on a backend the run never
+// resolves. Nil when nothing declares or overrides a var, which reads
+// exactly as before.
 func launchVarsView(w *Workflow, overrides map[string]string) map[string]string {
 	if len(w.Vars) == 0 {
 		return nil
@@ -169,12 +178,12 @@ func launchVarsView(w *Workflow, overrides map[string]string) map[string]string 
 			continue
 		}
 		if s, ok := varDefaultText(v.Default); ok {
-			put(name, s)
+			put(name, ExpandWithDefault(s, os.Getenv))
 		}
 	}
 	for name, s := range overrides {
 		if _, declared := w.Vars[name]; declared {
-			put(name, s)
+			put(name, ExpandWithDefault(s, os.Getenv))
 		}
 	}
 	return view

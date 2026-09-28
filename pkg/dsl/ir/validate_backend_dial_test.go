@@ -725,10 +725,14 @@ func TestApplyRunFallback_WhatTheLaunchCannotAnswerStaysUndecided(t *testing.T) 
 	if w == nil {
 		t.Fatal("the fixture does not compile")
 	}
-	// zz is undeclared: the launch value never reaches the run's vars, so
-	// the node screens as undecided — and an undecided field does NOT fall
-	// through to default_backend: (that rule is
-	// TestEffectiveNodeBackend_DoesNotSubstituteForAnUndecidedField's).
+	// zz is undeclared: the screen must not resolve it, and dispatch does
+	// not either — the run's vars never carry it. resolveVars drops it, and
+	// the executor seeding takes the same rule (runview.BuildExecutor;
+	// an undeclared key allowed through by --allow-unknown-inputs rides as
+	// a run INPUT for subbot forwarding, never as a var — its witness is
+	// TestBuildExecutor_UndeclaredLaunchVarDoesNotReachTheExecutorVars).
+	// An undecided field does NOT fall through to default_backend: (that
+	// rule is TestEffectiveNodeBackend_DoesNotSubstituteForAnUndecidedField's).
 	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
 		map[string]string{"zz": "claw"})
 	if len(refusals) != 0 {
@@ -736,5 +740,91 @@ func TestApplyRunFallback_WhatTheLaunchCannotAnswerStaysUndecided(t *testing.T) 
 	}
 	if got := runBackend.withVars(launchVarsView(w, map[string]string{"zz": "claw"})).name("{{vars.zz}}"); got != "" {
 		t.Errorf("undeclared {{vars.zz}} resolved to %q, want undecided", got)
+	}
+}
+
+// The view reads a var's text the way resolveVars does at dispatch — through
+// the PROCESS ENVIRONMENT (varExpandFn ends in os.Getenv), never through the
+// ITERION_ settings overlay, which is LookupEnv's alone. A view built on the
+// overlay's reading screens a backend the run will never use.
+func TestLaunchVarsView_ReadsVarTextThroughTheProcessEnv(t *testing.T) {
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_ZZPROBE_BACKEND" {
+			return "claw", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${ITERION_ZZPROBE_BACKEND}"},
+		"o": {Name: "o", Type: VarString},
+	}}
+	// The overlay says claw; the process environment says nothing. Dispatch
+	// stores "" — the view must too.
+	if got := launchVarsView(w, nil)["b"]; got != "" {
+		t.Errorf("view[b] = %q, want \"\" — the overlay is not the run's reading of a var's text", got)
+	}
+	// Overrides take the same reading (resolveVars expands both), here with
+	// the process env answering.
+	t.Setenv("C1606_OVERRIDE", "kimi")
+	if got := launchVarsView(w, map[string]string{"o": "${C1606_OVERRIDE}"})["o"]; got != "kimi" {
+		t.Errorf("view[o] = %q, want kimi — an override's ${…} is expanded as the run expands it", got)
+	}
+}
+
+// Dispatch expands TWICE: resolveVars expands the var's text, then
+// resolveRoutingField expands the field the value lands in. The view stores
+// the first expansion and the reader runs the second, so a value that is
+// itself a reference resolves to the same backend on both sides.
+func TestLaunchVarsView_ExpandsAsManyTimesAsDispatch(t *testing.T) {
+	t.Setenv("C1606_INNER", "${C1606_OUTER}")
+	t.Setenv("C1606_OUTER", "claw")
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_INNER}"},
+	}}
+	got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}")
+	if got != "claw" {
+		t.Errorf("run reading of {{vars.b}} = %q, want claw — dispatch expands the substituted value a second time", got)
+	}
+}
+
+// The screen-level consequence, on the reviewer's fixture: a var default
+// written against an ITERION_ name the overlay answers but the process
+// environment does not. Dispatch reads "" — the node backend is undecided
+// and the crossing screens take no opinion — while a view on the overlay's
+// reading screened it as claw and refused a route the run would have taken.
+func TestApplyRunFallback_VarsBackendReadThroughTheProcessEnvNotTheOverlay(t *testing.T) {
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_ZZPROBE_BACKEND" {
+			return "claw", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+	src := "vars:\n  b: string = \"${ITERION_ZZPROBE_BACKEND}\"\n\n" +
+		"agent x:\n  backend: \"{{vars.b}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	fresh := func() *Workflow {
+		w := compileFallbackSrc(t, src).Workflow
+		if w == nil {
+			t.Fatal("the fixture does not compile")
+		}
+		return w
+	}
+	route := []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}
+	// Process env unset: dispatch resolves the var to "" and the node is
+	// undecided — no refusal.
+	if refusals := ApplyRunFallback(fresh(), route, false, nil); len(refusals) != 0 {
+		t.Errorf("refused on the overlay's reading, which the run never makes: %v", refusals)
+	}
+	// Control: the process env answering IS the run's reading — the same
+	// route on the tools-less claw node is the refusal.
+	t.Setenv("ITERION_ZZPROBE_BACKEND", "claw")
+	refusals := ApplyRunFallback(fresh(), route, false, nil)
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals with the process env set, want 1: %v", len(refusals), refusals)
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
 	}
 }
