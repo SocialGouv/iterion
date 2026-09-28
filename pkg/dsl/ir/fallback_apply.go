@@ -3,6 +3,7 @@ package ir
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -151,55 +152,91 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 // order, and with its rule that a launch value for a var the workflow
 // does not declare is dropped.
 //
-// The values are expanded the way dispatch expands them — TWICE, and the
-// first pass is resolveVars': var text resolves through the PROCESS
-// environment (varExpandFn ends in os.Getenv), never through the ITERION_
-// settings overlay, which is LookupEnv's alone. The view stores that first
-// expansion; the reader's own `${…}` pass then runs on the substituted
-// field, resolveRoutingField's second. Storing the raw text instead read
-// every var-held `${…}` once too few and through the wrong environment —
-// an overlay-only `ITERION_X` answered the screen "claw" where dispatch
-// stored "", and the screen refused a route on a backend the run never
-// resolves. Nil when nothing declares or overrides a var, which reads
-// exactly as before.
-func launchVarsView(w *Workflow, overrides map[string]string) map[string]string {
+// Values carry the type resolveVars gives them — ResolveVarText is its
+// one reading of a var's text, shared here — so a `json` var is its
+// parsed document and a dotted `{{vars.cfg.backend}}` drills into it,
+// the executor's own semantics. The expansion pass is resolveVars' too:
+// the PROCESS environment (varExpandFn ends in os.Getenv), never the
+// ITERION_ settings overlay, which is LookupEnv's alone. The reader's
+// own `${…}` pass then runs on the substituted field, resolveRoutingField's
+// second. Storing the raw text instead read every var-held `${…}` once
+// too few and through the wrong environment — an overlay-only `ITERION_X`
+// answered the screen "claw" where dispatch stored "", and the screen
+// refused a route on a backend the run never resolves.
+//
+// Two resolveVars readings the screen cannot reproduce stay UNDECIDED
+// instead: a var whose text references one of the five names varExpandFn
+// answers from engine state — PROJECT_DIR, BUNDLE_DIR, BUNDLE_SKILLS_DIR,
+// PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR — is omitted (the screen has no
+// workDir, worktree or container workspace; os.Getenv reads them "",
+// decided-empty where dispatch reads a path), and a var whose text fails
+// coercion is omitted too (dispatch logs and falls back to the raw value,
+// which a drill cannot read either). Undecided is the established posture
+// for what the screen cannot know: no opinion, no guess. Nil when nothing
+// declares or overrides a var, which reads exactly as before.
+func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
 	if len(w.Vars) == 0 {
 		return nil
 	}
-	var view map[string]string
-	put := func(name, value string) {
+	var view map[string]any
+	put := func(name string, value any) {
 		if view == nil {
-			view = make(map[string]string, len(w.Vars))
+			view = make(map[string]any, len(w.Vars))
 		}
 		view[name] = value
+	}
+	read := func(name string, raw any, vt VarType) {
+		if s, isText := raw.(string); isText && referencesEngineSuppliedName(s) {
+			return
+		}
+		v, err := ResolveVarText(raw, vt, os.Getenv)
+		if err != nil {
+			return
+		}
+		put(name, v)
 	}
 	for name, v := range w.Vars {
 		if v == nil || !v.HasDefault {
 			continue
 		}
-		if s, ok := varDefaultText(v.Default); ok {
-			put(name, ExpandWithDefault(s, os.Getenv))
-		}
+		read(name, v.Default, v.Type)
 	}
 	for name, s := range overrides {
-		if _, declared := w.Vars[name]; declared {
-			put(name, ExpandWithDefault(s, os.Getenv))
+		if decl, declared := w.Vars[name]; declared && decl != nil {
+			read(name, s, decl.Type)
 		}
 	}
 	return view
 }
 
-// varDefaultText renders a declared default as the text a routing field
-// substitutes — a string as written, a scalar the way the template
-// resolver's JSON-ish formatting prints it.
-func varDefaultText(v any) (string, bool) {
-	switch t := v.(type) {
-	case string:
-		return t, true
-	case int64, float64, bool:
-		return fmt.Sprintf("%v", t), true
+// engineSuppliedVarNames are the names the engine's varExpandFn answers
+// from run state (pkg/runtime/engine_resolve.go) rather than from any
+// environment the launch-time screen runs with — keep the twin in sync.
+var engineSuppliedVarNames = []string{
+	"PROJECT_DIR",
+	"BUNDLE_DIR",
+	"BUNDLE_SKILLS_DIR",
+	"PROJECT_MEMORY_DIR",
+	"PROJECT_SCRATCH_DIR",
+}
+
+// referencesEngineSuppliedName reports whether expanding s would CONSULT
+// one of the engine-supplied names — directly, bare or braced, or nested
+// inside a `:-` default. Probing with a recording lookup reproduces
+// exactly the names the real expansion reads, instead of guessing at the
+// spelling with a substring match (`${PROJECT_DIR2}` is not PROJECT_DIR).
+func referencesEngineSuppliedName(s string) bool {
+	if !strings.ContainsRune(s, '$') {
+		return false
 	}
-	return "", false
+	found := false
+	expandWithDefault(s, func(name string) string {
+		if slices.Contains(engineSuppliedVarNames, name) {
+			found = true
+		}
+		return ""
+	}, expandPolicy{})
+	return found
 }
 
 // ParseRunFallbackFlag parses the `--fallback` / launch-row value into a

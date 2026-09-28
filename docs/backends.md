@@ -497,7 +497,8 @@ that stack. It is resolved per node like every routing field (`model:`,
 `backend:`, `provider:`, `interaction_model:`, a `fallbacks:` route's three
 fields, a verified action's `recovery.model`, the workflow's
 `default_backend:`): a `{{vars.<name>}}` reference
-first — the run's vars are the one namespace that exists before the node
+first — a dotted `{{vars.<doc>.<member>}}` included, drilled into a `json`
+var's document; the run's vars are the one namespace that exists before the node
 runs; any other template warns C148 at compile time and reaches the backend
 as text — then `${VAR}` / `${VAR:-default}` expansion.
 
