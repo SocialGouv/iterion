@@ -119,9 +119,14 @@ const HINTS: Record<string, DiagnosticHint> = {
     docsAnchor: "c023",
   },
   C024: {
-    title: "Invalid reasoning_effort or duplicate MCP server",
-    hint: "Use `none | low | medium | high | xhigh | max | ultracode` for reasoning_effort, and unique mcp_server names.",
+    title: "Duplicate MCP server",
+    hint: "A `mcp_server` name is declared more than once — use unique mcp_server names.",
     docsAnchor: "c024",
+  },
+  C027: {
+    title: "Invalid reasoning_effort",
+    hint: "Use `none | low | medium | high | xhigh | max | ultracode` for reasoning_effort, or a quoted `${VAR:-default}` string.",
+    docsAnchor: "c027",
   },
   C025: {
     title: "Invalid MCP server config",

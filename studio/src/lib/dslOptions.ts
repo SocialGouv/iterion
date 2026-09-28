@@ -103,7 +103,7 @@ export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
 
 export const REASONING_EFFORT_HELP =
   "For reasoning-capable models (e.g. o-series, claude-extended-thinking). " +
-  "none disables reasoning on the models that carry it (GPT-6 Sol/Luna) and clamps to the lowest real level elsewhere. " +
+  "none disables reasoning on the models that carry it (GPT-6 Sol/Luna); elsewhere claw and claude_code clamp it to low, pi spells it off, codex's CLI refuses it on a model without it. " +
   "ultracode = xhigh + standing consent to orchestrate multi-agent workflows; reliable only on claude-opus-4-8.";
 
 export const FALLBACK_ON_OPTIONS: SelectOption[] = [

@@ -94,7 +94,10 @@ export function EffortBar({ level, live, muted, supported, className, title }: P
   // 4-level model fills 4/4. Else use the global low→max scale.
   const supportedIdx = supported ? supported.indexOf(level) : -1;
   const total = supported && supportedIdx >= 0 ? supported.length : 5;
-  const filled = supportedIdx >= 0 ? supportedIdx + 1 : FILLED[level];
+  // none draws an empty bar on every scale — including a normalised one,
+  // where index 0 + 1 would otherwise paint a cell on exactly the backends
+  // (pi, codex fallback) whose supported list carries the level.
+  const filled = level === "none" ? 0 : supportedIdx >= 0 ? supportedIdx + 1 : FILLED[level];
   const cells = Array.from({ length: total }, (_, i) => i);
   const isModelMax = supportedIdx >= 0 && supportedIdx === total - 1;
   const defaultTitle = muted
