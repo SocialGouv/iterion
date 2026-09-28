@@ -89,9 +89,11 @@ func loadProductions(t *testing.T) map[string]string {
 // previous line-at-a-time stripper only fired when both delimiters shared a
 // line, so a multi-line comment survived intact — and its quoted words were
 // then read as production values, letting a dropped enum word hide behind a
-// comment from TestEBNFValueProductionsMatchTheRegistry. An unterminated
-// comment swallows the rest of the file; the <50-productions floor in
-// loadProductions turns that into a loud failure.
+// comment from TestEBNFValueProductionsMatchTheRegistry. The guarantee this
+// stripper owes the guard is one-directional: stripping can only REMOVE
+// text, so an unterminated comment (or any over-strip) makes the guard
+// false-red — a loud, safe failure direction — and can never make it
+// false-green by inventing a value that is not in the file.
 func stripEBNFComments(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))

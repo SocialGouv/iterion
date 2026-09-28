@@ -1,9 +1,13 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 )
 
 // TestEffortCapabilities_ClawOpus48 proves the endpoint returns the full
@@ -567,4 +571,68 @@ func sameStringSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// seedCodexModelCache installs a fake Codex model/list response so
+// codexCapabilities exercises its live-list path without spawning the CLI.
+func seedCodexModelCache(t *testing.T, models []codexsdk.ModelInfo) {
+	t.Helper()
+	codexCacheMu.Lock()
+	codexCache = &codexCacheEntry{models: models, fetchedAt: time.Now()}
+	codexCacheMu.Unlock()
+	t.Cleanup(func() {
+		codexCacheMu.Lock()
+		codexCache = nil
+		codexCacheMu.Unlock()
+	})
+}
+
+// TestCodexCapabilities_LiveListOffersNoneForCarriers reproduces the
+// live-list vs fallback divergence: codex 0.156.1's model/list reports
+// low/medium/high/max even for gpt-6-sol, yet the runtime accepts none
+// for Sol/Luna (and 400s it for Astra). The endpoint must agree with the
+// runtime truth on BOTH paths — a picker that offers none only when the
+// CLI is down is lying whenever the CLI is up.
+func TestCodexCapabilities_LiveListOffersNoneForCarriers(t *testing.T) {
+	cliList := []codexsdk.ModelInfo{
+		{
+			ID:    "gpt-6-sol",
+			Model: "gpt-6-sol",
+			// What codex 0.156.1 actually reports — no none.
+			SupportedReasoningEfforts: []codexsdk.ReasoningEffortOption{
+				{Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "max"},
+			},
+			DefaultReasoningEffort: "medium",
+		},
+		{
+			ID:    "gpt-6-astra",
+			Model: "gpt-6-astra",
+			SupportedReasoningEfforts: []codexsdk.ReasoningEffortOption{
+				{Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "max"},
+			},
+			DefaultReasoningEffort: "medium",
+		},
+	}
+	seedCodexModelCache(t, cliList)
+
+	sol, err := codexCapabilities(context.Background(), "gpt-6-sol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sol.Source != "codex-cli" {
+		t.Fatalf("Source=%q, want codex-cli (live path)", sol.Source)
+	}
+	assertEffortLevels(t, sol.Supported,
+		[]string{"none", "low", "medium", "high", "max"}, // required
+		nil, // forbidden
+	)
+
+	astra, err := codexCapabilities(context.Background(), "gpt-6-astra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEffortLevels(t, astra.Supported,
+		[]string{"low", "medium", "high", "max"}, // required
+		[]string{"none"},                         // forbidden: the runtime 400s it
+	)
 }
