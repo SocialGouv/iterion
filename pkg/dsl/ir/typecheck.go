@@ -74,7 +74,7 @@ func (c *compiler) validateExprTypes(w *Workflow) {
 			loc := fmt.Sprintf("compute %q field %q", cn.ID, ce.Key)
 			c.walkExprTypes(expr.ToSnapshot(ce.AST), env, cn.ID, "", loc)
 			c.checkIntDivision(w, cn, ce, env)
-			c.checkCollectionLiteralConform(w, cn, ce)
+			c.checkCollectionLiteralConform(w, cn, ce, env)
 		}
 	}
 }
@@ -174,16 +174,15 @@ func (c *compiler) walkExprTypes(n *expr.Snapshot, env exprEnv, nodeID, eid, loc
 // side (C306): the evaluator's equals() never walks into a slice or a map,
 // so the comparison is CONSTANT — `==` is false and `!=` true even between
 // identical contents (`[1] == [1]` is false, `xs != xs` true). The trigger
-// is a literal on either side (always a collection, whatever it holds), or
-// two operands the compiler knows as collections (the schema vocabulary's
-// one collection type is string[]; a json field bails to no-opinion like
-// everywhere else).
+// is a literal on either side (always a collection, whatever it holds) or an
+// operand the compiler knows as one — a string[] field, or the result of a
+// total collection helper (`keys`, `values`, `sort`, `unique`, `flatten`,
+// `tail`, `slice`, `concat`, `map`, `filter`): `keys(m) == keys(m)` is the
+// same constant false. A json field bails to no-opinion like everywhere
+// else.
 func (c *compiler) checkCollectionCompare(l, r *expr.Snapshot, op string, env exprEnv, nodeID, eid, loc string) {
 	isLit := func(s *expr.Snapshot) bool { return s.Kind == expr.SnapList || s.Kind == expr.SnapObject }
-	knownColl := func(s *expr.Snapshot) bool {
-		t := env.inferType(s)
-		return t.known && t.t == FieldTypeStringArray
-	}
+	knownColl := func(s *expr.Snapshot) bool { return env.inferType(s).collection }
 	if !isLit(l) && !isLit(r) && (!knownColl(l) || !knownColl(r)) {
 		return
 	}
@@ -202,11 +201,13 @@ func (c *compiler) checkCollectionCompare(l, r *expr.Snapshot, op string, env ex
 // collection literal the declared field type cannot hold (C307) — the mirror
 // of checkIntDivision for the collection types: the runtime conforms the
 // value to the schema and a value that cannot conform fails the node
-// (SCHEMA_VALIDATION), and only there. An element the compiler cannot type —
-// a ref, a call, an arithmetic — is not held against the author; a literal
-// scalar, a nested collection or (under a scalar field) the collection
-// itself is, because its kind is known from the source alone.
-func (c *compiler) checkCollectionLiteralConform(w *Workflow, cn *ComputeNode, ce *ComputeExpr) {
+// (SCHEMA_VALIDATION), and only there. An element is judged by its INFERRED
+// type, not its syntax: a literal scalar, a nested collection, and a
+// statically-known non-string expression (`[input.n == 1]` is a bool
+// element) are all named, because their kind is known from the source
+// alone; an element the compiler cannot type — a ref into a json field, an
+// untypable call — is not held against the author.
+func (c *compiler) checkCollectionLiteralConform(w *Workflow, cn *ComputeNode, ce *ComputeExpr, env exprEnv) {
 	schema := w.Schemas[cn.OutputSchema]
 	if schema == nil {
 		return
@@ -229,16 +230,15 @@ func (c *compiler) checkCollectionLiteralConform(w *Workflow, cn *ComputeNode, c
 		switch root.Kind {
 		case expr.SnapList:
 			for i, el := range root.Children {
+				et := env.inferType(el)
 				var what string
-				switch el.Kind {
-				case expr.SnapString:
-					continue
-				case expr.SnapBool, expr.SnapInt, expr.SnapFloat:
-					what = "a scalar literal"
-				case expr.SnapList, expr.SnapObject:
+				switch {
+				case et.collection:
 					what = "a nested collection"
+				case !et.known || et.t == FieldTypeString:
+					continue // untypable, or a string: conforms
 				default:
-					continue // a path, a call, an arithmetic: no opinion
+					what = fmt.Sprintf("a statically-known %s", et.t)
 				}
 				c.warnfAt(DiagCollectionLiteralConformance, cn.ID, "",
 					"compute %q field %q is a string[] but its list literal's element %d is %s — it fails SCHEMA_VALIDATION at run time (`field[%d]: expected string, got ...`): quote it ('42'), or type the field json",
@@ -375,15 +375,24 @@ func lookupField(w *Workflow, schemaName, field string) (*SchemaField, bool) {
 
 // inferredType is the conservative static type of an expression sub-tree.
 // known==false means "no opinion" (json, unresolved ref, ambiguous builtin)
-// and callers MUST treat it as compatible with everything.
+// and callers MUST treat it as compatible with everything. collection==true
+// says the value is definitely a collection (a list or a map) whatever t
+// says — equality never compares one by value, which is C306's trigger;
+// a collection with a known element type carries both (known, t=string[],
+// collection).
 type inferredType struct {
-	t     FieldType
-	known bool
+	t          FieldType
+	known      bool
+	collection bool
 }
 
 var unknownType = inferredType{}
 
-func knownT(t FieldType) inferredType { return inferredType{t: t, known: true} }
+// knownT types a sub-tree; a string[] is the vocabulary's one typed
+// collection, so it carries the collection mark every reader agrees on.
+func knownT(t FieldType) inferredType {
+	return inferredType{t: t, known: true, collection: t == FieldTypeStringArray}
+}
 
 // inferType walks a Snapshot and returns its conservative static type.
 func (env exprEnv) inferType(n *expr.Snapshot) inferredType {
@@ -402,20 +411,20 @@ func (env exprEnv) inferType(n *expr.Snapshot) inferredType {
 	case expr.SnapList:
 		// A list literal whose every element is statically a string IS the
 		// vocabulary's one collection type; the empty literal conforms to it
-		// too ([]any{} passes the field check). Anything else bails — a
-		// mixed or non-string literal has no name here, and the run says
-		// what it was at conformance (C307 covers the provable cases).
+		// too ([]any{} passes the field check). Anything else is still
+		// definitely a collection — equality on it is C306's business —
+		// without a nameable element type.
 		for _, ch := range n.Children {
 			if ct := env.inferType(ch); !ct.known || ct.t != FieldTypeString {
-				return unknownType
+				return collectionT
 			}
 		}
 		return knownT(FieldTypeStringArray)
 	case expr.SnapObject:
 		// An object literal is definitely a map, and the schema vocabulary
 		// types that json — whose doctrine is "no opinion": equality on it
-		// is C306's business, conformance C307's, both syntactic.
-		return unknownType
+		// is C306's business, conformance C307's, both reading collection.
+		return collectionT
 	case expr.SnapPath:
 		if n.Namespace == "vars" && len(n.Path) == 1 {
 			if v, ok := env.w.Vars[n.Path[0]]; ok {
@@ -456,9 +465,67 @@ func (env exprEnv) inferType(n *expr.Snapshot) inferredType {
 			return knownT(FieldTypeBool)
 		case "join":
 			return knownT(FieldTypeString)
+		case "keys":
+			// keys() of any map is a list of its (string) keys.
+			return knownT(FieldTypeStringArray)
+		case "values":
+			return collectionT
+		case "sort", "unique", "flatten", "tail", "slice":
+			// Element-preserving: the result carries the input's element
+			// type when it is known.
+			if len(n.Children) >= 1 {
+				return mirrorCollection(env.inferType(n.Children[0]))
+			}
+			return collectionT
+		case "concat":
+			// concat of all-string[] inputs is a string[]; any result it
+			// returns is a list either way.
+			if len(n.Children) == 0 {
+				return collectionT
+			}
+			for _, ch := range n.Children {
+				if ct := env.inferType(ch); !ct.known || ct.t != FieldTypeStringArray {
+					return collectionT
+				}
+			}
+			return knownT(FieldTypeStringArray)
 		}
-		// concat/unique/if: element/result type not statically known → bail
+		// if/min/max/sum and arithmetic forms: result type not statically
+		// known → bail
+		return unknownType
+	case expr.SnapLambdaComb:
+		// map/filter always produce a list; filter preserves the element
+		// type (map's body is opaque). reduce's accumulator is a scalar as
+		// often as a collection — no claim.
+		switch n.Func {
+		case "map":
+			return collectionT
+		case "filter":
+			if len(n.Children) >= 1 {
+				return mirrorCollection(env.inferType(n.Children[0]))
+			}
+			return collectionT
+		}
 		return unknownType
 	}
 	return unknownType
+}
+
+// collectionT is the inference for a value that is DEFINITELY a collection
+// (a list — or a map, equality never walks either) whose element type the
+// compiler cannot name. known stays false: every consumer but C306 reads
+// t/known, and "a collection of unknowable elements" must not become a
+// type claim there — `values(m) == 'x'` is constant-false for the same
+// reason `[1] == [1]` is (C306), but it is not a string[]-vs-string
+// mismatch (C107 stays out).
+var collectionT = inferredType{collection: true}
+
+// mirrorCollection is the element-preserving collection helpers' inference:
+// the result carries the input's element type when it is known (sort/unique/
+// tail/slice/flatten of a string[] is a string[]), a collection otherwise.
+func mirrorCollection(t inferredType) inferredType {
+	if t.known && t.t == FieldTypeStringArray {
+		return knownT(FieldTypeStringArray)
+	}
+	return collectionT
 }

@@ -284,7 +284,7 @@ func withLiteralRemedy(t FieldType, key, raw string) string {
 				return fmt.Sprintf("emit the constant from a compute's `expr:` (`%s: %q`) and reference `{{outputs.<compute>.%s}}`, or bind the value from a producer whose `output:` schema declares `%s: json` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}`; declare the field `string` if one string is what is meant",
 					key, es, key, key, key, s, key)
 			}
-			return fmt.Sprintf("bind the value from a producer whose `output:` schema declares `%s: json` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}` (a compute `expr:` literal cannot spell this value — JSON null has no expr spelling, and an object key that is not an identifier needs a quote a double-quoted DSL string cannot carry; a string value is one there: `%s: \"'text'\"`, the empty string `%s: \"''\"`); declare the field `string` if one string is what is meant",
+			return fmt.Sprintf("bind the value from a producer whose `output:` schema declares `%s: json` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}` (a compute `expr:` literal cannot spell this value — JSON null has no expr spelling, and the suggestion spells an object key as a bare identifier only: a quoted key would parse, but the remedy offers the one canonical form and a non-identifier key falls back here; a string value is one there: `%s: \"'text'\"`, the empty string `%s: \"''\"`); declare the field `string` if one string is what is meant",
 				key, key, s, key, key, key)
 		}
 		return fmt.Sprintf("the text is not valid JSON, so no producer can type it as written: write the value you mean where a producer types it — a tool whose `output:` schema declares `%s: json`, or a compute `expr:` for a string (`%s: \"'text'\"`, the empty string `%s: \"''\"`) — and reference `{{outputs.<node>.%s}}`; declare the field `string` if one string is what is meant",
@@ -335,11 +335,14 @@ func spellExprListLiteral(xs []string) (string, bool) {
 
 // spellExprJSONText spells a valid, compacted JSON text as an expr literal,
 // or reports it unspellable: JSON null has no expr form (there is no null
-// literal), and an object key that is not an identifier would need a
-// quoted-string key whose double quotes a double-quoted DSL string cannot
-// carry. Numbers keep the scalar arms' rule: an integral value spells as an
-// integer, a fractional one as a float; a digit-only re-format that would
-// overflow the int64 literal (1e21) is unspellable, never silently wrong.
+// literal), and an object key is spelled as a bare identifier or not at
+// all — a conservative choice: a quoted key (`{'a-b': 1}`) would parse,
+// but the remedy offers the one canonical form, and a key that is not an
+// identifier (or a keyword — `{true: 1}` is refused at parse) falls back
+// to the producer form. Numbers keep the scalar arms' rule: an integral
+// value spells as an integer, a fractional one as a float; a digit-only
+// re-format that would overflow the int64 literal (1e21) is unspellable,
+// never silently wrong.
 func spellExprJSONText(compacted string) (string, bool) {
 	var v any
 	if err := json.Unmarshal([]byte(compacted), &v); err != nil {

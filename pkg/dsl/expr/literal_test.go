@@ -20,6 +20,7 @@ func TestExpr_CollectionLiterals(t *testing.T) {
 		{`[1, 'a', true, 2.5]`, []any{int64(1), "a", true, 2.5}},
 		{`{}`, map[string]any{}},
 		{`{a: 1, 'b': 2}`, map[string]any{"a": int64(1), "b": int64(2)}},
+		{`{'a b': 1}`, map[string]any{"a b": int64(1)}}, // a quoted key carries what an identifier cannot
 		{`{a: [1, {b: 'x'}]}`, map[string]any{"a": []any{int64(1), map[string]any{"b": "x"}}}},
 		{`[[1, 2], []]`, []any{[]any{int64(1), int64(2)}, []any{}}},
 		// Postfix access reaches into a literal directly.

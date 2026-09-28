@@ -17,6 +17,7 @@ const literalHead = `schema src_out:
   tags: string[]
   other: string[]
   n: int
+  j: json
 
 schema lit_out:
   cmp: bool
@@ -60,10 +61,15 @@ func TestC306CollectionCompareIsConstant(t *testing.T) {
 		"literal vs ref":             {expr: `input.tags == ['a']`, want306: true},
 		"ref vs literal":             {expr: `{a: 1} != input.tags`, want306: true},
 		"two known collections":      {expr: `input.tags == input.other`, want306: true},
+		"keys == keys":               {expr: `keys(input.j) == keys(input.j)`, want306: true},        // LOW 1: the helper's result is a collection
+		"values == values":           {expr: `values(input.j) != values(input.j)`, want306: true},    // collection of unknowable elements: still constant
+		"sort == sort on string[]":   {expr: `sort(input.tags) == sort(input.other)`, want306: true}, // element-preserving mirror
+		"map == map":                 {expr: `map(input.tags, x => x) == map(input.tags, x => x)`, want306: true},
 		"scalar comparison":          {expr: `input.n == 1`, want306: false},
-		"known collection vs scalar": {expr: `input.tags == 'x'`, want306: false}, // C107 owns it
-		"literal vs scalar":          {expr: `['a'] == 'x'`, want306: false},      // C107 owns it (the all-string literal infers string[])
-		"mixed literal vs scalar":    {expr: `[1, 'a'] == 'x'`, want306: true},    // the literal infers no type: no C107, still constant
+		"known collection vs scalar": {expr: `input.tags == 'x'`, want306: false},       // C107 owns it
+		"helper vs scalar":           {expr: `sort(input.tags) == 'x'`, want306: false}, // C107 owns it (sort of string[] infers string[])
+		"literal vs scalar":          {expr: `['a'] == 'x'`, want306: false},            // C107 owns it (the all-string literal infers string[])
+		"mixed literal vs scalar":    {expr: `[1, 'a'] == 'x'`, want306: true},          // the literal infers no element type: no C107, still constant
 	} {
 		t.Run(name, func(t *testing.T) {
 			src := literalHead + "    cmp: \"" + strings.ReplaceAll(tc.expr, `"`, `'`) + "\"\n" +
@@ -131,15 +137,19 @@ func TestC307CollectionLiteralConformance(t *testing.T) {
 		expr  string
 		want  bool
 	}{
-		"non-string element":       {"xs", `['a', 1]`, true},
-		"bool element":             {"xs", `[true]`, true},
-		"nested collection":        {"xs", `[['a']]`, true},
-		"all strings":              {"xs", `['a', 'b']`, false},
-		"empty list":               {"xs", `[]`, false},
-		"untypable element":        {"xs", `[input.tags]`, false},
-		"object into string[]":     {"xs", `{a: 1}`, true},
-		"list into a string field": {"s", `['a']`, true},
-		"object into an int field": {"n", `{a: 1}`, true},
+		"non-string element":        {"xs", `['a', 1]`, true},
+		"bool element":              {"xs", `[true]`, true},
+		"bool expression element":   {"xs", `[input.n == 1]`, true},  // a ==/!= infers bool (LOW 2)
+		"known int ref element":     {"xs", `[input.n]`, true},       // a typed ref, known from the source
+		"collection helper element": {"xs", `[keys(input.j)]`, true}, // keys() is a string[] — a nested collection
+		"nested collection":         {"xs", `[['a']]`, true},
+		"all strings":               {"xs", `['a', 'b']`, false},
+		"empty list":                {"xs", `[]`, false},
+		"untypable element":         {"xs", `[input.j]`, false},               // a json field: no opinion
+		"string-typed expression":   {"xs", `[join(input.tags, '-')]`, false}, // join() infers string
+		"object into string[]":      {"xs", `{a: 1}`, true},
+		"list into a string field":  {"s", `['a']`, true},
+		"object into an int field":  {"n", `{a: 1}`, true},
 		"scalar into string[]? no — a plain string is fine as an expression": {"xs", `input.tags`, false},
 		"json takes an object":     {"j", `{a: 1}`, false},
 		"json takes a mixed list":  {"j", `['a', 1]`, false},
@@ -231,8 +241,8 @@ func TestC152JSONRemedyOffersTheComputeLiteral(t *testing.T) {
 		{`"{}"`, "(`v: \"{}\"`)", ""},
 		{`"[]"`, "(`v: \"[]\"`)", ""},
 		{`"null"`, "JSON null has no expr spelling", "(`v: \""},
-		{`"{\"a-b\": 1}"`, "not an identifier", "(`v: \""},
-		{`"{\"true\": 1}"`, "not an identifier", "(`v: \""}, // `true` is a keyword: a bare `{true: 1}` is refused at parse
+		{`"{\"a-b\": 1}"`, "a bare identifier only", "(`v: \""},
+		{`"{\"true\": 1}"`, "a bare identifier only", "(`v: \""}, // a keyword key: the suggestion stays conservative
 	}
 	for _, tc := range cases {
 		msg := c152Message(t, compileText(t, c152Fixture("json", tc.lit)))
