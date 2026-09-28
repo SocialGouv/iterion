@@ -272,4 +272,8 @@ const (
 	DiagWithSecretRef           DiagCode = "C150" // `{{secrets.x}}` in a data mapping or a compute `expr:` — the runtime materialises secrets only at execution sinks (tool command/script/postcondition, action params, prompt body); the mapping and the expr evaluator both resolve to nil
 	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a data mapping or a compute `expr:` — same rule as secrets
 	DiagWithLiteralTypeMismatch DiagCode = "C152" // a `with:` value arrives as a string unless it is exactly one reference: fires on every ref-less literal or interpolated template reaching a `bool`/`int`/`float`/`string[]` field (a string is never one), and on a `json` field for a literal that visibly attempts an encoding (warning at every consumer)
+
+	// C180+ — the var-typing wave (#1604, #1610). Kept in one contiguous
+	// hunk, away from the C15x family another in-flight branch extends.
+	DiagWithWholeRefListToString DiagCode = "C180" // a `with:` mapping that is exactly one reference to a `string[]`/`json` var delivers the value WHOLE — a list, an object — into a field declared `string`, and nothing checks a `with:` value's type at run time (warning, the mirror of C152 in the other direction)
 )

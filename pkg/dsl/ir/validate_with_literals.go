@@ -11,7 +11,9 @@ import (
 )
 
 // validateWithMappingLiterals warns (C152) when an edge `with:` value
-// reaches a typed input field of the destination as TEXT. A `with:`
+// reaches a typed input field of the destination as TEXT, and (C180) when
+// a whole-reference mapping delivers a LIST into a field declared
+// `string` — the two directions of the same divergence. A `with:`
 // value is a template: the runtime hands the destination a string for
 // every mapping except one that is exactly a single `{{…}}` block
 // covering the whole text — that one passes the referenced value
@@ -72,14 +74,18 @@ func (c *compiler) validateWithMappingLiterals(w *Workflow) {
 			continue // C002 handles the missing schema
 		}
 		for _, dm := range e.With {
-			if dm == nil || !mappingArrivesAsText(dm) {
+			if dm == nil {
 				continue
 			}
 			f := findField(schema, dm.Key)
 			if f == nil {
 				continue // C028/C034 flag the mismatch on the key
 			}
-			c.checkWithLiteral(e, dm, f, inSchema, dst)
+			if mappingArrivesAsText(dm) {
+				c.checkWithLiteral(e, dm, f, inSchema, dst)
+				continue
+			}
+			c.checkWithWholeRef(w, e, dm, f, inSchema, dst)
 		}
 	}
 }
@@ -174,6 +180,44 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 		"edge %s -> %s, with %q: value %q reaches the `%s` field %q of input schema %q on %s %s node as %s; %s",
 		e.From, e.To, dm.Key, dm.Raw, f.Type, dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(),
 		withLiteralArrival(f.Type, dm.Raw, len(dm.Refs) == 0), withLiteralRemedy(f.Type, dm.Key, dm.Raw))
+}
+
+// checkWithWholeRef is C152's mirror in the other direction (#1604): the
+// mapping is exactly one reference, so the runtime passes the value
+// through WITH its type — and a typed value can land on a field declared
+// `string`, the arm C152 deliberately stays silent on because there a
+// string is the legal value. Since #1285 a `string[]`/`json` var IS a
+// list on the default path as much as on the override one, so a
+// whole-value reference to one delivers the list — or the object — whole,
+// and nothing checks a `with:` value's type at run time (InputSchema has
+// no non-test reader in pkg/runtime): the arity simply moves, and a tool
+// whose `command:` reads {{input.<field>}} executes once per element. A
+// warning, like C152: a tolerant consumer (an LLM prompt, a text
+// template) reads the rendered value without breaking, and a refusal
+// would reject a shape a run can survive.
+//
+// Only a `{{vars.<name>}}` reference carries a statically-known type; an
+// `{{outputs.<node>…}}` whole reference resolves to nil or a schema-typed
+// field the graph checks elsewhere (C031/C032), so it earns no opinion
+// here.
+func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *SchemaField, inSchema string, dst Node) {
+	if f.Type != FieldTypeString || len(dm.Refs) != 1 {
+		return
+	}
+	ref := dm.Refs[0]
+	if ref.Kind != RefVars || len(ref.Path) != 1 {
+		return
+	}
+	v := w.Vars[ref.Path[0]]
+	if v == nil {
+		return // C033 owns the undeclared name
+	}
+	if v.Type != VarStringArray && v.Type != VarJSON {
+		return
+	}
+	c.warnfAt(DiagWithWholeRefListToString, e.From, edgeID(e.From, e.To),
+		"edge %s -> %s, with %q: the mapping is exactly one reference to the `%s` var %q, so the value passes through with its type — a list or an object arrives WHOLE on the `string` field %q of input schema %q on %s %s node, and nothing checks a `with:` value's type at run time: the arity simply moves (a tool whose command reads {{input.%s}} executes once per element); declare the field `string[]` or `json`, or interpolate the reference into prose if one string is meant",
+		e.From, e.To, dm.Key, v.Type, ref.Path[0], dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(), dm.Key)
 }
 
 // aAn is the indefinite article for s, by its initial letter — the
