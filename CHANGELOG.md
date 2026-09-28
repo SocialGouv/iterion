@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.206.0](https://github.com/SocialGouv/iterion/compare/v3.205.3...v3.206.0) (2026-09-28)
+
+### Features
+
+* **bots:** Doki reads product context — reference repos, tracker snapshot, per-run backend (3.6.0) ([#1911](https://github.com/SocialGouv/iterion/issues/1911)) ([9516682](https://github.com/SocialGouv/iterion/commit/95166821e7a21ce0b3c806470c7a31a85246b238)), references [#1612](https://github.com/SocialGouv/iterion/issues/1612)
+
+    <details><summary>why</summary>
+
+    Until now docs-refresh grounded only in the cloned repo + scope_notes; enrichment for a PRODUCT (functional specs, online-help PDFs, the tracker board) had to be paraphrased by hand into the notes.
+
+    </details>
+
 ## [3.205.3](https://github.com/SocialGouv/iterion/compare/v3.205.2...v3.205.3) (2026-09-28)
 
 ### Bug Fixes
