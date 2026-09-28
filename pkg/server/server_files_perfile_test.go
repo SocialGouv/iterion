@@ -728,6 +728,136 @@ func TestThePerFileEditorCarriesAnAddedImport(t *testing.T) {
 	}
 }
 
+// TestASaveRefusesAnAddedFileClaimedWithoutItsDigest: the digest is the
+// ONLY staleness guard for a file the unit's revision never covered, so a
+// claim that omits it is refused — not trusted. Measured before the
+// refusal existed: the same save with the digest stripped answered 200 and
+// wrote the document's stale declarations over a colleague's edit.
+func TestASaveRefusesAnAddedFileClaimedWithoutItsDigest(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	// A colleague edits the fragment while the overlay is unsaved, and the
+	// author edits what the fragment declares from the canvas, so the save
+	// WOULD rewrite it — this is what makes the missing guard an overwrite
+	// and not a no-op.
+	onDisk := "prompt extra:\n  A colleague wrote this meanwhile.\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/lib/more.bot": onDisk})
+	edited := editDocument(t, applied.Document, func(m map[string]any) {
+		for _, p := range m["prompts"].([]any) {
+			if pm, _ := p.(map[string]any); pm["name"] == "extra" {
+				pm["body"] = "Edited from the canvas on the stale read."
+			}
+		}
+	})
+	stripped := make([]unitFileInfo, len(applied.Unit.Files))
+	copy(stripped, applied.Unit.Files)
+	for i := range stripped {
+		if stripped[i].Rel == "lib/more.bot" {
+			stripped[i].Digest = ""
+		}
+	}
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, stripped)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save of an added file claimed without its digest: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/more.bot") {
+		t.Fatalf("the refusal does not name the file: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != onDisk {
+		t.Fatalf("the colleague's edit was overwritten:\n%s", got)
+	}
+	// The control: the same save WITH the digest is the conflict the guard
+	// exists to be — 409, named, nothing written.
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("save with the digest over a moved file: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != onDisk {
+		t.Fatalf("the colleague's edit was overwritten:\n%s", got)
+	}
+}
+
+// TestTheRenderFollowsTheClaimPastAStaleAddedFile: the per-file render
+// writes nothing, so a fragment that moved on disk since the apply is not
+// the render's to judge — refusing it (409) would strand the unsaved
+// header edit behind a verdict only a save needs: the buffer would show
+// the stored header, and a re-apply of that text would silently revert
+// the edit. The render follows the claim; the save makes the conflict,
+// when it runs.
+func TestTheRenderFollowsTheClaimPastAStaleAddedFile(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	writeUnitFixture(t, workdir, map[string]string{"demo/lib/more.bot": "prompt extra:\n  A colleague wrote this meanwhile.\n"})
+
+	rec, main := unparseCall(t, s, map[string]any{"document": applied.Document, "path": "demo/main.bot", "file": "main.bot", "unit_files": applied.Unit.Files})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render over a stale added file: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(main.Source, "import \"lib/more.bot\"") {
+		t.Fatalf("the render dropped the claimed header:\n%s", main.Source)
+	}
+}
+
+// TestTheProbeStubKeepsTheRealWorkflowsName: the claim's probe stages the
+// main as its claimed header plus a STUB workflow (so a main below a lib/
+// directory keeps its main-ness). An error that names the stub — a newly
+// imported file declaring a workflow of its own meets E010 — must name
+// the author's workflow, not a "probe" they never wrote.
+func TestTheProbeStubKeepsTheRealWorkflowsName(t *testing.T) {
+	workdir := t.TempDir()
+	full := "workflow other:\n  entry: done\n"
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/full.bot":  full,
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	// The apply refuses this import already (a second workflow is a new
+	// load error); the probe's wording is what the SAVE's own re-derivation
+	// surfaces, so drive the save directly with the claim the apply would
+	// have answered.
+	claimed := append([]unitFileInfo{}, opened.Unit.Files...)
+	claimed[0].Imports = append(append([]string{}, claimed[0].Imports...), "lib/full.bot")
+	claimed = append(claimed, unitFileInfo{Rel: "lib/full.bot", Digest: fileDigest([]byte(full))})
+	rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimed)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("importing a file that declares a second workflow: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "probe") {
+		t.Fatalf("the refusal names the probe's stub instead of the author's workflow: %s", rec.Body.String())
+	}
+	// The body is JSON: quotes arrive escaped.
+	if !strings.Contains(rec.Body.String(), `\"w\"`) {
+		t.Fatalf("the refusal does not name the main's own workflow: %s", rec.Body.String())
+	}
+}
+
 // TestThePerFileEditorCarriesARemovedImport: an `import` line removed in
 // the per-file editor applies and saves: the main is written without it,
 // and the fragment it named is LEFT ALONE — the measured pre-#1680 failure

@@ -533,7 +533,7 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		httpError(w, http.StatusUnprocessableEntity, "the document carries no provenance for a bot in several files: reopen %s in the studio (an older client would fold every file into the main)", req.Path)
 		return
 	}
-	target, headers, added, err := s.claimedTarget(u, unitRequest{main: u.Main, abs: absPath, root: u.Root}, req.UnitFiles)
+	target, headers, added, err := s.claimedTarget(u, unitRequest{main: u.Main, abs: absPath, root: u.Root}, req.UnitFiles, true)
 	if err != nil {
 		var conflict claimConflict
 		if errors.As(err, &conflict) {
@@ -854,7 +854,7 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		httpError(w, http.StatusUnprocessableEntity, "the document carries no provenance for a bot in several files: reopen the bot (an older client would fold every file into the main)")
 		return
 	}
-	target, headers, _, err := s.claimedTarget(u, unitRequest{files: req.Files, main: main}, req.UnitFiles)
+	target, headers, _, err := s.claimedTarget(u, unitRequest{files: req.Files, main: main}, req.UnitFiles, true)
 	if err != nil {
 		var conflict claimConflict
 		if errors.As(err, &conflict) {
@@ -958,12 +958,17 @@ func (e claimConflict) Error() string { return e.msg }
 // skeleton headers come from the claim, so the change is written instead
 // of dropped. added holds the files the claim joins to the unit, with
 // their content as read NOW; a disk save re-reads them under the locks.
-func (s *Server) claimedTarget(u *unit.Unit, ur unitRequest, claimed []unitFileInfo) (target *unit.Unit, headers map[string]unitFileInfo, added []unit.File, err error) {
+// forWrite says the answer backs a WRITE: a file the claim adds is then
+// checked against the digest the claim carries (the unit's revision never
+// covered it). A render passes false — showing the document's truth about
+// its files is not a write, and refusing it would strand an unsaved header
+// edit behind a staleness verdict only a save needs.
+func (s *Server) claimedTarget(u *unit.Unit, ur unitRequest, claimed []unitFileInfo, forWrite bool) (target *unit.Unit, headers map[string]unitFileInfo, added []unit.File, err error) {
 	if len(claimed) == 0 || claimedMatchesStored(u, claimed) {
 		return u, nil, nil, nil
 	}
 	probe := ur.probeUnit(u, claimed)
-	return finishClaimed(u, probe, claimed)
+	return finishClaimed(u, probe, claimed, forWrite)
 }
 
 // claimedMatchesStored reports whether the claimed file list is the stored
@@ -1030,22 +1035,25 @@ func (ur unitRequest) probeUnit(stored *unit.Unit, claimed []unitFileInfo) *unit
 	for _, f := range stored.Files {
 		held[f.Rel] = true
 	}
-	// The synthetic main keeps a workflow when the real one declares one:
-	// a main living below a lib/ directory whose staged text has none is
-	// read as a FRAGMENT of the bot above (unit.fragmentAlone judges the
-	// staged text), and the probe's whole membership is rebased under
-	// names nothing claims.
-	withWorkflow := false
+	// The synthetic main keeps a workflow when the real one declares one —
+	// named after it, so an error that mentions it (a fragment that declares
+	// a workflow of its own meets the unit's one-workflow rule, E010) reads
+	// as the REAL main's workflow, not as a "probe" the author never wrote.
+	// A main living below a lib/ directory whose staged text has no
+	// workflow is read as a FRAGMENT of the bot above (unit.fragmentAlone
+	// judges the staged text), and the probe's whole membership is rebased
+	// under names nothing claims.
+	stub := ""
 	for _, f := range stored.Files {
 		if f.Rel == stored.Main && f.AST != nil && len(f.AST.Workflows) > 0 {
-			withWorkflow = true
+			stub = f.AST.Workflows[0].Name
 		}
 	}
 	if ur.files != nil {
 		m := make(map[string]string, len(claimed))
 		for _, cf := range claimed {
 			if held[cf.Rel] {
-				m[cf.Rel] = claimedHeaderText(cf, cf.Rel == stored.Main && withWorkflow)
+				m[cf.Rel] = claimedHeaderText(cf, mainStub(cf, stored, stub))
 			} else if src, ok := ur.files[cf.Rel]; ok {
 				m[cf.Rel] = src
 			}
@@ -1068,25 +1076,35 @@ func (ur unitRequest) probeUnit(stored *unit.Unit, claimed []unitFileInfo) *unit
 				key = filepath.ToSlash(k)
 			}
 		}
-		staged[key] = []byte(claimedHeaderText(cf, cf.Rel == stored.Main && withWorkflow))
+		staged[key] = []byte(claimedHeaderText(cf, mainStub(cf, stored, stub)))
 	}
 	return unit.LoadDirStaged(ur.abs, staged)
+}
+
+// mainStub is the stub workflow's name for the claimed main, "" for every
+// other file (never a fragment: the unit's one-workflow rule would fire
+// inside the probe).
+func mainStub(cf unitFileInfo, stored *unit.Unit, stub string) string {
+	if cf.Rel == stored.Main {
+		return stub
+	}
+	return ""
 }
 
 // claimedHeaderText renders a claimed file header — its `import` lines —
 // as a whole file's text: what probeUnit stages for a file the stored unit
 // holds, so the loader walks the CLAIMED imports and the membership is the
 // claim's, while no declaration of the stored file leaks into the probe.
-// withWorkflow adds a stub workflow, for the main of a unit whose real
-// main declares one — never for a fragment, or the unit's one-workflow
-// rule (E010) would fire inside the probe.
-func claimedHeaderText(cf unitFileInfo, withWorkflow bool) string {
+// stubWorkflow, when set, adds a stub workflow of that name — the real
+// main's, so the staged main keeps its main-ness below a lib/ directory
+// and any error that names the workflow names the author's own.
+func claimedHeaderText(cf unitFileInfo, stubWorkflow string) string {
 	var b strings.Builder
 	for _, p := range cf.Imports {
 		fmt.Fprintf(&b, "import %s\n", strconv.Quote(p))
 	}
-	if withWorkflow {
-		b.WriteString("\nworkflow probe:\n  entry: done\n")
+	if stubWorkflow != "" {
+		fmt.Fprintf(&b, "\nworkflow %s:\n  entry: done\n", stubWorkflow)
 	}
 	return b.String()
 }
@@ -1095,11 +1113,12 @@ func claimedHeaderText(cf unitFileInfo, withWorkflow bool) string {
 // claim and assembles the unit the save or the render works from: the
 // stored unit's own entries for the files it holds (their declarations are
 // the comparison a rewrite is judged against), the probe's for the ones
-// the claim adds (their content as read now, digest-checked against the
-// read the claim carries — the unit's revision never covered them).
-// headers maps every claimed file to the header the split's skeleton must
-// take: the claim's, not the stored file's.
-func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
+// the claim adds (their content as read now — and for a WRITE,
+// digest-checked against the read the claim carries, since the unit's
+// revision never covered them). headers maps every claimed file to the
+// header the split's skeleton must take: the claim's, not the stored
+// file's.
+func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bool) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
 	if d := firstErrorDiagnostic(probe.Diagnostics); d != "" {
 		return nil, nil, nil, fmt.Errorf("the files the document claims do not load as one unit: %s", d)
 	}
@@ -1131,7 +1150,15 @@ func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo) (*unit.Unit
 			files = append(files, f)
 			continue
 		}
-		if cf.Digest != "" && cf.Digest != fileDigest(pf.Source) {
+		// A file the claim ADDS was never covered by the unit's revision, so
+		// the digest of the read the document was built from is the only
+		// thing that stands between a colleague's edit and an overwrite. A
+		// claim without it cannot be told fresh from stale: refused, not
+		// trusted.
+		if cf.Digest == "" {
+			return nil, nil, nil, fmt.Errorf("the document's file list claims %s, a file this bot did not hold, without the digest of the read it was seen in: reopen the bot and redo the edit", pf.Rel)
+		}
+		if forWrite && cf.Digest != fileDigest(pf.Source) {
 			return nil, nil, nil, claimConflict{fmt.Sprintf("%s changed since it was read into this bot: reopen it and redo the edit", pf.Rel)}
 		}
 		added = append(added, pf)
@@ -1202,7 +1229,10 @@ func unitFile(u *unit.Unit, rel string) (unit.File, bool) {
 // a header a per-file edit changed and has not saved yet is rendered as
 // claimed, or the view would show the stored header over a document that
 // no longer has it — and a re-apply of that text would silently revert the
-// edit.
+// edit. Staleness of a file the claim newly imports is NOT judged here:
+// the render writes nothing, and refusing it would strand the unsaved
+// header edit behind a verdict only a save needs — the save makes it, as
+// a conflict, when it runs.
 func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc *ast.File) {
 	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
 	if err != nil {
@@ -1213,13 +1243,8 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 		httpError(w, http.StatusUnprocessableEntity, "the bot's files hold no program")
 		return
 	}
-	target, headers, _, err := s.claimedTarget(ur.unit, ur, req.UnitFiles)
+	target, headers, _, err := s.claimedTarget(ur.unit, ur, req.UnitFiles, false)
 	if err != nil {
-		var conflict claimConflict
-		if errors.As(err, &conflict) {
-			httpError(w, http.StatusConflict, "%v", err)
-			return
-		}
 		httpError(w, http.StatusUnprocessableEntity, "%v", err)
 		return
 	}
