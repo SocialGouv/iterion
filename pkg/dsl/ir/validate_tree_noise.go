@@ -74,29 +74,32 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 			// One quote/comment/heredoc-aware pass per body: C158 reads the
 			// hits, C157's script arm the quoted/heredoc intervals.
 			sc := scanShellBody(b.text)
+			seenRaw := map[string]bool{} // one C157 per body: repeats of the same ref are the same finding, at the same (first) line
 			for _, ref := range b.refs {
 				// Only the plain member: a sub-field is already C153's,
 				// and the bang form is the remedy, not the defect.
 				if ref.Kind != RefRun || ref.Unquoted ||
-					len(ref.Path) != 1 || ref.Path[0] != "tree_noise" {
+					len(ref.Path) != 1 || ref.Path[0] != "tree_noise" ||
+					seenRaw[ref.Raw] {
 					continue
 				}
+				seenRaw[ref.Raw] = true
 				// The AST keeps no per-property span (the lot-1b work), so
 				// the position travels in the message: the body-relative
 				// line of the reference, located by its raw text.
 				line := bodyLineOf(b.text, ref.Raw)
 				if b.where == "script" {
-					// A ref inside a quoted span or a heredoc of a script is
-					// interpreter-bound DATA, not a shell word (the
-					// python3 -c shape): the one-word verdict does not
-					// apply there, and claiming it would be the lie the
-					// redesign exists to prevent.
+					// A ref inside a quoted span or a heredoc of a script
+					// MAY be interpreter-bound data rather than a shell
+					// word (the python3 -c shape) — the check cannot tell
+					// data from a collapsed word there, so it stays silent:
+					// a miss is the honest direction, the lie is not.
 					freeLine, free := firstFreeOccurrence(b.text, ref.Raw, sc)
 					if !free {
 						continue
 					}
 					c.warnfAt(DiagTreeNoiseRefInExecBody, t.ID, "",
-						"tool %q script, body line %d: {{run.tree_noise}} renders as ONE JSON-quoted string (a script body renders its refs as JSON literals) — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying (inside quotes the ref is interpreter-bound data, and is left alone). "+
+						"tool %q script, body line %d: {{run.tree_noise}} renders as ONE JSON-quoted string (a script body renders its refs as JSON literals) — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying (inside quotes the check cannot tell data from a collapsed word, and stays silent). "+
 							"Write {{!run.tree_noise}} for a verbatim substitution, or read $%s unquoted — the engine exports it to every tool process",
 						t.ID, freeLine, treenoise.TreeNoiseEnvVar)
 					continue
@@ -203,20 +206,30 @@ func treeNoiseEnvOnlyVar(content string) bool {
 	return strings.ContainsRune("-+?=#%/:", rune(rest[0]))
 }
 
-// shellBoundary separates shell words: whitespace and the command
-// separators. `=` is deliberately NOT one — `X="$V"` (an assignment, where
-// quoting is mandatory, or an argument, which fails LOUD rather than
-// silently) is not the standalone-word shape C158 names; neither are
-// redirections or parenthesised forms.
-func isShellBoundary(b byte) bool {
+// shellBoundaryOpen separates shell words on the OPENING side of a quoted
+// span: whitespace and the command separators. `=` is deliberately NOT one —
+// `X="$V"` (an assignment, where quoting is mandatory, or an argument, which
+// fails LOUD rather than silently) is not the standalone-word shape C158
+// names; neither is a redirect target (`2>"$V"` — one word by design) or a
+// `(`-glued span (a case pattern never word-splits).
+func isShellBoundaryOpen(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == ';' || b == '&' || b == '|'
+}
+
+// shellBoundaryClose is the closing side: the open set plus the redirection
+// and subshell closers — `git add "$V">/dev/null`, `( git add "$V")` and
+// `OUT=$(git status -- "$V")` all hand the collapsed word to argv exactly
+// like a blank did (measured: bash argc=1).
+func isShellBoundaryClose(b byte) bool {
+	return isShellBoundaryOpen(b) || b == '>' || b == '<' || b == ')'
 }
 
 // shellKeyword keeps command position across the shell's structural words,
 // so `if test -n "$V"; then` still reads `test` as a command.
 func shellKeyword(w string) bool {
 	switch w {
-	case "if", "then", "elif", "else", "while", "until", "do", "in", "!", "{", "}", "time", "coproc":
+	case "if", "then", "elif", "else", "while", "until", "do", "in", "!", "{", "}", "time", "coproc",
+		"case", "esac":
 		return true
 	}
 	return false
@@ -251,8 +264,13 @@ func scanShellBody(body string) shellScan {
 		wordStart = -1   // offset of the unquoted word under construction (-1: none)
 		cmdStart  = true // at command position
 
-		testCloser string // "]" / "]]" while inside a bracket test
-		testCmd    bool   // inside a `test …` command
+		testCloser  string // "]" / "]]" while inside a bracket test
+		testCmd     bool   // inside a `test …` command
+		casePending bool   // a `case` at command position: the NEXT quoted span is the case word, which never word-splits
+		caseRegion  bool   // between `case` and `esac`
+		casePattern bool   // in a case PATTERN position (between `in` and the arm's `)`, and after each `;;`/`;&`) — patterns never word-split either
+
+		arithDepth int // inside $(( … )) / (( … )): no word-splitting, no heredocs
 
 		heredocDelim string // pending: opens at the next newline
 		heredocStrip bool
@@ -266,6 +284,8 @@ func scanShellBody(body string) shellScan {
 		}
 		w := body[wordStart:end]
 		wordStart = -1
+		// A bare case word consumed the pending flag before this word.
+		casePending = false
 		switch w {
 		case "[":
 			testCloser = "]"
@@ -283,6 +303,20 @@ func scanShellBody(body string) shellScan {
 			if cmdStart {
 				testCmd = true
 			}
+		case "case":
+			if cmdStart {
+				casePending = true
+				caseRegion = true
+			}
+		case "in":
+			// `case … in` opens the pattern list; a `for … in` list DOES
+			// word-split, which is why this is gated on the case region.
+			if caseRegion {
+				casePattern = true
+			}
+		case "esac":
+			caseRegion = false
+			casePattern = false
 		}
 		// Command-position tracking: a keyword keeps it, any other word
 		// ends it; the separators set it again below.
@@ -293,13 +327,25 @@ func scanShellBody(body string) shellScan {
 	// it for C158.
 	closeSpan := func(close int) {
 		sc.quoted = append(sc.quoted, [2]int{spanStart, close + 1})
-		standalone := (spanStart == 0 || isShellBoundary(body[spanStart-1])) &&
-			(close+1 >= len(body) || isShellBoundary(body[close+1]))
-		if !standalone || testCloser != "" || testCmd {
+		standalone := (spanStart == 0 || isShellBoundaryOpen(body[spanStart-1])) &&
+			(close+1 >= len(body) || isShellBoundaryClose(body[close+1]))
+		if casePending {
+			// The case word: `case "$V" in` — a case word never
+			// word-splits, so the collapse mechanism is false here.
+			casePending = false
+			return
+		}
+		if !standalone || testCloser != "" || testCmd || arithDepth > 0 || casePattern {
 			return
 		}
 		content := body[spanStart+1 : close]
 		if !treeNoiseEnvOnlyVar(content) {
+			return
+		}
+		if pipedToXargs(body, close+1) {
+			// echo "$V" | xargs git add — xargs re-splits the one word
+			// downstream, so the exclusion survives end to end; naming the
+			// collapse here would be a false mechanism.
 			return
 		}
 		sc.hits = append(sc.hits, treeNoiseQuote{body[spanStart : close+1], spanLine, quote == '"'})
@@ -356,6 +402,36 @@ func scanShellBody(body string) shellScan {
 				i++
 			}
 		default:
+			// Arithmetic, $(( … )) or (( … )): nothing inside word-splits
+			// and `<<` is a shift, not a heredoc (one shift line used to
+			// open a FAKE pending heredoc that swallowed the rest of the
+			// body). Only parens, quotes and escapes mean anything here.
+			if arithDepth > 0 {
+				switch {
+				case ch == '\\':
+					if i+1 < len(body) && body[i+1] == '\n' {
+						line++
+					}
+					i += 2
+				case ch == '\'' || ch == '"':
+					quote = ch
+					spanStart = i
+					spanLine = line
+					i++
+				case ch == '(':
+					arithDepth++
+					i++
+				case ch == ')':
+					arithDepth--
+					i++
+				default:
+					if ch == '\n' {
+						line++
+					}
+					i++
+				}
+				continue
+			}
 			switch {
 			case ch == '\\': // an escape outside quotes: \' \$ \\ — never a word char
 				if i+1 < len(body) && body[i+1] == '\n' {
@@ -379,8 +455,25 @@ func scanShellBody(body string) shellScan {
 				cmdStart = true
 				testCmd = false
 				i++
-			case ch == '(' || ch == ')':
+				// A case arm terminator (`;;` or `;&`) returns to pattern
+				// position. `||` is not one.
+				if caseRegion && ch == ';' && i < len(body) && (body[i] == ';' || body[i] == '&') {
+					casePattern = true
+					i++
+				}
+			case ch == '(' && i+1 < len(body) && body[i+1] == '(':
+				// `(( … ))` or `$(( … ))` — bash reads `$((` as arithmetic
+				// first, so the adjacency rule matches the shell's own.
 				flushWord(i)
+				arithDepth = 2
+				i += 2
+			case ch == '(':
+				flushWord(i)
+				i++
+			case ch == ')':
+				flushWord(i)
+				// The `)` after a pattern list: the arm body begins.
+				casePattern = false
 				i++
 			case ch == '<' && i+1 < len(body) && body[i+1] == '<' && (i+2 >= len(body) || body[i+2] != '<'):
 				flushWord(i)
@@ -413,6 +506,32 @@ func scanShellBody(body string) shellScan {
 	return sc
 }
 
+// pipedToXargs reports whether the span ending at off feeds a pipe whose
+// next command is xargs: `echo "$V" | xargs git add`. xargs re-splits on
+// blanks, so the one-word expansion is split again downstream — the
+// collapse the check names never reaches argv.
+func pipedToXargs(body string, off int) bool {
+	j := off
+	for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
+		j++
+	}
+	if j >= len(body) || body[j] != '|' {
+		return false
+	}
+	if j+1 < len(body) && body[j+1] == '|' {
+		return false // || is not a pipe
+	}
+	j++
+	for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
+		j++
+	}
+	start := j
+	for j < len(body) && !isShellBoundaryOpen(body[j]) && body[j] != '(' && body[j] != ')' {
+		j++
+	}
+	return body[start:j] == "xargs"
+}
+
 // parseHeredocDelim reads the delimiter of a `<<` operator: an optional `-`
 // (strip leading tabs on the body), blanks, then the word, bare or quoted.
 // Returns the delimiter text (quotes removed), the strip flag, and the
@@ -438,7 +557,7 @@ func parseHeredocDelim(s string) (delim string, strip bool, n int) {
 		return s[n+1 : n+1+end], strip, n + end + 2
 	}
 	start := n
-	for n < len(s) && !isShellBoundary(s[n]) && s[n] != '(' && s[n] != ')' && s[n] != '<' && s[n] != '>' {
+	for n < len(s) && !isShellBoundaryOpen(s[n]) && s[n] != '(' && s[n] != ')' && s[n] != '<' && s[n] != '>' {
 		n++
 	}
 	return s[start:n], strip, n

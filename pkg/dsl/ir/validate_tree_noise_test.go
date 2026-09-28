@@ -406,3 +406,75 @@ func TestTreeNoiseRefInsideScriptQuotesIsData(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round-4 probes — word-boundary sides, arithmetic, the case word
+// ---------------------------------------------------------------------------
+
+// TestTreeNoiseScannerRound4Probes pins the re-attack of the round-3
+// rewrite: the closing side of a standalone word is wider than the opening
+// side (redirection and subshell closers hand the collapsed word to argv
+// exactly like a blank — measured at bash argc=1), arithmetic is a region
+// with no word-splitting and no heredocs, and a case word never splits.
+func TestTreeNoiseScannerRound4Probes(t *testing.T) {
+	c158count := func(r *CompileResult) int { return countCode(r, DiagTreeNoiseEnvQuoted) }
+	for name, tc := range map[string]struct {
+		line string
+		want int
+	}{
+		// HIGH 1 — the closing side accepts >, < and ).
+		"b1: redirect-glued closing": {
+			"  command: |\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\">/dev/null", 1},
+		"b2: paren-wrapped closing": {
+			"  command: |\n    ( git add -A -- ':/' \"$ITERION_TREE_NOISE\")", 1},
+		"b3: inside a command substitution": {
+			"  command: |\n    OUT=$(git status --porcelain -- \"$ITERION_TREE_NOISE\")\n    echo \"$OUT\"", 1},
+		// W7 — …but the OPENING side never gains them: a redirect target
+		// is one word by design.
+		"w7: a redirect target stays silent": {
+			"  command: |\n    git add -A 2>\"$ITERION_TREE_NOISE\"", 0},
+		// HIGH 2 — arithmetic is a region: << is a shift, no heredoc opens,
+		// and a quoted var inside does not word-split either.
+		"h2: an arithmetic shift does not open a heredoc": {
+			"  command: |\n    echo $((1 << 2))\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		"h2b: an arithmetic command does not open a heredoc": {
+			"  command: |\n    ((x << 2))\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		"h2c: a quoted var inside arithmetic": {
+			"  command: |\n    echo $((n = \"$ITERION_TREE_NOISE\"))\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		// …and a real heredoc inside a command substitution still works.
+		"heredoc inside $( ) is still consumed": {
+			"  command: |\n    OUT=$(cat <<EOF\n    \"$ITERION_TREE_NOISE\"\n    EOF\n    )\n    git add -A -- ':/' $ITERION_TREE_NOISE", 0},
+		// MEDIUM 1 — the case word never word-splits.
+		"m1: a case word": {
+			"  command: |\n    case \"$ITERION_TREE_NOISE\" in\n      \"\") exit 1 ;;\n    esac", 0},
+		// …nor does a case pattern (the ( side stays closed for it).
+		"a case pattern": {
+			"  command: |\n    case x in\n      \"$ITERION_TREE_NOISE\") exit 1 ;;\n    esac", 0},
+		// LOW — xargs re-splits downstream: the collapse never reaches argv.
+		"a pipe into xargs": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs git add --", 0},
+		"a pipe into xargs with flags": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -r git add --", 0},
+		// LOW — documented recall hole: a span inside another expansion.
+		"a span inside another var's expansion": {
+			"  command: |\n    echo ${OTHER:+\"$ITERION_TREE_NOISE\"}", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileText(t, treeNoiseSrc(tc.line))
+			if got := c158count(r); got != tc.want {
+				t.Fatalf("C158 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
+			}
+		})
+	}
+}
+
+// TestTreeNoiseRefFiresOncePerBody (LOW): two occurrences of the same ref in
+// one body are ONE finding — the message can only carry the first
+// occurrence's line anyway, so the second diagnostic was a byte-identical
+// duplicate (pre-existing since the check exists).
+func TestTreeNoiseRefFiresOncePerBody(t *testing.T) {
+	r := compileText(t, treeNoiseSrc("  command: |\n    git add -A -- ':/' {{run.tree_noise}}\n    git status --porcelain -- {{run.tree_noise}}"))
+	if got := countCode(r, DiagTreeNoiseRefInExecBody); got != 1 {
+		t.Fatalf("C157 count = %d, want 1 (deduped per body)\ndiagnostics: %v", got, r.Diagnostics)
+	}
+}
