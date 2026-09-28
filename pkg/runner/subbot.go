@@ -322,7 +322,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// its own children relative to ITS directory.
 			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),
 			runtime.WithEventObserver(childUsage.observe),
-			runtime.WithOnNodeFinished(func(runID, nodeID string, out map[string]any) {
+			runtime.WithOnNodeFinished(func(_ context.Context, runID, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
 			}),
 		}

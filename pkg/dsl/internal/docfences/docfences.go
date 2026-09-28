@@ -79,8 +79,31 @@ func Files(root string) ([]string, error) {
 // silently kept. The info string is captured whole, so a policy with a
 // space in it is seen by the caller instead of silently dropped. A fence
 // never closed is returned as an error beside the fences that were.
+// HasFence reports whether raw carries a fence opened for lang — any
+// spelling CommonMark reads: three or more backticks or tildes, after any
+// run of blockquote prefixes, the language after the marker with or
+// without a space. The list guard and Extract read through it, so a form
+// a renderer reads is a form this package reads too (#1814).
+func HasFence(raw []byte, lang string) bool {
+	re := openFenceRe(lang)
+	for _, line := range strings.Split(string(raw), "\n") {
+		if re.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// openFenceRe is the opener of one lang's fences: indentation, any run of
+// `> ` blockquote prefixes, a fence of three or more backticks or tildes,
+// optional spaces, then the language at a word boundary. The captures are
+// the whitespace prefix, the fence marker, and the info string.
+func openFenceRe(lang string) *regexp.Regexp {
+	return regexp.MustCompile("^(\\s*)((?:> ?){0,6})(`{3,}|~{3,})[ \\t]*" + regexp.QuoteMeta(lang) + "(?:\\b|[ \\t])(.*)$")
+}
+
 func Extract(path, lang string) ([]Fence, error) {
-	open := regexp.MustCompile("^(\\s*)```" + regexp.QuoteMeta(lang) + "\\b(.*)$")
+	open := openFenceRe(lang)
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("docfences: %w", err)
@@ -90,21 +113,42 @@ func Extract(path, lang string) ([]Fence, error) {
 	var cur *Fence
 	var body []string
 	indent := ""
+	var marker string
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 4*1024*1024)
 	lineNo := 0
+	closesFence := func(line string) bool {
+		t := strings.TrimRight(line, " \t")
+		rest, ok := strings.CutPrefix(t, indent)
+		if !ok {
+			// A closing fence may sit at up to three spaces of its own
+			// indentation below the opener's (CommonMark) — but only where
+			// the opener's prefix is plain indentation: inside a
+			// blockquote, the prefix IS the fence's place.
+			lead := t[:len(t)-len(strings.TrimLeft(t, " \t"))]
+			if len(lead) > 3 || strings.Contains(indent, ">") {
+				return false
+			}
+			rest = strings.TrimLeft(t, " \t")
+		}
+		if len(rest) < len(marker) || rest[0] != marker[0] {
+			return false
+		}
+		return strings.Trim(rest, string(marker[0])) == ""
+	}
 	for sc.Scan() {
 		lineNo++
 		line := sc.Text()
 		if cur == nil {
 			if m := open.FindStringSubmatch(line); m != nil {
-				indent = m[1]
-				cur = &Fence{File: path, Line: lineNo, Info: strings.TrimSpace(m[2])}
+				indent = m[1] + m[2]
+				marker = m[3]
+				cur = &Fence{File: path, Line: lineNo, Info: strings.TrimSpace(m[4])}
 				body = body[:0]
 			}
 			continue
 		}
-		if strings.TrimRight(line, " \t") == indent+"```" {
+		if closesFence(line) {
 			cur.Body = strings.Join(body, "\n") + "\n"
 			out = append(out, *cur)
 			cur = nil
@@ -119,7 +163,7 @@ func Extract(path, lang string) ([]Fence, error) {
 		return out, fmt.Errorf("docfences: read %s: %w", path, err)
 	}
 	if cur != nil {
-		return out, fmt.Errorf("%s:%d: ```%s fence is never closed", path, cur.Line, lang)
+		return out, fmt.Errorf("%s:%d: %s fence is never closed", path, cur.Line, marker+lang)
 	}
 	return out, nil
 }

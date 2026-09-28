@@ -116,7 +116,7 @@
 | `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program AND to carry the same… | — | 3 · 8 |
 | `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 27 |
 | `pkg/dsl/fix` | applies the mechanical remedies of compile diagnostics to a `.bot` text — the edits a diagnostic can carry because its fix is the same every time… | — | 1 · 6 |
-| `pkg/dsl/internal/docfences` | reads the fenced code blocks of the repository's documentation — the programs and documents a reader, human or agent, copies — for the tests that… | — | 1 · 3 |
+| `pkg/dsl/internal/docfences` | reads the fenced code blocks of the repository's documentation — the programs and documents a reader, human or agent, copies — for the tests that… | — | 1 · 4 |
 | `pkg/dsl/internal/dsltest` | holds the equivalence oracle the DSL packages' tests share: "the program that comes out of this transport, serialiser or editor is the program that… | — | 1 · 2 |
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
 | `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 47 · 476 |
@@ -172,7 +172,7 @@
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — | 30 · 32 |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — | 1 · 8 |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — | 3 · 11 |
-| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveBackendResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 71 · 253 |
+| `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveBackendResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` | 71 · 254 |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` | 1 · 26 |
 | `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` | 53 · 359 |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` | 7 · 36 |

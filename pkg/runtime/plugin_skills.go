@@ -99,9 +99,27 @@ func (t *contribClaimTracker) report(destPath string) bool {
 // form alone is NOT discovered as a skill by claude_code's Skill tool (only
 // the directory form is, per the Agent Skills spec; claw discovers both). See
 // mirrorFileSkill for the two-form contract.
+// mirrorCwdGuard is set by TEST binaries (SetMirrorCwdGuardForTests):
+// under `go test`, a mirror whose destination is the test process cwd (the
+// package dir) would write into the developer's checkout — the engine under
+// test needs an explicit workDir (#1803). Production never sets it.
+var mirrorCwdGuard func(workDir string) error
+
+// SetMirrorCwdGuardForTests arms the cwd guard in the calling package's
+// test binary: every skill mirror then refuses a destination equal to the
+// test process's cwd. nil disarms it. Production must never call this.
+func SetMirrorCwdGuardForTests(fn func(workDir string) error) {
+	mirrorCwdGuard = fn
+}
+
 func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnresolved bool, logger *iterlog.Logger) (owned []string, complete bool, err error) {
 	if workDir == "" {
 		return nil, true, nil
+	}
+	if mirrorCwdGuard != nil {
+		if err := mirrorCwdGuard(workDir); err != nil {
+			return nil, false, err
+		}
 	}
 	if inj != nil {
 		injOwned, injComplete, injErr := mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)

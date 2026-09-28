@@ -318,7 +318,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			result.eventErrors++
 		}
 		if e.onNodeFinished != nil {
-			e.onNodeFinished(runID, currentNodeID, output)
+			e.onNodeFinished(ctx, runID, currentNodeID, output)
 		}
 
 		selected, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output, result, branchRS)

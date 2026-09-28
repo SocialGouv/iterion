@@ -372,6 +372,55 @@ type finalizeResult struct {
 // finalizeWorktree promotes the worktree's HEAD onto a persistent
 // branch and best-effort fast-forwards the requested merge target.
 // Always best-effort: any failure is logged but does not fail the run.
+// proveOwnWorktree proves, through git, that the directory is the run's own
+// worktree: its toplevel IS the registered path, and its git common dir
+// hangs off the source repository's .git — a linked worktree of the run's
+// repository, never a directory whose git lookups climb into an enclosing
+// checkout (#1782). An executor that cannot answer keeps the pessimistic
+// reading: the proof fails and nothing is banked.
+func proveOwnWorktree(wc worktreeContext) error {
+	// git answers with PHYSICAL paths (kernel getcwd): both sides of every
+	// comparison are resolved, or a symlinked store dir makes the engine's
+	// own worktree read as foreign (#1782 review).
+	resolve := func(p string) string {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			return resolved
+		}
+		return abs
+	}
+	top, err := runGit(wc.wtPath, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git toplevel failed: %v", err)
+	}
+	if !samePath(resolve(strings.TrimSpace(top)), resolve(wc.wtPath)) {
+		return fmt.Errorf("the directory's git toplevel is %s, not the registered worktree %s", strings.TrimSpace(top), wc.wtPath)
+	}
+	common, err := runGit(wc.wtPath, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git common dir failed: %v", err)
+	}
+	common = strings.TrimSpace(common)
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(wc.wtPath, common)
+	}
+	source, err := runGit(wc.repoRoot, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading the source repository's git common dir failed: %v", err)
+	}
+	source = strings.TrimSpace(source)
+	if !filepath.IsAbs(source) {
+		source = filepath.Join(wc.repoRoot, source)
+	}
+	if !samePath(resolve(common), resolve(source)) {
+		return fmt.Errorf("the directory hangs off git repository %s, not the run's source repository %s", common, source)
+	}
+	return nil
+}
+
 func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.Logger) finalizeResult {
 	res := finalizeResult{}
 
@@ -387,6 +436,18 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	if samePath(wc.wtPath, wc.repoRoot) {
 		if logger != nil {
 			logger.Warn("runtime: finalize: worktree path %s is the repo root — refusing to bank/promote (would commit on the operator's branch); preserving, recover any run output by hand", wc.wtPath)
+		}
+		res.PreserveWorktree = true
+		return res
+	}
+
+	// 0b. The same proof, before EVERY write this finalisation makes: a
+	// nested workdir with a clean tree has nothing to bank, but its HEAD is
+	// a commit of the enclosing repository — promoting it would create an
+	// iterion/run/* branch in a repo the run does not own (#1782 review).
+	if err := proveOwnWorktree(wc); err != nil {
+		if logger != nil {
+			logger.Warn("runtime: finalize: %v — refusing to bank or promote; preserving worktree at %s", err, wc.wtPath)
 		}
 		res.PreserveWorktree = true
 		return res

@@ -696,7 +696,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// subbots died with "no SubbotRunner is wired" even though the
 			// depth guard below exists precisely to bound that recursion.
 			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
-			runtime.WithOnNodeFinished(func(_, nodeID string, out map[string]any) {
+			runtime.WithOnNodeFinished(func(_ context.Context, _, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
 			}),
 		}

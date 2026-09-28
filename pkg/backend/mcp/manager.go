@@ -215,8 +215,15 @@ func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
 	}
 	wg.Wait()
 	close(results)
-	var errs []error
+	// Collected in completion order: sorted by server, one failure's text
+	// does not move from run to run.
+	var got []result
 	for r := range results {
+		got = append(got, r)
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i].server < got[j].server })
+	var errs []error
+	for _, r := range got {
 		if r.err != nil {
 			errs = append(errs, r.err)
 		}

@@ -3,6 +3,37 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.205.2](https://github.com/SocialGouv/iterion/compare/v3.205.1...v3.205.2) (2026-09-27)
+
+### Bug Fixes
+
+* **author:** the flow comment counts — one physical comment, one entry ([#1892](https://github.com/SocialGouv/iterion/issues/1892)) ([7819d88](https://github.com/SocialGouv/iterion/commit/7819d880e01c777ef24a6f067fbda98769c820f4)), references [#1814](https://github.com/SocialGouv/iterion/issues/1814)
+
+    <details><summary>why</summary>
+
+    The last two items of #1814. author.Comments read a flow collection's comments off its source AND listed the copies yaml.v3 hung on the node's head, line and foot: `[a: # c` + a line break counted "# c" twice. And the old text-based dedupe swallowed a same-text comment written on ANOTHER line — the head's lines are now derived from the source (the contiguous block ending above the opening bracket, blanks skipped), and only a sourced read ON those lines is the head's copy.
+
+    </details>
+
+## [3.205.1](https://github.com/SocialGouv/iterion/compare/v3.205.0...v3.205.1) (2026-09-27)
+
+### Bug Fixes
+
+* **author:** the author twin's remaining lows — raw folds, remedies that exist, one mistake one message ([#1884](https://github.com/SocialGouv/iterion/issues/1884)) ([ac2a192](https://github.com/SocialGouv/iterion/commit/ac2a192444dc519331f60d5d8c69a207f28239ba))
+
+    <details><summary>why</summary>
+
+    Eight of #1814's ten items, each with its witness:
+
+    </details>
+* **runtime:** the engine writes only what is its own — the wip bank proves its worktree, the finish hook carries the run's context, no test mirror lands in the checkout ([#1889](https://github.com/SocialGouv/iterion/issues/1889)) ([3e2ede4](https://github.com/SocialGouv/iterion/commit/3e2ede4eb2235a9d6a726dbbbec893e3c6e314b8)), references [#1805](https://github.com/SocialGouv/iterion/issues/1805)
+
+    <details><summary>why</summary>
+
+    Three tickets, one seam: nothing the engine writes may land in a repository or a directory that is not the run's.
+
+    </details>
+
 ## [3.205.0](https://github.com/SocialGouv/iterion/compare/v3.204.2...v3.205.0) (2026-09-27)
 
 ### Features

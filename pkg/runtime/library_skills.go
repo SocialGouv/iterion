@@ -36,6 +36,12 @@ import (
 // no library on disk, so the launching instance resolved the workflow's refs
 // for it; see Contributions).
 func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra []string, inj *Contributions, logger *iterlog.Logger) (hints map[string]string, owned []string, complete bool, err error) {
+	if mirrorCwdGuard != nil && workDir != "" {
+		if err := mirrorCwdGuard(workDir); err != nil {
+			return nil, nil, false, err
+		}
+	}
+
 	if workDir == "" || wf == nil {
 		return nil, nil, true, nil
 	}
