@@ -826,10 +826,15 @@ func TestTheRenderFollowsTheClaimPastAStaleAddedFile(t *testing.T) {
 // main as its claimed header plus a STUB workflow (so a main below a lib/
 // directory keeps its main-ness). An error that names the stub — a newly
 // imported file declaring a workflow of its own meets E010 — must name
-// the author's workflow, not a "probe" they never wrote.
+// the author's workflow AND cite its real position: the stub sits wherever
+// the claim's import lines leave it, and before the citation was taken
+// from the stored main the message pointed at main.bot:4 — a line the
+// author's file does not have, shifting with the claim's import count.
 func TestTheProbeStubKeepsTheRealWorkflowsName(t *testing.T) {
 	workdir := t.TempDir()
-	full := "workflow other:\n  entry: done\n"
+	// Probe C: the fragment declares a workflow of the SAME name as the
+	// main's (`w`, at main.bot:3 in the fixture).
+	full := "workflow w:\n  entry: done\n"
 	writeUnitFixture(t, workdir, map[string]string{
 		"demo/main.bot":      unitFixtureMain,
 		"demo/lib/nodes.bot": unitFixtureNodes,
@@ -841,20 +846,41 @@ func TestTheProbeStubKeepsTheRealWorkflowsName(t *testing.T) {
 	// The apply refuses this import already (a second workflow is a new
 	// load error); the probe's wording is what the SAVE's own re-derivation
 	// surfaces, so drive the save directly with the claim the apply would
-	// have answered.
-	claimed := append([]unitFileInfo{}, opened.Unit.Files...)
-	claimed[0].Imports = append(append([]string{}, claimed[0].Imports...), "lib/full.bot")
-	claimed = append(claimed, unitFileInfo{Rel: "lib/full.bot", Digest: fileDigest([]byte(full))})
-	rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimed)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("importing a file that declares a second workflow: %d %s", rec.Code, rec.Body.String())
+	// have answered — with TWO claimed imports (the stub lands on the
+	// synthetic header's line 4) and with ONE (line 3): the citation must
+	// be the real main.bot:3 in both shapes.
+	claimWith := func(imports ...string) []unitFileInfo {
+		claimed := []unitFileInfo{{Rel: "main.bot", Imports: imports, Digest: opened.Unit.Files[0].Digest}}
+		claimed = append(claimed, unitFileInfo{Rel: "lib/full.bot", Digest: fileDigest([]byte(full))})
+		if len(imports) > 1 {
+			claimed = append(claimed, opened.Unit.Files[1])
+		}
+		return claimed
 	}
-	if strings.Contains(rec.Body.String(), "probe") {
-		t.Fatalf("the refusal names the probe's stub instead of the author's workflow: %s", rec.Body.String())
-	}
-	// The body is JSON: quotes arrive escaped.
-	if !strings.Contains(rec.Body.String(), `\"w\"`) {
-		t.Fatalf("the refusal does not name the main's own workflow: %s", rec.Body.String())
+	for _, claimed := range [][]unitFileInfo{
+		claimWith("lib/full.bot"),
+		claimWith("lib/nodes.bot", "lib/full.bot"),
+	} {
+		rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimed)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("importing a file that declares a second workflow (%v): %d %s", claimed[0].Imports, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "probe") {
+			t.Fatalf("the refusal names the probe's stub instead of the author's workflow: %s", body)
+		}
+		if !strings.Contains(body, `\"w\"`) {
+			t.Fatalf("the refusal does not name the main's own workflow: %s", body)
+		}
+		// The real main declares `workflow w:` at line 3; the stub's line in
+		// the synthetic header (3 or 4, per the claim's import count) is a
+		// place the author's file does not have.
+		if !strings.Contains(body, "main.bot:3") {
+			t.Fatalf("the refusal does not cite the real workflow position (%v): %s", claimed[0].Imports, body)
+		}
+		if strings.Contains(body, "main.bot:4") {
+			t.Fatalf("the refusal cites the stub's synthetic line (%v): %s", claimed[0].Imports, body)
+		}
 	}
 }
 

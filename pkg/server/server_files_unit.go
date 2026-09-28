@@ -1109,6 +1109,35 @@ func claimedHeaderText(cf unitFileInfo, stubWorkflow string) string {
 	return b.String()
 }
 
+// citeStoredMainWorkflow rewrites the probe's duplicate-workflow
+// diagnostic (E010) so the main-side citation is the STORED main's real
+// workflow position. The probe's main is a synthetic header: its stub
+// workflow sits wherever the claim's import lines leave it — a line that
+// shifts with the claim's import count and points at a place the author's
+// file does not have. Everything else the probe cites is real (fragments
+// are read from their real content); when the real main declares no
+// workflow there is no stub, and nothing to rewrite.
+func citeStoredMainWorkflow(stored, probe *unit.Unit) {
+	if probe.Merged == nil || len(probe.Merged.Workflows) < 2 {
+		return
+	}
+	var mainWf *ast.WorkflowDecl
+	for _, f := range stored.Files {
+		if f.Rel == stored.Main && f.AST != nil && len(f.AST.Workflows) > 0 {
+			mainWf = f.AST.Workflows[0]
+		}
+	}
+	if mainWf == nil {
+		return
+	}
+	other := probe.Merged.Workflows[1]
+	for i, d := range probe.Diagnostics {
+		if d.Code == parser.DiagDuplicateDecl && strings.HasPrefix(d.Message, "a unit has one workflow:") {
+			probe.Diagnostics[i].Message = fmt.Sprintf("a unit has one workflow: %q here and %q at %s:%d", other.Name, mainWf.Name, stored.Main, mainWf.Span.Start.Line)
+		}
+	}
+}
+
 // finishClaimed validates the probe of a claimed file list against the
 // claim and assembles the unit the save or the render works from: the
 // stored unit's own entries for the files it holds (their declarations are
@@ -1119,6 +1148,7 @@ func claimedHeaderText(cf unitFileInfo, stubWorkflow string) string {
 // header the split's skeleton must take: the claim's, not the stored
 // file's.
 func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bool) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
+	citeStoredMainWorkflow(stored, probe)
 	if d := firstErrorDiagnostic(probe.Diagnostics); d != "" {
 		return nil, nil, nil, fmt.Errorf("the files the document claims do not load as one unit: %s", d)
 	}
