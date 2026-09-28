@@ -1,6 +1,9 @@
 package ir
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The routing fields (model, backend, provider, interaction_model — on the
 // node and on its fallbacks routes) resolve vars.* at dispatch and nothing
@@ -130,5 +133,76 @@ func TestRoutingFieldRefsDottedVarPath(t *testing.T) {
 				t.Fatalf("want exactly one %s, got %v in\n%s", c.want, seen, diags)
 			}
 		})
+	}
+}
+
+// A routing field is a scalar by nature — its text becomes a name at
+// dispatch — so a `{{vars.x}}` span that DOES resolve is still unroutable
+// when the var it names is declared `string[]`/`json` (#1605): the
+// resolved text is the list's JSON spelling (`["claw","claude_code"]`),
+// which the backend registry rejects after the workspace and the sandbox
+// have been paid for. It is C148, the failure the family exists to
+// describe, and a warning like the rest of it: a launch override can
+// still hand the var a scalar.
+func TestRoutingFieldListTypedVar(t *testing.T) {
+	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n  bs: string[] = \"claw,claude_code\"\n  cfg: json = \"{\\\"backend\\\": \\\"claw\\\"}\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
+	agent := func(props string) string { return "agent a:\n  system: p\n" + props }
+	cases := []struct {
+		name string
+		body string
+		wf   string // extra properties of the workflow block
+		want int    // C148 count
+	}{
+		{name: "the ticket's probe: a string[] var as backend", body: agent("  backend: \"{{vars.bs}}\"\n"), want: 1},
+		{name: "a json var as backend", body: agent("  backend: \"{{vars.cfg}}\"\n"), want: 1},
+		{name: "a string[] var as model", body: agent("  model: \"{{vars.bs}}\"\n"), want: 1},
+		{name: "a string[] var as provider", body: agent("  provider: \"{{vars.bs}}\"\n"), want: 1},
+		{name: "a string[] var as interaction_model", body: agent("  interaction_model: \"{{vars.bs}}\"\n"), want: 1},
+		{name: "a string[] var on a fallback route",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n  fallbacks:\n    alt:\n      backend: \"claw\"\n      model: \"{{vars.bs}}\"\n"), want: 1},
+		{name: "a string[] var as the workflow default_backend", body: agent(""), wf: "  default_backend: \"{{vars.bs}}\"\n", want: 1},
+		{name: "two list-typed fields fire once each",
+			body: agent("  model: \"{{vars.bs}}\"\n  backend: \"{{vars.cfg}}\"\n"), want: 2},
+		{name: "scalar vars stay silent", body: agent("  model: \"{{vars.m}}\"\n  backend: \"{{vars.b}}\"\n"), want: 0},
+		{name: "a scalar workflow default_backend stays silent", body: agent(""), wf: "  default_backend: \"{{vars.b}}\"\n", want: 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, diags := compileSource(t, head+c.body+"\nworkflow w:\n  entry: a\n"+c.wf+"  a -> done\n")
+			got := 0
+			for _, d := range diags {
+				if d.Code == DiagRoutingFieldRef {
+					got++
+					if d.Severity != SeverityWarning {
+						t.Errorf("C148 is %v, want a warning — a launch override can still hand the var a scalar", d.Severity)
+					}
+				}
+			}
+			if got != c.want {
+				t.Fatalf("C148 count = %d, want %d in\n%s", got, c.want, diags)
+			}
+		})
+	}
+}
+
+// The message names the field, the var, its declared type and the failure
+// — the author has to find one line in a file of them, and the remedy (a
+// `string` var, or a launch-time scalar override) is on it.
+func TestRoutingFieldListTypedVarMessage(t *testing.T) {
+	const src = "vars:\n  bs: string[] = \"claw,claude_code\"\n\nprompt p:\n  Hi.\n\nagent a:\n  system: p\n  backend: \"{{vars.bs}}\"\n\nworkflow w:\n  entry: a\n  a -> done\n"
+	_, diags := compileSource(t, src)
+	var msg string
+	for _, d := range diags {
+		if d.Code == DiagRoutingFieldRef {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatalf("no C148 raised\ndiagnostics: %v", diags)
+	}
+	for _, want := range []string{`agent "a" backend`, "{{vars.bs}}", "`string[]`", "first delegation"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q does not carry %q", msg, want)
+		}
 	}
 }
