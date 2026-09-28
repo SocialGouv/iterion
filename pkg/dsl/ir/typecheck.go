@@ -240,9 +240,19 @@ func (c *compiler) checkCollectionLiteralConform(w *Workflow, cn *ComputeNode, c
 				default:
 					what = fmt.Sprintf("a statically-known %s", et.t)
 				}
+				// The remedy matches the element's KIND (L2): "quote it"
+				// is a fix for a literal scalar ('42' for 42) — for an
+				// expression element quoting yields the constant string
+				// 'input.n', and no string() builtin exists, so the fix
+				// there is the field's type.
+				remedy := "type the field json"
+				switch el.Kind {
+				case expr.SnapBool, expr.SnapInt, expr.SnapFloat:
+					remedy = "quote it ('42'), or type the field json"
+				}
 				c.warnfAt(DiagCollectionLiteralConformance, cn.ID, "",
-					"compute %q field %q is a string[] but its list literal's element %d is %s — it fails SCHEMA_VALIDATION at run time (`field[%d]: expected string, got ...`): quote it ('42'), or type the field json",
-					cn.ID, ce.Key, i, what, i)
+					"compute %q field %q is a string[] but its list literal's element %d is %s — it fails SCHEMA_VALIDATION at run time (`field[%d]: expected string, got ...`): %s",
+					cn.ID, ce.Key, i, what, i, remedy)
 				return // one warning per field names the shape
 			}
 		case expr.SnapObject:
@@ -465,30 +475,61 @@ func (env exprEnv) inferType(n *expr.Snapshot) inferredType {
 			return knownT(FieldTypeBool)
 		case "join":
 			return knownT(FieldTypeString)
-		case "keys":
-			// keys() of any map is a list of its (string) keys.
-			return knownT(FieldTypeStringArray)
-		case "values":
+		case "keys", "values":
+			// keys()/values() of a map are a list of its (string) keys /
+			// of its values. A KNOWN non-map argument — a typed scalar or
+			// list, or a list literal — fails the helper at run time
+			// (EXPRESSION_FAILED): no result exists to compare, so no
+			// collection is claimed (C306 would over-claim a constant
+			// comparison that never happens). An unknown argument (a json
+			// ref) keeps the claim: these helpers name collections, and
+			// an unknown input usually is one.
+			if len(n.Children) >= 1 {
+				if at := env.inferType(n.Children[0]); at.known || n.Children[0].Kind == expr.SnapList {
+					return unknownType
+				}
+			}
+			if n.Func == "keys" {
+				return knownT(FieldTypeStringArray)
+			}
+			// values() claims the collection fact alone (L4): its caps
+			// stay silent deliberately — the loop-cap check reads t/known
+			// and a collection of unknowable elements claims nothing,
+			// where keys()/sort()/filter()/concat() of a string[] refuse
+			// a non-integer cap at compile time. The run refuses the bad
+			// cap either way; compile says nothing it cannot prove.
 			return collectionT
 		case "sort", "unique", "flatten", "tail", "slice":
 			// Element-preserving: the result carries the input's element
 			// type when it is known.
 			if len(n.Children) >= 1 {
+				if n.Children[0].Kind == expr.SnapObject {
+					return unknownType // a map fails these helpers at run time
+				}
 				return mirrorCollection(env.inferType(n.Children[0]))
 			}
 			return collectionT
 		case "concat":
 			// concat of all-string[] inputs is a string[]; any result it
-			// returns is a list either way.
+			// returns is a list either way. A known scalar argument fails
+			// the call at run time — no claim.
 			if len(n.Children) == 0 {
 				return collectionT
 			}
+			allStringArrays := true
 			for _, ch := range n.Children {
-				if ct := env.inferType(ch); !ct.known || ct.t != FieldTypeStringArray {
-					return collectionT
+				ct := env.inferType(ch)
+				if ct.known && !ct.collection {
+					return unknownType
+				}
+				if !ct.known || ct.t != FieldTypeStringArray {
+					allStringArrays = false
 				}
 			}
-			return knownT(FieldTypeStringArray)
+			if allStringArrays {
+				return knownT(FieldTypeStringArray)
+			}
+			return collectionT
 		}
 		// if/min/max/sum and arithmetic forms: result type not statically
 		// known → bail
@@ -496,12 +537,26 @@ func (env exprEnv) inferType(n *expr.Snapshot) inferredType {
 	case expr.SnapLambdaComb:
 		// map/filter always produce a list; filter preserves the element
 		// type (map's body is opaque). reduce's accumulator is a scalar as
-		// often as a collection — no claim.
+		// often as a collection — no claim. Like values() (L4), map()
+		// claims the collection fact alone: its caps stay silent
+		// deliberately — the loop-cap check reads t/known, and a
+		// collection of unknowable elements claims nothing, where the
+		// element-preserving helpers of a string[] refuse a non-integer
+		// cap at compile time.
 		switch n.Func {
 		case "map":
+			if len(n.Children) >= 1 {
+				ct := env.inferType(n.Children[0])
+				if (ct.known && !ct.collection) || n.Children[0].Kind == expr.SnapObject {
+					return unknownType // a scalar or a map fails the combinator at run time (L1)
+				}
+			}
 			return collectionT
 		case "filter":
 			if len(n.Children) >= 1 {
+				if n.Children[0].Kind == expr.SnapObject {
+					return unknownType // a map fails the combinator at run time (L1)
+				}
 				return mirrorCollection(env.inferType(n.Children[0]))
 			}
 			return collectionT
@@ -523,9 +578,15 @@ var collectionT = inferredType{collection: true}
 // mirrorCollection is the element-preserving collection helpers' inference:
 // the result carries the input's element type when it is known (sort/unique/
 // tail/slice/flatten of a string[] is a string[]), a collection otherwise.
+// A KNOWN scalar input is neither: the helper fails it at run time
+// (EXPRESSION_FAILED), so no collection — and no comparison a diagnostic
+// could call constant — exists (L1).
 func mirrorCollection(t inferredType) inferredType {
 	if t.known && t.t == FieldTypeStringArray {
 		return knownT(FieldTypeStringArray)
+	}
+	if t.known && !t.collection {
+		return unknownType
 	}
 	return collectionT
 }

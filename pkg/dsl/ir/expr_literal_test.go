@@ -66,10 +66,13 @@ func TestC306CollectionCompareIsConstant(t *testing.T) {
 		"sort == sort on string[]":   {expr: `sort(input.tags) == sort(input.other)`, want306: true}, // element-preserving mirror
 		"map == map":                 {expr: `map(input.tags, x => x) == map(input.tags, x => x)`, want306: true},
 		"scalar comparison":          {expr: `input.n == 1`, want306: false},
-		"known collection vs scalar": {expr: `input.tags == 'x'`, want306: false},       // C107 owns it
-		"helper vs scalar":           {expr: `sort(input.tags) == 'x'`, want306: false}, // C107 owns it (sort of string[] infers string[])
-		"literal vs scalar":          {expr: `['a'] == 'x'`, want306: false},            // C107 owns it (the all-string literal infers string[])
-		"mixed literal vs scalar":    {expr: `[1, 'a'] == 'x'`, want306: true},          // the literal infers no element type: no C107, still constant
+		"helper on a scalar operand": {expr: `sort(input.n) == sort(input.n)`, want306: false},       // L1: sort(int) dies EXPRESSION_FAILED — no comparison happens
+		"keys of a list":             {expr: `keys(input.tags) == keys(input.tags)`, want306: false}, // L1: keys of a list dies at run time too
+		"sort of an object literal":  {expr: `sort({a: 1}) == sort({a: 1})`, want306: false},         // L1, same class: a map is not an array
+		"known collection vs scalar": {expr: `input.tags == 'x'`, want306: false},                    // C107 owns it
+		"helper vs scalar":           {expr: `sort(input.tags) == 'x'`, want306: false},              // C107 owns it (sort of string[] infers string[])
+		"literal vs scalar":          {expr: `['a'] == 'x'`, want306: false},                         // C107 owns it (the all-string literal infers string[])
+		"mixed literal vs scalar":    {expr: `[1, 'a'] == 'x'`, want306: true},                       // the literal infers no element type: no C107, still constant
 	} {
 		t.Run(name, func(t *testing.T) {
 			src := literalHead + "    cmp: \"" + strings.ReplaceAll(tc.expr, `"`, `'`) + "\"\n" +
@@ -183,6 +186,9 @@ func TestC307NamesTheElement(t *testing.T) {
 		if d.Code == DiagCollectionLiteralConformance {
 			if !strings.Contains(d.Message, "element 1") || d.Severity != SeverityWarning {
 				t.Fatalf("C307 does not name element 1 as a warning: %+v", d)
+			}
+			if !strings.Contains(d.Message, "quote it") {
+				t.Fatalf("C307 on a literal scalar element dropped the 'quote it' remedy (L2: it is right THERE): %s", d.Message)
 			}
 			return
 		}
@@ -319,4 +325,96 @@ func normalizeJSONNumbers(v any) any {
 		return out
 	}
 	return v
+}
+
+// TestC306HelperOnAFailedOperandStaysSilent (L1): a helper whose operand the
+// compiler knows is NOT a collection dies at run time (EXPRESSION_FAILED) —
+// no collection, and no comparison, exists. C306's "the comparison is
+// constant" would be a lie there, so it stays silent.
+func TestC306HelperOnAFailedOperandStaysSilent(t *testing.T) {
+	for _, e := range []string{
+		`sort(input.n) == sort(input.n)`,       // sort of an int
+		`keys(input.tags) == keys(input.tags)`, // keys of a list
+		`sort({a: 1}) == sort({a: 1})`,         // sort of a map
+	} {
+		src := literalHead + "    cmp: \"" + e + "\"\n" +
+			"    xs: \"input.tags\"\n    s: \"'x'\"\n    n: \"input.n\"\n    j: \"input.tags\"\n" + literalTail
+		cr := compileText(t, src)
+		if got := countByCode(cr, "C306"); got != 0 {
+			t.Errorf("C306 fired %d times on %q, where the helper dies before any comparison:\n%v", got, e, cr.Diagnostics)
+		}
+	}
+}
+
+// TestC307RemedyMatchesTheElementKind (L2): "quote it" is a remedy for a
+// LITERAL scalar element only — for an expression element (`[input.n]`)
+// quoting would yield the constant string 'input.n', and no string()
+// builtin exists. The remedy there points at typing the field json.
+func TestC307RemedyMatchesTheElementKind(t *testing.T) {
+	src := literalHead + "    cmp: \"true\"\n    xs: \"[input.n]\"\n    s: \"'x'\"\n    n: \"input.n\"\n    j: \"input.tags\"\n" + literalTail
+	cr := compileText(t, src)
+	for _, d := range cr.Diagnostics {
+		if d.Code != DiagCollectionLiteralConformance {
+			continue
+		}
+		if strings.Contains(d.Message, "quote it") {
+			t.Fatalf("C307 on an expression element offers 'quote it' — quoting yields the constant string:\n%s", d.Message)
+		}
+		if !strings.Contains(d.Message, "type the field json") {
+			t.Fatalf("C307 on an expression element does not point at typing the field json:\n%s", d.Message)
+		}
+		return
+	}
+	t.Fatalf("no C307 emitted: %v", cr.Diagnostics)
+}
+
+// TestC107FiresOnAHelperTypedStringArray (L3): the element-preserving typing
+// is only worth its flag if it also feeds the checks that already existed —
+// sort of a string[] IS a string[], so comparing one to a string is the C107
+// mismatch, not a silent pass.
+func TestC107FiresOnAHelperTypedStringArray(t *testing.T) {
+	src := literalHead + "    cmp: \"sort(input.tags) == 'x'\"\n" +
+		"    xs: \"input.tags\"\n    s: \"'x'\"\n    n: \"input.n\"\n    j: \"input.tags\"\n" + literalTail
+	cr := compileText(t, src)
+	if got := countByCode(cr, "C107"); got != 1 {
+		t.Fatalf("C107 count = %d, want 1 (sort of a string[] is a string[])\ndiagnostics: %v", got, cr.Diagnostics)
+	}
+}
+
+// TestLoopCapReadsHelperTypes (L3): a helper-typed cap is refused when the
+// helper's result is known non-integer (sort of a string[] is a string[],
+// C004), accepted when it computes one (length(keys(...)) is an int), and —
+// deliberate conservative direction — left to the run when the result is a
+// collection of unknowable elements (values(): the cap check reads
+// t/known, and a collection with no nameable type claims nothing).
+func TestLoopCapReadsHelperTypes(t *testing.T) {
+	fixture := func(cap string) string {
+		return `schema wout:
+  tags: string[]
+  doc: json
+
+agent work:
+  model: "m"
+  output: wout
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: work
+  work -> done else
+  work -> work as l("` + cap + `")
+`
+	}
+	cr := compileText(t, fixture("sort(outputs.work.tags)"))
+	if got := countByCode(cr, "C004"); got != 1 {
+		t.Fatalf("cap sort(outputs.work.tags): C004 count = %d, want 1 (a string[] cap)\ndiagnostics: %v", got, cr.Diagnostics)
+	}
+	cr = compileText(t, fixture("length(keys(outputs.work.doc))"))
+	if got := countByCode(cr, "C004"); got != 0 {
+		t.Fatalf("cap length(keys(...)): C004 count = %d, want 0 (an int cap)\ndiagnostics: %v", got, cr.Diagnostics)
+	}
+	cr = compileText(t, fixture("values(outputs.work.doc)"))
+	if got := countByCode(cr, "C004"); got != 0 {
+		t.Fatalf("cap values(...): C004 count = %d, want 0 (unknownable element type stays silent — the run refuses it)\ndiagnostics: %v", got, cr.Diagnostics)
+	}
 }
