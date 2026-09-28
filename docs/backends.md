@@ -61,6 +61,20 @@ cannot speak to). The settled rules:
   every production switch doubles as a parity measurement, so switches
   stay observable (events carry the backend and the served model).
 
+#### PDFs on `read_file` (claw)
+
+`read_file` on claw extracts the text of a workspace PDF instead of
+returning mangled binary-as-text: a file carrying the `%PDF` magic is
+run through claw-code-go's BT/ET scraper and windowed with the same
+chunk semantics as any text file (continuation markers included). The
+extraction runs under a DOCUMENT-WIDE inflation budget equal to the
+read ceiling (64 MiB): zlib holds ~1000:1, so a compressed bomb — or
+many small streams summing to one — fails the read with an explicit
+`ErrBudgetExceeded` instead of allocating. claude_code reads PDFs
+natively; this is the same capability wired on claw (the parity
+doctrine above). Scratch/attachment paths stay outside `read_file`'s
+workspace containment — reach them through `bash`.
+
 ### Per-backend capability matrix
 
 The status table says which backends are trusted; this matrix says what

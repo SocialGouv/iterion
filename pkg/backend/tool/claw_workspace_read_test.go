@@ -1,11 +1,18 @@
 package tool
 
 import (
+	"bytes"
+	"compress/zlib"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 )
 
 // read_file is registered for every claw agent node (RegisterClawBuiltins),
@@ -224,5 +231,166 @@ func TestWorkspaceReadFileRejectsOversizedSparseFile(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "read ceiling") || out != "" {
 			t.Fatalf("start=%d: %q, %v", start, out, err)
 		}
+	}
+}
+
+// writeSimplePDF writes a minimal VALID one-page PDF (proper /Length,
+// xref and startxref — the BT/ET scraper is stricter than poppler)
+// whose single content stream is contentStream, into dir.
+func writeSimplePDF(t *testing.T, dir, name, contentStream string) string {
+	t.Helper()
+
+	p := filepath.Join(dir, name)
+	var pdf strings.Builder
+	pdf.WriteString("%PDF-1.4\n")
+	obj1 := pdf.Len()
+	pdf.WriteString("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+	obj2 := pdf.Len()
+	pdf.WriteString("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+	obj3 := pdf.Len()
+	pdf.WriteString("3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n")
+	obj4 := pdf.Len()
+	fmt.Fprintf(&pdf, "4 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(contentStream), contentStream)
+	xref := pdf.Len()
+	pdf.WriteString("xref\n0 5\n0000000000 65535 f \n")
+	for _, off := range []int{obj1, obj2, obj3, obj4} {
+		fmt.Fprintf(&pdf, "%010d 00000 n \n", off)
+	}
+	pdf.WriteString("trailer\n<< /Size 5 /Root 1 0 R >>\n")
+	fmt.Fprintf(&pdf, "startxref\n%d\n%%%%EOF\n", xref)
+
+	if err := os.WriteFile(p, []byte(pdf.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestWorkspaceReadFile_ExtractsAPdfInsteadOfReturningMangledBytes(t *testing.T) {
+	workspace := t.TempDir()
+	writeSimplePDF(t, workspace, "spec.pdf", "BT\n/F1 12 Tf\n(reference spec text for the reader) Tj\nET")
+
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "spec.pdf"}, workspace)
+	if err != nil {
+		t.Fatalf("read_file on a workspace pdf: %v", err)
+	}
+	if !strings.Contains(out, "reference spec text for the reader") {
+		t.Fatalf("read_file did not return the extracted text: %q", out)
+	}
+	if strings.Contains(out, "%PDF") || strings.Contains(out, "endobj") {
+		t.Fatalf("read_file leaked raw PDF structure: %q", out)
+	}
+}
+
+func TestWorkspaceReadFile_PdfTextWindowsAndPaginates(t *testing.T) {
+	workspace := t.TempDir()
+	// The scraper reads operators line-oriented (a real poppler/Word
+	// export puts BT/Tj/ET on their own lines) and joins Tj with spaces —
+	// only the ' / " show operators emit newlines. The fixture uses them
+	// so the extraction is three lines.
+	writeSimplePDF(t, workspace, "lines.pdf", "BT\n/F1 12 Tf\n(first line) Tj\n(second line) '\n(third line) '\nET")
+
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2)}, workspace)
+	if err != nil {
+		t.Fatalf("read_file start_line=2 on a pdf: %v", err)
+	}
+	if !strings.Contains(out, "second line") || !strings.Contains(out, "third line") {
+		t.Fatalf("window from line 2 missing later lines: %q", out)
+	}
+	if strings.Contains(out, "first line") {
+		t.Fatalf("window from line 2 leaked line 1: %q", out)
+	}
+	if strings.Contains(out, "read_file partial") {
+		t.Fatalf("lines 2-3 of 3 is the whole window — no continuation marker expected: %q", out)
+	}
+
+	// A bounded window IS partial: the marker must name the next line.
+	out, err = executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2), "line_count": float64(1)}, workspace)
+	if err != nil {
+		t.Fatalf("read_file line_count=1 on a pdf: %v", err)
+	}
+	if !strings.Contains(out, "second line") || strings.Contains(out, "third line") {
+		t.Fatalf("line_count=1 window wrong: %q", out)
+	}
+	if !strings.Contains(out, "read_file partial") || !strings.Contains(out, "start_line 3") {
+		t.Fatalf("a partial extraction must print the continuation marker naming the next line: %q", out)
+	}
+}
+
+func TestWorkspaceReadFile_MisnamedTextPdfReadsAsText(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "notes.pdf"), []byte("plain notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "notes.pdf"}, workspace)
+	if err != nil {
+		t.Fatalf("read_file on a misnamed text file: %v", err)
+	}
+	if out != "plain notes\n" {
+		t.Fatalf("read_file output = %q, want the text body", out)
+	}
+}
+
+func TestWorkspaceReadFile_TextlessPdfReadsEmpty(t *testing.T) {
+	workspace := t.TempDir()
+	writeSimplePDF(t, workspace, "blank.pdf", "")
+
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "blank.pdf"}, workspace)
+	if err != nil {
+		t.Fatalf("read_file on a text-less pdf: %v", err)
+	}
+	if out != "" {
+		t.Fatalf("read_file output = %q, want empty for a text-less pdf", out)
+	}
+}
+
+// The .pdf branch must not reopen the hole the regular path closed: a
+// FIFO named *.pdf used to hang the call forever (os.Open with no
+// O_NONBLOCK), because the magic check ran before any regular-file
+// check. The safe open is workspacePDFWindow's, and a non-regular file
+// falls through to the text path's own refusal.
+func TestWorkspaceReadFile_DoesNotBlockOnAPdfNamedFIFO(t *testing.T) {
+	workspace := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(workspace, "report.pdf"), 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := executeWorkspaceReadFile(map[string]any{"path": "report.pdf"}, workspace)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("error = %v, want the regular-file refusal", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("read_file blocked on a .pdf-named FIFO — the .pdf branch bypassed the safe open")
+	}
+}
+
+// The decompression budget must FLOW THROUGH the wiring: a PDF whose
+// FlateDecode stream inflates past the read ceiling errors explicitly
+// instead of allocating (the claw-side test proves the budget is
+// honored; this one proves the wiring passes it).
+func TestWorkspaceReadFile_PdfBombIsRefusedNotAllocated(t *testing.T) {
+	workspace := t.TempDir()
+	var raw bytes.Buffer
+	zw, _ := zlib.NewWriterLevel(&raw, zlib.BestCompression)
+	if _, err := zw.Write(bytes.Repeat([]byte("0"), (workspaceReadMaxFileBytes/1024+1)*1024)); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+
+	var pdf strings.Builder
+	pdf.WriteString("%PDF-1.4\n1 0 obj\n<< /Length " + fmt.Sprint(raw.Len()) + " /Filter /FlateDecode >>\nstream\n")
+	pdf.Write(raw.Bytes())
+	pdf.WriteString("\nendstream\nendobj\ntrailer\n<< /Size 2 /Root 1 0 R >>\n%%EOF\n")
+	if err := os.WriteFile(filepath.Join(workspace, "bomb.pdf"), []byte(pdf.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := executeWorkspaceReadFile(map[string]any{"path": "bomb.pdf"}, workspace)
+	if !errors.Is(err, clawtools.ErrBudgetExceeded) {
+		t.Fatalf("error = %v, want the extraction-budget refusal", err)
 	}
 }
