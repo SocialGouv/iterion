@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.205.3](https://github.com/SocialGouv/iterion/compare/v3.205.2...v3.205.3) (2026-09-28)
+
+### Bug Fixes
+
+* **assessment:** declare the forge_token secret for the workspace clone ([#1893](https://github.com/SocialGouv/iterion/issues/1893)) ([db45b94](https://github.com/SocialGouv/iterion/commit/db45b94fcbe8e6cf21be4f182cf7c0d1f9651c86))
+
+    <details><summary>why</summary>
+
+    The runner's repo workspace clone ran credential-less on any private repo: the launch --connection-id fills the run's forge_token only when the workflow declares the secret, and the assessment bot never did — the clone died before the survey could start. Same shape as the product-docs bot's forge block.
+
+    </details>
+
 ## [3.205.2](https://github.com/SocialGouv/iterion/compare/v3.205.1...v3.205.2) (2026-09-27)
 
 ### Bug Fixes
