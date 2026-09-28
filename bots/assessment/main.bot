@@ -35,6 +35,16 @@
 
 dsl: 2
 
+secrets:
+  ## Forge access for the workspace clone: the launch's --connection-id
+  ## binds the forge token under this name and the runner authenticates the
+  ## repo workspace clone with it. Without the declaration the clone runs
+  ## credential-less and dies on any private repo. optional:true so
+  ## public-repo runs work unchanged.
+  forge_token:
+    as: file
+    optional: true
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## The declared ENTRY of the assessment: objectives, target versions,
