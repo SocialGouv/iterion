@@ -3,6 +3,7 @@ package tool
 import (
 	"bytes"
 	"compress/zlib"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 )
 
 // read_file is registered for every claw agent node (RegisterClawBuiltins),
@@ -387,7 +390,7 @@ func TestWorkspaceReadFile_PdfBombIsRefusedNotAllocated(t *testing.T) {
 	}
 
 	_, err := executeWorkspaceReadFile(map[string]any{"path": "bomb.pdf"}, workspace)
-	if err == nil || !strings.Contains(err.Error(), "decompression budget") {
-		t.Fatalf("error = %v, want the decompression-budget refusal", err)
+	if !errors.Is(err, clawtools.ErrBudgetExceeded) {
+		t.Fatalf("error = %v, want the extraction-budget refusal", err)
 	}
 }
