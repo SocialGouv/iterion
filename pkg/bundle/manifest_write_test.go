@@ -176,6 +176,83 @@ func TestWriteManifest_IconRoundTrip(t *testing.T) {
 	}
 }
 
+// #1349: a one-key patch leaves every other byte alone — the non-BMP icon
+// is not escaped into "\U0001F9ED", and the blank lines between top-level
+// keys do not vanish.
+func TestWriteManifest_RequiresPatchKeepsEmojiAndBlankLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := `# Top-of-file note about this bot.
+name: compass
+icon: 🧭
+
+# the catalogue blurb
+description: |
+  A test bot.
+  Second line.
+
+author: me <me@example.com>
+schema_version: 1
+
+requires:
+  iterion: ">= 3.141.0"
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := WriteManifest(path, ManifestPatch{Requires: &Requires{Iterion: ">= 3.204.2"}})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Requires == nil || m.Requires.Iterion != ">= 3.204.2" {
+		t.Fatalf("the floor was not raised: %+v", m.Requires)
+	}
+
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	want := `# Top-of-file note about this bot.
+name: compass
+icon: 🧭
+
+# the catalogue blurb
+description: |
+  A test bot.
+  Second line.
+
+author: me <me@example.com>
+schema_version: 1
+
+requires:
+  iterion: ">= 3.204.2"
+`
+	if got != want {
+		t.Errorf("the patch touched more than the requires: block\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+	if strings.Contains(got, `\U0001F9ED`) {
+		t.Errorf("the emoji icon came back escaped\n---\n%s", got)
+	}
+}
+
+// The patched icon itself is written as the character, in place, with the
+// line's comment kept.
+func TestWriteManifest_PatchedIconIsWrittenRaw(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: compass\nicon: 🧭 # the identity\nschema_version: 1\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Icon: ptr("🦉")}); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	want := "name: compass\nicon: 🦉 # the identity\nschema_version: 1\n"
+	if string(raw) != want {
+		t.Errorf("patched icon line changed shape\n--- got ---\n%s\n--- want ---\n%s", raw, want)
+	}
+}
+
 func TestWriteManifest_IconTooLongRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.yaml")
