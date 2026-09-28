@@ -164,16 +164,21 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 // answered the screen "claw" where dispatch stored "", and the screen
 // refused a route on a backend the run never resolves.
 //
-// Two resolveVars readings the screen cannot reproduce stay UNDECIDED
-// instead: a var whose text references one of the five names varExpandFn
-// answers from engine state — PROJECT_DIR, BUNDLE_DIR, BUNDLE_SKILLS_DIR,
-// PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR — is omitted (the screen has no
-// workDir, worktree or container workspace; os.Getenv reads them "",
-// decided-empty where dispatch reads a path), and a var whose text fails
-// coercion is omitted too (dispatch logs and falls back to the raw value,
-// which a drill cannot read either). Undecided is the established posture
-// for what the screen cannot know: no opinion, no guess. Nil when nothing
-// declares or overrides a var, which reads exactly as before.
+// One resolveVars reading the screen cannot reproduce stays UNDECIDED
+// instead: a var whose expansion would CONSULT one of the five names
+// varExpandFn answers from engine state — PROJECT_DIR, BUNDLE_DIR,
+// BUNDLE_SKILLS_DIR, PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR — is omitted
+// (the screen has no workDir, worktree or container workspace; os.Getenv
+// reads them "", decided-empty where dispatch reads a path). The probe
+// reads the text the way dispatch expands THAT TYPE — a json var's string
+// leaves braced-only, keys never — and it counts a name consulted but
+// discarded (`${SET:-${PROJECT_DIR}}` with SET in the environment: the
+// inside-out pass consults the inner segment before the outer
+// short-circuits), which is over-conservative by construction: dispatch
+// decides the outer value where the screen says nothing. Undecided never
+// refuses a route the run would take; it only screens less, the pre-#1606
+// posture for every var. Nil when nothing declares or overrides a var,
+// which reads exactly as before.
 func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
 	if len(w.Vars) == 0 {
 		return nil
@@ -186,11 +191,21 @@ func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
 		view[name] = value
 	}
 	read := func(name string, raw any, vt VarType) {
-		if s, isText := raw.(string); isText && referencesEngineSuppliedName(s) {
+		if referencesEngineSuppliedName(raw, vt) {
 			return
 		}
 		v, err := ResolveVarText(raw, vt, os.Getenv)
 		if err != nil {
+			// resolveVars' own fallback: a coercion failure logs and runs
+			// the RAW value, env-expanded (engine_resolve.go) — a flat
+			// {{vars.b}} reads it, and a drill into it finds nothing, as
+			// into any non-map. Omitting the var instead read the node as
+			// undecided — or left the declared DEFAULT standing over a
+			// failed override — both screening a backend the run never
+			// resolves.
+			if s, isText := raw.(string); isText {
+				put(name, ExpandWithDefault(s, os.Getenv))
+			}
 			return
 		}
 		put(name, v)
@@ -209,10 +224,11 @@ func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
 	return view
 }
 
-// engineSuppliedVarNames are the names the engine's varExpandFn answers
+// EngineSuppliedVarNames are the names the engine's varExpandFn answers
 // from run state (pkg/runtime/engine_resolve.go) rather than from any
-// environment the launch-time screen runs with — keep the twin in sync.
-var engineSuppliedVarNames = []string{
+// environment the launch-time screen runs with. Exported so the twin is
+// pinned by a pkg/runtime test against varExpandFn itself.
+var EngineSuppliedVarNames = []string{
 	"PROJECT_DIR",
 	"BUNDLE_DIR",
 	"BUNDLE_SKILLS_DIR",
@@ -220,23 +236,65 @@ var engineSuppliedVarNames = []string{
 	"PROJECT_SCRATCH_DIR",
 }
 
-// referencesEngineSuppliedName reports whether expanding s would CONSULT
-// one of the engine-supplied names — directly, bare or braced, or nested
-// inside a `:-` default. Probing with a recording lookup reproduces
-// exactly the names the real expansion reads, instead of guessing at the
-// spelling with a substring match (`${PROJECT_DIR2}` is not PROJECT_DIR).
-func referencesEngineSuppliedName(s string) bool {
-	if !strings.ContainsRune(s, '$') {
+// referencesEngineSuppliedName reports whether reading raw as a var of
+// type vt would CONSULT one of the engine-supplied names — the probe
+// reads the text the way dispatch expands that type: the full reading
+// for a scalar, the braced-only reading of a json document's string
+// LEAVES (expandJSONLeaves — keys are names, never expanded, so
+// `{"note":"$PROJECT_DIR"}` is data, not a reference), and the full
+// reading again for a json text that fails to parse, which dispatch's
+// error fallback expands wholesale.
+//
+// Probing with a recording lookup reproduces exactly the names the real
+// expansion reads, instead of guessing at the spelling with a substring
+// match (`${PROJECT_DIR2}` is not PROJECT_DIR). The price is stated on
+// launchVarsView: a name consulted but discarded still counts.
+func referencesEngineSuppliedName(raw any, vt VarType) bool {
+	s, isText := raw.(string)
+	if !isText || !strings.ContainsRune(s, '$') {
 		return false
 	}
+	if vt == VarJSON {
+		if out, err := CoerceVarValue(s, vt); err == nil {
+			if text, notJSON := out.(string); notJSON {
+				return probesEngineSuppliedName(text, expandPolicy{bracedOnly: true})
+			}
+			found := false
+			expandJSONLeaves(out, func(leaf string) string {
+				if probesEngineSuppliedName(leaf, expandPolicy{bracedOnly: true}) {
+					found = true
+				}
+				return leaf
+			})
+			return found
+		}
+	}
+	return probesEngineSuppliedName(s, expandPolicy{})
+}
+
+// probesEngineSuppliedName reports whether expanding s under policy would
+// consult an engine-supplied name.
+func probesEngineSuppliedName(s string, policy expandPolicy) bool {
 	found := false
 	expandWithDefault(s, func(name string) string {
-		if slices.Contains(engineSuppliedVarNames, name) {
+		if slices.Contains(EngineSuppliedVarNames, name) {
 			found = true
 		}
 		return ""
-	}, expandPolicy{})
+	}, policy)
 	return found
+}
+
+// LaunchBackendName is the launch-time screen's reading of one routing
+// field: a `{{vars.<name>}}` reference decided by the launch's vars (the
+// workflow's declared defaults under the overrides, a dotted path drilled
+// into a json var's document), then the field's `${…}` expansion, in the
+// run's order (resolveRoutingField). "" means the screen cannot name the
+// backend. Exported so a host screening a launch reads exactly what
+// ApplyRunFallback screens — and so the executor's drill is pinned
+// against this reading from pkg/backend/model, which imports ir.
+func LaunchBackendName(w *Workflow, overrides map[string]string, field string) string {
+	return runBackend.withVars(launchVarsView(w, overrides)).name(field)
 }
 
 // ParseRunFallbackFlag parses the `--fallback` / launch-row value into a
