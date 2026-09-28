@@ -197,7 +197,7 @@ const (
 	// as data. Both warnings — the catalogue carries zero instances (the
 	// tree_noise_channel tests prove it), so the change is additive.
 	DiagTreeNoiseRefInExecBody DiagCode = "C157" // {{run.tree_noise}} (not the bang form) in a shell-bound tool command/script/postcondition (warning; use {{!run.tree_noise}} or $ITERION_TREE_NOISE unquoted)
-	DiagTreeNoiseEnvQuoted     DiagCode = "C158" // a quoted span referencing $ITERION_TREE_NOISE in a shell-bound tool body (warning; double quotes collapse the list to one pathspec, single quotes never expand — [ … ] tests and assignment RHS suppressed, quoting is mandatory there)
+	DiagTreeNoiseEnvQuoted     DiagCode = "C158" // a standalone quoted word holding exactly $ITERION_TREE_NOISE in a shell-bound tool body (warning; double quotes collapse the list to one pathspec, single quotes never expand — only that unambiguous shape is named: tests, assignments, concatenations, comments, heredocs and \$ escapes stay silent by design)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).

@@ -190,9 +190,13 @@ func TestTreeNoiseRefInANonShellScriptStaysSilent(t *testing.T) {
 // where word-splitting would corrupt the test — `[ -n $VAR ]` unquoted is
 // TRUE on an empty var (the one-word `-n`), and an assignment RHS never
 // word-splits. A check whose remedy ("drop the quotes") breaks the guard it
-// fires on trains authors to ignore it, so those spans are suppressed.
+// fires on trains authors to ignore it. Tests are suppressed by a BOUNDED
+// region (the closing bracket, or the first separator for `test`),
+// assignments by the standalone-word rule itself (`=` is not a word
+// boundary, so `X="$V"` is never the named shape).
 //
-// Mutation that reddens it: drop the suppression call from the C158 scan.
+// Mutation that reddens it: test-region suppression removed from closeSpan,
+// or `=` added to isShellBoundary.
 func TestQuotedTreeNoiseEnvKeepsItsGuards(t *testing.T) {
 	for name, line := range map[string]string{
 		"a -n guard":                "  command: |\n    if [ -n \"$ITERION_TREE_NOISE\" ]; then\n      git add -A -- ':/' $ITERION_TREE_NOISE\n    fi",
@@ -221,15 +225,20 @@ func TestQuotedTreeNoiseEnvKeepsItsGuards(t *testing.T) {
 	}
 }
 
-// TestQuotedTreeNoiseEnvScannerCoverage: the four exact spellings were not
-// the class — a defaulted braced form and a concatenation inside one quoted
-// span collapse the same way. And the message must match the quote style:
+// TestQuotedTreeNoiseEnvScannerCoverage: the unambiguous shape is a
+// STANDALONE word that is exactly one quoted span holding exactly the var —
+// the braced parameter-expansion forms included. Round 3 requalified the
+// check to precision over recall: a lint that misses is acceptable, a lint
+// that lies is not, so a concatenation inside one quoted span is now SILENT
+// by design (round 2 fired on it — reversed; the intent of `"prefix $VAR"`
+// cannot be told from data). The message must match the quote style:
 // single quotes never expand at all (the literal text reaches the command),
 // double quotes expand to ONE word. The AST keeps no per-property span (the
 // lot-1b work), so the position travels in the message: the body-relative
 // line of the offending span.
 //
-// Mutation that reddens it: reinstate the four-substring quotedTreeNoiseEnv.
+// Mutation that reddens it: treeNoiseEnvOnlyVar answering true for content
+// beyond the exact var forms.
 func TestQuotedTreeNoiseEnvScannerCoverage(t *testing.T) {
 	t.Run("a defaulted braced form", func(t *testing.T) {
 		r := compileText(t, treeNoiseSrc("  command: `git status --porcelain -- \"${ITERION_TREE_NOISE:-}\"`"))
@@ -238,11 +247,10 @@ func TestQuotedTreeNoiseEnvScannerCoverage(t *testing.T) {
 			t.Fatalf("no C158 on \"${ITERION_TREE_NOISE:-}\"\ndiagnostics: %v", r.Diagnostics)
 		}
 	})
-	t.Run("a concatenation inside one quoted span", func(t *testing.T) {
+	t.Run("a concatenation inside one quoted span is silent by design", func(t *testing.T) {
 		r := compileText(t, treeNoiseSrc("  command: `git status --porcelain -- \"prefix $ITERION_TREE_NOISE\"`"))
-		got := treeNoiseDiag(r, DiagTreeNoiseEnvQuoted)
-		if got == nil {
-			t.Fatalf("no C158 on \"prefix $ITERION_TREE_NOISE\"\ndiagnostics: %v", r.Diagnostics)
+		if got := treeNoiseDiag(r, DiagTreeNoiseEnvQuoted); got != nil {
+			t.Fatalf("C158 on a non-standalone shape: %s", got.Message)
 		}
 	})
 	t.Run("the message matches the quote style and carries the body line", func(t *testing.T) {
@@ -276,4 +284,125 @@ func TestQuotedTreeNoiseEnvScannerCoverage(t *testing.T) {
 			t.Errorf("messages must carry the body-relative line: single=%q double=%q", single.Message, double.Message)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Round-3 probes — the suppression heuristics re-attacked
+// ---------------------------------------------------------------------------
+
+// TestTreeNoiseScannerRound3Probes pins the reviewer's probes against the
+// requalified design: C158 names ONLY the standalone quoted word holding
+// exactly the var, and the suppression regions are bounded — a `test`
+// command ends at its separator, a bracket test at its closing `]` found
+// with quote/comment awareness.
+func TestTreeNoiseScannerRound3Probes(t *testing.T) {
+	c158count := func(r *CompileResult) int { return countCode(r, DiagTreeNoiseEnvQuoted) }
+	for name, tc := range map[string]struct {
+		line string
+		want int // number of C158 hits expected
+	}{
+		// p1: the bracket test suppresses ITS operand, and the region ends
+		// at the closing ] — the git add span after && must still fire.
+		"p1: a hit past the bracket test's close": {
+			"  command: |\n    [ -n \"$ITERION_TREE_NOISE\" ] && git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		// p1b: a `test` command's region ends at ; — the hit after it fires.
+		"p1b: a hit past the test command's separator": {
+			"  command: |\n    test -n \"$ITERION_TREE_NOISE\"; git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		// p2/p28: a stray bracket inside an echo'd string or a comment is
+		// neither an opener nor a closer — nothing is suppressed.
+		"p2: a stray bracket in an echo'd string": {
+			"  command: |\n    echo \"[x]\"; git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		"p28: a stray bracket in a comment": {
+			"  command: |\n    # see [1] for the rationale\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		// p12: an argument, not an assignment — and not the standalone
+		// shape either, so silent by design (git would refuse X=… LOUD,
+		// which is not the silent-vanishing class).
+		"p12: a name=value argument": {
+			"  command: |\n    git add X=\"$ITERION_TREE_NOISE\"", 0},
+		// p21: a multi-line double-quoted string is tracked ACROSS lines —
+		// its interior is never scanned, and the hit on the later line
+		// keeps its own line number.
+		"p21: a multi-line double-quoted string": {
+			"  command: |\n    MSG=\"don't quote the var\n    like $ITERION_TREE_NOISE here\"\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		// p22: a double-quoted spelling inside a multi-line SINGLE-quoted
+		// string never expands at all — the inverted-mechanism FP.
+		"p22: double quotes inside a multi-line single-quoted string": {
+			"  command: |\n    MSG='multi\n    line with \"$ITERION_TREE_NOISE\" inside'\n    git add -A -- ':/' $ITERION_TREE_NOISE", 0},
+		// p30: the '\'' idiom must not misframe the following span, and a
+		// real hit on the next line still fires.
+		"p30: the '\\'' idiom": {
+			"  command: |\n    echo 'it'\\''s fine'\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		"p30b: the idiom wrapping a double-quoted var": {
+			"  command: |\n    echo 'it'\\''s \"$ITERION_TREE_NOISE\"'", 0},
+		// p31b: \$ is a literal dollar — it never expands.
+		"p31b: an escaped dollar inside double quotes": {
+			"  command: |\n    echo \"\\$ITERION_TREE_NOISE\"", 0},
+		// An escaped quote closes nothing: without the \" skip the span
+		// ends early, the next " opens one that never closes on the line,
+		// and the open quote swallows the following line's real hit.
+		"an escaped quote does not eat the next line's hit": {
+			"  command: |\n    echo \"say \\\"hi\\\"\"\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		// p3: display text — the span holds more than the var; silent by
+		// design (documented recall limit).
+		"p3: echo display text": {
+			"  command: |\n    echo \"excluded: $ITERION_TREE_NOISE\"", 0},
+		// p4: a heredoc body is data, never argv; silent by design.
+		"p4: a heredoc body": {
+			"  command: |\n    cat <<EOF\n    \"$ITERION_TREE_NOISE\"\n    EOF", 0},
+		// …and the shape the check exists for still fires, quoted and not.
+		"the standalone double-quoted word": {
+			"  command: |\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		"a hit after a heredoc ends": {
+			"  command: |\n    cat <<EOF\n    done\n    EOF\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileText(t, treeNoiseSrc(tc.line))
+			if got := c158count(r); got != tc.want {
+				t.Fatalf("C158 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
+			}
+		})
+	}
+
+	// p21 detail: the surviving hit is attributed to the git add line, not
+	// to inside the string.
+	r := compileText(t, treeNoiseSrc("  command: |\n    MSG=\"don't quote the var\n    like $ITERION_TREE_NOISE here\"\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\""))
+	if d := treeNoiseDiag(r, DiagTreeNoiseEnvQuoted); d == nil || !strings.Contains(d.Message, "body line 3") {
+		t.Fatalf("the hit must carry the git add line (3): %+v", d)
+	}
+}
+
+// TestTreeNoiseRefInsideScriptQuotesIsData (p20): a sh script that wraps
+// ANOTHER interpreter — python3 -c "… {{run.tree_noise}} …" — hands the ref
+// to the shell as part of one quoted word whose content is SOURCE for that
+// interpreter; rendered as a JSON literal it lands there as data, valid and
+// working. C157's one-word verdict applies only to a ref the SHELL will
+// word-read: outside quotes, outside heredocs.
+//
+// Mutation that reddens it: drop the firstFreeOccurrence gate from the
+// script arm of the C157 check.
+func TestTreeNoiseRefInsideScriptQuotesIsData(t *testing.T) {
+	for name, tc := range map[string]struct {
+		line string
+		want bool // true = C157 fires
+	}{
+		"a sh script wrapping python3, ref inside quotes": {
+			"  script: |\n    python3 -c \"noise = {{run.tree_noise}}; print(len(noise.split()))\"\n  language: sh", false},
+		"a sh script, ref bare": {
+			"  script: |\n    git add -A -- ':/' {{run.tree_noise}}\n  language: sh", true},
+		"a sh script, ref inside a heredoc": {
+			"  script: |\n    cat <<EOF\n    {{run.tree_noise}}\n    EOF\n  language: sh", false},
+		"a command keeps firing, quoted or not": {
+			`  command: "git add -A -- ':/' {{run.tree_noise}}"`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileText(t, treeNoiseSrc(tc.line))
+			got := treeNoiseDiag(r, DiagTreeNoiseRefInExecBody)
+			if tc.want && got == nil {
+				t.Fatalf("no C157\ndiagnostics: %v", r.Diagnostics)
+			}
+			if !tc.want && got != nil {
+				t.Fatalf("C157 on a data-bound ref: %s", got.Message)
+			}
+		})
+	}
 }
