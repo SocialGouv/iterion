@@ -99,7 +99,7 @@ func TestStartOAuthRefreshers_NeverRefreshesACodexForfait(t *testing.T) {
 	r.startOAuthRefreshers(stop, "run-ownership", map[string]string{
 		string(secrets.OAuthKindClaudeCode): anthropicPath,
 		string(secrets.OAuthKindCodex):      codexPath,
-	}, nil, nil)
+	}, nil, nil, nil)
 
 	// Positive control: wait for the kind that IS owned by the runner.
 	deadline := time.Now().Add(10 * time.Second)

@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -46,19 +47,28 @@ const oauthFollowInterval = time.Minute
 // (refreshAnthropicLoop), and says so. Codex is not refreshed at all: its CLI
 // rotates its own refresh token, and admitting it needs a write-through of the
 // followed record into the sandbox's codex home, which does not exist yet.
-func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files, refs, fingerprints map[string]string) {
+func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files, refs, fingerprints map[string]string, lent map[string]bool) {
 	hc := &http.Client{Timeout: oauthRefreshHTTPTimeout}
 	for kind, path := range files {
 		if secrets.OAuthKind(kind) != secrets.OAuthKindClaudeCode {
 			continue
 		}
-		if ref := refs[kind]; ref != "" && r.cfg.OAuthForfaits != nil && r.cfg.Sealer != nil {
-			fp := fingerprints[kind]
+		fp := fingerprints[kind]
+		// A lent slot is held to the subscription that was lent, which it can
+		// only recognise by its fingerprint: without one it keeps the
+		// self-refresh it always had.
+		if ref := refs[kind]; ref != "" && r.cfg.OAuthForfaits != nil && r.cfg.Sealer != nil && (!lent[kind] || fp != "") {
+			heldTo := ""
+			if lent[kind] {
+				heldTo = fp
+			}
 			// A bundle can wait in the queue past a rotation: catch up
 			// before the run's first spawn reads the file.
-			r.followOAuthRecord(runID, secrets.OAuthKind(kind), ref, fp, path)
+			if !r.followOAuthRecord(runID, secrets.OAuthKind(kind), ref, fp, heldTo, path) {
+				continue
+			}
 			errtrack.Go("runner.followOAuthRecord", func() {
-				r.followOAuthRecordLoop(stop, runID, secrets.OAuthKind(kind), ref, fp, path, oauthFollowInterval)
+				r.followOAuthRecordLoop(stop, runID, secrets.OAuthKind(kind), ref, fp, heldTo, path, oauthFollowInterval)
 			})
 			continue
 		}
@@ -72,8 +82,9 @@ func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files,
 // followOAuthRecordLoop keeps the materialised credentials file equal to the
 // store record the run was sealed from, re-reading it every `every`, and
 // writes each change through into the run's sandbox. It never exchanges a
-// token.
-func (r *Runner) followOAuthRecordLoop(stop <-chan struct{}, runID string, kind secrets.OAuthKind, ref, fp, path string, every time.Duration) {
+// token, and it ends when a lent slot's record no longer names the lent
+// subscription.
+func (r *Runner) followOAuthRecordLoop(stop <-chan struct{}, runID string, kind secrets.OAuthKind, ref, fp, heldTo, path string, every time.Duration) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -82,22 +93,32 @@ func (r *Runner) followOAuthRecordLoop(stop <-chan struct{}, runID string, kind 
 			return
 		case <-tick.C:
 		}
-		r.followOAuthRecord(runID, kind, ref, fp, path)
+		if !r.followOAuthRecord(runID, kind, ref, fp, heldTo, path) {
+			return
+		}
 	}
 }
 
+// errNotTheLentCredential ends the follow of a lent slot whose donor record
+// no longer names the subscription that was lent.
+var errNotTheLentCredential = errors.New("the donor's record no longer names the subscription that was lent")
+
 // followOAuthRecord runs one follow pass and reports it: a refusal or a store
-// error is logged, a change is written through into the run's sandbox.
-func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp, path string) {
-	changed, fpNow, err := r.followOAuthRecordOnce(kind, ref, path)
+// error is logged, a change is written through into the run's sandbox. It
+// returns false when the follow must end: a lent slot whose donor record now
+// names another subscription keeps the token it holds — in-flight runs
+// finish on the credential they were granted, never on one the donor
+// connects after.
+func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp, heldTo, path string) bool {
+	changed, fpNow, err := r.followOAuthRecordOnce(kind, ref, heldTo, path)
 	if err != nil {
 		if r.cfg.Logger != nil {
 			r.cfg.Logger.Warn("runner: oauth-forfait follow run=%s kind=%s record=%s: %v", runID, kind, ref, err)
 		}
-		return
+		return !errors.Is(err, errNotTheLentCredential)
 	}
 	if !changed {
-		return
+		return true
 	}
 	if r.cfg.Logger != nil {
 		r.cfg.Logger.Info("runner: oauth-forfait run=%s picked up the store's rotation of %s", runID, kind)
@@ -107,6 +128,7 @@ func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp
 		}
 	}
 	r.propagateForfaitToSandbox(runID, path)
+	return true
 }
 
 // followOAuthRecordOnce re-reads the record once and, when its payload moved,
@@ -116,8 +138,10 @@ func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp
 // rotations (an unstamped record stamped, a subscription identified as an
 // account, an account demoted to a local meter), and a reconnect of the slot
 // is its owner's choice of credential for it. The id pins the owner and the
-// rank, so the run follows that one slot.
-func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref, path string) (bool, string, error) {
+// rank, so the run follows that one slot — except a lent one: heldTo, when
+// set, is the fingerprint of the subscription that was lent, and a record
+// that names another is refused (errNotTheLentCredential).
+func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref, heldTo, path string) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	rec, err := r.cfg.OAuthForfaits.GetByID(ctx, ref)
@@ -126,6 +150,9 @@ func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref, path string)
 	}
 	if rec.Kind != kind {
 		return false, "", fmt.Errorf("record is a %s forfait, the run was sealed with a %s one", rec.Kind, kind)
+	}
+	if heldTo != "" && rec.Fingerprint != heldTo {
+		return false, rec.Fingerprint, fmt.Errorf("%w (fingerprint %q, lent %q): the run keeps the token it holds", errNotTheLentCredential, rec.Fingerprint, heldTo)
 	}
 	payload, err := secrets.OpenOAuthPayload(r.cfg.Sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 	if err != nil {
