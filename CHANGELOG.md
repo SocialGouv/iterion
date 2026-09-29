@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.212.1](https://github.com/SocialGouv/iterion/compare/v3.212.0...v3.212.1) (2026-09-29)
+
+### Bug Fixes
+
+* **dsl:** the launch fallback screen resolves a {{vars.x}} node backend with the run's vars ([#1606](https://github.com/SocialGouv/iterion/issues/1606)) ([#1921](https://github.com/SocialGouv/iterion/issues/1921)) ([4805334](https://github.com/SocialGouv/iterion/commit/480533446576b965e8e333c8c4662e33c09aa6bc))
+
+    <details><summary>why</summary>
+
+    ApplyRunFallback — the launch-time admission for an operator's --fallback / Studio Launch row — screened each route against the node's backend, but its signature carried no vars, so a `backend: "{{vars.x}}"` node read as undecided and the four C176 predicates (the tools: inversion, session continuity, the permission gate, the unresolvable-tools check) silently did not apply to it. The compile side is silent on that shape by design — a launch may override the var — which left it with no screen…
+
+    </details>
+* **studio:** derive the wire mode unions from the DSL registry ([#1935](https://github.com/SocialGouv/iterion/issues/1935)) ([#1939](https://github.com/SocialGouv/iterion/issues/1939)) ([3e09df4](https://github.com/SocialGouv/iterion/commit/3e09df4d30d0a5ab3c57494b7d367ea085e44806)), references [#1930s](https://github.com/SocialGouv/iterion/issues/1930s)
+
+    <details><summary>why</summary>
+
+    SessionMode, AwaitMode and InteractionMode in studio/src/api/types.ts were a third hand copy of the registry enums, drifted: AwaitMode carried a "none" the parser refuses and InteractionMode missed review/async/human_or_host.
+
+    </details>
+
 ## [3.212.0](https://github.com/SocialGouv/iterion/compare/v3.211.0...v3.212.0) (2026-09-29)
 
 ### Features
