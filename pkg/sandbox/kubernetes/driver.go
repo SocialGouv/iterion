@@ -1273,27 +1273,40 @@ func clearHostLooseRefs(gitDir string) error {
 // leftover.
 //
 // A writer racing the archive (a git process still finishing in the pod)
-// makes tar warn "file changed as we read it" and exit 1 although the
-// archive is complete. That one failure is retried, up to exportAttempts;
-// a tree that keeps changing, and every other failure, stays an error.
+// makes tar warn — a file changed, or was listed then removed — and exit 1
+// although the archive is complete. That one failure is retried with a
+// growing pause (ITERION_SANDBOX_EXPORT_ATTEMPTS, _RETRY_PAUSE); a tree
+// that keeps changing, and every other failure, stays an error. After a
+// retry, the files under .git that only a raced archive wrote — a lock, a
+// MERGE_HEAD caught mid-operation — are removed, since host-side git would
+// otherwise read them as an operation still in progress.
 func (r *Run) ExportWorkspace(ctx context.Context) error {
 	if r.info.WorkspacePath == "" {
 		return nil // workspace-less run — nothing was populated
 	}
 	hostDst := resolveCloneRoot(ctx, r.info.WorkspacePath)
 	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
+	attempts, pause := exportRetrySettings(r.driver.logger)
+	hostGit := filepath.Join(hostDst, ".git")
+	before, err := gitDirFiles(hostGit)
+	if err != nil {
+		return fmt.Errorf("list host .git before export: %w", err)
+	}
 	var last error
-	for attempt := 1; attempt <= exportAttempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		// Cleared before EVERY attempt: a pod-side gc between two attempts
 		// may pack a ref the previous extract wrote loose, and a stale loose
 		// file would shadow the packed value this attempt brings.
-		if err := clearHostLooseRefs(filepath.Join(hostDst, ".git")); err != nil {
+		if err := clearHostLooseRefs(hostGit); err != nil {
 			return fmt.Errorf("clear host loose refs before export extract: %w", err)
 		}
-		retryable, err := r.exportOnce(ctx, hostDst)
+		retryable, extracted, err := r.exportOnce(ctx, hostDst)
 		if err == nil {
 			if attempt > 1 {
-				r.driver.logger.Warn("sandbox: workspace export succeeded on attempt %d/%d, after tar saw files change mid-archive", attempt, exportAttempts)
+				r.driver.logger.Warn("sandbox: workspace export succeeded on attempt %d/%d, after tar saw the tree change mid-archive", attempt, attempts)
+				if err := r.dropRacedGitLeftovers(hostGit, before, extracted); err != nil {
+					return err
+				}
 			}
 			return nil
 		}
@@ -1301,33 +1314,65 @@ func (r *Run) ExportWorkspace(ctx context.Context) error {
 			return err
 		}
 		last = err
-		r.driver.logger.Warn("sandbox: workspace export attempt %d/%d: tar saw files change mid-archive, retrying", attempt, exportAttempts)
-		if attempt < exportAttempts {
+		r.driver.logger.Warn("sandbox: workspace export attempt %d/%d: tar saw the tree change mid-archive, retrying", attempt, attempts)
+		if attempt < attempts {
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("workspace export retry abandoned (%v): %w", ctx.Err(), last)
-			case <-time.After(exportRetryPause):
+			case <-time.After(pause):
 			}
+			pause *= 2
 		}
 	}
-	return fmt.Errorf("the pod workspace kept changing under the export after %d attempts: %w", exportAttempts, last)
+	return fmt.Errorf("the pod workspace kept changing under the export after %d attempts: %w", attempts, last)
 }
 
-// exportAttempts bounds how many archives a racing writer can cost the export.
-const exportAttempts = 3
+// Export retry defaults: five archives, the pause doubling from one second —
+// about fifteen seconds for a racing writer to finish (a detached `git gc`
+// included) inside the caller's export deadline.
+const (
+	defaultExportAttempts   = 5
+	defaultExportRetryPause = time.Second
+)
 
-// exportRetryPause lets the racing writer finish between two attempts.
-var exportRetryPause = 500 * time.Millisecond
+// exportRetrySettings reads the retry bounds, overridable by
+// ITERION_SANDBOX_EXPORT_ATTEMPTS (an integer >= 1) and
+// ITERION_SANDBOX_EXPORT_RETRY_PAUSE (a positive Go duration, the first
+// pause; each next one doubles). An unusable value is reported and the default
+// kept — the export is not the place to fail on a knob.
+func exportRetrySettings(logger *iterlog.Logger) (attempts int, pause time.Duration) {
+	attempts, pause = defaultExportAttempts, defaultExportRetryPause
+	if raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_EXPORT_ATTEMPTS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 1 {
+			attempts = n
+		} else {
+			logger.Warn("sandbox: ITERION_SANDBOX_EXPORT_ATTEMPTS=%q is not an integer >= 1 — keeping %d", raw, attempts)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_EXPORT_RETRY_PAUSE")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			pause = d
+		} else {
+			logger.Warn("sandbox: ITERION_SANDBOX_EXPORT_RETRY_PAUSE=%q is not a positive duration — keeping %s", raw, pause)
+		}
+	}
+	return attempts, pause
+}
 
-// tarFileChangedWarning is GNU tar's warning for a file that changed while it
-// was archived: the archive is complete, but tar exits 1.
-const tarFileChangedWarning = "file changed as we read it"
+// tarRaceWarnings are GNU tar's warnings for a tree that changed while it was
+// archived: a file rewritten, or listed and then removed. The archive is
+// complete; tar exits 1 ("some files differ").
+var tarRaceWarnings = []string{"file changed as we read it", "File removed before we read it"}
 
-// onlyFileChangedWarnings reports whether err is an exit status 1 whose stderr
-// carries nothing but tar's file-changed warning — the one failure a retry can
-// cure. kubectl reports its own failures with exit 1 too, on other lines, so the
-// stderr content is what tells them apart.
-func onlyFileChangedWarnings(err error, stderr string) bool {
+// kubectlRemoteExit1 is the line `kubectl exec` itself adds to stderr when the
+// remote command exits 1.
+const kubectlRemoteExit1 = "command terminated with exit code 1"
+
+// onlyTarRaceWarnings reports whether err is an exit status 1 whose stderr
+// carries tar's race warnings and nothing else but kubectl's own exit-code
+// trailer — the one failure a retry can cure. kubectl reports its own failures
+// with exit 1 too, on other lines, so the stderr content tells them apart.
+func onlyTarRaceWarnings(err error, stderr string) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		return false
@@ -1335,20 +1380,80 @@ func onlyFileChangedWarnings(err error, stderr string) bool {
 	seen := false
 	for _, line := range strings.Split(stderr, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "tar: ") || !strings.HasSuffix(line, tarFileChangedWarning) {
+		switch {
+		case line == "" || line == kubectlRemoteExit1:
+		case strings.HasPrefix(line, "tar: ") && hasAnySuffix(line, tarRaceWarnings):
+			seen = true
+		default:
 			return false
 		}
-		seen = true
 	}
 	return seen
 }
 
+func hasAnySuffix(s string, suffixes []string) bool {
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(s, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitDirFiles lists the regular files under gitDir, relative to it. The export
+// only ever removes what it can prove it wrote, so this is the host's state
+// BEFORE any archive landed.
+func gitDirFiles(gitDir string) (map[string]bool, error) {
+	files := map[string]bool{}
+	err := filepath.WalkDir(gitDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path == gitDir {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if d.Type().IsRegular() {
+			rel, relErr := filepath.Rel(gitDir, path)
+			if relErr != nil {
+				return relErr
+			}
+			files[filepath.ToSlash(rel)] = true
+		}
+		return nil
+	})
+	return files, err
+}
+
+// dropRacedGitLeftovers removes, after a retried export, every regular file
+// under hostGit that was not there before the export and that the successful
+// archive did not bring: only a raced archive can have written it. Candidates
+// come from walking hostGit itself — never from names the pod sent — and a
+// file the host already had is never touched.
+func (r *Run) dropRacedGitLeftovers(hostGit string, before, extracted map[string]bool) error {
+	now, err := gitDirFiles(hostGit)
+	if err != nil {
+		return fmt.Errorf("list host .git after export: %w", err)
+	}
+	for rel := range now {
+		if before[rel] || extracted[".git/"+rel] {
+			continue
+		}
+		path := filepath.Join(hostGit, filepath.FromSlash(rel))
+		if !strings.HasPrefix(path, hostGit+string(os.PathSeparator)) {
+			return fmt.Errorf("refusing to remove %q: outside %s", path, hostGit)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove raced leftover %s: %w", path, err)
+		}
+		r.driver.logger.Warn("sandbox: removed %s — written by a raced archive, absent from the one that landed", path)
+	}
+	return nil
+}
+
 // exportOnce streams one archive of the pod workspace into hostDst. retryable
-// reports a failure onlyFileChangedWarnings accepts as transient.
-func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, err error) {
+// reports a failure onlyTarRaceWarnings accepts as transient; extracted names
+// the members the host extract wrote, relative to hostDst.
+func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, extracted map[string]bool, err error) {
 	kubectlArgs := []string{"--namespace", r.namespace,
 		"exec", r.podName, "--container", "workload", "--",
 		"tar", "-C", r.prepared.workspace}
@@ -1357,29 +1462,37 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 	}
 	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
 	podTar := kubectlCmdContext(ctx, kubectlArgs...)
-	hostTar := exec.CommandContext(ctx, "tar", "-C", hostDst, "-xf", "-")
+	hostTar := exec.CommandContext(ctx, "tar", "-C", hostDst, "-xvf", "-")
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {
-		return false, fmt.Errorf("pod tar stdout pipe: %w", err)
+		return false, nil, fmt.Errorf("pod tar stdout pipe: %w", err)
 	}
 	hostTar.Stdin = pipe
-	var podErr, hostErr bytes.Buffer
+	var podErr, hostErr, hostOut bytes.Buffer
 	podTar.Stderr = &podErr
 	hostTar.Stderr = &hostErr
+	hostTar.Stdout = &hostOut
 
 	if err := hostTar.Start(); err != nil {
-		return false, fmt.Errorf("start host tar extract: %w", err)
+		return false, nil, fmt.Errorf("start host tar extract: %w", err)
 	}
 	if err := podTar.Run(); err != nil {
 		_ = hostTar.Wait()
 		stderr := strings.TrimSpace(podErr.String())
-		return onlyFileChangedWarnings(err, stderr), fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
+		return onlyTarRaceWarnings(err, stderr), nil, fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
 	}
 	if err := hostTar.Wait(); err != nil {
-		return false, fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
+		return false, nil, fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
 	}
-	return false, nil
+	extracted = map[string]bool{}
+	for _, name := range strings.Split(hostOut.String(), "\n") {
+		name = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(name), "./"), "/")
+		if name != "" {
+			extracted[name] = true
+		}
+	}
+	return false, extracted, nil
 }
 
 // fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on

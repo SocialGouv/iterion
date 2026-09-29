@@ -9,20 +9,20 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
-// tarRacedWriter is the stderr GNU tar leaves when a file changed while it was
-// archived: the archive is complete, the exit status is 1.
-const tarRacedWriter = "tar: ./.git: file changed as we read it"
+// measuredRaceStderr is the stderr a real export returned when a git process
+// was still writing in the pod: tar's warning, then the trailer `kubectl exec`
+// adds for a remote exit 1. The fake kubectl reproduces it verbatim — a shim
+// that drops the trailer tests a predicate production never meets.
+const measuredRaceStderr = "tar: ./.git: file changed as we read it\n" + kubectlRemoteExit1
 
 // exportShim puts a fake kubectl on PATH for ExportWorkspace. Each call archives
 // src the way the in-pod tar would and counts itself; the first failFor calls
-// then write stderr and exit 1 — a racing writer's shape, or kubectl's own
-// failure, depending on the text.
+// then write stderr and exit 1.
 func exportShim(t *testing.T, src string, failFor int, stderr string) (calls func() int) {
 	t.Helper()
 	return exportShimSeq(t, []string{src}, failFor, stderr)
@@ -72,8 +72,9 @@ func srcCases(srcs []string) string {
 }
 
 // exportTarget is a fresh clone under the test's temp dir. The export clears
-// loose refs under the RESOLVED clone root, so the resolution is asserted
-// before anything runs: a root this test does not own stops the test.
+// loose refs and removes raced leftovers under the RESOLVED clone root, so the
+// resolution is asserted before anything runs: a root this test does not own
+// stops the test.
 func exportTarget(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -98,15 +99,25 @@ func exportTarget(t *testing.T) string {
 	return ws
 }
 
-// podWork is the pod workspace the shim archives: one file the host must end
-// up with once the export succeeds.
-func podWork(t *testing.T) string {
+// podTree writes files (path -> content) into a fresh dir: what the pod holds.
+func podTree(t *testing.T, files map[string]string) string {
 	t.Helper()
 	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "note.txt"), []byte("pod work"), 0o644); err != nil {
-		t.Fatal(err)
+	for rel, content := range files {
+		path := filepath.Join(src, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return src
+}
+
+func podWork(t *testing.T) string {
+	t.Helper()
+	return podTree(t, map[string]string{"note.txt": "pod work"})
 }
 
 func exportRun(ws string) *Run {
@@ -119,21 +130,20 @@ func exportRun(ws string) *Run {
 	}
 }
 
+// fastExportRetries shrinks the pause through the operator's own escape hatch.
 func fastExportRetries(t *testing.T) {
 	t.Helper()
-	prev := exportRetryPause
-	exportRetryPause = 10 * time.Millisecond
-	t.Cleanup(func() { exportRetryPause = prev })
+	t.Setenv("ITERION_SANDBOX_EXPORT_RETRY_PAUSE", "5ms")
 }
 
 // TestExportWorkspace_RetriesATarThatRacedAWriter: a git process still
-// finishing in the pod makes tar warn and exit 1 over a complete archive.
-// Dropping that export threw the run's in-pod work away; one more archive
-// brings it home.
+// finishing in the pod makes tar warn and exit 1 over a complete archive, and
+// kubectl adds its own trailer. Dropping that export threw the run's in-pod
+// work away; one more archive brings it home.
 func TestExportWorkspace_RetriesATarThatRacedAWriter(t *testing.T) {
 	fastExportRetries(t)
 	ws := exportTarget(t)
-	calls := exportShim(t, podWork(t), 1, tarRacedWriter)
+	calls := exportShim(t, podWork(t), 1, measuredRaceStderr)
 	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
 		t.Fatalf("an export whose only failure was a racing writer was dropped: %v", err)
 	}
@@ -147,17 +157,34 @@ func TestExportWorkspace_RetriesATarThatRacedAWriter(t *testing.T) {
 
 // TestExportWorkspace_RefusesATreeThatKeepsChanging: the retry is bounded — a
 // workspace that never settles is still an export failure, never an archive
-// accepted half-written.
+// accepted half-written. The bound is the operator's to set.
 func TestExportWorkspace_RefusesATreeThatKeepsChanging(t *testing.T) {
 	fastExportRetries(t)
+	t.Setenv("ITERION_SANDBOX_EXPORT_ATTEMPTS", "3")
 	ws := exportTarget(t)
-	calls := exportShim(t, podWork(t), 99, tarRacedWriter)
+	calls := exportShim(t, podWork(t), 99, measuredRaceStderr)
 	err := exportRun(ws).ExportWorkspace(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "kept changing") {
 		t.Fatalf("a workspace that never settled was accepted: %v", err)
 	}
-	if n := calls(); n != exportAttempts {
-		t.Fatalf("pod tar ran %d time(s), want exactly %d", n, exportAttempts)
+	if n := calls(); n != 3 {
+		t.Fatalf("pod tar ran %d time(s), want exactly the 3 attempts the operator set", n)
+	}
+}
+
+// TestExportWorkspace_KeepsTheDefaultBoundOverAnUnusableKnob: a knob that is
+// not an integer is reported and the default kept — the export is not the
+// place to fail, nor to run unbounded.
+func TestExportWorkspace_KeepsTheDefaultBoundOverAnUnusableKnob(t *testing.T) {
+	fastExportRetries(t)
+	t.Setenv("ITERION_SANDBOX_EXPORT_ATTEMPTS", "many")
+	ws := exportTarget(t)
+	calls := exportShim(t, podWork(t), 99, measuredRaceStderr)
+	if err := exportRun(ws).ExportWorkspace(context.Background()); err == nil {
+		t.Fatal("a workspace that never settled was accepted")
+	}
+	if n := calls(); n != defaultExportAttempts {
+		t.Fatalf("pod tar ran %d time(s), want the default %d", n, defaultExportAttempts)
 	}
 }
 
@@ -179,26 +206,25 @@ func TestExportWorkspace_NeverRetriesAKubectlFailure(t *testing.T) {
 // TestExportWorkspace_ClearsLooseRefsBeforeEveryAttempt: between two attempts
 // a pod-side gc may pack a ref the first extract wrote LOOSE. Git reads loose
 // before packed, so a loose file left over from the raced archive would shadow
-// the value the successful one brings — the run's work unreachable by ref.
+// the value the successful one brings — the run's work unreachable by ref. The
+// ref also exists loose on the host before the export: the leftover cleanup
+// never touches a file the host already had, so only the per-attempt clearing
+// can remove it.
 func TestExportWorkspace_ClearsLooseRefsBeforeEveryAttempt(t *testing.T) {
 	fastExportRetries(t)
 	ws := exportTarget(t)
+	branch := exec.Command("git", "-C", ws, "branch", "feature")
+	branch.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := branch.CombinedOutput(); err != nil {
+		t.Fatalf("git branch: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git/refs/heads/feature")); err != nil {
+		t.Fatalf("the host clone does not carry the loose ref the scenario needs: %v", err)
+	}
 	const stale, packed = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
-	raced := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(raced, ".git/refs/heads"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(raced, ".git/refs/heads/feature"), []byte(stale+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	settled := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(settled, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(settled, ".git/packed-refs"), []byte(packed+" refs/heads/feature\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	exportShimSeq(t, []string{raced, settled}, 1, tarRacedWriter)
+	raced := podTree(t, map[string]string{".git/refs/heads/feature": stale + "\n"})
+	settled := podTree(t, map[string]string{".git/packed-refs": packed + " refs/heads/feature\n"})
+	exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
 	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
 		t.Fatalf("export failed: %v", err)
 	}
@@ -211,8 +237,36 @@ func TestExportWorkspace_ClearsLooseRefsBeforeEveryAttempt(t *testing.T) {
 	}
 }
 
-// TestOnlyFileChangedWarnings pins the one failure the export retries.
-func TestOnlyFileChangedWarnings(t *testing.T) {
+// TestExportWorkspace_DropsWhatOnlyTheRacedArchiveWrote: a raced archive
+// catches a git operation mid-flight — its lock, its MERGE_HEAD. tar never
+// deletes, so without cleanup the host would read an operation still in
+// progress ("Unable to create '.git/index.lock': File exists"). The files the
+// host already had are never touched, even those the landing archive lacks.
+func TestExportWorkspace_DropsWhatOnlyTheRacedArchiveWrote(t *testing.T) {
+	fastExportRetries(t)
+	ws := exportTarget(t)
+	raced := podTree(t, map[string]string{
+		".git/index.lock": "lock",
+		".git/MERGE_HEAD": "3333333333333333333333333333333333333333\n",
+		"note.txt":        "pod work",
+	})
+	settled := podTree(t, map[string]string{"note.txt": "pod work"})
+	exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+	for _, leftover := range []string{".git/index.lock", ".git/MERGE_HEAD"} {
+		if _, err := os.Stat(filepath.Join(ws, leftover)); err == nil {
+			t.Fatalf("%s from the raced archive survived the retry — host-side git reads an operation in progress", leftover)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git/HEAD")); err != nil {
+		t.Fatalf("the host's own .git/HEAD was removed — the cleanup touched a file the export did not write: %v", err)
+	}
+}
+
+// TestOnlyTarRaceWarnings pins the one failure the export retries.
+func TestOnlyTarRaceWarnings(t *testing.T) {
 	exitWith := func(code int) error {
 		err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
 		var exitErr *exec.ExitError
@@ -221,24 +275,25 @@ func TestOnlyFileChangedWarnings(t *testing.T) {
 		}
 		return err
 	}
-	two := tarRacedWriter + "\n" + "tar: ./docs/page.md: file changed as we read it"
 	for _, tc := range []struct {
 		name   string
 		err    error
 		stderr string
 		want   bool
 	}{
-		{"one racing writer", exitWith(1), tarRacedWriter, true},
-		{"several racing writers", exitWith(1), two, true},
-		{"a racing writer and another tar error", exitWith(1), tarRacedWriter + "\ntar: ./x: Cannot open: Permission denied", false},
+		{"the measured stderr, kubectl trailer included", exitWith(1), measuredRaceStderr, true},
+		{"a file listed then removed", exitWith(1), "tar: ./.git/index.lock: File removed before we read it\n" + kubectlRemoteExit1, true},
+		{"several racing writers", exitWith(1), "tar: ./.git: file changed as we read it\ntar: ./docs/page.md: file changed as we read it", true},
+		{"a racing writer and another tar error", exitWith(1), "tar: ./.git: file changed as we read it\ntar: ./x: Cannot open: Permission denied\n" + kubectlRemoteExit1, false},
+		{"the kubectl trailer alone", exitWith(1), kubectlRemoteExit1, false},
 		{"kubectl's own failure", exitWith(1), "error: unable to upgrade connection", false},
 		{"no stderr at all", exitWith(1), "", false},
-		{"a fatal tar exit", exitWith(2), tarRacedWriter, false},
-		{"not an exit status", errors.New("pipe broke"), tarRacedWriter, false},
-		{"no error", nil, tarRacedWriter, false},
+		{"a fatal tar exit", exitWith(2), measuredRaceStderr, false},
+		{"not an exit status", errors.New("pipe broke"), measuredRaceStderr, false},
+		{"no error", nil, measuredRaceStderr, false},
 	} {
-		if got := onlyFileChangedWarnings(tc.err, tc.stderr); got != tc.want {
-			t.Errorf("%s: onlyFileChangedWarnings = %v, want %v", tc.name, got, tc.want)
+		if got := onlyTarRaceWarnings(tc.err, tc.stderr); got != tc.want {
+			t.Errorf("%s: onlyTarRaceWarnings = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
