@@ -83,8 +83,22 @@ bracket is refused rather than merged — and both are enforced independently:
 
 **Where each is checked.** A literal **default** is checked at compile time
 ([C126](references/diagnostics.md) / [C161](references/diagnostics.md)) on the
-text as written — a default is never re-checked later, so `= "${AGENT}"` on a
-constrained var is refused rather than excused. An operator-supplied value
+text as written — a default is never re-checked later. A default carrying an
+env reference expands at run start, not at compile time, so the verbatim
+comparison could not judge it: the compiler expands what has an answer with
+no environment (the `${VAR:-default}` forms) and **warns** instead — [C181](references/diagnostics.md)
+when a reference stays unresolvable, which includes the engine-supplied
+names (`${PROJECT_DIR}` and kin: the RUN answers those itself, so no
+compile-time reading may) — the constraint is then checked on no
+path for that default: named, never silently excused — and [C182](references/diagnostics.md)
+when the compile-time reading violates (it is still only the value a launch
+with nothing set starts with, and the operator's env is an explicit choice).
+Only text whose `$` is no reference at all stays on the literal path. `:-` is
+the only operator the expander has, so `${VAR:+alt}` and `${VAR-default}`
+look up a variable literally named `VAR:+alt` / `VAR-default` (the run's
+lookup filters no name), and a computed name (`${${SEL}}`, `${PRE${X}}`)
+resolves to whatever the launch environment makes of it: both are C181.
+An operator-supplied value
 (`--var`, an HTTP payload, a dispatcher's `bot_args`, a preset overlay) is
 refused **at launch**, before a worktree or a sandbox is created, naming the
 var, the offending value and what it failed. Launch values are judged after
@@ -1346,7 +1360,7 @@ workflow:
 
 - **Write a number as digits, without a leading 0.** YAML reads `010` as the octal 8 where the `.bot` reads 10, `0x10` as 16, `+3` as 3, `1e2` as 100 and `01.5` as 1.5. The converter refuses these spellings rather than re-spell them in silence (E051, YAML's reading named): write the number you mean in the `.bot`'s digits (`8` or `10`, `16`, `100`), or — where the value may be text — quote it (`'010'`, a zip code). A `-` is kept where the value is always text — a `with` value, a connector's parameter (`offset: -10`); where a number or a text is taken (a preset's value, a JSON value) a signed number is refused, quote it if it is text; a property that takes a number takes no sign. The same holds for a bool where text is taken: `True` is YAML's spelling, `true` the `.bot`'s, and `draft: true` in a connector's `params:` is the text `true`.
 
-**What else differs.** A prompt declared under `prompts:` as a `|` block is a `.bot` prompt body: its leading and trailing blank lines are dropped, the first line's indentation is taken off every line, and profile 1 drops its interior blank lines — when the body you wrote is read otherwise, `validate` says so (E053, a warning), `fmt` refuses to rewrite the document rather than put that reading in your place, and `fmt --to bot` writes the reading into the `.bot`. A ` #` that follows a plain TEXT value on its line warns the same way — the value ends at the `#` and the rest is a comment YAML drops (`command: echo "see #123"` reads `echo "see`); a number, a bool, a null, a quoted or block scalar keep their trailing comment as the note it reads as. A prompt text written in place (`system: |`) is a string, kept as written. `dsl:` is required (E052). `catalog:` is the `.bot`'s `## ---` frontmatter, read by the one reader the catalogue uses. Comments are not carried either way: a document with YAML comments is refused by `fmt` and left as it is, and it still converts with `--to bot`, which counts the comments the `.bot` is not written with and names the first; `--to yaml` counts the `.bot` comments the document leaves behind. A conversion under `--force` replaces its target whole, and names what the target carried that the new text does not.
+**What else differs.** A prompt declared under `prompts:` as a `|` block is a `.bot` prompt body: its leading and trailing blank lines are dropped, the first line's indentation is taken off every line, and profile 1 drops its interior blank lines — when the body you wrote is read otherwise, `validate` says so (E053, a warning), `fmt` refuses to rewrite the document rather than put that reading in your place, and `fmt --to bot` writes the reading into the `.bot`. YAML's scanner also ends a line at an invisible U+0085 (NEL), U+2028 (LS) or U+2029 (PS): inside a literal block body one is read as the newline the scanner meant (E053 names the reading), but a trailing line holding only such a character is chomped like a blank line before the body is ever read — so the document itself is scanned raw, and one warning lists every line that holds one (E055). A ` #` that follows a plain TEXT value on its line warns the same way — the value ends at the `#` and the rest is a comment YAML drops (`command: echo "see #123"` reads `echo "see`); a number, a bool, a null, a quoted or block scalar keep their trailing comment as the note it reads as. A prompt text written in place (`system: |`) is a string, kept as written. `dsl:` is required (E052). `catalog:` is the `.bot`'s `## ---` frontmatter, read by the one reader the catalogue uses. Comments are not carried either way: a document with YAML comments is refused by `fmt` and left as it is, and it still converts with `--to bot`, which counts the comments the `.bot` is not written with and names the first; `--to yaml` counts the `.bot` comments the document leaves behind. A conversion under `--force` replaces its target whole, and names what the target carried that the new text does not.
 
 ## Validation and references
 

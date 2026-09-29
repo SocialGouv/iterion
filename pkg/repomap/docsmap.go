@@ -58,18 +58,10 @@ func (d docsPages) Extract(root string) (string, error) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Path < rows[j].Path })
 
-	adrs := 0
-	for _, r := range rows {
-		if r.IsADR {
-			adrs++
-		}
-	}
-
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d pages under `docs/`, of which %d ADRs. "+
-		"An ADR's **status** is the column that says whether its decision still "+
-		"holds; superseded ones stay listed because the reasoning is still "+
-		"the reason.\n\n", len(rows), adrs)
+	b.WriteString("One row per page under `docs/`, ADRs included. An ADR's **status** " +
+		"is the column that says whether its decision still holds; superseded " +
+		"ones stay listed because the reasoning is still the reason.\n\n")
 	b.WriteString("| Page | Title | Opens with | Status |\n|---|---|---|---|\n")
 	for _, r := range rows {
 		status := r.Status

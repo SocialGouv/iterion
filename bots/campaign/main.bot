@@ -69,7 +69,6 @@ vars:
   lot_max_passes: int = 4
 
 ## ─── Prompts (for the two HUMAN nodes — no LLM reads these) ─────────
-
 prompt escalate_instructions:
   The campaign supervisor paused because the items under review need an
   operator. They are listed with their type and evidence.
@@ -93,7 +92,6 @@ prompt review_instructions:
   Acknowledge to close the run.
 
 ## ─── Schemas ───────────────────────────────────────────────────────
-
 schema preflight_state:
   campaign_base: string
   refs_dir: string
@@ -163,6 +161,27 @@ schema review_input:
 schema review_ack:
   ack: string
 
+## escalate — the in-flight window, when configuration asks for one.
+##
+## The answer edits nothing: an operator who wants to change the programme
+## changes the repository and commits, exactly as a human supervisor did.
+## The pause IS the window; git carries the intervention.
+human escalate:
+  description: "Campaign escalation — operator review during the run"
+  input: escalate_input
+  output: escalate_answer
+  interaction: human
+  instructions: escalate_instructions
+
+## handoff_review — both escalation modes end here: the campaign never
+## closes without offering a human the decisions it took.
+human handoff_review:
+  description: "End-of-campaign handoff review"
+  input: review_input
+  output: review_ack
+  interaction: human
+  instructions: review_instructions
+
 ## ─── Nodes ─────────────────────────────────────────────────────────
 
 ## preflight — refuse early what would make every later verdict a lie.
@@ -175,8 +194,6 @@ schema review_ack:
 ## having supervised nothing is the blind judge this whole family of bots
 ## exists to refuse.
 tool preflight:
-  output: preflight_state
-  language: py
   script: |
     import json
     import os
@@ -276,20 +293,8 @@ tool preflight:
 
     print(json.dumps(out))
 
-## run_lot — the worker, one lot per child run.
-##
-## No `output:` is read from the child ON PURPOSE: the supervisor believes
-## nothing a run says about itself. Progress is measured in git by the next
-## node, exactly as it would be measured by a third party. No `isolated:`
-## either — the child works on THIS checkout; that is what it is for, and
-## the workspace-safety guard is right to serialise it.
-subbot run_lot:
-  source: "../modernize/main.bot"
-  with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    plan_path:     "{{vars.plan_path}}",
-    max_passes:    "{{vars.lot_max_passes}}"
-  }
+  language: py
+  output: preflight_state
 
 ## observe — everything the supervisor knows, re-read from git and files.
 ##
@@ -297,9 +302,6 @@ subbot run_lot:
 ## never in loop-carried messages: a campaign interrupted anywhere can be
 ## resumed, or re-run, and re-derive exactly where it stood.
 tool observe:
-  input: observe_input
-  output: observe_state
-  language: py
   script: |
     import json
     import os
@@ -481,6 +483,10 @@ tool observe:
 
     print(json.dumps(out))
 
+  language: py
+  input: observe_input
+  output: observe_state
+
 ## steward — the OTHER authority, mechanised but still separate.
 ##
 ## It executes a re-record if and only if: the request is well-formed, the
@@ -491,9 +497,6 @@ tool observe:
 ## becomes an escalation item, written and committed before anyone is asked
 ## anything.
 tool steward:
-  input: steward_input
-  output: steward_state
-  language: py
   script: |
     import datetime
     import json
@@ -713,24 +716,13 @@ tool steward:
     out["notice"] = ("%d act(s), %d escalation item(s)" % (out["acts"], len(items)))
     print(json.dumps(out))
 
-## escalate — the in-flight window, when configuration asks for one.
-##
-## The answer edits nothing: an operator who wants to change the programme
-## changes the repository and commits, exactly as a human supervisor did.
-## The pause IS the window; git carries the intervention.
-human escalate:
-  description: "Campaign escalation — operator review during the run"
-  input: escalate_input
-  output: escalate_answer
-  instructions: escalate_instructions
-  interaction: human
+  language: py
+  input: steward_input
+  output: steward_state
 
 ## record_answer — the operator's answer goes where every other fact went:
 ## in the committed record, before the campaign moves again.
 tool record_answer:
-  input: escalate_answer
-  output: answer_state
-  language: py
   script: |
     import datetime
     import json
@@ -754,13 +746,9 @@ tool record_answer:
                    capture_output=True, text=True, timeout=60)
     print(json.dumps({"stop": action == "stop"}))
 
-## loop_gate — continue while something can still land. Pure conjunction of
-## measured facts; the fall-through also serves loop and budget exhaustion.
-compute loop_gate:
-  output: loop_state
-  expr:
-    proceed: "!outputs.observe.exhausted && outputs.observe.stagnant < vars.stagnation_stop"
-    reason: "if(outputs.observe.exhausted, 'programme exhausted: no eligible lot remains', if(outputs.observe.stagnant >= vars.stagnation_stop, 'stagnation: consecutive child runs landed nothing', 'continue'))"
+  language: py
+  input: escalate_answer
+  output: answer_state
 
 ## finalize — the campaign's verdict, computed the way a third party would.
 ##
@@ -770,9 +758,6 @@ compute loop_gate:
 ## a cause the finished tree has closed); handoff written and committed,
 ## extensions first.
 tool finalize:
-  input: finalize_input
-  output: finalize_state
-  language: py
   script: |
     import datetime
     import json
@@ -1024,18 +1009,36 @@ tool finalize:
                                     "green" if out["oracle_green"] else "not green"))
     print(json.dumps(out))
 
-## handoff_review — both escalation modes end here: the campaign never
-## closes without offering a human the decisions it took.
-human handoff_review:
-  description: "End-of-campaign handoff review"
-  input: review_input
-  output: review_ack
-  instructions: review_instructions
-  interaction: human
+  language: py
+  input: finalize_input
+  output: finalize_state
+
+## loop_gate — continue while something can still land. Pure conjunction of
+## measured facts; the fall-through also serves loop and budget exhaustion.
+compute loop_gate:
+  output: loop_state
+  expr:
+    proceed: "!outputs.observe.exhausted && outputs.observe.stagnant < vars.stagnation_stop"
+    reason: "if(outputs.observe.exhausted, 'programme exhausted: no eligible lot remains', if(outputs.observe.stagnant >= vars.stagnation_stop, 'stagnation: consecutive child runs landed nothing', 'continue'))"
+
+## run_lot — the worker, one lot per child run.
+##
+## No `output:` is read from the child ON PURPOSE: the supervisor believes
+## nothing a run says about itself. Progress is measured in git by the next
+## node, exactly as it would be measured by a third party. No `isolated:`
+## either — the child works on THIS checkout; that is what it is for, and
+## the workspace-safety guard is right to serialise it.
+subbot run_lot:
+  source: "../modernize/main.bot"
+  with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    plan_path: "{{vars.plan_path}}",
+    max_passes: "{{vars.lot_max_passes}}",
+  }
 
 ## ─── Workflow ──────────────────────────────────────────────────────
-
 workflow campaign:
+
   entry: preflight
 
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default, and
@@ -1055,33 +1058,36 @@ workflow campaign:
   preflight -> run_lot
 
   run_lot -> observe with {
-    base:        "{{outputs.preflight.campaign_base}}",
-    ledger_path: "{{outputs.preflight.ledger_path}}"
+    base: "{{outputs.preflight.campaign_base}}",
+    ledger_path: "{{outputs.preflight.ledger_path}}",
   }
 
   observe -> steward with {
-    before:      "{{outputs.observe.before}}",
-    moved:       "{{outputs.observe.moved}}",
-    extensions:  "{{outputs.observe.extensions}}",
-    pending:     "{{outputs.observe.pending}}",
+    before: "{{outputs.observe.before}}",
+    moved: "{{outputs.observe.moved}}",
+    extensions: "{{outputs.observe.extensions}}",
+    pending: "{{outputs.observe.pending}}",
     ledger_path: "{{outputs.preflight.ledger_path}}",
-    verify_path: "{{outputs.preflight.verify_path}}"
+    verify_path: "{{outputs.preflight.verify_path}}",
   }
 
   ## Exhaustive pair on one bool: pause, or straight to the loop decision.
   steward -> escalate when pause_required with {
-    items:   "{{outputs.steward.escalations}}",
-    context: "{{outputs.steward.notice}}"
+    items: "{{outputs.steward.escalations}}",
+    context: "{{outputs.steward.notice}}",
   }
+
   steward -> loop_gate when not pause_required
 
   escalate -> record_answer with {
     action: "{{outputs.escalate.action}}",
-    note:   "{{outputs.escalate.note}}"
+    note: "{{outputs.escalate.note}}",
   }
+
   record_answer -> finalize when stop with {
     verify_path: "{{outputs.preflight.verify_path}}"
   }
+
   record_answer -> loop_gate when not stop
 
   ## Continue while something can still land; the unguarded fall-through
@@ -1090,13 +1096,16 @@ workflow campaign:
   loop_gate -> finalize when not proceed with {
     verify_path: "{{outputs.preflight.verify_path}}"
   }
+
   loop_gate -> run_lot as campaign_loop("{{vars.max_lots}}")
+
   loop_gate -> finalize with {
     verify_path: "{{outputs.preflight.verify_path}}"
   }
 
   finalize -> handoff_review with {
     handoff_path: "{{outputs.finalize.handoff_path}}",
-    summary:      "{{outputs.finalize.notice}}"
+    summary: "{{outputs.finalize.notice}}",
   }
+
   handoff_review -> done

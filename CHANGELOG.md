@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.215.0](https://github.com/SocialGouv/iterion/compare/v3.214.1...v3.215.0) (2026-09-29)
+
+### Features
+
+* **dsl:** type-consistency for whole-ref with: mappings, routing fields, and constrained env defaults ([#1604](https://github.com/SocialGouv/iterion/issues/1604) [#1605](https://github.com/SocialGouv/iterion/issues/1605) [#1610](https://github.com/SocialGouv/iterion/issues/1610)) ([#1926](https://github.com/SocialGouv/iterion/issues/1926)) ([4fd951a](https://github.com/SocialGouv/iterion/commit/4fd951ad4ccde1eee65c8f3f6bc9918cb86cd040)), references [#1285](https://github.com/SocialGouv/iterion/issues/1285) [#1320](https://github.com/SocialGouv/iterion/issues/1320) [#1389](https://github.com/SocialGouv/iterion/issues/1389) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [pre-#1915](https://github.com/pre-/issues/1915) [#1915](https://github.com/SocialGouv/iterion/issues/1915) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1919](https://github.com/SocialGouv/iterion/issues/1919)
+
+    <details><summary>why</summary>
+
+    An edge with: mapping that is exactly one {{vars.<name>}} reference passes the value through with its type, and since #1285 a string[]/json var IS a list on the default path as much as on the override one — so the list (or object) arrives WHOLE on a field declared string, compiles clean, and nothing checks a with: value's type at run time: the arity simply moves (a tool whose command reads the field executes once per element).
+
+    </details>
+
+## [3.214.1](https://github.com/SocialGouv/iterion/compare/v3.214.0...v3.214.1) (2026-09-29)
+
+### Bug Fixes
+
+* **delegate:** retry a forfait token renewed under a running CLI, do not bench it ([#1960](https://github.com/SocialGouv/iterion/issues/1960)) ([6f7fb16](https://github.com/SocialGouv/iterion/commit/6f7fb167e083af805edd68fbc225a246bdbfb792))
+
+    <details><summary>why</summary>
+
+    A claude_code CLI holds the forfait access token it was spawned with for its whole life. When the store's refresh worker rotates the record, the provider revokes that token, and the runner writes the rotation into the forfait file. Measured: a live delegate refused "OAuth access token has been revoked" 16 s after the worker rotated its team record. The delegate read that render as a dead credential: ErrAuthFailed paused the run for a human re-auth, and the auth evidence it filed benched a…
+
+    </details>
+
+## [3.214.0](https://github.com/SocialGouv/iterion/compare/v3.213.0...v3.214.0) (2026-09-29)
+
+### Features
+
+* **dsl:** the writer's multi-line forms, E055 separator notice, surgical WriteManifest ([#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1663](https://github.com/SocialGouv/iterion/issues/1663) [#1349](https://github.com/SocialGouv/iterion/issues/1349)) ([#1919](https://github.com/SocialGouv/iterion/issues/1919)) ([928271d](https://github.com/SocialGouv/iterion/commit/928271d3c9339465530323c042bdcb654d6142b8))
+
+    <details><summary>why</summary>
+
+    A strict render folded every value holding a newline onto one escaped "…\n…" line — 470 504 characters on bots/golden-master/main.bot — which pkg/dsl/canon then refused by name, leaving 40 shipped files unformattable (.fmt-refused). The writer now gives a value holding a newline the `key: |` block scalar form when the reader gives it back exactly (ends with a newline, no leading blank line, no whitespace-only line, no later line de-denting below the first, no carriage return), and the backtick…
+
+    </details>
+
 ## [3.213.0](https://github.com/SocialGouv/iterion/compare/v3.212.2...v3.213.0) (2026-09-29)
 
 ### Features

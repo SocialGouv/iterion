@@ -53,45 +53,27 @@
 
 dsl: 2
 
-secrets:
-  ## Forge API token, mounted read-only as a FILE (path/env only, never
-  ## read into a prompt). Used to (a) push the alignment commit onto the
-  ## PR branch and (b) post the review comment via the forge REST API —
-  ## no host `gh`/`glab` needed, so it works inside the sandbox. An org
-  ## binds its forge credential to this name via a bot-secret binding.
-  ## optional: true so a local dogfood relying on host git auth still runs.
-  forge_token:
-    as: file
-    optional: true
-
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## The PR's target (base) branch — the bump is `base_ref..HEAD`. The
   ## webhook stamps the real base; default "main" covers the common case.
   base_ref: string = "main"
-
   ## The pull/merge-request URL (webhook-stamped). Empty on a bare local
   ## run → the feedback step skips posting (it still audits + aligns).
   pr_url: string = ""
-
   ## The PR author login (webhook-stamped, e.g. "dependabot[bot]").
   ## Informational — surfaced in the comment; the author FILTER lives in
   ## the webhook config, not here.
   pr_author: string = ""
-
   ## PR title + body (webhook-stamped) — extra context for the audit.
   scope_notes: string = ""
-
   ## Soft budget hint passed into align/validate prompts (number of
   ## self-fix attempts the align agent should spend before flagging
   ## unstable). Not a hard loop bound — convergence is by construction.
   max_fix_iterations: int = 2
-
   ## When true, also mirror the verdict to the native board. Off by
   ## default — Vetty's primary sink is the PR comment.
   post_to_board: bool = false
-
   ## MERGE GATE. When set, the feedback step also posts a commit status on
   ## the PR head SHA carrying Vetty's verdict: `success` only when the bump
   ## was audited safe AND the deterministic verify gate was green. Add the
@@ -104,7 +86,6 @@ vars:
   ## server's publish endpoint below. No endpoint, no gate — stated as such
   ## rather than silently skipped.
   gate_enabled: bool = true
-
   ## The commit-status CONTEXT — the name in the repo's required checks. A
   ## required check applies to EVERY PR, so on a repo where a reviewer takes
   ## the human PRs and Vetty takes the bot's, both must post the SAME
@@ -112,7 +93,6 @@ vars:
   ## permanently absent and block the PR. Pin the shared name per repo via
   ## the integration's launch_vars.
   gate_context: string = "vetty/deps"
-
   ## AUTO-MERGE ARMING (opt-in, OFF by default so the catalog behaviour is
   ## unchanged). When true AND the verdict is green AND the gate landed green,
   ## Vetty asks the forge to merge the PR *once its own required checks pass*.
@@ -128,10 +108,8 @@ vars:
   ## target branch; with none, "clean" says nothing and a forge merges an armed
   ## PR straight away.
   arm_automerge: bool = false
-
   ## Merge method asked for when arming. Must be one the repo allows.
   automerge_method: string [enum: "squash", "merge", "rebase"] = "squash"
-
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
   ## launch when the run's team has a forge connection covering pr_url's
   ## repo. Declaring them here is the whole opt-in (undeclared launch vars
@@ -140,12 +118,10 @@ vars:
   ## no gate.
   forge_publish_url: string = ""
   forge_publish_token: string = ""
-
   ## Out-of-tree scratch for the deterministic gate’s verify script/log
   ## (${PROJECT_SCRATCH_DIR} resolves outside the PR checkout — never
   ## pollute the PR branch).
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/dep-update-guard"
-
   ## Seconds the deterministic verify may run before it is called red.
   ## Overridable because 20 minutes is a guess, not a property of the world:
   ## a monorepo whose own CI takes longer would be held on a timeout that
@@ -154,8 +130,18 @@ vars:
   ## crashed node.
   verify_timeout_s: int = 1200
 
-## ─── Prompts ────────────────────────────────────────────────────
+secrets:
+  ## Forge API token, mounted read-only as a FILE (path/env only, never
+  ## read into a prompt). Used to (a) push the alignment commit onto the
+  ## PR branch and (b) post the review comment via the forge REST API —
+  ## no host `gh`/`glab` needed, so it works inside the sandbox. An org
+  ## binds its forge credential to this name via a bot-secret binding.
+  ## optional: true so a local dogfood relying on host git auth still runs.
+  forge_token:
+    as: file
+    optional: true
 
+## ─── Prompts ────────────────────────────────────────────────────
 prompt security_audit_system:
   You are a supply-chain security auditor. A dependency bot (Dependabot
   or Renovate) opened a PR that bumps one or more dependencies. Your job
@@ -495,7 +481,6 @@ prompt escalate_instructions:
   run can act on).
 
 ## ─── Schemas ────────────────────────────────────────────────────
-
 schema prepare_output:
   ## is_empty: no diff vs base AND the base resolved — the only case that
   ## may end the run early. A degraded scope never reports empty.
@@ -689,6 +674,68 @@ schema automerge_output:
   ## mystery.
   reason: string
 
+## Supply-chain audit (read-only). claude_code so it has a real shell +
+## the sec scanners from the sandbox image; reads the skills and adapts.
+agent security_audit:
+  model: "${VETTY_MODEL_AUDIT:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: audit_input
+  output: audit_output
+  system: security_audit_system
+  user: security_audit_user
+  tool_max_steps: 40
+  reasoning_effort: "${VETTY_EFFORT_AUDIT:-high}"
+  readonly: true
+
+## Align consuming code to the bump AND keep the build green (mutating).
+agent align:
+  model: "${VETTY_MODEL_ALIGN:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: align_input
+  output: align_output
+  system: align_system
+  user: align_user
+  tool_max_steps: 80
+  reasoning_effort: "${VETTY_EFFORT_ALIGN:-high}"
+
+## verify_build — adaptive capture of the repo's build+tests into the
+## out-of-tree verify.sh (it does NOT judge; the tool's exit code does).
+agent verify_build:
+  model: "${VETTY_MODEL_VALIDATE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: verify_feedback_input
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  tool_max_steps: 30
+  reasoning_effort: "${VETTY_EFFORT_VALIDATE:-medium}"
+  readonly: true
+
+## Commit the alignment onto the PR branch + push it back (token auth).
+agent commit:
+  model: "${VETTY_MODEL_COMMIT:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: commit_input
+  output: commit_output
+  system: commit_system
+  user: commit_user
+  tool_max_steps: 25
+  reasoning_effort: "${VETTY_EFFORT_COMMIT:-medium}"
+
+## llm_or_human: auto-answers a routine question, pauses for a real
+## architectural decision.
+human escalate:
+  input: escalate_input
+  output: escalate_output
+  interaction: llm_or_human
+  instructions: escalate_instructions
+  ## The LLM half (auto-answers a routine question); a genuine
+  ## architectural choice still pauses for a human.
+  ## provider/model-id, NOT a bare model name: a human node's llm half runs
+  ## through the direct claw generation path, which has no backend to infer
+  ## the provider from (an agent node's claude_code backend does).
+  model: "${VETTY_MODEL_ESCALATE:-anthropic/claude-opus-5-5}"
+
 ## ─── Nodes ──────────────────────────────────────────────────────
 
 ## Deterministic bump detector (no LLM): diff the PR branch against the
@@ -787,76 +834,6 @@ print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
                   'head_sha': head_sha}))
 "`
   output: prepare_output
-
-## Supply-chain audit (read-only). claude_code so it has a real shell +
-## the sec scanners from the sandbox image; reads the skills and adapts.
-agent security_audit:
-  backend: "claude_code"
-  model: "${VETTY_MODEL_AUDIT:-claude-opus-5-5}"
-  reasoning_effort: "${VETTY_EFFORT_AUDIT:-high}"
-  input: audit_input
-  output: audit_output
-  system: security_audit_system
-  user: security_audit_user
-  session: fresh
-  readonly: true
-  tool_max_steps: 40
-
-## Deterministic gate: only `safe` proceeds to alignment; suspicious /
-## malicious short-circuit to a HOLD comment (no code change).
-compute audit_gate:
-  input: audit_gate_input
-  output: audit_gate_output
-  expr:
-    safe: "input.verdict == 'safe'"
-    verdict: "input.verdict"
-
-## Align consuming code to the bump AND keep the build green (mutating).
-agent align:
-  backend: "claude_code"
-  model: "${VETTY_MODEL_ALIGN:-claude-opus-5-5}"
-  reasoning_effort: "${VETTY_EFFORT_ALIGN:-high}"
-  input: align_input
-  output: align_output
-  system: align_system
-  user: align_user
-  session: fresh
-  tool_max_steps: 80
-
-## Deterministic gate on the escalation flag.
-compute align_gate:
-  input: align_gate_input
-  output: align_gate_output
-  expr:
-    needs_human: "input.needs_human"
-
-## llm_or_human: auto-answers a routine question, pauses for a real
-## architectural decision.
-human escalate:
-  input: escalate_input
-  output: escalate_output
-  instructions: escalate_instructions
-  interaction: llm_or_human
-  ## The LLM half (auto-answers a routine question); a genuine
-  ## architectural choice still pauses for a human.
-  ## provider/model-id, NOT a bare model name: a human node's llm half runs
-  ## through the direct claw generation path, which has no backend to infer
-  ## the provider from (an agent node's claude_code backend does).
-  model: "${VETTY_MODEL_ESCALATE:-anthropic/claude-opus-5-5}"
-
-## verify_build — adaptive capture of the repo's build+tests into the
-## out-of-tree verify.sh (it does NOT judge; the tool's exit code does).
-agent verify_build:
-  backend: "claude_code"
-  model: "${VETTY_MODEL_VALIDATE:-claude-opus-5-5}"
-  reasoning_effort: "${VETTY_EFFORT_VALIDATE:-medium}"
-  input: verify_feedback_input
-  output: verify_plan
-  system: verify_system
-  user: verify_user
-  session: fresh
-  readonly: true
-  tool_max_steps: 30
 
 ## verify_run — the DETERMINISTIC truth oracle before commit: re-runs
 ## the agent-prepared verify.sh and reports the REAL exit code (v2 —
@@ -1246,47 +1223,6 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'prechec
 "`
   output: verify_result
 
-## Deterministic gate: a green DETERMINISTIC verify is the ONLY path to
-## commit (fail-closed: a missing verify.sh reports passed=false).
-compute validate_gate:
-  output: validate_gate_output
-  expr:
-    stable: "outputs.verify_run.passed"
-
-## Did the commit step actually land anything? Answered from the shas, not
-## from the agent's own account of its work: an agent that reports
-## `committed: true` having pushed nothing would otherwise make every
-## user-facing string — the comment badge, the "what Vetty did" line, the
-## required check's description — assert work that never happened.
-##
-## An unmoved head has TWO causes, and they are opposite verdicts: the bump
-## genuinely needed no alignment, or `align` produced one that never reached
-## the branch. The second is not hypothetical — the runner re-clones the repo
-## on every claim, so a run that dies between `align` and `commit` (a provider
-## usage window is the ordinary way) resumes on a tree where the alignment is
-## gone, while the checkpoint still replays `align.applied = true` downstream.
-## The shas cannot separate the two, so the check reads `align`'s own claim
-## alongside them: not to trust the agent — the sha comparison still decides
-## what was COMMITTED — but so that a claim contradicted by the branch blocks
-## instead of passing for a bump that never needed anything.
-compute commit_check:
-  output: commit_check_output
-  expr:
-    did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
-    alignment_lost: "outputs.align.applied && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
-
-## Commit the alignment onto the PR branch + push it back (token auth).
-agent commit:
-  backend: "claude_code"
-  model: "${VETTY_MODEL_COMMIT:-claude-opus-5-5}"
-  reasoning_effort: "${VETTY_EFFORT_COMMIT:-medium}"
-  input: commit_input
-  output: commit_output
-  system: commit_system
-  user: commit_user
-  session: fresh
-  tool_max_steps: 25
-
 ## Post the complete review comment on the PR (forge REST + token).
 ## DETERMINISTIC feedback (no LLM): compose the verdict comment from the
 ## structured verdict fields and POST it via the forge REST API with the
@@ -1298,9 +1234,6 @@ agent commit:
 ## JSON-encoded (safe for multi-line summaries); a missing ref renders as the
 ## JSON `null` literal, so `null/true/false` are shimmed to Python.
 tool post_feedback:
-  input: feedback_input
-  output: feedback_output
-  language: py
   script: |
     import json, os, re, urllib.request, urllib.error
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1518,6 +1451,10 @@ tool post_feedback:
     except Exception as e:
         out(False, skipped_reason="forge POST error: " + str(e), gate_skipped_reason=gate_fallback)
 
+  language: py
+  input: feedback_input
+  output: feedback_output
+
 ## Deterministic anti-façade gate: a PR target was given but nothing
 ## posted → loud banner (informational; the audit/align already ran).
 tool feedback_health:
@@ -1574,9 +1511,6 @@ print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
 ## the GraphQL side — a push landing mid-decision aborts the merge (and the
 ## enqueue).
 tool arm_automerge:
-  input: automerge_input
-  output: automerge_output
-  language: py
   script: |
     import json, os, re, urllib.request, urllib.error
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1921,9 +1855,63 @@ tool arm_automerge:
         # must always carry its reason.
         out(False, "auto-merge request refused: " + str(e))
 
-## ─── Workflow ───────────────────────────────────────────────────
+  language: py
+  input: automerge_input
+  output: automerge_output
 
+## Deterministic gate: only `safe` proceeds to alignment; suspicious /
+## malicious short-circuit to a HOLD comment (no code change).
+compute audit_gate:
+  input: audit_gate_input
+  output: audit_gate_output
+  expr:
+    safe: "input.verdict == 'safe'"
+    verdict: "input.verdict"
+
+## Deterministic gate on the escalation flag.
+compute align_gate:
+  input: align_gate_input
+  output: align_gate_output
+  expr:
+    needs_human: "input.needs_human"
+
+## Deterministic gate: a green DETERMINISTIC verify is the ONLY path to
+## commit (fail-closed: a missing verify.sh reports passed=false).
+compute validate_gate:
+  output: validate_gate_output
+  expr:
+    stable: "outputs.verify_run.passed"
+
+## Did the commit step actually land anything? Answered from the shas, not
+## from the agent's own account of its work: an agent that reports
+## `committed: true` having pushed nothing would otherwise make every
+## user-facing string — the comment badge, the "what Vetty did" line, the
+## required check's description — assert work that never happened.
+##
+## An unmoved head has TWO causes, and they are opposite verdicts: the bump
+## genuinely needed no alignment, or `align` produced one that never reached
+## the branch. The second is not hypothetical — the runner re-clones the repo
+## on every claim, so a run that dies between `align` and `commit` (a provider
+## usage window is the ordinary way) resumes on a tree where the alignment is
+## gone, while the checkpoint still replays `align.applied = true` downstream.
+## The shas cannot separate the two, so the check reads `align`'s own claim
+## alongside them: not to trust the agent — the sha comparison still decides
+## what was COMMITTED — but so that a claim contradicted by the branch blocks
+## instead of passing for a bump that never needed anything.
+compute commit_check:
+  output: commit_check_output
+  expr:
+    did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
+    alignment_lost: "outputs.align.applied && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
+
+## ─── Workflow ───────────────────────────────────────────────────
 workflow dep_update_guard:
+  ## Scanners + build toolchain live in the sec sandbox image. One
+  ## sandbox for the whole run; network open by default so the auditors
+  ## reach OSV/advisory DBs and the commit/feedback steps reach the forge.
+  sandbox:
+    image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
+
   entry: prepare
 
   ## Sized for the heavy case, not the median: a grouped go bump of 15
@@ -1945,24 +1933,21 @@ workflow dep_update_guard:
     max_duration: "4h"
     max_cost_usd: 25
 
-  ## Scanners + build toolchain live in the sec sandbox image. One
-  ## sandbox for the whole run; network open by default so the auditors
-  ## reach OSV/advisory DBs and the commit/feedback steps reach the forge.
-  sandbox:
-    image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-
   ## Nothing changed vs base → done (defensive). Otherwise audit.
   prepare -> done when is_empty
+
   prepare -> security_audit when not is_empty with {
     bump_summary: "{{outputs.prepare.bump_summary}}",
     dep_files: "{{outputs.prepare.dep_files}}",
     no_manifest: "{{outputs.prepare.no_manifest}}",
     degraded: "{{outputs.prepare.degraded}}",
-    degraded_reason: "{{outputs.prepare.degraded_reason}}"
+    degraded_reason: "{{outputs.prepare.degraded_reason}}",
   }
 
   ## Deterministic verdict gate.
-  security_audit -> audit_gate with { verdict: "{{outputs.security_audit.verdict}}" }
+  security_audit -> audit_gate with {
+    verdict: "{{outputs.security_audit.verdict}}"
+  }
 
   ## Not safe → HOLD comment, no alignment, no commit.
   audit_gate -> post_feedback when not safe with {
@@ -1971,19 +1956,27 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     cves: "{{outputs.security_audit.cves}}",
     malware_signals: "{{outputs.security_audit.malware_signals}}",
-    audited_sha: "{{outputs.prepare.head_sha}}"
+    audited_sha: "{{outputs.prepare.head_sha}}",
   }
-  ## Safe → align the consuming code.
-  audit_gate -> align when safe with { bump_summary: "{{outputs.prepare.bump_summary}}" }
 
-  align -> align_gate with { needs_human: "{{outputs.align.needs_human}}" }
+  ## Safe → align the consuming code.
+  audit_gate -> align when safe with {
+    bump_summary: "{{outputs.prepare.bump_summary}}"
+  }
+
+  align -> align_gate with {
+    needs_human: "{{outputs.align.needs_human}}"
+  }
 
   ## Architectural decision needed → escalate; else verify the build.
   align_gate -> escalate when needs_human with {
     human_question: "{{outputs.align.human_question}}",
-    breaking_summary: "{{outputs.align.breaking_summary}}"
+    breaking_summary: "{{outputs.align.breaking_summary}}",
   }
-  align_gate -> verify_build when not needs_human with { precheck_feedback: "" }
+
+  align_gate -> verify_build when not needs_human with {
+    precheck_feedback: ""
+  }
 
   ## Escalation → comment with the open decision (no commit).
   escalate -> post_feedback with {
@@ -1992,25 +1985,28 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     escalation: "{{outputs.escalate.guidance}}",
-    audited_sha: "{{outputs.prepare.head_sha}}"
+    audited_sha: "{{outputs.prepare.head_sha}}",
   }
 
   verify_build -> verify_run
+
   ## The precheck rejecting verify.sh (rc=3: a CI drift gate the script
   ## does not mirror) is an AUTHORSHIP defect, not a red build — feed the
   ## exact rejection back so the agent amends its script in-loop instead
   ## of the whole alignment being discarded at the verdict. Bounded; on
   ## exhaustion the else edge falls through to the hold path as before.
-  verify_run -> verify_build as fix_verify(2) when precheck_rejected with {
+  verify_run -> verify_build when precheck_rejected as fix_verify(2) with {
     precheck_feedback: "{{outputs.verify_run.precheck_reason}}"
   }
+
   verify_run -> validate_gate else
 
   ## Green → commit the alignment onto the PR branch.
   validate_gate -> commit when stable with {
     files_changed: "{{outputs.align.files_changed}}",
-    breaking_summary: "{{outputs.align.breaking_summary}}"
+    breaking_summary: "{{outputs.align.breaking_summary}}",
   }
+
   ## Red → HOLD comment, no commit.
   validate_gate -> post_feedback when not stable with {
     pr_url: "{{vars.pr_url}}",
@@ -2018,7 +2014,7 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "{{outputs.verify_run.log_tail}}",
-    audited_sha: "{{outputs.prepare.head_sha}}"
+    audited_sha: "{{outputs.prepare.head_sha}}",
   }
 
   commit -> commit_check
@@ -2044,8 +2040,9 @@ workflow dep_update_guard:
     commit_summary: "{{outputs.commit.summary}}",
     ## The head did not move — that IS this verdict: align claimed edits and
     ## the branch head disagrees. The read sha is the only one that exists.
-    audited_sha: "{{outputs.prepare.head_sha}}"
+    audited_sha: "{{outputs.prepare.head_sha}}",
   }
+
   commit_check -> post_feedback when did_commit with {
     pr_url: "{{vars.pr_url}}",
     verdict: "committed",
@@ -2055,8 +2052,9 @@ workflow dep_update_guard:
     commit_summary: "{{outputs.commit.summary}}",
     ## The ONE edge where the alignment moved the branch: the verdict covers
     ## the commit this run pushed, not the head it read.
-    audited_sha: "{{outputs.commit.sha}}"
+    audited_sha: "{{outputs.commit.sha}}",
   }
+
   commit_check -> post_feedback else with {
     pr_url: "{{vars.pr_url}}",
     verdict: "clean",
@@ -2066,7 +2064,7 @@ workflow dep_update_guard:
     commit_summary: "{{outputs.commit.summary}}",
     ## Nothing to align, so nothing was pushed: the verdict covers the head
     ## this run read.
-    audited_sha: "{{outputs.prepare.head_sha}}"
+    audited_sha: "{{outputs.prepare.head_sha}}",
   }
 
   ## Deterministic anti-façade gate on the comment, then done.
@@ -2077,8 +2075,9 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     gate_enabled: "{{vars.gate_enabled}}",
     gate_posted: "{{outputs.post_feedback.gate_posted}}",
-    gate_skipped_reason: "{{outputs.post_feedback.gate_skipped_reason}}"
+    gate_skipped_reason: "{{outputs.post_feedback.gate_skipped_reason}}",
   }
+
   feedback_health -> arm_automerge with {
     pr_url: "{{vars.pr_url}}",
     verdict: "{{outputs.post_feedback.verdict}}",
@@ -2086,6 +2085,7 @@ workflow dep_update_guard:
     gate_state: "{{outputs.post_feedback.gate_state}}",
     gate_sha: "{{outputs.post_feedback.gate_sha}}",
     audited_sha: "{{outputs.prepare.head_sha}}",
-    committed_sha: "{{outputs.commit.sha}}"
+    committed_sha: "{{outputs.commit.sha}}",
   }
+
   arm_automerge -> done

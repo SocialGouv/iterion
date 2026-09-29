@@ -295,12 +295,17 @@ for collision, devbox and pause/resume rules.
    against the node's own working directory — the checkout. A relative
    workspace is resolved against the process directory rather than
    refused; one the process cannot resolve at all fails the run. A bot
-   declaring the var should constrain it,
-   e.g. `[matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"]`. The second
-   branch is required, not decoration: the launch gate reads the
-   EXPANDED value, but the compile-time default check (C161) compares
-   the **literal** default text, so a bare `^/` refuses
-   `"${BUNDLE_SKILLS_DIR}"` itself.
+   declaring the var should constrain it, e.g. `[matching: "^/.*$"]`:
+   the launch gate reads the EXPANDED value, so it refuses `""` and
+   `some/dir` while admitting the `"${BUNDLE_SKILLS_DIR}"` a studio form
+   re-sends unmodified. The default `"${BUNDLE_SKILLS_DIR}"` itself names
+   a directory the RUN answers, so no compile-time reading may judge it:
+   it is [C181](references/diagnostics.md) — the pattern is checked on
+   no path for that default, and the warning says so. Before #1610 the
+   compile-time check (C161) compared the literal default text and
+   refused it under a bare `^/`; the `|[$][{]BUNDLE_SKILLS_DIR[}]`
+   branch the catalogue's bots still carry is that workaround, and is no
+   longer needed.
 
    The reset removes the directory recursively, and `.claude` is a path
    the checkout supplies: the engine resolves it and refuses the run

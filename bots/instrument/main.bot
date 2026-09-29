@@ -74,27 +74,23 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## THE FAMILIES to instrument — an open, comma-separated list. Shipped
   ## families (each with a matching skill): "errors" (Sentry-DSN-protocol
   ## error tracking — Sentry AND GlitchTip), "logs" (one central logging
   ## seam, JSON default in prod), "tracing" (OPT-IN, Sentry-first
   ## transactions/spans — add it explicitly: scope=errors,logs,tracing).
   scope: string = "errors,logs"
-
   ## The environment variable the instrumented code reads its DSN from at
   ## RUNTIME. SENTRY_DSN is the ecosystem convention every Sentry-protocol
   ## SDK (and GlitchTip) understands; override when the target repo has
   ## its own env naming scheme. The instrumentation must be OFF (zero
   ## behaviour change) when this variable is unset.
   dsn_env_var: string = "SENTRY_DSN"
-
   ## Optional operator guidance for THIS run: repo-specific arbitrations
   ## (which module to extend, which seams to wire, what to exclude),
   ## constraints, or context. Empty = the campaign surveys and decides
   ## per the skills.
   mission_notes: string = ""
-
   ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
   ## verify script/log ONLY. The engine resolves ${PROJECT_SCRATCH_DIR}
   ## to ~/.iterion/projects/<key>/scratch non-sandboxed and to the
@@ -104,14 +100,12 @@ vars:
   ## target worktree is the repo-agnostic rule: never pollute someone
   ## else's tree.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/instrument"
-
   ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
   ## pre-existing test failures / flaky tests the campaign must SKIP rather
   ## than burn budget proving they aren't its own. Empty (default) = the
   ## campaign establishes it once cheaply (a `git stash`-based check) then
   ## skips what predates its work. The dispatcher/operator can pre-fill it.
   baseline: string = ""
-
   ## Hard cap on continuation PASSES — the convergence backstop. Each pass
   ## is one campaign→verify cycle; the run stops (shipping what is banked)
   ## when the instrumentation is reported complete + the tree is green, or
@@ -119,7 +113,6 @@ vars:
   ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
   ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1.
   max_passes: int = 6
-
   ## ─── PR finalization (opt-in) ─────────────────────────────────
   ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
   ## (the SERIES of per-slice commits) to the forge and opens a pull
@@ -149,7 +142,6 @@ secrets:
     optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
-
 prompt campaign_system:
   You are a senior engineer INSTRUMENTING one repository for
   observability, end to end — working EXACTLY as you would in a
@@ -382,7 +374,6 @@ prompt campaign_user:
 ## language / package manager is named here — the gate stays universal while
 ## the verdict stays deterministic. verify_build does NOT fix code: a RED gate
 ## routes back to `campaign` (the one capable agent) to fix what it broke.
-
 prompt verify_system:
   You are a release engineer. An instrumentation pass just applied changes to
   this repository and committed them. Your single job: capture how THIS repo
@@ -454,7 +445,6 @@ prompt verify_user:
   (exit 3) and the loop burns a full pass re-learning this.
 
 ## ─── Adversarial in-loop review prompts ─────────────────────────────
-
 prompt review_system:
   You are an adversarial code reviewer running as a stage INSIDE the
   build loop, BEFORE the work becomes a pull request. Your job is to catch
@@ -528,7 +518,6 @@ prompt review_user:
   return specific, actionable findings for the campaign to fix.
 
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
-
 prompt finalize_mr_system:
   You finalize a converged instrumentation run by opening ONE pull request
   (PR; merge request on GitLab) for the SERIES of per-slice commits this run
@@ -685,6 +674,16 @@ schema finalize_mr_output:
   skipped_reason: string
   summary: string
 
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
 ## ─── Nodes ──────────────────────────────────────────────────────
 
 ## campaign — the one adaptive agent. claude_code with the full native
@@ -698,16 +697,61 @@ schema finalize_mr_output:
 ## contract). Board capabilities power the end-of-pass findings handoff.
 agent campaign:
   description: "Campaign: instrument & commit slices"
-  backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  backend: "claude_code"
   input: campaign_input
   output: campaign_output
   system: campaign_system
   user: campaign_user
-  session: fresh
-  interaction: async
   capabilities: [board.read, board.create]
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  interaction: async
+
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
+## per-slice session. medium: mechanical capture of the repo's
+## build/test.
+agent verify_build:
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
+  interaction: human
+
+## review — adversarial in-loop self-review (readonly). Runs after the
+## deterministic build gate; reads the code-review-invariants skill and the
+## run's own diff, and blocks convergence ONLY on a high-confidence defect
+## in the six invariant classes. This is the refinement the downstream
+## reviewer would otherwise do — moved INTO the loop so the PR ships clean.
+## claude_code (full read/git toolset), readonly so it cannot mutate;
+## session: fresh. Convergent by design: light no-op on a red build, strict
+## no-re-raise, blocks only verified real bugs (see review_system).
+agent review:
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
+  readonly: true
+
+agent finalize_mr:
+  model: "${ITERION_INSTRUMENT_MR_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  ## 20 is ample for push + open-PR + back-link (~5-8 commands nominal);
+  ## forge_auth_probe guarantees the node is only entered when a push
+  ## credential exists.
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_INSTRUMENT_MR_EFFORT:-medium}"
 
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
 ## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
@@ -745,20 +789,6 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 "`
   input: verify_probe_input
   output: verify_probe_state
-
-## verify_build — adaptive, stack-agnostic gate authoring (writes
-## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
-## per-slice session. medium: mechanical capture of the repo's
-## build/test.
-agent verify_build:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
-  output: verify_plan
-  system: verify_system
-  user: verify_user
-  session: fresh
-  interaction: human
 
 ## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
 ## <scratch_dir>/verify.sh and reports the REAL exit code. No language /
@@ -1025,47 +1055,6 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 "`
   output: verify_result
 
-## review — adversarial in-loop self-review (readonly). Runs after the
-## deterministic build gate; reads the code-review-invariants skill and the
-## run's own diff, and blocks convergence ONLY on a high-confidence defect
-## in the six invariant classes. This is the refinement the downstream
-## reviewer would otherwise do — moved INTO the loop so the PR ships clean.
-## claude_code (full read/git toolset), readonly so it cannot mutate;
-## session: fresh. Convergent by design: light no-op on a red build, strict
-## no-re-raise, blocks only verified real bugs (see review_system).
-agent review:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
-  input: review_input
-  output: review_output
-  system: review_system
-  user: review_user
-  session: fresh
-  readonly: true
-
-## gate — the deterministic continuation decision. Reads the build result
-## (outputs.verify_run.passed), the campaign's termination output
-## (outputs.campaign.instrumentation_complete), AND the adversarial review
-## verdict (outputs.review.clean), all fresh in the loop BODY (the same
-## discipline whole_improve_loop's gate uses to read the loop-head safely).
-## converged = green AND fully wired AND review-clean. fail_log carries the
-## real build failure (RED build) or the review findings (green but dirty) to
-## the campaign; empty when green + clean. No LLM, no shell.
-compute gate:
-  description: "Convergence check: instrumentation complete & gates green"
-  output: gate_state
-  expr:
-    converged: "outputs.verify_run.passed && outputs.campaign.instrumentation_complete && outputs.review.clean"
-    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), if(outputs.verify_run.skipped, outputs.verify_run.log_tail + '\\n\\n' + outputs.review.findings, outputs.verify_run.log_tail))"
-
-## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
-## edges use the C012-exhaustive simple form. No LLM, no shell.
-compute mr_gate:
-  output: mr_gate_output
-  expr:
-    open_mr: "vars.open_mr"
-
 ## finalize_mr — opt-in PR creation shipping the SERIES of per-slice
 ## commits. claude_code so the bundled forge-mr-create skill is mirrored and
 ## the board comment tool (native back-link) is available.
@@ -1098,49 +1087,39 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 "`
   output: forge_auth_state
 
-agent finalize_mr:
-  backend: "claude_code"
-  model: "${ITERION_INSTRUMENT_MR_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_INSTRUMENT_MR_EFFORT:-medium}"
-  input: finalize_mr_input
-  output: finalize_mr_output
-  system: finalize_mr_system
-  user: finalize_mr_user
-  tools: [bash, read_file, glob, grep]
-  capabilities: [board.read, board.comment]
-  ## 20 is ample for push + open-PR + back-link (~5-8 commands nominal);
-  ## forge_auth_probe guarantees the node is only entered when a push
-  ## credential exists.
-  tool_max_steps: 20
-
-## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
-## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
-## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
-## directive a tool node prints on stdout — never from agent prose. Reached
-## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
-## python guard drops an empty url so the scanner never sees a malformed
-## directive. read-only, idempotent.
-schema surface_pr_link_input:
-  url: string
-
 tool surface_pr_link:
-  input: surface_pr_link_input
   command: `URL={{input.url}} python3 -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
     print('[iterion] preview_url=' + u + ' kind=pr scope=external')
 "`
+  input: surface_pr_link_input
+
+## gate — the deterministic continuation decision. Reads the build result
+## (outputs.verify_run.passed), the campaign's termination output
+## (outputs.campaign.instrumentation_complete), AND the adversarial review
+## verdict (outputs.review.clean), all fresh in the loop BODY (the same
+## discipline whole_improve_loop's gate uses to read the loop-head safely).
+## converged = green AND fully wired AND review-clean. fail_log carries the
+## real build failure (RED build) or the review findings (green but dirty) to
+## the campaign; empty when green + clean. No LLM, no shell.
+compute gate:
+  description: "Convergence check: instrumentation complete & gates green"
+  output: gate_state
+  expr:
+    converged: "outputs.verify_run.passed && outputs.campaign.instrumentation_complete && outputs.review.clean"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), if(outputs.verify_run.skipped, outputs.verify_run.log_tail + '\\n\\n' + outputs.review.findings, outputs.verify_run.log_tail))"
+
+## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
+## edges use the C012-exhaustive simple form. No LLM, no shell.
+compute mr_gate:
+  output: mr_gate_output
+  expr:
+    open_mr: "vars.open_mr"
 
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow instrument:
-  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
-  ## (the survey is the campaign's own first move, not a blocking upstream
-  ## plan node). A re-dispatch's campaign reads `git log` and continues
-  ## from the slices earlier passes banked.
-  entry: campaign
-
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
   ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
   ## operator's main checkout is untouched during the run, (b) on convergence
@@ -1149,13 +1128,18 @@ workflow instrument:
   ## skipped with a warning on conflict).
   worktree: auto
 
+  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
+  ## (the survey is the campaign's own first move, not a blocking upstream
+  ## plan node). A re-dispatch's campaign reads `git log` and continues
+  ## from the slices earlier passes banked.
+  entry: campaign
+
   ## No `sandbox:` block (ADR-082): isolation is the platform's job —
   ## the engine sandboxes by default (`sandbox: auto` reads the target
   ## repo's devcontainer, else the default image). The bot declares only
   ## its own toolchain in the sibling devbox.json (gh/glab for the PR
   ## tail); the target repo's toolchain comes from the target's own
   ## devcontainer/devbox.json.
-
   budget:
     max_parallel_branches: 1
     max_duration: "3h"
@@ -1170,25 +1154,31 @@ workflow instrument:
   campaign -> verify_probe with {
     iteration: "{{loop.continuation_loop.iteration}}"
   }
+
   ## verify_probe reuses an already-valid verify.sh (skipping the LLM
   ## verify_build) on passes 2+; the first pass of every run regenerates it for
   ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
   verify_probe -> verify_run when fresh
+
   verify_probe -> verify_build when not fresh
+
   verify_build -> verify_run
+
   ## After the deterministic build gate, the adversarial review inspects the
   ## run's diff (the refinement pass moved in-loop), then the gate decides.
   verify_run -> review with {
-    base_ref:       "{{vars.mr_base}}",
-    build_passed:   "{{outputs.verify_run.passed}}",
-    build_skipped:  "{{outputs.verify_run.skipped}}",
-    prior_findings: "{{outputs.gate.fail_log}}"
+    base_ref: "{{vars.mr_base}}",
+    build_passed: "{{outputs.verify_run.passed}}",
+    build_skipped: "{{outputs.verify_run.skipped}}",
+    prior_findings: "{{outputs.gate.fail_log}}",
   }
+
   review -> gate
 
   ## Converged (green AND the campaign reports every family fully wired) →
   ## ship what is banked (optional PR, else finish).
   gate -> mr_gate when converged
+
   ## Not converged → another campaign pass. RED carries the failure log so the
   ## agent fixes what it broke; green-but-more-work carries an empty log so the
   ## agent simply continues the instrumentation. This closes the single declared
@@ -1198,6 +1188,7 @@ workflow instrument:
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
     fail_log: "{{outputs.gate.fail_log}}"
   }
+
   ## continuation_loop exhausted (max_passes hit while work remains) → ship
   ## what is banked anyway (every committed slice is real, landed work).
   ## Unconditional fallthrough after the loop-back retries are spent.
@@ -1208,22 +1199,29 @@ workflow instrument:
   ## (when source_issue_ref is set) posts the URL back. The mission notes
   ## ride along as the PR's scope context.
   mr_gate -> forge_auth_probe when open_mr
+
   mr_gate -> done when not open_mr
 
   ## Push credential present → finalize_mr pushes + opens the PR; absent →
   ## finish cleanly (commits are on the engine's iterion/run/<name> storage
   ## branch for a manual push) instead of paying an agent turn to rediscover it.
   forge_auth_probe -> finalize_mr when available with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    mr_branch:        "{{vars.mr_branch}}",
-    mr_base:          "{{vars.mr_base}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    mr_branch: "{{vars.mr_branch}}",
+    mr_base: "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",
-    scope_notes:      "{{vars.mission_notes}}"
+    scope_notes: "{{vars.mission_notes}}",
   }
+
   forge_auth_probe -> done when not available
+
   ## PR opened → surface its URL as a headline result-link in the run summary
   ## (deterministic stdout directive → preview_url_available kind=pr), then
   ## finish. Nothing opened (empty diff / refused PR) → straight to done.
-  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> surface_pr_link when opened with {
+    url: "{{outputs.finalize_mr.url}}"
+  }
+
   finalize_mr -> done when not opened
+
   surface_pr_link -> done

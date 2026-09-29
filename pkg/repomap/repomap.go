@@ -16,6 +16,18 @@
 //   - ONE ARTIFACT, TWO AUDIENCES. A file in the tree needs no protocol:
 //     a session reads it, and so does a bot that checked the repo out
 //     inside a container.
+//   - MERGEABLE ACROSS ENTRIES. A row renders its own entry and nothing
+//     else, and no line sums up the tree — no totals, no per-row counts.
+//     Two pull requests that each add a page would both edit such a count
+//     the same way, git would merge them clean, and the combined tree would
+//     be stale: the merge queue fails that twenty minutes into CI. Without
+//     them, branches that change DIFFERENT entries merge into exactly the
+//     regenerated map, and neighbouring rows conflict where a reader sees
+//     it; merge_test.go holds this. Two branches that change sources of the
+//     SAME entry — two files of one package, two paragraphs of one page, a
+//     bundle's manifest and one of its skills — can still merge clean and
+//     stale; the fail-fast freshness step at the head of CI's `test` job is
+//     the net for that.
 //
 // Why these three extractors and not one: a seam with a single
 // implementation is a promise, not a seam. Go packages, markdown docs and

@@ -24,10 +24,10 @@ vars:
   ## stack knowledge lives in skills.
   surface_scope: string = ""
   workspace_dir: string = "${PROJECT_DIR}"
-  scratch_dir:   string = "${PROJECT_SCRATCH_DIR}/golden-master"
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/golden-master"
   ## Neutral dotdir in the TARGET repo (the .sec-audit/ pattern), committed.
   ## It is both the net and a deliverable a client can read and re-run.
-  oracle_dir:    string = ".golden-master"
+  oracle_dir: string = ".golden-master"
   ## Minimum share of VALID mutants that must be detected. A floor, never a
   ## ceiling: blind_lanes must be empty regardless of the score.
   mutation_floor: int = 90
@@ -49,7 +49,6 @@ secrets:
     optional: true
 
 ## ─── Prompts ───────────────────────────────────────────────────────
-
 prompt campaign_system:
   You build behavioural non-regression nets for existing applications, and you
   are judged on whether the net can SEE — never on how green it looks.
@@ -167,7 +166,6 @@ prompt adversary_user:
   and the guess is what was wrong.
 
 ## ─── Schemas ───────────────────────────────────────────────────────
-
 schema campaign_input:
   fail_log: string
 
@@ -262,43 +260,33 @@ schema emit_output:
   runner_path: string
   report_path: string
 
-## ─── Nodes ─────────────────────────────────────────────────────────
+schema adversary_state:
+  adversarial: bool
 
+## ─── Nodes ─────────────────────────────────────────────────────────
 agent oracle_campaign:
-  backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  backend: "claude_code"
   input: campaign_input
   output: campaign_output
   system: campaign_system
   user: campaign_user
-  session: fresh
-  interaction: human
   skills: ["golden-master", "surface-discovery", "deterministic-fixture", "canonicalization", "oracle-mutation", "binary-lane"]
-
-## adversary_gate lifts vars.adversarial into a bool output field so both
-## outgoing edges test the same name (C012-exhaustive). No LLM, no shell.
-compute adversary_gate:
-  output: adversary_state
-  expr:
-    adversarial: "vars.adversarial"
-
-schema adversary_state:
-  adversarial: bool
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  interaction: human
 
 ## Isolated on purpose, and a judge rather than an agent: a distinct lens is a
 ## PROPERTY of the check, not a decomposition of the work. Merging it into the
 ## campaign would let the same context that wrote the comparators also decide
 ## what could evade them.
 judge mutants_adversary:
-  backend: "claude_code"
   model: "${ITERION_GOLDEN_MASTER_ADVERSARY_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_GOLDEN_MASTER_ADVERSARY_EFFORT:-high}"
+  backend: "claude_code"
   output: adversary_output
   system: adversary_system
   user: adversary_user
-  session: fresh
   skills: ["oracle-mutation"]
+  reasoning_effort: "${ITERION_GOLDEN_MASTER_ADVERSARY_EFFORT:-high}"
 
 ## oracle_run — THE deterministic half. Boots the app, proves the capture is
 ## reproducible, then injects each mutation and reports what the oracle saw.
@@ -307,8 +295,6 @@ judge mutants_adversary:
 ## and a test holds the two bodies byte-identical rather than asking for it in
 ## prose. stdlib only — no venv, no pip, no egress.
 tool oracle_run:
-  output: mutation_report
-  language: py
   script: |
     import os
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -8457,6 +8443,9 @@ tool oracle_run:
     if __name__ == "__main__":
         main()
 
+  language: py
+  output: mutation_report
+
 ## promote_audit — turn the SPENT held-out set into committed evidence.
 ##
 ## Runs only on the converged edge, and that placement is the whole design: at
@@ -8470,8 +8459,6 @@ tool oracle_run:
 ## The next cycle must draw a FRESH set; the gate refuses one that repeats a
 ## published fingerprint, so this cannot decay into theatre.
 tool promote_audit:
-  output: audit_state
-  language: py
   script: |
     import json
     import os
@@ -8568,77 +8555,13 @@ tool promote_audit:
                          % (out["promoted"], rel, (com.stderr or com.stdout)[-300:]))
     print(json.dumps(out))
 
-compute oracle_gate:
-  output: gate_state
-  expr:
-    ## A pure CONJUNCTION. Deliberately not a weighted score: an aggregate lets
-    ## a lane at 100% average away a lane at 0%, which is exactly how four
-    ## public-search references shipped that could not see a changed record.
-    ## blind_lanes must be EMPTY, and the held-out set — never shown to the
-    ## hardening loop — must be fully detected, or the oracle was tuned rather
-    ## than fixed.
-    ##
-    ## The width floor is checked HERE, on corpus_distinct, because it was
-    ## previously stated to the agent in a prompt and enforced by nothing — the
-    ## same shape as a seal guaranteed by a sentence in a skill. It counts
-    ## DISTINCT references: two entries with a byte-identical reference are one
-    ## observation, and a corpus padded with duplicates is narrower than it
-    ## looks.
-    ##
-    ## And `duplicate_groups_unproven` is a TERM, not a note. A class the corpus
-    ## claims is a deliberate control must NAME the mutant that separates it and
-    ## have that mutant measured moving a strict subset. Computed but unwired,
-    ## the obligation reached the operator only through `log_tail` — the message
-    ## rendered once `converged` is already false — so a corpus whose single
-    ## defect was an unproved class went green while every docstring in the
-    ## harness claimed the gate checked it. A proof obligation nothing refuses is
-    ## a waiver with extra steps.
-    ##
-    ## `holdout_total > 0` is the FLOOR under the held-out term, and it is a
-    ## TERM rather than a nicety because `holdout_detected == holdout_total` is
-    ## satisfied by `0 == 0`: an EMPTY held-out set passes the gate's strongest
-    ## clause by having nothing to say. The harness distinguishes three ways to
-    ## arrive there and writes a field for each — `holdout_spent_unreplaced`,
-    ## `holdout_awaiting_gate`, `holdout_sealed_uncommitted` — and none of the
-    ## three is read by anything: they are not declared in `schema
-    ## oracle_output`, so C031 makes a term over them impossible to write at
-    ## all. Measured on a live campaign and recorded in the harness's own
-    ## comment: thirteen spent cycles, no set redrawn, every landing reporting
-    ## `held-out detected 0/0` through a clause that was vacuously true.
-    ##
-    ## The floor sits HERE, on the rite's own convergence gate, because the rite
-    ## is who OWES the next set — drawing, sealing and scoring them is its
-    ## whole job. It is deliberately absent from RUNNER_VERDICT_PY, which a
-    ## lot's verify runs: a lot cannot discharge a debt only a rite can pay, and
-    ## a floor there would refuse trees whose defect is somewhere else entirely.
-    ## That asymmetry is stated on the runner's `ok`, where it is visible to
-    ## whoever reads the weaker of the two gates.
-    ##
-    ## `workspace_dirty` carries NO such asymmetry, and that is the point: it is
-    ## a term on BOTH gates. The held-out floor is a debt, owed by one party and
-    ## payable by one party. An uncommitted tree is not a debt — it voids the
-    ## MEASUREMENT, identically for whoever takes it. A mutant's revert restores
-    ## HEAD, so uncommitted changes are destroyed mid-run and every figure
-    ## describes a tree that stopped existing partway through. A lot's verify
-    ## reading green on that tree is exactly as worthless as a rite's.
-    ##
-    ## Measured before proposing, on the last four rites: `01a08f18` clean,
-    ## `01a09459` clean, `01a091a0` other cause, `01a0a3a8` DIRTY — and
-    ## `01a0a3a8` CONVERGED. Two of the three that converged had a clean tree,
-    ## so this term refuses no legitimate run; it fires on the pathological case
-    ## and on that alone. The check itself is taken BEFORE `seal_holdout` moves
-    ## anything, so a gate that opted into `seal_committed` is not refused by
-    ## the uncommitted deletions its own seal leaves behind.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && length(outputs.oracle_run.workspace_dirty) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_total > 0 && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
-    fail_log: "outputs.oracle_run.log_tail"
+  language: py
+  output: audit_state
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
 ## client reads. Written from the harness the gate actually used, never from a
 ## copy the campaign could have edited.
 tool emit_runner:
-  input: emit_input
-  output: emit_output
-  language: py
   script: |
     import json, os, stat
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -8858,9 +8781,84 @@ tool emit_runner:
 
     print(json.dumps({"runner_path": runner, "report_path": report}))
 
-## ─── Workflow ──────────────────────────────────────────────────────
+  language: py
+  input: emit_input
+  output: emit_output
 
+## adversary_gate lifts vars.adversarial into a bool output field so both
+## outgoing edges test the same name (C012-exhaustive). No LLM, no shell.
+compute adversary_gate:
+  output: adversary_state
+  expr:
+    adversarial: "vars.adversarial"
+
+compute oracle_gate:
+  output: gate_state
+  expr:
+    ## A pure CONJUNCTION. Deliberately not a weighted score: an aggregate lets
+    ## a lane at 100% average away a lane at 0%, which is exactly how four
+    ## public-search references shipped that could not see a changed record.
+    ## blind_lanes must be EMPTY, and the held-out set — never shown to the
+    ## hardening loop — must be fully detected, or the oracle was tuned rather
+    ## than fixed.
+    ##
+    ## The width floor is checked HERE, on corpus_distinct, because it was
+    ## previously stated to the agent in a prompt and enforced by nothing — the
+    ## same shape as a seal guaranteed by a sentence in a skill. It counts
+    ## DISTINCT references: two entries with a byte-identical reference are one
+    ## observation, and a corpus padded with duplicates is narrower than it
+    ## looks.
+    ##
+    ## And `duplicate_groups_unproven` is a TERM, not a note. A class the corpus
+    ## claims is a deliberate control must NAME the mutant that separates it and
+    ## have that mutant measured moving a strict subset. Computed but unwired,
+    ## the obligation reached the operator only through `log_tail` — the message
+    ## rendered once `converged` is already false — so a corpus whose single
+    ## defect was an unproved class went green while every docstring in the
+    ## harness claimed the gate checked it. A proof obligation nothing refuses is
+    ## a waiver with extra steps.
+    ##
+    ## `holdout_total > 0` is the FLOOR under the held-out term, and it is a
+    ## TERM rather than a nicety because `holdout_detected == holdout_total` is
+    ## satisfied by `0 == 0`: an EMPTY held-out set passes the gate's strongest
+    ## clause by having nothing to say. The harness distinguishes three ways to
+    ## arrive there and writes a field for each — `holdout_spent_unreplaced`,
+    ## `holdout_awaiting_gate`, `holdout_sealed_uncommitted` — and none of the
+    ## three is read by anything: they are not declared in `schema
+    ## oracle_output`, so C031 makes a term over them impossible to write at
+    ## all. Measured on a live campaign and recorded in the harness's own
+    ## comment: thirteen spent cycles, no set redrawn, every landing reporting
+    ## `held-out detected 0/0` through a clause that was vacuously true.
+    ##
+    ## The floor sits HERE, on the rite's own convergence gate, because the rite
+    ## is who OWES the next set — drawing, sealing and scoring them is its
+    ## whole job. It is deliberately absent from RUNNER_VERDICT_PY, which a
+    ## lot's verify runs: a lot cannot discharge a debt only a rite can pay, and
+    ## a floor there would refuse trees whose defect is somewhere else entirely.
+    ## That asymmetry is stated on the runner's `ok`, where it is visible to
+    ## whoever reads the weaker of the two gates.
+    ##
+    ## `workspace_dirty` carries NO such asymmetry, and that is the point: it is
+    ## a term on BOTH gates. The held-out floor is a debt, owed by one party and
+    ## payable by one party. An uncommitted tree is not a debt — it voids the
+    ## MEASUREMENT, identically for whoever takes it. A mutant's revert restores
+    ## HEAD, so uncommitted changes are destroyed mid-run and every figure
+    ## describes a tree that stopped existing partway through. A lot's verify
+    ## reading green on that tree is exactly as worthless as a rite's.
+    ##
+    ## Measured before proposing, on the last four rites: `01a08f18` clean,
+    ## `01a09459` clean, `01a091a0` other cause, `01a0a3a8` DIRTY — and
+    ## `01a0a3a8` CONVERGED. Two of the three that converged had a clean tree,
+    ## so this term refuses no legitimate run; it fires on the pathological case
+    ## and on that alone. The check itself is taken BEFORE `seal_holdout` moves
+    ## anything, so a gate that opted into `seal_committed` is not refused by
+    ## the uncommitted deletions its own seal leaves behind.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && length(outputs.oracle_run.workspace_dirty) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_total > 0 && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    fail_log: "outputs.oracle_run.log_tail"
+
+## ─── Workflow ──────────────────────────────────────────────────────
 workflow golden_master:
+
   entry: oracle_campaign
 
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default. The
@@ -8868,7 +8866,6 @@ workflow golden_master:
   ## this bundle declares only python3 and jq, so the bot stays repo-agnostic.
   ## The container runtime forbids mounting a docker socket, so the app under
   ## test runs natively; `deterministic-fixture` covers what that implies.
-
   budget:
     max_parallel_branches: 1
     max_duration: "4h"
@@ -8879,18 +8876,22 @@ workflow golden_master:
     preserve_recent: 8
 
   oracle_campaign -> adversary_gate
+
   adversary_gate -> mutants_adversary when adversarial
+
   adversary_gate -> oracle_run when not adversarial
+
   mutants_adversary -> oracle_run
+
   oracle_run -> oracle_gate
 
   ## Converged → emit the runner and the report.
   oracle_gate -> promote_audit when converged
 
   promote_audit -> emit_runner with {
-    score_pct:        "{{outputs.oracle_run.score_pct}}",
+    score_pct: "{{outputs.oracle_run.score_pct}}",
     holdout_detected: "{{outputs.oracle_run.holdout_detected}}",
-    holdout_total:    "{{outputs.oracle_run.holdout_total}}"
+    holdout_total: "{{outputs.oracle_run.holdout_total}}",
   }
 
   ## Not converged → another hardening pass, carrying the deterministic
@@ -8904,9 +8905,9 @@ workflow golden_master:
   ## REPORT.md carries the score and the held-out result, so a partial oracle
   ## ships as a partial oracle rather than as a silence.
   oracle_gate -> emit_runner with {
-    score_pct:        "{{outputs.oracle_run.score_pct}}",
+    score_pct: "{{outputs.oracle_run.score_pct}}",
     holdout_detected: "{{outputs.oracle_run.holdout_detected}}",
-    holdout_total:    "{{outputs.oracle_run.holdout_total}}"
+    holdout_total: "{{outputs.oracle_run.holdout_total}}",
   }
 
   emit_runner -> done

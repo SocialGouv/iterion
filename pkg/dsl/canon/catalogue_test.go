@@ -220,20 +220,21 @@ func commentAddresses(name, text string) map[string]int {
 
 // TestTheRefusedBaselineMatchesWhatIsRefused: `.fmt-refused` is the list
 // that lets `task fmt:check` be GREEN on a catalogue that is not yet wholly
-// canonical (#1612). A list that drifts from what the rule actually refuses
-// is worse than no list — it makes the check green on a file nobody looked
-// at, or red on one nobody can fix. This is the ratchet's own guard, and it
+// canonical. A list that drifts from what the rule actually refuses is
+// worse than no list — it makes the check green on a file nobody looked at,
+// or red on one nobody can fix. This is the ratchet's own guard, and it
 // reddens in the unit suite rather than only in CI.
 //
-// The witness: delete a line from `.fmt-refused` and this names it.
+// The witness: name a file nothing refuses and this names it back. Since
+// #1612 the list stands EMPTY — the goal state, not a blind one: that the
+// writer still refuses what it cannot carry is what the fold tests pin,
+// and that the corpus keeps exercising the oracle is the programs floor of
+// TestTheCanonicalFormOfEveryShippedBotIsTheSameProgram.
 func TestTheRefusedBaselineMatchesWhatIsRefused(t *testing.T) {
 	const baselinePath = "../../../.fmt-refused"
 	known, err := ReadBaseline(baselinePath)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(known) == 0 {
-		t.Fatal(".fmt-refused lists nothing — a baseline that empties itself makes the check green on everything")
 	}
 	var refused []string
 	for _, path := range shippedBots(t) {

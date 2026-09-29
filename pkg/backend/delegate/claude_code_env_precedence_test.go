@@ -97,10 +97,10 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 					var err error
 					var fingerprint string
 					if formatting {
-						_, err = b.formatOutput(ctx, task, "env-test")
+						_, _, err = b.formatOutput(ctx, task, "env-test")
 					} else {
 						opts, _ := b.buildTransportOptions(task)
-						opts, fingerprint, err = b.setupCredsAndSession(ctx, task, opts)
+						opts, fingerprint, _, err = b.setupCredsAndSession(ctx, task, opts)
 						if err == nil {
 							_, err = claudesdk.Prompt(ctx, "record env", opts...)
 						}

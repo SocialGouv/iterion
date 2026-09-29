@@ -86,7 +86,7 @@ func TestSelfHostedRoutingKeepsItsThreeClauses(t *testing.T) {
 	}
 
 	for _, clause := range []struct{ needle, why string }{
-		{"vars.CI_SELF_HOSTED", "the operator's lever — three REQUIRED checks route here, and " +
+		{"vars.CI_SELF_HOSTED", "the operator's lever — REQUIRED checks route here, and " +
 			"repairing by merging does not work when merging is what is broken"},
 		{"head.repo.full_name != github.repository", "the fork guard — a public repository, and " +
 			"these runners sit inside the cluster"},
@@ -136,7 +136,7 @@ var requiredChecks = map[string]bool{
 	"mongo-conformance": true,
 	"golangci":          true,
 	"brand":             true,
-	// Here before it is in the ruleset, like `brand`: the job runs in the
+	// Here before it is in the ruleset: the job runs in the
 	// merge queue from day one so the context exists the moment it is
 	// promoted — a required check that only starts being reported when it
 	// is promoted leaves the queue waiting for one that never arrives.

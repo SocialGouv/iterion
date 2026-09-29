@@ -30,9 +30,12 @@ concurrency:
   # desktop-release.yml) each trigger a separate run for the same tag, and
   # both write the same branch and PR, so concurrent runs would race on the
   # push. Never cancel — every run carries artefacts that need to land in
-  # the tap.
+  # the tap. cancel-in-progress: false alone does not keep them: a group
+  # holds ONE pending run and cancels it when a newer one queues (a tag's
+  # second pass, then the next tag's first). queue: max keeps up to 100.
   group: ${{ github.workflow }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: write
