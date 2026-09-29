@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -869,11 +868,16 @@ func cloneBool(v *bool) *bool {
 	return &out
 }
 
+// resolveSupervisorModel is the model of an agent, a judge or an llm router
+// that names none: ITERION_DEFAULT_SUPERVISOR_MODEL through LookupEnv — the
+// reading the executor's router fallback and the supervisor apply at run
+// time — so a stored bot var repins those nodes in the compiled program too
+// (ADR-093), not only at run time.
 func resolveSupervisorModel(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	return os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+	return LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 }
 
 // defaultWorktreeMode resolves the workflow's `worktree:` field into the

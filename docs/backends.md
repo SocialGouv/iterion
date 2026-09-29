@@ -943,7 +943,8 @@ The screen reads a node's backend the way the run itself will: a
 `{{vars.<name>}}` reference by the launch's vars (the declared defaults
 under that launch's `--var` overrides) — the same template-then-env
 reading `resolveRoutingField` makes at dispatch, var values expanded
-through the process environment exactly as `resolveVars` expands them.
+through the bot-vars overlay then the process environment exactly as
+`resolveVars` expands them.
 A reference neither answers stays undecided and is screened as before:
 no opinion, no guess.
 
