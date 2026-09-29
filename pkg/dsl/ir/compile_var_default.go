@@ -124,7 +124,7 @@ func deterministicVarReading(s string) (string, bool) {
 			return v
 		}
 		if settableEnvName(key) {
-			return "\x00iterion-live-ref\x00"
+			return liveRefSentinel
 		}
 		return ""
 	}

@@ -116,6 +116,8 @@ func TestRoutingFieldListTypedVar(t *testing.T) {
   ja: json = ` + "`" + `["a", "b"]` + "`" + `
   j0: json = "null"
   je: json = "${BACKEND_JSON}"
+  jcost: json = ` + "`" + `"gpt $1"` + "`" + `
+  jawk: json = ` + "`" + `{"awk": "{print $1}"}` + "`" + `
   jx: json
 
 prompt p:
@@ -159,8 +161,15 @@ schema s:
 			body: agent("  backend: \"{{vars.j0}}\"\n"), want: 1},
 		{name: "a json var with no default warns (the launch supplies the document)",
 			body: agent("  backend: \"{{vars.jx}}\"\n"), want: 1},
-		{name: "a json var whose default carries an env reference warns",
+		{name: "a json var whose default carries a ${...} reference warns",
 			body: agent("  backend: \"{{vars.je}}\"\n"), want: 1},
+		// The round-2 MEDIUM: a json leaf's `$1` is DATA under the run's
+		// braced-only reading — never expanded — and the document is the
+		// scalar string. Warn here was a doubly-false mechanism.
+		{name: "a json scalar whose text carries $1 stays silent (the braced-only reading never touches it)",
+			body: agent("  model: \"{{vars.jcost}}\"\n"), want: 0},
+		{name: "a json object whose leaf carries $-data still warns for the document's shape, not its text",
+			body: agent("  backend: \"{{vars.jawk}}\"\n"), want: 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -199,6 +208,46 @@ func TestRoutingFieldListTypedVarMessage(t *testing.T) {
 	for _, want := range []string{`agent "a" backend`, "{{vars.bs}}", "`string[]`", "first delegation"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message %q does not carry %q", msg, want)
+		}
+	}
+}
+
+// TestBracedLivenessMatchesTheJsonRunReading pins the rule the json arm's
+// liveness check rests on to the expander's BEHAVIOUR: under the run's
+// braced-only json reading, `${...}` is live and a bare `$NAME` is data.
+// A check that read the bare form would false-positive C148 on a scalar
+// document with a launch dependency that does not exist (the round-2
+// MEDIUM, executed: `cost: json = `"gpt $1"“ resolved to "gpt $1").
+func TestBracedLivenessMatchesTheJsonRunReading(t *testing.T) {
+	live := []string{`"${BACKEND_JSON}"`, `{"dir": "${PROJECT_DIR}/x"}`, `"${A:-b}"`}
+	data := []string{`"gpt $1"`, `{"awk": "{print $1}"}`, `"$HOME of the brave"`, `"100$"`}
+	for _, s := range live {
+		if !carriesLiveReferenceBraced(s) {
+			t.Errorf("carriesLiveReferenceBraced(%q) = false, but the run's braced-only reading rewrites it", s)
+		}
+	}
+	for _, s := range data {
+		if carriesLiveReferenceBraced(s) {
+			t.Errorf("carriesLiveReferenceBraced(%q) = true, but a json leaf's bare $ is data the run never expands", s)
+		}
+		// The run's own reading agrees — that is what makes the document
+		// judgeable as written: no leaf is rewritten, even under a
+		// lookup that answers every name it is asked.
+		v, err := ResolveVarText(s, VarJSON, func(string) string { return "SET" })
+		if err != nil {
+			t.Fatalf("ResolveVarText(%q): %v", s, err)
+		}
+		switch x := v.(type) {
+		case string:
+			if strings.Contains(x, "SET") || !strings.Contains(x, "$") {
+				t.Errorf("the run rewrote the json string leaf of %q into %q — the liveness check and the run disagree", s, x)
+			}
+		case map[string]any:
+			for _, leaf := range x {
+				if str, ok := leaf.(string); ok && strings.Contains(str, "SET") {
+					t.Errorf("the run rewrote a leaf of %q into %q", s, str)
+				}
+			}
 		}
 	}
 }
