@@ -80,6 +80,7 @@ func stubProductDocs(exec *scenarioExecutor, st *productDocsState) {
 			"routes": routes, "source": st.routesSource, "note": "",
 			"degraded": st.oraclePath != "" && len(routes) == 0, "dropped": 0,
 			"log": "ROUTE TABLE", "_tokens": 1,
+			"net_digest": map[string]any{"corpus.json": "c0ffee"},
 		}, nil
 	})
 	exec.on("scan_hints", func(_ map[string]any) (map[string]any, error) {
@@ -382,6 +383,13 @@ func TestProductDocs_RouteTableIsResolvedOnceForEveryReader(t *testing.T) {
 		got := st.gateInputs[reader]
 		if !strings.Contains(render(got["routes"]), "/dashboard/items") || render(got["routes_source"]) != "probe" {
 			t.Errorf("%s routes = %v (source %v), want the table route_table resolved", reader, got["routes"], got["routes_source"])
+		}
+	}
+	// The gates judge the net as route_table fingerprinted it when the run
+	// began, so the fingerprint must reach both of them.
+	for _, gate := range []string{"diagram_lint", "coverage_check"} {
+		if !strings.Contains(render(st.gateInputs[gate]["net_digest"]), "c0ffee") {
+			t.Errorf("%s net_digest = %v, want route_table's fingerprint of the net", gate, st.gateInputs[gate]["net_digest"])
 		}
 	}
 	if !strings.Contains(render(st.campaignIn["routes"]), "/dashboard/items") {

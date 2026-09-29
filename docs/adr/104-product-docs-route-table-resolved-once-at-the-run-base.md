@@ -42,22 +42,35 @@ net built the usual way both route checks were inert: degraded, zero routes.
 frozen answer, as data, to the map step, the campaign and both route gates.
 The gates no longer read a route file or run a command.
 
-- **A route file wins, and is read at the run base commit** (`git show`),
-  never from the working tree. A file that exists only in the working tree is
-  named and set aside.
-- **Otherwise the net's committed `routes_probe` is replayed in a throwaway
-  checkout of the run base** (`git worktree add`, git hooks off):
-  - it runs in its own process group, which is killed when the probe returns
-    or times out;
+- **The workspace's own net is read at the run base commit.** Its route
+  file is read with `git show`, and only as a regular committed file: a link
+  or an LFS pointer is named and degrades. A file that exists only in the
+  working tree is named and set aside.
+- **Otherwise its committed `routes_probe` is replayed in a throwaway clone
+  of the run base**, with no remote and git hooks off. That way, whatever the
+  probe writes (files or git state) lands in the clone, and the judged
+  repository's local state (sparse checkout, config) cannot shape what the
+  probe reads.
+  - A guardian owns the probe's process group and kills it the moment the
+    node is gone.
+  - The node kills the group when the probe returns or times out.
   - stdout and stderr are read merged, as golden-master reads them, through a
-    1 MiB bound and a single deadline (golden-master's 120 s);
-  - the output is decoded tolerantly;
-  - lines that name files inside the checkout are set aside;
-  - one path under several methods counts as one route.
+    1 MiB bound and a single deadline (golden-master's 120 s).
+  - The output is decoded tolerantly.
+  - Lines that name files inside the checkout are set aside, and so are lines
+    that are not a route (whitespace, over 512 characters).
+  - One path under several methods counts as one route.
 - **Only the workspace's own net is replayed**: `<workspace>/<oracle_dir>` in
-  the workspace's own repository. The command of any other net, such as a
-  source clone, is never executed. `catalog_ingest` refuses a `scratch_dir`
-  inside the workspace.
+  the workspace's own repository. Any other net, such as a source clone, is
+  read as `catalog_ingest` cloned it, before any agent runs: a regular file,
+  reached without following a link. Its command is never executed.
+  `catalog_ingest` refuses a `scratch_dir` inside the workspace, or a link
+  anywhere in its clone tree.
+- **The net is fingerprinted as the run found it.** The node records a sha256
+  of each net file the gates read. The gates refuse, before the loop, a file
+  that no longer matches.
+- **The table is bounded to what a gate can receive**: 100 000 bytes of JSON.
+- **Git reads ignore replace refs and grafts**, here and in the scope gate.
 - **With no table, the path checks degrade visibly** to the corpus and name
   the cause. The cause is an operator-side note, never a repair order to the
   campaign.
@@ -78,10 +91,19 @@ The gates no longer read a route file or run a command.
     pod still bounds it);
   - a committed route file wins over the probe, so keeping it fresh is the
     operator's job. By default, commit none.
-- Two semantic changes ship with this decision:
+- Four semantic changes ship with this decision:
   - **A cited corpus entry covers the route its captured path instantiates**
     (query aside). Pages cite entries more often than paths. On a real net,
     130 of 131 routes were refused while every screen was documented.
-  - **The map lint grounds a mapped path on a captured corpus path** when the
-    table misses it. A source-reading probe can miss a handler, for example
-    one inherited from a generic controller.
+  - **A citation is credited to the most specific route it fits.**
+    `/items/new` documents the create screen, never the detail `/items/{id}`.
+  - **A route is credited only by a block that writes about it**, never by a
+    heading. A route cited by its path needs its own share of the block's
+    prose. A route reached through an entry rides the prose the block already
+    owes its features.
+  - **A concrete path that fits a route only through a placeholder is
+    grounded only if the net captured it**; otherwise it is a phantom, on a
+    page and on the map, and the page cites the route as declared. The map
+    lint also grounds a mapped path on a captured corpus path when the table
+    misses it: a source-reading probe can miss a handler, for example one
+    inherited from a generic controller.

@@ -1943,6 +1943,7 @@ func coverageCommandTimed(t *testing.T, ws, productDir, oraclePath, exclToken, m
 		"input.routes":                     routesJSON(t, rt.Routes),
 		"input.routes_source":              rt.Source,
 		"input.routes_note":                rt.Note,
+		"input.net_digest":                 digestJSON(t, rt.NetDigest),
 		"vars.coverage_exclusions_heading": exclToken,
 		"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
 		"vars.coverage_citation_open":      open,
@@ -1956,12 +1957,13 @@ func coverageCommandTimed(t *testing.T, ws, productDir, oraclePath, exclToken, m
 // routeTableOut is route_table's answer: the declared routes every route
 // check judges by, resolved once per run at a commit.
 type routeTableOut struct {
-	Routes   []string `json:"routes"`
-	Source   string   `json:"source"`
-	Note     string   `json:"note"`
-	Degraded bool     `json:"degraded"`
-	Dropped  int      `json:"dropped"`
-	Log      string   `json:"log"`
+	Routes    []string          `json:"routes"`
+	Source    string            `json:"source"`
+	Note      string            `json:"note"`
+	Degraded  bool              `json:"degraded"`
+	Dropped   int               `json:"dropped"`
+	Log       string            `json:"log"`
+	NetDigest map[string]string `json:"net_digest"`
 }
 
 // snapshotRunBase commits the fixture as it stands, the way a run starts from
@@ -1996,6 +1998,20 @@ func routeTableFor(t *testing.T, ws, oraclePath, routesFile, probeTimeout string
 	var out routeTableOut
 	runJSON(t, routeTableCommand(t, ws, oraclePath, base, routesFile, probeTimeout), &out)
 	return out
+}
+
+// digestJSON renders route_table's fingerprint of the net the way the engine
+// relays a json output: the gates refuse a net file that no longer matches it.
+func digestJSON(t *testing.T, digest map[string]string) string {
+	t.Helper()
+	if digest == nil {
+		digest = map[string]string{}
+	}
+	raw, err := json.Marshal(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func routesJSON(t *testing.T, routes []string) string {
@@ -2408,8 +2424,9 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 // read. A route first cited on the LAST page must not be refused while the
 // gate is still reading the first — the check lives outside the per-line
 // loop, and the test that proves it cites the route from a page that sorts
-// after every other one. It also settles the DIRECTION of the match: a
-// concrete citation covers the parameterized route it instantiates.
+// after every other one. The route is cited as declared: a concrete value the
+// net never captured is a phantom (see
+// TestProductDocsCoverageGateGroundsAConcretePathOnlyWhereTheNetSawIt).
 func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *testing.T) {
 	requireGitPython(t)
 	// One route the corpus never exercised, documented only from the route
@@ -2424,9 +2441,9 @@ func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *
 		writeRoutes(t, ws)
 		writeFile(t, ws, "docs/demo/z-exports.md", "# The exports\n"+
 			"\n"+
-			"## The export screen — [[ref:/dashboard/exports/9]]\n"+
+			"## The export screen — [[ref:/dashboard/exports/{id}]]\n"+
 			"\n"+
-			"The manager exports the filtered list from [[ref:/dashboard/exports/9]] as\n"+
+			"The manager exports the filtered list from [[ref:/dashboard/exports/{id}]] as\n"+
 			"a CSV file, one row per item, carrying the columns of the current view.\n")
 		got := runCoverage(t, ws)
 		if !got.OK {
@@ -2448,19 +2465,6 @@ func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *
 		got := runCoverage(t, ws)
 		if !got.OK {
 			t.Fatalf("a route whose only citation carries a query was refused — the screen the documentation already describes:\n%s", got.Log)
-		}
-	})
-	t.Run("a concrete citation covers its parameterized route", func(t *testing.T) {
-		ws := newCoverageFixture(t)
-		writeRoutes(t, ws)
-		mutate(t, ws, "docs/demo/README.md",
-			"newest first, each one showing its owner, its status and its last change.",
-			"newest first, each one showing its owner, its status and its last change.\n"+
-				"From this screen the manager exports the list to a CSV file\n"+
-				"([[ref:/dashboard/exports/42]]), one row per item of the current view.")
-		got := runCoverage(t, ws)
-		if !got.OK {
-			t.Fatalf("a concrete citation did not cover the parameterized route it instantiates:\n%s", got.Log)
 		}
 	})
 }
@@ -4206,8 +4210,10 @@ func TestProductDocsRouteTableKillsWhatTheProbeStarted(t *testing.T) {
 }
 
 // TestProductDocsRouteTableRunsNoGitHook: the throwaway checkout is git's own
-// plumbing — a hook the workspace's configuration points at (core.hooksPath,
-// as a package manager's install step sets it) never runs there.
+// plumbing — a hook the environment's git configuration points at (the way a
+// package manager's install step sets core.hooksPath) never runs there. The
+// hook path is injected through git's environment configuration, which the
+// throwaway clone honours exactly as a global one.
 func TestProductDocsRouteTableRunsNoGitHook(t *testing.T) {
 	requireGitPython(t)
 	ws := newCoverageFixture(t)
@@ -4218,14 +4224,15 @@ func TestProductDocsRouteTableRunsNoGitHook(t *testing.T) {
 	if err := os.Chmod(filepath.Join(hooks, "post-checkout"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	snapshotRunBase(t, ws)
-	gittest.Run(t, ws, "config", "core.hooksPath", hooks)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+	t.Setenv("GIT_CONFIG_VALUE_0", hooks)
 	got := runRouteTable(t, ws, shippedProbeTimeout)
 	if got.Source != "probe" {
 		t.Fatalf("the replay did not read the probe: %+v", got)
 	}
 	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("the throwaway checkout ran a git hook of the workspace")
+		t.Fatal("the throwaway checkout ran a git hook")
 	}
 }
 
@@ -5217,6 +5224,7 @@ func diagramCommand(t *testing.T, ws, productDir, oraclePath, routes string) str
 		"input.routes":        routesJSON(t, rt.Routes),
 		"input.routes_source": rt.Source,
 		"input.routes_note":   rt.Note,
+		"input.net_digest":    digestJSON(t, rt.NetDigest),
 	})
 }
 
