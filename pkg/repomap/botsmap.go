@@ -11,7 +11,6 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/treeskip"
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
 
@@ -34,8 +33,6 @@ type botRow struct {
 	Icon        string
 	Version     string
 	Description string
-	Skills      int
-	Workflows   int
 }
 
 type skillRow struct {
@@ -58,9 +55,8 @@ func (b botBundles) Extract(root string) (string, error) {
 		if !e.IsDir() || treeskip.Dir(e.Name()) {
 			continue
 		}
-		// A bundle is a directory with a manifest. Without this test the
-		// map called `bots/testdata/` — a fixture tree — a shipped bot,
-		// and published "38 bundles" where the catalog has 36.
+		// A bundle is a directory with a manifest; one without (`bots/smoke/`)
+		// is not a shipped bot.
 		if _, err := os.Stat(filepath.Join(botsDir, e.Name(), "manifest.yaml")); err != nil {
 			continue
 		}
@@ -80,14 +76,13 @@ func (b botBundles) Extract(root string) (string, error) {
 	})
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d bundles under `bots/`, carrying %d skills between them.\n\n",
-		len(bots), len(skills))
+	sb.WriteString("The bundles under `bots/`, then the skills they carry.\n\n")
 	sb.WriteString("## Bundles\n\n")
-	sb.WriteString("| Bot | Persona | What it does | `.bot` files · skills | Version |\n|---|---|---|---|---|\n")
+	sb.WriteString("| Bot | Persona | What it does | Version |\n|---|---|---|---|\n")
 	for _, r := range bots {
 		persona := strings.TrimSpace(r.Icon + " " + r.Display)
-		fmt.Fprintf(&sb, "| `%s` | %s | %s | %d · %d | %s |\n",
-			r.Name, orDash(persona), orDash(r.Description), r.Workflows, r.Skills, orDash(r.Version))
+		fmt.Fprintf(&sb, "| `%s` | %s | %s | %s |\n",
+			r.Name, orDash(persona), orDash(r.Description), orDash(r.Version))
 	}
 
 	sb.WriteString("\n## Skills\n\n")
@@ -122,19 +117,6 @@ func readBundle(botsDir, name string) (botRow, []skillRow, error) {
 		}
 	}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return row, nil, fmt.Errorf("read bots/%s: %w", name, err)
-	}
-	for _, e := range entries {
-		// workflowfile owns the accepted extension (CLAUDE.md names it
-		// the single source of truth); a second spelling here would
-		// drift the day a second extension lands.
-		if !e.IsDir() && workflowfile.IsWorkflowFile(e.Name()) {
-			row.Workflows++
-		}
-	}
-
 	skillsDir := filepath.Join(dir, "skills")
 	skillEntries, err := os.ReadDir(skillsDir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -164,6 +146,5 @@ func readBundle(botsDir, name string) (botRow, []skillRow, error) {
 			Description: firstSentence(desc, 130),
 		})
 	}
-	row.Skills = len(skills)
 	return row, skills, nil
 }

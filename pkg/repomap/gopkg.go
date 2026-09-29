@@ -33,8 +33,6 @@ type pkgRow struct {
 	Name       string
 	Doc        string
 	Interfaces []string
-	Files      int
-	Exported   int
 }
 
 func (g goPackages) Extract(root string) (string, error) {
@@ -55,11 +53,11 @@ func (g goPackages) Extract(root string) (string, error) {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Dir < rows[j].Dir })
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d packages, excluding vendored and generated trees. "+
-		"The third column lists exported **interfaces** — the seams a new "+
-		"variant plugs into rather than branching the core.\n\n", len(rows))
-	b.WriteString("| Package | What it is | Interfaces | Files · exported |\n")
-	b.WriteString("|---|---|---|---|\n")
+	b.WriteString("One row per package of this module, excluding vendored and generated " +
+		"trees. The third column lists exported **interfaces** — the seams a new " +
+		"variant plugs into rather than branching the core.\n\n")
+	b.WriteString("| Package | What it is | Interfaces |\n")
+	b.WriteString("|---|---|---|\n")
 	for _, r := range rows {
 		ifaces := "—"
 		if len(r.Interfaces) > 0 {
@@ -69,7 +67,7 @@ func (g goPackages) Extract(root string) (string, error) {
 		if doc == "" {
 			doc = "—"
 		}
-		fmt.Fprintf(&b, "| `%s` | %s | %s | %d · %d |\n", r.Dir, doc, ifaces, r.Files, r.Exported)
+		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.Dir, doc, ifaces)
 	}
 	return b.String(), nil
 }
@@ -81,6 +79,7 @@ func parsePackageDir(abs, rel string, entries []os.DirEntry) (pkgRow, bool, erro
 	row := pkgRow{Dir: rel}
 	var docs []string
 	seen := map[string]bool{}
+	files := 0
 
 	for _, e := range entries {
 		name := e.Name()
@@ -98,7 +97,7 @@ func parsePackageDir(abs, rel string, entries []os.DirEntry) (pkgRow, bool, erro
 			// by the size of its blind spot.
 			return row, false, fmt.Errorf("parse %s/%s: %w", rel, name, err)
 		}
-		row.Files++
+		files++
 		if row.Name == "" {
 			row.Name = file.Name.Name
 		}
@@ -111,9 +110,9 @@ func parsePackageDir(abs, rel string, entries []os.DirEntry) (pkgRow, bool, erro
 				docs = append(docs, text)
 			}
 		}
-		collectExports(file, &row, seen)
+		collectInterfaces(file, &row, seen)
 	}
-	if row.Files == 0 {
+	if files == 0 {
 		return row, false, nil
 	}
 	if len(docs) > 0 {
@@ -123,40 +122,21 @@ func parsePackageDir(abs, rel string, entries []os.DirEntry) (pkgRow, bool, erro
 	return row, true, nil
 }
 
-// collectExports counts a file's exported declarations and records the
-// names of its exported interface types.
-// collectExports counts EVERY exported declaration — functions, methods,
-// types, constants and variables. Counting only functions and types made
-// the number wrong on 174 of 238 packages (4 418 against a true 10 035,
-// `pkg/dsl/parser` reading 22 for 220), and no const, var or method could
-// ever move the rendered bytes, so the freshness gate could not see the
-// error either.
-func collectExports(file *ast.File, row *pkgRow, seen map[string]bool) {
+// collectInterfaces records the names of a file's exported interface types.
+func collectInterfaces(file *ast.File, row *pkgRow, seen map[string]bool) {
 	for _, decl := range file.Decls {
-		switch d := decl.(type) {
-		case *ast.FuncDecl:
-			if d.Name.IsExported() {
-				row.Exported++ // methods included: they are part of the surface
+		d, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range d.Specs {
+			s, ok := spec.(*ast.TypeSpec)
+			if !ok || !s.Name.IsExported() {
+				continue
 			}
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				switch s := spec.(type) {
-				case *ast.TypeSpec:
-					if !s.Name.IsExported() {
-						continue
-					}
-					row.Exported++
-					if _, isIface := s.Type.(*ast.InterfaceType); isIface && !seen[s.Name.Name] {
-						seen[s.Name.Name] = true
-						row.Interfaces = append(row.Interfaces, s.Name.Name)
-					}
-				case *ast.ValueSpec:
-					for _, id := range s.Names {
-						if id.IsExported() {
-							row.Exported++
-						}
-					}
-				}
+			if _, isIface := s.Type.(*ast.InterfaceType); isIface && !seen[s.Name.Name] {
+				seen[s.Name.Name] = true
+				row.Interfaces = append(row.Interfaces, s.Name.Name)
 			}
 		}
 	}
