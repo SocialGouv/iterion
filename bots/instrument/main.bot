@@ -488,18 +488,19 @@ prompt review_system:
     including query_string and cookies, the HTTP server's access log,
     stack-trace frame-locals the SDK serializes, free-form message
     interpolation, breadcrumbs) and verify each is scrubbed. Then prove it
-    against a local capture endpoint: first assert the envelopes you
-    triggered arrived and were decoded, then that no raw secret or
-    identity appears anywhere in them. Write any harness under
+    against a local capture endpoint: first assert every envelope you
+    triggered arrived and was decoded, then that no secret or identity
+    appears in any decoded value (JSON-unescaped, percent-decoded — never
+    a grep of the raw bytes). Write any harness under
     `{{vars.scratch_dir}}/review`, never in the workspace, and leave the
     working tree exactly as you found it — no new, modified or deleted
     file.
   - **Written invariants**: every guarantee in code or docs ("the sub
     never reaches a log store") must have a test that fails when it
     breaks — sweep the call sites by the SHAPE of the violation, not the
-    exact string. An untested invariant is a finding, not a block —
-    unless it is a redaction or isolation claim the diff makes: an
-    unproven one of those blocks as a false-claim defect.
+    exact string. An untested invariant alone does not block — unless
+    it is a redaction or isolation claim the diff makes: an unproven one
+    of those blocks as a false-claim defect.
 
   Procedure:
     1. If `build_passed` is false AND `build_skipped` is false, the tree is

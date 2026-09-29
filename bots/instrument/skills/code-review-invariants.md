@@ -116,9 +116,10 @@ net**. The paths that leak are the ones you did not enumerate:
 
 Verify each path **against a capture endpoint**: boot the instrumented
 process with the sink pointed at a local collector, trigger the paths,
-assert FIRST that the envelopes you triggered arrived and were decoded,
-then assert nothing raw arrives. A unit test with a mock transport proves
-the code path; the capture test proves the net.
+assert FIRST that every envelope you triggered arrived and was decoded,
+then that no secret appears in any decoded value (JSON-unescaped,
+percent-decoded — never a grep of the raw bytes). A unit test with a mock
+transport proves the code path; the capture test proves the net.
 
 ## 8. Written invariants must be tested — and their call sites swept
 
@@ -129,9 +130,9 @@ violate it. An invariant written but not asserted is worse than none:
 the next author trusts it untested. Grep for the *shape* of the violation
 (the raw value in a format string, the unprefixed key) — half-closed
 classes (some sites hashed, some still raw) are the documented residue.
-An untested invariant is a finding, not a block — unless it is a
-redaction or isolation claim the diff makes: an unproven one of those
-blocks as a false-claim defect (§5).
+An untested invariant alone does not block — unless it is a redaction or
+isolation claim the diff makes: an unproven one of those blocks as a
+false-claim defect (§5).
 
 ## 9. Fit and rot — did we build the RIGHT thing, and only that
 
@@ -158,9 +159,9 @@ what the task needed. Two failure modes, opposite directions:
 Conformance to the repo's declared conventions is already covered for
 cross-cutting concerns by §1; here, just confirm the change reads like the
 code around it. This section is judgment, not a checklist — apply it once,
-honestly, and fix what you find in the same pass. It is **advisory**: the
-deterministic build+test gate stays the only thing that blocks shipping — this
-lens sharpens the diff, it never gates it.
+honestly, and fix what you find in the same pass. It is **advisory**: this
+lens never blocks — only a §1–§8 defect and the build+test gate do; it
+sharpens the diff, it never gates it.
 
 ## How to use this in a self-review pass
 

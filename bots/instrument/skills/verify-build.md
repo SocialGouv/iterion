@@ -127,33 +127,39 @@ with DRIFT GATE MISSING (exit 3); a green verify that leaves new changes in the
 tree fails with UNCOMMITTED REGEN OUTPUT (exit 4). Writing the gate here is
 cheaper than being bounced by the enforcement.
 
-## 1c. Replay the dependency resolution of the images CI builds
+## 1c. Check that the pins the CI images install exist on the CI index
 
 Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
 docker-compose services) that this sandbox never builds. The image build
-resolves the dependency set against the **index the CI actually uses** — an
-index that may not carry a version your sandbox resolved (deleted upstream, or
+installs the dependency set from the **index the CI actually uses** — an index
+that may not carry a version your sandbox already has (deleted upstream, or
 absent from the mirror CI uses; a merely *yanked* release still installs when
 pinned with `==`). A pin the CI index does not carry fails **every image
 build** while your local suite stays green.
 
-- Read the CI config for the image-build jobs (`BUILD_*`, `docker build`,
-  `buildx`) and find the dependency-install step each Dockerfile runs.
-  **Never put `docker build` in verify.sh**: the iterion sandbox has no Docker
-  daemon by design (no socket, no `--privileged`), so the step exits 127 on
-  every pass and the gate never goes green. Replay the image's resolution step
-  with the repo's own resolver instead, against the index CI uses — e.g.
-  `python -m pip install --dry-run --ignore-installed -r <the file the
-  Dockerfile installs>` (it resolves the full transitive tree and fails with
-  the same "No matching distribution" the image build would). If no
-  resolver-level equivalent exists, report the image build as **unavailable**
-  in the summary — it neither passes nor fails the gate.
-- A pin the CI index does not carry is a **real red to fix in the same
-  change** (bump to a carried version, or drop the dependency when nothing
-  imports it) — do not ship a branch whose image cannot build. (Paid: a
-  transitive pin, dragged in by a never-imported dependency, was no longer
-  carried by the index the CI resolves against — every api image build failed
-  while the sandbox suite stayed green.)
+- **Never put `docker build` in verify.sh**: the iterion sandbox has no Docker
+  daemon by design (no socket, no `--privileged`), so the step fails on every
+  pass and the gate never goes green. Do not replay the full resolution
+  either: `pip install --dry-run` downloads every wheel in full (a torch pin
+  alone is 800 MB) and its verdict depends on the local interpreter — the
+  default sandbox image ships Python 3.13, no pip, no `python` on PATH.
+- Instead, read the CI config for the image-build jobs (`BUILD_*`,
+  `docker build`, `buildx`), find the file each Dockerfile installs (or the
+  lock it is exported from), and check each **exact pin** against the CI
+  index's listing — for Python, the package's PEP 503 simple page
+  `<index>/<normalized-name>/`, comparing the version field of each wheel or
+  sdist filename exactly (`1.5` is not `1.5.1`). Metadata only, stdlib
+  `python3` only, the same answer on any interpreter. Three outcomes, never
+  conflated: every pin listed → pass; a pin with no file of its version →
+  **missing**, a real red; an index you cannot reach or a page you cannot
+  read → **unavailable**, reported in the summary, neither passing nor
+  failing the gate.
+- A missing pin is a **real red to fix in the same change** (bump to a carried
+  version, or drop the dependency when nothing imports it) — do not ship a
+  branch whose image cannot build. (Paid: a transitive pin, dragged in by a
+  never-imported dependency, was no longer carried by the index the CI
+  resolves against — every api image build failed while the sandbox suite
+  stayed green.)
 
 ## 2. Write the verify script to the scratch dir
 

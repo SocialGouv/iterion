@@ -6,11 +6,12 @@ version: 0.2.2
 ## outbound path a value travels: query string, cookies, access log,
 ## stack-trace frame-locals, free-text interpolation — paid: an OAuth code
 ## and a ProConnect sub crossed a campaign's own scrubber), proven against
-## a capture endpoint that asserts arrival before absence; verify-build
-## learns to replay the CI image's dependency resolution (a pin the CI
-## index does not carry fails the real image build, not the sandbox —
-## never `docker build`, the sandbox has no daemon). lang-python: the
-## capture harness (gzip AND br) and when uvicorn applies its log config.
+## a capture endpoint that asserts arrival before absence and searches
+## decoded values; verify-build learns to check that the pins the CI images
+## install exist on the CI index (metadata only — a pin the index does not
+## carry fails the real image build, not the sandbox; never `docker build`,
+## the sandbox has no daemon). lang-python: the capture harness (gzip AND
+## br) and when uvicorn's log config undoes the seam.
 ## 0.2.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 0.1.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,

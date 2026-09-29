@@ -140,14 +140,16 @@ entry points. Never wire tracing "while you're at it".
   instrumented process — or its entry seam — with the sink pointed at a
   LOCAL capture endpoint (a tiny HTTP server collecting envelopes;
   decode per `Content-Encoding` — gzip AND br, the Python SDK's default
-  when `brotli` is importable — and wait for delivery) and assert over
-  the WHOLE envelope set: FIRST that the triggered error events arrived
-  (and, only when tracing is in scope, one transaction per unit of work
-  with the sample rate forced to 1.0 for the test), THEN that **no raw
-  secret or identity appears anywhere** — request fields including the
-  query string and cookies, stack-trace frame-locals the SDK serializes,
-  free-form message interpolation, breadcrumbs included. Over an empty
-  or undecoded capture, "nothing leaked" is vacuously true. The
+  when `brotli` is importable — and wait until every triggered envelope
+  is delivered) and assert over the WHOLE envelope set: FIRST that every
+  triggered error event arrived (and, only when tracing is in scope, one
+  transaction per unit of work with the sample rate forced to 1.0 for
+  the test), THEN that **no secret or identity appears anywhere**,
+  searched in the decoded values (JSON-unescaped, percent-decoded), never
+  the raw bytes — request fields including the query string and cookies,
+  stack-trace frame-locals the SDK serializes, free-form message
+  interpolation, breadcrumbs included. Over an empty, partial or
+  undecoded capture, "nothing leaked" is vacuously true. The
   mock-transport unit tests prove the code path; the capture test proves
   the net. (Paid: in a campaign's own diff, an OAuth `code` crossed the
   scrubber through the request's query string and the stack's

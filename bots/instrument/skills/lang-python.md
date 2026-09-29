@@ -72,21 +72,25 @@ older SDK lines — match the pinned version).
   human/console on interactive CLI; both switchable by the repo's
   log-format env convention.
 - **🪤 uvicorn's own log config, and WHEN it runs.** uvicorn applies its
-  dictConfig when `Config()` is constructed: `uvicorn`, `uvicorn.error`
-  and `uvicorn.access` get their own plain-text handlers with
-  `propagate=False` (root routing is untouched). Under the uvicorn CLI
-  or `uvicorn.run("mod:app")` that happens BEFORE the app import, so
-  clearing those loggers' handlers and setting `propagate = True` in the
-  seam (called at import) works; under `uvicorn.run(app)` with an
-  already-imported app it happens AFTER the seam and undoes it — pass
-  `log_config=None` there (or a dict routing through the seam's
-  handlers). Assert over the WHOLE captured stdout+stderr of a booted
-  process — every line JSON **and** no raw secret in any line — not
+  dictConfig when `Config()` is constructed: `uvicorn` and
+  `uvicorn.access` get their own plain-text handlers with
+  `propagate=False` (`uvicorn.error` reaches `uvicorn`'s; root routing is
+  untouched). What decides is whether the app module is ALREADY imported
+  when `Config()` is built: under the uvicorn CLI or
+  `uvicorn.run("mod:app")` it is not, so clearing those loggers' handlers
+  and setting `propagate = True` in the seam (called at import) works;
+  under `uvicorn.run(app)` or `fastapi run` (which imports the module to
+  discover the app) it is, and the dictConfig undoes the seam — pass
+  `log_config=None` to `uvicorn.run(app)`, or re-apply the routing in the
+  app's lifespan startup, which runs after `Config()` in every launch
+  mode. Assert over the WHOLE captured stdout+stderr of a booted
+  process — every line JSON **and** no secret in any line, searched after
+  percent-decoding each line and json-decoding the JSON ones — not
   record-by-record. Strip the query string in an access-log filter:
-  `uvicorn.access` prints the raw request line (`GET /callback?code=…`)
-  straight into the log store. (Paid: on a campaign's own diff, the
-  uvicorn lines of the production entry point stayed plain text while
-  every record-level test was green.)
+  `uvicorn.access` prints the request line as received
+  (`GET /callback?code=…`, percent-encoded) straight into the log store.
+  (Paid: on a campaign's own diff, the uvicorn lines of the production
+  entry point stayed plain text while every record-level test was green.)
 
 ## Capture-endpoint E2E (the net, not just the code path)
 
@@ -115,14 +119,20 @@ class H(http.server.BaseHTTPRequestHandler):
 ```
 
 The SDK sends from a background thread: after triggering the paths,
-call `sentry_sdk.flush()` in-process, or wait on `arrived` with a
-deadline for a booted process. Assert FIRST that the envelopes you
-triggered are there (the event's message or `event_id`) — over an empty
-or undecoded capture, "no secret found" is vacuously true — then assert
-over EVERY captured line: no raw secret/identity (emails, `sub` uuids,
-OAuth codes, request query strings, cookies, stack-trace frame-locals)
-appears anywhere — the leaks ride the fields and frame vars unit tests
-never build.
+call `sentry_sdk.flush()` in-process; for a booted process, poll until
+EVERY envelope you triggered is in `captured` (each one's message or
+`event_id`), with a deadline — `arrived` only says the first one landed.
+Assert FIRST that the envelopes you triggered are all there — over an
+empty, partial or undecoded capture, "no secret found" is vacuously
+true — then assert over the DECODED values of every captured item,
+never the raw bytes: `json.loads` each line, walk every string (keys
+included), and search each one as-is and through
+`urllib.parse.unquote_plus` — the SDK's JSON escapes non-ASCII
+(`Hélène`) and a WSGI query string arrives percent-encoded
+(`jo%40x.fr`), both invisible to a byte grep. No secret or identity
+(emails, `sub` uuids, OAuth codes, request query strings, cookies,
+stack-trace frame-locals, personal names) may appear in any decoded
+value — the leaks ride the fields and frame vars unit tests never build.
 
 ## Stray sweep targets (Python)
 
