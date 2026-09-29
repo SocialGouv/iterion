@@ -197,12 +197,6 @@ func (c *compiler) checkPresetConstraint(preset string, pv *ast.PresetValue, v *
 	}
 }
 
-// liveRefSentinel is what liveness checks substitute for every name: a
-// string no expansion can produce by accident, so a text that comes back
-// unchanged was never asked about. Shared by carriesLiveReference and its
-// braced-only twin.
-const liveRefSentinel = "\x00iterion-live-ref\x00"
-
 // carriesLiveReference reports whether the run's expander would REWRITE s —
 // the behaviour checkPresetConstraint's skip actually needs.
 //
@@ -213,15 +207,6 @@ const liveRefSentinel = "\x00iterion-live-ref\x00"
 // rule spelled over the text skipped all four, and a preset value the
 // expander never touches is precisely the one the compiler can still judge.
 func carriesLiveReference(s string) bool {
-	return ExpandWithDefault(s, func(string) string { return liveRefSentinel }) != s
-}
-
-// carriesLiveReferenceBraced is carriesLiveReference under the BRACED-ONLY
-// reading a `json` document gets at run time (varExpander, var_value.go):
-// only `${VAR}` / `${VAR:-default}` count. A bare `$NAME` inside a json
-// leaf is DATA — `"gpt $1"` is a price, `{"awk": "{print $1}"}` is a
-// program — and the run never expands it, so a liveness check that read
-// one would warn about a launch dependency that does not exist.
-func carriesLiveReferenceBraced(s string) bool {
-	return ExpandBracedWithDefault(s, func(string) string { return liveRefSentinel }) != s
+	const sentinel = "\x00iterion-live-ref\x00"
+	return ExpandWithDefault(s, func(string) string { return sentinel }) != s
 }
