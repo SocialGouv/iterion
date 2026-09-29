@@ -366,3 +366,80 @@ func TestJsonDefaultShapeIsFixedByItsText(t *testing.T) {
 		}
 	}
 }
+
+// TestRoutingFieldConsequenceIsTheSites: what the run does with an
+// unroutable or an empty routing field depends on the site, and C148 says
+// the site's own (routingConsequences). A companion model has no default
+// to fall back to — the interaction's model call refuses an empty spec
+// (executeHumanLLM → registry.Resolve) — so "silently falls back" there
+// was the inversion of a loud failure; a provider hint no backend knows is
+// ignored (C087's reading), so "the node fails" there was one too; the
+// workflow's default_backend is read only by the nodes that name no
+// backend, and a fallbacks route only when the node falls back to it.
+func TestRoutingFieldConsequenceIsTheSites(t *testing.T) {
+	const head = "vars:\n  bs: string[] = \"claw,claude_code\"\n  j0: json = \"null\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
+	human := func(props string) string {
+		return "human a:\n  instructions: p\n  output: s\n  interaction: llm\n  system: p\n" + props
+	}
+	agent := func(props string) string { return "agent a:\n  system: p\n" + props }
+	cases := []struct {
+		name, body, wf string
+		want, bad      []string
+	}{
+		{name: "a null human companion model fails the interaction, it does not fall back",
+			body: human("  model: \"{{vars.j0}}\"\n"),
+			want: []string{`human "a" model`, "no default to fall back to", "fails on the empty spec"},
+			bad:  []string{"silently falls back", "UNSET"}},
+		{name: "a null interaction_model fails the interaction, it does not fall back",
+			body: agent("  interaction: llm\n  interaction_model: \"{{vars.j0}}\"\n"),
+			want: []string{"interaction_model", "no default to fall back to", "fails on the empty spec"},
+			bad:  []string{"silently falls back", "UNSET"}},
+		{name: "a list human companion model fails the interaction's call",
+			body: human("  model: \"{{vars.bs}}\"\n"),
+			want: []string{"the interaction's model call fails on it"},
+			bad:  []string{"first delegation"}},
+		{name: "a list provider hint is ignored, it fails nothing",
+			body: agent("  provider: \"{{vars.bs}}\"\n"),
+			want: []string{"every backend but pi ignores it", "default credential precedence"},
+			bad:  []string{"fails"}},
+		{name: "a list provider on a fallbacks route is ignored the same way",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n  fallbacks:\n    alt:\n      backend: \"claw\"\n      provider: \"{{vars.bs}}\"\n"),
+			want: []string{"every backend but pi ignores it"},
+			bad:  []string{"fails"}},
+		{name: "a list model on a fallbacks route fails when the route is taken",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n  fallbacks:\n    alt:\n      backend: \"claw\"\n      model: \"{{vars.bs}}\"\n"),
+			want: []string{"the route fails when the node falls back to it"},
+			bad:  []string{"first delegation"}},
+		{name: "a list default_backend fails the nodes that name no backend",
+			body: agent(""), wf: "  default_backend: \"{{vars.bs}}\"\n",
+			want: []string{"every node that names no backend fails"},
+			bad:  []string{"the node fails"}},
+		{name: "a null default_backend falls back",
+			body: agent(""), wf: "  default_backend: \"{{vars.j0}}\"\n",
+			want: []string{"default_backend is then UNSET", "silently falls back"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, diags := compileSource(t, head+c.body+"\nworkflow w:\n  entry: a\n"+c.wf+"  a -> done\n")
+			var msgs []string
+			for _, d := range diags {
+				if d.Code == DiagRoutingFieldRef {
+					msgs = append(msgs, d.Message)
+				}
+			}
+			if len(msgs) != 1 {
+				t.Fatalf("C148 count = %d, want 1\ndiagnostics: %v", len(msgs), diags)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(msgs[0], want) {
+					t.Errorf("message %q does not carry %q", msgs[0], want)
+				}
+			}
+			for _, bad := range c.bad {
+				if strings.Contains(msgs[0], bad) {
+					t.Errorf("message %q claims %q — not what the run does at this site", msgs[0], bad)
+				}
+			}
+		})
+	}
+}

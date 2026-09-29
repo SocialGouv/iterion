@@ -62,7 +62,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 								loc, span, refs[0].Path[0], v.Type, v.Type)
 						}
 					} else {
-						c.checkRoutingVarListType(w, node.NodeID(), loc, rf.name, refs[0].Path[0], strings.TrimSpace(rf.value) == span)
+						c.checkRoutingVarListType(w, node, loc, rf.name, refs[0].Path[0], strings.TrimSpace(rf.value) == span)
 					}
 					continue
 				}
@@ -90,7 +90,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 						span, refs[0].Path[0], v.Type)
 				}
 			} else {
-				c.checkRoutingVarListType(w, "", "workflow default_backend", "default_backend", refs[0].Path[0], strings.TrimSpace(w.DefaultBackend) == span)
+				c.checkRoutingVarListType(w, nil, "workflow default_backend", "default_backend", refs[0].Path[0], strings.TrimSpace(w.DefaultBackend) == span)
 			}
 			continue
 		}
@@ -134,20 +134,27 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 // object, and on no default at all (the launch supplies the document). A
 // null document warns for what it does instead when the reference is the
 // whole field (whole — the executor trims, so padding counts as whole):
-// it renders as the empty string, so the field is UNSET at dispatch and
-// silently falls back to its default. Inside other text
+// it renders as the empty string, so the field is UNSET at dispatch — a
+// silent fall-back to its default, or, on a companion model that has
+// none, a failed interaction call. Inside other text
 // (`claw{{vars.b}}`) only the reference empties and the surrounding text
 // is the route, so the arm stays silent — as it does on two null spans
 // side by side, or one beside a `${X:-}` that expands empty: telling
 // those apart needs every span and the launch environment, and silence
 // beats a false claim. A `${...}` in the default moves nothing: the run
 // parses the document before it expands a leaf, so `"${BACKEND}"` is the
-// routable string it expands to.
-func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string, whole bool) {
+// routable string it expands to. What the run then does is the site's own
+// (routingConsequences); node is nil for the workflow's default_backend.
+func (c *compiler) checkRoutingVarListType(w *Workflow, node Node, loc, field, varName string, whole bool) {
 	v := w.Vars[varName]
 	if v == nil {
 		return // C033 owns the undeclared name
 	}
+	nodeID := ""
+	if node != nil {
+		nodeID = node.NodeID()
+	}
+	unroutable, empty := routingConsequences(node, field)
 	switch v.Type {
 	case VarStringArray:
 	case VarJSON:
@@ -163,20 +170,53 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varN
 				return
 			}
 			// null renders as the empty string (formatValue), and an empty
-			// routing field is an UNSET one: nothing fails — the route
-			// silently falls back to the default the field was written to
-			// override.
+			// routing field is an UNSET one — what that does is the site's.
 			c.warnfAt(DiagRoutingFieldRef, nodeID, "",
-				"%s: {{vars.%s}} resolves, but the `json` var's default document is null, which renders as the empty string — %s is then UNSET at dispatch and silently falls back to its default instead of the route the field names (give the var a scalar default, or declare it `string` if the fallback is meant)",
-				loc, varName, field)
+				"%s: {{vars.%s}} resolves, but the `json` var's default document is null, which renders as the empty string — %s",
+				loc, varName, empty)
 			return
 		}
 	default:
 		return
 	}
 	c.warnfAt(DiagRoutingFieldRef, nodeID, "",
-		"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list or object value resolves to its JSON spelling ([\"a\",\"b\"]), a name no backend, model or provider answers to; the node fails at its first delegation (declare the var `string`, or override it at launch with a scalar)",
-		loc, varName, v.Type, field)
+		"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list or object value resolves to its JSON spelling ([\"a\",\"b\"]), %s (declare the var `string`, or override it at launch with a scalar)",
+		loc, varName, v.Type, field, unroutable)
+}
+
+// routingConsequences is what the run does at dispatch with a routing
+// field whose text is an unroutable name (a collection's JSON spelling),
+// and with one that renders empty — per site, because the sites do not
+// share one and C148 names the run's behaviour (node nil = the workflow's
+// default_backend):
+//
+//   - default_backend is read only by the nodes that name no backend;
+//   - a fallbacks route is dispatched only when the node falls back to it;
+//   - a provider hint no backend knows is ignored by every backend but pi
+//     (hintIgnoringBackends; claude_code's credential selection reads an
+//     unknown hint as none — C087's reading), so a JSON spelling there
+//     fails nothing: the route is silently dropped;
+//   - a companion model — a human node's model or interaction_model, an
+//     agent's or a judge's interaction_model — has no default: the
+//     interaction's model call resolves the spec it is given
+//     (executeHumanLLM → registry.Resolve), so an empty one is refused
+//     where every other empty routing field falls back to its default.
+func routingConsequences(node Node, field string) (unroutable, empty string) {
+	unroutable = "a name no backend, model or provider answers to; the node fails at its first delegation"
+	empty = field + " is then UNSET at dispatch and silently falls back to its default instead of the route the field names (give the var a scalar default, or declare it `string` if the fallback is meant)"
+	_, human := node.(*HumanNode)
+	switch {
+	case node == nil:
+		unroutable = "a backend name nobody registered; every node that names no backend fails at its first delegation"
+	case field == "provider" || strings.HasSuffix(field, ".provider"):
+		unroutable = "a provider hint no backend knows — every backend but pi ignores it (pi hands it to its CLI), so the node silently runs on default credential precedence instead of the route the field names"
+	case human || field == "interaction_model":
+		unroutable = "a model spec no provider answers to; the interaction's model call fails on it"
+		empty = field + " is then EMPTY at dispatch, and a companion model has no default to fall back to: the interaction's model call fails on the empty spec (give the var a scalar default)"
+	case strings.HasPrefix(field, "fallbacks."):
+		unroutable = "a name no backend or model answers to; the route fails when the node falls back to it"
+	}
+	return unroutable, empty
 }
 
 // jsonDefaultDocument is the document a `json` var's static default
