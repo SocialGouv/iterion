@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.212.0](https://github.com/SocialGouv/iterion/compare/v3.211.0...v3.212.0) (2026-09-29)
+
+### Features
+
+* **models:** reasoning_effort none — DSL, adapters and studio parity ([#1837](https://github.com/SocialGouv/iterion/issues/1837)) ([#1900](https://github.com/SocialGouv/iterion/issues/1900)) ([4486221](https://github.com/SocialGouv/iterion/commit/448622104b6a01e16bd36d567061567133998152))
+
+    <details><summary>why</summary>
+
+    GPT-6 Sol/Luna accept reasoning_effort "none" and the model backend already transmitted it on Responses when handed the value directly, but the authoring path and the adapters each dropped it at a different seam:
+
+    </details>
+
 ## [3.211.0](https://github.com/SocialGouv/iterion/compare/v3.210.0...v3.211.0) (2026-09-29)
 
 ### Features
