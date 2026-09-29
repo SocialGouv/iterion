@@ -127,9 +127,11 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 // type.
 //
 // A `json` var is not a list by declaration: its default document decides
-// (executed: `b: json = "\"claude_code\""` resolves to the ROUTABLE
-// scalar "claude_code", no override involved). So the json arm reads the
-// static default's shape (jsonDefaultDocument) and stays SILENT on a
+// (executed: `b: json` with the default written in backticks as
+// "claude_code" — a JSON string — resolves to the ROUTABLE scalar
+// claude_code, no override involved; a profile-1 `\"` escapes nothing,
+// so only the backtick form writes that document). So the json arm reads
+// the static default's shape (jsonDefaultDocument) and stays SILENT on a
 // scalar document — a string, a number, a bool — warning on a list, an
 // object, and on no default at all (the launch supplies the document). A
 // null document warns for what it does instead when the reference is the
