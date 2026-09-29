@@ -399,16 +399,17 @@ workflow main:
   ## ABOVE-THE-LAST-EDGE
   b -> done
 `,
-		// A profile-2 `"a\nb"` decodes to two lines and occupies one:
-		// measuring the value made the property swallow the comment
-		// written below it, and the comment walked a line per rewrite.
-		"a comment under an escaped newline": `dsl: 2
+		// A value holding a newline is written over lines (the raw string —
+		// #1612): measuring the one it opens on made the property swallow
+		// the comment written below it, and the comment walked a line per
+		// rewrite.
+		"a comment under a value over two lines": `dsl: 2
 
 schema s:
   ok: bool
 
 tool t:
-  command: "echo a\necho b"
+  command: ` + "`echo a\necho b`" + `
   ## THIS-IS-ABOUT-THE-TIMEOUT
   timeout: 5m
   output: s

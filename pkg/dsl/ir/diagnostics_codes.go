@@ -272,4 +272,10 @@ const (
 	DiagWithSecretRef           DiagCode = "C150" // `{{secrets.x}}` in a data mapping or a compute `expr:` — the runtime materialises secrets only at execution sinks (tool command/script/postcondition, action params, prompt body); the mapping and the expr evaluator both resolve to nil
 	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a data mapping or a compute `expr:` — same rule as secrets
 	DiagWithLiteralTypeMismatch DiagCode = "C152" // a `with:` value arrives as a string unless it is exactly one reference: fires on every ref-less literal or interpolated template reaching a `bool`/`int`/`float`/`string[]` field (a string is never one), and on a `json` field for a literal that visibly attempts an encoding (warning at every consumer)
+
+	// Compute-field enum membership (#1916): a statically-known literal the
+	// runtime enum arm (checkFieldType, pkg/backend/model/validate.go) will
+	// refuse at the node. C180–C182 are claimed by an in-flight branch, so
+	// the band starts at C183.
+	DiagComputeEnumLiteral DiagCode = "C183" // compute field with an enum constraint fed by a static string literal outside the enum (warning — the value fails SCHEMA_VALIDATION at run time)
 )

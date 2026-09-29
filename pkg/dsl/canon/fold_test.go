@@ -13,18 +13,22 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
-// A profile-2 file: the writer escapes every string, so a value written
-// over several lines comes back as one (#1612). The `decoy` tool holds a
-// value the AUTHOR already wrote on one line — the very form the writer
-// emits — and it is declared first.
-const foldDecoyFirst = "dsl: 2\n\ntool decoy:\n  description: \"a\"\n  command: \"echo a\\necho b\"\n\ntool real:\n  description: \"b\"\n  command: `line one\nline two`\n"
+// A profile-2 file whose `real` tool the render folds: the writer's
+// multi-line forms carry `line one\nline two` (the backtick raw string,
+// the block scalar) but nothing carries the decoy's — a backtick AND a
+// newline with no trailing one — so one folded value re-renders the whole
+// file without either form, and `real` comes back on one line with it.
+// The decoy is declared first.
+const foldDecoyFirst = "dsl: 2\n\ntool decoy:\n  description: \"a\"\n  command: \"has a `backtick`\\nand a newline\"\n\ntool real:\n  description: \"b\"\n  command: `line one\nline two`\n"
 
 // TestOneValueTheAuthorWroteOnOneLineDoesNotShieldTheRest: the refusal asks
 // about EVERY value the render puts on a line, not the first one it finds.
 // Stopping at the first let one ordinary `"a\nb"` — which loses nothing,
 // since its author wrote it that way — hide every real multi-line value
 // behind it, and `iterion fmt` then rewrote bots/golden-master/main.bot
-// into a single line of 473 101 characters.
+// into a single line of 473 101 characters. Here the decoy is the value
+// the writer cannot carry — flat, as its author wrote it — and `real` is
+// the spread value the render folds with it.
 func TestOneValueTheAuthorWroteOnOneLineDoesNotShieldTheRest(t *testing.T) {
 	_, err := Bytes("decoy.bot", []byte(foldDecoyFirst))
 	if !errors.Is(err, ErrRefused) {
@@ -39,9 +43,10 @@ func TestOneValueTheAuthorWroteOnOneLineDoesNotShieldTheRest(t *testing.T) {
 }
 
 // TestAValueItsAuthorWroteOnOneLineIsNotAFold: folding is a before/after
-// property. A value already written as `"a\nb"` comes back as `"a\nb"` and
-// nothing was folded — refusing it would make every profile-2 file holding
-// an escaped newline unsavable from the studio.
+// property. A value already written as `"a\nb"` is not folded — since
+// #1612 the writer spreads it over lines, and spreading is the opposite of
+// a fold — and refusing it would make every profile-2 file holding an
+// escaped newline unsavable from the studio.
 func TestAValueItsAuthorWroteOnOneLineIsNotAFold(t *testing.T) {
 	src := "dsl: 2\n\ntool t:\n  description: \"a\"\n  command: \"echo a\\necho b\"\n"
 	if _, err := Bytes("flat.bot", []byte(src)); err != nil {
@@ -108,12 +113,14 @@ func itoa(n int) string {
 // missed the one value being edited — which is the `command:` block the
 // author came to change — so a save that touched it wrote the file folded
 // and answered 200. The writer's form is the fact, not any value's
-// spelling.
+// spelling. The edit below gives the value a shape no multi-line form
+// carries (a backtick beside a newline, no trailing one), so the render
+// folds the file's values — the spread one included.
 func TestEditingTheFoldedValueItselfIsStillAFold(t *testing.T) {
 	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two`\n"
-	// The same file with the multi-line value EDITED and written folded —
-	// what the writer produces once the author changes that script.
-	edited := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline two\\nline three\"\n"
+	// The same file with the multi-line value EDITED into a shape the
+	// writer cannot keep over lines.
+	edited := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline two\\nhas a `backtick` now\"\n"
 	if _, _, folds := Folds("t.bot", stored, edited); !folds {
 		t.Fatal("editing the value the writer folds made the fold invisible")
 	}
@@ -136,11 +143,13 @@ func TestEditingTheFoldedValueItselfIsStillAFold(t *testing.T) {
 // TestTheLineNamedIsTheFilesOwn: the writer reorders declarations, so a
 // line of the render points at unrelated text in the file. This fixture is
 // built so the two differ — with declarations in an order the writer
-// changes — and the refusal must name the FILE's.
+// changes — and the refusal must name the FILE's. The second tool's flat
+// value is the one no multi-line form carries, which is what sends the
+// render back without either form and folds the first tool's spread one.
 func TestTheLineNamedIsTheFilesOwn(t *testing.T) {
 	// The writer emits prompts, then schemas, then agents, then tools: a
 	// tool declared FIRST here comes back last.
-	src := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two`\n\nprompt p:\n  a\n  b\n  c\n  d\n  e\n\nagent a:\n  system: p\n\nworkflow w:\n  entry: t\n  t -> a\n  a -> done\n"
+	src := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two`\n\ntool flat:\n  description: \"has a `backtick`\\nand a newline\"\n\nprompt p:\n  a\n  b\n  c\n  d\n  e\n\nagent a:\n  system: p\n\nworkflow w:\n  entry: t\n  t -> flat\n  flat -> a\n  a -> done\n"
 	pr := parser.Parse("t.bot", src)
 	if parseErrs(pr) != "" {
 		t.Fatalf("fixture: %s", parseErrs(pr))
@@ -252,21 +261,22 @@ func TestDeletingTheDeclarationThatHeldASpreadValueIsNotAFold(t *testing.T) {
 	}
 }
 
-// TestTheWriterNeverMixesItsTwoFormsInOneRender is the invariant every
-// fold refusal rests on, asserted rather than argued.
+// TestTheWriterNeverMixesItsFormsInOneRender is the invariant every fold
+// refusal rests on, asserted rather than argued.
 //
 // `Folds` decides from the render alone: a text that writes ANY value
 // holding a newline on one line is a text written without the multi-line
-// form, so EVERY value its author spread over lines came back folded.
-// That is exact only because the writer is all-or-nothing — it has one
-// multi-line form (the backtick raw string) and abandons it for the WHOLE
-// file the moment a single value needs the strict escape (unparse.str).
+// forms, so EVERY value its author spread over lines came back folded.
+// That is exact only because the writer is all-or-nothing — its multi-line
+// forms (the block scalar at a property line, the backtick raw string
+// elsewhere) are abandoned TOGETHER for the whole file the moment a single
+// value can take neither (unparse.render).
 //
 // If that ever stopped holding — a render folding one value while keeping
 // another spread — `Folds` would fall silent and all five guarded write
 // sites would stop refusing, without a line of their own changing. So it
 // is checked here against every shipped bot, not left to a comment.
-func TestTheWriterNeverMixesItsTwoFormsInOneRender(t *testing.T) {
+func TestTheWriterNeverMixesItsFormsInOneRender(t *testing.T) {
 	var scanned, withFolded, withSpread int
 	for _, dir := range []string{"bots", "examples"} {
 		root := filepath.Join("..", "..", "..", dir)
@@ -328,19 +338,17 @@ func TestTheWriterNeverMixesItsTwoFormsInOneRender(t *testing.T) {
 	if scanned < 78 {
 		t.Fatalf("only %d files scanned: the walk is not reaching the shipped bots, so this asserts nothing", scanned)
 	}
-	if withFolded == 0 {
-		t.Fatalf("no shipped file renders a folded value (%d scanned): this cannot witness the invariant", scanned)
-	}
-	// The shipped corpus is entirely profile 2, where the writer always
-	// escapes — measured: %d files fold, none spread. So it witnesses one
-	// side only, and the other is asserted on fixtures the corpus cannot
-	// supply. Without this the check would be vacuously true on the half
-	// that matters most: a SPREAD render is what tells Folds nothing was
-	// lost.
+	// Since #1612 the shipped corpus renders wholly spread: the block
+	// scalar and the raw string carry every value it holds. The FOLD side
+	// of the invariant — a value no form carries sends the whole render
+	// back to the one-line escapes — is witnessed on fixtures, and so is
+	// the spread side of a strict render, which the corpus's profile-2
+	// files exercise every day but a fixture names precisely.
 	for name, src := range map[string]string{
 		"profile 1, one value over its lines":         "tool t:\n  command: `one\ntwo`\n\nworkflow w:\n  entry: t\n  t -> done\n",
 		"profile 1, two values over their lines":      "tool a:\n  command: `one\ntwo`\n\ntool b:\n  command: `three\nfour`\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
 		"profile 1, a spread value beside a flat one": "tool a:\n  command: `one\ntwo`\n\ntool b:\n  command: \"flat\"\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
+		"profile 2, a block scalar and a raw string":  "dsl: 2\n\ntool a:\n  command: |\n    echo one\n    echo two\n\ntool b:\n  command: `one\ntwo`\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
 	} {
 		pr := parser.Parse(name, src)
 		if pr.File == nil || parseErrs(pr) != "" {
@@ -368,6 +376,37 @@ func TestTheWriterNeverMixesItsTwoFormsInOneRender(t *testing.T) {
 			t.Errorf("%s: the writer mixed its forms — %d folded beside %d spread", name, folded, spread)
 		}
 		withSpread++
+	}
+	// The fold side: one value no multi-line form carries — a backtick
+	// beside a newline, no trailing one — and the whole render comes back
+	// without either form, values its author spread included.
+	for name, src := range map[string]string{
+		"profile 2, one value no form carries":     "dsl: 2\n\ntool t:\n  command: \"has a `backtick`\\nand a newline\"\n\nworkflow w:\n  entry: t\n  t -> done\n",
+		"profile 2, a spread value folded with it": "dsl: 2\n\ntool t:\n  command: `one\ntwo`\n\ntool u:\n  command: \"has a `backtick`\\nand a newline\"\n\nworkflow w:\n  entry: t\n  t -> u\n  u -> done\n",
+	} {
+		pr := parser.Parse(name, src)
+		if pr.File == nil || parseErrs(pr) != "" {
+			t.Fatalf("%s: fixture does not parse: %s", name, parseErrs(pr))
+		}
+		text := unparse.Unparse(pr.File)
+		folded, spread := 0, 0
+		for _, tok := range parser.NewLexer(name, text).All() {
+			if tok.Type != parser.TokenString || !strings.Contains(tok.Value, "\n") {
+				continue
+			}
+			if tok.EndLine > tok.Line {
+				spread++
+			} else {
+				folded++
+			}
+		}
+		if folded == 0 {
+			t.Fatalf("%s: nothing folded, so this fixture cannot witness the fold side", name)
+		}
+		if spread > 0 {
+			t.Errorf("%s: the writer mixed its forms — %d spread beside %d folded", name, spread, folded)
+		}
+		withFolded++
 	}
 	t.Logf("%d shipped files rendered: %d carry a folded value, none carry both; %d fixtures carry a spread value, none carry both", scanned, withFolded, withSpread)
 }

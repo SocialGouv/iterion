@@ -31,6 +31,11 @@ linters:
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
+        # The unparse writer's own buffer: backed by bytes.Buffer, its
+        # writes cannot fail (same best-effort class as fmt.Fprint* above).
+        - (*github.com/SocialGouv/iterion/pkg/dsl/unparse.buf).Write
+        - (*github.com/SocialGouv/iterion/pkg/dsl/unparse.buf).WriteString
+        - (*github.com/SocialGouv/iterion/pkg/dsl/unparse.buf).WriteByte
   exclusions:
     generated: lax
     presets:

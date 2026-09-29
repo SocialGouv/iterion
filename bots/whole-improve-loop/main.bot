@@ -77,7 +77,6 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
   ## verify script/log ONLY (no worklist/cursor any more — git is the state).
   ## The engine resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/scratch
@@ -87,7 +86,6 @@ vars:
   ## the target worktree is the repo-agnostic rule: never pollute someone
   ## else's tree.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/whole-improve-loop"
-
   ## THE AXIS. The determined improvement to apply across the whole codebase,
   ## site by site — passed as improvement_prompt. Empty (default) = the
   ## campaign identifies and sweeps the single highest-value cross-cutting
@@ -101,14 +99,12 @@ vars:
   ## the axis (the WHAT is the axis); passed as guidance to the agent.
   ## Example: --var scope_globs="pkg/runtime,pkg/store".
   scope_globs: string = ""
-
   ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
   ## pre-existing test failures / flaky tests the campaign must SKIP rather
   ## than burn budget proving they aren't its own. Empty (default) = the
   ## campaign establishes it once cheaply (a `git stash`-based check) then
   ## skips what predates its work. The dispatcher/operator can pre-fill it.
   baseline: string = ""
-
   ## Hard cap on continuation PASSES — the convergence backstop. Each pass is
   ## one campaign→verify cycle; the run stops (shipping what is banked) when
   ## the axis is reported complete + the tree is green, or when this cap is
@@ -120,7 +116,6 @@ vars:
   ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
   ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
-
   ## ─── PR finalization (opt-in) ───────────────────────────────
   ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
   ## (the SERIES of per-pass commits) to the forge and opens a pull
@@ -140,7 +135,6 @@ vars:
   ## "native:<id>" (local board) or a forge issue URL. When set, finalize_mr
   ## posts the opened PR's URL back as a comment on it.
   source_issue_ref: string = ""
-
   ## ─── Plan phase ───────────────────────────────────────────────
   ## The plan phase itself — the AUTHORED sweep plan the campaign works
   ## from — runs by default, on every deployment, whatever `plan_review`
@@ -179,7 +173,6 @@ secrets:
     optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
-
 prompt campaign_system:
   You are a senior engineer running a focused improvement CAMPAIGN on ONE
   axis across a whole codebase — working EXACTLY as you would in a
@@ -384,20 +377,6 @@ prompt campaign_user:
   first to see what earlier passes already landed. Then report the termination
   contract (axis_complete, commits_this_pass, sites_remaining).
 
-## ─── supervisor (Persy, the perseverance coach) ─────────────────────
-## Concurrent LLM watcher on the campaign node enforcing the contract's
-## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
-## the run's first event); see docs/supervisors.md for the knobs and the
-## per-run kill switch. Every text marker is pinned to `assistant_text`
-## — the agent's own words — so tool output and prompt echoes never wake
-## an eval (measured: 5 of 10 evals burned on echoes when unpinned).
-supervisor persy:
-  watches: [campaign]
-  system: persy_policy
-  cooldown: "5m"
-  max_evals: 10
-  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
-
 prompt persy_policy:
   You are Persy, a perseverance coach watching a senior engineer agent
   (the `campaign` node) apply one improvement axis across a whole
@@ -442,7 +421,6 @@ prompt persy_policy:
 ## language / package manager is named here — the gate stays universal while
 ## the verdict stays deterministic. verify_build does NOT fix code: a RED gate
 ## routes back to `campaign` (the one capable agent) to fix what it broke.
-
 prompt verify_system:
   You are a release engineer. A campaign pass just applied changes across
   this repository and committed them. Your single job: capture how THIS repo
@@ -514,7 +492,6 @@ prompt verify_user:
   (exit 3) and the loop burns a full pass re-learning this.
 
 ## ─── PR finalization prompts (opt-in) ────────────────────────────
-
 prompt finalize_mr_system:
   You finalize a converged improvement run by opening ONE pull request
   (PR; merge request on GitLab) for the SERIES of per-pass commits this
@@ -571,94 +548,6 @@ prompt finalize_mr_user:
   Push the branch, open the PR, post the back-link when a source issue is
   given, and return the structured result.
 
-## ─── Schemas ────────────────────────────────────────────────────
-
-## campaign's input: the deterministic gate's failure log from the PREVIOUS
-## pass (empty on the first pass and on a green-but-more-work continuation).
-schema campaign_input:
-  fail_log: string
-  ## Plan-phase hand-off (empty when the phase is off / skipped / on
-  ## continuation passes — git is the durable state there).
-  plan: string
-  plan_critique: string
-  plan_responses: string
-  ## Who authored the plan and whether a cross-model peer challenged it:
-  ## a literal stamp set on each hand-off edge, empty when no plan ran.
-  plan_provenance: string
-
-## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
-## keys convergence on. axis_complete is the done-oracle (a fresh re-scan
-## finds nothing left); the rest is observability.
-schema campaign_output:
-  axis_complete: bool
-  commits_this_pass: int
-  sites_remaining: string
-  needs_human: bool
-  human_note: string
-  summary: string
-
-## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
-schema verify_plan:
-  prepared: bool
-  summary: string
-
-## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
-## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
-## LLM judgment. `skipped` is true only when no verify script was produced,
-## which is a REFUSAL (`passed` false): a gate that did not run cannot
-## certify. A repo with genuinely nothing to build writes a verify.sh that
-## exits 0 — an explicit empty gate leaves an artefact, a missing one does not.
-schema verify_result:
-  passed: bool
-  skipped: bool
-  exit_code: int
-  log_tail: string
-
-## verify_probe output — deterministic "is a usable verify.sh already prepared?"
-## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
-## the script is missing/invalid or on the first pass. fresh=true reuses it.
-## verify_probe input — the continuation-loop iteration, mapped on the
-## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
-## tool command (only input/vars/run do), so the iteration is passed in as node
-## input via the edge data-mapping. Pass 1 = iteration 0 (always regenerate).
-schema verify_probe_input:
-  iteration: int
-
-schema verify_probe_state:
-  fresh: bool
-  reason: string
-
-## gate is the deterministic continuation decision. converged = the tree is
-## green AND the campaign reported the axis fully applied. fail_log relays the
-## real build failure to the campaign on a RED pass (empty when green).
-schema gate_state:
-  converged: bool
-  fail_log: string
-
-schema mr_gate_output:
-  open_mr: bool
-
-## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
-## LLM agent) is only ever entered when a push credential actually exists.
-schema forge_auth_state:
-  available: bool
-  reason: string
-
-schema finalize_mr_input:
-  workspace_dir: string
-  mr_branch: string
-  mr_base: string
-  source_issue_ref: string
-  scope_notes: string
-
-schema finalize_mr_output:
-  opened: bool
-  url: string
-  branch: string
-  back_linked: bool
-  skipped_reason: string
-  summary: string
-
 ## ─── Nodes ──────────────────────────────────────────────────────
 
 ## ─── Plan phase (authored plan + opt-in cross-model pair review) ───
@@ -670,7 +559,6 @@ schema finalize_mr_output:
 ## campaign stays the arbiter of reality (asymptote intact). With the
 ## review off, the campaign still gets the authored plan, stamped
 ## unreviewed. `plan_phase: off` skips the phase altogether.
-
 prompt plan_system:
   You are the implementation planner for a codebase-improvement
   campaign. You are READ-ONLY: explore the repository and produce a
@@ -805,6 +693,94 @@ prompt plan_revise_user:
   Your plan as reviewed:
   {{input.plan}}
 
+## ─── Schemas ────────────────────────────────────────────────────
+
+## campaign's input: the deterministic gate's failure log from the PREVIOUS
+## pass (empty on the first pass and on a green-but-more-work continuation).
+schema campaign_input:
+  fail_log: string
+  ## Plan-phase hand-off (empty when the phase is off / skipped / on
+  ## continuation passes — git is the durable state there).
+  plan: string
+  plan_critique: string
+  plan_responses: string
+  ## Who authored the plan and whether a cross-model peer challenged it:
+  ## a literal stamp set on each hand-off edge, empty when no plan ran.
+  plan_provenance: string
+
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
+## keys convergence on. axis_complete is the done-oracle (a fresh re-scan
+## finds nothing left); the rest is observability.
+schema campaign_output:
+  axis_complete: bool
+  commits_this_pass: int
+  sites_remaining: string
+  needs_human: bool
+  human_note: string
+  summary: string
+
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
+
+## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
+## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
+## LLM judgment. `skipped` is true only when no verify script was produced,
+## which is a REFUSAL (`passed` false): a gate that did not run cannot
+## certify. A repo with genuinely nothing to build writes a verify.sh that
+## exits 0 — an explicit empty gate leaves an artefact, a missing one does not.
+schema verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
+
+## verify_probe output — deterministic "is a usable verify.sh already prepared?"
+## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
+## the script is missing/invalid or on the first pass. fresh=true reuses it.
+## verify_probe input — the continuation-loop iteration, mapped on the
+## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
+## tool command (only input/vars/run do), so the iteration is passed in as node
+## input via the edge data-mapping. Pass 1 = iteration 0 (always regenerate).
+schema verify_probe_input:
+  iteration: int
+
+schema verify_probe_state:
+  fresh: bool
+  reason: string
+
+## gate is the deterministic continuation decision. converged = the tree is
+## green AND the campaign reported the axis fully applied. fail_log relays the
+## real build failure to the campaign on a RED pass (empty when green).
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+schema mr_gate_output:
+  open_mr: bool
+
+## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
+## LLM agent) is only ever entered when a push credential actually exists.
+schema forge_auth_state:
+  available: bool
+  reason: string
+
+schema finalize_mr_input:
+  workspace_dir: string
+  mr_branch: string
+  mr_base: string
+  source_issue_ref: string
+  scope_notes: string
+
+schema finalize_mr_output:
+  opened: bool
+  url: string
+  branch: string
+  back_linked: bool
+  skipped_reason: string
+  summary: string
+
 ## workspace_probe output — the deterministic "is there a repository to
 ## work on?" verdict. ok=false carries the typed code WORKSPACE_NOT_A_REPO
 ## and a reason naming what was refused.
@@ -849,6 +825,139 @@ schema plan_revised_output:
   plan: string
   review_responses: string
 
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+## ─── supervisor (Persy, the perseverance coach) ─────────────────────
+## Concurrent LLM watcher on the campaign node enforcing the contract's
+## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
+## the run's first event); see docs/supervisors.md for the knobs and the
+## per-run kill switch. Every text marker is pinned to `assistant_text`
+## — the agent's own words — so tool output and prompt echoes never wake
+## an eval (measured: 5 of 10 evals burned on echoes when unpinned).
+supervisor persy:
+  watches: [campaign]
+  system: persy_policy
+  cooldown: "5m"
+  max_evals: 10
+  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
+
+## plan — the AUTHOR. Same family/model as the campaign (the peer is the
+## cross-check). readonly is enforced on codex/pi only — on claude_code
+## (bypassPermissions) it is intent, not a guarantee; the deterministic
+## verify gate + the campaign's own review remain the backstop.
+agent plan:
+  description: "Author the sweep plan (read-only)"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  readonly: true
+
+## plan_revise — the AUTHOR again, SAME session (the `_session_id`
+## carried on the edge), challenging the peer's critique. Read-only.
+agent plan_revise:
+  description: "Author challenges & integrates the critique"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: plan_revise_input
+  output: plan_revised_output
+  system: plan_revise_system
+  user: plan_revise_user
+  session: inherit_if_available
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  readonly: true
+
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset (read/edit/shell/git) so it works exactly like a native Claude
+## Code session: a living todo list + one verified commit per site, in
+## stride. session: fresh — a fresh pass re-derives its todo list from the
+## repo + `git log` (git is the durable state). reasoning_effort high, not
+## max: the productive-session data says the working SHAPE, not the model
+## tier, is the lever (framing > capability). interaction: async — an
+## ambiguous or self-picked axis gets a non-blocking teach-back
+## (ask_user_async: restate + assumptions, keep working; answers land
+## mid-run in the message queue) while the blocking ask_user stays for
+## genuine hard stops (kept rare by the contract).
+agent campaign:
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  interaction: async
+
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-site
+## session. high, not max: mechanical capture of the repo's build/test.
+agent verify_build:
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
+  interaction: human
+
+agent finalize_mr:
+  model: "${ITERION_WHOLE_IMPROVE_MR_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  ## 20 is ample for push + open-PR + back-link (~5-8 commands nominal); 40 was
+  ## headroom for a degenerate credential-probe spin that forge_auth_probe now
+  ## makes impossible (the node is only entered when a push credential exists).
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_WHOLE_IMPROVE_MR_EFFORT:-medium}"
+
+## plan_review — the PEER, pinned to the other family. claw because
+## "openai/*" models only resolve there; both knobs env-overridable so a
+## host without OpenAI quota can run the peer elsewhere. Read-only
+## toolset (no write_file/file_edit tools — though bash can write; the
+## restriction is intent + review-pr's shipped posture, not a sandbox).
+judge plan_review:
+  description: "Peer plan review (other model family)"
+  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-6-astra}"
+  backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
+  input: plan_review_input
+  output: plan_review_output
+  system: plan_review_system
+  user: plan_review_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  fallbacks:
+    ## The plan_review_policy switch, expressed as a route gate:
+    ## policy "skip" arms this terminal route — a peer failure completes
+    ## the node with a zero-value critique stamped _skipped (plan_gate
+    ## routes around the revise turn). policy "wait" leaves NO active
+    ## route: the failure stays failed_resumable and the run-level
+    ## usage-window retry parks the run until the forfait reopens.
+    ## on: [any] — deliberately unfiltered: the operator's `skip` means
+    ## the peer must NEVER block the campaign, whatever killed it. It is
+    ## also load-bearing under the shipped `sandbox: auto`: a sandboxed
+    ## claw failure flattens to a string at the IPC boundary and
+    ## classifies UNCLASSIFIED, which a filtered skip refuses by design.
+    give_up:
+      on: [any]
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+
 ## workspace_probe — DETERMINISTIC precondition and the run's ENTRY: a
 ## launch with nothing to work on is refused BEFORE any LLM node spends
 ## (a `--bot` launch carrying only pr_url attaches no repository; the
@@ -876,131 +985,6 @@ if p.returncode != 0:
 print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws}))
 "`
   output: workspace_probe_state
-
-## workspace_not_a_repo — the entry precondition refused. NOT resumable:
-## nothing about this run changes by resuming it, because the workspace it
-## was launched against is not the thing the operator can widen. Fix the
-## launch (attach a repository) and start again.
-fail workspace_not_a_repo:
-  description: "the launch has no repository to work on"
-  code: WORKSPACE_NOT_A_REPO
-  message: "{{outputs.workspace_probe.reason}}"
-  resumable: false
-
-## plan_topology lifts the plan_phase switch into a bool so the entry
-## edges use the C012-exhaustive simple form. No LLM. This gate is the
-## PHASE (on by default); whether a cross-model peer reviews the authored
-## plan is decided after it exists, by plan_review_topology.
-compute plan_topology:
-  description: "Plan phase gate (plan_phase switch)"
-  output: plan_topology_state
-  expr:
-    do_plan: "vars.plan_phase == 'on'"
-
-## plan — the AUTHOR. Same family/model as the campaign (the peer is the
-## cross-check). readonly is enforced on codex/pi only — on claude_code
-## (bypassPermissions) it is intent, not a guarantee; the deterministic
-## verify gate + the campaign's own review remain the backstop.
-agent plan:
-  description: "Author the sweep plan (read-only)"
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  output: plan_output
-  system: plan_system
-  user: plan_user
-  session: fresh
-  readonly: true
-
-## plan_review_topology — is a cross-model peer wired for this run? Lifts
-## the launch-resolved plan_review var (auto → on iff a second model
-## family is credentialed) into a bool AFTER the plan is authored, so an
-## edge condition can read it. off → the authored plan goes to the
-## campaign unreviewed, stamped so the campaign knows no peer looked at
-## it. No LLM.
-compute plan_review_topology:
-  description: "Peer review gate (launch-resolved plan_review)"
-  output: plan_review_topology_state
-  expr:
-    do_review: "vars.plan_review == 'on'"
-
-## plan_review — the PEER, pinned to the other family. claw because
-## "openai/*" models only resolve there; both knobs env-overridable so a
-## host without OpenAI quota can run the peer elsewhere. Read-only
-## toolset (no write_file/file_edit tools — though bash can write; the
-## restriction is intent + review-pr's shipped posture, not a sandbox).
-judge plan_review:
-  description: "Peer plan review (other model family)"
-  backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
-  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-6-astra}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: plan_review_input
-  output: plan_review_output
-  system: plan_review_system
-  user: plan_review_user
-  session: fresh
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  fallbacks:
-    ## The plan_review_policy switch, expressed as a route gate:
-    ## policy "skip" arms this terminal route — a peer failure completes
-    ## the node with a zero-value critique stamped _skipped (plan_gate
-    ## routes around the revise turn). policy "wait" leaves NO active
-    ## route: the failure stays failed_resumable and the run-level
-    ## usage-window retry parks the run until the forfait reopens.
-    ## on: [any] — deliberately unfiltered: the operator's `skip` means
-    ## the peer must NEVER block the campaign, whatever killed it. It is
-    ## also load-bearing under the shipped `sandbox: auto`: a sandboxed
-    ## claw failure flattens to a string at the IPC boundary and
-    ## classifies UNCLASSIFIED, which a filtered skip refuses by design.
-    give_up:
-      action: skip
-      when: "vars.plan_review_policy == 'skip'"
-      on: [any]
-
-## plan_gate — did the peer actually serve, or did the skip route fire?
-## Deterministic: reads the _skipped stamp, never an LLM judgment.
-compute plan_gate:
-  description: "Peer review served or skipped?"
-  output: plan_gate_state
-  expr:
-    skipped: "outputs.plan_review._skipped == true"
-
-## plan_revise — the AUTHOR again, SAME session (the `_session_id`
-## carried on the edge), challenging the peer's critique. Read-only.
-agent plan_revise:
-  description: "Author challenges & integrates the critique"
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  input: plan_revise_input
-  output: plan_revised_output
-  system: plan_revise_system
-  user: plan_revise_user
-  session: inherit_if_available
-  readonly: true
-
-## campaign — the one adaptive agent. claude_code with the full native
-## toolset (read/edit/shell/git) so it works exactly like a native Claude
-## Code session: a living todo list + one verified commit per site, in
-## stride. session: fresh — a fresh pass re-derives its todo list from the
-## repo + `git log` (git is the durable state). reasoning_effort high, not
-## max: the productive-session data says the working SHAPE, not the model
-## tier, is the lever (framing > capability). interaction: async — an
-## ambiguous or self-picked axis gets a non-blocking teach-back
-## (ask_user_async: restate + assumptions, keep working; answers land
-## mid-run in the message queue) while the blocking ask_user stays for
-## genuine hard stops (kept rare by the contract).
-agent campaign:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  input: campaign_input
-  output: campaign_output
-  system: campaign_system
-  user: campaign_user
-  session: fresh
-  interaction: async
 
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
 ## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
@@ -1038,19 +1022,6 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 "`
   input: verify_probe_input
   output: verify_probe_state
-
-## verify_build — adaptive, stack-agnostic gate authoring (writes
-## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-site
-## session. high, not max: mechanical capture of the repo's build/test.
-agent verify_build:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
-  output: verify_plan
-  system: verify_system
-  user: verify_user
-  session: fresh
-  interaction: human
 
 ## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
 ## <scratch_dir>/verify.sh and reports the REAL exit code. No language /
@@ -1316,26 +1287,6 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 "`
   output: verify_result
 
-## gate — the deterministic continuation decision. Reads the real gate result
-## (outputs.verify_run.passed) AND the campaign's termination output
-## (outputs.campaign.axis_complete), both fresh in the loop BODY (the same
-## discipline the retired `advance` compute used to read the loop-head safely).
-## converged = green AND the axis is fully applied. On a RED pass fail_log
-## carries the real build failure to the campaign; empty when green. No LLM,
-## no shell.
-compute gate:
-  output: gate_state
-  expr:
-    converged: "outputs.verify_run.passed && outputs.campaign.axis_complete"
-    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
-
-## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
-## edges use the C012-exhaustive simple form. No LLM, no shell.
-compute mr_gate:
-  output: mr_gate_output
-  expr:
-    open_mr: "vars.open_mr"
-
 ## finalize_mr — opt-in PR creation shipping the SERIES of per-pass commits.
 ## claude_code so the bundled forge-mr-create skill is mirrored and the board
 ## comment tool (native back-link) is available.
@@ -1368,43 +1319,77 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 "`
   output: forge_auth_state
 
-agent finalize_mr:
-  backend: "claude_code"
-  model: "${ITERION_WHOLE_IMPROVE_MR_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_WHOLE_IMPROVE_MR_EFFORT:-medium}"
-  input: finalize_mr_input
-  output: finalize_mr_output
-  system: finalize_mr_system
-  user: finalize_mr_user
-  tools: [bash, read_file, glob, grep]
-  capabilities: [board.read, board.comment]
-  ## 20 is ample for push + open-PR + back-link (~5-8 commands nominal); 40 was
-  ## headroom for a degenerate credential-probe spin that forge_auth_probe now
-  ## makes impossible (the node is only entered when a push credential exists).
-  tool_max_steps: 20
-
-## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
-## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
-## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
-## directive a tool node prints on stdout — never from agent prose. Reached
-## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
-## python guard drops an empty url so the scanner never sees a malformed
-## directive. read-only, idempotent.
-schema surface_pr_link_input:
-  url: string
-
 tool surface_pr_link:
-  input: surface_pr_link_input
   command: `URL={{input.url}} python3 -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
     print('[iterion] preview_url=' + u + ' kind=pr scope=external')
 "`
+  input: surface_pr_link_input
+
+## plan_topology lifts the plan_phase switch into a bool so the entry
+## edges use the C012-exhaustive simple form. No LLM. This gate is the
+## PHASE (on by default); whether a cross-model peer reviews the authored
+## plan is decided after it exists, by plan_review_topology.
+compute plan_topology:
+  description: "Plan phase gate (plan_phase switch)"
+  output: plan_topology_state
+  expr:
+    do_plan: "vars.plan_phase == 'on'"
+
+## plan_review_topology — is a cross-model peer wired for this run? Lifts
+## the launch-resolved plan_review var (auto → on iff a second model
+## family is credentialed) into a bool AFTER the plan is authored, so an
+## edge condition can read it. off → the authored plan goes to the
+## campaign unreviewed, stamped so the campaign knows no peer looked at
+## it. No LLM.
+compute plan_review_topology:
+  description: "Peer review gate (launch-resolved plan_review)"
+  output: plan_review_topology_state
+  expr:
+    do_review: "vars.plan_review == 'on'"
+
+## plan_gate — did the peer actually serve, or did the skip route fire?
+## Deterministic: reads the _skipped stamp, never an LLM judgment.
+compute plan_gate:
+  description: "Peer review served or skipped?"
+  output: plan_gate_state
+  expr:
+    skipped: "outputs.plan_review._skipped == true"
+
+## gate — the deterministic continuation decision. Reads the real gate result
+## (outputs.verify_run.passed) AND the campaign's termination output
+## (outputs.campaign.axis_complete), both fresh in the loop BODY (the same
+## discipline the retired `advance` compute used to read the loop-head safely).
+## converged = green AND the axis is fully applied. On a RED pass fail_log
+## carries the real build failure to the campaign; empty when green. No LLM,
+## no shell.
+compute gate:
+  output: gate_state
+  expr:
+    converged: "outputs.verify_run.passed && outputs.campaign.axis_complete"
+    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
+
+## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
+## edges use the C012-exhaustive simple form. No LLM, no shell.
+compute mr_gate:
+  output: mr_gate_output
+  expr:
+    open_mr: "vars.open_mr"
+
+## workspace_not_a_repo — the entry precondition refused. NOT resumable:
+## nothing about this run changes by resuming it, because the workspace it
+## was launched against is not the thing the operator can widen. Fix the
+## launch (attach a repository) and start again.
+fail workspace_not_a_repo:
+  description: "the launch has no repository to work on"
+  code: WORKSPACE_NOT_A_REPO
+  message: "{{outputs.workspace_probe.reason}}"
 
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow whole_improve_loop:
+
   ## Entry is the deterministic workspace precondition: a launch with no
   ## repository to work on fails typed (WORKSPACE_NOT_A_REPO) before any
   ## LLM node spends. Then the plan phase: on by default, the sweep plan
@@ -1421,7 +1406,6 @@ workflow whole_improve_loop:
   ## image). The bot's own tools (gh/glab for the PR-comment tail) come
   ## from the sibling devbox.json; the target repo's toolchain from its
   ## own devcontainer/devbox.json.
-
   budget:
     max_parallel_branches: 1
     ## +30m/+$15 headroom for the opt-in plan phase (ADR-091): when
@@ -1435,16 +1419,21 @@ workflow whole_improve_loop:
 
   ## Precondition: nothing LLM runs on a workspace with no repository.
   workspace_probe -> plan_topology when ok
+
   workspace_probe -> workspace_not_a_repo when not ok
 
   ## Plan phase: on by default; plan_phase off → straight to the campaign.
   plan_topology -> plan when do_plan
+
   ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
   ## field is not "" but the raw {{input.x}} placeholder leaking into
   ## the prompt (the engine keeps unresolved refs as-is).
   plan_topology -> campaign when not do_plan with {
-    fail_log: "", plan: "", plan_critique: "", plan_responses: "",
-    plan_provenance: ""
+    fail_log: "",
+    plan: "",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "",
   }
 
   ## The authored plan meets the peer-review gate: a second model family
@@ -1452,41 +1441,51 @@ workflow whole_improve_loop:
   ## revision; otherwise the plan reaches the campaign unreviewed, with a
   ## provenance stamp that says so.
   plan -> plan_review_topology
+
   plan_review_topology -> plan_review when do_review with {
-    plan:        "{{outputs.plan.plan}}",
+    plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
-    risks:       "{{outputs.plan.risks}}"
+    risks: "{{outputs.plan.risks}}",
   }
+
   plan_review_topology -> campaign when not do_review with {
-    fail_log: "", plan: "{{outputs.plan.plan}}",
-    plan_critique: "", plan_responses: "",
-    plan_provenance: "authored by the plan node - NOT peer-reviewed (plan_review resolved off: one model family credentialed, or the operator said off); the author's own map, unchallenged"
+    fail_log: "",
+    plan: "{{outputs.plan.plan}}",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "authored by the plan node - NOT peer-reviewed (plan_review resolved off: one model family credentialed, or the operator said off); the author's own map, unchallenged",
   }
+
   plan_review -> plan_gate
+
   ## Peer served → the plan AUTHOR (same session) challenges the
   ## critique and integrates what holds; skipped (policy skip + peer
   ## unavailable) → the unreviewed plan proceeds, loudly.
   plan_gate -> plan_revise when not skipped with {
-    plan:        "{{outputs.plan.plan}}",
+    plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
-    risks:       "{{outputs.plan.risks}}",
-    concerns:    "{{outputs.plan_review.concerns}}",
+    risks: "{{outputs.plan.risks}}",
+    concerns: "{{outputs.plan_review.concerns}}",
     suggestions: "{{outputs.plan_review.suggestions}}",
-    blocking:    "{{outputs.plan_review.blocking}}",
+    blocking: "{{outputs.plan_review.blocking}}",
     _session_id: "{{outputs.plan._session_id}}",
-    _session_fingerprint: "{{outputs.plan._session_fingerprint}}"
+    _session_fingerprint: "{{outputs.plan._session_fingerprint}}",
   }
+
   plan_gate -> campaign when skipped with {
-    fail_log: "", plan: "{{outputs.plan.plan}}",
-    plan_critique: "", plan_responses: "",
-    plan_provenance: "authored by the plan node - the cross-model peer review was SKIPPED mid-run (peer unavailable, plan_review_policy skip); the author's own map, unchallenged"
+    fail_log: "",
+    plan: "{{outputs.plan.plan}}",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "authored by the plan node - the cross-model peer review was SKIPPED mid-run (peer unavailable, plan_review_policy skip); the author's own map, unchallenged",
   }
+
   plan_revise -> campaign with {
-    fail_log:        "",
-    plan:            "{{outputs.plan_revise.plan}}",
-    plan_critique:   "{{outputs.plan_review.concerns}}",
-    plan_responses:  "{{outputs.plan_revise.review_responses}}",
-    plan_provenance: "authored by the plan node, critiqued by a cross-model peer, and revised by the author (its accepted/rejected responses follow)"
+    fail_log: "",
+    plan: "{{outputs.plan_revise.plan}}",
+    plan_critique: "{{outputs.plan_review.concerns}}",
+    plan_responses: "{{outputs.plan_revise.review_responses}}",
+    plan_provenance: "authored by the plan node, critiqued by a cross-model peer, and revised by the author (its accepted/rejected responses follow)",
   }
 
   ## Each pass: the campaign applies the axis (committing each site in
@@ -1494,17 +1493,22 @@ workflow whole_improve_loop:
   campaign -> verify_probe with {
     iteration: "{{loop.continuation_loop.iteration}}"
   }
+
   ## verify_probe reuses an already-valid verify.sh (skipping the LLM
   ## verify_build) on passes 2+; the first pass of every run regenerates it for
   ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
   verify_probe -> verify_run when fresh
+
   verify_probe -> verify_build when not fresh
+
   verify_build -> verify_run
+
   verify_run -> gate
 
   ## Converged (green AND the campaign reports the axis fully applied) → ship
   ## what is banked (optional PR, else finish).
   gate -> mr_gate when converged
+
   ## Not converged → another campaign pass. RED carries the failure log so the
   ## agent fixes what it broke; green-but-more-work carries an empty log so the
   ## agent simply continues the axis. This closes the single declared loop
@@ -1516,8 +1520,12 @@ workflow whole_improve_loop:
   ## plan would re-anchor later passes that must read `git log` instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
     fail_log: "{{outputs.gate.fail_log}}",
-    plan: "", plan_critique: "", plan_responses: "", plan_provenance: ""
+    plan: "",
+    plan_critique: "",
+    plan_responses: "",
+    plan_provenance: "",
   }
+
   ## continuation_loop exhausted (max_passes hit while sites still remain) →
   ## ship what is banked anyway (every committed site is real, landed work).
   ## Unconditional fallthrough after the loop-back retries are spent.
@@ -1527,6 +1535,7 @@ workflow whole_improve_loop:
   ## the deterministic forge_auth_probe checks a push credential EXISTS before we
   ## pay the finalize_mr agent turn.
   mr_gate -> forge_auth_probe when open_mr
+
   mr_gate -> done when not open_mr
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
@@ -1534,16 +1543,22 @@ workflow whole_improve_loop:
   ## posts the URL back. Absent → finish cleanly; the commits are on the
   ## engine's persistent iterion/run/<name> storage branch for a manual push.
   forge_auth_probe -> finalize_mr when available with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    mr_branch:        "{{vars.mr_branch}}",
-    mr_base:          "{{vars.mr_base}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    mr_branch: "{{vars.mr_branch}}",
+    mr_base: "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",
-    scope_notes:      "{{vars.scope_notes}}"
+    scope_notes: "{{vars.scope_notes}}",
   }
+
   forge_auth_probe -> done when not available
+
   ## PR opened → surface its URL as a headline result-link in the run summary
   ## (deterministic stdout directive → preview_url_available kind=pr), then
   ## finish. Nothing opened (empty diff / refused PR) → straight to done.
-  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> surface_pr_link when opened with {
+    url: "{{outputs.finalize_mr.url}}"
+  }
+
   finalize_mr -> done when not opened
+
   surface_pr_link -> done

@@ -3,6 +3,7 @@
 ## track, a real tiny MP4), then pauses on a HUMAN review — which surfaces in the
 ## parent's card on /pipelines as an answerable review. Tool-only + human:
 ## no LLM, no API keys.
+
 dsl: 2
 
 vars:
@@ -20,6 +21,11 @@ schema episode_out:
   episode: string
   verdict: string
 
+## The sub-bot's human gate: the parent parks this branch until the review is
+## answered from the pipeline-board sidebar (or `iterion resume`).
+human review:
+  output: review_out
+
 ## base64 -d is not strictly POSIX but ships with coreutils on every Linux
 ## host + all iterion sandbox images; dd provides the WAV's silent payload.
 tool produce:
@@ -33,11 +39,6 @@ printf 'AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANWbW9vdgAAAGxtdmhkAAAAAAAA
 printf '{"episode":"%s","ready":true}' "$EP"`
   output: produce_out
 
-## The sub-bot's human gate: the parent parks this branch until the review is
-## answered from the pipeline-board sidebar (or `iterion resume`).
-human review:
-  output: review_out
-
 compute wrap:
   output: episode_out
   expr:
@@ -45,8 +46,13 @@ compute wrap:
     verdict: "outputs.review.notes"
 
 workflow episode:
+
   entry: produce
+
   produce -> review
-  review  -> wrap when approved
-  review  -> fail when not approved
-  wrap    -> done
+
+  review -> wrap when approved
+
+  review -> fail when not approved
+
+  wrap -> done

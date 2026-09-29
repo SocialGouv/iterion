@@ -8,7 +8,7 @@ name: 🧪 Tests
 # other red on the same commit is enough to redden the PR and disarm auto-merge.
 #
 # `merge_group` is load-bearing: test/race/vendor-check/mongo-conformance/
-# golangci are REQUIRED checks, and the queue branch
+# golangci/brand are REQUIRED checks, and the queue branch
 # (gh-readonly-queue/main/...) used to get them from that unfiltered push. A
 # queue build with no checks waits for a context that never arrives and
 # dequeues the PR after the 60-minute timeout.
@@ -35,9 +35,9 @@ concurrency:
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
 # the ruleset's required checks (test, race, vendor-check, mongo-conformance,
-# golangci, revi/review) — plus the jobs STAGED to become required, `brand`
-# and `fmt-check`, which stay in the queue so their context already exists the
-# day the ruleset names them (a required check first reported at promotion
+# golangci, brand, revi/review) — plus the job STAGED to become required,
+# `fmt-check`, which stays in the queue so its context already exists the
+# day the ruleset names it (a required check first reported at promotion
 # leaves the queue waiting for one that never arrives). internal/ciguard's
 # requiredChecks is that staging list, and is what refuses a job that picks
 # neither side. Promoting one of the advisory jobs to required means deleting
@@ -84,8 +84,8 @@ concurrency:
 # content is first-party.
 #
 # THE ESCAPE HATCH: setting the repository variable CI_SELF_HOSTED to `off`
-# sends every job back to GitHub-hosted runners. It exists because three
-# REQUIRED checks route here on merge_group, so a scale set that stops serving
+# sends every job back to GitHub-hosted runners. It exists because REQUIRED
+# checks route here on merge_group, so a scale set that stops serving
 # makes every queue entry wait check_response_timeout_minutes (60) for a check
 # that never reports, and then fail — all pull requests at once. A variable is
 # deliberately the mechanism rather than an edit to this file: repairing by
@@ -955,7 +955,8 @@ jobs:
     # It is GREEN today, and red only on something worth acting on: a
     # formattable bot that drifted, a file that newly cannot be formatted,
     # or a line in `.fmt-refused` that nothing refuses any more (the
-    # ratchet — #1612 landing must shrink that list). `task fmt:check` runs
+    # ratchet — the list stands empty since #1612 gave the writer its
+    # multi-line forms, and stays as the guard). `task fmt:check` runs
     # exactly this command.
     # The org's runners, like every other pure-Go job that stays in the
     # queue: a GitHub-hosted slot is one of the 20 the org shares, and this

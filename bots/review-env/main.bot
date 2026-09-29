@@ -41,17 +41,6 @@ vars:
   ## Redeploy attempts when the environment does not come up live.
   max_deploy_retries: int = 2
 
-## Browser at the agent's fingertips — attached, never imposed. A deploy
-## that "answers 200" and a deploy that RENDERS are different claims; the
-## agent may open the returned URL in a real headless browser to look
-## before reporting healthy, and to iterate fast when something is wrong.
-## The durable end-to-end coverage belongs to the target repo's own test
-## suite — this server is for the agent's eyes, not for the record.
-mcp_server playwright:
-  transport: stdio
-  command: "npx"
-  args: ["-y", "@playwright/mcp@latest", "--headless"]
-
 secrets:
   ## Deployment credential — a single READ-ONLY file used BY REFERENCE
   ## (env $DEPLOY_CREDENTIAL = its PATH), never opened or printed; its
@@ -63,11 +52,21 @@ secrets:
   ## the missing credential instead of failing the graph.
   deploy_credential:
     as: file
-    env: DEPLOY_CREDENTIAL
+    env: "DEPLOY_CREDENTIAL"
     optional: true
 
-## ─── Prompts ───────────────────────────────────────────────────────
+## Browser at the agent's fingertips — attached, never imposed. A deploy
+## that "answers 200" and a deploy that RENDERS are different claims; the
+## agent may open the returned URL in a real headless browser to look
+## before reporting healthy, and to iterate fast when something is wrong.
+## The durable end-to-end coverage belongs to the target repo's own test
+## suite — this server is for the agent's eyes, not for the record.
+mcp_server playwright:
+  transport: stdio
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest", "--headless"]
 
+## ─── Prompts ───────────────────────────────────────────────────────
 prompt deploy_system:
   You deploy the application in the current workspace to the operator's
   platform and hand back a LIVE https URL. You do one thing; do it
@@ -160,7 +159,6 @@ prompt deploy_user:
   {{input.fail_log}}
 
 ## ─── Schemas ───────────────────────────────────────────────────────
-
 schema preflight_state:
   head: string
   dirty: int
@@ -196,12 +194,22 @@ schema verdict_state:
 schema surface_input:
   url: string
 
+agent deploy:
+  mcp:
+    servers: [playwright]
+  model: "${ITERION_REVIEW_ENV_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: deploy_input
+  output: deploy_report
+  system: deploy_system
+  user: deploy_user
+  skills: ["deploy-target"]
+  timeout: "25m"
+
 ## ─── Nodes ─────────────────────────────────────────────────────────
 
 ## preflight — the commit identity the environment will be reviewed as.
 tool preflight:
-  output: preflight_state
-  language: py
   script: |
     import json
     import subprocess
@@ -240,26 +248,13 @@ tool preflight:
     out["dirty"] = len([l for l in st.stdout.splitlines() if l.strip() and not is_scaffold(l)])
     print(json.dumps(out))
 
-agent deploy:
-  backend: "claude_code"
-  model: "${ITERION_REVIEW_ENV_MODEL:-claude-opus-5-5}"
-  input: deploy_input
-  output: deploy_report
-  system: deploy_system
-  user: deploy_user
-  session: fresh
-  skills: ["deploy-target"]
-  mcp:
-    servers: [playwright]
-  timeout: "25m"
+  language: py
+  output: preflight_state
 
 ## url_gate — the independent measurement. Standard-library probe, real
 ## certificate verification (a review URL that only answers with TLS
 ## checks disabled is not live, it is almost live — which is not a state).
 tool url_gate:
-  input: gate_input
-  output: gate_state
-  language: py
   script: |
     import json
     import time
@@ -300,6 +295,23 @@ tool url_gate:
         out["log_tail"] = last
     print(json.dumps(out))
 
+  language: py
+  input: gate_input
+  output: gate_state
+
+## surface_url — deterministic result-link emitter: the studio surfaces a
+## run's headline URL from this directive on stdout, never from agent
+## prose. The python guard drops an empty url so the scanner never sees a
+## malformed directive.
+tool surface_url:
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=deploy scope=external')
+"`
+  input: surface_input
+
 ## The conjunction: the agent deployed it, the agent saw it healthy, and
 ## the gate measured it live. Two of three is a report, not a URL.
 compute verdict:
@@ -309,43 +321,29 @@ compute verdict:
     fail_log: "if(outputs.url_gate.live, '', outputs.deploy.notes + ' | gate: ' + outputs.url_gate.log_tail)"
     notice: "if(outputs.url_gate.live, 'live at ' + outputs.deploy.deployed_url, 'not live — see fail_log')"
 
-## surface_url — deterministic result-link emitter: the studio surfaces a
-## run's headline URL from this directive on stdout, never from agent
-## prose. The python guard drops an empty url so the scanner never sees a
-## malformed directive.
-tool surface_url:
-  input: surface_input
-  command: `URL={{input.url}} python3 -c "
-import os
-u = (os.environ.get('URL') or '').strip()
-if u:
-    print('[iterion] preview_url=' + u + ' kind=deploy scope=external')
-"`
-
 ## ─── Workflow ──────────────────────────────────────────────────────
-
 workflow review_env:
+
   entry: preflight
 
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default.
   ## This bundle declares only python3 — platform tooling is the attached
   ## skill's business, installed by its own steps.
-
   budget:
     max_parallel_branches: 1
     max_duration: "45m"
     max_cost_usd: 15
 
   preflight -> deploy with {
-    head:     "{{outputs.preflight.head}}",
-    dirty:    "{{outputs.preflight.dirty}}",
-    fail_log: ""
+    head: "{{outputs.preflight.head}}",
+    dirty: "{{outputs.preflight.dirty}}",
+    fail_log: "",
   }
 
   deploy -> url_gate with {
     deployed: "{{outputs.deploy.deployed}}",
-    url:      "{{outputs.deploy.deployed_url}}",
-    expected: "{{vars.expected_status}}"
+    url: "{{outputs.deploy.deployed_url}}",
+    expected: "{{vars.expected_status}}",
   }
 
   url_gate -> verdict
@@ -353,13 +351,15 @@ workflow review_env:
   verdict -> surface_url when ok with {
     url: "{{outputs.deploy.deployed_url}}"
   }
+
   surface_url -> done
 
   ## Not live → another attempt carrying the measured failure; exhausted →
   ## end on the committed report rather than a guess.
   verdict -> deploy as deploy_loop("{{vars.max_deploy_retries}}") with {
-    head:     "{{outputs.preflight.head}}",
-    dirty:    "{{outputs.preflight.dirty}}",
-    fail_log: "{{outputs.verdict.fail_log}}"
+    head: "{{outputs.preflight.head}}",
+    dirty: "{{outputs.preflight.dirty}}",
+    fail_log: "{{outputs.verdict.fail_log}}",
   }
+
   verdict -> done

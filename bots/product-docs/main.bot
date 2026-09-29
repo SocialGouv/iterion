@@ -137,7 +137,6 @@ vars:
   ## The DOCS repository — this run's workspace and the ONLY tree the
   ## bot writes to. Source repositories are cloned out of tree.
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## REQUIRED. The product catalog. Either a YAML FILE describing one
   ## product, or a DIRECTORY holding one `<product_id>.yml` per
   ## product (the pilot's `catalog/<id>.yml` layout). Relative paths
@@ -145,16 +144,13 @@ vars:
   ## Empty fails catalog_ingest loudly — there is nothing sensible to
   ## default to, and guessing a path would document the wrong product.
   catalog_path: string = ""
-
   ## REQUIRED. Which product to document. Selects the catalog entry
   ## (file name, or top-level key in a multi-product file), and with
   ## it the `docs.product_dir` this run may write to.
   product_id: string = ""
-
   ## Optional free-text notes pinning the campaign's attention
   ## ("the new agent workspace is undocumented", an operator's review).
   scope_notes: string = ""
-
   ## Alignment scope. `full`: sweep the whole product documentation
   ## against the whole source corpus — the periodic reconciliation.
   ## `incremental`: focus on the pages impacted by what changed in the
@@ -163,19 +159,16 @@ vars:
   ## last `Bot: product-docs` commit. A first run with no prior
   ## alignment commit degrades cleanly to a full sweep.
   mode: string = "full"
-
   ## Incremental base (explicit pin, docs side). Non-empty forces
   ## `git diff <diff_since>...HEAD` in the docs repo instead of the
   ## trailer-detected base. Usually left empty.
   diff_since: string = ""
-
   ## The directory in the DOCS REPO holding the product team's OWN
   ## editorial skills — documentary model, allowed blocks, glossary,
   ## tone. Every `*.md` found here is handed to the campaign as
   ## AUTHORITATIVE guidance overriding the bundle defaults. Empty
   ## disables the override (bundle defaults only).
   editorial_dir: string = ".product-docs"
-
   ## Out-of-tree, sandbox-writable scratch: the source clones, the
   ## promises ledger, and any cross-pass state. The engine resolves
   ## ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/scratch
@@ -183,20 +176,17 @@ vars:
   ## under a sandbox. Keeping the clones OUT of the docs worktree is
   ## what makes the scope gate meaningful.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/product-docs"
-
   ## DISMISSALS LEDGER — the campaign's cross-pass MEMORY. JSON array
   ## of {doc, kind, value, reason} entries it adjudicated as
   ## not-worth-acting-on. scan_hints excludes them from every later
   ## pass so a settled judgment never re-surfaces. Out of tree like
   ## scratch_dir; empty disables the exclusion.
   dismissed_path: string = "${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json"
-
   ## Clone depth for the source repositories. 1 = the cheapest clone
   ## that still lets the agent read every file at HEAD. Raise it when
   ## a run needs source HISTORY (a deep incremental base, a changelog
   ## read); 0 means a FULL clone with no depth limit.
   clone_depth: int = 1
-
   ## Files removed from every source clone before the campaign may
   ## read them. Comma-separated shell globs, matched against both the
   ## base name and the clone-relative path. The default covers the
@@ -206,7 +196,6 @@ vars:
   ## that clone's `.git`, which is why the history is dropped once the
   ## source delta has been computed.
   secret_globs: string = "*.env,.env,.env.*,*secret*,*secrets*,*credential*,*credentials*,*.pem,*.key,*.p12,*.pfx,id_rsa*,id_ed25519*,.netrc,.npmrc,.pypirc,kubeconfig,*kubeconfig*,values*.yaml,values*.yml,*.tfvars,*.tfstate,*.tfstate.backup,*.jks,*.keystore,.htpasswd"
-
   ## Editorial lint rules enforced on PUBLISHED pages (comma-separated,
   ## page_lint). Dropping a name disables that rule for this run;
   ## `extra_forbidden_headings` adds product-specific ones without
@@ -220,17 +209,14 @@ vars:
   ##                      password): the last deterministic gate
   ##                      between a source clone and a published page
   lint_rules: string = "html_comments,sources_box,clarify_section,technical_annex,secret_material"
-
   ## Extra heading titles (comma-separated, case-insensitive, matched
   ## as a prefix of the heading text) that must never appear in a
   ## published page. Empty by default.
   extra_forbidden_headings: string = ""
-
   ## Cap on the advisory hints list handed to the campaign (context
   ## bound — telemetry counts are computed BEFORE truncation, so the
   ## report stays honest about what was cut).
   max_hints: int = 120
-
   ## ─── Exhaustiveness gate (automatic when a net is present) ────
   ## Directory holding the golden-master non-regression net, looked up
   ## in the docs workspace FIRST and then in each source clone.
@@ -242,7 +228,6 @@ vars:
   ## the bot behaves exactly as it did before this node existed.
   ## Empty disables the lookup outright.
   oracle_dir: string = ".golden-master"
-
   ## DECLARED IDENTIFIERS the exhaustiveness gate matches on. They are
   ## vars and not literals because the gate is language-neutral while
   ## the pages are not: a docs repo writing in French sets
@@ -262,7 +247,6 @@ vars:
   ##     contradict each other; empty disables the escape hatch.
   coverage_exclusions_heading: string = "exclusions"
   coverage_no_anchor_marker: string = "<!--no-anchor-->"
-
   ## The DECLARED route table, read from the net: a path RELATIVE to
   ## `oracle_dir` and nothing else — an absolute path or a `..` escape is
   ## a named refusal that STOPS the run, because its repair is a launch
@@ -280,13 +264,11 @@ vars:
   ## `routes_degraded`. Degraded is loud and still refuses; it is never
   ## silently green.
   coverage_routes_file: string = "routes.txt"
-
   ## How long the replayed `routes_probe` may run, in seconds — the bound
   ## golden-master's harness gives the same command (at most 2147483).
   ## Past it the table is unavailable and the route checks degrade,
   ## naming the timeout.
   coverage_routes_probe_timeout: int = 120
-
   ## THE CITATION SYNTAX. A reference is what a page SAYS is one --
   ## `coverage_citation_open` + token + `coverage_citation_close` -- and
   ## nothing else: a code span is prose, whatever it looks like. The gate
@@ -302,7 +284,6 @@ vars:
   ## never a gate that quietly recognises nothing.
   coverage_citation_open: string = "[[ref:"
   coverage_citation_close: string = "]]"
-
   ## Substitutes that do not count as writing when a page documents a
   ## feature or names an exclusion, and the minimum number of prose
   ## characters that does. Prose is measured over the BLOCK carrying the
@@ -312,7 +293,6 @@ vars:
   ## identifier under a heading is silence wearing a label.
   coverage_placeholders: string = "TODO,FIXME,TBD,XXX,WIP,lorem ipsum"
   coverage_min_prose: int = 60
-
   ## HARD CEILING on chapters declaring they restitute no reference
   ## (`coverage_no_anchor_marker`). The marker is the written exception to
   ## the anchor rule, and an exception with no ceiling is the rule: a
@@ -328,12 +308,10 @@ vars:
   ## never counts: it is anchored by its role, and its body is judged by
   ## the exclusions rule.
   coverage_max_anchorless: int = 2
-
   ## Hard cap on continuation PASSES — the convergence backstop.
   ## NOTE loop semantics: `as continuation_loop(N)` bounds the loop
   ## BACKS, so the total number of passes is N+1.
   max_passes: int = 4
-
   ## ─── PR finalization (opt-in) ─────────────────────────────────
   ## open_mr=true pushes the page series and opens ONE pull request
   ## at the end of the run (converged OR max_passes exhausted with
@@ -341,7 +319,6 @@ vars:
   ## deterministic forge_auth_probe skips the tail cleanly when none
   ## exists, and finalize_mr refuses to open an empty PR.
   open_mr: bool = false
-
   ## Open the pull request as a DRAFT. Functional documentation is
   ## read by the business owners of the product, not merged on a green
   ## test: the human validation happens ON THE FORGE, and marking the
@@ -349,11 +326,9 @@ vars:
   ## exactly that reason; set false for a repo whose review flow does
   ## not use drafts.
   mr_draft: bool = true
-
   mr_branch: string = ""
   mr_base: string = ""
   source_issue_ref: string = ""
-
   ## ─── Publication (opt-in) ─────────────────────────────────────
   ## publish=true converts the product docs into a static site
   ## (GitBook blocks → MkDocs Material), packages it as a container
@@ -365,7 +340,6 @@ vars:
   ## Swap platforms by attaching another deploy-target skill and
   ## credential.
   publish: bool = false
-
   ## Base URL the deploy target serves the site at. Required when
   ## publish=true: publish_gate refuses the tail without it, and
   ## verify_publish accepts no URL outside it — neither the one the
@@ -373,7 +347,6 @@ vars:
   ## verifies THE OPERATOR'S deployment, never the URL the agent
   ## narrated.
   publish_base_url: string = ""
-
   ## Image repository the packaged site is pushed to, WITHOUT a tag
   ## (the publish agent tags it with the docs commit, then deploys the
   ## DIGEST that push resolved to — a tag is an alias whose content can
@@ -381,16 +354,13 @@ vars:
   ## deployment, never a person: no default, publish_gate refuses the
   ## tail when it is empty.
   publish_image: string = ""
-
   ## Login the registry token authenticates as; empty = the registry's
   ## own convention for token logins (the publish-static-site skill
   ## names it per registry).
   publish_registry_user: string = ""
-
   ## DNS-safe slug the deploy target derives the app's namespace and
   ## host from; empty = prody-<product id>.
   publish_slug: string = ""
-
   ## Ref of SocialGouv/iterion the publish agent fetches the
   ## GitBook→MkDocs converter from (raw URL). Defaults to main (where
   ## the converter lives once this bundle is merged); pin a tag/SHA for
@@ -407,7 +377,6 @@ secrets:
   forge_token:
     as: file
     optional: true
-
   ## Deployment credential (opt-in). A single READ-ONLY file the
   ## publish agent uses BY REFERENCE and is instructed never to open —
   ## what it CONTAINS and how it is consumed are decided entirely by the
@@ -423,9 +392,8 @@ secrets:
   ## publish_system hands the agent, and what publish_gate probes.
   deploy_credential:
     as: file
-    env: DEPLOY_CREDENTIAL
+    env: "DEPLOY_CREDENTIAL"
     optional: true
-
   ## Registry credential (opt-in): the token the packaged site image is
   ## pushed with, one value in a READ-ONLY file, fed to the registry
   ## login on stdin — never on argv, never printed. Same env/path
@@ -433,11 +401,10 @@ secrets:
   ## sandbox shortcut, `{{secrets.registry_token.path}}` is the truth.
   registry_token:
     as: file
-    env: REGISTRY_TOKEN
+    env: "REGISTRY_TOKEN"
     optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
-
 prompt diagram_system:
   You are a senior product cartographer opening a FUNCTIONAL DOCUMENTATION
   campaign. Before any page is written or rewritten, you draw the MAP of
@@ -910,7 +877,6 @@ prompt campaign_user:
   passes already wrote.
 
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
-
 prompt finalize_mr_system:
   You finalize a finished product-docs run by getting its SERIES of
   per-page commits into ONE pull request (PR; merge request on GitLab).
@@ -1018,7 +984,6 @@ prompt finalize_mr_user:
   result.
 
 ## ─── Publication prompts (opt-in) ───────────────────────────────
-
 prompt publish_system:
   You are the PUBLISH phase of a functional-documentation bot. The
   docs corpus in this workspace has already been written, gated and
@@ -1459,6 +1424,75 @@ schema verify_publish_output:
 
 schema surface_site_link_input:
   url: string
+
+## diagram — the MAP step, run ONCE before the first campaign pass. It
+## sits on the catalog_ingest → scan_hints edge, and the continuation
+## loop re-enters at scan_hints, so later passes never redraw the map:
+## from pass 2 on the map is just pages under the product directory the
+## campaign maintains like any other page. It gives the campaign a
+## first mapping to organize its work around, and gives the
+## exhaustiveness gates a reader-facing surface the route checks can be
+## judged against. What it writes is judged by diagram_lint in the tail
+## — never by its own word.
+agent diagram:
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: diagram_input
+  output: diagram_output
+  system: diagram_system
+  user: diagram_user
+  reasoning_effort: "${ITERION_PRODUCT_DOCS_EFFORT_CLAUDE:-high}"
+  interaction: human
+
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset so it works exactly like a native session: read the source
+## clones, read the editorial line in force, write the page, commit it
+## in stride. session: fresh — a fresh pass re-derives its todo from a
+## fresh advisory report + `git log` (git is the durable state). Board
+## capabilities power the findings handoff.
+agent campaign:
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  capabilities: [board.read, board.create]
+  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
+  ## tool + the orchestration prerogative, so it can fan out its own
+  ## sub-readers per source repository or per user role. A product
+  ## spread over N repositories is exactly the shape a single
+  ## self-scoping agent under-serves.
+  reasoning_effort: "${ITERION_PRODUCT_DOCS_EFFORT_CLAUDE:-ultracode}"
+  interaction: human
+
+agent finalize_mr:
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_PRODUCT_DOCS_MR_EFFORT:-medium}"
+
+## publish — the skill-driven publish agent. The platform playbook is
+## the operator-attached `deploy-target` skill (a plugin or library
+## skill, resolved by name); the build + packaging recipe is the
+## bundle's own publish-static-site skill, mirrored with the rest.
+agent publish:
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: publish_input
+  output: publish_output
+  system: publish_system
+  user: publish_user
+  tools: [bash, read_file, glob, grep]
+  skills: ["deploy-target"]
+  tool_max_steps: 60
+  reasoning_effort: "${ITERION_PRODUCT_DOCS_PUBLISH_EFFORT:-medium}"
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -2101,7 +2135,6 @@ print(json.dumps({'product_id': product, 'product_dir': product_dir, 'base_sha':
 ## Raw-string command: no double quote, no literal backtick, no dollar
 ## sign in the python body.
 tool route_table:
-  input: route_table_input
   command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} BASE_SHA={{input.base_sha}} ORACLE_DIR={{vars.oracle_dir}} ROUTES_FILE={{vars.coverage_routes_file}} PROBE_TIMEOUT={{vars.coverage_routes_probe_timeout}} python3 -I -c "import os, sys, re, json, stat, subprocess, signal, tempfile, select, time, shutil, hashlib
 ws = os.environ['WS']
 os.chdir(ws)
@@ -2480,30 +2513,10 @@ if not routes:
 note = '; '.join(x for x in [aside, stray.lstrip('; '), left] if x)
 emit(routes, 'probe', note, dropped, 'ROUTE TABLE: ' + str(len(routes)) + ' route(s) replayed from the net routes_probe at ' + base_sha[:12] + ((' -- ' + note) if note else ''))
 "`
+  input: route_table_input
   output: route_table_output
 
-## diagram — the MAP step, run ONCE before the first campaign pass. It
-## sits on the catalog_ingest → scan_hints edge, and the continuation
-## loop re-enters at scan_hints, so later passes never redraw the map:
-## from pass 2 on the map is just pages under the product directory the
-## campaign maintains like any other page. It gives the campaign a
-## first mapping to organize its work around, and gives the
-## exhaustiveness gates a reader-facing surface the route checks can be
-## judged against. What it writes is judged by diagram_lint in the tail
-## — never by its own word.
-agent diagram:
-  backend: "claude_code"
-  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_PRODUCT_DOCS_EFFORT_CLAUDE:-high}"
-  input: diagram_input
-  output: diagram_output
-  system: diagram_system
-  user: diagram_user
-  session: fresh
-  interaction: human
-
 tool scan_hints:
-  input: hints_input
   command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} SURFACES={{input.surfaces}} EDITORIAL_DIR={{vars.editorial_dir}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} MODE={{vars.mode}} DIFF_SINCE={{vars.diff_since}} python3 -I -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
@@ -2672,30 +2685,8 @@ if mode == 'incremental' and not incremental_base:
     hints_note = hints_note + '; BOOTSTRAP: no prior alignment commit for this product -- incremental mode degraded to a full sweep'
 print(json.dumps({'pages': pages, 'page_count': len(pages), 'hints': hints, 'hint_count': len(hints), 'dead_link_count': dead_link_count, 'orphan_count': orphan_count, 'unmapped_surface_count': unmapped_surface_count, 'checked_links': checked_links, 'ledger_excluded': ledger_excluded, 'truncated': truncated, 'hints_note': hints_note, 'editorial_files': editorial_files, 'mode': mode, 'incremental_base': incremental_base, 'recently_changed_pages': recent}, ensure_ascii=False))
 "`
+  input: hints_input
   output: hints_output
-
-## campaign — the one adaptive agent. claude_code with the full native
-## toolset so it works exactly like a native session: read the source
-## clones, read the editorial line in force, write the page, commit it
-## in stride. session: fresh — a fresh pass re-derives its todo from a
-## fresh advisory report + `git log` (git is the durable state). Board
-## capabilities power the findings handoff.
-agent campaign:
-  backend: "claude_code"
-  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
-  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
-  ## tool + the orchestration prerogative, so it can fan out its own
-  ## sub-readers per source repository or per user role. A product
-  ## spread over N repositories is exactly the shape a single
-  ## self-scoping agent under-serves.
-  reasoning_effort: "${ITERION_PRODUCT_DOCS_EFFORT_CLAUDE:-ultracode}"
-  input: campaign_input
-  output: campaign_output
-  system: campaign_system
-  user: campaign_user
-  session: fresh
-  interaction: human
-  capabilities: [board.read, board.create]
 
 ## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
 ## BASE (the newest reflog entry that is not one of this run's own
@@ -2706,7 +2697,6 @@ agent campaign:
 ## are held to the same rule. No LLM; the campaign must revert whatever
 ## this flags.
 tool scope_check:
-  input: product_dir_input
   command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} EDITORIAL_DIR={{vars.editorial_dir}} BASE_SHA={{input.base_sha}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
@@ -2801,6 +2791,7 @@ except Exception as exc:
     ## timeout. The campaign gets the reason verbatim.
     print(json.dumps({'scope_ok': False, 'out_of_scope': [], 'log': 'SCOPE GATE UNAVAILABLE: ' + ' '.join(str(exc).split())[:400] + ' -- refusing to certify the writeable set.'}, ensure_ascii=False))
 "`
+  input: product_dir_input
   output: scope_check_output
 
 ## page_lint — the DETERMINISTIC EDITORIAL gate. A published page is
@@ -2818,7 +2809,6 @@ except Exception as exc:
 ## A violation is NOT converged: the log feeds the next pass and the
 ## campaign removes exactly the reported lines.
 tool page_lint:
-  input: lint_input
   command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} LINT_RULES={{vars.lint_rules}} EXTRA_HEADINGS={{vars.extra_forbidden_headings}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ORACLE_PATH={{input.oracle_path}} python3 -I -c "
 import os, json, glob, re
 ws = os.environ['WS']
@@ -3003,6 +2993,7 @@ if violations:
         log = log + chr(10) + '- ... and ' + str(len(violations) - 40) + ' more'
 print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'violation_count': len(violations), 'pages_linted': len(pages), 'log': log}, ensure_ascii=False))
 "`
+  input: lint_input
   output: lint_output
 
 ## coverage_check — the DETERMINISTIC EXHAUSTIVENESS gate, and the
@@ -3102,7 +3093,6 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 ## Raw-string command: no double quote, no literal backtick, no dollar
 ## sign in the python body.
 tool diagram_lint:
-  input: maplint_input
   command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} ORACLE_PATH={{input.oracle_path}} ROUTES={{input.routes}} ROUTES_SOURCE={{input.routes_source}} ROUTES_NOTE={{input.routes_note}} NET_DIGEST={{input.net_digest}} python3 -I -c "
 import os, json, re, glob, hashlib
 ws = os.environ['WS']
@@ -3272,10 +3262,10 @@ log_lines.append('DIAGRAM LINT: ' + ('RED -- ' + str(len(causes)) + ' named caus
 print(json.dumps({'diagram_ok': not causes, 'causes': causes[:200], 'cause_count': len(causes), 'diagram_pages': len(pages), 'mermaid_blocks': blocks_total, 'routes_on_map': len(routes_on_map), 'routes_unverified': routes_unverified, 'log': chr(10).join(log_lines)}, ensure_ascii=False))
 raise SystemExit(0)
 "`
+  input: maplint_input
   output: maplint_output
 
 tool coverage_check:
-  input: coverage_input
   command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES={{input.routes}} ROUTES_SOURCE={{input.routes_source}} ROUTES_NOTE={{input.routes_note}} NET_DIGEST={{input.net_digest}} CITE_OPEN={{vars.coverage_citation_open}} CITE_CLOSE={{vars.coverage_citation_close}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} MAX_ANCHORLESS={{vars.coverage_max_anchorless}} python3 -I -c "
 import os, json, glob, re, unicodedata, hashlib
 from urllib.parse import urlsplit, parse_qsl
@@ -4286,33 +4276,8 @@ else:
     notes.append('COVERAGE GATE: GREEN -- every documented screen rests on a reference that exists, every inventoried feature is documented, every exclusion is named.')
 print(json.dumps({'coverage_ok': not causes, 'net_present': True, 'causes': causes[:200], 'cause_count': len(causes), 'features_total': len(feature_names), 'features_documented': documented, 'exclusions_total': len(exclusion_reasons), 'exclusions_named': named, 'entries_cited': len(cited_entries), 'paths_cited': len(cited_paths), 'chapters': len(headings), 'chapters_unanchored_declared': len(marked), 'chapters_anchorless_max': max_anchorless, 'routes_declared': len(declared), 'routes_degraded': routes_degraded, 'net_unproven': net_unproven, 'oracle_dir_used': oracle, 'counts_line': count_line, 'log': chr(10).join(notes)}, ensure_ascii=False))
 "`
+  input: coverage_input
   output: coverage_output
-
-## gate — the deterministic continuation decision. converged = the
-## writeable set is clean AND the published pages carry no working
-## notes AND the documentation is EXHAUSTIVE against the net AND the
-## campaign reports the documentation aligned AND the map the diagram
-## step drew still exists, still draws, and grounds every mapped path.
-## NOTHING ELSE: the advisory hint counts are telemetry in the run
-## events, never conditions. Without a net `coverage_ok` is true by
-## construction, so this is the expression it always was. fail_log
-## relays the four gates' complaints to the next pass — and carries
-## each term only when it is red, so a run with no net produces the
-## log it produced before, plus the map verdict. A green-but-more-work
-## pass rides an empty log. No LLM, no shell.
-compute gate:
-  output: gate_state
-  expr:
-    converged: "outputs.scope_check.scope_ok && outputs.page_lint.lint_ok && outputs.diagram_lint.diagram_ok && outputs.coverage_check.coverage_ok && outputs.campaign.docs_aligned"
-    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log + ' | ', '') + if(!outputs.page_lint.lint_ok, outputs.page_lint.log, '') + if(!outputs.diagram_lint.diagram_ok, if(!outputs.page_lint.lint_ok, ' | ', '') + outputs.diagram_lint.log, '') + if(!outputs.coverage_check.coverage_ok, if(!outputs.page_lint.lint_ok || !outputs.diagram_lint.diagram_ok, ' | ', '') + outputs.coverage_check.log, '')"
-
-## ─── Nodes : PR finalization tail (opt-in) ─────────────────────────
-
-## mr_gate decides whether the PR tail runs. No LLM, no shell.
-compute mr_gate:
-  output: mr_gate_output
-  expr:
-    open_mr: "vars.open_mr"
 
 ## forge_auth_probe — DETERMINISTIC pre-flight for the push.
 ## finalize_mr is an LLM agent; entering it with NO push credential
@@ -4340,30 +4305,18 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 "`
   output: forge_auth_state
 
-agent finalize_mr:
-  backend: "claude_code"
-  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_PRODUCT_DOCS_MR_EFFORT:-medium}"
-  input: finalize_mr_input
-  output: finalize_mr_output
-  system: finalize_mr_system
-  user: finalize_mr_user
-  tools: [bash, read_file, glob, grep]
-  capabilities: [board.read, board.comment]
-  tool_max_steps: 20
-
 ## surface_pr_link — DETERMINISTIC result-link emitter for the studio
 ## run summary. The studio surfaces a run's headline PR link from the
 ## `[iterion] preview_url=… kind=pr` directive a tool node prints on
 ## stdout — never from agent prose. Read-only, idempotent.
 tool surface_pr_link:
-  input: surface_pr_link_input
   command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
     print('[iterion] preview_url=' + u + ' kind=pr scope=external')
 "`
+  input: surface_pr_link_input
 
 ## ─── Nodes : publication tail (opt-in) ──────────────────────────
 
@@ -4420,22 +4373,6 @@ print(json.dumps({'do_publish': ok, 'reason': reason}))
 "`
   output: publish_gate_output
 
-## publish — the skill-driven publish agent. The platform playbook is
-## the operator-attached `deploy-target` skill (a plugin or library
-## skill, resolved by name); the build + packaging recipe is the
-## bundle's own publish-static-site skill, mirrored with the rest.
-agent publish:
-  backend: "claude_code"
-  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_PRODUCT_DOCS_PUBLISH_EFFORT:-medium}"
-  skills: ["deploy-target"]
-  input: publish_input
-  output: publish_output
-  system: publish_system
-  user: publish_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 60
-
 ## verify_publish — DETERMINISTIC truth gate on the live URL. The
 ## agent's own verification is necessary but not sufficient: this
 ## node re-checks from outside the agent's narrative and FAILS the
@@ -4445,7 +4382,6 @@ agent publish:
 ## not the first wait — the window covers the tail of an ingress/DNS
 ## propagation, not a cold deploy.
 tool verify_publish:
-  input: verify_publish_input
   command: `URL={{input.url}} BASE={{input.base_url}} DEPLOYED={{input.deployed}} SUMMARY={{input.summary}} python3 -I -c "
 import json, os, time, urllib.request
 u = (os.environ.get('URL') or '').strip()
@@ -4519,34 +4455,59 @@ if not anchored(final):
     raise SystemExit(1)
 print(json.dumps({'verified': True, 'url': u, 'detail': 'http 200, title present'}))
 "`
+  input: verify_publish_input
   output: verify_publish_output
 
 ## surface_site_link — DETERMINISTIC result-link emitter, the
 ## published site counterpart of surface_pr_link.
 tool surface_site_link:
-  input: surface_site_link_input
   command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
     print('[iterion] preview_url=' + u + ' kind=site scope=external')
 "`
+  input: surface_site_link_input
+
+## gate — the deterministic continuation decision. converged = the
+## writeable set is clean AND the published pages carry no working
+## notes AND the documentation is EXHAUSTIVE against the net AND the
+## campaign reports the documentation aligned AND the map the diagram
+## step drew still exists, still draws, and grounds every mapped path.
+## NOTHING ELSE: the advisory hint counts are telemetry in the run
+## events, never conditions. Without a net `coverage_ok` is true by
+## construction, so this is the expression it always was. fail_log
+## relays the four gates' complaints to the next pass — and carries
+## each term only when it is red, so a run with no net produces the
+## log it produced before, plus the map verdict. A green-but-more-work
+## pass rides an empty log. No LLM, no shell.
+compute gate:
+  output: gate_state
+  expr:
+    converged: "outputs.scope_check.scope_ok && outputs.page_lint.lint_ok && outputs.diagram_lint.diagram_ok && outputs.coverage_check.coverage_ok && outputs.campaign.docs_aligned"
+    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log + ' | ', '') + if(!outputs.page_lint.lint_ok, outputs.page_lint.log, '') + if(!outputs.diagram_lint.diagram_ok, if(!outputs.page_lint.lint_ok, ' | ', '') + outputs.diagram_lint.log, '') + if(!outputs.coverage_check.coverage_ok, if(!outputs.page_lint.lint_ok || !outputs.diagram_lint.diagram_ok, ' | ', '') + outputs.coverage_check.log, '')"
+
+## ─── Nodes : PR finalization tail (opt-in) ─────────────────────────
+
+## mr_gate decides whether the PR tail runs. No LLM, no shell.
+compute mr_gate:
+  output: mr_gate_output
+  expr:
+    open_mr: "vars.open_mr"
 
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow product_docs:
-  entry: catalog_ingest
-
   ## Run in an isolated git worktree of the DOCS repo — the campaign
   ## commits pages in stride; the worktree + finalize keeps the
   ## operator's checkout untouched during the run and lands the series
   ## on a persistent branch.
   worktree: auto
-
   ## The docs repository is a documentation repository: it has no
   ## build, and its devbox.json (if any) would install a toolchain
   ## this run never uses. The BOT's own devbox.json still applies.
   repo_devbox: off
+
+  entry: catalog_ingest
 
   budget:
     max_parallel_branches: 1
@@ -4581,8 +4542,9 @@ workflow product_docs:
   ## is written: every consumer below reads this one frozen answer.
   catalog_ingest -> route_table with {
     oracle_path: "{{outputs.catalog_ingest.oracle_path}}",
-    base_sha: "{{outputs.catalog_ingest.base_sha}}"
+    base_sha: "{{outputs.catalog_ingest.base_sha}}",
   }
+
   route_table -> diagram with {
     product_id: "{{outputs.catalog_ingest.product_id}}",
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
@@ -4590,11 +4552,12 @@ workflow product_docs:
     inventory: "{{outputs.catalog_ingest.inventory}}",
     sources_stamp: "{{outputs.catalog_ingest.sources_stamp}}",
     routes: "{{outputs.route_table.routes}}",
-    routes_source: "{{outputs.route_table.source}}"
+    routes_source: "{{outputs.route_table.source}}",
   }
+
   diagram -> scan_hints with {
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
-    surfaces: "{{outputs.catalog_ingest.surfaces}}"
+    surfaces: "{{outputs.catalog_ingest.surfaces}}",
   }
 
   ## Each pass: the fresh advisory report + the source inventory are
@@ -4617,7 +4580,7 @@ workflow product_docs:
     oracle_path: "{{outputs.catalog_ingest.oracle_path}}",
     routes: "{{outputs.route_table.routes}}",
     routes_source: "{{outputs.route_table.source}}",
-    fail_log: "{{outputs.gate.fail_log}}"
+    fail_log: "{{outputs.gate.fail_log}}",
   }
 
   ## Deterministic TRUTH gates after every campaign pass: writeable-set
@@ -4627,13 +4590,15 @@ workflow product_docs:
   ## oracle on the artifact it actually ships.
   campaign -> scope_check with {
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
-    base_sha: "{{outputs.catalog_ingest.base_sha}}"
+    base_sha: "{{outputs.catalog_ingest.base_sha}}",
   }
+
   scope_check -> page_lint with {
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
     base_sha: "{{outputs.catalog_ingest.base_sha}}",
-    oracle_path: "{{outputs.catalog_ingest.oracle_path}}"
+    oracle_path: "{{outputs.catalog_ingest.oracle_path}}",
   }
+
   ## The exhaustiveness gate. `oracle_path` is empty whenever the
   ## product carries no golden-master net, and the node is then a
   ## no-op that certifies nothing and refuses nothing.
@@ -4646,28 +4611,32 @@ workflow product_docs:
     routes: "{{outputs.route_table.routes}}",
     routes_source: "{{outputs.route_table.source}}",
     routes_note: "{{outputs.route_table.note}}",
-    net_digest: "{{outputs.route_table.net_digest}}"
+    net_digest: "{{outputs.route_table.net_digest}}",
   }
+
   diagram_lint -> coverage_check with {
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
     oracle_path: "{{outputs.catalog_ingest.oracle_path}}",
     routes: "{{outputs.route_table.routes}}",
     routes_source: "{{outputs.route_table.source}}",
     routes_note: "{{outputs.route_table.note}}",
-    net_digest: "{{outputs.route_table.net_digest}}"
+    net_digest: "{{outputs.route_table.net_digest}}",
   }
+
   coverage_check -> gate
 
   ## Converged → straight to the PR tail.
   gate -> mr_gate when converged
+
   ## Not converged → another pass through the loop head: a fresh
   ## advisory report (resolved hints + ledger entries retire) →
   ## campaign. The scope/lint complaints ride outputs.gate.fail_log on
   ## the scan_hints→campaign edge.
   gate -> scan_hints as continuation_loop("{{vars.max_passes}}") with {
     product_dir: "{{outputs.catalog_ingest.product_dir}}",
-    surfaces: "{{outputs.catalog_ingest.surfaces}}"
+    surfaces: "{{outputs.catalog_ingest.surfaces}}",
   }
+
   ## continuation_loop exhausted (max_passes hit while work remains) →
   ## finish anyway, shipping what is banked (every committed page is
   ## real, landed work; drift_remaining tells the operator what is
@@ -4679,27 +4648,34 @@ workflow product_docs:
   ## finalize_mr refuses an empty PR and reports drift_remaining +
   ## unread_sources honestly in the body.
   mr_gate -> forge_auth_probe when open_mr
+
   mr_gate -> publish_gate when not open_mr
 
   forge_auth_probe -> finalize_mr when available with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    product_id:       "{{outputs.catalog_ingest.product_id}}",
-    draft:            "{{vars.mr_draft}}",
-    mr_branch:        "{{vars.mr_branch}}",
-    mr_base:          "{{vars.mr_base}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    product_id: "{{outputs.catalog_ingest.product_id}}",
+    draft: "{{vars.mr_draft}}",
+    mr_branch: "{{vars.mr_branch}}",
+    mr_base: "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",
-    scope_notes:      "{{vars.scope_notes}}",
+    scope_notes: "{{vars.scope_notes}}",
     campaign_summary: "{{outputs.campaign.summary}}",
-    drift_remaining:  "{{outputs.campaign.drift_remaining}}",
-    unread_sources:   "{{outputs.campaign.unread_sources}}",
-    coverage_counts:  "{{outputs.coverage_check.counts_line}}"
+    drift_remaining: "{{outputs.campaign.drift_remaining}}",
+    unread_sources: "{{outputs.campaign.unread_sources}}",
+    coverage_counts: "{{outputs.coverage_check.counts_line}}",
   }
+
   forge_auth_probe -> publish_gate when not available
+
   ## PR opened → surface its URL as a headline result-link in the run
   ## summary. Every PR-tail outcome then flows into the publication
   ## tail, which decides for itself (publish_gate) whether to run.
-  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> surface_pr_link when opened with {
+    url: "{{outputs.finalize_mr.url}}"
+  }
+
   finalize_mr -> publish_gate when not opened
+
   surface_pr_link -> publish_gate
 
   ## ── Publication tail (opt-in) ───────────────────────────────────
@@ -4714,20 +4690,27 @@ workflow product_docs:
     base_url: "{{vars.publish_base_url}}",
     image: "{{vars.publish_image}}",
     registry_user: "{{vars.publish_registry_user}}",
-    tools_ref: "{{vars.publish_tools_ref}}"
+    tools_ref: "{{vars.publish_tools_ref}}",
   }
+
   publish_gate -> done when not do_publish
+
   ## Unconditional fallback: edge selection SKIPS a conditional edge
   ## whose field is absent from the output (an errored tool body yields
   ## an output without do_publish), and a node with only conditional
   ## edges then dead-ends the run with NO_OUTGOING_EDGE. The fallback
   ## makes the safe route structural: no publish signal → done.
   publish_gate -> done
+
   publish -> verify_publish with {
     url: "{{outputs.publish.url}}",
     base_url: "{{vars.publish_base_url}}",
     deployed: "{{outputs.publish.deployed}}",
-    summary: "{{outputs.publish.summary}}"
+    summary: "{{outputs.publish.summary}}",
   }
-  verify_publish -> surface_site_link with { url: "{{outputs.verify_publish.url}}" }
+
+  verify_publish -> surface_site_link with {
+    url: "{{outputs.verify_publish.url}}"
+  }
+
   surface_site_link -> done
