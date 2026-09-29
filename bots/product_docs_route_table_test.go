@@ -975,6 +975,26 @@ func TestProductDocsRouteTableSetsAsideWhatIsNotARoute(t *testing.T) {
 	}
 }
 
+// TestProductDocsRouteTableKeepsRoutesUnderTheWorkspacePath: a pod's
+// workspace is /workspace, a prefix an app's own routes may share. A probe
+// line under the workspace path is a build tool's chatter only when it names
+// one of the workspace's own entries.
+func TestProductDocsRouteTableKeepsRoutesUnderTheWorkspacePath(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	real, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, ws, "src/Main.java", "class Main {}\n")
+	probeNet(t, ws, "GET "+real+"/{id}/members\nGET "+real+"/new\n"+real+"/src/Main.java:3:\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	want := []string{real + "/{id}/members", real + "/new"}
+	if strings.Join(got.Routes, " ") != strings.Join(want, " ") || got.Dropped != 1 {
+		t.Fatalf("routes under the workspace path were set aside, or chatter kept: %+v", got)
+	}
+}
+
 // TestProductDocsRouteTableCleansUpAfterAReadOnlyProbe: a probe that leaves a
 // read-only directory does not leave the throwaway checkout behind.
 func TestProductDocsRouteTableCleansUpAfterAReadOnlyProbe(t *testing.T) {

@@ -2497,13 +2497,26 @@ if text is None:
     degrade(why + stray + (('; ' + left) if left else ''))
 ## A line naming a file inside the checkout or the workspace is a build
 ## tool's chatter, not a route: it is counted and set aside, never read.
-file_roots = [os.path.realpath(tree) + os.sep, tree + os.sep, real_ws + os.sep]
+## The checkout's path is this run's own; the workspace's is not (a pod's
+## is /workspace, a prefix an app's routes may share), so a line under it
+## is chatter only when it names one of the workspace's top-level entries.
+tree_roots = [os.path.realpath(tree) + os.sep, tree + os.sep]
+try:
+    ws_entries = set(os.listdir(real_ws))
+except OSError:
+    ws_entries = set()
+def names_a_file(pat):
+    if any(pat.startswith(r) for r in tree_roots):
+        return True
+    if not pat.startswith(real_ws + os.sep):
+        return False
+    return re.split('[:]', pat[len(real_ws) + 1:].split('/', 1)[0])[0] in ws_entries
 if lfs_pointer(text):
     degrade('the net routes_probe printed a Git LFS pointer, not a route table' + stray)
 parsed, odd = parse_route_table(text)
 routes, dropped = [], odd
 for pat in parsed:
-    if any(pat.startswith(r) for r in file_roots):
+    if names_a_file(pat):
         dropped += 1
         continue
     routes.append(pat)
