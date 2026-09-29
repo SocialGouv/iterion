@@ -197,8 +197,11 @@ and dispatched releases that invalidate on purpose; the script cannot tell
 them apart from a merged PR's release that slipped through the window.
 
 Two release runs never overlap, whatever triggered them: `version.yml` has one
-concurrency group for every trigger, with `queue: max`, and each run checks
-out `main`'s tip as it finds it. Overlap is what must never happen — when a
+concurrency group for every trigger, with `queue: max`, and each run moves to
+`main`'s tip right before release-it — a run queued behind a release finds it
+already tagged and releases nothing (a nightly or a dispatch checks for new
+commits first, since a dispatch's explicit increment would otherwise cut an
+empty release). Overlap is what must never happen — when a
 push is rejected, release-it rolls back by deleting the remote tag of the
 version it computed, and if the other run had just pushed that same version,
 that is the other run's tag. `queue: max` is there because a group otherwise

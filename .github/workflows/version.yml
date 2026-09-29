@@ -95,21 +95,45 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Skip nightly release when nothing changed
+      - name: Release main's tip as it is now
+        # The checkout above ran minutes ago, and runs wait in line behind one
+        # another: a merge landing in between — typically the one that drains
+        # the queue — would make release-it commit onto a stale tree and its
+        # push fail. Move to main's current tip first; reinstall the
+        # dependencies only when the lockfile moved with it.
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse HEAD)"
+          git fetch --quiet origin main
+          git checkout --quiet -B main origin/main
+          if [ "$(git rev-parse HEAD)" != "$before" ]; then
+            echo "main moved from ${before:0:9} to $(git rev-parse --short HEAD) since the checkout"
+            if ! git diff --quiet "$before" HEAD -- package.json pnpm-lock.yaml pnpm-workspace.yaml; then
+              pnpm install --frozen-lockfile
+            fi
+          fi
+
+      - name: Skip the release when nothing changed since the last tag
+        # A queued run can find main's tip already released by the run ahead
+        # of it. For a merged pull request, release-it's conventional-changelog
+        # plugin then declines on its own ("No new version to release"); a
+        # dispatch passes an explicit increment (`minor` by default), which
+        # would cut an empty release — so the nightly and a dispatch check
+        # first.
         id: changes
-        if: github.event_name == 'schedule'
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
           if [ -z "$LAST_TAG" ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "no previous tag — releasing"
-          elif git log "${LAST_TAG}..HEAD" --oneline | grep -q .; then
+          elif [ "$(git rev-list --count "${LAST_TAG}..HEAD")" -gt 0 ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "commits since ${LAST_TAG} — releasing"
           else
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "no commits since ${LAST_TAG} — skipping nightly release"
+            echo "::notice::no commit since ${LAST_TAG} — nothing to release"
           fi
 
       - name: Hold the release while the merge queue is building
