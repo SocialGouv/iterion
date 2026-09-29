@@ -21,6 +21,11 @@
 ##     poll_prom        (tool) Prometheus probes through the same proxy,
 ##                             each typed healthy | breached | no_data |
 ##                             error
+##     poll_sentry      (tool) Sentry's issue lists (org-scoped API): the
+##                             issues first seen since the cursor, the
+##                             regressed / escalating ones dated by their
+##                             activity, the alerted ones by id — ISSUE TEXT
+##                             GOES TO SCRATCH ONLY, stdout carries counts
 ##     probe_http       (tool) the app's own health URLs
 ##     leak_scan        (tool) the ONLY reader of the raw lines: redacts
 ##                             every class of secret / personal data,
@@ -46,8 +51,8 @@
 ##
 ## Universal by design: no host, namespace, metric name, language or
 ## channel is baked in — everything comes from the workspace config
-## (prod-watch.json, see skills/argus-config.md) plus the `webhooks`
-## and `grafana_token` secrets. Requires python3 (stdlib only) on the
+## (prod-watch.json, see skills/argus-config.md) plus the `webhooks`,
+## `grafana_token` and `sentry_token` secrets. Requires python3 (stdlib only) on the
 ## execution host. See skills/signals-and-queries.md for the lanes.
 ## ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +75,16 @@ secrets:
   ## query and probe, named in the coverage note — never the tick's death
   ## while another lane answers.
   grafana_token:
+    as: file
+    optional: true
+
+  ## Sentry auth token (an internal integration's, or a user token) with
+  ## project:read + event:read on the watched project. Read ONLY by
+  ## poll_sentry, never into a prompt. Optional so a deployment without the
+  ## Sentry lane runs without it; a configured lane with no usable token is
+  ## a lane error named in the coverage note — never the tick's death while
+  ## another lane answers.
+  sentry_token:
     as: file
     optional: true
 
@@ -164,6 +179,10 @@ schema plan_output:
   prometheus: json
   ## [{id, url, expect_status, timeout_secs, severity}]
   probes: json
+  ## {enabled: false} when the lane is off; else the normalized section,
+  ## the lane identity, the cursor (bootstrap, armed_at, since, new_since)
+  ## and the incidents' index the walk needs (tracked ids, known dates).
+  sentry: json
   sinks: json
   ## Message labels: built-in English defaults merged with the config's
   ## `labels` map (any language without touching the bot).
@@ -236,9 +255,37 @@ schema http_output:
   ## [{id, url, ok, status, ms, error, severity}]
   results: json
 
+schema sentry_input:
+  sentry: json
+  timeout_secs: int
+  scratch_dir: string
+  allow_private: bool
+
+schema sentry_output:
+  ## Scratch file holding one record per issue read (its free text
+  ## included). The ONLY consumer is leak_scan; the path is the handoff.
+  raw_file: string
+  ## Records written — leak_scan and decide refuse a handoff that holds
+  ## another number.
+  issues: int
+  ## True when a query stopped at its page cap, the transition checks at
+  ## their cap, the tracked ids at theirs, the deadline passed, or an
+  ## issue was malformed: absence proves nothing this tick.
+  truncated: bool
+  ## {bootstrap, as_of, clock, new_complete, transition_complete,
+  ##  tracked_complete, pages, activity_checks, checks_cut, malformed,
+  ##  filtered, deadline_hit}
+  walk: json
+  ## [{query, error}] — reported, not fatal: it degrades the lane.
+  errors: json
+  ok: bool
+  summary: string
+
 schema leak_input:
   raw_file: string
   per_query: json
+  sentry_file: string
+  sentry_issues: int
   app: json
   scratch_dir: string
 
@@ -268,6 +315,12 @@ schema decide_input:
   loki_per_query: json
   prom_ok: bool
   prom_errors: json
+  sentry: json
+  sentry_ok: bool
+  sentry_truncated: bool
+  sentry_errors: json
+  sentry_walk: json
+  sentry_issues: int
   release: string
   release_known: bool
   lanes: json
@@ -312,6 +365,9 @@ schema notify_input:
   sinks: json
   labels: json
   app: json
+  ## The plan's Sentry section: notify renders a link only under its exact
+  ## link_prefix.
+  sentry: json
   ## The deployed version as resolved ("" when unknown) and whether it was
   ## verified: every message says which.
   release: string
@@ -358,7 +414,7 @@ tool plan:
   output: plan_output
   language: py
   script: |
-    import json, os, sys, time, datetime
+    import json, os, re, sys, time, datetime
     from urllib.parse import urlsplit
     ws = {{vars.workspace_dir}}
     cfg_path = {{vars.config_path}}
@@ -490,6 +546,71 @@ tool plan:
         s['min_severity'] = ms
         s['required'] = bool(s.get('required', True))
 
+    ## ── sentry ─────────────────────────────────────────────────────
+    ## Absent or null: the lane is off. Present: every field is checked
+    ## here, by name. The lane's IDENTITY (base URL, org, project,
+    ## environment) travels in its cursor: a change of any of them re-arms
+    ## the lane instead of reading another project's issues against this
+    ## one's memory. min_level is not part of it — it only decides what
+    ## the lane starts tracking, and moving it drops nothing.
+    LEVELS = {'debug': 0, 'info': 1, 'warning': 2, 'error': 3, 'fatal': 4}
+    SEVERITIES = ('critical', 'high', 'medium', 'low')
+    sentry_cfg = cfg.get('sentry')
+    sentry = {'enabled': False}
+    if sentry_cfg is not None:
+        if not isinstance(sentry_cfg, dict):
+            raise SystemExit('prod-watch: config.sentry must be an object (or null to turn the lane off)')
+        s_base = sentry_cfg.get('base_url')
+        ## Characters a link can carry safely: the base URL is the prefix of
+        ## the one clickable link the bot renders.
+        if not isinstance(s_base, str) or not re.fullmatch(r'https?://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*/?', s_base):
+            raise SystemExit('prod-watch: config.sentry.base_url must be an http(s) URL with a host and no query, fragment or credentials, got ' +
+                             repr(s_base)[:80])
+        s_base = s_base.rstrip('/')
+        for f in ('org', 'project'):
+            v = sentry_cfg.get(f)
+            if not isinstance(v, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,99}', v):
+                raise SystemExit('prod-watch: config.sentry.' + f + ' must be a Sentry slug (lowercase letters, digits, - and _), got ' + repr(v)[:60])
+        s_env = sentry_cfg.get('environment')
+        if s_env is not None and (not isinstance(s_env, str) or not s_env or len(s_env) > 64 or any(c in s_env for c in '\n\r\f/')):
+            raise SystemExit('prod-watch: config.sentry.environment must be a Sentry environment name (1-64 characters, no slash or '
+                             'line break), got ' + repr(s_env)[:80])
+        s_min = str(sentry_cfg.get('min_level') or 'error').lower()
+        if s_min not in LEVELS:
+            raise SystemExit('prod-watch: config.sentry.min_level must be one of ' + ', '.join(LEVELS) + ', got ' + repr(sentry_cfg.get('min_level'))[:40])
+        def s_int(name, default, lo, hi):
+            v = sentry_cfg.get(name)
+            if v is None:
+                return default
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise SystemExit('prod-watch: config.sentry.' + name + ' must be an integer in [' + str(lo) + ', ' + str(hi) + '], got ' + repr(v)[:40])
+            return v
+        s_overlap = s_int('overlap_minutes', 60, 0, 1440)
+        s_max_issues = s_int('max_issues', 200, 1, 1000)
+        s_max_checks = s_int('max_transition_checks', 20, 0, 200)
+        s_max_tracked = s_int('max_tracked', 200, 0, 1000)
+        s_deadline = s_int('deadline_secs', 120, 10, 600)
+        s_catchup = s_int('max_catchup_hours', 24, 1, 720)
+        s_sev = {'fatal': 'high', 'error': 'medium', 'warning': 'low', 'info': 'low', 'debug': 'low'}
+        user_sev = sentry_cfg.get('severity')
+        if user_sev is not None:
+            if not isinstance(user_sev, dict) or any(k not in LEVELS or not isinstance(v, str) or v.lower() not in SEVERITIES
+                                                     for k, v in user_sev.items()):
+                raise SystemExit('prod-watch: config.sentry.severity must map Sentry levels (' + ', '.join(LEVELS) +
+                                 ') to critical|high|medium|low')
+            s_sev.update({k: v.lower() for k, v in user_sev.items()})
+        s_max_sev = str(sentry_cfg.get('max_severity') or 'high').lower()
+        if s_max_sev not in SEVERITIES:
+            raise SystemExit('prod-watch: config.sentry.max_severity must be critical|high|medium|low, got ' + repr(sentry_cfg.get('max_severity'))[:40])
+        sentry = {'enabled': True, 'base_url': s_base, 'org': sentry_cfg['org'], 'project': sentry_cfg['project'],
+                  'environment': s_env or '', 'min_level': s_min, 'overlap_minutes': s_overlap, 'max_issues': s_max_issues,
+                  'max_transition_checks': s_max_checks, 'max_tracked': s_max_tracked, 'deadline_secs': s_deadline,
+                  'max_catchup_hours': s_catchup,
+                  'severity': s_sev, 'max_severity': s_max_sev,
+                  'identity': {'base_url': s_base, 'org': sentry_cfg['org'], 'project': sentry_cfg['project'],
+                               'environment': s_env or ''},
+                  'link_prefix': s_base + '/organizations/' + sentry_cfg['org'] + '/issues/'}
+
     ## English defaults; the config's `labels` map overrides any subset —
     ## this bot bakes in no language (deterministic messages included).
     labels = {
@@ -510,6 +631,18 @@ tool plan:
         'loki_detail': '{count} line(s) since {first}, containers: {streams}',
         'leak': 'personal data or secret detected in the logs',
         'leak_detail': '{count} match(es) of class {class} ({distinct} distinct) in {sources}',
+        'sentry_issue': 'Sentry issue',
+        'sentry_detail': '{level} · {count} event(s) in 14 days · {users} user(s) · {culprit}',
+        'sentry_detail_total': '{level} · {count} event(s) in total · {users} user(s) · {culprit}',
+        'sentry_detail_short': '{level} · {short_id}',
+        'sentry_regressed': 'regressed in Sentry',
+        'sentry_escalating': 'escalating in Sentry',
+        'sentry_resolved': 'resolved in Sentry',
+        'sentry_archived': 'archived in Sentry',
+        'sentry_closed': 'deleted or merged in Sentry',
+        'sentry_open': 'open in Sentry',
+        'sentry_leak': 'personal data or secret detected in Sentry issue text',
+        'sentry_leak_detail': 'class {class} in {count} issue(s): {sources}',
         'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
         'overflow': '{n} more alert(s) exceeded the per-run cap; they stay open and will fire on the next tick',
         'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
@@ -578,6 +711,16 @@ tool plan:
             refuse_state(where + '.count', rec['count'], 'an integer')
         if rec.get('fields') is not None and not isinstance(rec['fields'], dict):
             refuse_state(where + '.fields', rec['fields'], 'an object')
+        ## The Sentry incident's own fields — each written by decide as a
+        ## string, an ISO timestamp, a boolean or null.
+        for f in ('short_id', 'level', 'link', 'substatus', 'status', 'pending'):
+            if rec.get(f) is not None and not isinstance(rec[f], str):
+                refuse_state(where + '.' + f, rec[f], 'a string')
+        for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at'):
+            if rec.get(f) is not None and not is_iso(rec[f]):
+                refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
+        if rec.get('backlog') is not None and not isinstance(rec['backlog'], bool):
+            refuse_state(where + '.backlog', rec['backlog'], 'a boolean')
     for src, hrec in (state.get('health') or {}).items():
         if not isinstance(hrec, dict):
             refuse_state('health[' + repr(src)[:40] + ']', hrec, 'an object')
@@ -689,16 +832,73 @@ tool plan:
                  'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
                  'stream_labels': loki.get('stream_labels') or ['namespace', 'container', 'pod', 'app', 'job']}
 
-    lanes = {'loki': bool(queries), 'prometheus': bool(norm_probes), 'probes': bool(http_probes)}
+    ## ── sentry cursor + the incidents' index ───────────────────────
+    ## decide writes cursors.sentry whole — {identity, armed_at, since, at}
+    ## — and this reads exactly that, whether the lane is on or not. A
+    ## cursor of another identity (the config moved to another project,
+    ## environment or level floor) is a BOOTSTRAP: the lane re-arms and
+    ## decide drops the old identity's incidents.
+    sc = lane_cursors.get('sentry')
+    if sc is not None:
+        if not isinstance(sc, dict):
+            refuse_state('cursors.sentry', sc, 'an object')
+        ident = sc.get('identity')
+        if not isinstance(ident, dict) or any(not isinstance(ident.get(k), str) for k in ('base_url', 'org', 'project', 'environment')):
+            refuse_state('cursors.sentry.identity', ident, 'an object of four strings')
+        for f in ('armed_at', 'since', 'at'):
+            if not is_iso(sc.get(f)) or datetime.datetime.fromisoformat(sc[f]).tzinfo is None:
+                refuse_state('cursors.sentry.' + f, sc.get(f), 'an ISO timestamp with its offset')
+    if sentry['enabled']:
+        same = sc is not None and sc.get('identity') == sentry['identity']
+        sentry['bootstrap'] = not same
+        sentry['identity_changed'] = sc is not None and not same
+        sentry['armed_at'] = sc['armed_at'] if same else ''
+        sentry['since'] = sc['since'] if same else ''
+        ## A bootstrap reads the issues first seen within the overlap below
+        ## now and records them as backlog; a tick reads from its cursor
+        ## minus the overlap (late ingestion) — the incidents dedupe.
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        ref = datetime.datetime.fromisoformat(sc['since']) if same else now_dt
+        new_from = ref - datetime.timedelta(minutes=sentry['overlap_minutes'])
+        ## A cursor older than max_catchup_hours (the lane turned off, a long
+        ## outage) opens at the floor instead: the stretch in between is a
+        ## declared gap — never a flood of old issues posted as new.
+        floor = now_dt - datetime.timedelta(hours=sentry['max_catchup_hours'])
+        sentry['gap_since'] = ''
+        if new_from < floor:
+            sentry['gap_since'] = new_from.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            new_from = floor
+        sentry['new_since'] = new_from.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        known, tracked = {}, []
+        if same:
+            for ifp, rec in (state.get('incidents') or {}).items():
+                sid = ifp.split(':', 1)[1] if ifp.startswith('sentry:') else ''
+                if rec.get('kind') != 'sentry' or not re.fullmatch(r'[0-9]{1,20}', sid):
+                    continue
+                known[sid] = {'transition_at': rec.get('transition_at'), 'last_seen': rec.get('sentry_last_seen'),
+                              'checked_at': rec.get('transition_checked_at')}
+                ## Tracked by id: what is pending, and what was alerted and is
+                ## still open (a regression of a resolved or archived one is
+                ## read through the transition list).
+                if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved') in ('unresolved', 'reprocessing')):
+                    tracked.append((rec.get('last_seen') or '', sid))
+        tracked.sort(reverse=True)
+        sentry['tracked_ids'] = [sid for _, sid in tracked[:sentry['max_tracked']]]
+        sentry['tracked_cut'] = len(tracked) > sentry['max_tracked']
+        sentry['known'] = known
+
+    lanes = {'loki': bool(queries), 'prometheus': bool(norm_probes), 'probes': bool(http_probes), 'sentry': sentry['enabled']}
     if not any(lanes.values()):
-        raise SystemExit('prod-watch: config declares no lane at all (loki.queries, prometheus.probes and probes all empty)')
+        raise SystemExit('prod-watch: config declares no lane at all (loki.queries, prometheus.probes, probes and sentry all empty)')
 
     summary = ('watch: app=' + app['name'] + ('/' + app['environment'] if app['environment'] else '') +
                ', loki ' + str(len(queries)) + ' query(ies), prometheus ' + str(len(norm_probes)) +
-               ' probe(s), http ' + str(len(http_probes)) + ' probe(s), ' + str(len(sinks)) + ' sink(s)' +
-               (', HALTED' if halted else ''))
+               ' probe(s), http ' + str(len(http_probes)) + ' probe(s), sentry ' +
+               ((sentry['project'] + ('/' + sentry['environment'] if sentry['environment'] else '') +
+                 (' (bootstrap)' if sentry['bootstrap'] else '')) if sentry['enabled'] else 'off') +
+               ', ' + str(len(sinks)) + ' sink(s)' + (', HALTED' if halted else ''))
     print(json.dumps({'app': app, 'release': release, 'grafana': grafana, 'loki': loki_plan,
-                      'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sinks': sinks,
+                      'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sentry': sentry, 'sinks': sinks,
                       'labels': labels, 'lanes': lanes, 'halted': halted, 'halt': halt or {},
                       'halt_reason': halt_reason, 'summary': summary}, ensure_ascii=False))
 
@@ -816,7 +1016,7 @@ tool poll_loki:
     raw_path = os.path.join(scratch, 'loki_raw-' + str({{run.id}})[-12:] + '.jsonl')
     try:
         cutoff = time.time() - 24 * 3600
-        prefixes = ('loki_raw-', 'signals-', 'state_next-', 'alertlog_delta-', 'tick-')
+        prefixes = ('loki_raw-', 'sentry_raw-', 'signals-', 'state_next-', 'alertlog_delta-', 'tick-')
         for name in os.listdir(scratch):
             if not name.startswith(prefixes):
                 continue
@@ -857,8 +1057,8 @@ tool poll_loki:
             return not a.is_multicast and not a.is_unspecified
         return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
     def _validate_host(host):
-        ## Same body in resolve_release, poll_loki, poll_prom and probe_http —
-        ## edit all four. No proxy exemption: the TARGET host is what is
+        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry and probe_http —
+        ## edit all five. No proxy exemption: the TARGET host is what is
         ## validated here, whatever an egress proxy in the environment says.
         if not host:
             raise ValueError('URL has no host')
@@ -1221,8 +1421,8 @@ tool poll_prom:
             return not a.is_multicast and not a.is_unspecified
         return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
     def _validate_host(host):
-        ## Same body in resolve_release, poll_loki, poll_prom and probe_http —
-        ## edit all four. No proxy exemption: the TARGET host is what is
+        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry and probe_http —
+        ## edit all five. No proxy exemption: the TARGET host is what is
         ## validated here, whatever an egress proxy in the environment says.
         if not host:
             raise ValueError('URL has no host')
@@ -1369,6 +1569,455 @@ tool poll_prom:
     ## decide refuses the tick only when every configured lane failed.
     print(json.dumps({'results': results, 'ok': not errors, 'errors': errors}, ensure_ascii=False))
 
+## Sentry's issue lists for ONE project and environment, through the
+## org-scoped API (the project-scoped list is deprecated upstream). Three
+## queries, each a fact the server holds rather than one this node infers:
+##   new         `firstSeen:>=` the cursor minus the overlap — with an
+##               environment Sentry filters on the processing time of the
+##               issue's first event there, so late events and client
+##               clocks cannot hide a new issue;
+##   transition  the regressed / escalating ones — resolved and archived
+##               issues never appear in an unresolved list, so a regression
+##               is read here, dated by its own activity record;
+##   tracked     the alerted (or pending) incidents by id — their status,
+##               substatus and last event.
+## Issue titles, culprits and metadata are free text an app — or anyone
+## holding its public DSN — writes: they go to the scratch file only, and
+## leak_scan is their only reader. No event body is fetched in this slice
+## (the user, request, frame locals and breadcrumbs stay in Sentry). Every
+## failure is the lane's, named, never the tick's death; a deadline bounds
+## the walk.
+tool poll_sentry:
+  input: sentry_input
+  output: sentry_output
+  language: py
+  script: |
+    import json, os, socket, ipaddress, time, re, http, datetime
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit, urlencode, quote
+    from email.utils import parsedate_to_datetime
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    cfg = {{input.sentry}} or {}
+    timeout = int({{input.timeout_secs}})
+    scratch = {{input.scratch_dir}}
+    allow_private = {{input.allow_private}}
+    token_file = {{secrets.sentry_token.path}}
+    os.makedirs(scratch, exist_ok=True)
+    ## Always a fresh file, even with the lane off: leak_scan opens it.
+    raw_path = os.path.join(scratch, 'sentry_raw-' + str({{run.id}})[-12:] + '.jsonl')
+    open(raw_path, 'w', encoding='utf-8').close()
+    if not cfg.get('enabled'):
+        print(json.dumps({'raw_file': raw_path, 'issues': 0, 'truncated': False, 'walk': {}, 'errors': [], 'ok': True,
+                          'summary': 'sentry lane off'}))
+        raise SystemExit(0)
+    base, org, project = cfg['base_url'], cfg['org'], cfg['project']
+    env = cfg.get('environment') or ''
+    origin = urlsplit(base)
+    LEVELS = {'debug': 0, 'info': 1, 'warning': 2, 'error': 3, 'fatal': 4}
+    min_rank = LEVELS.get(cfg.get('min_level') or 'error', 3)
+    known = cfg.get('known') or {}
+    bootstrap = bool(cfg.get('bootstrap'))
+
+    def _addr_ok(ip):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        if a.is_link_local:
+            return False
+        if allow_private:
+            return not a.is_multicast and not a.is_unspecified
+        return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
+    def _validate_host(host):
+        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry and probe_http —
+        ## edit all five. No proxy exemption: the TARGET host is what is
+        ## validated here, whatever an egress proxy in the environment says.
+        if not host:
+            raise ValueError('URL has no host')
+        for info in socket.getaddrinfo(host, None):
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    class CredentialRefused(Exception):
+        pass
+
+    class LaneError(Exception):
+        pass
+
+    class NotFound(Exception):
+        pass
+
+    class DeadlineReached(Exception):
+        pass
+
+    def lane_error(e):
+        ## What an exception says about an upstream answer can quote it — an
+        ## issue title, an environment name anyone with the DSN can create,
+        ## an HTTP reason phrase (the server's words): only the lane's own
+        ## messages and the transport's travel, an HTTP error as its code and
+        ## the standard phrase; anything else is named by its type.
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                phrase = http.HTTPStatus(e.code).phrase
+            except ValueError:
+                phrase = 'unknown status'
+            return 'HTTPError: HTTP Error ' + str(e.code) + ': ' + phrase
+        if isinstance(e, (CredentialRefused, LaneError, DeadlineReached, OSError)):
+            return type(e).__name__ + ': ' + str(e)[:200]
+        return type(e).__name__ + ': the answer did not parse (its text is withheld)'
+
+    ## The environment the lane needs — a usable token, a scheme the bearer
+    ## credential can ride, a Sentry host resolving to an allowed address —
+    ## is checked once; a failure fails the whole lane, named.
+    token, setup_exc = '', None
+    try:
+        if token_file and os.path.exists(token_file):
+            with open(token_file, encoding='utf-8-sig') as fh:
+                token = fh.read().strip()
+        if not token:
+            raise CredentialRefused('the sentry_token secret is not bound or empty -- bind a Sentry auth token (project:read, '
+                                    'event:read) to the secret name sentry_token')
+        if not (token.isascii() and token.isprintable()) or ' ' in token:
+            ## Never quoted: the text is the secret, or holds it.
+            raise CredentialRefused('the sentry_token secret is not one token on one line (whitespace or a control character '
+                                    'inside) -- bind the token alone')
+        if origin.scheme != 'https' and not allow_private:
+            raise LaneError('sentry.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
+        try:
+            _validate_host(origin.hostname or '')
+        except (OSError, ValueError) as e:
+            raise OSError('Sentry host ' + repr(origin.hostname) + ': ' + str(e)) from None
+    except Exception as e:
+        setup_exc = e
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    _opener = urllib.request.build_opener(_NoRedirect())
+    deadline = time.monotonic() + int(cfg.get('deadline_secs') or 120)
+    server_date = []
+    MAX_BODY = 8 * 1024 * 1024
+
+    def get(path, params, what):
+        ## `what` names the call in every error; a URL is never quoted (its
+        ## query holds the operator's environment name, harmless, but the
+        ## habit is what keeps the other callers clean).
+        if time.monotonic() >= deadline:
+            raise DeadlineReached('the walk passed its deadline_secs before ' + what)
+        url = base + path + ('?' + urlencode(params, doseq=True) if params else '')
+        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
+                                                   'User-Agent': 'prod-watch/0.2 (iterion)'})
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise DeadlineReached('the walk passed its deadline_secs during ' + what)
+            try:
+                with _opener.open(req, timeout=max(1, min(timeout, left))) as r:
+                    if not server_date and r.headers.get('Date'):
+                        server_date.append(r.headers.get('Date'))
+                    ## Read in chunks against the deadline: a body dripping a
+                    ## byte at a time never trips the per-read timeout.
+                    chunks, size = [], 0
+                    while True:
+                        if time.monotonic() >= deadline:
+                            raise DeadlineReached('the walk passed its deadline_secs while reading ' + what)
+                        c = r.read(65536)
+                        if not c:
+                            break
+                        chunks.append(c)
+                        size += len(c)
+                        if size > MAX_BODY:
+                            raise LaneError('the answer to ' + what + ' exceeds 8 MiB')
+                    return json.loads(b''.join(chunks).decode('utf-8')), r.headers
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    raise CredentialRefused('Sentry refused the token (HTTP ' + str(e.code) + ') on ' + what + ' -- the sentry_token '
+                                            'needs project:read and event:read on this project, or it expired')
+                if e.code == 404:
+                    raise NotFound(what)
+                last = e
+                if e.code < 500 and e.code != 429:
+                    raise LaneError('Sentry refused ' + what + ' (HTTP ' + str(e.code) + ')')
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                if time.monotonic() >= deadline:
+                    ## The call was cut by the deadline cap on its timeout.
+                    raise DeadlineReached('the walk passed its deadline_secs during ' + what) from None
+                last = e
+        raise last
+
+    CURSOR = re.compile(r'[0-9]+(?:\.[0-9]+)?:[0-9]+:[01]')
+    def next_cursor(link):
+        ## Only the cursor VALUE of rel="next" travels, never its URL: the
+        ## server builds that URL from its own url-prefix (another scheme or
+        ## host), and following it would send the token wherever it points.
+        ## A short page is not the end — the server drops auto-resolved and
+        ## vanished issues after paginating — `results` is.
+        for part in (link or '').split(','):
+            if 'rel="next"' not in part:
+                continue
+            if 'results="true"' not in part:
+                return None
+            m = re.search(r'cursor="([^"]{1,64})"', part)
+            if not m or not CURSOR.fullmatch(m.group(1)):
+                raise LaneError('Sentry sent a next-page cursor in an unknown format (withheld)')
+            return m.group(1)
+        return None
+
+    def iso(v):
+        ## Sentry writes `2026-09-29T10:38:09Z` (microseconds sometimes);
+        ## `fromisoformat` reads a Z only from Python 3.11 on.
+        if not isinstance(v, str) or not v:
+            return None
+        t = v[:-1] + '+00:00' if v.endswith('Z') else v
+        try:
+            d = datetime.datetime.fromisoformat(t)
+        except ValueError:
+            return None
+        if d.tzinfo is None:
+            return None
+        return d.astimezone(datetime.timezone.utc).isoformat(timespec='seconds')
+    def word(v):
+        ## An upstream enum (a level, a status) travels; any other text is
+        ## dropped.
+        v = str(v if v is not None else '').lower()
+        return v if re.fullmatch(r'[a-z_]{1,40}', v) else ''
+    def text(v, cap=4000):
+        ## Free text is bounded generously here and cut to its display size
+        ## only AFTER the scrub: a value cut first no longer matches its
+        ## class (an email without its TLD, a JWT without its signature). A
+        ## lone surrogate (valid JSON, invalid UTF-8) is replaced here, or
+        ## every later write would die on it.
+        return v[:cap].encode('utf-8', 'replace').decode('utf-8') if isinstance(v, str) else ''
+
+    records, stats = {}, {'malformed': 0, 'filtered': 0, 'pages': 0, 'activity_checks': 0}
+    def take(i, source):
+        if not isinstance(i, dict) or not isinstance(i.get('id'), str) or not re.fullmatch(r'[0-9]{1,20}', i['id']):
+            stats['malformed'] += 1
+            return
+        level = word(i.get('level'))
+        ## min_level decides what the lane starts tracking; an issue already
+        ## known stays observed whatever its latest event's level says (its
+        ## regression included).
+        if source != 'tracked' and i['id'] not in known and LEVELS.get(level, 1) < min_rank:
+            stats['filtered'] += 1
+            return
+        rec = records.get(i['id'])
+        seen = iso(i.get('lastSeen'))
+        if rec is None:
+            short = i.get('shortId')
+            md = i.get('metadata') if isinstance(i.get('metadata'), dict) else {}
+            cnt = i.get('count')
+            cnt = int(cnt) if isinstance(cnt, str) and cnt.isascii() and cnt.isdigit() else (cnt if isinstance(cnt, int) and not isinstance(cnt, bool) else None)
+            users = i.get('userCount')
+            rec = {'id': i['id'],
+                   'short_id': short if isinstance(short, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', short) else '',
+                   'level': level or 'unknown', 'status': word(i.get('status')), 'substatus': word(i.get('substatus')) or None,
+                   'category': word(i.get('issueCategory')), 'last_seen': seen, 'count': cnt,
+                   'user_count': users if isinstance(users, int) and not isinstance(users, bool) else None,
+                   'title': text(i.get('title')), 'culprit': text(i.get('culprit')), 'meta_type': text(md.get('type'), 400),
+                   'meta_value': text(md.get('value')), 'meta_filename': text(md.get('filename'), 400),
+                   'meta_function': text(md.get('function'), 400),
+                   'in_new': False, 'in_transition': False, 'in_tracked': False, 'transition_at': None, 'transition_kind': None,
+                   ## The lists count events over their 14-day window; the by-id
+                   ## answer counts the issue's whole life, every environment.
+                   'count_scope': 'total' if source == 'tracked' else '14d', 'transition_checked': False}
+            records[i['id']] = rec
+        elif seen and (not rec['last_seen'] or seen > rec['last_seen']):
+            rec['last_seen'] = seen
+        if source == 'tracked':
+            ## The by-id answer carries the issue's current status.
+            rec['status'] = word(i.get('status'))
+            rec['substatus'] = word(i.get('substatus')) or None
+        rec['in_' + source] = True
+
+    flags = {'answered': False}
+    def walk(query, sort, max_pages, what, name):
+        ## Each page is taken as it arrives: a walk cut by an error, a cap
+        ## or the deadline keeps what it read.
+        params = {'project': project_id, 'query': query, 'sort': sort, 'statsPeriod': '14d', 'collapse': 'stats', 'limit': 100}
+        if env:
+            params['environment'] = env
+        cursor, pages = None, 0
+        while True:
+            if pages >= max_pages:
+                return False
+            p = dict(params, cursor=cursor) if cursor else params
+            body, headers = get('/api/0/organizations/' + org + '/issues/', p, what)
+            pages += 1
+            stats['pages'] += 1
+            if not isinstance(body, list):
+                raise LaneError('the answer to ' + what + ' is not a list (its text is withheld)')
+            flags['answered'] = True
+            for i in body:
+                take(i, name)
+            cursor = next_cursor(headers.get('Link'))
+            if cursor is None:
+                return True
+
+    errors = []
+    complete = {'new': False, 'transition': False, 'tracked': False}
+    ## `answered` (flags): at least one query answered after the setup held
+    ## — the tick may report on what was read (like one Loki query
+    ## covering); `ok` stays the lane's HEALTH: every call answered.
+    checks_cut = False
+    rechecks_deferred = 0
+    ## The runner's clock stands in for Sentry's Date only when no answer
+    ## carried one — read BEFORE the first request, so nothing processed
+    ## during the walk falls behind the next cursor.
+    t_start = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+    deadline_hit = False
+    project_id = ''
+    max_pages = max(1, -(-int(cfg.get('max_issues') or 200) // 100))
+    try:
+        if setup_exc is not None:
+            raise setup_exc
+        body, _ = get('/api/0/projects/' + org + '/' + project + '/', None, 'the project lookup')
+        project_id = str(body.get('id') or '') if isinstance(body, dict) else ''
+        if not re.fullmatch(r'[0-9]{1,20}', project_id):
+            raise LaneError('the project lookup answered without a numeric id (its text is withheld)')
+        if env:
+            ## Unknown to the project (a typo, or a name only another project
+            ## of the org knows) the lists would answer an empty page — the
+            ## same as "no issue" — so the environment is checked first.
+            try:
+                get('/api/0/projects/' + org + '/' + project + '/environments/' + quote(env, safe='') + '/', None,
+                    'the environment lookup')
+            except NotFound:
+                raise LaneError('environment ' + repr(env) + ' is unknown to project ' + org + '/' + project +
+                                ' -- check config.sentry.environment (an environment exists once one of its events reached Sentry)')
+    except NotFound:
+        errors.append({'query': 'sentry setup', 'error': 'LaneError: project ' + org + '/' + project + ' not found, or not visible to the token'})
+    except Exception as e:
+        errors.append({'query': 'sentry setup', 'error': lane_error(e)})
+    if not errors:
+        phases = [('new', 'is:unresolved firstSeen:>=' + str(cfg.get('new_since') or ''), 'new', 'the new-issue list'),
+                  ('transition', 'is:unresolved substatus:[regressed,escalating]', 'date', 'the regressed/escalating list')]
+        for name, query, sort, what in phases:
+            try:
+                complete[name] = walk(query, sort, max_pages, what, name)
+            except DeadlineReached:
+                deadline_hit = True
+            except Exception as e:
+                errors.append({'query': 'sentry ' + name, 'error': lane_error(e)})
+        ## Transition dates, from the issue's own activity. UNDATED ones first
+        ## (an untracked issue, or one whose transition was never dated) —
+        ## one the cap leaves undated is a loss this tick, and the walk says
+        ## partial. Then the RE-CHECKS of dated ones an event arrived after
+        ## (a new regression needs a new event), least recently checked
+        ## first: a re-check the cap defers keeps its known date and waits its
+        ## turn — busy regressed issues can never starve a new one. The dates
+        ## are Sentry's processing times.
+        undated, rechecks = [], []
+        for r in records.values():
+            if not (r['in_transition'] and r['substatus'] in ('regressed', 'escalating')):
+                continue
+            k = known.get(r['id']) or {}
+            r['transition_kind'] = r['substatus']
+            if not k.get('transition_at'):
+                undated.append(r)
+            else:
+                ## Substatus and activities are project-wide, the list's
+                ## lastSeen environment-scoped: a second regression from
+                ## another environment moves nothing here — every dated
+                ## candidate is re-checked in turn.
+                r['transition_at'] = k['transition_at']
+                rechecks.append(r)
+        undated.sort(key=lambda r: (r['last_seen'] or '', r['id']), reverse=True)
+        rechecks.sort(key=lambda r: ((known.get(r['id']) or {}).get('checked_at') or '', r['id']))
+        want = {'regressed': 'set_regression', 'escalating': 'set_escalating'}
+        cap = int(cfg.get('max_transition_checks') or 0)
+        for r in undated + rechecks:
+            if stats['activity_checks'] >= cap:
+                if r in undated:
+                    checks_cut = True
+                else:
+                    rechecks_deferred += 1
+                continue
+            stats['activity_checks'] += 1
+            try:
+                body, _ = get('/api/0/organizations/' + org + '/issues/' + r['id'] + '/activities/', None,
+                              'the activities of issue ' + r['id'])
+                acts = body.get('activity') if isinstance(body, dict) else None
+                if not isinstance(acts, list):
+                    raise LaneError('the activities of issue ' + r['id'] + ' are not a list (their text is withheld)')
+                dates = [iso(a.get('dateCreated')) for a in acts if isinstance(a, dict) and a.get('type') == want[r['substatus']]]
+                dates = [d for d in dates if d]
+                if dates:
+                    r['transition_at'] = max(dates)
+                r['transition_checked'] = True
+            except NotFound:
+                pass   # deleted or merged between the list and this call: nothing to date
+            except DeadlineReached:
+                deadline_hit = True
+                break
+            except Exception as e:
+                errors.append({'query': 'sentry transition', 'error': lane_error(e)})
+                complete['transition'] = False
+        ids = [x for x in (cfg.get('tracked_ids') or []) if isinstance(x, str) and re.fullmatch(r'[0-9]{1,20}', x)]
+        try:
+            for n in range(0, len(ids), 100):
+                p = {'project': project_id, 'group': ids[n:n + 100], 'statsPeriod': '14d', 'collapse': 'stats', 'limit': 100}
+                if env:
+                    p['environment'] = env
+                body, _ = get('/api/0/organizations/' + org + '/issues/', p, 'the tracked issues')
+                stats['pages'] += 1
+                if not isinstance(body, list):
+                    raise LaneError('the answer to the tracked issues is not a list (its text is withheld)')
+                flags['answered'] = True
+                for i in body:
+                    take(i, 'tracked')
+            complete['tracked'] = True
+        except DeadlineReached:
+            deadline_hit = True
+        except Exception as e:
+            errors.append({'query': 'sentry tracked', 'error': lane_error(e)})
+
+    as_of, clock = None, 'server'
+    try:
+        d = parsedate_to_datetime(server_date[0]) if server_date else None
+        if d is not None and d.tzinfo is None:
+            d = d.replace(tzinfo=datetime.timezone.utc)   # `-0000`: UTC, per RFC 5322
+        as_of = d.astimezone(datetime.timezone.utc).isoformat(timespec='seconds') if d is not None else None
+    except (TypeError, ValueError, IndexError, OverflowError):
+        as_of = None
+    if as_of is None:
+        ## No Date header came back (or it did not parse): the runner's clock
+        ## stands in, and the walk says so.
+        as_of, clock = t_start, 'local'
+    with open(raw_path, 'w', encoding='utf-8') as fh:
+        for rid in sorted(records):
+            fh.write(json.dumps(records[rid], ensure_ascii=False) + chr(10))
+    failed = {e['query'] for e in errors}
+    partial = [why for why, on in (
+        ('the new-issue list stopped at max_issues', not complete['new'] and 'sentry new' not in failed and not deadline_hit),
+        ('the regressed/escalating list stopped at max_issues', not complete['transition'] and 'sentry transition' not in failed and not deadline_hit),
+        ('transition checks capped at max_transition_checks', checks_cut),
+        ('tracked incidents over max_tracked', bool(cfg.get('tracked_cut'))),
+        ('the deadline passed', deadline_hit),
+        ('the cursor was older than max_catchup_hours: issues first processed between ' + str(cfg.get('gap_since') or '?') +
+         ' and ' + str(cfg.get('new_since') or '?') + ' were never read as new', bool(cfg.get('gap_since'))),
+        (str(stats['malformed']) + ' malformed issue(s) skipped', stats['malformed'] > 0)) if on and not ('setup' in ' '.join(failed))]
+    truncated = (not all(complete.values()) or checks_cut or deadline_hit or stats['malformed'] > 0 or bool(cfg.get('tracked_cut'))
+                 or bool(cfg.get('gap_since')))
+    walk_info = {'bootstrap': bootstrap, 'as_of': as_of, 'clock': clock, 'new_complete': complete['new'],
+                 'transition_complete': complete['transition'] and not checks_cut, 'tracked_complete': complete['tracked'] and not cfg.get('tracked_cut'),
+                 'pages': stats['pages'], 'activity_checks': stats['activity_checks'], 'checks_cut': checks_cut,
+                 'malformed': stats['malformed'], 'filtered': stats['filtered'], 'deadline_hit': deadline_hit, 'partial': partial,
+                 'answered': flags['answered'], 'rechecks_deferred': rechecks_deferred, 'gap': bool(cfg.get('gap_since'))}
+    summary = ('sentry ' + project + ('/' + env if env else '') + ': ' + str(len(records)) + ' issue(s) read (' +
+               str(sum(1 for r in records.values() if r['in_new'])) + ' in the new list, ' +
+               str(sum(1 for r in records.values() if r['in_transition'])) + ' regressed/escalating, ' +
+               str(sum(1 for r in records.values() if r['in_tracked'])) + ' tracked), ' + str(stats['pages']) + ' page(s)' +
+               (', TRUNCATED' if truncated else '') + (', BOOTSTRAP' if bootstrap else '') +
+               ((' -- errors: ' + json.dumps(errors)[:300]) if errors else ''))
+    print(json.dumps({'raw_file': raw_path, 'issues': len(records), 'truncated': truncated, 'walk': walk_info,
+                      'errors': errors, 'ok': not errors, 'summary': summary}, ensure_ascii=False))
+
 ## The application's own health URLs — the one signal that needs no
 ## observability stack at all. A probe is OK when the status matches;
 ## the body is never stored. Redirects are followed only hop by hop
@@ -1482,6 +2131,8 @@ tool leak_scan:
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     raw_path = {{input.raw_file}}
     per_query = {{input.per_query}} or {}
+    sentry_path = {{input.sentry_file}} or ''
+    sentry_expected = int({{input.sentry_issues}} or 0)
     app = {{input.app}} or {}
     scratch = {{input.scratch_dir}}
     os.makedirs(scratch, exist_ok=True)
@@ -1578,7 +2229,11 @@ tool leak_scan:
     ## reach a sample), that no class claimed is masked before the contact
     ## classes run — a PAN in pairs must not be read as a phone number.
     BELT_BARE = re.compile(r'(?<!\d)\d{12,}(?!\d)')
-    BELT_GROUPED = re.compile(r'(?<![A-Za-z0-9])\d{1,8}(?:([^A-Za-z0-9\n])\d{1,8}){1,12}(?![A-Za-z0-9])')
+    ## Separators exclude EVERY digit (`\d` is Unicode here): a digit NFKC
+    ## keeps (Arabic-Indic, Devanagari…) that could be both a digit and a
+    ## separator made a 70-digit run backtrack for seconds — anyone holding a
+    ## public DSN writes the text this scan reads.
+    BELT_GROUPED = re.compile(r'(?<![\dA-Za-z])\d{1,8}(?:([^\dA-Za-z\n])\d{1,8}){1,12}(?![\dA-Za-z])')
     def belt(text):
         text = BELT_BARE.sub('<num>', text)
         return BELT_GROUPED.sub(lambda m: '<num>' if sum(ch.isdigit() for ch in m.group(0)) >= 12 else m.group(0), text)
@@ -1702,12 +2357,12 @@ tool leak_scan:
             r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,})$|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
             r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,})$|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,})$)'
             r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
-        ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^A-Za-z0-9\n]?(\d{2})[^A-Za-z0-9\n]?(0[1-9]|1[0-2]|[2-9]\d)[^A-Za-z0-9\n]?(\d{2}|2[AB])[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{3})[^A-Za-z0-9\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
+        ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^\dA-Za-z\n]?(\d{2})[^\dA-Za-z\n]?(0[1-9]|1[0-2]|[2-9]\d)[^\dA-Za-z\n]?(\d{2}|2[AB])[^\dA-Za-z\n]?(\d{3})[^\dA-Za-z\n]?(\d{3})[^\dA-Za-z\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
         ## Bare, or grouped under ONE repeated separator of any kind; a run
         ## that continues past the match with the same separator is a row
         ## of numbers, not a card.
-        ('card', re.compile(r'(?<!\d)(?:\d{15,19}|\d{1,6}(?:([^A-Za-z0-9\n])\d{1,6})(?:\1\d{1,6}){1,8})(?!\d|\.\d|\1\d)'), lambda m: card_ok(m)),
+        ('card', re.compile(r'(?<!\d)(?:\d{15,19}|\d{1,6}(?:([^\dA-Za-z\n])\d{1,6})(?:\1\d{1,6}){1,8})(?!\d|\.\d|\1\d)'), lambda m: card_ok(m)),
         ('num', None, None),
         ('email', re.compile(r'(?a)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
         ('phone_fr', re.compile(r'(?a)(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
@@ -1733,8 +2388,10 @@ tool leak_scan:
         return re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFKC', line))
 
     findings = {}
-    def note(cls, value, q, stream, ts, qs=()):
-        f = findings.setdefault(cls, {'class': cls, 'severity': 'high', 'count': 0, 'hashes': set(),
+    def note(cls, value, q, stream, ts, qs=(), into=None):
+        ## `into` collects one Sentry issue's classes apart: decide counts a
+        ## Sentry leak per issue sighted, never per re-read of its text.
+        f = (findings if into is None else into).setdefault(cls, {'class': cls, 'severity': 'high', 'count': 0, 'hashes': set(),
                                        'sources': {}, 'queries': set(), 'sample_masked': mask(cls, value)})
         f['count'] += 1
         f['queries'].update(qs or (q,))
@@ -1746,7 +2403,7 @@ tool leak_scan:
         s['last'] = max(s['last'], ts)
 
     MARKER = re.compile(r'\[REDACTED:[a-z_]+\]')
-    def scrub(line, q, stream, ts, qs=()):
+    def scrub(line, q, stream, ts, qs=(), into=None):
         ## A marker LITERALLY present in the log (attacker-influenced text
         ## can spell one) is neutralised first, so no class can hide behind it.
         out = MARKER.sub('[literal-marker]', normalize(line))
@@ -1765,7 +2422,7 @@ tool leak_scan:
                     for k in range(len(parts) - 1, 0, -1):
                         head = ' '.join(parts[:k])
                         if iban_ok(head):
-                            note(cls, head, q, stream, ts, qs)
+                            note(cls, head, q, stream, ts, qs, into)
                             ## What follows the IBAN may hold another one.
                             return '[REDACTED:' + cls + ']' + rx.sub(repl, m.group(0)[len(head):])
                     return m.group(0)
@@ -1774,7 +2431,7 @@ tool leak_scan:
                 if MARKER.fullmatch(value):
                     ## A marker left by an earlier class is not a second value.
                     return m.group(0)
-                note(cls, value, q, stream, ts, qs)
+                note(cls, value, q, stream, ts, qs, into)
                 if cls == 'secret_kv':
                     ## The key before the value and what closes it (a quote,
                     ## the `@` of a URL) are kept.
@@ -1902,13 +2559,58 @@ tool leak_scan:
             coverage = 'partial'
     if templates_cut:
         coverage = 'partial'
+
+    ## ── Sentry issue records ───────────────────────────────────────
+    ## Every free-text field goes through the same scrub, into a per-issue
+    ## findings dict; each is cut to its display size AFTER the scrub. What
+    ## leaves is the scrubbed text, the structured fields, and per issue the
+    ## classes found with a masked sample — never a raw value.
+    sentry_issues = []
+    s_records = 0
+    if sentry_path and os.path.exists(sentry_path):
+        with open(sentry_path, encoding='utf-8') as fh:
+            for ln in fh:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    rec = json.loads(ln)
+                except ValueError:
+                    continue   # counted as missing: the record count below refuses the handoff
+                if not isinstance(rec, dict):
+                    continue
+                s_records += 1
+                per = {}
+                seen = str(rec.get('last_seen') or '')
+                def clean(field, cap):
+                    v = rec.get(field)
+                    if not isinstance(v, str) or not v:
+                        return ''
+                    return scrub(v, 'sentry', {}, seen, (), per)[:cap]
+                item = {k: rec.get(k) for k in ('id', 'short_id', 'level', 'status', 'substatus', 'category', 'last_seen', 'count',
+                                                'user_count', 'in_new', 'in_transition', 'in_tracked', 'transition_at', 'transition_kind',
+                                                'count_scope', 'transition_checked')}
+                item.update({'title': clean('title', 200), 'culprit': clean('culprit', 200), 'meta_type': clean('meta_type', 120),
+                             'meta_value': clean('meta_value', 300), 'meta_filename': clean('meta_filename', 200),
+                             'meta_function': clean('meta_function', 120)})
+                item['leaks'] = sorted(({'class': f['class'], 'count': f['count'], 'sample_masked': f['sample_masked']}
+                                        for f in per.values()), key=lambda f: f['class'])
+                sentry_issues.append(item)
+    elif sentry_expected > 0:
+        raise SystemExit('prod-watch: the Sentry handoff ' + repr(sentry_path) + ' is missing although the lane reported ' +
+                         str(sentry_expected) + ' issue(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
+    if s_records != sentry_expected:
+        raise SystemExit('prod-watch: the Sentry handoff holds ' + str(s_records) + ' record(s) but the lane reported ' +
+                         str(sentry_expected) + ' -- refusing to score a partial read as an observation')
+    sentry_issues.sort(key=lambda i: str(i.get('id')))
+
     signals = {'app': app.get('name') or '', 'coverage': coverage, 'lines_scanned': scanned,
                'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list), 'cut_last_ts': cut_last_ts,
-               'leak': leak_list, 'per_query': per_query}
+               'leak': leak_list, 'per_query': per_query, 'sentry_issues': sentry_issues}
     with open(signals_path, 'w', encoding='utf-8') as fh:
         json.dump(signals, fh, ensure_ascii=False, indent=1)
     summary = ('scanned ' + str(scanned) + ' line(s), ' + str(len(tpl_list)) + ' error template(s), ' +
-               str(len(leak_list)) + ' leak class(es) hit, coverage ' + coverage)
+               str(len(leak_list)) + ' leak class(es) hit, ' + str(len(sentry_issues)) + ' Sentry issue(s) scrubbed, coverage ' + coverage)
     print(json.dumps({'signals_file': signals_path, 'templates': len(tpl_list), 'lines_scanned': scanned,
                       'leak_findings': leak_list, 'coverage': coverage, 'summary': summary}, ensure_ascii=False))
 
@@ -1937,6 +2639,12 @@ tool decide:
     loki_per_query = {{input.loki_per_query}} or {}
     prom_ok = bool({{input.prom_ok}})
     prom_errors = {{input.prom_errors}} or []
+    sentry_cfg = {{input.sentry}} or {}
+    sentry_ok = bool({{input.sentry_ok}})
+    sentry_truncated = bool({{input.sentry_truncated}})
+    sentry_errors = {{input.sentry_errors}} or []
+    sentry_walk = {{input.sentry_walk}} or {}
+    sentry_expected = int({{input.sentry_issues}} or 0)
     release = {{input.release}} or ''
     release_known = bool({{input.release_known}})
     lanes = {{input.lanes}} or {}
@@ -1992,7 +2700,13 @@ tool decide:
         if expected > 0:
             raise SystemExit('prod-watch: the signals file ' + repr(signals_file) + ' is missing although the lanes reported ' +
                              str(expected) + ' line(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
+    if sentry_expected > 0 and not os.path.exists(signals_file):
+        raise SystemExit('prod-watch: the signals file ' + repr(signals_file) + ' is missing although the Sentry lane reported ' +
+                         str(sentry_expected) + ' issue(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
     signals = jload(signals_file, {})
+    if len(signals.get('sentry_issues') or []) != sentry_expected:
+        raise SystemExit('prod-watch: the signals hold ' + str(len(signals.get('sentry_issues') or [])) + ' Sentry issue(s) but the lane '
+                         'reported ' + str(sentry_expected) + ' -- a scan from another tick; relaunch the tick')
     spath = os.path.join(state_dir, 'state.json')
     bootstrap = not os.path.exists(spath)
     state = jload(spath, {'version': 1, 'generation': 0, 'cursors': {'loki': {}}, 'incidents': {}, 'health': {}, 'halt': None})
@@ -2060,9 +2774,200 @@ tool decide:
     ## the tick may be reported when one probe answered, like one Loki
     ## query covered.
     prom_answered = any(r.get('state') != 'error' for r in prom_results)
-    lane_ok = {'loki': loki_ok, 'prometheus': prom_answered, 'probes': True}
+    lane_ok = {'loki': loki_ok, 'prometheus': prom_answered, 'probes': True, 'sentry': bool(sentry_walk.get('answered'))}
     seen_fps = set()
     alerts, observed_new = [], 0
+
+    ## ── Sentry issues ──────────────────────────────────────────────
+    ## Precedence, pinned: a bootstrap posts nothing (backlog is not news);
+    ## a regression / escalation dated by Sentry's own activity after the
+    ## arming posts, tracked issue or not, backlog or not, whether or not
+    ## an event arrived this tick; an untracked issue of the new-issue list
+    ## posts NEW; an alerted issue whose last event moved is a sighting
+    ## (escalated / reminder); an alerted issue Sentry reports resolved, or
+    ## idle for quiet_after_hours, gets one note. An issue read without any
+    ## of these facts is tracked silently (backlog): Sentry's backlog alerts
+    ## only through its own transitions. The incident persists structured
+    ## fields only — titles and culprits are rendered from THIS tick's
+    ## scrubbed signals and never written to the state or the alert log.
+    s_on = bool(lanes.get('sentry')) and bool(sentry_cfg.get('enabled'))
+    s_boot = bool(sentry_cfg.get('bootstrap'))
+    s_state = state.setdefault('cursors', {})
+    def s_dt(v):
+        try:
+            d = datetime.datetime.fromisoformat(v)
+        except (TypeError, ValueError):
+            return None
+        return d if d.tzinfo is not None else None
+    def s_sev(level):
+        sev = (sentry_cfg.get('severity') or {}).get(level) or 'low'
+        cap = sentry_cfg.get('max_severity') or 'high'
+        return sev if RANK.get(sev, 1) <= RANK.get(cap, 3) else cap
+    def s_label(it):
+        return it.get('short_id') or it.get('id') or '?'
+    def s_alert(fp, rec, state_word, it, severity, transition_at=None):
+        sid = fp.split(':', 1)[1]
+        short = rec.get('short_id') or sid
+        if it is not None:
+            ## The lists count the last 14 days, the by-id answer the issue's
+            ## whole life in every environment: the detail says which.
+            title_arg = it.get('title') or short
+            detail_key = 'sentry_detail' if it.get('count_scope') == '14d' else 'sentry_detail_total'
+            fields = {'level': it.get('level') or '?', 'count': it.get('count') if it.get('count') is not None else '?',
+                      'users': it.get('user_count') if it.get('user_count') is not None else '?',
+                      'culprit': it.get('culprit') or '-', 'short_id': short}
+        else:
+            title_arg, detail_key = short, 'sentry_detail_short'
+            fields = {'level': rec.get('level') or '?', 'short_id': short}
+        return {'fingerprint': fp, 'kind': 'sentry', 'severity': severity, 'state': state_word,
+                'title_key': 'sentry_issue', 'title_arg': title_arg, 'detail_key': detail_key, 'fields': fields,
+                'evidence': {'link': rec.get('link'), 'short_id': short, 'status': rec.get('status') or ''},
+                'count': (it or {}).get('count') if (it or {}).get('count') is not None else int(rec.get('count') or 0),
+                'first_seen': rec.get('first_seen'), 'prev_severity': rec.get('severity') or '',
+                'transition_at': transition_at, 'log_title': short}
+    def s_record(it, fp):
+        rec = incidents.get(fp)
+        if rec is None:
+            rec = {'fp': fp, 'kind': 'sentry', 'sources': ['sentry'], 'first_seen': now_iso, 'last_seen': now_iso, 'count': 0,
+                   'alerted': False, 'last_notified': None, 'quiet_noted': False, 'backlog': False, 'pending': None,
+                   'pending_transition_at': None, 'transition_at': None, 'sentry_last_seen': None,
+                   'severity': s_sev(it.get('level') or ''), 'status': ''}
+            incidents[fp] = rec
+        short = s_label(it)
+        rec.update({'title_key': 'sentry_issue', 'title_arg': short, 'detail_key': 'sentry_detail_short',
+                    'fields': {'level': it.get('level') or '?', 'short_id': short}, 'short_id': short,
+                    'level': it.get('level') or 'unknown', 'link': (sentry_cfg.get('link_prefix') or '') + it['id'] + '/'})
+        rec['substatus'] = it.get('substatus')
+        if it.get('status'):
+            rec['status'] = it['status']
+        return rec
+    ## Open in Sentry: unresolved, or being reprocessed; anything else
+    ## (resolved, archived, deleted, merged) closes the alerted incident with
+    ## one note naming the status.
+    S_OPEN = ('', 'unresolved', 'reprocessing')
+    if s_on and sentry_cfg.get('identity_changed'):
+        ## Another project or environment: the old identity's memory goes, and
+        ## its cursor with it — a failed re-arming then retries as a bootstrap,
+        ## and reverting the config is a bootstrap too, never a replay against
+        ## an empty memory.
+        for fp in [f for f, r in incidents.items() if r.get('kind') in ('sentry', 'sentry_leak')]:
+            del incidents[fp]
+        s_state.pop('sentry', None)
+    s_issues = {}
+    for it in (signals.get('sentry_issues') or []):
+        if isinstance(it, dict) and isinstance(it.get('id'), str) and re.fullmatch(r'[0-9]{1,20}', it['id']):
+            s_issues[it['id']] = it
+    s_as_of = sentry_walk.get('as_of') if s_dt(sentry_walk.get('as_of')) else now_iso
+    s_emitted = set()
+    s_leaks = {}
+    if s_on and s_boot:
+        ## Whatever was read is backlog. The lane ARMS only once the new-issue
+        ## list was read whole with every call answered: armed on a cut read,
+        ## the next tick's overlap would re-read the unread part and post it
+        ## as new.
+        for sid, it in sorted(s_issues.items()):
+            rec = s_record(it, 'sentry:' + sid)
+            rec['backlog'] = True
+            if it.get('transition_at'):
+                rec['transition_at'] = it['transition_at']
+            if it.get('transition_checked'):
+                rec['transition_checked_at'] = now_iso
+            if it.get('last_seen'):
+                rec['sentry_last_seen'] = it['last_seen']
+        if sentry_ok and sentry_walk.get('answered') and sentry_walk.get('new_complete'):
+            s_state['sentry'] = {'identity': sentry_cfg['identity'], 'armed_at': s_as_of, 'since': s_as_of, 'at': now_iso}
+    elif s_on:
+        armed = s_dt(sentry_cfg.get('armed_at'))
+        overlap_td = datetime.timedelta(minutes=int(sentry_cfg.get('overlap_minutes') or 0))
+        for sid, it in sorted(s_issues.items()):
+            fp = 'sentry:' + sid
+            prev = incidents.get(fp)
+            prev_seen = (prev or {}).get('sentry_last_seen')
+            prev_sev = (prev or {}).get('severity') or ''
+            rec = s_record(it, fp)
+            if it.get('transition_checked'):
+                rec['transition_checked_at'] = now_iso
+            sev_now = s_sev(it.get('level') or '')
+            sighted = bool(it.get('last_seen')) and (not prev_seen or it['last_seen'] > prev_seen)
+            tr_at = s_dt(it.get('transition_at'))
+            dated = (it.get('in_transition') and it.get('transition_kind') in ('regressed', 'escalating') and tr_at is not None
+                     and (not rec.get('transition_at') or it['transition_at'] > rec['transition_at']))
+            word_ = None
+            if dated and armed is not None and tr_at >= armed - overlap_td:
+                word_ = it['transition_kind']
+            elif dated:
+                ## Dated before the arming: history, recorded — whatever the
+                ## record — so it is neither re-dated every tick nor posted.
+                rec['transition_at'] = it['transition_at']
+            if word_ is None and prev is None and it.get('in_new'):
+                word_ = 'new'
+            elif word_ is None and prev is None:
+                rec['backlog'] = True
+            elif word_ is None and rec.get('alerted') and sighted:
+                if RANK.get(sev_now, 0) > RANK.get(prev_sev or 'low', 0):
+                    word_ = 'escalated'
+                elif rec.get('last_notified') and not said_within(rec['last_notified'], renotify_h):
+                    word_ = 'reminder'
+            if RANK.get(sev_now, 0) > RANK.get(rec.get('severity') or 'low', 0):
+                ## Never down on its own; a deferred escalation restores it.
+                rec['severity'] = sev_now
+            if sighted:
+                rec['sentry_last_seen'] = it['last_seen']
+                rec['last_seen'] = now_iso
+                rec['quiet_noted'] = False
+                rec['count'] = int(rec.get('count') or 0) + 1
+            if (word_ is None and it.get('in_tracked') and (it.get('status') or '') not in S_OPEN
+                    and rec.get('alerted') and not rec.get('quiet_noted') and not rec.get('pending')):
+                ## A pending alert goes out first; the note follows on a later
+                ## tick (from the recorded status, below).
+                word_ = 'resolved'
+            if word_:
+                a = s_alert(fp, rec, word_, it, 'low' if word_ == 'resolved' else rec['severity'],
+                            it.get('transition_at') if word_ in ('regressed', 'escalating') else None)
+                a['prev_severity'] = prev_sev
+                alerts.append(a)
+                s_emitted.add(fp)
+            if word_ or sighted or prev is None:
+                ## Retention forgets what is merely re-read: an issue idle for
+                ## forget_after_days leaves the tracked set.
+                seen_fps.add(fp)
+            if sighted or word_ in ('new', 'regressed', 'escalating'):
+                for lk in (it.get('leaks') or []):
+                    agg = s_leaks.setdefault(lk.get('class') or '?', {'ids': [], 'sample': lk.get('sample_masked') or ''})
+                    agg['ids'].append(s_label(it))
+        t_complete = sentry_ok and bool(sentry_walk.get('tracked_complete'))
+        for fp, rec in list(incidents.items()):
+            if rec.get('kind') != 'sentry' or fp in s_emitted:
+                continue
+            it = s_issues.get(fp.split(':', 1)[1])
+            if rec.get('pending') in ('new', 'regressed', 'escalating'):
+                ## Cut by the per-run cap on an earlier tick: re-emitted until
+                ## posted, from this tick's text when the issue was read, from
+                ## its short id and link otherwise.
+                alerts.append(s_alert(fp, rec, rec['pending'], it, rec.get('severity') or 'low', rec.get('pending_transition_at')))
+                s_emitted.add(fp)
+                seen_fps.add(fp)
+            elif rec.get('alerted') and not rec.get('quiet_noted') and (rec.get('status') or '') not in S_OPEN:
+                ## Closed in Sentry and not noted yet (the note was cut by the
+                ## cap, or waited for a pending alert): the recorded status
+                ## says it — the issue is no longer read by id.
+                alerts.append(s_alert(fp, rec, 'resolved', it, 'low'))
+                s_emitted.add(fp)
+                seen_fps.add(fp)
+            elif (rec.get('alerted') and not rec.get('quiet_noted') and t_complete
+                  and age_h(rec.get('last_seen') or rec.get('first_seen') or now_iso) >= quiet_h):
+                alerts.append(s_alert(fp, rec, 'quiet', it, 'low'))
+                s_emitted.add(fp)
+        cur = s_state.get('sentry') or {}
+        s_state['sentry'] = {'identity': sentry_cfg['identity'], 'armed_at': cur.get('armed_at') or s_as_of,
+                             'since': s_as_of if (sentry_ok and sentry_walk.get('new_complete')) else (cur.get('since') or s_as_of),
+                             'at': now_iso}
+    for cls, agg in sorted(s_leaks.items()):
+        cands.append({'fp': 'sentry_leak:' + cls, 'kind': 'sentry_leak', 'sources': ['sentry'], 'severity': 'high',
+                      'title_key': 'sentry_leak', 'title_arg': cls, 'detail_key': 'sentry_leak_detail',
+                      'fields': {'class': cls, 'count': len(agg['ids']), 'sources': ', '.join(sorted(set(agg['ids']))[:8]) or '-'},
+                      'evidence': {'sample_masked': agg['sample']}, 'lane': 'sentry', 'tick_count': len(agg['ids'])})
+
     for c in cands:
         fp = c['fp']
         prev = incidents.get(fp)
@@ -2132,8 +3037,9 @@ tool decide:
     tpl_complete = (bool(loki_ok) and not signals.get('templates_cut')
                     and any(q != 'leak_sweep' for q in loki_per_query)
                     and not any(partial(i) for q, i in loki_per_query.items() if q != 'leak_sweep'))
-    observe_ok = dict(lane_ok, loki=loki_complete, prometheus=prom_ok)
-    sources = {'prometheus': {r.get('id') for r in prom_results}, 'probes': {r.get('id') for r in http_results}, 'loki': set(loki_per_query)}
+    observe_ok = dict(lane_ok, loki=loki_complete, prometheus=prom_ok, sentry=sentry_ok and not sentry_truncated)
+    sources = {'prometheus': {r.get('id') for r in prom_results}, 'probes': {r.get('id') for r in http_results}, 'loki': set(loki_per_query),
+               'sentry': {'sentry'} if lanes.get('sentry') else set()}
     for fp, rec in list(incidents.items()):
         if fp in seen_fps:
             continue
@@ -2144,7 +3050,10 @@ tool decide:
             ## state grows for ever behind a lane that never completes.
             del incidents[fp]
             continue
-        lane = {'probe': 'probes', 'prom': 'prometheus', 'prom_no_data': 'prometheus', 'loki': 'loki', 'leak': 'loki'}.get(rec.get('kind'), 'loki')
+        if rec.get('kind') == 'sentry':
+            continue   # its notes are the Sentry block's (resolved, idle), above
+        lane = {'probe': 'probes', 'prom': 'prometheus', 'prom_no_data': 'prometheus', 'loki': 'loki', 'leak': 'loki',
+                'sentry_leak': 'sentry'}.get(rec.get('kind'), 'loki')
         observed = tpl_complete if rec.get('kind') == 'loki' else observe_ok.get(lane, True)
         if not observed or not lanes.get(lane, False):
             ## The lane that would observe it did not observe everything
@@ -2182,6 +3091,9 @@ tool decide:
         mark('prometheus', prom_ok, json.dumps(prom_errors)[:300] if prom_errors else '')
     if lanes.get('probes'):
         mark('probes', True)
+    if lanes.get('sentry'):
+        mark('sentry', sentry_ok and bool(sentry_walk.get('answered')),
+             json.dumps(sentry_errors)[:300] if sentry_errors else '; '.join(str(x) for x in (sentry_walk.get('partial') or []))[:300])
     for source in [k for k in health if not lanes.get(k, False)]:
         del health[source]
     stale = []
@@ -2208,22 +3120,31 @@ tool decide:
     ## component is new or its last mention is older than renotify_hours,
     ## whatever the combination: a lane flapping, or kinds coming and going
     ## together, never re-post it every tick.
-    coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors) else 'full'
+    coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors
+                             or (lanes.get('sentry') and (sentry_errors or sentry_truncated))) else 'full'
     gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
     truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
     lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
-                                   for e in (loki_errors + prom_errors)))[:600]
+                                   for e in (loki_errors + prom_errors + sentry_errors)))[:600]
     ## The note's pieces, each with the component it says — the loss first:
     ## a gap, then the errors, then what is only behind.
     pieces = [('gap: ' + q, q + ': gap — the cursor fell out of the max window, the lines in between were skipped') for q in gapped]
     pieces += [(c, text) for text, c in sorted(
         (str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160],
          lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160])
-        for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors)) for e in errs)]
+        for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors), ('sentry', sentry_errors)) for e in errs)]
     pieces += [('truncated', q + ': truncated at max_lines') for q in truncated_qs]
     if signals.get('templates_cut'):
         pieces.append(('cut', 'template list cut: ' + str(signals.get('templates_total') or '?') +
                        ' templates, the 200 with the most live lines kept'))
+    if lanes.get('sentry') and sentry_walk.get('gap'):
+        pieces.insert(0, ('sentry gap', 'sentry: gap — ' + next((str(x) for x in (sentry_walk.get('partial') or []) if 'max_catchup_hours' in str(x)), 'the cursor was older than max_catchup_hours')))
+    if lanes.get('sentry') and sentry_truncated and not sentry_errors:
+        ## One component whatever the causes (the walk names them): they can
+        ## come and go together, and the note must not re-post every tick.
+        why = [str(x) for x in (sentry_walk.get('partial') or []) if 'max_catchup_hours' not in str(x)]
+        if why or not sentry_walk.get('gap'):
+            pieces.append(('sentry truncated', 'sentry: partial walk (' + (', '.join(why[:6]) or 'incomplete') + ')'))
     components = sorted({c for c, _ in pieces})
     posted_kinds = {k: v for k, v in (state.get('coverage_posted') or {}).items() if said_within(v, renotify_h)}
     coverage_note = coverage == 'partial' and any(c not in posted_kinds for c in components)
@@ -2251,26 +3172,59 @@ tool decide:
     state['coverage_posted'] = posted_kinds
 
     ## ── priority, cap, staging ────────────────────────────────────
-    order = {'new': 3, 'escalated': 3, 'reminder': 2, 'quiet': 1}
+    order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
     alerts.sort(key=lambda a: (RANK.get(a['severity'], 0), order.get(a['state'], 0)), reverse=True)
+    ## Inside one rank the lanes take turns, so a flood on one lane (a public
+    ## DSN creating issues) cannot hold the cap against another's alerts
+    ## of the same rank; each lane keeps its own order.
+    def lane_of(a):
+        return 'sentry' if a.get('kind') in ('sentry', 'sentry_leak') else str(a.get('kind') or '')
+    fair, i = [], 0
+    while i < len(alerts):
+        j = i
+        key = (RANK.get(alerts[i]['severity'], 0), order.get(alerts[i]['state'], 0))
+        while j < len(alerts) and (RANK.get(alerts[j]['severity'], 0), order.get(alerts[j]['state'], 0)) == key:
+            j += 1
+        queues = {}
+        for a in alerts[i:j]:
+            queues.setdefault(lane_of(a), []).append(a)
+        lanes_in_tier = sorted(queues)
+        while any(queues[q] for q in lanes_in_tier):
+            for q in lanes_in_tier:
+                if queues[q]:
+                    fair.append(queues[q].pop(0))
+        i = j
+    alerts = fair
     overflow = max(0, len(alerts) - max_alerts)
     posted, deferred = alerts[:max_alerts], alerts[max_alerts:]
     ## Stamps happen HERE, on what was actually selected: a deferred alert
     ## keeps its previous notification stamp, its previous severity and an
-    ## un-noted quiet flag, so the same rule re-selects it next tick.
+    ## un-noted quiet flag, so the same rule re-selects it next tick. A
+    ## Sentry fact that will not recur by itself (a new issue, a dated
+    ## transition) is kept PENDING and re-emitted until posted.
     for a in posted:
         rec = incidents.get(a['fingerprint'])
         if rec is None:
             continue
-        if a['state'] == 'quiet':
+        if a['state'] in ('quiet', 'resolved'):
             rec['quiet_noted'] = True
         else:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
+        if a['kind'] == 'sentry':
+            rec['pending'] = None
+            rec['pending_transition_at'] = None
+            if a['state'] in ('regressed', 'escalating') and a.get('transition_at'):
+                rec['transition_at'] = a['transition_at']
+            if a['state'] not in ('quiet', 'resolved'):
+                rec['backlog'] = False
     for a in deferred:
         rec = incidents.get(a['fingerprint'])
         if rec is not None and a['state'] == 'escalated' and a.get('prev_severity'):
             rec['severity'] = a['prev_severity']
+        if rec is not None and a['kind'] == 'sentry' and a['state'] in ('new', 'regressed', 'escalating'):
+            rec['pending'] = a['state']
+            rec['pending_transition_at'] = a.get('transition_at')
     if lanes.get('loki'):
         for q in [q for q in cursors if q not in loki_per_query]:
             ## A query absent this tick keeps its high-water mark (a
@@ -2315,15 +3269,19 @@ tool decide:
             cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'frontier_ns': str(info.get('frontier_ns') or info['covered_to_ns']),
                           'at': now_iso, 'band': list(info.get('band') or []), 'band_base_ns': str(info.get('band_base_ns') or 0),
                           'overlap_from_ns': str(info.get('overlap_from_ns') or 0), 'history_to_ns': str(info.get('history_next_ns') or 0)}
-    needs_analysis = any(a['state'] in ('new', 'escalated') and a['kind'] in ('probe', 'prom', 'loki') for a in posted)
+    needs_analysis = any(a['state'] in ('new', 'escalated', 'regressed', 'escalating') and a['kind'] in ('probe', 'prom', 'loki', 'sentry')
+                         for a in posted)
 
     ## Zero-façade guard: if EVERY configured lane errored this tick there
     ## is no basis to claim "nothing to report" — fail loudly instead.
     cfg_lanes = [k for k, v in lanes.items() if v]
     dead = [k for k in cfg_lanes if not lane_ok.get(k, True)]
     if cfg_lanes and len(dead) == len(cfg_lanes):
+        why = lane_errors
+        if 'sentry' in dead and not sentry_errors and sentry_walk.get('partial'):
+            why = '; '.join(x for x in (why, 'sentry: ' + ', '.join(str(r) for r in sentry_walk['partial'])) if x)
         raise SystemExit('prod-watch: every configured lane failed this tick (' + ', '.join(dead) + ') -- refusing to report a quiet tick' +
-                         (': ' + lane_errors if lane_errors else ''))
+                         (': ' + why if why else ''))
 
     ## Shared scratch: the handoff names carry the run id.
     state_next = os.path.join(scratch, 'state_next-' + str({{run.id}})[-12:] + '.json')
@@ -2332,19 +3290,22 @@ tool decide:
     alertlog = os.path.join(scratch, 'alertlog_delta-' + str({{run.id}})[-12:] + '.jsonl')
     with open(alertlog, 'w', encoding='utf-8') as fh:
         for a in posted:
+            ## A Sentry alert logs its short id, never the issue's text: the
+            ## log is committed with the state.
             fh.write(json.dumps({'at': now_iso, 'fp': a['fingerprint'], 'kind': a['kind'], 'severity': a['severity'],
-                                 'state': a['state'], 'title': a['title_arg'], 'count': a['count'], 'release': release},
+                                 'state': a['state'], 'title': a.get('log_title') or a['title_arg'], 'count': a['count'], 'release': release},
                                 ensure_ascii=False) + chr(10))
     tick = os.path.join(scratch, 'tick-' + str({{run.id}})[-12:] + '.json')
     with open(tick, 'w', encoding='utf-8') as fh:
         json.dump({'at': now_iso, 'generation': state['generation'], 'lines': signals.get('lines_scanned', 0),
                    'templates': len(signals.get('templates') or []), 'alerts': len(posted), 'overflow': overflow,
                    'lanes_ok': lane_ok, 'coverage': coverage, 'release': release, 'release_known': release_known,
-                   'bootstrap': bootstrap}, fh, ensure_ascii=False)
+                   'bootstrap': bootstrap, 'sentry_issues': len(s_issues), 'sentry_bootstrap': bool(s_on and s_boot)}, fh, ensure_ascii=False)
     summary = ('alerts: ' + str(len(posted)) + ' to post (' + str(overflow) + ' overflow), ' + str(observed_new) +
                ' observed, ' + str(len(incidents)) + ' open incident(s), coverage ' + coverage +
-               (', BOOTSTRAP' if bootstrap else '') +
-               ((' -- lane errors: ' + json.dumps(loki_errors + prom_errors)[:400]) if (loki_errors or prom_errors) else ''))
+               (', BOOTSTRAP' if bootstrap else '') + (', SENTRY BOOTSTRAP' if s_on and s_boot else '') +
+               ((' -- lane errors: ' + json.dumps(loki_errors + prom_errors + sentry_errors)[:400])
+                if (loki_errors or prom_errors or sentry_errors) else ''))
     print(json.dumps({'alerts': posted, 'alert_count': len(posted), 'overflow_count': overflow, 'generation': generation_seen,
                       'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage, 'reasons': coverage_reasons}] if coverage_note else []),
                       'needs_analysis': needs_analysis, 'state_next_file': state_next, 'alertlog_file': alertlog,
@@ -2372,6 +3333,7 @@ tool notify:
     sinks = {{input.sinks}} or []
     labels = {{input.labels}} or {}
     app = {{input.app}} or {}
+    sentry = {{input.sentry}} or {}
     release = {{input.release}} or ''
     release_known = bool({{input.release_known}})
     dry_run = {{input.dry_run}}
@@ -2397,10 +3359,18 @@ tool notify:
         ## nothing a reader copies out of the span is a live link either.
         t = flat(s, cap).replace('`', "'")
         return '`' + re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
+    def untrusted(s, cap=300):
+        ## A value an attacker can write (a Sentry culprit, a container or
+        ## metric name) is inert AND cannot ping or link: a zero-width space
+        ## after every `@` defeats @channel / @all / @here / @user, and one
+        ## inside `www.` defeats Mattermost's scheme-less autolink. (Inline
+        ## code, where titles and samples render, parses neither.)
+        t = inert(s, cap).replace('@', '@' + chr(8203))
+        return re.sub(r'(?i)www\.', lambda m: m.group(0)[:3] + chr(8203) + '.', t)
     def fmt(label, /, **kw):
         t = labels.get(label) or label
         for k, v in kw.items():
-            t = t.replace('{' + k + '}', inert(v, 200))
+            t = t.replace('{' + k + '}', untrusted(v, 200))
         return t
 
     scope = flat(app.get('name'), 60) + ('/' + flat(app.get('environment'), 40) if app.get('environment') else '')
@@ -2409,7 +3379,12 @@ tool notify:
         sev = a.get('severity') or 'medium'
         state = a.get('state') or 'new'
         head = fmt(a.get('title_key') or 'alert')
-        marker = {'new': labels.get('alert'), 'escalated': labels.get('escalated'), 'reminder': labels.get('reminder'), 'quiet': labels.get('quiet')}.get(state) or state
+        ## A closed Sentry issue's note names its status: resolved, archived,
+        ## or gone (deleted, merged).
+        closed = {'resolved': 'sentry_resolved', 'ignored': 'sentry_archived'}.get(str((a.get('evidence') or {}).get('status') or ''), 'sentry_closed')
+        marker = {'new': labels.get('alert'), 'escalated': labels.get('escalated'), 'reminder': labels.get('reminder'), 'quiet': labels.get('quiet'),
+                  'regressed': labels.get('sentry_regressed'), 'escalating': labels.get('sentry_escalating'),
+                  'resolved': labels.get(closed)}.get(state) or state
         lines = [ICON.get(sev, ':bell:') + ' **' + inert(marker, 40).upper() + ' · ' + inert(scope, 100) + ' — ' + inert(head, 120) + '**']
         if a.get('title_arg'):
             lines.append(code(a['title_arg'], 200))
@@ -2428,6 +3403,17 @@ tool notify:
             lines.append('> ' + code(ev['sample'], 300))
         if ev.get('sample_masked'):
             lines.append('> ' + inert(labels.get('sample', 'masked sample'), 40) + ': ' + code(ev['sample_masked'], 120))
+        ## The bot's ONE clickable link: a Sentry issue, built by decide from
+        ## the configured base URL and org and a digits-only id — rendered
+        ## only when it is exactly that shape under the configured prefix;
+        ## its text is the short id (a closed alphabet) or the digits.
+        prefix = sentry.get('link_prefix') or ''
+        link = ev.get('link')
+        if (a.get('kind') == 'sentry' and prefix and isinstance(link, str)
+                and re.fullmatch(re.escape(prefix) + r'[0-9]{1,20}/', link)):
+            short = ev.get('short_id') if isinstance(ev.get('short_id'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', ev['short_id']) \
+                else link[len(prefix):-1]
+            lines.append(inert(labels.get('sentry_open', 'open in Sentry'), 40) + ': [' + short.replace('_', '\\_') + '](' + link + ')')
         messages.append((sev, chr(10).join(lines), False))
     ## Meta notices — overflow, a silent source, partial coverage — are
     ## about the WATCHDOG's own sight, not an incident's severity: they
@@ -2751,7 +3737,14 @@ workflow prod_watch:
     allow_private: "{{vars.allow_private_sources}}"
   }
 
-  poll_prom -> probe_http with {
+  poll_prom -> poll_sentry with {
+    sentry: "{{outputs.plan.sentry}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    allow_private: "{{vars.allow_private_sources}}"
+  }
+
+  poll_sentry -> probe_http with {
     probes: "{{outputs.plan.probes}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     allow_private: "{{vars.allow_private_sources}}"
@@ -2760,6 +3753,8 @@ workflow prod_watch:
   probe_http -> leak_scan with {
     raw_file: "{{outputs.poll_loki.raw_file}}",
     per_query: "{{outputs.poll_loki.per_query}}",
+    sentry_file: "{{outputs.poll_sentry.raw_file}}",
+    sentry_issues: "{{outputs.poll_sentry.issues}}",
     app: "{{outputs.plan.app}}",
     scratch_dir: "{{vars.scratch_dir}}"
   }
@@ -2774,6 +3769,12 @@ workflow prod_watch:
     loki_per_query: "{{outputs.poll_loki.per_query}}",
     prom_ok: "{{outputs.poll_prom.ok}}",
     prom_errors: "{{outputs.poll_prom.errors}}",
+    sentry: "{{outputs.plan.sentry}}",
+    sentry_ok: "{{outputs.poll_sentry.ok}}",
+    sentry_truncated: "{{outputs.poll_sentry.truncated}}",
+    sentry_errors: "{{outputs.poll_sentry.errors}}",
+    sentry_walk: "{{outputs.poll_sentry.walk}}",
+    sentry_issues: "{{outputs.poll_sentry.issues}}",
     release: "{{outputs.resolve_release.release}}",
     release_known: "{{outputs.resolve_release.release_known}}",
     lanes: "{{outputs.plan.lanes}}",
@@ -2795,6 +3796,7 @@ workflow prod_watch:
     sinks: "{{outputs.plan.sinks}}",
     labels: "{{outputs.plan.labels}}",
     app: "{{outputs.plan.app}}",
+    sentry: "{{outputs.plan.sentry}}",
     release: "{{outputs.resolve_release.release}}",
     release_known: "{{outputs.resolve_release.release_known}}",
     dry_run: "{{vars.dry_run}}",

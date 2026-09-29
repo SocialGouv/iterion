@@ -1,6 +1,6 @@
 ---
 name: signals-and-queries
-description: prod-watch (Argus) signal lanes — the Loki window and cursor contract, what the redaction scan derives (templates, leak classes, coverage), how Prometheus probes are typed, the health probes, and how to read a tick's outputs and messages.
+description: prod-watch (Argus) signal lanes — the Loki window and cursor contract, the Sentry lists and what posts when, what the redaction scan derives (templates, leak classes, coverage), how Prometheus probes are typed, the health probes, and how to read a tick's outputs and messages.
 ---
 
 # Signals and queries
@@ -199,6 +199,98 @@ explicit range for counters; the examples in `argus-config.md` assume
 kube-state-metrics and ingress-nginx metrics, which are **not** present
 on every cluster — validate them on yours.
 
+## Sentry — three lists, facts the server holds
+
+Off unless `config.sentry` is set (see `skills/argus-config.md`). Each tick
+reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
+`project=<id>`, the configured `environment`, `statsPeriod=14d`,
+`collapse=stats`, 100 per page):
+
+- **new** — `is:unresolved firstSeen:>=<cursor − overlap>`, sorted new.
+  With an environment, Sentry filters on the processing time of the
+  issue's first event THERE: a late event or a client clock cannot hide a
+  new issue. An issue returned here that the lane does not track is NEW.
+  The payload's `firstSeen` is never read — its meaning changes with the
+  API path. (This holds on Sentry's Postgres search path, the one measured
+  on self-hosted 24.11; an organization whose issue search runs on the
+  group-attributes executor filters `firstSeen` project-wide instead: an
+  issue already seen in another environment is then not NEW when it first
+  reaches the watched one — only its regressions and escalations post.)
+- **transitions** — `is:unresolved substatus:[regressed,escalating]`.
+  Resolved and archived issues never appear in an unresolved list, so a
+  regression arrives as an issue the lane may never have tracked; it is
+  dated by its own activity (`set_regression` / `set_escalating`), at
+  most `max_transition_checks` lookups a tick: the undated ones first (an
+  undated one the cap leaves is a loss — partial coverage), then the
+  re-checks of dated ones an event arrived after (a new regression needs
+  a new event), least recently checked first — a deferred re-check keeps
+  its date and waits its turn, so busy regressed issues never starve a
+  new one. Every dated one is re-checked in turn, whether or not an event
+  moved in the watched environment: substatus and activities are
+  project-wide, so a second regression can come from another environment.
+  A transition dated before the arming is recorded as history. The level
+  floor does not apply to an issue the lane already knows.
+- **tracked** — the alerted (or pending) issues by id, their current
+  status and last event.
+
+An explicit `query` always: without one Sentry applies its default
+(`is:unresolved issue.priority:[high, medium]`) and low-priority issues
+vanish. The environment is checked first (an unknown one answers an
+empty list — indistinguishable from "no issue"). Only the `cursor=` value
+of the `Link` header is followed, never its URL; a short page with
+`results="true"` is not the end. The cursor's `since` is Sentry's own
+`Date` (the runner's clock, read before the first request, only when
+the header is missing — the walk says `clock: local`), and advances only
+when the new-issue list completed; a cursor older than
+`max_catchup_hours` opens at that floor and the gap is declared.
+
+**What posts, in this order.** A bootstrap (no cursor, or a changed lane
+identity) posts nothing and records every issue read as backlog; it arms
+only once the new-issue list was read whole with every call answered.
+Then:
+a transition dated after the arming (minus the overlap) and newer than
+the recorded one posts `REGRESSED IN SENTRY` / `ESCALATING IN SENTRY` —
+tracked or not, backlog or not, with or without a new event this tick
+(the substatus is project-wide, the counts environment-scoped); an
+untracked issue of the new list posts NEW; an alerted issue whose last
+event moved is a sighting — `ESCALATED` when its level-mapped severity
+rose, `STILL OPEN` once per `renotify_hours`; an alerted issue Sentry
+reports closed gets one note naming the status (`RESOLVED IN SENTRY`,
+`ARCHIVED IN SENTRY`, `DELETED OR MERGED IN SENTRY` — after any pending
+alert of it went out), one idle for `quiet_after_hours` (while the by-id
+read was complete) one `NOT OBSERVED ANY MORE`. An alert the per-run cap
+cuts stays PENDING and is re-emitted every tick until posted (a new issue
+or a dated transition does not recur by itself); a cut closing note is
+re-emitted from the recorded status. Anything else read is tracked
+silently: a backlog issue never posts on mere recurrence, and an issue
+merely re-read for `forget_after_days` leaves the tracked set.
+
+**What a message shows.** The scrubbed title, the level, the events
+(the lists count the last 14 days; an issue read only by id shows its
+count over its whole life — the detail says which), the users, the
+culprit, and ONE clickable link built
+from the configured base URL, org and the digit id — never the API's
+`permalink`, rendered only when it is exactly that shape. Severity comes
+from the level (`severity` map), capped by `max_severity`.
+
+**Redaction.** Titles, culprits and metadata go to the scratch handoff
+only; `leak_scan` scrubs every field (bounded first, cut to display size
+after the scrub), and counts a class found in an issue's text once per
+sighting of that issue — a `sentry_leak:<class>` incident with a masked
+sample, never a value. No event body is read in this slice: the user
+block, the request, frame locals and breadcrumbs stay in Sentry — the
+leak classes cover issue text only.
+
+**Limits, said.** Level and substatus are project-wide Sentry facts (an
+event from another environment moves them); the "last event" of a
+sighting is an event time (tolerance = `overlap_minutes`); a public DSN
+lets anyone create issues — a flood pushes the lists into their caps
+(partial coverage, named) and the alerts into the per-run cap (pending,
+delivered over the next ticks; inside one rank the lanes take turns under
+the cap, so a flood never holds it against another lane). Issue text
+anyone can write never pings nor links: titles render in inline code, a
+culprit (or any other lane's field) with every `@` and `www.` broken.
+
 ## Health probes
 
 `GET` on each configured URL, `ok` when the status matches
@@ -220,12 +312,15 @@ malformed status line is the server's text, withheld.
 - `commit_state` — `committed` (pushed) and what was logged.
 
 Messages carry a marker (`PRODUCTION ALERT` / `ESCALATED` / `STILL OPEN`
-/ `NOT OBSERVED ANY MORE` — wording from `labels`), the app/environment,
+/ `NOT OBSERVED ANY MORE`, and for Sentry `REGRESSED IN SENTRY` /
+`ESCALATING IN SENTRY` / `RESOLVED IN SENTRY` — wording from `labels`), the app/environment,
 the incident title, the detail line, severity, first-seen date and the
 occurrence count, and — for a log template — the redacted sample as a
-quote. Notes (`:warning:`) announce an overflow, a silent source (its
-last error quoted), or a partial-coverage tick (a Loki query truncated,
-gapped or failed, a Prometheus probe failed, a cut template list) — each
+quote; a Sentry alert its scrubbed title and link. Notes (`:warning:`)
+announce an overflow, a silent source (its last error quoted), or a
+partial-coverage tick (a Loki query truncated, gapped or failed, a
+Prometheus probe failed, a cut template list, a Sentry walk partial or
+failed) — each
 COMPONENT of the partiality once, then again only after `renotify_hours`,
 whatever the combination (a query's gap, a lane's error kind — queries or
 probes failing in turn with the same error are one kind, the same error on

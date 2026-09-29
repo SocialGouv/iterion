@@ -1,6 +1,6 @@
 ---
 name: argus-config
-description: prod-watch (Argus) workspace configuration — the prod-watch.json format (app, release, grafana, loki, prometheus, probes, sinks, labels), the secrets, the state layout in the ops repository, and the cloud schedule + binding recipe.
+description: prod-watch (Argus) workspace configuration — the prod-watch.json format (app, release, grafana, loki, prometheus, probes, sentry, sinks, labels), the secrets, the state layout in the ops repository, and the cloud schedule + binding recipe.
 ---
 
 # prod-watch workspace configuration
@@ -37,6 +37,7 @@ overrides).
     {"id": "api_health", "url": "https://api.myapp.example/api/v1/health", "expect_status": 200, "timeout_secs": 10, "severity": "critical"},
     {"id": "frontend", "url": "https://myapp.example/live", "expect_status": 200, "severity": "high"}
   ],
+  "sentry": {"base_url": "https://sentry.example", "org": "myorg", "project": "myapp", "environment": "preprod", "min_level": "error"},
   "sinks": [
     {"kind": "mattermost", "webhook": "mm_myapp_ops", "channel": "#myapp-prod", "username": "Argus", "icon_emoji": ":eye:", "min_severity": "medium", "required": true}
   ],
@@ -76,6 +77,30 @@ overrides).
   series posts a `no_data` incident rather than reading as healthy).
 - `probes` — the app's own health URLs. Public hosts only unless
   `--var allow_private_sources=true` (on-prem / hermetic tests).
+- `sentry` — absent or `null`: the lane is off. `base_url` (https, no
+  query, fragment or credentials; the prefix of the ONE clickable link
+  the bot renders), `org` and `project` (slugs), `environment` (strongly
+  recommended: with it, NEW means "first event processed in this
+  environment", a server-side processing time; without it Sentry filters
+  on the issue's first event time, which a late event or a client clock
+  can move), `min_level` (`fatal|error|warning|info|debug`, default
+  `error`: below it the lane never STARTS tracking an issue — an issue
+  already alerted stays observed whatever its latest event's level),
+  `severity` (level → `critical|high|medium|low`, defaults fatal→high,
+  error→medium, warning and below→low), `max_severity` (default `high`:
+  a level is event content anyone with the public DSN writes, so
+  `critical` from Sentry is an opt-in), `overlap_minutes` (60),
+  `max_issues` (per list, pages of 100; default 200),
+  `max_transition_checks` (activity lookups per tick; 20),
+  `max_tracked` (alerted issues re-read by id; 200), `deadline_secs`
+  (120: the walk stops there, partial, never the tick's death),
+  `max_catchup_hours` (24: a cursor older than that — the lane turned
+  off, a long outage — opens at the floor and declares the gap instead of
+  posting days-old issues as new). The lane's IDENTITY — base URL, org,
+  project, environment — travels in its cursor: changing any of them
+  drops the old identity's incidents and cursor, and re-arms the lane (a
+  silent bootstrap). `min_level` is not part of it: moving it drops
+  nothing. See `skills/signals-and-queries.md` for what posts when.
 - `sinks` — same contract as feed-watch/vuln-watch: `webhook` is a NAME
   looked up in the `webhooks` secret; `min_severity` filters what a sink
   receives (notes such as overflow, staleness and partial coverage are
@@ -103,6 +128,12 @@ overrides).
   error on every query and probe,
   named in the coverage note: the health probes still report (with no
   other lane configured, the tick is refused, naming it).
+- `sentry_token` — a Sentry auth token with `project:read` and
+  `event:read` on the watched project (an internal integration's, or a
+  user token — nothing more: the lane never writes). Read only by
+  `poll_sentry`; one token on one line, never quoted. Unbound, blank,
+  malformed or refused (401/403) is a lane error named in the coverage
+  note; the other lanes still report.
 - `forge_token` — the ops repository's push credential on cloud runners
   (`state_commit=true`); local runs authenticate through the host.
 
@@ -117,7 +148,7 @@ Cloud: bind team secrets by name (`POST /api/teams/<id>/secrets` with
   .lock                  flock serializing state writes (one runner)
   .gitignore             keeps .lock out of git (written by the bot)
   .gitattributes         alertlog.jsonl and ticks.jsonl merge=union
-  state.json             cursors + incidents + source health — mode=watch is its ONLY writer
+  state.json             cursors (Loki, Sentry) + incidents + source health — mode=watch is its ONLY writer
   alertlog.jsonl         append-only history of every alert posted
   ticks.jsonl            append-only tick ledger (the digest slice reads it)
 ```
@@ -133,6 +164,12 @@ frontier or at the overlap below the mark, never before the band's bound,
 so a line is written exactly once across ticks. The hashes are not
 reversible, but they are a **confirmation oracle** over raw log content —
 one more reason the ops repository that carries the state is private.
+
+The Sentry cursor is `{identity, armed_at, since, at}`; a Sentry incident
+persists structured fields only (short id, level, link, the last event
+time, the transition date, backlog/pending flags) — issue titles and
+culprits are rendered from each tick's scrubbed signals and never written
+to the state or the alert log, which are committed for good.
 
 Two options, pick ONE: gitignore the state dir (host cron on one
 machine), or `--var state_commit=true` (required on ephemeral cloud
@@ -153,7 +190,12 @@ replays the same alerts next tick (at-least-once, never lost);
 (`bootstrap_window_minutes`, default 10) and OBSERVES the error templates
 without posting them — an install must not replay history as news — while
 failing probes and breached metrics DO post: they describe the present.
-An observed template posts as NEW the first time it recurs.
+An observed template posts as NEW the first time it recurs. The Sentry
+lane's first tick records every issue it reads (the issues first seen in
+the overlap, the regressed and escalating ones) as backlog and posts
+nothing; unlike a log template, a backlog issue never posts on mere
+recurrence — only through Sentry's own transitions (a regression, an
+escalation) dated after the arming.
 
 ## Scheduling recipe
 
@@ -211,6 +253,24 @@ managed secret under the name `forge_token` (see vuln-watch's
   `renotify_hours`, whatever the combination: queries or probes failing
   in turn with the same error, or a lane flapping, do not re-post it
   every tick.
+- **"CredentialRefused: Sentry refused the token (HTTP 401/403)"** —
+  the `sentry_token` lacks `project:read`/`event:read` on the project, or
+  it expired. **"environment 'X' is unknown to project org/proj"** — a
+  typo, or an environment no event of that project ever carried (Sentry
+  creates it with its first event). **"project org/proj not found, or not
+  visible to the token"** — the slug, or the token's scope. Each is a lane
+  error: the other lanes still report.
+- **`sentry: partial walk (…)`** in a coverage note — a list stopped at
+  `max_issues`, the activity lookups at `max_transition_checks`, the
+  tracked ids over `max_tracked`, the deadline passed, or an issue was
+  malformed; the causes are named. Nothing is concluded from absence that
+  tick (no "not observed any more"); a flood of distinct issues from a
+  public DSN is one way there — raise the caps or tighten `min_level`
+  (pending alerts survive either). **`sentry: gap — the cursor was older
+  than max_catchup_hours …`** — issues first processed in the named
+  interval were never read as new (a loss, said once). While the lane
+  has not armed yet (its bootstrap was cut), each tick bootstraps again,
+  silently, until the new-issue list is read whole.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

@@ -43,6 +43,24 @@ func pwTool(t *testing.T, wf *ir.Workflow, id string) *ir.ToolNode {
 // with the mounted path, failing on any leftover ref.
 func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map[string]string) string {
 	t.Helper()
+	// A test that sets NO Sentry input gets the lane-off ones; one that sets
+	// any must set them all (the unsubstituted-ref check below says which).
+	merged := map[string]any{}
+	partial := false
+	for k := range pwSentryOff {
+		if _, set := inputs[k]; set {
+			partial = true
+		}
+	}
+	for k, v := range pwSentryOff {
+		if !partial && strings.Contains(script, "{{input."+k+"}}") {
+			merged[k] = v
+		}
+	}
+	for k, v := range inputs {
+		merged[k] = v
+	}
+	inputs = merged
 	for k, v := range inputs {
 		b, err := json.Marshal(v)
 		if err != nil {
@@ -163,6 +181,9 @@ type pwHarness struct {
 	sinkMu                               sync.Mutex
 	sinkBodies                           []string
 	sinkHits                             atomic.Int64
+	sentry                               *pwSentry // the fake Sentry (prod_watch_sentry_test.go)
+	sentryTokenFile                      string
+	alertCap                             atomic.Int64 // tick()'s max_alerts when set (0: the bot's default 20)
 }
 
 const pwToken = "glsa_test_token_0123456789"
@@ -333,11 +354,16 @@ func newPWHarness(t *testing.T) *pwHarness {
 	mux.HandleFunc("/hook-down", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
+	h.mountSentry(mux)
 	h.srv = httptest.NewServer(mux)
 	t.Cleanup(h.srv.Close)
 
 	h.tokenFile = filepath.Join(h.scratch, "grafana_token")
 	if err := os.WriteFile(h.tokenFile, []byte(pwToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.sentryTokenFile = filepath.Join(h.scratch, "sentry_token")
+	if err := os.WriteFile(h.sentryTokenFile, []byte(pwSentryToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h.webhooksFile = filepath.Join(h.scratch, "webhooks.json")
@@ -400,7 +426,7 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
 		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000,
 	}
-	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}
+	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile, "sentry_token": h.sentryTokenFile}
 	h.stderrs = map[string]string{}
 	run := func(id string, inputs map[string]any) map[string]any {
 		t.Helper()
@@ -420,18 +446,23 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 	loki := run("poll_loki", map[string]any{"grafana": plan["grafana"], "loki": plan["loki"], "timeout_secs": 5,
 		"scratch_dir": h.scratch, "allow_private": true})
 	prom := run("poll_prom", map[string]any{"grafana": plan["grafana"], "prometheus": plan["prometheus"], "timeout_secs": 5, "allow_private": true})
+	sentry := run("poll_sentry", map[string]any{"sentry": plan["sentry"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true})
 	probe := run("probe_http", map[string]any{"probes": plan["probes"], "timeout_secs": 5, "allow_private": true})
-	leak := run("leak_scan", map[string]any{"raw_file": loki["raw_file"], "per_query": loki["per_query"], "app": plan["app"], "scratch_dir": h.scratch})
+	leak := run("leak_scan", map[string]any{"raw_file": loki["raw_file"], "per_query": loki["per_query"],
+		"sentry_file": sentry["raw_file"], "sentry_issues": sentry["issues"], "app": plan["app"], "scratch_dir": h.scratch})
 	decide := run("decide", map[string]any{
 		"signals_file": leak["signals_file"], "prom_results": prom["results"], "http_results": probe["results"],
 		"loki_ok": loki["ok"], "loki_truncated": loki["truncated"], "loki_errors": loki["errors"], "loki_per_query": loki["per_query"],
 		"prom_ok": prom["ok"], "prom_errors": prom["errors"], "release": rel["release"], "release_known": rel["release_known"],
+		"sentry": plan["sentry"], "sentry_ok": sentry["ok"], "sentry_truncated": sentry["truncated"], "sentry_errors": sentry["errors"],
+		"sentry_walk": sentry["walk"], "sentry_issues": sentry["issues"],
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20,
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(),
 	})
 	notify := run("notify", map[string]any{
 		"alerts": decide["alerts"], "overflow_count": decide["overflow_count"], "stale_sources": decide["stale_sources"],
-		"sinks": plan["sinks"], "labels": plan["labels"], "app": plan["app"], "release": rel["release"], "release_known": rel["release_known"],
+		"sinks": plan["sinks"], "labels": plan["labels"], "app": plan["app"], "sentry": plan["sentry"],
+		"release": rel["release"], "release_known": rel["release_known"],
 		"dry_run": dryRun, "max_message_chars": 14000,
 	})
 	if notify["consume"] == true {
@@ -2882,13 +2913,15 @@ func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 		"resolve_release": {"release": true, "timeout_secs": true, "allow_private": true},
 		"poll_loki":       {"grafana": true, "loki": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
 		"poll_prom":       {"grafana": true, "prometheus": true, "timeout_secs": true, "allow_private": true},
+		"poll_sentry":     {"sentry": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
 		"probe_http":      {"probes": true, "timeout_secs": true, "allow_private": true},
-		"leak_scan":       {"raw_file": true, "per_query": true, "app": true, "scratch_dir": true},
+		"leak_scan":       {"raw_file": true, "per_query": true, "sentry_file": true, "sentry_issues": true, "app": true, "scratch_dir": true},
 		"decide": {"signals_file": true, "prom_results": true, "http_results": true, "loki_ok": true, "loki_truncated": true,
 			"loki_errors": true, "loki_per_query": true, "prom_ok": true, "prom_errors": true, "release": true, "release_known": true,
+			"sentry": true, "sentry_ok": true, "sentry_truncated": true, "sentry_errors": true, "sentry_walk": true, "sentry_issues": true,
 			"lanes": true, "app": true, "workspace": true, "state_dir": true, "scratch_dir": true, "renotify_hours": true,
 			"quiet_after_hours": true, "forget_after_days": true, "source_stale_hours": true, "max_alerts": true},
-		"notify": {"alerts": true, "overflow_count": true, "stale_sources": true, "sinks": true, "labels": true, "app": true,
+		"notify": {"alerts": true, "overflow_count": true, "stale_sources": true, "sinks": true, "labels": true, "app": true, "sentry": true,
 			"release": true, "release_known": true, "dry_run": true, "max_message_chars": true},
 		"commit_state": {"state_next_file": true, "alertlog_file": true, "tick_file": true, "generation": true,
 			"state_commit": true, "workspace": true, "state_dir": true},
