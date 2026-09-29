@@ -414,7 +414,7 @@ tool plan:
   output: plan_output
   language: py
   script: |
-    import json, os, re, sys, time, datetime
+    import json, os, re, sys, time, datetime, hashlib
     from urllib.parse import urlsplit
     ws = {{vars.workspace_dir}}
     cfg_path = {{vars.config_path}}
@@ -567,6 +567,13 @@ tool plan:
             raise SystemExit('prod-watch: config.sentry.base_url must be an http(s) URL with a host and no query, fragment or credentials, got ' +
                              repr(s_base)[:80])
         s_base = s_base.rstrip('/')
+        ## Normalized before it becomes the lane identity and the link prefix:
+        ## scheme and host lower-cased, a default port dropped.
+        m = re.match(r'(https?)://([^/:]+)(?::([0-9]{1,5}))?(.*)$', s_base, re.I)
+        port = m.group(3)
+        if port and ((m.group(1).lower() == 'https' and port == '443') or (m.group(1).lower() == 'http' and port == '80')):
+            port = None
+        s_base = m.group(1).lower() + '://' + m.group(2).lower() + (':' + port if port else '') + m.group(4)
         for f in ('org', 'project'):
             v = sentry_cfg.get(f)
             if not isinstance(v, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,99}', v):
@@ -591,6 +598,9 @@ tool plan:
         s_max_tracked = s_int('max_tracked', 200, 0, 1000)
         s_deadline = s_int('deadline_secs', 120, 10, 600)
         s_catchup = s_int('max_catchup_hours', 24, 1, 720)
+        if s_overlap >= s_catchup * 60:
+            raise SystemExit('prod-watch: config.sentry.overlap_minutes (' + str(s_overlap) + ') must be below max_catchup_hours x 60 (' +
+                             str(s_catchup * 60) + '): the overlap re-reads what the catch-up floor would otherwise call a gap')
         s_sev = {'fatal': 'high', 'error': 'medium', 'warning': 'low', 'info': 'low', 'debug': 'low'}
         user_sev = sentry_cfg.get('severity')
         if user_sev is not None:
@@ -716,7 +726,7 @@ tool plan:
         for f in ('short_id', 'level', 'link', 'substatus', 'status', 'pending'):
             if rec.get(f) is not None and not isinstance(rec[f], str):
                 refuse_state(where + '.' + f, rec[f], 'a string')
-        for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at'):
+        for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since'):
             if rec.get(f) is not None and not is_iso(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
         if rec.get('backlog') is not None and not isinstance(rec['backlog'], bool):
@@ -835,9 +845,9 @@ tool plan:
     ## ── sentry cursor + the incidents' index ───────────────────────
     ## decide writes cursors.sentry whole — {identity, armed_at, since, at}
     ## — and this reads exactly that, whether the lane is on or not. A
-    ## cursor of another identity (the config moved to another project,
-    ## environment or level floor) is a BOOTSTRAP: the lane re-arms and
-    ## decide drops the old identity's incidents.
+    ## cursor of another identity (the config moved to another Sentry,
+    ## project or environment) is a BOOTSTRAP: the lane re-arms and decide
+    ## drops the old identity's incidents.
     sc = lane_cursors.get('sentry')
     if sc is not None:
         if not isinstance(sc, dict):
@@ -848,10 +858,17 @@ tool plan:
         for f in ('armed_at', 'since', 'at'):
             if not is_iso(sc.get(f)) or datetime.datetime.fromisoformat(sc[f]).tzinfo is None:
                 refuse_state('cursors.sentry.' + f, sc.get(f), 'an ISO timestamp with its offset')
+    if state.get('sentry_identity') is not None and not isinstance(state.get('sentry_identity'), str):
+        refuse_state('sentry_identity', state.get('sentry_identity'), 'a string')
     if sentry['enabled']:
+        ## The identity key decide stamps on the state on every tick the lane
+        ## is on — armed or not — so a switch during a bootstrap that never
+        ## armed drops that memory too.
+        sentry['identity_key'] = hashlib.sha1(json.dumps(sentry['identity'], sort_keys=True).encode()).hexdigest()[:16]
         same = sc is not None and sc.get('identity') == sentry['identity']
         sentry['bootstrap'] = not same
-        sentry['identity_changed'] = sc is not None and not same
+        sentry['identity_changed'] = ((sc is not None and not same) or
+                                      (state.get('sentry_identity') not in (None, sentry['identity_key'])))
         sentry['armed_at'] = sc['armed_at'] if same else ''
         sentry['since'] = sc['since'] if same else ''
         ## A bootstrap reads the issues first seen within the overlap below
@@ -861,13 +878,17 @@ tool plan:
         ref = datetime.datetime.fromisoformat(sc['since']) if same else now_dt
         new_from = ref - datetime.timedelta(minutes=sentry['overlap_minutes'])
         ## A cursor older than max_catchup_hours (the lane turned off, a long
-        ## outage) opens at the floor instead: the stretch in between is a
-        ## declared gap — never a flood of old issues posted as new.
+        ## outage) opens at the floor instead: the stretch between the cursor
+        ## and the floor is a declared gap — never a flood of old issues posted
+        ## as new — and decide records every transition dated before the floor
+        ## as history. The overlap below the cursor was read already: only a
+        ## cursor itself below the floor is a gap.
         floor = now_dt - datetime.timedelta(hours=sentry['max_catchup_hours'])
+        sentry['catchup_floor'] = floor.isoformat(timespec='seconds')
         sentry['gap_since'] = ''
-        if new_from < floor:
-            sentry['gap_since'] = new_from.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-            new_from = floor
+        if same and ref < floor:
+            sentry['gap_since'] = ref.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        new_from = max(new_from, floor)
         sentry['new_since'] = new_from.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         known, tracked = {}, []
         if same:
@@ -877,12 +898,15 @@ tool plan:
                     continue
                 known[sid] = {'transition_at': rec.get('transition_at'), 'last_seen': rec.get('sentry_last_seen'),
                               'checked_at': rec.get('transition_checked_at')}
-                ## Tracked by id: what is pending, and what was alerted and is
-                ## still open (a regression of a resolved or archived one is
-                ## read through the transition list).
-                if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved') in ('unresolved', 'reprocessing')):
-                    tracked.append((rec.get('last_seen') or '', sid))
-        tracked.sort(reverse=True)
+                ## Tracked by id: what is pending, and what was alerted and can
+                ## still come back by itself — open, or archived (Sentry reopens
+                ## an archived issue as ongoing). A resolved one regresses
+                ## through the transition list; a deleted or merged one is gone.
+                if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved') in ('unresolved', 'reprocessing', 'ignored')):
+                    tracked.append((rec.get('tracked_read_at') or '', sid))
+        ## Least recently read first: over max_tracked, the incidents take
+        ## turns instead of the oldest never being read again.
+        tracked.sort()
         sentry['tracked_ids'] = [sid for _, sid in tracked[:sentry['max_tracked']]]
         sentry['tracked_cut'] = len(tracked) > sentry['max_tracked']
         sentry['known'] = known
@@ -1720,13 +1744,15 @@ tool poll_sentry:
                 with _opener.open(req, timeout=max(1, min(timeout, left))) as r:
                     if not server_date and r.headers.get('Date'):
                         server_date.append(r.headers.get('Date'))
-                    ## Read in chunks against the deadline: a body dripping a
-                    ## byte at a time never trips the per-read timeout.
+                    ## One recv at a time (read1), the deadline checked between
+                    ## them: a body dripping a byte at a time resets the socket
+                    ## timeout on every byte, and read(n) would wait for all n.
+                    ## The overrun is bounded by one socket timeout.
                     chunks, size = [], 0
                     while True:
                         if time.monotonic() >= deadline:
                             raise DeadlineReached('the walk passed its deadline_secs while reading ' + what)
-                        c = r.read(65536)
+                        c = r.read1(65536)
                         if not c:
                             break
                         chunks.append(c)
@@ -1860,6 +1886,7 @@ tool poll_sentry:
                 return True
 
     errors = []
+    requested = []
     complete = {'new': False, 'transition': False, 'tracked': False}
     ## `answered` (flags): at least one query answered after the setup held
     ## — the tick may report on what was read (like one Loki query
@@ -1965,6 +1992,9 @@ tool poll_sentry:
                 if env:
                     p['environment'] = env
                 body, _ = get('/api/0/organizations/' + org + '/issues/', p, 'the tracked issues')
+                ## Asked and answered: an id missing from the answer is gone
+                ## (deleted, merged) — a fact about that incident.
+                requested.extend(ids[n:n + 100])
                 stats['pages'] += 1
                 if not isinstance(body, list):
                     raise LaneError('the answer to the tracked issues is not a list (its text is withheld)')
@@ -1997,18 +2027,18 @@ tool poll_sentry:
         ('the new-issue list stopped at max_issues', not complete['new'] and 'sentry new' not in failed and not deadline_hit),
         ('the regressed/escalating list stopped at max_issues', not complete['transition'] and 'sentry transition' not in failed and not deadline_hit),
         ('transition checks capped at max_transition_checks', checks_cut),
-        ('tracked incidents over max_tracked', bool(cfg.get('tracked_cut'))),
         ('the deadline passed', deadline_hit),
         ('the cursor was older than max_catchup_hours: issues first processed between ' + str(cfg.get('gap_since') or '?') +
          ' and ' + str(cfg.get('new_since') or '?') + ' were never read as new', bool(cfg.get('gap_since'))),
         (str(stats['malformed']) + ' malformed issue(s) skipped', stats['malformed'] > 0)) if on and not ('setup' in ' '.join(failed))]
-    truncated = (not all(complete.values()) or checks_cut or deadline_hit or stats['malformed'] > 0 or bool(cfg.get('tracked_cut'))
+    truncated = (not all(complete.values()) or checks_cut or deadline_hit or stats['malformed'] > 0
                  or bool(cfg.get('gap_since')))
     walk_info = {'bootstrap': bootstrap, 'as_of': as_of, 'clock': clock, 'new_complete': complete['new'],
                  'transition_complete': complete['transition'] and not checks_cut, 'tracked_complete': complete['tracked'] and not cfg.get('tracked_cut'),
                  'pages': stats['pages'], 'activity_checks': stats['activity_checks'], 'checks_cut': checks_cut,
                  'malformed': stats['malformed'], 'filtered': stats['filtered'], 'deadline_hit': deadline_hit, 'partial': partial,
-                 'answered': flags['answered'], 'rechecks_deferred': rechecks_deferred, 'gap': bool(cfg.get('gap_since'))}
+                 'answered': flags['answered'], 'rechecks_deferred': rechecks_deferred, 'gap': bool(cfg.get('gap_since')),
+                 'tracked_requested': sorted(set(requested))}
     summary = ('sentry ' + project + ('/' + env if env else '') + ': ' + str(len(records)) + ' issue(s) read (' +
                str(sum(1 for r in records.values() if r['in_new'])) + ' in the new list, ' +
                str(sum(1 for r in records.values() if r['in_transition'])) + ' regressed/escalating, ' +
@@ -2348,14 +2378,18 @@ tool leak_scan:
         ## Or a command-line flag (`--password …`, `--db-pass …`,
         ## `--passphrase …`), SQL (`IDENTIFIED BY '…'`), a URL's credentials
         ## (`scheme://user:…@`). The value is redacted, the key kept;
-        ## `secret_ok` refuses what is no secret.
+        ## `secret_ok` refuses what is no secret. Every repeated group has
+        ## disjoint alternatives (a backslash escapes the next character, or
+        ## ends the line; a digit run is taken whole): scrubbed text is
+        ## attacker-written, and overlapping alternatives backtrack
+        ## exponentially on a value that never closes.
         ('secret_kv', re.compile(
             r'(?a)(?:(?<![A-Za-z])(?i:secret[_-]?key[_-]?base|password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)'
             r'|(?<=[a-z])(?:Password|Passwd|Pwd|Pass|Secret|Token|ApiKey|AccessKey|PrivateKey)|(?<=[A-Z])(?:Password|Passwd|Pass|Secret|Token))'
-            r'(?i:[_-]?(?:key|value|phrase|v?\d+|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
-            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,})$|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^\s=])\S+)*))'
-            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){3,})$|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){3,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
-            r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\(?=[^\\w\\s]|$)){2,})$|"((?:\\.|[^"\\\n]|\\(?=[^\\w\\s]|$)){2,})$)'
+            r'(?i:[_-]?(?:key|value|phrase|v?\d+(?!\d)|prod(?:uction)?|dev|staging|test|live|qa|preprod))*'
+            r'[\'"\]]?\s*(?:=>|[=:])\s*(?:"((?:\\.|[^"\\\n]|\\$){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\$){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\$){3,})$|\'((?:\\.|[^\'\\\n]|\\$){3,})$|([^\s\'"&,;<>]{6,}(?: (?![a-z][a-zA-Z0-9_-]*=[^\s=])\S+)*))'
+            r'|(?<![A-Za-z0-9-])--?(?:[A-Za-z0-9]+-)*(?i:password|passwd|pwd|pass|passphrase|secret|token|api-?key)\s+(?:"((?:\\.|[^"\\\n]|\\$){3,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\$){3,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\$){3,})$|\'((?:\\.|[^\'\\\n]|\\$){3,})$|([^\s\'"&,;<>-][^\s\'"&,;<>]{5,}))'
+            r'|(?i:identified\s+by|with\s+password)\s+(?:\'((?:\\.|[^\'\\\n]|\\$){2,}(?<!\\))\'|"((?:\\.|[^"\\\n]|\\$){2,}(?<!\\))"|\'((?:\\.|[^\'\\\n]|\\$){2,})$|"((?:\\.|[^"\\\n]|\\$){2,})$)'
             r'|\b[A-Za-z][A-Za-z0-9+.-]{1,20}://[^\s:/@\'"]*:([^\s:/@\'"]{4,})@'), secret_ok),
         ('nir', re.compile(r'(?<![\dA-Za-z])([12])[^\dA-Za-z\n]?(\d{2})[^\dA-Za-z\n]?(0[1-9]|1[0-2]|[2-9]\d)[^\dA-Za-z\n]?(\d{2}|2[AB])[^\dA-Za-z\n]?(\d{3})[^\dA-Za-z\n]?(\d{3})[^\dA-Za-z\n]?(\d{2})(?![\dA-Za-z])'), nir_ok),
         ('iban', re.compile(r'(?ai)\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b'), lambda m: iban_ok(m.group(0))),
@@ -2849,10 +2883,13 @@ tool decide:
         ## Another project or environment: the old identity's memory goes, and
         ## its cursor with it — a failed re-arming then retries as a bootstrap,
         ## and reverting the config is a bootstrap too, never a replay against
-        ## an empty memory.
+        ## an empty memory. The identity key is stamped on every tick the
+        ## lane is on, so a bootstrap that never armed is dropped too.
         for fp in [f for f, r in incidents.items() if r.get('kind') in ('sentry', 'sentry_leak')]:
             del incidents[fp]
         s_state.pop('sentry', None)
+    if s_on:
+        state['sentry_identity'] = sentry_cfg.get('identity_key') or ''
     s_issues = {}
     for it in (signals.get('sentry_issues') or []):
         if isinstance(it, dict) and isinstance(it.get('id'), str) and re.fullmatch(r'[0-9]{1,20}', it['id']):
@@ -2860,25 +2897,42 @@ tool decide:
     s_as_of = sentry_walk.get('as_of') if s_dt(sentry_walk.get('as_of')) else now_iso
     s_emitted = set()
     s_leaks = {}
+    s_pending, s_fresh, s_notes = [], [], []
+    ## Read by id this tick: in the answer, or asked and absent (deleted or
+    ## merged) — a note about an incident needs a fact about THAT incident,
+    ## never the whole walk being complete.
+    s_requested = set(x for x in (sentry_walk.get('tracked_requested') or []) if isinstance(x, str))
+    s_armed_now = bool(s_state.get('sentry'))
     if s_on and s_boot:
-        ## Whatever was read is backlog. The lane ARMS only once the new-issue
-        ## list was read whole with every call answered: armed on a cut read,
-        ## the next tick's overlap would re-read the unread part and post it
-        ## as new.
+        ## Whatever was read is backlog; a transition the walk could not date is
+        ## dated at the arming (history either way). The lane ARMS only once the
+        ## new-issue list was read whole: armed on a cut read, the next tick's
+        ## overlap would re-read the unread part and post it as new. An error
+        ## elsewhere (an activity lookup) does not hold the arming.
         for sid, it in sorted(s_issues.items()):
             rec = s_record(it, 'sentry:' + sid)
             rec['backlog'] = True
             if it.get('transition_at'):
                 rec['transition_at'] = it['transition_at']
+            elif it.get('in_transition') and it.get('transition_kind') in ('regressed', 'escalating'):
+                rec['transition_at'] = s_as_of
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
             if it.get('last_seen'):
                 rec['sentry_last_seen'] = it['last_seen']
-        if sentry_ok and sentry_walk.get('answered') and sentry_walk.get('new_complete'):
+        if sentry_walk.get('answered') and sentry_walk.get('new_complete'):
             s_state['sentry'] = {'identity': sentry_cfg['identity'], 'armed_at': s_as_of, 'since': s_as_of, 'at': now_iso}
+        s_armed_now = bool(s_state.get('sentry'))
     elif s_on:
         armed = s_dt(sentry_cfg.get('armed_at'))
         overlap_td = datetime.timedelta(minutes=int(sentry_cfg.get('overlap_minutes') or 0))
+        ## A transition posts when dated after the arming (minus the overlap)
+        ## AND after the catch-up floor: a lane off for days, or a lowered level
+        ## floor, must not post days-old regressions as news.
+        post_from = armed - overlap_td if armed is not None else None
+        floor = s_dt(sentry_cfg.get('catchup_floor'))
+        if post_from is not None and floor is not None and floor > post_from:
+            post_from = floor
         for sid, it in sorted(s_issues.items()):
             fp = 'sentry:' + sid
             prev = incidents.get(fp)
@@ -2887,17 +2941,20 @@ tool decide:
             rec = s_record(it, fp)
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
+            if it.get('in_tracked') or sid in s_requested:
+                rec['tracked_read_at'] = now_iso
             sev_now = s_sev(it.get('level') or '')
             sighted = bool(it.get('last_seen')) and (not prev_seen or it['last_seen'] > prev_seen)
             tr_at = s_dt(it.get('transition_at'))
             dated = (it.get('in_transition') and it.get('transition_kind') in ('regressed', 'escalating') and tr_at is not None
                      and (not rec.get('transition_at') or it['transition_at'] > rec['transition_at']))
             word_ = None
-            if dated and armed is not None and tr_at >= armed - overlap_td:
+            if dated and post_from is not None and tr_at >= post_from:
                 word_ = it['transition_kind']
             elif dated:
-                ## Dated before the arming: history, recorded — whatever the
-                ## record — so it is neither re-dated every tick nor posted.
+                ## Dated before the arming or the catch-up floor: history,
+                ## recorded — whatever the record — so it is neither re-dated
+                ## every tick nor posted.
                 rec['transition_at'] = it['transition_at']
             if word_ is None and prev is None and it.get('in_new'):
                 word_ = 'new'
@@ -2925,43 +2982,59 @@ tool decide:
                 a = s_alert(fp, rec, word_, it, 'low' if word_ == 'resolved' else rec['severity'],
                             it.get('transition_at') if word_ in ('regressed', 'escalating') else None)
                 a['prev_severity'] = prev_sev
-                alerts.append(a)
+                (s_notes if word_ == 'resolved' else s_fresh).append(a)
                 s_emitted.add(fp)
-            if word_ or sighted or prev is None:
-                ## Retention forgets what is merely re-read: an issue idle for
-                ## forget_after_days leaves the tracked set.
+            if word_ or sighted or prev is None or it.get('in_transition'):
+                ## Retention forgets what is merely re-read by id; an issue still
+                ## in the transition list keeps its record (and its dated
+                ## transition — forgotten, it would be re-dated and replayed).
                 seen_fps.add(fp)
             if sighted or word_ in ('new', 'regressed', 'escalating'):
                 for lk in (it.get('leaks') or []):
                     agg = s_leaks.setdefault(lk.get('class') or '?', {'ids': [], 'sample': lk.get('sample_masked') or ''})
                     agg['ids'].append(s_label(it))
-        t_complete = sentry_ok and bool(sentry_walk.get('tracked_complete'))
-        for fp, rec in list(incidents.items()):
+        for sid in s_requested - set(s_issues):
+            rec = incidents.get('sentry:' + sid)
+            if rec is not None:
+                rec['tracked_read_at'] = now_iso   # asked and absent: gone (deleted, merged)
+        for fp, rec in sorted(incidents.items(), key=lambda kv: (str(kv[1].get('pending_since') or ''), kv[0])):
             if rec.get('kind') != 'sentry' or fp in s_emitted:
                 continue
-            it = s_issues.get(fp.split(':', 1)[1])
+            sid = fp.split(':', 1)[1]
+            it = s_issues.get(sid)
+            read_now = (it is not None and it.get('in_tracked')) or sid in s_requested
             if rec.get('pending') in ('new', 'regressed', 'escalating'):
                 ## Cut by the per-run cap on an earlier tick: re-emitted until
-                ## posted, from this tick's text when the issue was read, from
-                ## its short id and link otherwise.
-                alerts.append(s_alert(fp, rec, rec['pending'], it, rec.get('severity') or 'low', rec.get('pending_transition_at')))
+                ## posted (ahead of fresh alerts: see the cap below), from this
+                ## tick's text when the issue was read, from its short id and
+                ## link otherwise.
+                s_pending.append(s_alert(fp, rec, rec['pending'], it, rec.get('severity') or 'low', rec.get('pending_transition_at')))
                 s_emitted.add(fp)
                 seen_fps.add(fp)
-            elif rec.get('alerted') and not rec.get('quiet_noted') and (rec.get('status') or '') not in S_OPEN:
+            elif rec.get('alerted') and not rec.get('quiet_noted') and (rec.get('status') or '') not in S_OPEN and rec.get('status') != 'ignored':
                 ## Closed in Sentry and not noted yet (the note was cut by the
                 ## cap, or waited for a pending alert): the recorded status
-                ## says it — the issue is no longer read by id.
-                alerts.append(s_alert(fp, rec, 'resolved', it, 'low'))
+                ## says it.
+                s_notes.append(s_alert(fp, rec, 'resolved', it, 'low'))
                 s_emitted.add(fp)
                 seen_fps.add(fp)
-            elif (rec.get('alerted') and not rec.get('quiet_noted') and t_complete
-                  and age_h(rec.get('last_seen') or rec.get('first_seen') or now_iso) >= quiet_h):
-                alerts.append(s_alert(fp, rec, 'quiet', it, 'low'))
+            elif rec.get('alerted') and not rec.get('quiet_noted') and rec.get('status') == 'ignored' and not read_now:
+                ## Archived and noted-not-yet, not read this tick: the note from
+                ## the recorded status (an archived issue stays read by id —
+                ## Sentry reopens it as ongoing).
+                s_notes.append(s_alert(fp, rec, 'resolved', it, 'low'))
                 s_emitted.add(fp)
+                seen_fps.add(fp)
+            elif (rec.get('alerted') and not rec.get('quiet_noted') and read_now
+                  and age_h(rec.get('last_seen') or rec.get('first_seen') or now_iso) >= quiet_h):
+                s_notes.append(s_alert(fp, rec, 'quiet', it, 'low'))
+                s_emitted.add(fp)
+        alerts.extend(s_pending + s_fresh + s_notes)
         cur = s_state.get('sentry') or {}
         s_state['sentry'] = {'identity': sentry_cfg['identity'], 'armed_at': cur.get('armed_at') or s_as_of,
-                             'since': s_as_of if (sentry_ok and sentry_walk.get('new_complete')) else (cur.get('since') or s_as_of),
+                             'since': s_as_of if (sentry_walk.get('answered') and sentry_walk.get('new_complete')) else (cur.get('since') or s_as_of),
                              'at': now_iso}
+        s_armed_now = True
     for cls, agg in sorted(s_leaks.items()):
         cands.append({'fp': 'sentry_leak:' + cls, 'kind': 'sentry_leak', 'sources': ['sentry'], 'severity': 'high',
                       'title_key': 'sentry_leak', 'title_arg': cls, 'detail_key': 'sentry_leak_detail',
@@ -3092,7 +3165,7 @@ tool decide:
     if lanes.get('probes'):
         mark('probes', True)
     if lanes.get('sentry'):
-        mark('sentry', sentry_ok and bool(sentry_walk.get('answered')),
+        mark('sentry', sentry_ok and bool(sentry_walk.get('answered')) and s_armed_now,
              json.dumps(sentry_errors)[:300] if sentry_errors else '; '.join(str(x) for x in (sentry_walk.get('partial') or []))[:300])
     for source in [k for k in health if not lanes.get(k, False)]:
         del health[source]
@@ -3137,6 +3210,12 @@ tool decide:
     if signals.get('templates_cut'):
         pieces.append(('cut', 'template list cut: ' + str(signals.get('templates_total') or '?') +
                        ' templates, the 200 with the most live lines kept'))
+    if s_on and not s_armed_now:
+        ## A bootstrap that could not read the new-issue list whole posts
+        ## nothing — said, not hidden behind a healthy lane.
+        pieces.insert(0, ('sentry not armed', 'sentry: NOT ARMED — the new-issue list could not be read whole (' +
+                          (', '.join(str(x) for x in (sentry_walk.get('partial') or [])[:3]) or 'errors') +
+                          '); nothing posts from this lane until it arms'))
     if lanes.get('sentry') and sentry_walk.get('gap'):
         pieces.insert(0, ('sentry gap', 'sentry: gap — ' + next((str(x) for x in (sentry_walk.get('partial') or []) if 'max_catchup_hours' in str(x)), 'the cursor was older than max_catchup_hours')))
     if lanes.get('sentry') and sentry_truncated and not sentry_errors:
@@ -3171,6 +3250,32 @@ tool decide:
             posted_kinds[c] = now_iso
     state['coverage_posted'] = posted_kinds
 
+    ## A NEW alert the cap cut on an earlier tick whose trigger does not
+    ## recur by itself — a log template, a leak class (Loki or Sentry) — is
+    ## re-emitted from its record until posted: the overflow note promises
+    ## it. (Probe and metric incidents describe the present: they recur while
+    ## true; Sentry issues have their own pending path above.)
+    already = {a['fingerprint'] for a in alerts}
+    for fp, rec in sorted(incidents.items(), key=lambda kv: (str(kv[1].get('pending_since') or ''), kv[0])):
+        if fp in already or rec.get('kind') not in ('loki', 'leak', 'sentry_leak') or rec.get('pending') != 'new':
+            continue
+        alerts.append({'fingerprint': fp, 'kind': rec.get('kind'), 'severity': rec.get('severity') or 'medium', 'state': 'new',
+                       'title_key': rec.get('title_key'), 'title_arg': rec.get('title_arg'), 'detail_key': rec.get('detail_key'),
+                       'fields': rec.get('fields') or {}, 'evidence': {}, 'count': rec.get('count'),
+                       'first_seen': rec.get('first_seen'), 'prev_severity': rec.get('severity') or ''})
+    ## An alert of a PENDING incident — re-emitted from its record, or
+    ## detected again this tick (a Sentry transition the cap cut is re-dated
+    ## until posted; a template recurs) — goes ahead of the others, oldest
+    ## first, whatever the path that emitted it (both sorts are stable, and
+    ## each lane keeps its order below): fresh alerts of the same rank, every
+    ## tick, must not hold it back for ever.
+    def pending_first(a):
+        rec = incidents.get(a['fingerprint']) or {}
+        if rec.get('pending') and a.get('state') not in ('quiet', 'resolved'):
+            return (0, str(rec.get('pending_since') or ''))
+        return (1, '')
+    alerts.sort(key=pending_first)
+
     ## ── priority, cap, staging ────────────────────────────────────
     order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
     alerts.sort(key=lambda a: (RANK.get(a['severity'], 0), order.get(a['state'], 0)), reverse=True)
@@ -3178,7 +3283,7 @@ tool decide:
     ## DSN creating issues) cannot hold the cap against another's alerts
     ## of the same rank; each lane keeps its own order.
     def lane_of(a):
-        return 'sentry' if a.get('kind') in ('sentry', 'sentry_leak') else str(a.get('kind') or '')
+        return str(a.get('kind') or '')
     fair, i = [], 0
     while i < len(alerts):
         j = i
@@ -3211,8 +3316,13 @@ tool decide:
         else:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
-        if a['kind'] == 'sentry':
+            ## Posted again (a transition, a pending alert): its closing note
+            ## is owed again.
+            rec['quiet_noted'] = False
+        if rec.get('pending') and a['state'] not in ('quiet', 'resolved'):
             rec['pending'] = None
+            rec['pending_since'] = None
+        if a['kind'] == 'sentry':
             rec['pending_transition_at'] = None
             if a['state'] in ('regressed', 'escalating') and a.get('transition_at'):
                 rec['transition_at'] = a['transition_at']
@@ -3225,6 +3335,10 @@ tool decide:
         if rec is not None and a['kind'] == 'sentry' and a['state'] in ('new', 'regressed', 'escalating'):
             rec['pending'] = a['state']
             rec['pending_transition_at'] = a.get('transition_at')
+            rec['pending_since'] = rec.get('pending_since') or now_iso
+        elif rec is not None and a['kind'] in ('loki', 'leak', 'sentry_leak') and a['state'] == 'new':
+            rec['pending'] = 'new'
+            rec['pending_since'] = rec.get('pending_since') or now_iso
     if lanes.get('loki'):
         for q in [q for q in cursors if q not in loki_per_query]:
             ## A query absent this tick keeps its high-water mark (a
@@ -3359,18 +3473,16 @@ tool notify:
         ## nothing a reader copies out of the span is a live link either.
         t = flat(s, cap).replace('`', "'")
         return '`' + re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
-    def untrusted(s, cap=300):
-        ## A value an attacker can write (a Sentry culprit, a container or
-        ## metric name) is inert AND cannot ping or link: a zero-width space
-        ## after every `@` defeats @channel / @all / @here / @user, and one
-        ## inside `www.` defeats Mattermost's scheme-less autolink. (Inline
-        ## code, where titles and samples render, parses neither.)
-        t = inert(s, cap).replace('@', '@' + chr(8203))
-        return re.sub(r'(?i)www\.', lambda m: m.group(0)[:3] + chr(8203) + '.', t)
     def fmt(label, /, **kw):
+        ## Every value filled into a label is inline code: a Sentry culprit, a
+        ## container, a URL — anything an attacker can write — can neither
+        ## mention (@channel) nor autolink there (Mattermost's markdown turns
+        ## a bare `host.tld/path`, `www1.` or a scheme glued to a word into a
+        ## link in plain text, whatever escaping precedes it). The label's own
+        ## words are the operator's.
         t = labels.get(label) or label
         for k, v in kw.items():
-            t = t.replace('{' + k + '}', untrusted(v, 200))
+            t = t.replace('{' + k + '}', code(v, 200))
         return t
 
     scope = flat(app.get('name'), 60) + ('/' + flat(app.get('environment'), 40) if app.get('environment') else '')
@@ -3395,7 +3507,7 @@ tool notify:
                 fmt('new_since', date=(a.get('first_seen') or '')[:16]),
                 fmt('count', n=a.get('count') or 0)]
         if release:
-            meta.append(labels.get('release', 'release') + ' ' + inert(release, 60) +
+            meta.append(labels.get('release', 'release') + ' ' + code(release, 60) +
                         ('' if release_known else ' (' + inert(labels.get('release_unverified', 'unverified'), 40) + ')'))
         lines.append('_' + ' · '.join(meta) + '_')
         ev = a.get('evidence') or {}

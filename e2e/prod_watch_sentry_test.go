@@ -56,11 +56,13 @@ type pwSentryIssue struct {
 	Meta           map[string]any
 	Env            string
 	Acts           []pwSentryAct
+	Raw            map[string]string // payload fields sent verbatim as JSON: a lone surrogate, a count in foreign digits
 }
 
 type pwSentryCall struct {
 	Path string
 	Q    url.Values
+	At   time.Time
 }
 
 type pwSentry struct {
@@ -162,7 +164,7 @@ func (s *pwSentry) payload(i *pwSentryIssue, env string) map[string]any {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	return map[string]any{
+	p := map[string]any{
 		"id": i.ID, "shortId": short, "title": i.Title, "culprit": i.Culprit, "level": i.Level, "status": i.Status,
 		"substatus": sub, "issueCategory": "error", "issueType": "error", "priority": "low", "isUnhandled": true,
 		// An EVENT time a minute before the processing time: the bot must never classify on it.
@@ -171,6 +173,10 @@ func (s *pwSentry) payload(i *pwSentryIssue, env string) map[string]any {
 		"permalink": "https://evil.invalid/share/issue/" + i.ID + "/",
 		"project":   map[string]any{"id": "63", "slug": "proj"},
 	}
+	for k, v := range i.Raw {
+		p[k] = json.RawMessage(v)
+	}
+	return p
 }
 
 func (h *pwHarness) mountSentry(mux *http.ServeMux) {
@@ -184,7 +190,7 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 		q := r.URL.Query()
 		kind := pwSentryKind(r.URL.Path, q)
 		s.mu.Lock()
-		s.calls = append(s.calls, pwSentryCall{Path: r.URL.Path, Q: q})
+		s.calls = append(s.calls, pwSentryCall{Path: r.URL.Path, Q: q, At: time.Now()})
 		if s.dateOffset != 0 {
 			w.Header().Set("Date", time.Now().Add(s.dateOffset).UTC().Format(http.TimeFormat))
 		}
@@ -989,6 +995,9 @@ func TestProdWatch_SentryPlanGuards(t *testing.T) {
 		{"bool as integer", "config.sentry.max_issues", func(s map[string]any) { s["max_issues"] = true }},
 		{"severity map", "config.sentry.severity", func(s map[string]any) { s["severity"] = map[string]any{"fatal": "extreme"} }},
 		{"max severity", "config.sentry.max_severity", func(s map[string]any) { s["max_severity"] = "urgent" }},
+		{"overlap as wide as the catch-up", "config.sentry.overlap_minutes", func(s map[string]any) {
+			s["overlap_minutes"], s["max_catchup_hours"] = 60, 1
+		}},
 	}
 	for _, c := range cases {
 		c := c

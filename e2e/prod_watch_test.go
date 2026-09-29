@@ -976,7 +976,7 @@ func TestProdWatch_DeliverySemantics(t *testing.T) {
 	}
 	bodies := h.bodies()
 	joined := strings.Join(bodies[len(bodies)-3:], "\n")
-	if !strings.Contains(joined, "loki") || !strings.Contains(joined, "30") || !strings.Contains(joined, "PARTIAL") || !strings.Contains(joined, "2 more") {
+	if !strings.Contains(joined, "`loki`") || !strings.Contains(joined, "`30`") || !strings.Contains(joined, "PARTIAL") || !strings.Contains(joined, "`2` more") {
 		t.Fatalf("meta notices must name the source, the hours, the coverage and the overflow: %s", joined)
 	}
 }
@@ -1539,6 +1539,19 @@ func (h *pwHarness) setState(t *testing.T, st map[string]any) {
 func pwTemplateFP(template string) string {
 	sum := sha1.Sum([]byte(template))
 	return "loki:" + hex.EncodeToString(sum[:])[:12]
+}
+
+// pwOutsideCode is a rendered line with its inline code spans removed — what
+// Mattermost renders as markdown: mentions notify and bare hosts autolink
+// there, never inside a span (its mention parser reads Text nodes only, and a
+// CodeSpan is not one).
+func pwOutsideCode(line string) string {
+	for strings.Count(line, "`") >= 2 {
+		a := strings.Index(line, "`")
+		b := strings.Index(line[a+1:], "`")
+		line = line[:a] + line[a+1+b+1:]
+	}
+	return line
 }
 
 // pwQuietFPs lists the fingerprints decide posted a "not observed any more"
@@ -3240,10 +3253,13 @@ func TestProdWatch_NotifyRendersUntrustedTextInert(t *testing.T) {
 	if strings.Contains(text, "https://evil") {
 		t.Fatalf("a bare URL from a log line must be defanged:\n%s", text)
 	}
-	if strings.Contains(text, " **bold**") {
-		t.Fatalf("markdown actives in a field must be escaped:\n%s", text)
+	if !strings.Contains(text, "`container=api **bold**`") {
+		t.Fatalf("a field value must render inside inline code:\n%s", text)
 	}
 	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(pwOutsideCode(line), "**bold**") || strings.Contains(pwOutsideCode(line), "@channel") {
+			t.Fatalf("untrusted markdown or a mention rendered outside inline code:\n%s", line)
+		}
 		if strings.Count(line, "`")%2 != 0 {
 			t.Fatalf("a backtick in the source must not break a code span:\n%s", text)
 		}
@@ -3422,5 +3438,60 @@ func TestProdWatch_CommitStateSubdirWorkspace(t *testing.T) {
 	}
 	if log := gittest.Run(t, root, "log", "--oneline", "origin/main"); !strings.Contains(log, "chore(prod-watch)") {
 		t.Fatalf("the state commit must reach the remote: %s", log)
+	}
+}
+
+// TestProdWatch_LokiCutAlertsAreReEmittedOldestFirst: a new log template and a
+// leak class whose alerts the per-run cap cut do not recur by themselves
+// (their lines are behind the cursor next tick): each is re-emitted from its
+// record until posted, once — and ahead of the templates first seen since, or
+// one fresh template a tick would hold it back for ever.
+func TestProdWatch_LokiCutAlertsAreReEmittedOldestFirst(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["prometheus"] = map[string]any{"probes": []map[string]any{}}
+		cfg["probes"] = []map[string]any{}
+	})
+	var lines []pwLine
+	add := func(line, q string) {
+		lines = append(lines, pwLine{TS: nsAgo(time.Second), Line: line, Container: "api", Q: q})
+		h.lines.Store(append([]pwLine(nil), lines...))
+	}
+	posted := func(outs map[string]map[string]any) []string {
+		var got []string
+		for _, a := range outs["decide"]["alerts"].([]any) {
+			m := a.(map[string]any)
+			got = append(got, fmt.Sprint(m["kind"], ":", m["state"], ":", m["title_arg"]))
+		}
+		sort.Strings(got)
+		return got
+	}
+	add("ERROR boot sequence failed", "errors-q")
+	h.tick(t, wf, false) // bootstrap: the template is observed
+	h.alertCap.Store(1)
+	add("ERROR alpha handler failed", "errors-q")
+	add("ERROR beta handler failed", "errors-q")
+	add("INFO api: session opened for jean.dupont@example.org", "sweep-q")
+	if got := posted(h.tick(t, wf, false)); strings.Join(got, " ") != "leak:new:email" {
+		t.Fatalf("tick 2, cap 1: want the leak (high) alone, got %v", got)
+	}
+	var seq [][]string
+	for _, fresh := range []string{"gamma", "delta", "epsilon"} {
+		time.Sleep(1100 * time.Millisecond) // pending_since has a one-second resolution: one cut per second
+		add("ERROR "+fresh+" handler failed", "errors-q")
+		seq = append(seq, posted(h.tick(t, wf, false)))
+	}
+	h.alertCap.Store(0)
+	seq = append(seq, posted(h.tick(t, wf, false)), posted(h.tick(t, wf, false)))
+	// Alpha and beta were cut together: either goes first.
+	if len(seq[0]) == 1 && len(seq[1]) == 1 && seq[0][0] > seq[1][0] {
+		seq[0], seq[1] = seq[1], seq[0]
+	}
+	want := [][]string{{"loki:new:ERROR alpha handler failed"}, {"loki:new:ERROR beta handler failed"}, {"loki:new:ERROR gamma handler failed"},
+		{"loki:new:ERROR delta handler failed", "loki:new:ERROR epsilon handler failed"}, nil}
+	if fmt.Sprint(seq) != fmt.Sprint(want) {
+		t.Fatalf("each cut template must post once, the oldest first:\nwant %q\ngot  %q", want, seq)
 	}
 }

@@ -3,8 +3,11 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -102,8 +105,11 @@ func TestProdWatch_SentryServerTextIsWithheld(t *testing.T) {
 }
 
 // TestProdWatch_SentryAttackerTextCannotPingOrLink: a culprit or title written
-// through a public DSN cannot mention the channel nor become a link — in the
-// Sentry detail line and in any other lane's label placeholders alike.
+// through a public DSN cannot mention the channel nor become a link. Escaping
+// is not enough — Mattermost autolinks a host after a word character or a
+// hyphen (`-sso-portal.com/reset`, `_https://`, `éhttps://`, `www1.`, a host
+// in parentheses) whatever backslashes precede it — so every value renders
+// inside inline code, which neither links nor notifies.
 func TestProdWatch_SentryAttackerTextCannotPingOrLink(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -111,26 +117,25 @@ func TestProdWatch_SentryAttackerTextCannotPingOrLink(t *testing.T) {
 	h.writeConfig(t, sentryOnly(h, nil))
 	sentryTick(t, h, wf)
 	now := time.Now()
-	h.sentry.put(&pwSentryIssue{ID: "1501", ShortID: strp("PROJ-150"), Title: "@channel @all read www.evillogin.example/reset",
-		Culprit: "@here @jo please re-login at www.evillogin.example/reset", FirstProcessed: now, LastSeen: now, Count: 1})
+	culprits := []string{"@here @jo please re-login at www.evillogin.example/reset", "please re-login at -sso-portal.com/reset",
+		"_https://evil.com/reset", "éhttps://evil.com/reset", "see www1.evil.com/reset", "please re-login (evil.com/reset)"}
+	for i, c := range culprits {
+		h.sentry.put(&pwSentryIssue{ID: strconv.Itoa(1501 + i), ShortID: strp("PROJ-" + strconv.Itoa(150+i)),
+			Title: "@channel @all read www.evillogin.example/reset", Culprit: c, FirstProcessed: now, LastSeen: now, Count: 1})
+	}
 	sentryTick(t, h, wf)
 	body := strings.Join(h.bodies(), "\n")
-	for _, bad := range []string{"@channel", "@all", "@here", "@jo", "www.evillogin"} {
+	for _, c := range culprits {
+		if !strings.Contains(body, "`"+c+"`") {
+			t.Fatalf("culprit %q did not render inside inline code:\n%s", c, body)
+		}
+	}
+	for _, bad := range []string{"@channel", "@all", "@here", "@jo", "www.evillogin", "portal.com", "evil.com"} {
 		for _, line := range strings.Split(body, "\n") {
-			// Inline code renders neither mentions nor autolinks.
-			outside := line
-			for strings.Count(outside, "`") >= 2 {
-				a := strings.Index(outside, "`")
-				b := strings.Index(outside[a+1:], "`")
-				outside = outside[:a] + outside[a+1+b+1:]
-			}
-			if strings.Contains(outside, bad) {
+			if strings.Contains(pwOutsideCode(line), bad) {
 				t.Fatalf("attacker text %q reached the channel outside inline code:\n%s", bad, line)
 			}
 		}
-	}
-	if !strings.Contains(body, "@\u200bhere") {
-		t.Fatalf("the culprit was not rendered (neutralized):\n%s", body)
 	}
 }
 
@@ -393,18 +398,168 @@ func TestProdWatch_SentryNotesAndAnalysisFlags(t *testing.T) {
 }
 
 // TestProdWatch_SentryForeignIncidentFieldIsRefusedByName: plan refuses a
-// Sentry incident field of another type by name — never a traceback.
+// Sentry field of another type by name — never a traceback.
 func TestProdWatch_SentryForeignIncidentFieldIsRefusedByName(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
+	cases := []struct {
+		field string
+		state map[string]any
+	}{
+		{"backlog", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "backlog": "yes"}}}},
+		{"tracked_read_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "tracked_read_at": 5}}}},
+		{"pending_since", map[string]any{"incidents": map[string]any{"leak:email": map[string]any{"kind": "leak", "pending_since": "soon"}}}},
+		{"sentry_identity", map[string]any{"incidents": map[string]any{}, "sentry_identity": 7}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.field, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, nil))
+			st := map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{}, "health": map[string]any{}}
+			for k, v := range c.state {
+				st[k] = v
+			}
+			h.setState(t, st)
+			vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+				"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, nil))
+			if err == nil || !strings.Contains(stderr, c.field) || strings.Contains(stderr, "Traceback") {
+				t.Fatalf("a foreign %s was not refused by name: err=%v %s", c.field, err, stderr)
+			}
+		})
+	}
+}
+
+// TestProdWatch_SentryDrippingBodyStopsAtTheDeadline: a body dripping one byte
+// every 400 ms (never tripping the per-read timeout) stops at the walk's
+// deadline, not when the body ends — one recv at a time, the deadline checked
+// between them.
+func TestProdWatch_SentryDrippingBodyStopsAtTheDeadline(t *testing.T) {
+	t.Parallel()
+	h := newPWHarness(t)
+	body := `{"id": "63", "slug": "proj", "name": "proj"}` + strings.Repeat(" ", 16) // 60 bytes: 24 s at 400 ms a byte
+	drip := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/0/projects/org/proj/") || strings.Contains(r.URL.Path, "/environments/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		f, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < len(body); i++ {
+			if _, err := w.Write([]byte{body[i]}); err != nil {
+				return
+			}
+			f.Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(400 * time.Millisecond):
+			}
+		}
+	}))
+	t.Cleanup(drip.Close)
+	h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["base_url"] = drip.URL; s["deadline_secs"] = 10; delete(s, "environment") }))
+	plan, vars, secrets := sentryPlan(t, h, "prod-watch/main.bot")
+	start := time.Now()
+	out, _ := runPollSentry(t, h, plan, vars, secrets, true, nil)
+	if took := time.Since(start); took > 15*time.Second || !strings.Contains(fmt.Sprint(out["errors"]), "deadline") {
+		t.Fatalf("a dripping body held poll_sentry %v past a 10 s deadline (errors: %v)", took, out["errors"])
+	}
+}
+
+// TestProdWatch_SentrySecretScanResistsBacktracking: a key word followed by a
+// long digit run, or a quoted value of backslash pairs that never closes — in
+// every form the secret class knows (assignment, flag, SQL; either quote) —
+// scans in well under a second: every repeated group has disjoint
+// alternatives. With overlapping ones the same 35 characters took seconds,
+// doubling with each extra character.
+func TestProdWatch_SentrySecretScanResistsBacktracking(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	pairs := strings.Repeat(`\ `, 25)
+	cases := map[string]string{
+		"digit run after a key":    "password" + strings.Repeat("1", 26) + "!",
+		"assignment, double quote": `password="` + pairs,
+		"assignment, single quote": `password='` + pairs,
+		"flag, double quote":       `--password "` + pairs,
+		"flag, single quote":       `--password '` + pairs,
+		"sql, single quote":        `identified by '` + pairs,
+		"sql, double quote":        `identified by "` + pairs,
+	}
+	for name, text := range cases {
+		name, text := name, text
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			raw := filepath.Join(h.scratch, "sentry_raw-kv.jsonl")
+			b, _ := json.Marshal(map[string]any{"id": "1", "short_id": "P-1", "title": "x", "culprit": text, "last_seen": "2026-09-29T10:00:00+00:00"})
+			if err := os.WriteFile(raw, append(b, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+				"raw_file": filepath.Join(h.scratch, "none.jsonl"), "per_query": map[string]any{}, "sentry_file": raw,
+				"sentry_issues": 1, "app": map[string]any{"name": "demo"}, "scratch_dir": h.scratch}, nil, nil))
+			if err != nil {
+				t.Fatalf("leak_scan: %v %s", err, stderr)
+			}
+			if d := time.Since(start); d > 3*time.Second {
+				t.Fatalf("one crafted culprit stalled the scan %v (overlapping alternatives in a repeated group)", d)
+			}
+		})
+	}
+}
+
+// TestProdWatch_SentryHostileJSONIsTakenWhole: valid JSON the runner's Python
+// cannot take at face value — a lone surrogate in a title (invalid UTF-8 once
+// written), a count in digits int() refuses — neither kills the node nor cuts
+// the list: the text is repaired, the count unknown, the issue posted.
+func TestProdWatch_SentryHostileJSONIsTakenWhole(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for name, raw := range map[string]map[string]string{
+		"a lone surrogate in the title": {"title": `"\ud800 boom"`},
+		"a count in superscript digits": {"count": `"²"`},
+	} {
+		name, raw := name, raw
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, nil))
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "4401", ShortID: strp("P-4401"), Title: "boom", FirstProcessed: now, LastSeen: now, Count: 3, Raw: raw})
+			o := sentryTick(t, h, wf)
+			if got := sentryAlerts(o); strings.Join(got, " ") != "new:P-4401:medium" || o["poll_sentry"]["ok"] != true {
+				t.Fatalf("want the issue read whole and posted: %v, errors %v", got, o["poll_sentry"]["errors"])
+			}
+		})
+	}
+}
+
+// TestProdWatch_SentryLocalClockIsReadBeforeTheWalk: without a usable Date
+// header the runner's clock stands in — read BEFORE the first request, so an
+// issue processed while the walk ran never falls behind the next cursor.
+func TestProdWatch_SentryLocalClockIsReadBeforeTheWalk(t *testing.T) {
+	t.Parallel()
 	h := newPWHarness(t)
 	h.writeConfig(t, sentryOnly(h, nil))
-	h.setState(t, map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{}, "health": map[string]any{},
-		"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "backlog": "yes"}}})
-	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
-	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, nil))
-	if err == nil || !strings.Contains(stderr, "backlog") {
-		t.Fatalf("a foreign backlog field was not refused by name: err=%v %s", err, stderr)
+	h.sentry.rawDate = "not a date"
+	h.sentry.delay = 1500 * time.Millisecond // each of the two lists
+	plan, vars, secrets := sentryPlan(t, h, "prod-watch/main.bot")
+	out, _ := runPollSentry(t, h, plan, vars, secrets, true, nil)
+	walk, _ := out["walk"].(map[string]any)
+	asOf, err := time.Parse(time.RFC3339, fmt.Sprint(walk["as_of"]))
+	if err != nil || walk["clock"] != "local" {
+		t.Fatalf("want the local clock: %v", walk)
+	}
+	h.sentry.mu.Lock()
+	first := h.sentry.calls[0].At
+	h.sentry.mu.Unlock()
+	if asOf.After(first) {
+		t.Fatalf("the local clock was read %v after the first request (the walk took ≥ 3 s)", asOf.Sub(first))
 	}
 }

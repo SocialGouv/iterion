@@ -228,10 +228,16 @@ reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
   new one. Every dated one is re-checked in turn, whether or not an event
   moved in the watched environment: substatus and activities are
   project-wide, so a second regression can come from another environment.
-  A transition dated before the arming is recorded as history. The level
-  floor does not apply to an issue the lane already knows.
-- **tracked** — the alerted (or pending) issues by id, their current
-  status and last event.
+  A transition dated before the arming (minus the overlap) or before the
+  catch-up floor (now − `max_catchup_hours`) is recorded as history: a
+  lane off for days, or a lowered level floor admitting issues it never
+  knew, posts no old regression as news. The level floor does not apply
+  to an issue the lane already knows.
+- **tracked** — the alerted (or pending) issues by id — open, being
+  reprocessed, or archived (Sentry reopens an archived issue as ongoing)
+  — their current status and last event. Over `max_tracked` they take
+  turns, least recently read first; an issue asked and absent from the
+  answer (deleted, merged) was read too.
 
 An explicit `query` always: without one Sentry applies its default
 (`is:unresolved issue.priority:[high, medium]`) and low-priority issues
@@ -240,13 +246,22 @@ empty list — indistinguishable from "no issue"). Only the `cursor=` value
 of the `Link` header is followed, never its URL; a short page with
 `results="true"` is not the end. The cursor's `since` is Sentry's own
 `Date` (the runner's clock, read before the first request, only when
-the header is missing — the walk says `clock: local`), and advances only
-when the new-issue list completed; a cursor older than
-`max_catchup_hours` opens at that floor and the gap is declared.
+the header is missing — the walk says `clock: local`), and advances
+whenever the new-issue list was read whole (an activity lookup failing
+holds nothing). A cursor older than `max_catchup_hours` opens at that
+floor and the gap is declared — only a cursor itself below the floor:
+the overlap below it was read already (`overlap_minutes` must stay below
+`max_catchup_hours` × 60).
 
 **What posts, in this order.** A bootstrap (no cursor, or a changed lane
-identity) posts nothing and records every issue read as backlog; it arms
-only once the new-issue list was read whole with every call answered.
+identity) posts nothing and records every issue read as backlog — a
+transition it read but could not date (the check cap) is dated at the
+arming, history like the others. It arms once the new-issue list was
+read whole (an activity lookup failing does not hold it); until then
+nothing posts from the lane, a coverage note says `sentry: NOT ARMED`
+and its health is not stamped (a silent-source note follows). The
+identity is stamped on the state from the lane's first tick, so a switch
+during a bootstrap that never armed drops what it recorded too.
 Then:
 a transition dated after the arming (minus the overlap) and newer than
 the recorded one posts `REGRESSED IN SENTRY` / `ESCALATING IN SENTRY` —
@@ -260,10 +275,15 @@ reports closed gets one note naming the status (`RESOLVED IN SENTRY`,
 alert of it went out), one idle for `quiet_after_hours` (while the by-id
 read was complete) one `NOT OBSERVED ANY MORE`. An alert the per-run cap
 cuts stays PENDING and is re-emitted every tick until posted (a new issue
-or a dated transition does not recur by itself); a cut closing note is
-re-emitted from the recorded status. Anything else read is tracked
-silently: a backlog issue never posts on mere recurrence, and an issue
-merely re-read for `forget_after_days` leaves the tracked set.
+or a dated transition does not recur by itself), ahead of the tick's
+fresh alerts, oldest first; a cut closing note is re-emitted from the
+recorded status, and a posted transition owes its closing note again.
+The same holds for a Sentry leak class, a new log template and a log
+leak class. Anything else read is tracked silently: a backlog issue
+never posts on mere recurrence, and an issue merely re-read for
+`forget_after_days` leaves the tracked set — not while it is still in
+the regressed/escalating list (forgotten, its transition would be
+re-dated and posted again).
 
 **What a message shows.** The scrubbed title, the level, the events
 (the lists count the last 14 days; an issue read only by id shows its
@@ -277,7 +297,9 @@ from the level (`severity` map), capped by `max_severity`.
 only; `leak_scan` scrubs every field (bounded first, cut to display size
 after the scrub), and counts a class found in an issue's text once per
 sighting of that issue — a `sentry_leak:<class>` incident with a masked
-sample, never a value. No event body is read in this slice: the user
+sample, never a value. The classes are written for text an attacker
+controls: no repeated group has overlapping alternatives, so a crafted
+field cannot stall the scan. No event body is read in this slice: the user
 block, the request, frame locals and breadcrumbs stay in Sentry — the
 leak classes cover issue text only.
 
@@ -286,10 +308,14 @@ event from another environment moves them); the "last event" of a
 sighting is an event time (tolerance = `overlap_minutes`); a public DSN
 lets anyone create issues — a flood pushes the lists into their caps
 (partial coverage, named) and the alerts into the per-run cap (pending,
-delivered over the next ticks; inside one rank the lanes take turns under
-the cap, so a flood never holds it against another lane). Issue text
-anyone can write never pings nor links: titles render in inline code, a
-culprit (or any other lane's field) with every `@` and `www.` broken.
+delivered over the next ticks; inside one rank each alert kind — a
+Sentry issue, a Sentry leak, a log template, a log leak, a probe —
+takes its turn under the cap, so a flood never holds it against
+another). Issue text anyone can write never pings nor links: every value
+a message quotes — title, culprit, any lane's field, a sample — renders
+as inline code, where Mattermost parses neither mentions nor links.
+Escaping is not enough: its autolinker takes a host after a hyphen, a
+word character or a parenthesis, whatever precedes it.
 
 ## Health probes
 

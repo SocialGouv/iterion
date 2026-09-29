@@ -92,12 +92,15 @@ overrides).
   `critical` from Sentry is an opt-in), `overlap_minutes` (60),
   `max_issues` (per list, pages of 100; default 200),
   `max_transition_checks` (activity lookups per tick; 20),
-  `max_tracked` (alerted issues re-read by id; 200), `deadline_secs`
-  (120: the walk stops there, partial, never the tick's death),
-  `max_catchup_hours` (24: a cursor older than that — the lane turned
-  off, a long outage — opens at the floor and declares the gap instead of
-  posting days-old issues as new). The lane's IDENTITY — base URL, org,
-  project, environment — travels in its cursor: changing any of them
+  `max_tracked` (alerted issues re-read by id each tick; 200 — over it
+  they take turns), `deadline_secs` (120: the walk stops there, partial,
+  never the tick's death), `max_catchup_hours` (24, above
+  `overlap_minutes`: a cursor older than that — the lane turned off, a
+  long outage — opens at the floor and declares the gap instead of
+  posting days-old issues as new, and a transition dated before the floor
+  is history). The lane's IDENTITY — base URL (compared as the host it
+  names: case and a default port do not count), org, project,
+  environment — travels in its cursor: changing any of them
   drops the old identity's incidents and cursor, and re-arms the lane (a
   silent bootstrap). `min_level` is not part of it: moving it drops
   nothing. See `skills/signals-and-queries.md` for what posts when.
@@ -110,8 +113,8 @@ overrides).
   a best-effort sink whose own failure alone does not fail the tick.
 - `labels` — message-wording overrides (any language). Keys and their
   English defaults live in the bot's `plan` node; placeholders in braces
-  are substituted with each value markdown-inert and truncated to 200
-  characters.
+  are substituted with each value as inline code (neither a mention nor
+  a link can come out of it), truncated to 200 characters.
 
 ## The secrets
 
@@ -262,15 +265,19 @@ managed secret under the name `forge_token` (see vuln-watch's
   error: the other lanes still report.
 - **`sentry: partial walk (…)`** in a coverage note — a list stopped at
   `max_issues`, the activity lookups at `max_transition_checks`, the
-  tracked ids over `max_tracked`, the deadline passed, or an issue was
-  malformed; the causes are named. Nothing is concluded from absence that
+  deadline passed, or an issue was malformed; the causes are named
+  (tracked ids over `max_tracked` are not a cause: they take turns). Nothing is concluded from absence that
   tick (no "not observed any more"); a flood of distinct issues from a
   public DSN is one way there — raise the caps or tighten `min_level`
   (pending alerts survive either). **`sentry: gap — the cursor was older
   than max_catchup_hours …`** — issues first processed in the named
-  interval were never read as new (a loss, said once). While the lane
-  has not armed yet (its bootstrap was cut), each tick bootstraps again,
-  silently, until the new-issue list is read whole.
+  interval were never read as new (a loss, said once). **`sentry: NOT
+  ARMED — …`** — the bootstrap could not read the new-issue list whole
+  (more issues first seen in the overlap than `max_issues`, an error, the
+  deadline): each tick bootstraps again until it can, and nothing posts
+  from the lane meanwhile — its health is not stamped either, so a
+  silent-source note follows. Raise `max_issues` or `deadline_secs`, or
+  shorten `overlap_minutes`.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

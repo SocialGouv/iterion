@@ -30,7 +30,7 @@ notify → done                                             when not consume (dr
 | `poll_sentry` | Sentry's org-scoped issue lists: first seen since the cursor, regressed/escalating (dated by their activity), the alerted ones by id; **issue text goes to scratch only** | Sentry API | `<scratch>/sentry_raw-<run>.jsonl` |
 | `probe_http` | GET the health URLs, status + latency | the app | — |
 | `leak_scan` | **the only reader of the raw lines and the Sentry issue text**: redaction by class, error templates, masked samples, coverage | scratch | `<scratch>/signals-<run>.json` |
-| `decide` | incident lifecycle (new / escalated / reminder / quiet; for Sentry also regressed / escalating / resolved, and pending past the cap), source staleness, cap + overflow, staged next state | `signals-<run>.json`, `state.json` | scratch: `state_next-<run>.json`, `alertlog_delta-<run>.jsonl`, `tick-<run>.json` |
+| `decide` | incident lifecycle (new / escalated / reminder / quiet, and pending past the cap; for Sentry also regressed / escalating / resolved), source staleness, cap + overflow, staged next state | `signals-<run>.json`, `state.json` | scratch: `state_next-<run>.json`, `alertlog_delta-<run>.jsonl`, `tick-<run>.json` |
 | `notify` | Mattermost/Slack incoming webhooks, per-sink `min_severity`, `required` sinks, all-or-nothing consume | `webhooks` secret | the channel |
 | `commit_state` | `state.json` (replaced), `alertlog.jsonl` + `ticks.jsonl` (appended, `merge=union`), optional commit + push | scratch | `<state_dir>/` |
 
