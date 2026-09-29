@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -20,16 +21,16 @@ func TestRenderedFailure(t *testing.T) {
 	str := func(s string) *string { return &s }
 
 	t.Run("nil result is not a failure", func(t *testing.T) {
-		if err := b.renderedFailure(nil, task, "pass 1"); err != nil {
+		if err := b.renderedFailure(context.Background(), nil, task, "pass 1", forfaitSpawn{}); err != nil {
 			t.Fatalf("nil message: %v", err)
 		}
-		if err := b.renderedFailure(&claudesdk.ResultMessage{}, task, "pass 1"); err != nil {
+		if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{}, task, "pass 1", forfaitSpawn{}); err != nil {
 			t.Fatalf("nil result: %v", err)
 		}
 	})
 	t.Run("an answer is an answer", func(t *testing.T) {
 		rm := &claudesdk.ResultMessage{Result: str("Here is the plan: three lots, one gate each.")}
-		if err := b.renderedFailure(rm, task, "pass 1"); err != nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{}); err != nil {
 			t.Fatalf("answer re-typed: %v", err)
 		}
 	})
@@ -37,7 +38,7 @@ func TestRenderedFailure(t *testing.T) {
 		rm := &claudesdk.ResultMessage{Result: str("API Error: [500][Operation failed][2026090610430471b2ed5a5eaa4de7]")}
 		for _, pass := range []string{"pass 1", "formatting pass 1/2", "recovery formatting pass"} {
 			var tr *ErrTransient
-			err := b.renderedFailure(rm, task, pass)
+			err := b.renderedFailure(context.Background(), rm, task, pass, forfaitSpawn{})
 			if !errors.As(err, &tr) || tr.Reason != "api_error_result" {
 				t.Fatalf("%s: want ErrTransient{api_error_result}, got %v", pass, err)
 			}
@@ -47,7 +48,7 @@ func TestRenderedFailure(t *testing.T) {
 		rm := &claudesdk.ResultMessage{Result: str("API Error: [429][Usage limit reached for 5 hour. Your limit will reset at 3pm][abc]")}
 		var rl *ErrRateLimited
 		var tr *ErrTransient
-		err := b.renderedFailure(rm, task, "pass 1")
+		err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{})
 		if errors.As(err, &tr) {
 			t.Fatalf("window notice retried as transient: %v", err)
 		}
@@ -58,7 +59,7 @@ func TestRenderedFailure(t *testing.T) {
 	t.Run("a bare 429 with no window is transient", func(t *testing.T) {
 		rm := &claudesdk.ResultMessage{Result: str("API Error: 429 Too Many Requests")}
 		var tr *ErrTransient
-		if err := b.renderedFailure(rm, task, "pass 1"); !errors.As(err, &tr) {
+		if err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{}); !errors.As(err, &tr) {
 			t.Fatalf("want ErrTransient, got %v", err)
 		}
 	})
@@ -66,7 +67,7 @@ func TestRenderedFailure(t *testing.T) {
 		rm := &claudesdk.ResultMessage{Result: str("API Error: [401][Unauthorized][2026090610430471b2ed5a5eaa4de7]")}
 		var auth *ErrAuthFailed
 		var tr *ErrTransient
-		err := b.renderedFailure(rm, task, "pass 1")
+		err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{})
 		if errors.As(err, &tr) {
 			t.Fatalf("credential verdict retried: %v", err)
 		}
@@ -82,11 +83,11 @@ func TestRenderedFailure(t *testing.T) {
 			Result:           str("quota exceeded"),
 			StructuredOutput: map[string]any{"status": "quota exceeded", "ok": false},
 		}
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err == nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); err == nil {
 			t.Fatalf("an SDK object beside a quota render shipped as an answer")
 		}
 		rm.Result = str("Here is the quota summary you asked for.")
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); err != nil {
 			t.Fatalf("structured answer beside prose re-typed: %v", err)
 		}
 		// The formatting pass may deliver its answer as JSON in the text
@@ -95,18 +96,18 @@ func TestRenderedFailure(t *testing.T) {
 			Result:           str(`{"status": "usage limit reached", "ok": false}`),
 			StructuredOutput: map[string]any{},
 		}
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); err != nil {
 			t.Fatalf("JSON-text answer re-typed: %v", err)
 		}
 		rm = &claudesdk.ResultMessage{Result: str("quota exceeded"), StructuredOutput: map[string]any{}}
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err == nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); err == nil {
 			t.Fatalf("a bare quota notice with an empty object is not an answer: want the quota verdict")
 		}
 	})
 	t.Run("a 403 is a credential verdict, as the pi backend mints it — never retried", func(t *testing.T) {
 		for _, text := range []string{"API Error: 403 Forbidden", "API Error: [403][Request blocked][abc]"} {
 			rm := &claudesdk.ResultMessage{Result: str(text)}
-			err := b.renderedFailure(rm, task, "pass 1")
+			err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{})
 			var auth *ErrAuthFailed
 			if !errors.As(err, &auth) {
 				t.Fatalf("%q: want ErrAuthFailed, got %v", text, err)
@@ -137,7 +138,7 @@ func TestRenderedFailure(t *testing.T) {
 	})
 	t.Run("a model the CLI cannot use fails fast", func(t *testing.T) {
 		rm := &claudesdk.ResultMessage{Result: str("There's an issue with the selected model (x/y). It may not exist or you may not have access to it.")}
-		err := b.renderedFailure(rm, task, "pass 1")
+		err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{})
 		var tr *ErrTransient
 		if err == nil || errors.As(err, &tr) {
 			t.Fatalf("want a fast, non-transient failure, got %v", err)
