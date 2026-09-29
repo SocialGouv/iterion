@@ -190,16 +190,20 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 // list on the default path as much as on the override one, so a
 // whole-value reference to one delivers the list — or the object — whole,
 // and nothing checks a `with:` value's type at run time (InputSchema has
-// no non-test reader in pkg/runtime): the arity simply moves, and a tool
-// whose `command:` reads {{input.<field>}} executes once per element. A
-// warning, like C152: a tolerant consumer (an LLM prompt, a text
-// template) reads the rendered value without breaking, and a refusal
-// would reject a shape a run can survive.
+// no non-test reader in pkg/runtime). What measurably breaks is the
+// shell: a tool `command:` reading the field gets the list spread into
+// its argv by shellEscapeValue's ShapeUndeclared arm — the first element
+// is kept, the rest become a command of their own (the mechanism
+// DiagVarListDefaultRouting describes). A warning, like C152: a tolerant
+// consumer (an LLM prompt, a text template) reads the rendered value
+// without breaking, and a refusal would reject a shape a run can
+// survive.
 //
-// Only a `{{vars.<name>}}` reference carries a statically-known type; an
-// `{{outputs.<node>…}}` whole reference resolves to nil or a schema-typed
-// field the graph checks elsewhere (C031/C032), so it earns no opinion
-// here.
+// Only a `{{vars.<name>}}` reference carries a statically-known type
+// here. An `{{outputs.<node>…}}` whole reference earns no opinion: C031/
+// C032 check that the referenced field EXISTS, never its type — so a
+// list-typed output delivered whole into a `string` field is a known
+// gap, not a case covered elsewhere.
 func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *SchemaField, inSchema string, dst Node) {
 	if f.Type != FieldTypeString || len(dm.Refs) != 1 {
 		return
@@ -216,7 +220,7 @@ func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *S
 		return
 	}
 	c.warnfAt(DiagWithWholeRefListToString, e.From, edgeID(e.From, e.To),
-		"edge %s -> %s, with %q: the mapping is exactly one reference to the `%s` var %q, so the value passes through with its type — a list or an object arrives WHOLE on the `string` field %q of input schema %q on %s %s node, and nothing checks a `with:` value's type at run time: the arity simply moves (a tool whose command reads {{input.%s}} executes once per element); declare the field `string[]` or `json`, or interpolate the reference into prose if one string is meant",
+		"edge %s -> %s, with %q: the mapping is exactly one reference to the `%s` var %q, so the value passes through with its type — a list or an object arrives WHOLE on the `string` field %q of input schema %q on %s %s node, and nothing checks a `with:` value's type at run time: a tool `command:` reading {{input.%s}} gets the list spread into its argv (the first element is kept, the rest become a command of their own); declare the field `string[]` or `json`, or interpolate the reference into prose if one string is meant",
 		e.From, e.To, dm.Key, v.Type, ref.Path[0], dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(), dm.Key)
 }
 

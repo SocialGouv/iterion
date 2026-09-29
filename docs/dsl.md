@@ -87,10 +87,16 @@ text as written — a default is never re-checked later. A default carrying an
 env reference expands at run start, not at compile time, so the verbatim
 comparison could not judge it: the compiler expands what has an answer with
 no environment (the `${VAR:-default}` forms) and **warns** instead — [C181](references/diagnostics.md)
-when a reference stays unresolvable (the constraint is then checked on no
-path for that default: named, never silently excused), [C182](references/diagnostics.md)
+when a reference stays unresolvable, which includes the engine-supplied
+names (`${PROJECT_DIR}` and kin: the RUN answers those itself, so no
+compile-time reading may) — the constraint is then checked on no
+path for that default: named, never silently excused — and [C182](references/diagnostics.md)
 when the compile-time reading violates (it is still only the value a launch
 with nothing set starts with, and the operator's env is an explicit choice).
+Two shapes stay on the literal path: text whose `$` is no reference at all,
+and the forms the expander does not support (`${VAR:+alt}`, `${VAR-default}`)
+— the run reads those as the empty string whatever the environment holds,
+so they are as judgeable as a literal and earn the literal verdicts.
 An operator-supplied value
 (`--var`, an HTTP payload, a dispatcher's `bot_args`, a preset overlay) is
 refused **at launch**, before a worktree or a sandbox is created, naming the
