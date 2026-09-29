@@ -132,6 +132,23 @@ jobs:
           # keep it.
           cache: ${{ runner.environment == 'github-hosted' }}
 
+      - name: Go came from the runner image
+        # On the organisation's runners, setup-go finds go.mod's Go in the
+        # image's tool cache (ci/arc-runner) instead of downloading it. A
+        # download still works — ~30 s a job — so this warns rather than
+        # fails; the fix is a new image and its pin in infra-apps.
+        if: runner.environment == 'self-hosted'
+        run: |
+          baked="$RUNNER_TOOL_CACHE/iterion-ci-runner.env"
+          running="$(go env GOVERSION)"
+          if [ ! -f "$baked" ]; then
+            echo "::warning::this runner's image bakes no toolchain ($baked is missing): setup-go downloaded ${running}"
+          elif ! grep -qx "GO_VERSION=${running#go}" "$baked"; then
+            echo "::warning::the runner image bakes $(tr '\n' ' ' < "$baked")but this job runs ${running}, downloaded by setup-go: publish a new ci/arc-runner image and bump its pin in infra-apps"
+          else
+            echo "${running} from the runner image"
+          fi
+
       - name: Generated artefacts are fresh (fail fast)
         # Two pull requests that each regenerate the same committed artefact
         # can merge clean and stale together — the queue's most frequent
