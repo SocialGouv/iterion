@@ -1551,7 +1551,7 @@ human draft_review:
 ## the tree's build system is truly unchanged, which is when reuse is correct.
 ## python3 for safe JSON; writes only the fingerprint sidecar in scratch.
 tool verify_probe:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -I -c "
 import os, subprocess, json, hashlib
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -1604,7 +1604,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## the gate stays universal while the verdict stays deterministic. python3 for
 ## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -1869,7 +1869,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## finalize_mr when a push can actually happen. python3 for safe JSON;
 ## read-only, idempotent.
 tool forge_auth_probe:
-  command: `python3 -c "
+  command: `python3 -I -c "
 import os, subprocess, json
 tok = '/run/iterion/secrets/forge_token'
 try:
@@ -1891,7 +1891,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
   output: forge_auth_state
 
 tool surface_pr_link:
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
@@ -1900,7 +1900,7 @@ if u:
   input: surface_pr_link_input
 
 tool surface_deploy_link:
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
@@ -1922,7 +1922,7 @@ if u:
 ## traceable to the repo: the commits reachable from a remote branch, and the
 ## running image published under the repo's own registry path.
 tool deploy_trace:
-  command: `WS={{vars.workspace_dir}} IMAGE={{input.image_ref}} python3 -c "
+  command: `WS={{vars.workspace_dir}} IMAGE={{input.image_ref}} python3 -I -c "
 import os, subprocess, json, re
 ws = os.environ.get('WS', '.')
 image = (os.environ.get('IMAGE') or '').strip()

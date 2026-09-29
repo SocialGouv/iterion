@@ -864,7 +864,7 @@ agent finalize_mr:
 ## explicitly: a half-materialized context must never look like a
 ## complete one. No LLM.
 tool context_ingest:
-  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
+  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -I -c "
 import os, json, re, subprocess, shutil, urllib.request, urllib.error, base64
 
 scratch = os.environ.get('SCRATCH', '')
@@ -1022,7 +1022,7 @@ print(json.dumps({'context_note': note, 'sources': sources, 'errors': ''}))
   output: context_ingest_output
 
 tool scan_hints:
-  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -I -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1300,7 +1300,7 @@ print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, '
 ## Untracked files are held to the same rule. No LLM; the campaign
 ## must revert whatever this flags.
 tool scope_check:
-  command: `WS={{vars.workspace_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
 
@@ -1381,7 +1381,7 @@ print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:10
 ## finalize_mr when a push can actually happen. python3 for safe JSON;
 ## read-only, idempotent.
 tool forge_auth_probe:
-  command: `python3 -c "
+  command: `python3 -I -c "
 import os, subprocess, json
 tok = '/run/iterion/secrets/forge_token'
 try:
@@ -1403,7 +1403,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
   output: forge_auth_state
 
 tool surface_pr_link:
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:

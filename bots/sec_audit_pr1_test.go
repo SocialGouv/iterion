@@ -217,11 +217,11 @@ func bankScriptFor(t *testing.T) string {
 		t.Fatal("no bank_deepsec_findings node")
 	}
 	blk := src[i:]
-	pyStart := strings.Index(blk, "python3 -c '")
+	pyStart := strings.Index(blk, "python3 -I -c '")
 	if pyStart < 0 {
-		t.Fatal("bank_deepsec_findings does not use python3 -c '...'")
+		t.Fatal("bank_deepsec_findings does not use python3 -I -c '...'")
 	}
-	pyStart += len("python3 -c '")
+	pyStart += len("python3 -I -c '")
 	pyEnd := strings.Index(blk[pyStart:], "'`")
 	if pyEnd < 0 {
 		t.Fatal("bank_deepsec_findings python body never closes")

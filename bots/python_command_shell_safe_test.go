@@ -32,7 +32,7 @@ func commandBackticks(src string) []string {
 var tmplRef = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
 // TestReviewPRPublishCommandsRunCleanly guards a bug class that has bitten the
-// review-pr publish path twice: a `python3 -c "<body>"` tool command whose BODY
+// review-pr publish path twice: a `python3 -I -c "<body>"` tool command whose BODY
 // contains a shell-significant character (a bare double-quote, an unescaped
 // backtick) that ends the double-quoted shell argument early and SILENTLY
 // truncates the python — exit 0, empty stdout, no work done. `iterion validate`
@@ -50,7 +50,7 @@ func TestReviewPRPublishCommandsRunCleanly(t *testing.T) {
 	blocks := commandBackticks(string(data))
 	ran := 0
 	for _, blk := range blocks {
-		if !strings.Contains(blk, `python3 -c "`) {
+		if !strings.Contains(blk, `python3 -I -c "`) {
 			continue
 		}
 		// Skip the diff_precheck command: it chdir's into a workspace and runs
@@ -66,7 +66,7 @@ func TestReviewPRPublishCommandsRunCleanly(t *testing.T) {
 		rendered := tmplRef.ReplaceAllString(blk, "")
 		out, _ := exec.Command("sh", "-c", rendered).Output()
 		if strings.TrimSpace(string(out)) == "" {
-			t.Errorf("review-pr/main.bot: a python3 -c tool command produced EMPTY output when run — its body is truncated by a stray shell metacharacter (bare double-quote or backtick). Keep the python -c body free of unescaped \" and `. Command head: %q",
+			t.Errorf("review-pr/main.bot: a python3 -I -c tool command produced EMPTY output when run — its body is truncated by a stray shell metacharacter (bare double-quote or backtick). Keep the python -c body free of unescaped \" and `. Command head: %q",
 				firstLine(rendered))
 		}
 		ran++

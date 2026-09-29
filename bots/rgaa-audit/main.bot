@@ -357,7 +357,7 @@ agent report_card:
 ## Language-agnostic — no UI extension enumeration here (that is the
 ## adaptive campaign's phase-0 job).
 tool inventory:
-  command: `WS={{vars.workspace_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} python3 -I -c "
 import os, json
 ws = os.environ['WS']
 EXCLUDED = {'.git','node_modules','vendor','.iterion','.works','.claude','.venv','venv','env','dist','build','.next','out','target','__pycache__','.cache','.terraform','coverage'}
@@ -388,7 +388,7 @@ print(json.dumps({'listing': listing}))
 ## This is the degenerate Verified-Action quad (recipe == postcondition,
 ## no recovery): the gate stays deterministic.
 tool scan_health:
-  command: `WS={{input.workspace_dir}} HAS_UI={{input.has_ui}} EXAMINED={{input.examined_files}} CANDS={{input.candidates}} python3 -c "
+  command: `WS={{input.workspace_dir}} HAS_UI={{input.has_ui}} EXAMINED={{input.examined_files}} CANDS={{input.candidates}} python3 -I -c "
 import os, json, sys, glob
 ws = os.environ.get('WS','.')
 has_ui = (os.environ.get('HAS_UI','false') or 'false').strip().lower() == 'true'
@@ -438,7 +438,7 @@ if not healthy:
 ## DETERMINISTIC overflow guard: keep at most `cap` non-conformities as
 ## board issues, severity-sorted; surface how many were capped.
 tool cap_findings:
-  command: `CANDS={{input.candidates}} CAP={{input.cap}} python3 -c "
+  command: `CANDS={{input.candidates}} CAP={{input.cap}} python3 -I -c "
 import os, json
 try:
     cap = int(os.environ.get('CAP','80') or '80')

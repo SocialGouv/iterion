@@ -145,7 +145,7 @@ agent generate_devbox:
 ## never throws (a failure is reported, not crashed). python3 -c keeps the
 ## JSON emission clean (single quotes are safe inside the double-quoted -c arg).
 tool verify_devbox:
-  command: `WS={{input.workspace_dir}} python3 -c "
+  command: `WS={{input.workspace_dir}} python3 -I -c "
 import os, json, subprocess, pwd
 ws = os.environ['WS']
 # devbox/nix live in the container user real home (e.g. /home/devbox), not
@@ -174,7 +174,7 @@ print(json.dumps({'ok': rc == 0, 'output': tail}))
 ## written but the worktree is discarded at finalize ("no commits produced")
 ## and the bot delivers nothing.
 tool commit_devbox:
-  command: `WS={{input.workspace_dir}} python3 -c "
+  command: `WS={{input.workspace_dir}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ['WS']
 files = [f for f in ('devbox.json', 'devbox.lock') if os.path.isfile(os.path.join(ws, f))]

@@ -33,15 +33,15 @@ func bankScript(t *testing.T) string {
 		if !strings.Contains(blk, "no deepsec export at ") {
 			continue
 		}
-		const marker = "python3 -c '"
+		const marker = "python3 -I -c '"
 		i := strings.Index(blk, marker)
 		if i < 0 {
-			t.Fatal("the banking command embeds no python3 -c body")
+			t.Fatal("the banking command embeds no python3 -I -c body")
 		}
 		start := i + len(marker)
 		end := strings.Index(blk[start:], "'")
 		if end < 0 {
-			t.Fatal("unterminated python3 -c body in the banking command")
+			t.Fatal("unterminated python3 -I -c body in the banking command")
 		}
 		// The body lives inside a '…' shell string, so ONE apostrophe closes it
 		// early and silently truncates the python — the trap the deepsec scanner
