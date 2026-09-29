@@ -520,12 +520,15 @@ func TestTreeNoiseScannerRound5Probes(t *testing.T) {
 			"  command: |\n    echo '$ITERION_TREE_NOISE' | xargs git add --", 1},
 		"m4b: a collapse upstream of the pipe fires": {
 			"  command: |\n    git add -A -- \"$ITERION_TREE_NOISE\" | xargs echo staged", 1},
-		"m4c: xargs -0 does not re-split — fires": {
-			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -0 git add --", 1},
-		"m4d: xargs -I{} does not re-split — fires": {
-			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -I{} git add {}", 1},
-		"m4e: xargs -d does not re-split — fires": {
-			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -d ' ' git add --", 1},
+		// The exit round deleted the downstream parsing entirely: no flags
+		// are read, so a non-re-splitting xargs is a documented MISS (the
+		// honest direction) rather than a special case.
+		"m4c: xargs -0 — silent since the exit (documented miss)": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -0 git add --", 0},
+		"m4d: xargs -I{} — silent since the exit (documented miss)": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -I{} git add {}", 0},
+		"m4e: xargs -d — silent since the exit (documented miss)": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | xargs -d ' ' git add --", 0},
 		// LOW 5 — the pipe may end its line.
 		"low5: a pipe continued on the next line": {
 			"  command: |\n    echo \"$ITERION_TREE_NOISE\" |\n      xargs git add --", 0},
@@ -541,5 +544,71 @@ func TestTreeNoiseScannerRound5Probes(t *testing.T) {
 				t.Fatalf("C158 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Exit round — the xargs special case is gone; ONE pipe rule remains
+// ---------------------------------------------------------------------------
+
+// TestTreeNoisePipeRule pins the exit: a DOUBLE-quoted span produced by
+// echo/printf whose command ends at a pipe is silent — piped output: the
+// downstream may re-split, and the check cannot tell. Nothing downstream is
+// parsed (not the command, not flags, not continuations, not comments), so
+// every shape the xargs machinery missed converges to the same verdict. A
+// span whose producer consumes its argv (git add upstream of the pipe)
+// keeps firing — the collapse happens before the pipe.
+func TestTreeNoisePipeRule(t *testing.T) {
+	c158count := func(r *CompileResult) int { return countCode(r, DiagTreeNoiseEnvQuoted) }
+	for name, tc := range map[string]struct {
+		line string
+		want int
+	}{
+		"echo | backslash-continuation to anything": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | \\\n      xargs git add --", 0},
+		"echo | env xargs": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | env xargs git add --", 0},
+		"command echo | xargs": {
+			"  command: |\n    command echo \"$ITERION_TREE_NOISE\" | xargs git add --", 0},
+		"echo | comment continuation": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" | # stage the tree\n      xargs git add --", 0},
+		"echo with a preceding argument still suppresses": {
+			"  command: |\n    echo staged: \"$ITERION_TREE_NOISE\" | xargs git add --", 0},
+		"echo \"$V\" extra args still suppress": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" v2 | xargs git add --", 0},
+		"git add upstream of the pipe FIRES": {
+			"  command: |\n    git add -A -- \"$ITERION_TREE_NOISE\" | xargs echo staged", 1},
+		"echo || is not a pipe": {
+			"  command: |\n    echo \"$ITERION_TREE_NOISE\" || exit 1", 1},
+		"a single-quoted span feeding a pipe is literal": {
+			"  command: |\n    echo '$ITERION_TREE_NOISE' | xargs git add --", 1},
+		"an unknown producer keeps firing": {
+			"  command: |\n    show \"$ITERION_TREE_NOISE\" | xargs git add --", 1},
+		"an env-modified producer suppresses": {
+			"  command: |\n    env echo \"$ITERION_TREE_NOISE\" | xargs git add --", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileText(t, treeNoiseSrc(tc.line))
+			if got := c158count(r); got != tc.want {
+				t.Fatalf("C158 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
+			}
+		})
+	}
+}
+
+// TestTreeNoiseCaseStack pins the per-depth case state: an inner case (even
+// inside the outer case's WORD) neither consumes the outer compound's
+// awaiting-in nor strands its pattern state.
+func TestTreeNoiseCaseStack(t *testing.T) {
+	c158count := func(r *CompileResult) int { return countCode(r, DiagTreeNoiseEnvQuoted) }
+	// (a) the outer pattern survives an inner case inside the case word.
+	r := compileText(t, treeNoiseSrc("  command: |\n    case $(case x in y) echo z;; esac) in\n      \"$ITERION_TREE_NOISE\") git add -A ;;\n    esac"))
+	if got := c158count(r); got != 0 {
+		t.Fatalf("(a) outer pattern after an inner case in the case word: %d hits, want 0\n%v", got, r.Diagnostics)
+	}
+	// (b) a real collapse in the outer arm AFTER the inner esac fires again.
+	r = compileText(t, treeNoiseSrc("  command: |\n    case a in\n      x) case \"$MODE\" in y) echo ok ;; esac\n         git add -- \"$ITERION_TREE_NOISE\" ;;\n    esac"))
+	if got := c158count(r); got != 1 {
+		t.Fatalf("(b) outer-arm collapse after the inner esac: %d hits, want 1\n%v", got, r.Diagnostics)
 	}
 }

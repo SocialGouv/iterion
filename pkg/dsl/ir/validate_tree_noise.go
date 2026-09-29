@@ -273,23 +273,48 @@ func scanShellBody(body string) shellScan {
 
 		testCloser string // "]" / "]]" while inside a bracket test
 		testCmd    bool   // inside a `test …` command
-		// case tracking: a `case` at command position arms the compound
-		// (depth, for nesting); the NEXT span is the case word, which never
-		// word-splits; the pattern region opens ONLY from the
+		// case tracking, one state PER DEPTH (a stack): a `case` at command
+		// position pushes the enclosing state; `esac` at command position
+		// pops it back — an inner case's `in`/`esac` touches nothing of the
+		// outer compound. The NEXT span after `case` is the case word, which
+		// never word-splits; the pattern region opens ONLY from the
 		// "case word consumed, awaiting in" state — a bare `in` inside an
 		// arm (`for f in …`, `grep -w in …`) arms nothing.
-		caseDepth   int
+		caseStack   []caseState
 		casePending bool
 		awaitingIn  bool
-		casePattern bool   // in a case PATTERN position (between `in` and the arm's `)`, and after each `;;`/`;&`) — patterns never word-split either
-		cmdName     string // first word of the current command (the echo|xargs suppression reads it)
+		casePattern bool // in a case PATTERN position (between `in` and the arm's `)`, and after each `;;`/`;&`) — patterns never word-split either
 
 		arithDepth int // inside $(( … )) / (( … )): no word-splitting, no heredocs
 
 		heredocDelim string // pending: opens at the next newline
 		heredocStrip bool
 		heredocFrom  = -1 // active heredoc body's start offset
+
+		// Per-command buffering for the ONE pipe rule: a span that passes
+		// every other check waits for its command's end; flushed at the
+		// separator, a DOUBLE-quoted span produced by echo/printf whose
+		// command ends at a pipe is DROPPED — piped output: the downstream
+		// may re-split, and the check cannot tell. Nothing downstream is
+		// parsed at all (no xargs detection, no flags, no continuations —
+		// that machinery provably did not converge).
+		pending []treeNoiseQuote
+		cmdVerb string // first word of the current command (after keywords, assignment prefixes and command modifiers)
 	)
+
+	// flushCmd discharges the pending spans at a command's end. pipe is true
+	// when the command ends at a `|` — its stdout leaves to a downstream
+	// the check cannot model.
+	flushCmd := func(pipe bool) {
+		for _, h := range pending {
+			if pipe && h.double && (cmdVerb == "echo" || cmdVerb == "printf") {
+				continue
+			}
+			sc.hits = append(sc.hits, h)
+		}
+		pending = nil
+		cmdVerb = ""
+	}
 
 	// flushWord evaluates the word ending at end (outside any quote).
 	flushWord := func(end int) {
@@ -300,10 +325,11 @@ func scanShellBody(body string) shellScan {
 		wordStart = -1
 		// A bare case word consumed the pending flag before this word.
 		casePending = false
-		// Command-name tracking: the first non-keyword, non-assignment
-		// word of a command (`FOO=bar echo …` leaves the position open).
-		if cmdStart && cmdName == "" && !shellKeyword(w) && !isShellAssignWord(w) {
-			cmdName = w
+		// Command-verb tracking: the first word of a command that is not a
+		// keyword, an assignment prefix (`FOO=bar echo …`) or a command
+		// modifier (`command echo …`, `env echo …`).
+		if cmdStart && cmdVerb == "" && !shellKeyword(w) && !isShellAssignWord(w) && !isShellCommandModifier(w) {
+			cmdVerb = w
 		}
 		switch w {
 		case "[":
@@ -324,9 +350,10 @@ func scanShellBody(body string) shellScan {
 			}
 		case "case":
 			if cmdStart {
+				caseStack = append(caseStack, caseState{awaitingIn, casePattern})
 				casePending = true
 				awaitingIn = true
-				caseDepth++
+				casePattern = false
 			}
 		case "in":
 			// `case <word> in` opens the pattern list — and ONLY that
@@ -339,21 +366,22 @@ func scanShellBody(body string) shellScan {
 		case "esac":
 			// A closer only at command position: `echo esac` in an arm is
 			// an argument and closes nothing.
-			if cmdStart && caseDepth > 0 {
-				caseDepth--
-				if caseDepth == 0 {
-					casePattern = false
-				}
+			if cmdStart && len(caseStack) > 0 {
+				top := caseStack[len(caseStack)-1]
+				caseStack = caseStack[:len(caseStack)-1]
+				awaitingIn = top.awaitingIn
+				casePattern = top.casePattern
 			}
 		}
-		// Command-position tracking: a keyword or an assignment prefix
-		// keeps it, any other word ends it; the separators set it again
-		// below.
-		cmdStart = shellKeyword(w) || isShellAssignWord(w)
+		// Command-position tracking: a keyword, an assignment prefix or a
+		// command modifier keeps it, any other word ends it; the separators
+		// set it again below.
+		cmdStart = shellKeyword(w) || isShellAssignWord(w) || isShellCommandModifier(w)
 	}
 
-	// closeSpan records the span ending at the closing quote i and judges
-	// it for C158.
+	// closeSpan records the span ending at the closing quote i and, when it
+	// passes every suppression, buffers it as a candidate for its command's
+	// end (the pipe rule, see flushCmd).
 	closeSpan := func(close int) {
 		sc.quoted = append(sc.quoted, [2]int{spanStart, close + 1})
 		standalone := (spanStart == 0 || isShellBoundaryOpen(body[spanStart-1])) &&
@@ -371,18 +399,7 @@ func scanShellBody(body string) shellScan {
 		if !treeNoiseEnvOnlyVar(content) {
 			return
 		}
-		if quote == '"' && (cmdName == "echo" || cmdName == "printf") && pipedToXargs(body, close+1) {
-			// echo "$V" | xargs git add — xargs re-splits the one word
-			// downstream, so the exclusion survives end to end; naming the
-			// collapse here would be a false mechanism. Bounded on purpose:
-			// only a DOUBLE-quoted span (a single-quoted one is literal
-			// text, argc=1), only a producer whose stdout IS the var
-			// (echo/printf — `git add "$V" | xargs echo` collapses at git
-			// add, upstream of the pipe), only a flag-free xargs (-I/-0/-d
-			// do not re-split).
-			return
-		}
-		sc.hits = append(sc.hits, treeNoiseQuote{body[spanStart : close+1], spanLine, quote == '"'})
+		pending = append(pending, treeNoiseQuote{body[spanStart : close+1], spanLine, quote == '"'})
 	}
 
 	for i := 0; i < len(body); {
@@ -411,28 +428,29 @@ func scanShellBody(body string) shellScan {
 
 		switch quote {
 		case '\'':
-			if ch == '\'' {
+			switch ch {
+			case '\'':
 				closeSpan(i)
 				quote = 0
-			} else if ch == '\n' {
+			case '\n':
 				line++
 			}
 			i++
 		case '"':
-			switch {
-			case ch == '\\': // \" \$ \\ \` — the escaped byte is inert
+			switch ch {
+			case '\\': // \" \$ \\ \` — the escaped byte is inert
 				if i+1 < len(body) && body[i+1] == '\n' {
 					line++
 				}
 				i += 2
-			case ch == '"':
+			case '"':
 				closeSpan(i)
 				quote = 0
 				i++
+			case '\n':
+				line++
+				i++
 			default:
-				if ch == '\n' {
-					line++
-				}
 				i++
 			}
 		default:
@@ -441,27 +459,27 @@ func scanShellBody(body string) shellScan {
 			// open a FAKE pending heredoc that swallowed the rest of the
 			// body). Only parens, quotes and escapes mean anything here.
 			if arithDepth > 0 {
-				switch {
-				case ch == '\\':
+				switch ch {
+				case '\\':
 					if i+1 < len(body) && body[i+1] == '\n' {
 						line++
 					}
 					i += 2
-				case ch == '\'' || ch == '"':
+				case '\'', '"':
 					quote = ch
 					spanStart = i
 					spanLine = line
 					i++
-				case ch == '(':
+				case '(':
 					arithDepth++
 					i++
-				case ch == ')':
+				case ')':
 					arithDepth--
 					i++
+				case '\n':
+					line++
+					i++
 				default:
-					if ch == '\n' {
-						line++
-					}
 					i++
 				}
 				continue
@@ -474,10 +492,10 @@ func scanShellBody(body string) shellScan {
 				i += 2
 			case ch == '\n':
 				flushWord(i)
+				flushCmd(false)
 				line++
 				cmdStart = true
 				testCmd = false
-				cmdName = ""
 				i++
 				if heredocDelim != "" {
 					heredocFrom = i
@@ -487,13 +505,16 @@ func scanShellBody(body string) shellScan {
 				i++
 			case ch == ';' || ch == '&' || ch == '|':
 				flushWord(i)
+				// The command ends here: at a pipe its stdout leaves to a
+				// downstream the check cannot model; `||` is not a pipe.
+				pipe := ch == '|' && (i+1 >= len(body) || body[i+1] != '|')
+				flushCmd(pipe)
 				cmdStart = true
 				testCmd = false
-				cmdName = ""
 				i++
 				// A case arm terminator (`;;` or `;&`) returns to pattern
 				// position. `||` is not one.
-				if caseDepth > 0 && ch == ';' && i < len(body) && (body[i] == ';' || body[i] == '&') {
+				if len(caseStack) > 0 && ch == ';' && i < len(body) && (body[i] == ';' || body[i] == '&') {
 					casePattern = true
 					i++
 				}
@@ -508,15 +529,15 @@ func scanShellBody(body string) shellScan {
 				// `OUT=$(case "$V" in …` reads `case` at command position.
 				flushWord(i)
 				cmdStart = true
-				cmdName = ""
+				cmdVerb = ""
 				i++
 			case ch == ')':
 				flushWord(i)
 				// The `)` after a pattern list: the arm body begins, at
-				// command position.
+				// command position; a subshell's end discharges its command.
 				casePattern = false
+				flushCmd(false)
 				cmdStart = true
-				cmdName = ""
 				i++
 			case ch == '<' && i+1 < len(body) && body[i+1] == '<' && (i+2 >= len(body) || body[i+2] != '<'):
 				flushWord(i)
@@ -546,6 +567,7 @@ func scanShellBody(body string) shellScan {
 		}
 	}
 	flushWord(len(body))
+	flushCmd(false)
 	return sc
 }
 
@@ -562,41 +584,23 @@ func isShellAssignWord(w string) bool {
 	return i > 0 && i < len(w) && w[i] == '='
 }
 
-// pipedToXargs reports whether the span ending at off feeds a pipe whose
-// next command is a FLAG-FREE xargs: `echo "$V" | xargs git add` (the pipe
-// may end its line — `| \n xargs …` re-splits the same). xargs -I, -0 and
-// -d do NOT re-split on blanks, so a flagged form is not a suppression.
-func pipedToXargs(body string, off int) bool {
-	j := off
-	for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
-		j++
+// caseState is the per-depth case-compound state the stack carries (see
+// scanShellBody): whether the compound awaits its `in`, and whether the scan
+// sits in a pattern position.
+type caseState struct {
+	awaitingIn  bool
+	casePattern bool
+}
+
+// isShellCommandModifier reports whether w is a command MODIFIER — a word
+// that runs another command without being it (`command echo …`, `env echo
+// …`): command position and the command-verb question both pass through it.
+func isShellCommandModifier(w string) bool {
+	switch w {
+	case "command", "env", "builtin", "exec", "noglob":
+		return true
 	}
-	if j >= len(body) || body[j] != '|' {
-		return false
-	}
-	if j+1 < len(body) && body[j+1] == '|' {
-		return false // || is not a pipe
-	}
-	j++
-	for j < len(body) && (body[j] == ' ' || body[j] == '\t' || body[j] == '\n') {
-		j++
-	}
-	start := j
-	for j < len(body) && !isShellBoundaryOpen(body[j]) && body[j] != '(' && body[j] != ')' {
-		j++
-	}
-	if body[start:j] != "xargs" {
-		return false
-	}
-	for j < len(body) && (body[j] == ' ' || body[j] == '\t') {
-		j++
-	}
-	start = j
-	for j < len(body) && !isShellBoundaryOpen(body[j]) && body[j] != '(' && body[j] != ')' {
-		j++
-	}
-	flag := body[start:j]
-	return !strings.HasPrefix(flag, "-I") && !strings.HasPrefix(flag, "-0") && !strings.HasPrefix(flag, "-d")
+	return false
 }
 
 // parseHeredocDelim reads the delimiter of a `<<` operator: an optional `-`
