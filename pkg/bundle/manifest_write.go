@@ -671,7 +671,7 @@ func manifestPlainSafe(v string) bool {
 // the value by one newline on every patch (round 1).
 func manifestLiteralLines(key string, v string) ([]string, bool) {
 	lines := strings.Split(v, "\n")
-	indicator := "|"
+	var indicator string
 	var body []string
 	switch {
 	case strings.HasSuffix(v, "\n\n"):
