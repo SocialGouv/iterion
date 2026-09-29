@@ -25,9 +25,9 @@ func TestABlockBodySeparatorIsReadAsTheScannerReadIt(t *testing.T) {
 		name, scalar, wantBody, where, wantErr string
 		wantLine                               int
 	}{
-		{"LS in a literal", "|" + nl + "    one" + ls + "    two" + nl + "    three" + nl, "one" + nl + "two" + nl + "three", "a line separator (U+2028/U+2029), the first on line 4", "", 4},
-		{"PS in a literal", "|" + nl + "    one" + nl + "    two" + ps + "    three" + nl, "one" + nl + "two" + nl + "three", "on line 5", "", 5},
-		{"two separators in a literal", "|" + nl + "    one" + ls + "    two" + ps + "    three" + nl, "one" + nl + "two" + nl + "three", "2 line separators (U+2028/U+2029), the first on line 4", "", 4},
+		{"LS in a literal", "|" + nl + "    one" + ls + "    two" + nl + "    three" + nl, "one" + nl + "two" + nl + "three", "a line separator (U+2028/U+2029)", "", 4},
+		{"PS in a literal", "|" + nl + "    one" + nl + "    two" + ps + "    three" + nl, "one" + nl + "two" + nl + "three", "a line separator (U+2028/U+2029)", "", 5},
+		{"two separators in a literal", "|" + nl + "    one" + ls + "    two" + ps + "    three" + nl, "one" + nl + "two" + nl + "three", "2 line separators (U+2028/U+2029)", "", 4},
 		{"LS in a folded", ">" + nl + "    one" + ls + "    two" + nl, "", "", "in a folded block", 3},
 		{"an escaped LS in a quoted body", `"one` + bs + `Ltwo"` + nl, "one" + ls + "two", "", "", 0},
 	} {

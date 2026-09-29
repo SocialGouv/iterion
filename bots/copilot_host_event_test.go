@@ -21,7 +21,7 @@ func TestCopilotHostEventDoesNotReviveInitialMessage(t *testing.T) {
 	if !strings.Contains(src, precedence) {
 		t.Fatalf("Copi normalization must keep operator_message empty for a host event; want %q", precedence)
 	}
-	if !strings.Contains(src, `host_event:           "{{outputs.normalize_chat_turn.host_event}}"`) {
+	if !strings.Contains(src, `host_event: "{{outputs.normalize_chat_turn.host_event}}"`) {
 		t.Fatal("Copi Terra no longer receives the host event after chat normalization")
 	}
 	if strings.Contains(src, `operator_message: "if(input.operator_message, input.operator_message, input.initial_message)"`) {

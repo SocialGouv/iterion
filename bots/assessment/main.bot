@@ -35,16 +35,6 @@
 
 dsl: 2
 
-secrets:
-  ## Forge access for the workspace clone: the launch's --connection-id
-  ## binds the forge token under this name and the runner authenticates the
-  ## repo workspace clone with it. Without the declaration the clone runs
-  ## credential-less and dies on any private repo. optional:true so
-  ## public-repo runs work unchanged.
-  forge_token:
-    as: file
-    optional: true
-
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## The declared ENTRY of the assessment: objectives, target versions,
@@ -90,8 +80,17 @@ vars:
   ## tune and why a test may set it low to observe the timeout path.
   gate_probe_timeout_s: string = "${ITERION_ASSESSMENT_GATE_PROBE_TIMEOUT_S:-120}"
 
-## ─── Prompts ───────────────────────────────────────────────────────
+secrets:
+  ## Forge access for the workspace clone: the launch's --connection-id
+  ## binds the forge token under this name and the runner authenticates the
+  ## repo workspace clone with it. Without the declaration the clone runs
+  ## credential-less and dies on any private repo. optional:true so
+  ## public-repo runs work unchanged.
+  forge_token:
+    as: file
+    optional: true
 
+## ─── Prompts ───────────────────────────────────────────────────────
 prompt survey_system:
   You survey a repository so that deterministic tools can measure it. You
   DECLARE what the agnostic floor cannot see; you never publish a number and
@@ -594,6 +593,160 @@ schema commit_state:
   commit: string
   files: int
 
+schema floor_input:
+  base_sha: string
+
+schema survey_input:
+  base_sha: string
+  listing: string
+  brief_summary: string
+
+schema survey_write_input:
+  base_sha: string
+  stacks: json
+  declarations: json
+  notes: string
+
+## What the extractor runner did. `unsupported` is a RESULT — a stack nobody
+## shipped a skill for — and it is distinct from zero: a stack measured at
+## zero and a stack never measured read the same in a table, and only one of
+## them is a fact about the repository.
+schema extract_state:
+  ok: bool
+  code: string
+  reason: string
+  ran: json
+  outputs: json
+  unsupported: json
+  errors: json
+
+schema extract_input:
+  stacks: json
+  ## The commit every extractor must read AT. Without it a script falls back
+  ## on the checkout, which carries build output, caches and whatever a
+  ## previous node left behind — none of it in the commit this assessment
+  ## claims to describe.
+  base_sha: string
+
+schema health_input:
+  survey_path: string
+  outputs: json
+  unsupported: json
+  errors: json
+
+schema lint_input:
+  base_sha: string
+  survey_path: string
+
+schema measure_input:
+  base_sha: string
+  survey_path: string
+  floor_path: string
+  ## The extractor artefacts THIS pass produced, by path. The scratch
+  ## directory survives a resume, so reading everything in it sums a previous
+  ## pass's numbers into this one's.
+  extractor_outputs: json
+  ## What the coverage gate established, carried forward rather than
+  ## recomputed from the agent's flags: the document publishes the gap the
+  ## deterministic layer saw, not the one the survey admitted to.
+  stacks_unsupported: json
+  stacks_covered: json
+  coverage_degraded: bool
+  coverage_missing: json
+  ## Stacks whose extractors ERRORED. An extractor that failed beside one that
+  ## worked leaves the stack covered and the measurement thinner, and that
+  ## difference is invisible in every table unless the document carries it.
+  stacks_errored: json
+
+schema judgement_input:
+  facts: string
+  brief_summary: string
+  survey_notes: string
+
+schema render_input:
+  facts_path: string
+  state_judgement: string
+  plan_judgement: string
+  open_questions: string
+
+schema render_plan_input:
+  facts_path: string
+  lots: int
+  proposals: int
+  ## How many lots had their declared gate EXECUTED on the input tree and seen
+  ## to FAIL. Published because it is the count that says the programme is
+  ## verifiable: `lots` says how much was written, this says how much of it
+  ## can tell the work apart from its absence.
+  gates_proven_red: int
+  ## Lots whose gate the probe could NOT observe: a timeout, a failed spawn,
+  ## or a command the shell could not find or execute. Published because
+  ## silence here reads as proof: a lot in this list carries a gate nobody
+  ## has seen do anything, and the programme document says so.
+  gates_never_ran: json
+
+schema plan_draft_input:
+  facts: string
+  brief_summary: string
+  stacks: string
+
+## survey — the one adaptive step. It detects the stacks and returns the
+## declarations; the DETERMINISTIC extractors the matching `stack-<id>` skills
+## declare are run by `run_extractors`, not by it. It does not count: an
+## agent's count is an opinion with a number in it.
+agent survey:
+  model: "${ITERION_ASSESSMENT_SURVEY_MODEL:-anthropic/claude-opus-5-5}"
+  backend: "${ITERION_ASSESSMENT_SURVEY_BACKEND:-claude_code}"
+  input: survey_input
+  output: survey_output
+  system: survey_system
+  user: survey_user
+  ## NO SHELL. The four readers are what this step needs — it names stacks and
+  ## a perimeter, it does not run extractors, and `run_extractors` is the node
+  ## that executes anything. `readonly: true` below is honoured by codex and pi
+  ## and ignored by claude_code, so the shell is removed rather than locked:
+  ## a property carried by a flag one backend drops is not carried.
+  tools: [read_file, glob, grep, skill]
+  skills: ["assessment-survey", "assessment-brief"]
+  tool_max_steps: 120
+  reasoning_effort: "${ITERION_ASSESSMENT_SURVEY_EFFORT:-high}"
+  readonly: true
+
+## judgement — the prose a reader acts on. Factual assertions are inserted by
+## identifier and substituted by the renderer; free prose is confined to the
+## blocks that are marked as judgement. "No figure in the prose" is NOT
+## mechanisable by a digit detector — a count in words carries no digit, and a
+## lexical filter rejects legitimate cross-references — so the mechanism is the
+## opposite one: the renderer refuses an identifier it does not know.
+agent judgement:
+  model: "${ITERION_ASSESSMENT_JUDGEMENT_MODEL:-anthropic/claude-opus-5-5}"
+  backend: "${ITERION_ASSESSMENT_JUDGEMENT_BACKEND:-claude_code}"
+  input: judgement_input
+  output: judgement_output
+  system: judgement_system
+  user: judgement_user
+  tools: [skill]
+  skills: ["assessment-report"]
+  tool_max_steps: 8
+  reasoning_effort: "${ITERION_ASSESSMENT_JUDGEMENT_EFFORT:-high}"
+
+## plan_draft — writes the contract and the outcomes file. Its own report is
+## read as a POINTER to files, never as a verdict over them.
+agent plan_draft:
+  model: "${ITERION_ASSESSMENT_PLAN_MODEL:-anthropic/claude-opus-5-5}"
+  backend: "${ITERION_ASSESSMENT_PLAN_BACKEND:-claude_code}"
+  input: plan_draft_input
+  output: plan_draft_output
+  system: plan_draft_system
+  user: plan_draft_user
+  ## Readers and two writers, NO SHELL. It reads a repository its own prompt
+  ## calls untrusted and writes two files; on claude_code nothing but this
+  ## list bounds it. Its gates are RUN by contract_lint, in an allowlisted
+  ## environment and an empty home — never by the agent that wrote them.
+  tools: [read_file, glob, grep, skill, write_file, edit_file]
+  skills: ["plan-contract", "upgrade-archetypes", "assessment-survey"]
+  tool_max_steps: 200
+  reasoning_effort: "${ITERION_ASSESSMENT_PLAN_EFFORT:-high}"
+
 ## ─── Nodes ─────────────────────────────────────────────────────────
 
 ## workspace_probe — the deterministic entry precondition, and the run's
@@ -604,8 +757,6 @@ schema commit_state:
 ## verdict with the engine's generic tool failure.
 tool workspace_probe:
   description: "Precondition: a full git repository, pinned"
-  output: probe_state
-  language: py
   script: |
     import hashlib
     import json
@@ -725,17 +876,8 @@ tool workspace_probe:
     out["reason"] = "git repository at %s, pinned at %s" % (ws, base_sha[:12])
     print(json.dumps(out))
 
-fail workspace_not_a_repo:
-  description: "the launch has no repository to assess"
-  code: WORKSPACE_NOT_A_REPO
-  message: "{{outputs.workspace_probe.reason}}"
-  resumable: false
-
-fail bundle_skills_unavailable:
-  description: "the engine gave the run no bundle-owned skills directory"
-  code: BUNDLE_SKILLS_UNAVAILABLE
-  message: "{{outputs.workspace_probe.reason}}"
-  resumable: false
+  language: py
+  output: probe_state
 
 ## brief_read — the declared entry. Absent, unparseable or incomplete is a
 ## NAMED refusal and never a default: the objectives of a campaign, its target
@@ -743,8 +885,6 @@ fail bundle_skills_unavailable:
 ## certifies a fact that is future or external.
 tool brief_read:
   description: "Read and validate the declared brief"
-  output: brief_state
-  language: py
   script: |
     import json
     import os
@@ -931,20 +1071,8 @@ tool brief_read:
         brief_path, len(goals), len(decisions))
     print(json.dumps(out))
 
-fail brief_absent:
-  description: "the assessment has no declared brief to work from"
-  code: BRIEF_ABSENT
-  message: "{{outputs.brief_read.reason}}"
-  resumable: false
-
-## brief_invalid — the file is THERE and cannot serve. A different conversation
-## from an absent brief, and it gets a different code: one asks for a decision
-## to be written down, the other for a field to be repaired.
-fail brief_invalid:
-  description: "the declared brief is unreadable or incomplete"
-  code: BRIEF_INVALID
-  message: "{{outputs.brief_read.reason}}"
-  resumable: false
+  language: py
+  output: brief_state
 
 ## inventory_floor — the always-on agnostic layer. It reads git objects at the
 ## pinned commit and measures what EVERY repository has: a tree, files,
@@ -953,9 +1081,6 @@ fail brief_invalid:
 ## a clean bill of health.
 tool inventory_floor:
   description: "The agnostic measurement floor, at the pinned commit"
-  input: floor_input
-  output: floor_state
-  language: py
   script: |
     import fnmatch
     import json
@@ -1278,46 +1403,9 @@ tool inventory_floor:
     out["reason"] = "floor measured at %s: %d file(s), %d commit(s)" % (base_sha[:12], len(entries), commits)
     print(json.dumps(out))
 
-schema floor_input:
-  base_sha: string
-
-fail floor_failed:
-  description: "the agnostic floor produced no measurement"
-  code: FLOOR_FAILED
-  message: "{{outputs.inventory_floor.reason}}"
-
-schema survey_input:
-  base_sha: string
-  listing: string
-  brief_summary: string
-
-## survey — the one adaptive step. It detects the stacks and returns the
-## declarations; the DETERMINISTIC extractors the matching `stack-<id>` skills
-## declare are run by `run_extractors`, not by it. It does not count: an
-## agent's count is an opinion with a number in it.
-agent survey:
-  backend: "${ITERION_ASSESSMENT_SURVEY_BACKEND:-claude_code}"
-  model: "${ITERION_ASSESSMENT_SURVEY_MODEL:-anthropic/claude-opus-5-5}"
-  reasoning_effort: "${ITERION_ASSESSMENT_SURVEY_EFFORT:-high}"
-  input: survey_input
-  output: survey_output
-  system: survey_system
-  user: survey_user
-  skills: ["assessment-survey", "assessment-brief"]
-  ## NO SHELL. The four readers are what this step needs — it names stacks and
-  ## a perimeter, it does not run extractors, and `run_extractors` is the node
-  ## that executes anything. `readonly: true` below is honoured by codex and pi
-  ## and ignored by claude_code, so the shell is removed rather than locked:
-  ## a property carried by a flag one backend drops is not carried.
-  tools: [read_file, glob, grep, skill]
-  tool_max_steps: 120
-  readonly: true
-
-schema survey_write_input:
-  base_sha: string
-  stacks: json
-  declarations: json
-  notes: string
+  language: py
+  input: floor_input
+  output: floor_state
 
 ## survey_write — materialises the agent's structured output as a file, in one
 ## atomic rename. Separating the two is what makes the declarations checkable:
@@ -1325,9 +1413,6 @@ schema survey_write_input:
 ## what the lint judges.
 tool survey_write:
   description: "Materialise the survey declarations atomically"
-  input: survey_write_input
-  output: survey_state
-  language: py
   script: |
     import json
     import os
@@ -1413,34 +1498,9 @@ tool survey_write:
         survey_path, len(stacks), len(declarations))
     print(json.dumps(out))
 
-## survey_unreadable — survey_write's own refusal. It routed through
-## `declarations_refused` before, whose message reads the declaration lint's
-## field: an operator was shown the verdict of a node that had not run.
-fail survey_unreadable:
-  description: "the survey could not be materialised"
-  code: SURVEY_UNREADABLE
-  message: "{{outputs.survey_write.reason}}"
-
-## What the extractor runner did. `unsupported` is a RESULT — a stack nobody
-## shipped a skill for — and it is distinct from zero: a stack measured at
-## zero and a stack never measured read the same in a table, and only one of
-## them is a fact about the repository.
-schema extract_state:
-  ok: bool
-  code: string
-  reason: string
-  ran: json
-  outputs: json
-  unsupported: json
-  errors: json
-
-schema extract_input:
-  stacks: json
-  ## The commit every extractor must read AT. Without it a script falls back
-  ## on the checkout, which carries build output, caches and whatever a
-  ## previous node left behind — none of it in the commit this assessment
-  ## claims to describe.
-  base_sha: string
+  language: py
+  input: survey_write_input
+  output: survey_state
 
 ## run_extractors — the per-stack layer, and it contains no language. It reads
 ## the `iterion:extractors` block of `stack-<id>.md` for each stack the survey
@@ -1452,9 +1512,6 @@ schema extract_input:
 ## sentence.
 tool run_extractors:
   description: "Run the extractors the detected stacks' skills declare"
-  input: extract_input
-  output: extract_state
-  language: py
   script: |
     import json
     import os
@@ -1678,19 +1735,9 @@ tool run_extractors:
         len(out["ran"]), covered, len(out["unsupported"]), len(out["errors"]))
     print(json.dumps(out))
 
-## extractors_failed — the runner's own refusal. It used to route through
-## `coverage_void`, whose message reads another node's field: an operator was
-## handed the coverage gate's verdict about a gate that never ran.
-fail extractors_failed:
-  description: "the extractor runner could not run the skills this bundle ships"
-  code: EXTRACTORS_FAILED
-  message: "{{outputs.run_extractors.reason}}"
-
-schema health_input:
-  survey_path: string
-  outputs: json
-  unsupported: json
-  errors: json
+  language: py
+  input: extract_input
+  output: extract_state
 
 ## inventory_health — the coverage gate. Its expectations come from the SAME
 ## `iterion:extractors` blocks the runner executed, filtered to the stacks the
@@ -1699,9 +1746,6 @@ schema health_input:
 ## declared outputs is a coverage void, not a clean repository.
 tool inventory_health:
   description: "Coverage gate over the stacks the survey detected"
-  input: health_input
-  output: health_state
-  language: py
   script: |
     import json
     import os
@@ -1866,23 +1910,9 @@ tool inventory_health:
         len(out["stacks_errored"]))
     print(json.dumps(out))
 
-fail coverage_void:
-  description: "a detected stack produced none of its declared extractor outputs"
-  code: COVERAGE_VOID
-  message: "{{outputs.inventory_health.reason}}"
-
-## coverage_divergence — the agent and the runner read the same question two
-## ways. Its own code because it asks for a different repair: one of the two
-## readings is wrong, and which one decides whether a skill is missing or a
-## declaration is.
-fail coverage_divergence:
-  description: "the survey and the extractor runner disagree about what is covered"
-  code: COVERAGE_DIVERGENCE
-  message: "{{outputs.inventory_health.reason}}"
-
-schema lint_input:
-  base_sha: string
-  survey_path: string
+  language: py
+  input: health_input
+  output: health_state
 
 ## declaration_lint — every declaration re-verified in the tree at the pinned
 ## commit. Canonical identity, deduplication, refused overlaps, an explicit
@@ -1891,9 +1921,6 @@ schema lint_input:
 ## re-derive is a claim.
 tool declaration_lint:
   description: "Verify every declaration against the tree"
-  input: lint_input
-  output: lint_state
-  language: py
   script: |
     import json
     import os
@@ -2186,30 +2213,9 @@ tool declaration_lint:
         out["verified"], base_sha[:12], len(files))
     print(json.dumps(out))
 
-fail declarations_refused:
-  description: "a declaration could not be verified, or was made twice"
-  code: DECLARATIONS_REFUSED
-  message: "{{outputs.declaration_lint.reason}}"
-
-schema measure_input:
-  base_sha: string
-  survey_path: string
-  floor_path: string
-  ## The extractor artefacts THIS pass produced, by path. The scratch
-  ## directory survives a resume, so reading everything in it sums a previous
-  ## pass's numbers into this one's.
-  extractor_outputs: json
-  ## What the coverage gate established, carried forward rather than
-  ## recomputed from the agent's flags: the document publishes the gap the
-  ## deterministic layer saw, not the one the survey admitted to.
-  stacks_unsupported: json
-  stacks_covered: json
-  coverage_degraded: bool
-  coverage_missing: json
-  ## Stacks whose extractors ERRORED. An extractor that failed beside one that
-  ## worked leaves the stack covered and the measurement thinner, and that
-  ## difference is invisible in every table unless the document carries it.
-  stacks_errored: json
+  language: py
+  input: lint_input
+  output: lint_state
 
 ## measure — the published measurement, computed deterministically over the
 ## declared perimeter. It reads the measurement profile: metrics, canonical
@@ -2218,9 +2224,6 @@ schema measure_input:
 ## NOT APPLICABLE, never a letter that does not mean anything.
 tool measure:
   description: "Index, size band and measured facts, against a versioned profile"
-  input: measure_input
-  output: measure_state
-  language: py
   script: |
     import json
     import os
@@ -2791,39 +2794,9 @@ tool measure:
         "" if out["in_domain"] else " (%s)" % "; ".join(out_of_domain))
     print(json.dumps(out))
 
-fail measurement_refused:
-  description: "the measurement could not be taken"
-  code: MEASUREMENT_REFUSED
-  message: "{{outputs.measure.reason}}"
-
-schema judgement_input:
-  facts: string
-  brief_summary: string
-  survey_notes: string
-
-## judgement — the prose a reader acts on. Factual assertions are inserted by
-## identifier and substituted by the renderer; free prose is confined to the
-## blocks that are marked as judgement. "No figure in the prose" is NOT
-## mechanisable by a digit detector — a count in words carries no digit, and a
-## lexical filter rejects legitimate cross-references — so the mechanism is the
-## opposite one: the renderer refuses an identifier it does not know.
-agent judgement:
-  backend: "${ITERION_ASSESSMENT_JUDGEMENT_BACKEND:-claude_code}"
-  model: "${ITERION_ASSESSMENT_JUDGEMENT_MODEL:-anthropic/claude-opus-5-5}"
-  reasoning_effort: "${ITERION_ASSESSMENT_JUDGEMENT_EFFORT:-high}"
-  input: judgement_input
-  output: judgement_output
-  system: judgement_system
-  user: judgement_user
-  skills: ["assessment-report"]
-  tools: [skill]
-  tool_max_steps: 8
-
-schema render_input:
-  facts_path: string
-  state_judgement: string
-  plan_judgement: string
-  open_questions: string
+  language: py
+  input: measure_input
+  output: measure_state
 
 ## render — writes the documents. Every factual assertion is substituted from
 ## the facts file by identifier; an identifier the facts file does not carry is
@@ -2831,9 +2804,6 @@ schema render_input:
 ## reader over a signature that is not its own.
 tool render:
   description: "Render the state document, facts substituted by identifier"
-  input: render_input
-  output: render_state
-  language: py
   script: |
     import hashlib
     import json
@@ -3129,13 +3099,14 @@ tool render:
         state_path, len(used))
     print(json.dumps(out))
 
+  language: py
+  input: render_input
+  output: render_state
+
 ## render_plan — the programme document, written AFTER the contract has been
 ## validated. Rendering it earlier would describe a programme no lint had seen.
 tool render_plan:
   description: "Render the programme document from the validated contract"
-  input: render_plan_input
-  output: render_state
-  language: py
   script: |
     import json
     import os
@@ -3231,57 +3202,9 @@ tool render_plan:
     out["reason"] = "programme document rendered at %s" % plan_doc
     print(json.dumps(out))
 
-schema render_plan_input:
-  facts_path: string
-  lots: int
-  proposals: int
-  ## How many lots had their declared gate EXECUTED on the input tree and seen
-  ## to FAIL. Published because it is the count that says the programme is
-  ## verifiable: `lots` says how much was written, this says how much of it
-  ## can tell the work apart from its absence.
-  gates_proven_red: int
-  ## Lots whose gate the probe could NOT observe: a timeout, a failed spawn,
-  ## or a command the shell could not find or execute. Published because
-  ## silence here reads as proof: a lot in this list carries a gate nobody
-  ## has seen do anything, and the programme document says so.
-  gates_never_ran: json
-
-fail render_refused:
-  description: "the prose cited a fact the measurement never produced"
-  code: RENDER_REFUSED
-  message: "{{outputs.render.reason}}"
-
-## plan_render_refused — the programme document's own refusal. Routing it
-## through `render_refused` printed `outputs.render.reason`, which at that
-## point in the run holds render's SUCCESS line: an operator was handed
-## "state document rendered at …" as the reason a run failed.
-fail plan_render_refused:
-  description: "the programme document could not be written"
-  code: PLAN_RENDER_REFUSED
-  message: "{{outputs.render_plan.reason}}"
-
-schema plan_draft_input:
-  facts: string
-  brief_summary: string
-  stacks: string
-
-## plan_draft — writes the contract and the outcomes file. Its own report is
-## read as a POINTER to files, never as a verdict over them.
-agent plan_draft:
-  backend: "${ITERION_ASSESSMENT_PLAN_BACKEND:-claude_code}"
-  model: "${ITERION_ASSESSMENT_PLAN_MODEL:-anthropic/claude-opus-5-5}"
-  reasoning_effort: "${ITERION_ASSESSMENT_PLAN_EFFORT:-high}"
-  input: plan_draft_input
-  output: plan_draft_output
-  system: plan_draft_system
-  user: plan_draft_user
-  skills: ["plan-contract", "upgrade-archetypes", "assessment-survey"]
-  ## Readers and two writers, NO SHELL. It reads a repository its own prompt
-  ## calls untrusted and writes two files; on claude_code nothing but this
-  ## list bounds it. Its gates are RUN by contract_lint, in an allowlisted
-  ## environment and an empty home — never by the agent that wrote them.
-  tools: [read_file, glob, grep, skill, write_file, edit_file]
-  tool_max_steps: 200
+  language: py
+  input: render_plan_input
+  output: render_state
 
 ## contract_lint — the shared validator, over EVERY lot: types, enumerations,
 ## the dependency graph, unknown references, timeouts, and the editable block
@@ -3292,9 +3215,6 @@ agent plan_draft:
 ## test, so the two can never disagree about a contract.
 tool contract_lint:
   description: "Validate the whole contract, every lot"
-  input: contract_input
-  output: contract_state
-  language: py
   script: |
     import hashlib
     import json
@@ -4139,19 +4059,15 @@ tool contract_lint:
         out["lots"], out["proposals"], plan_rel)
     print(json.dumps(out))
 
-fail contract_refused:
-  description: "the drafted contract would be refused by the execution bot"
-  code: CONTRACT_REFUSED
-  message: "{{outputs.contract_lint.reason}}"
+  language: py
+  input: contract_input
+  output: contract_state
 
 ## commit — the assessment lands, or it did not happen. The tree is the
 ## deliverable: a run that rendered documents into a workspace nobody keeps
 ## produced a log line.
 tool commit:
   description: "Commit the contract, the survey and the documents"
-  input: commit_input
-  output: commit_state
-  language: py
   script: |
     import hashlib
     import json
@@ -4382,16 +4298,104 @@ tool commit:
     out["reason"] = "assessment committed at %s: %d file(s)" % (out["commit"][:12], len(expected))
     print(json.dumps(out))
 
+  language: py
+  input: commit_input
+  output: commit_state
+
+fail workspace_not_a_repo:
+  description: "the launch has no repository to assess"
+  code: WORKSPACE_NOT_A_REPO
+  message: "{{outputs.workspace_probe.reason}}"
+
+fail bundle_skills_unavailable:
+  description: "the engine gave the run no bundle-owned skills directory"
+  code: BUNDLE_SKILLS_UNAVAILABLE
+  message: "{{outputs.workspace_probe.reason}}"
+
+fail brief_absent:
+  description: "the assessment has no declared brief to work from"
+  code: BRIEF_ABSENT
+  message: "{{outputs.brief_read.reason}}"
+
+## brief_invalid — the file is THERE and cannot serve. A different conversation
+## from an absent brief, and it gets a different code: one asks for a decision
+## to be written down, the other for a field to be repaired.
+fail brief_invalid:
+  description: "the declared brief is unreadable or incomplete"
+  code: BRIEF_INVALID
+  message: "{{outputs.brief_read.reason}}"
+
+fail floor_failed:
+  description: "the agnostic floor produced no measurement"
+  code: FLOOR_FAILED
+  message: "{{outputs.inventory_floor.reason}}"
+
+## survey_unreadable — survey_write's own refusal. It routed through
+## `declarations_refused` before, whose message reads the declaration lint's
+## field: an operator was shown the verdict of a node that had not run.
+fail survey_unreadable:
+  description: "the survey could not be materialised"
+  code: SURVEY_UNREADABLE
+  message: "{{outputs.survey_write.reason}}"
+
+## extractors_failed — the runner's own refusal. It used to route through
+## `coverage_void`, whose message reads another node's field: an operator was
+## handed the coverage gate's verdict about a gate that never ran.
+fail extractors_failed:
+  description: "the extractor runner could not run the skills this bundle ships"
+  code: EXTRACTORS_FAILED
+  message: "{{outputs.run_extractors.reason}}"
+
+fail coverage_void:
+  description: "a detected stack produced none of its declared extractor outputs"
+  code: COVERAGE_VOID
+  message: "{{outputs.inventory_health.reason}}"
+
+## coverage_divergence — the agent and the runner read the same question two
+## ways. Its own code because it asks for a different repair: one of the two
+## readings is wrong, and which one decides whether a skill is missing or a
+## declaration is.
+fail coverage_divergence:
+  description: "the survey and the extractor runner disagree about what is covered"
+  code: COVERAGE_DIVERGENCE
+  message: "{{outputs.inventory_health.reason}}"
+
+fail declarations_refused:
+  description: "a declaration could not be verified, or was made twice"
+  code: DECLARATIONS_REFUSED
+  message: "{{outputs.declaration_lint.reason}}"
+
+fail measurement_refused:
+  description: "the measurement could not be taken"
+  code: MEASUREMENT_REFUSED
+  message: "{{outputs.measure.reason}}"
+
+fail render_refused:
+  description: "the prose cited a fact the measurement never produced"
+  code: RENDER_REFUSED
+  message: "{{outputs.render.reason}}"
+
+## plan_render_refused — the programme document's own refusal. Routing it
+## through `render_refused` printed `outputs.render.reason`, which at that
+## point in the run holds render's SUCCESS line: an operator was handed
+## "state document rendered at …" as the reason a run failed.
+fail plan_render_refused:
+  description: "the programme document could not be written"
+  code: PLAN_RENDER_REFUSED
+  message: "{{outputs.render_plan.reason}}"
+
+fail contract_refused:
+  description: "the drafted contract would be refused by the execution bot"
+  code: CONTRACT_REFUSED
+  message: "{{outputs.contract_lint.reason}}"
+
 fail commit_failed:
   description: "the assessment was not committed"
   code: COMMIT_FAILED
   message: "{{outputs.commit.reason}}"
 
 ## ─── Flow ──────────────────────────────────────────────────────────
-
 workflow assessment:
-  entry: workspace_probe
-
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default.
   ##
   ## The TARGET's devbox.json is not provisioned: this run reads the
@@ -4406,6 +4410,8 @@ workflow assessment:
   ## is left unproven, never counted as seen to fail.
   repo_devbox: off
 
+  entry: workspace_probe
+
   budget:
     max_parallel_branches: 1
     max_duration: "3h"
@@ -4416,7 +4422,9 @@ workflow assessment:
     preserve_recent: 8
 
   workspace_probe -> bundle_skills_unavailable when skills_missing
+
   workspace_probe -> workspace_not_a_repo when not ok
+
   workspace_probe -> brief_read when ok
 
   ## Absence is checked FIRST and is never true alongside a parse failure:
@@ -4424,112 +4432,125 @@ workflow assessment:
   ## incomplete brief falls through to its own code instead of telling the
   ## operator to write a file that already exists.
   brief_read -> brief_absent when not present
+
   brief_read -> brief_invalid when not ok
+
   brief_read -> inventory_floor when ok with {
     base_sha: "{{outputs.workspace_probe.base_sha}}"
   }
 
   inventory_floor -> floor_failed when not ok
+
   inventory_floor -> survey when ok with {
-    base_sha:      "{{outputs.workspace_probe.base_sha}}",
-    listing:       "{{outputs.inventory_floor.listing}}",
-    brief_summary: "{{outputs.brief_read.summary}}"
+    base_sha: "{{outputs.workspace_probe.base_sha}}",
+    listing: "{{outputs.inventory_floor.listing}}",
+    brief_summary: "{{outputs.brief_read.summary}}",
   }
 
   survey -> survey_write with {
-    base_sha:     "{{outputs.workspace_probe.base_sha}}",
-    stacks:       "{{outputs.survey.stacks}}",
+    base_sha: "{{outputs.workspace_probe.base_sha}}",
+    stacks: "{{outputs.survey.stacks}}",
     declarations: "{{outputs.survey.declarations}}",
-    notes:        "{{outputs.survey.notes}}"
+    notes: "{{outputs.survey.notes}}",
   }
 
   survey_write -> survey_unreadable when not ok
+
   survey_write -> run_extractors when ok with {
-    stacks:   "{{outputs.survey_write.stacks}}",
-    base_sha: "{{outputs.workspace_probe.base_sha}}"
+    stacks: "{{outputs.survey_write.stacks}}",
+    base_sha: "{{outputs.workspace_probe.base_sha}}",
   }
 
   run_extractors -> extractors_failed when not ok
+
   run_extractors -> inventory_health when ok with {
     survey_path: "{{outputs.survey_write.survey_path}}",
-    outputs:     "{{outputs.run_extractors.outputs}}",
+    outputs: "{{outputs.run_extractors.outputs}}",
     unsupported: "{{outputs.run_extractors.unsupported}}",
-    errors:      "{{outputs.run_extractors.errors}}"
+    errors: "{{outputs.run_extractors.errors}}",
   }
 
   ## Divergence first, and it is never true alongside a plain void: the two ask
   ## for different repairs, and one code for both sends the operator to write a
   ## skill that already exists.
   inventory_health -> coverage_divergence when divergent
+
   inventory_health -> coverage_void when not ok
+
   inventory_health -> declaration_lint when ok with {
-    base_sha:    "{{outputs.workspace_probe.base_sha}}",
-    survey_path: "{{outputs.survey_write.survey_path}}"
+    base_sha: "{{outputs.workspace_probe.base_sha}}",
+    survey_path: "{{outputs.survey_write.survey_path}}",
   }
 
   declaration_lint -> declarations_refused when not ok
+
   declaration_lint -> measure when ok with {
-    base_sha:           "{{outputs.workspace_probe.base_sha}}",
-    survey_path:        "{{outputs.survey_write.survey_path}}",
-    floor_path:         "{{outputs.inventory_floor.floor_path}}",
-    extractor_outputs:  "{{outputs.run_extractors.ran}}",
+    base_sha: "{{outputs.workspace_probe.base_sha}}",
+    survey_path: "{{outputs.survey_write.survey_path}}",
+    floor_path: "{{outputs.inventory_floor.floor_path}}",
+    extractor_outputs: "{{outputs.run_extractors.ran}}",
     stacks_unsupported: "{{outputs.inventory_health.stacks_unsupported}}",
-    stacks_covered:     "{{outputs.inventory_health.stacks_covered}}",
-    coverage_degraded:  "{{outputs.inventory_health.degraded}}",
-    coverage_missing:   "{{outputs.inventory_health.missing}}",
-    stacks_errored:     "{{outputs.inventory_health.stacks_errored}}"
+    stacks_covered: "{{outputs.inventory_health.stacks_covered}}",
+    coverage_degraded: "{{outputs.inventory_health.degraded}}",
+    coverage_missing: "{{outputs.inventory_health.missing}}",
+    stacks_errored: "{{outputs.inventory_health.stacks_errored}}",
   }
 
   measure -> measurement_refused when not ok
+
   measure -> judgement when ok with {
-    facts:         "{{outputs.measure.facts}}",
+    facts: "{{outputs.measure.facts}}",
     brief_summary: "{{outputs.brief_read.summary}}",
-    survey_notes:  "{{outputs.survey.notes}}"
+    survey_notes: "{{outputs.survey.notes}}",
   }
 
   judgement -> render with {
-    facts_path:      "{{outputs.measure.facts_path}}",
+    facts_path: "{{outputs.measure.facts_path}}",
     state_judgement: "{{outputs.judgement.state_judgement}}",
-    plan_judgement:  "{{outputs.judgement.plan_judgement}}",
-    open_questions:  "{{outputs.judgement.open_questions}}"
+    plan_judgement: "{{outputs.judgement.plan_judgement}}",
+    open_questions: "{{outputs.judgement.open_questions}}",
   }
 
   render -> render_refused when not ok
+
   render -> plan_draft when ok with {
-    facts:         "{{outputs.measure.facts}}",
+    facts: "{{outputs.measure.facts}}",
     brief_summary: "{{outputs.brief_read.summary}}",
-    stacks:        "{{outputs.survey_write.stacks}}"
+    stacks: "{{outputs.survey_write.stacks}}",
   }
 
   ## The brief travels INTO the lint. Without it the lint checks the contract
   ## against itself: internally consistent, and free to contradict every
   ## decision somebody took.
   plan_draft -> contract_lint with {
-    brief:            "{{outputs.brief_read.brief}}",
-    documents:        "{{outputs.render.documents}}",
+    brief: "{{outputs.brief_read.brief}}",
+    documents: "{{outputs.render.documents}}",
     documents_digest: "{{outputs.render.documents_digest}}",
-    tree_baseline:    "{{outputs.render.tree_baseline}}"
+    tree_baseline: "{{outputs.render.tree_baseline}}",
   }
 
   contract_lint -> contract_refused when not ok
+
   contract_lint -> render_plan when ok with {
     facts_path: "{{outputs.measure.facts_path}}",
     ## The LINT's counts, not the drafting agent's. Its report is a pointer to
     ## files; these two numbers are read out of the file, and a document whose
     ## figures contradict the contract beside it is the failure this bundle is
     ## shaped against.
-    lots:             "{{outputs.contract_lint.lots}}",
-    proposals:        "{{outputs.contract_lint.proposals}}",
+    lots: "{{outputs.contract_lint.lots}}",
+    proposals: "{{outputs.contract_lint.proposals}}",
     gates_proven_red: "{{outputs.contract_lint.gates_proven_red}}",
-    gates_never_ran:  "{{outputs.contract_lint.gates_never_ran}}"
+    gates_never_ran: "{{outputs.contract_lint.gates_never_ran}}",
   }
 
   render_plan -> plan_render_refused when not ok
+
   render_plan -> commit when ok with {
-    documents:      "{{outputs.render.documents}}",
+    documents: "{{outputs.render.documents}}",
     plan_documents: "{{outputs.render_plan.documents}}",
-    fingerprint:    "{{outputs.workspace_probe.fingerprint}}"
+    fingerprint: "{{outputs.workspace_probe.fingerprint}}",
   }
 
   commit -> commit_failed when not ok
+
   commit -> done when ok

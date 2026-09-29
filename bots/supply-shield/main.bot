@@ -73,7 +73,7 @@
 dsl: 2
 
 vars:
-  workspace_dir:       string = "${PROJECT_DIR}"
+  workspace_dir: string = "${PROJECT_DIR}"
   ## Where a tool node reads a machine-readable `iterion:` block out of a
   ## skill. The engine resets this directory and refills it from the bundle
   ## on every mirror pass, so it carries the bundle's bytes under only the
@@ -88,165 +88,39 @@ vars:
   ## literal a studio form re-sends unmodified. The second branch is what the
   ## compile-time default check (C161) reads — it compares the LITERAL text,
   ## never the expansion, so a bare "^/" would refuse this very default.
-  bundle_skills_dir:   string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
-  severity_threshold:  string = "medium"
-  scope_notes:         string = ""
+  bundle_skills_dir: string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
+  severity_threshold: string = "medium"
+  scope_notes: string = ""
   ## diff | full. diff = only newly added/upgraded deps between base..head
   ## (the PR / push case); full = whole-tree (the Depsy-style audit).
-  scope_mode:          string = "diff"
+  scope_mode: string = "diff"
   ## Empty base_ref auto-detects: merge-base with origin default branch,
   ## else origin/main|master, else HEAD~1. Override per run for a PR.
-  base_ref:            string = ""
-  head_ref:            string = "HEAD"
+  base_ref: string = ""
+  head_ref: string = "HEAD"
   ## Optional PR identifier for forge_report. When empty, the agent
   ## tries to derive it from the branch / git remote; if it still can't,
   ## it writes the report locally and skips the forge post (no failure).
-  pr_ref:              string = ""
-  forge_marker:        string = "supply-shield"
+  pr_ref: string = ""
+  forge_marker: string = "supply-shield"
   ## Out-of-tree, sandbox-writable scratch (engine resolves
   ## ${PROJECT_SCRATCH_DIR} to a container-writable path when sandboxed).
   ## Keeps .iterion/ out of the target repo (repo-agnostic rule) and the
   ## sec image's pinned non-host user can write here.
-  scan_dir:            string = "${PROJECT_SCRATCH_DIR}/supply-shield/scan"
-  cache_dir:           string = "${PROJECT_SCRATCH_DIR}/supply-shield/cache"
-  cache_path:          string = "${PROJECT_SCRATCH_DIR}/supply-shield/cache/packages.jsonl"
+  scan_dir: string = "${PROJECT_SCRATCH_DIR}/supply-shield/scan"
+  cache_dir: string = "${PROJECT_SCRATCH_DIR}/supply-shield/cache"
+  cache_path: string = "${PROJECT_SCRATCH_DIR}/supply-shield/cache/packages.jsonl"
   ## Cross-run / cross-repo dedup (the "shared store accessible to others"):
   ## point cache_path at the host-wide store for true reuse, e.g.
   ##   --var cache_path=$HOME/.iterion/security-cache/packages.jsonl
   ## (requires host_state:auto + a writable mount, or an unsandboxed run).
-  sarif_dir:           string = "${PROJECT_SCRATCH_DIR}/supply-shield"
-  sarif_path:          string = "${PROJECT_SCRATCH_DIR}/supply-shield/supply-shield.sarif.json"
-  report_path:         string = "${PROJECT_SCRATCH_DIR}/supply-shield/supply-shield-findings.md"
-  scanner_version:     string = "supply-shield@0.1.0"
-  cache_ttl_days:      int    = 30
-
-## ─── Schemas ──────────────────────────────────────────────────────
-
-schema diff_scope_output:
-  changed_lockfiles:  json
-  diff_text:          string
-  scope_mode:         string
-  base_ref:           string
-  head_ref:           string
-  summary:            string
-
-schema enumerate_input:
-  workspace_dir:      string
-  scope_mode:         string
-  changed_lockfiles:  json
-  diff_text:          string
-  scope_notes:        string
-
-schema enumerate_output:
-  deps:           json
-  ecosystems:     json
-  summary:        string
-
-schema normalize_input:
-  deps:        json
-  ecosystems:  json
-
-schema normalize_output:
-  deps:        json
-  ecosystems:  json
-  summary:     string
-
-schema heuristic_output:
-  packages:    json
-  errors:      json
-
-schema eco_input:
-  ecosystems:  json
-
-schema jsxray_output:
-  ran:          bool
-  output_path:  string
-
-schema heuristic_join_output:
-  eco:       json
-  generic:   json
-
-schema coverage_input:
-  ecosystems:  json
-  scan_dir:    string
-
-schema coverage_output:
-  expected:   int
-  present:    json
-  missing:    json
-  healthy:    bool
-  degraded:   bool
-  banner:     string
-
-schema cache_load_output:
-  cache_path:  string
-  raw_jsonl:   string
-  line_count:  int
-
-schema filter_input:
-  deps:             json
-  cache_raw_jsonl:  string
-  scanner_version:  string
-  ttl_days:         int
-
-schema filter_output:
-  pending:           json
-  already_scanned:   json
-  stats:             json
-
-schema review_input:
-  workspace_dir:       string
-  severity_threshold:  string
-  scope_notes:         string
-  scan_dir:            string
-  report_path:         string
-  coverage:            json
-  pending:             json
-  heuristics:          json
-
-schema review_output:
-  verdicts:        json
-  created_issues:  json
-  failed_issues:   json
-  report_path:     string
-  summary:         string
-
-schema sarif_input:
-  verdicts:    json
-  sarif_path:  string
-
-schema sarif_output:
-  sarif_path:    string
-  result_count:  int
-
-schema forge_report_input:
-  workspace_dir:       string
-  sarif_path:          string
-  report_path:         string
-  verdicts:            json
-  summary:             string
-  pr_ref:              string
-  forge_marker:        string
-  severity_threshold:  string
-
-schema forge_report_output:
-  posted:          bool
-  mode:            string
-  comment_ref:     string
-  sarif_uploaded:  bool
-  summary:         string
-
-schema update_input:
-  cache_path:       string
-  verdicts:         json
-  scanner_version:  string
-
-schema update_output:
-  appended_count:  int
-  summary:         string
+  sarif_dir: string = "${PROJECT_SCRATCH_DIR}/supply-shield"
+  sarif_path: string = "${PROJECT_SCRATCH_DIR}/supply-shield/supply-shield.sarif.json"
+  report_path: string = "${PROJECT_SCRATCH_DIR}/supply-shield/supply-shield-findings.md"
+  scanner_version: string = "supply-shield@0.1.0"
+  cache_ttl_days: int = 30
 
 ## ─── Prompts ──────────────────────────────────────────────────────
-
 prompt enumerate_system:
   You are enumerating the dependency versions that a PR / push ADDS
   or UPGRADES, so a malware shield can inspect only what changed.
@@ -507,6 +381,173 @@ prompt forge_report_user:
   PR via the native forge API. Degrade to local-only if there is no
   PR context or token. Return forge_report_output.
 
+## ─── Schemas ──────────────────────────────────────────────────────
+schema diff_scope_output:
+  changed_lockfiles: json
+  diff_text: string
+  scope_mode: string
+  base_ref: string
+  head_ref: string
+  summary: string
+
+schema enumerate_input:
+  workspace_dir: string
+  scope_mode: string
+  changed_lockfiles: json
+  diff_text: string
+  scope_notes: string
+
+schema enumerate_output:
+  deps: json
+  ecosystems: json
+  summary: string
+
+schema normalize_input:
+  deps: json
+  ecosystems: json
+
+schema normalize_output:
+  deps: json
+  ecosystems: json
+  summary: string
+
+schema heuristic_output:
+  packages: json
+  errors: json
+
+schema eco_input:
+  ecosystems: json
+
+schema jsxray_output:
+  ran: bool
+  output_path: string
+
+schema heuristic_join_output:
+  eco: json
+  generic: json
+
+schema coverage_input:
+  ecosystems: json
+  scan_dir: string
+
+schema coverage_output:
+  expected: int
+  present: json
+  missing: json
+  healthy: bool
+  degraded: bool
+  banner: string
+
+schema cache_load_output:
+  cache_path: string
+  raw_jsonl: string
+  line_count: int
+
+schema filter_input:
+  deps: json
+  cache_raw_jsonl: string
+  scanner_version: string
+  ttl_days: int
+
+schema filter_output:
+  pending: json
+  already_scanned: json
+  stats: json
+
+schema review_input:
+  workspace_dir: string
+  severity_threshold: string
+  scope_notes: string
+  scan_dir: string
+  report_path: string
+  coverage: json
+  pending: json
+  heuristics: json
+
+schema review_output:
+  verdicts: json
+  created_issues: json
+  failed_issues: json
+  report_path: string
+  summary: string
+
+schema sarif_input:
+  verdicts: json
+  sarif_path: string
+
+schema sarif_output:
+  sarif_path: string
+  result_count: int
+
+schema forge_report_input:
+  workspace_dir: string
+  sarif_path: string
+  report_path: string
+  verdicts: json
+  summary: string
+  pr_ref: string
+  forge_marker: string
+  severity_threshold: string
+
+schema forge_report_output:
+  posted: bool
+  mode: string
+  comment_ref: string
+  sarif_uploaded: bool
+  summary: string
+
+schema update_input:
+  cache_path: string
+  verdicts: json
+  scanner_version: string
+
+schema update_output:
+  appended_count: int
+  summary: string
+
+agent enumerate_deps:
+  model: "${ITERION_SEC_AUDIT_MODEL:-openai/gpt-6-sol}"
+  backend: "claw"
+  input: enumerate_input
+  output: enumerate_output
+  system: enumerate_system
+  user: enumerate_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 25
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_ENUMERATE:-medium}"
+  readonly: true
+
+agent llm_review:
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
+  ## claude_code is REQUIRED: needs the board MCP server registered and
+  ## the bundled skills mirrored to .claude/skills/.
+  backend: "claude_code"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  tools: [bash, read_file, write_file, glob, grep]
+  capabilities: [board.read, board.create, board.label]
+  tool_max_steps: 80
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REVIEW:-high}"
+  readonly: true
+
+agent forge_report:
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
+  ## claude_code: needs curl + the bundled forge-report.md skill. Posts
+  ## the sticky comment + inline review + code-scanning SARIF on the
+  ## PR via the native forge REST API. Degrades to local-only when
+  ## there is no PR context / token — never fails the run.
+  backend: "claude_code"
+  input: forge_report_input
+  output: forge_report_output
+  system: forge_report_system
+  user: forge_report_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 40
+  reasoning_effort: "${ITERION_FORGE_REPORT_EFFORT:-medium}"
+  readonly: true
+
 ## ─── Nodes ────────────────────────────────────────────────────────
 
 ## diff_scope — DETERMINISTIC. Resolves base..head and the changed
@@ -594,18 +635,6 @@ print(json.dumps({'changed_lockfiles': changed, 'diff_text': diff_text, 'scope_m
                   'base_ref': base, 'head_ref': head, 'summary': summary, 'errors': errors}))
 "`
   output: diff_scope_output
-
-agent enumerate_deps:
-  backend: "claw"
-  model: "${ITERION_SEC_AUDIT_MODEL:-openai/gpt-6-sol}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_ENUMERATE:-medium}"
-  input: enumerate_input
-  output: enumerate_output
-  system: enumerate_system
-  user: enumerate_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 25
-  readonly: true
 
 ## normalize_deps — DETERMINISTIC. Coerces enumerate_deps' (LLM) output
 ## into the canonical [{ecosystem, name, version, checksum}] shape no matter
@@ -886,7 +915,7 @@ print(json.dumps({'packages': packages, 'errors': errors}))
 ## absent (bare host) the node degrades to ran=false; coverage_gate then
 ## banners the gap rather than presenting the run as clean.
 tool run_jsxray:
-  command: `mkdir -p {{vars.scan_dir}} && ( command -v iterion-jsxray >/dev/null 2>&1 && SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} iterion-jsxray > {{vars.scan_dir}}/jsxray-run.log 2>&1 || true ); RAN=$( [ -f {{vars.scan_dir}}/jsxray.json ] && echo true || echo false ); printf '{"ran":%s,"output_path":"%s"}\n' "$RAN" {{vars.scan_dir}}/jsxray.json`
+  command: "mkdir -p {{vars.scan_dir}} && ( command -v iterion-jsxray >/dev/null 2>&1 && SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} iterion-jsxray > {{vars.scan_dir}}/jsxray-run.log 2>&1 || true ); RAN=$( [ -f {{vars.scan_dir}}/jsxray.json ] && echo true || echo false ); printf '{\"ran\":%s,\"output_path\":\"%s\"}\\n' \"$RAN\" {{vars.scan_dir}}/jsxray.json"
   output: jsxray_output
 
 ## run_generic_heuristics — DETERMINISTIC always-on malware floor. Emits
@@ -998,13 +1027,6 @@ if isinstance(tdata, dict):
 print(json.dumps({'packages': packages, 'errors': errors}))
 " > {{vars.scan_dir}}/generic.json; cat {{vars.scan_dir}}/generic.json`
   output: heuristic_output
-
-compute heuristic_join:
-  await: best_effort
-  output: heuristic_join_output
-  expr:
-    eco:      "outputs.run_eco_heuristics"
-    generic:  "outputs.run_generic_heuristics"
 
 ## coverage_gate — DETERMINISTIC anti-façade gate (mirrors
 ## sec-audit-source scan_health). HARD-FAILS (exit 1) when the always-on
@@ -1178,21 +1200,6 @@ print(json.dumps({'pending': pending, 'already_scanned': already, 'stats': stats
   input: filter_input
   output: filter_output
 
-agent llm_review:
-  ## claude_code is REQUIRED: needs the board MCP server registered and
-  ## the bundled skills mirrored to .claude/skills/.
-  backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REVIEW:-high}"
-  input: review_input
-  output: review_output
-  system: review_system
-  user: review_user
-  tools: [bash, read_file, write_file, glob, grep]
-  capabilities: [board.read, board.create, board.label]
-  tool_max_steps: 80
-  readonly: true
-
 ## sarif_gen — DETERMINISTIC. Emits SARIF 2.1.0 from the reviewer's
 ## verdicts so forge_report can upload to code-scanning. One result per
 ## flag, level mapped from severity, location = files_audited[0] or the
@@ -1239,22 +1246,6 @@ print(json.dumps({'sarif_path': out_path, 'result_count': len(results)}))
   input: sarif_input
   output: sarif_output
 
-agent forge_report:
-  ## claude_code: needs curl + the bundled forge-report.md skill. Posts
-  ## the sticky comment + inline review + code-scanning SARIF on the
-  ## PR via the native forge REST API. Degrades to local-only when
-  ## there is no PR context / token — never fails the run.
-  backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_FORGE_REPORT_EFFORT:-medium}"
-  input: forge_report_input
-  output: forge_report_output
-  system: forge_report_system
-  user: forge_report_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 40
-  readonly: true
-
 tool update_cache:
   ## Appends one kind=malware JSONL line per analysed package to the
   ## shared cache. Atomic via append (POSIX guarantees up to PIPE_BUF).
@@ -1295,11 +1286,15 @@ print(json.dumps({'appended_count': count, 'summary': 'Appended %d malware verdi
   input: update_input
   output: update_output
 
+compute heuristic_join:
+  output: heuristic_join_output
+  await: best_effort
+  expr:
+    eco: "outputs.run_eco_heuristics"
+    generic: "outputs.run_generic_heuristics"
+
 ## ─── Workflow ─────────────────────────────────────────────────────
-
 workflow supply_shield:
-  entry: diff_scope
-
   ## Scanners (js-x-ray, trivy, npm audit, …) need a host that ships
   ## them — slim/full sandbox images and a bare host do NOT, so without
   ## a scanner image every scan silently falls through and the audit
@@ -1316,14 +1311,16 @@ workflow supply_shield:
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
     env:
+      FORGEJO_TOKEN: "${localEnv:FORGEJO_TOKEN}"
       ## Forge-token passthrough for the forge_report tail
       ## (docker-local parity: the host env is the credential source).
       ## ADR-082 Phase 3 moves these to file secrets delivered per run.
       GH_TOKEN: "${localEnv:GH_TOKEN}"
+      GITEA_TOKEN: "${localEnv:GITEA_TOKEN}"
       GITHUB_TOKEN: "${localEnv:GITHUB_TOKEN}"
       GITLAB_TOKEN: "${localEnv:GITLAB_TOKEN}"
-      FORGEJO_TOKEN: "${localEnv:FORGEJO_TOKEN}"
-      GITEA_TOKEN: "${localEnv:GITEA_TOKEN}"
+
+  entry: diff_scope
 
   budget:
     max_parallel_branches: 4
@@ -1332,71 +1329,75 @@ workflow supply_shield:
     max_iterations: 200
 
   diff_scope -> enumerate_deps with {
-    workspace_dir:      "{{vars.workspace_dir}}",
-    scope_mode:         "{{outputs.diff_scope.scope_mode}}",
-    changed_lockfiles:  "{{outputs.diff_scope.changed_lockfiles}}",
-    diff_text:          "{{outputs.diff_scope.diff_text}}",
-    scope_notes:        "{{vars.scope_notes}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    scope_mode: "{{outputs.diff_scope.scope_mode}}",
+    changed_lockfiles: "{{outputs.diff_scope.changed_lockfiles}}",
+    diff_text: "{{outputs.diff_scope.diff_text}}",
+    scope_notes: "{{vars.scope_notes}}",
   }
 
   enumerate_deps -> normalize_deps with {
-    deps:        "{{outputs.enumerate_deps.deps}}",
-    ecosystems:  "{{outputs.enumerate_deps.ecosystems}}"
+    deps: "{{outputs.enumerate_deps.deps}}",
+    ecosystems: "{{outputs.enumerate_deps.ecosystems}}",
   }
 
-  normalize_deps -> run_eco_heuristics with {ecosystems: "{{outputs.normalize_deps.ecosystems}}"}
+  normalize_deps -> run_eco_heuristics with {
+    ecosystems: "{{outputs.normalize_deps.ecosystems}}"
+  }
 
-  run_eco_heuristics      -> run_jsxray
-  run_jsxray              -> run_generic_heuristics
-  run_generic_heuristics  -> heuristic_join
+  run_eco_heuristics -> run_jsxray
+
+  run_jsxray -> run_generic_heuristics
+
+  run_generic_heuristics -> heuristic_join
 
   heuristic_join -> coverage_gate with {
-    ecosystems:  "{{outputs.normalize_deps.ecosystems}}",
-    scan_dir:    "{{vars.scan_dir}}"
+    ecosystems: "{{outputs.normalize_deps.ecosystems}}",
+    scan_dir: "{{vars.scan_dir}}",
   }
 
   coverage_gate -> load_cache
 
   load_cache -> filter_cached with {
-    deps:             "{{outputs.normalize_deps.deps}}",
-    cache_raw_jsonl:  "{{outputs.load_cache.raw_jsonl}}",
-    scanner_version:  "{{vars.scanner_version}}",
-    ttl_days:         "{{vars.cache_ttl_days}}"
+    deps: "{{outputs.normalize_deps.deps}}",
+    cache_raw_jsonl: "{{outputs.load_cache.raw_jsonl}}",
+    scanner_version: "{{vars.scanner_version}}",
+    ttl_days: "{{vars.cache_ttl_days}}",
   }
 
   filter_cached -> llm_review with {
-    workspace_dir:       "{{vars.workspace_dir}}",
-    severity_threshold:  "{{vars.severity_threshold}}",
-    scope_notes:         "{{vars.scope_notes}}",
-    scan_dir:            "{{vars.scan_dir}}",
-    report_path:         "{{vars.report_path}}",
-    coverage:            "{{outputs.coverage_gate}}",
-    pending:             "{{outputs.filter_cached.pending}}",
-    heuristics:          "{{outputs.heuristic_join}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    severity_threshold: "{{vars.severity_threshold}}",
+    scope_notes: "{{vars.scope_notes}}",
+    scan_dir: "{{vars.scan_dir}}",
+    report_path: "{{vars.report_path}}",
+    coverage: "{{outputs.coverage_gate}}",
+    pending: "{{outputs.filter_cached.pending}}",
+    heuristics: "{{outputs.heuristic_join}}",
   }
 
   llm_review -> sarif_gen with {
-    verdicts:    "{{outputs.llm_review.verdicts}}",
-    sarif_path:  "{{vars.sarif_path}}"
+    verdicts: "{{outputs.llm_review.verdicts}}",
+    sarif_path: "{{vars.sarif_path}}",
   }
 
   sarif_gen -> forge_report with {
-    workspace_dir:       "{{vars.workspace_dir}}",
-    sarif_path:          "{{vars.sarif_path}}",
-    report_path:         "{{vars.report_path}}",
-    verdicts:            "{{outputs.llm_review.verdicts}}",
-    summary:             "{{outputs.llm_review.summary}}",
-    pr_ref:              "{{vars.pr_ref}}",
-    forge_marker:        "{{vars.forge_marker}}",
-    severity_threshold:  "{{vars.severity_threshold}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    sarif_path: "{{vars.sarif_path}}",
+    report_path: "{{vars.report_path}}",
+    verdicts: "{{outputs.llm_review.verdicts}}",
+    summary: "{{outputs.llm_review.summary}}",
+    pr_ref: "{{vars.pr_ref}}",
+    forge_marker: "{{vars.forge_marker}}",
+    severity_threshold: "{{vars.severity_threshold}}",
   }
 
   ## cache_path comes straight from vars (resolves identically on the
   ## normal and resume paths — a cross-node ref would not rebind on resume).
   forge_report -> update_cache with {
-    cache_path:       "{{vars.cache_path}}",
-    verdicts:         "{{outputs.llm_review.verdicts}}",
-    scanner_version:  "{{vars.scanner_version}}"
+    cache_path: "{{vars.cache_path}}",
+    verdicts: "{{outputs.llm_review.verdicts}}",
+    scanner_version: "{{vars.scanner_version}}",
   }
 
   update_cache -> done
