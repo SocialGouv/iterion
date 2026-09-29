@@ -21,9 +21,10 @@ import (
 // dotted path under a scalar or list var (a string holds no members — the
 // drill finds nothing and the text reaches the backend as written), the
 // `{{!…}}` raw form, an opening with no close. A flat `{{vars.x}}` span
-// that DOES resolve joins them when its var is declared `string[]` or
-// `json` (checkRoutingVarListType, #1605): a list var resolves to its JSON
-// spelling, a backend name nobody registered. The scan
+// that DOES resolve joins them when its var is declared `string[]`, or
+// `json` with no scalar default document (checkRoutingVarListType, #1605):
+// a list var resolves to its JSON spelling, a backend name nobody
+// registered. The scan
 // mirrors the executor's resolver, which treats any `{{…}}` as a reference
 // and keeps what it cannot resolve as written: left alone, that text reached
 // the backend (an invalid spec on claw, a model literally named `{{var.m}}`
@@ -128,58 +129,55 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 // A `json` var is not a list by declaration: its default document decides
 // (executed: `b: json = "\"claude_code\""` resolves to the ROUTABLE
 // scalar "claude_code", no override involved). So the json arm reads the
-// static default and stays SILENT on a scalar document — a string, a
-// number, a bool — warning only on a non-scalar document (a list, an
-// object, null) and on one compile time cannot read: no default, or a
-// default the run's BRACED-ONLY json reading expands (`${...}` in a leaf
-// — a bare `$NAME` there is data, and the run never touches it).
+// static default's shape (jsonDefaultDocument) and stays SILENT on a
+// scalar document — a string, a number, a bool — warning on a list, an
+// object, null, and on no default at all (the launch supplies the
+// document). A `${...}` in the default moves nothing: the run parses the
+// document before it expands a leaf, so `"${BACKEND}"` is the routable
+// string it expands to.
 func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string) {
 	v := w.Vars[varName]
 	if v == nil {
 		return // C033 owns the undeclared name
 	}
-	warn := func() {
-		c.warnfAt(DiagRoutingFieldRef, nodeID, "",
-			"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list or object value resolves to its JSON spelling ([\"a\",\"b\"]), a name no backend, model or provider answers to; the node fails at its first delegation (declare the var `string`, or override it at launch with a scalar)",
-			loc, varName, v.Type, field)
-	}
 	switch v.Type {
 	case VarStringArray:
-		warn()
 	case VarJSON:
-		if !v.HasDefault {
-			warn() // no static document to read — the launch supplies the value
-			return
+		if doc, known := jsonDefaultDocument(v); known && isScalarDocument(doc) {
+			return // a scalar document resolves to a routable scalar
 		}
-		d, ok := v.Default.(string)
-		if !ok {
-			// A non-string literal (number, bool): a scalar document.
-			if _, nonScalar := v.Default.([]any); nonScalar {
-				warn()
-			}
-			if _, nonScalar := v.Default.(map[string]any); nonScalar {
-				warn()
-			}
-			return
-		}
-		if carriesLiveReferenceBraced(d) {
-			warn() // the document depends on the launch (${...} in a leaf)
-			return
-		}
-		// Read the default EXACTLY as the run reads it — ResolveVarText,
-		// engine-supplied names sentineled — so the verdict rests on the
-		// value a bare launch starts with, never on a re-parse of the
-		// text (a profile-1 `\"` default is not JSON at all, and reads
-		// as the string it is).
-		val, err := ResolveVarText(d, VarJSON, compileTimeVarLookup)
-		if err == nil {
-			switch val.(type) {
-			case string, bool, float64:
-				return // a scalar document resolves to a routable scalar
-			}
-		}
-		warn()
+	default:
+		return
 	}
+	c.warnfAt(DiagRoutingFieldRef, nodeID, "",
+		"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list or object value resolves to its JSON spelling ([\"a\",\"b\"]), a name no backend, model or provider answers to; the node fails at its first delegation (declare the var `string`, or override it at launch with a scalar)",
+		loc, varName, v.Type, field)
+}
+
+// jsonDefaultDocument is the document a `json` var's static default
+// starts the run with, read for its SHAPE. The run parses the text first
+// (ResolveVarText → CoerceVarValue: text that is not JSON stays a
+// string) and only then expands the string LEAVES, so no reference ever
+// changes a document's shape — `"${DOC}"` is a string whatever DOC holds,
+// `["${X}"]` a list — and the parse alone answers the question without
+// an environment. known is false when the var has no default: the launch
+// supplies the document, and nothing about its shape is known.
+func jsonDefaultDocument(v *Var) (doc any, known bool) {
+	if !v.HasDefault {
+		return nil, false
+	}
+	doc, err := CoerceVarValue(v.Default, VarJSON)
+	return doc, err == nil
+}
+
+// isScalarDocument reports whether a decoded document is a string, a
+// number or a bool — null, a list and an object are not.
+func isScalarDocument(doc any) bool {
+	switch doc.(type) {
+	case string, bool, float64, int64:
+		return true
+	}
+	return false
 }
 
 // templateSpans returns every `{{…}}` span of s as written, the way the

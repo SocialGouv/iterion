@@ -37,11 +37,16 @@ workflow w:
 
 // TestC180_WholeListRefIntoStringField is the class table: one row per
 // shape a whole-value `with:` mapping can take onto a `string` field.
-// The `string[]` and `json` vars fire — since #1285 the var IS a list on
-// the default path too, so the list arrives whole and nothing checks it
-// at run time; a scalar var, an outputs reference and every text-arriving
-// mapping stay silent (the last two are C152's reading of the same edge,
-// and a `string` field is the one a string can satisfy).
+// A `string[]` var fires — since #1285 it IS a list on the default path
+// too, so the list arrives whole and nothing checks it at run time. A
+// `json` var fires on what its default DOCUMENT is (the run parses it
+// before expanding anything, so the text decides): a list or an object
+// fires, a scalar or a null document stays silent (R9a800e — a string
+// arrives, which is what the field declares), and no default fires on
+// what the launch may supply. A scalar var, an outputs reference and
+// every text-arriving mapping stay silent (the last two are C152's
+// reading of the same edge, and a `string` field is the one a string can
+// satisfy).
 func TestC180_WholeListRefIntoStringField(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -52,8 +57,24 @@ func TestC180_WholeListRefIntoStringField(t *testing.T) {
 	}{
 		{"the ticket's probe: a string[] var whole into a string field",
 			`  b: string[] = "claw,claude_code"`, "string", `"{{vars.b}}"`, true},
-		{"a json var whole into a string field",
+		{"a json var whose default document is an object, whole into a string field",
 			`  cfg: json = "{\"a\": 1}"`, "string", `"{{vars.cfg}}"`, true},
+		{"a json var whose default document is a list of scalars",
+			`  cfg: json = "[\"a\", \"b\"]"`, "string", `"{{vars.cfg}}"`, true},
+		{"a json var whose default document is a list holding an object",
+			`  cfg: json = "[{\"a\": 1}]"`, "string", `"{{vars.cfg}}"`, true},
+		{"a json var with no default: the launch supplies the document",
+			`  cfg: json`, "string", `"{{vars.cfg}}"`, true},
+		{"a json var whose default document is a string scalar arrives as a string",
+			`  cfg: json = "\"claw\""`, "string", `"{{vars.cfg}}"`, false},
+		{"a json var whose default document is a number is a scalar",
+			`  cfg: json = "3"`, "string", `"{{vars.cfg}}"`, false},
+		{"a json var whose default is a non-JSON word arrives as that word",
+			`  cfg: json = "claw"`, "string", `"{{vars.cfg}}"`, false},
+		{"a json var whose default is a ${...} reference arrives as the string it expands to",
+			`  cfg: json = "${DOC}"`, "string", `"{{vars.cfg}}"`, false},
+		{"a json var whose default document is null delivers no list",
+			`  cfg: json = "null"`, "string", `"{{vars.cfg}}"`, false},
 		{"a string var whole into a string field",
 			`  b: string = "claw"`, "string", `"{{vars.b}}"`, false},
 		{"a bool var whole into a string field is another divergence, not this one",
@@ -148,5 +169,46 @@ func TestC180_FiresOncePerMapping(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("C180 count = %d, want exactly 1\ndiagnostics: %v", n, r.Diagnostics)
+	}
+}
+
+// TestC180_MessageMatchesTheDocumentShape: the mechanism the message
+// names is the one shellEscapeValue applies to THAT shape. A list of
+// scalars is spread into argv; an object — or a list holding a
+// collection — is ONE JSON token, so a message claiming the spread for
+// it would be false (R9a800e's class: a false claim in the diagnostic's
+// own text). A var with no default says the launch supplies the document.
+func TestC180_MessageMatchesTheDocumentShape(t *testing.T) {
+	cases := []struct {
+		varLine       string
+		want, notWant []string
+	}{
+		{`  cfg: json = "[\"a\", \"b\"]"`, []string{"a list,", "spread into its argv"}, []string{"JSON token"}},
+		{`  cfg: json = "{\"a\": 1}"`, []string{"an object,", "ONE JSON token"}, []string{"spread into its argv"}},
+		{`  cfg: json = "[{\"a\": 1}]"`, []string{"a list holding a collection,", "ONE JSON token"}, []string{"spread into its argv"}},
+		{`  cfg: json`, []string{"the launch supplies", "if it is a list", "an object arrives as ONE JSON token"}, nil},
+	}
+	for _, tc := range cases {
+		r := compileText(t, c180Fixture(tc.varLine, "string", `"{{vars.cfg}}"`))
+		var msg string
+		for _, d := range r.Diagnostics {
+			if d.Code == DiagWithWholeRefListToString {
+				msg = d.Message
+			}
+		}
+		if msg == "" {
+			t.Errorf("%s: no C180 raised\ndiagnostics: %v", tc.varLine, r.Diagnostics)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: message %q does not carry %q", tc.varLine, msg, want)
+			}
+		}
+		for _, bad := range tc.notWant {
+			if strings.Contains(msg, bad) {
+				t.Errorf("%s: message %q claims %q, a mechanism this shape does not take", tc.varLine, msg, bad)
+			}
+		}
 	}
 }
