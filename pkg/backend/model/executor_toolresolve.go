@@ -35,6 +35,7 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 	}
 
 	var tools []delegate.ToolDef
+	var unclassified []string
 	seen := make(map[string]string, len(expanded))
 	for _, name := range expanded {
 		definition, ok, err := e.resolveSingleToolForNode(ctx, node, name)
@@ -53,9 +54,34 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 		}
 		seen[t.Name] = definition.QualifiedName
 		if e.toolPolicy != nil {
+			// For a sandboxed node, a tool that is not launcher-placed never
+			// reaches the guard below: the runner executes it in the container,
+			// or the backend refuses the node for it. The policy's verdict is
+			// taken now, on the name, and a tool it denies is not advertised —
+			// so a denied tool can neither run past the guard nor refuse a node
+			// that would never have called it successfully.
+			if e.sandbox != nil {
+				if placement, _ := tool.SandboxPlacementOf(t.Name); placement != tool.PlacementLauncher {
+					pctx := e.toolPolicyContext(ctx, ctx, node, t.Name, definition.QualifiedName, nil)
+					pctx.Deterministic = true
+					if err := e.toolPolicy.CheckContext(pctx); err != nil {
+						if e.logger != nil {
+							e.logger.Info("[%s] tool %q withheld from the sandboxed node: %v", node.NodeID(), t.Name, err)
+						}
+						continue
+					}
+					if placement == tool.PlacementSandbox {
+						unclassified = append(unclassified, t.Name)
+					}
+				}
+			}
 			t = e.guardTool(ctx, t, node, definition.QualifiedName)
 		}
 		tools = append(tools, t)
+	}
+	if mc, ok := e.toolPolicy.(tool.ModelConsultingChecker); ok && mc.ConsultsModel() && len(unclassified) > 0 && e.logger != nil {
+		e.logger.Warn("[%s] the LLM tool classifier does not see the calls a sandboxed runner executes in-container %v: "+
+			"only a tool_policy allowlist, if one is declared, applies to them", node.NodeID(), unclassified)
 	}
 	return tools, nil
 }
@@ -262,26 +288,30 @@ func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDe
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy
-	nodeID := node.NodeID()
-	nodeKind := node.NodeKind().String()
-	vars := e.vars
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
-		pctx := tool.PolicyContext{
-			Ctx:               ctx,
-			NodeID:            nodeID,
-			NodeKind:          nodeKind,
-			ToolName:          name,
-			QualifiedToolName: qualifiedName,
-			Input:             input,
-			Vars:              vars,
-			ResolvePattern:    e.policyPatternResolver(executionCtx, node),
-		}
-		if err := policy.CheckContext(pctx); err != nil {
+		if err := policy.CheckContext(e.toolPolicyContext(ctx, executionCtx, node, name, qualifiedName, input)); err != nil {
 			return "", err
 		}
 		return original(ctx, input)
 	}
 	return t
+}
+
+// toolPolicyContext is the one PolicyContext a node's tool is checked under,
+// whether the check runs at the call (guardTool) or ahead of it (a tool a
+// sandboxed runner executes in-container). callCtx carries the call's
+// cancellation; buildCtx resolves the policy's alias patterns.
+func (e *ClawExecutor) toolPolicyContext(callCtx, buildCtx context.Context, node ir.Node, name, qualifiedName string, input json.RawMessage) tool.PolicyContext {
+	return tool.PolicyContext{
+		Ctx:               callCtx,
+		NodeID:            node.NodeID(),
+		NodeKind:          node.NodeKind().String(),
+		ToolName:          name,
+		QualifiedToolName: qualifiedName,
+		Input:             input,
+		Vars:              e.vars,
+		ResolvePattern:    e.policyPatternResolver(buildCtx, node),
+	}
 }
 
 func (e *ClawExecutor) policyPatternResolver(ctx context.Context, node ir.Node) func(string) (string, error) {

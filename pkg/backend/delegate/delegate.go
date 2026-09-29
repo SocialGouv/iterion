@@ -282,6 +282,11 @@ type ToolDef struct {
 	Description string
 	InputSchema json.RawMessage
 	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
+
+	// QualifiedName is the registry identity before provider-name
+	// sanitization (`mcp.<server>.<tool>` for an MCP tool). In-process only:
+	// it never crosses the sandbox IPC.
+	QualifiedName string
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on

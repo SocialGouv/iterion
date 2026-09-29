@@ -35,12 +35,12 @@ import (
 // session_capture / event) and finishes with one [EnvelopeResult]
 // wrapping an [IOResult].
 //
-// V2-2: the [Task.ToolDefs] slice is now carried over the wire as
+// V2-2: the [Task.ToolDefs] slice is carried over the wire as
 // [IOToolDef] entries — the [ToolDef.Execute] closure is dropped (it
-// captures launcher-side state like the MCP manager) and the runner
-// builds proxy ToolDefs whose Execute emits [EnvelopeToolCall] and
-// blocks on the matching [EnvelopeToolResult]. This unblocks the
-// MCP-tools-in-sandbox path that V1 couldn't support.
+// captures launcher-side state like the MCP manager). The runner executes
+// the in-container tools itself and builds, for each launcher-placed one,
+// a proxy ToolDef whose Execute emits [EnvelopeToolCall] and blocks on the
+// matching [EnvelopeToolResult] (placement: tool.SandboxPlacementOf).
 type IOTask struct {
 	NodeID                 string                `json:"node_id"`
 	Iteration              int                   `json:"iteration,omitempty"`
@@ -128,7 +128,7 @@ type IOResult struct {
 // ToIOTask converts a [Task] to its wire form. The Sandbox handle and
 // closure fields are dropped; the [ToolDef.Execute] closures are
 // replaced by metadata-only [IOToolDef] entries (V2-2 — the runner
-// builds proxy ToolDefs).
+// executes the in-container tools and proxies the launcher-placed ones).
 func ToIOTask(t Task) IOTask {
 	var ioToolDefs []IOToolDef
 	if len(t.ToolDefs) > 0 {

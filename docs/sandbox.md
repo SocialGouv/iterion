@@ -441,12 +441,16 @@ against the workflow workspace before starting the container. `env:`,
 and auto-mode fallback cases.
 
 Per-node overrides accept the same short or block form on `agent`,
-`judge`, and `tool`:
+`judge`, and `tool`. They are parsed, but **not honoured at dispatch
+today**: every node of a run shares the run's sandbox, so the example
+below still runs `shell_helper` in it (a node-level `sandbox: none` draws
+the C128 warning saying so; a node-level block draws none yet). To run on
+the host, opt the workflow out (`sandbox: none` / `--sandbox none`).
 
 ```iter fragment
 agent shell_helper:
-  sandbox: none      # this node runs on the host even though the
-                     # workflow has sandbox: auto
+  sandbox: none      # parsed (C128 warns); not yet honoured:
+                     # the node shares the workflow's sandbox
 
 agent custom_env:
   sandbox:
@@ -507,13 +511,20 @@ iterion sandbox doctor                 # report driver + capabilities
 
 ### Precedence (highest → lowest)
 
-1. Per-node `sandbox:` declaration (DSL)
-2. CLI `--sandbox` flag
-3. Workflow-level `sandbox:` declaration (DSL)
-4. `ITERION_SANDBOX_DEFAULT` env var
-5. Built-in `auto` at product entry points (sandbox-by-default).
+1. CLI `--sandbox` flag — except that `--sandbox=auto` yields to a
+   workflow block naming its own container (`image:` or `build:`);
+   `--sandbox none` wins everywhere
+2. Workflow-level `sandbox:` declaration (DSL)
+3. `ITERION_SANDBOX_DEFAULT` env var
+4. Built-in `auto` at product entry points (sandbox-by-default).
    Engines embedded without an explicit default (tests, library use)
    stay neutral: no sandbox.
+
+There is no per-node tier: a node-level `sandbox:` is parsed but not
+honoured at run time, so every node runs where the run does. Under a
+workflow `sandbox: none`, a node declaring `sandbox: auto` or its own
+block still runs on the host — isolate a risky step by sandboxing the
+whole workflow, not the node.
 
 The tier decides only WHO asked, never what happens when the host
 cannot comply: any `auto` degrades gracefully, any explicit `inline`
@@ -746,7 +757,7 @@ your repo root and `sandbox: auto` will pick them up.
 | `opencode`    | **not shipped in the stock image** (the cloud runner image has the same gap) — the published sandbox image bakes claude-code and pi (and carries codex in node_modules), so a sandboxed `opencode`, `kimi` or `grok` node dies at `exec: not found` unless a custom image or a PATH inside the container supplies the binary. Nothing refuses it earlier: the limit is the image's contents, not the backend. |
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
-| Tool nodes    | **fully sandboxed** (`bash -c` runs inside the container) |
+| Tool nodes    | **sandboxed**: shell and script recipes run inside the container (`bash -c`); a registry-tool recipe (`command: <tool>`) is a launcher closure, so it runs only for a launcher-placed tool and is refused otherwise — under a Verified Action (`postcondition:`) that refusal fails the node whatever its `policy:`, since no rung can make the recipe runnable |
 | MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers remain host-side for Claude Code, but pi RPC starts them beside pi (inside the sandbox). See [MCP tools in a sandbox](#mcp-tools-in-a-sandbox). |
 
 ### Claw backend in sandbox
@@ -791,8 +802,83 @@ line is one envelope of typed payload (`task`, `tool_call`,
 [delegate.Multiplexer] dispatches runner-initiated envelopes
 (tool_call, ask_user, …) to handlers wired against the engine's
 existing tool registry / MCP manager / ask_user channel; the runner
-builds proxy ToolDef closures that round-trip each invocation back
+executes the in-container tools itself and builds, for each
+launcher-placed one, a proxy ToolDef closure that round-trips the call
 across the channel.
+
+> **Where an advertised tool executes is a boundary, not a fallback.**
+> A tool the runner proxies runs on the HOST, with the launcher's
+> process, cwd, filesystem and network position — so the routing cannot
+> be "local when we happen to know the name". Every tool iterion
+> registers for claw carries an explicit placement
+> (`tool.SandboxPlacementOf`, `pkg/backend/tool/sandbox_placement.go`);
+> a claw tool iterion does not register (`image_gen`, …) has none and
+> is refused:
+>
+> - **sandbox** — it starts a process, reaches a filesystem or opens a
+>   model-supplied URL, so the runner executes it in-container:
+>   `bash`, `diagnostic_shell`, `repl`, `read_file`, `write_file`,
+>   `file_edit`, `notebook_edit`, `glob`, `grep`, `workspace_grep`,
+>   `skill`, `read_image`, `web_fetch`, `remote_trigger`,
+>   `send_user_message`, `sleep`, `structured_output`, and `agent` (the
+>   runner registers claw's agent tool in the container — the same
+>   metadata-only form as an unsandboxed node gets, which starts no child
+>   conversation). A missing local registration is a fatal runner error,
+>   never a proxy.
+> - **launcher** — launcher-owned state, run with the launcher's process:
+>   `ask_user` and the async pair, every `mcp.*` / `mcp_*` / `mcp__*`
+>   tool, `list_mcp_resources`, `read_mcp_resource`, `mcp_auth`, the
+>   `task_*` / `team_*` / `cron_*` registries, `todo_write`, `config`,
+>   `tool_search`, the plan-mode pair, the privacy pair, `web_search`.
+>   Three caveats: the MCP tools and the resource pair reach servers
+>   through the launcher's MCP manager, which connects a server where it
+>   runs — for a stdio server, it starts the process on the launcher; the
+>   plan-mode and privacy state live under the run's store directory,
+>   which a container can write when that directory is mounted into it
+>   (`host_state: auto`, or a project-local `<repo>/.iterion` store with
+>   `worktree: none`); and the async question pair (`ask_user_async`,
+>   `await_answers`) is not bound to the run's question channel on this
+>   path yet, so `interaction: async` on a sandboxed claw node is refused
+>   by type when the node executes (`CAPABILITY_UNSUPPORTED`) — a fallback
+>   route on another backend can serve it.
+> - **refused** — no in-container form at all, so a sandboxed node that
+>   declares one is refused when it executes, with the remedy in the
+>   message (its `fallbacks:` still get their turn — like the Ask refusal
+>   it is an unclassified failure, which every non-`skip` route accepts
+>   whatever its `on:` filter): `lsp` (the language
+>   servers are the launcher's children), `screenshot` / `computer_use`
+>   (the launcher host's display), and the nine `worker_*` tools (a worker
+>   is keyed on a model-supplied working directory the launcher reads and
+>   writes). Drop the tool, or run the workflow unsandboxed
+>   (`sandbox: none` / `--sandbox none`) — a node-level `sandbox:` is not
+>   honoured at run time.
+>
+> A name nothing classifies — a claw bump's new tool — is refused, not
+> proxied: the default direction is the safe one. A name that merely
+> starts like an MCP tool (`mcp_bash`) is not one: the MCP rule needs a
+> server and a tool segment.
+>
+> **The launcher holds the boundary, not the runner.** The runner is the
+> contained side — on Kubernetes an older binary baked into the sandbox
+> image, and its IPC stdout is writable by anything in the container
+> running as its uid — so its routing is a request: the launcher executes
+> a forwarded call only for a tool advertised to the node under that exact
+> name, only if it is launcher-placed, and only if the run's `permission:`
+> policy allows it. That gate is evaluated again on the launcher, on the
+> tool's identity rather than one spelling: a rule written for the
+> advertised name (`mcp_<server>_<tool>`) or for the claude_code FQN
+> (`mcp__<server>__<tool>`) applies either way, an explicit deny winning.
+> Every refusal is logged and emitted as a failed tool call by the
+> launcher itself.
+>
+> **`tool_policy` and the tool classifier.** The launcher's call-time
+> guard never sees a call the runner executes in-container, so for a
+> sandboxed node the `tool_policy` allowlist is applied when the node is
+> built: an in-container tool it denies is not advertised at all.
+> Launcher-placed tools keep the call-time guard. The LLM tool classifier
+> (`ITERION_LLM_CLASSIFIER_MODEL`) reads each call's input and cannot be
+> consulted ahead of time; a sandboxed node whose in-container calls it
+> therefore does not see logs a warning naming them.
 
 **Status of V1 limitations**:
 

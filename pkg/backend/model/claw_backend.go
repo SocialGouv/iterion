@@ -197,9 +197,11 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // rather than escaping to the host. The unsandboxed path below is
 // the historical in-process implementation.
 //
-// V1 limitations of the sandbox-routed path are documented on
-// [delegate.IOTask] and in docs/sandbox.md: no MCP servers, no
-// mid-tool-loop ask_user resume.
+// On the sandbox-routed path each tool runs where its
+// [tool.SandboxPlacementOf] says: in the container, proxied back to the
+// launcher, or not at all — docs/sandbox.md lists the refusals (tools with
+// no in-container form, Ask-capable permission policies, async
+// interaction).
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result delegate.Result, err error) {
 	defer func() {
 		if err == nil && task.SessionSlot != "" {
@@ -262,8 +264,20 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// same combination as fail-not-degrade.
 		if task.Permission.CanAsk() {
 			return delegate.Result{}, fmt.Errorf(
-				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run this node unsandboxed, or route it to claude_code",
+				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run the workflow unsandboxed (`sandbox: none` / `--sandbox none`), or route the node to claude_code",
 				task.NodeID, task.Permission.Mode)
+		}
+		// The async question pair is served by the launcher, which does not
+		// bind it to the run's question channel on this path: a task wired
+		// to post async questions is refused by type — here, as one route's
+		// failure, so the node's fallbacks can serve it.
+		if task.PostAsyncQuestion != nil {
+			return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+				NodeID: task.NodeID, Backend: delegate.BackendClaw, Capability: "interaction: async in a sandboxed run"}
+		}
+		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
+		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
+			return delegate.Result{}, err
 		}
 		return b.executeViaSandboxRunner(ctx, task)
 	}
@@ -1490,6 +1504,97 @@ func anthropicWireShadowEnv() []string {
 	return shadows
 }
 
+// forwardedToolSpellings lists the names the permission gate may know one
+// tool by: the name it was advertised under and, for an MCP tool, the
+// claude_code FQN (`mcp__<server>__<tool>`) that rules are commonly written in
+// and that a model may emit.
+func forwardedToolSpellings(td delegate.ToolDef) []string {
+	spellings := []string{td.Name}
+	if rest, ok := strings.CutPrefix(td.QualifiedName, "mcp."); ok {
+		if server, name, found := strings.Cut(rest, "."); found && server != "" && name != "" {
+			spellings = append(spellings, "mcp__"+server+"__"+name)
+		}
+	}
+	return spellings
+}
+
+// evaluateForwardedCall gates a forwarded call on the tool's identity. The
+// runner gates the spelling the model emitted and forwards the advertised
+// one, and rules match spellings literally, so one spelling is not enough:
+// an explicit deny on ANY spelling denies — a forged call cannot pick the
+// spelling no deny names — and otherwise an allow on any spelling allows, so
+// an honest call the runner allowed through the FQN form is not refused here.
+// Otherwise the first spelling's verdict (the mode default) holds. The
+// returned spelling is the one the verdict was taken on.
+func evaluateForwardedCall(p *permission.Policy, spellings []string, args map[string]any) (permission.Decision, string, string) {
+	first, firstRule := p.Evaluate(spellings[0], args)
+	if first == permission.Deny && firstRule != "" {
+		return first, firstRule, spellings[0]
+	}
+	verdict, rule, spelling := first, firstRule, spellings[0]
+	for _, s := range spellings[1:] {
+		dec, r := p.Evaluate(s, args)
+		if dec == permission.Deny && r != "" {
+			return dec, r, s
+		}
+		if dec == permission.Allow && verdict != permission.Allow {
+			verdict, rule, spelling = dec, r, s
+		}
+	}
+	return verdict, rule, spelling
+}
+
+// refuseForwardedCall records a forwarded tool call the launcher refuses and
+// returns err. The refusal happens on the host's side of the boundary, so it
+// is logged and emitted from here — not left to the runner's event relay,
+// which whatever forged the call also controls.
+func (b *ClawBackend) refuseForwardedCall(task delegate.Task, name string, err error) error {
+	if b.logger != nil {
+		b.logger.Warn("[%s/claw] %v", task.NodeID, err)
+	}
+	if b.hooks.OnToolCall != nil {
+		b.hooks.OnToolCall(task.NodeID, LLMToolCallInfo{ToolName: name, Error: err})
+	}
+	return err
+}
+
+// withoutUnplaceableToolsThePolicyDenies drops a tool no side of the sandbox
+// can serve when the run's permission policy denies it outright: the node
+// could never have called it, so it neither refuses the node nor reaches the
+// runner, which stops on any tool it cannot place. The tool_policy
+// counterpart withholds such a tool at resolution.
+func withoutUnplaceableToolsThePolicyDenies(task delegate.Task) []delegate.ToolDef {
+	if !task.Permission.Enabled() {
+		return task.ToolDefs
+	}
+	kept := make([]delegate.ToolDef, 0, len(task.ToolDefs))
+	for _, td := range task.ToolDefs {
+		if placement, _ := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused && task.Permission.HasExplicitDeny(td.Name, nil) {
+			continue
+		}
+		kept = append(kept, td)
+	}
+	return kept
+}
+
+// refuseToolsWithNoSandboxPlacement refuses a sandboxed task carrying a tool
+// neither side of the sandbox may serve: the container has no form of it and
+// the launcher would run it on the host (tool.PlacementRefused, which every
+// unclassified name falls into). It runs in Execute, beside the Ask refusal,
+// so the node's `fallbacks:` still get their turn; the build-time effects
+// (llm_prompt, board token) have fired, but no runner starts and no token is
+// spent.
+func refuseToolsWithNoSandboxPlacement(task delegate.Task) error {
+	for _, td := range task.ToolDefs {
+		if placement, reason := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused {
+			return fmt.Errorf(
+				"claw backend: node %q declares tool %q, which a sandboxed runner cannot execute in-container (%s) — "+
+					"drop it, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)", task.NodeID, td.Name, reason)
+		}
+	}
+	return nil
+}
+
 // canonicalMCPToolName maps an MCP tool name the model emitted in the
 // claude_code FQN convention ("mcp__server__tool") to the sanitized
 // single-underscore form ("mcp_server_tool") that iterion advertises to
@@ -1516,11 +1621,12 @@ func canonicalMCPToolName(name string) string {
 // for a specific task.
 //
 //   - V2-2: OnToolCall dispatches via the task's ToolDefs map. The
-//     runner emits a tool_call envelope for each LLM-driven tool
-//     invocation; the launcher invokes the original closure (which has
-//     access to the engine's tool registry, MCP manager, ask_user
-//     channel, etc.) and forwards the result. *ErrAskUser returns are
-//     preserved typed by the multiplexer (V2-3).
+//     runner emits a tool_call envelope for each call to a
+//     launcher-placed tool; the launcher checks the call (advertised
+//     name, placement, permission gate), invokes the original closure
+//     (which has access to the engine's tool registry, MCP manager,
+//     ask_user channel, etc.) and forwards the result. *ErrAskUser
+//     returns are preserved typed by the multiplexer (V2-3).
 //   - V2-4: OnSessionCapture mirrors runner-emitted session snapshots
 //     into the host's nodeSessionStore so CompactAndRetry compacts the
 //     latest history. Pre-spawn, the launcher seeds a session_replay
@@ -1535,15 +1641,39 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	hostRunID, hostStore := runtimeContextFrom(ctx)
 	return delegate.MultiplexerHandler{
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
-			// The runner forwards the model's tool name verbatim, which
-			// may be the claude_code double-underscore FQN even though
-			// ToolDefs are keyed by the sanitized name; bridge the two.
+			// A runner forwards the name the tool was advertised under — its
+			// proxy closure captures it — so any other spelling is not one an
+			// honest runner sends, and is refused rather than mapped.
 			td, ok := toolByName[name]
 			if !ok {
-				td, ok = toolByName[canonicalMCPToolName(name)]
+				return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q was not advertised to this node", name))
 			}
-			if !ok {
-				return "", fmt.Errorf("launcher: tool %q not in task.ToolDefs (runner asked for an unknown tool)", name)
+			// The sandbox boundary is held on THIS side. The runner is the
+			// contained process — possibly an older binary baked into the
+			// sandbox image, and its IPC stdout is writable by anything in the
+			// container running as the same uid — so its routing is a request,
+			// never a verdict: only a tool whose home is the launcher's own
+			// state executes here.
+			if placement, reason := tool.SandboxPlacementOf(td.Name); placement != tool.PlacementLauncher {
+				return "", b.refuseForwardedCall(task, name, fmt.Errorf(
+					"launcher: refusing to execute tool %q on the host for a sandboxed node: its placement is %s (%s) — "+
+						"a current runner never forwards it: either the sandbox image carries an older iterion, or something else in the container wrote this call",
+					name, placement, reason))
+			}
+			// The permission gate the runner applies before forwarding is applied
+			// again here: a call that reached this handler without passing it —
+			// an older runner, a forged envelope — is gated all the same, on the
+			// tool's identity rather than on one spelling of it.
+			if task.Permission.Enabled() {
+				var args map[string]any
+				if len(input) > 0 {
+					if err := json.Unmarshal(input, &args); err != nil {
+						return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q: decode input for the permission gate: %w", name, err))
+					}
+				}
+				if dec, rule, spelling := evaluateForwardedCall(task.Permission, forwardedToolSpellings(td), args); dec != permission.Allow {
+					return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: %s", permission.DenyMessage(spelling, args, rule)))
+				}
 			}
 			if td.Execute == nil {
 				return "", fmt.Errorf("launcher: tool %q has no Execute closure (engine misconfiguration)", name)

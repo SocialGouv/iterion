@@ -38,7 +38,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `claw` | 🟢 | Recommended in-process backend for direct provider calls and native Iterion tools. anthropic + openai validated; bedrock/vertex/foundry ship but are **untested**. | Automatic or explicit. |
 | `claude_code` | 🟢 | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
-| `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
+| `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
 | `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -975,8 +975,28 @@ mode `deny`).
 > so the combination fails CLOSED, never open. What cannot cross is an
 > **Ask decision** — nothing inside the container can pause the parent
 > run — so an ask-capable policy is refused loudly at dispatch (and
-> C136 warns at compile time). Run such a node unsandboxed, or route it
-> to `claude_code`.
+> C136 warns at compile time). Run the workflow unsandboxed
+> (`sandbox: none` / `--sandbox none` — a node-level `sandbox:` is not
+> honoured at run time), or route the node to `claude_code`.
+
+> **A sandboxed `claw` node also refuses a tool the container cannot
+> execute.** Tools the runner does not run locally are proxied back and
+> executed on the HOST, so the split is decided by an explicit placement
+> rather than by which names the runner happens to register — and the
+> launcher refuses every forwarded call for a tool that is not
+> launcher-placed, or that the run's `permission:` policy denies. The
+> tools that start a process, touch the workspace or a model-supplied
+> path, or open a model-supplied URL, and `agent`, run in-container;
+> launcher-owned state (MCP, `ask_user`, the `task_*` / `team_*` /
+> `cron_*` registries, `todo_write`, `config`, `tool_search`, plan mode,
+> the privacy pair, `web_search`) keeps the IPC proxy; and `lsp`,
+> `screenshot`, `computer_use` and the `worker_*` family have no
+> in-container form, so a sandboxed node declaring one is refused when it
+> executes (its `fallbacks:` still get their turn) — drop it, or run the
+> workflow unsandboxed (`sandbox: none` / `--sandbox none`). A
+> `tool_policy` allowlist is applied to the in-container tools when the
+> node is built: a tool it denies is not advertised at all. The full table
+> and its reasons: [sandbox.md](sandbox.md#claw-backend-in-sandbox).
 
 ## Transient-error & network resilience
 
@@ -1826,9 +1846,10 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
   short-circuits it. External hooks cannot pause the parent run, so `ask`
   (including explicit `ask:` rules under `deny`) is refused. Guarded sandbox
   runs are also refused because neither CLI currently carries its home and hook
-  binary into the container — so a gated node needs `sandbox: none` (the
-  shipped default is `auto`, and **C136** warns at compile time rather than
-  letting the run die at the agent node). Windows is refused: the hook command
+  binary into the container — so a gated node needs an unsandboxed run:
+  `sandbox: none` on the workflow, or `--sandbox none` (a node-level
+  `sandbox:` is not honoured; the shipped default is `auto`, and **C136**
+  warns at compile time rather than letting the run die at the agent node). Windows is refused: the hook command
   is POSIX-quoted and a spawn failure is an ALLOW.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).

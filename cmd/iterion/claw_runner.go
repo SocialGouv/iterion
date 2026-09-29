@@ -28,12 +28,12 @@ import (
 // via a non-zero exit code so the launcher can detect protocol-level
 // failures distinctly from typed-result failures.
 //
-// V2-2: tools execute on the LAUNCHER side via the IPC. The runner
-// builds proxy [delegate.ToolDef] entries whose Execute closures
-// emit tool_call envelopes; the launcher's multiplexer dispatches
-// to the original ToolDef (bound to the engine's tool registry, MCP
-// manager, etc.) and returns the result. This unblocks the MCP-tools-
-// in-sandbox path V1 couldn't support.
+// Tools are routed by [tool.SandboxPlacementOf]: the ones that act on a
+// filesystem, a process or a model-supplied URL execute here, in the
+// container; the launcher-owned ones (ask_user, MCP, the in-memory
+// registries) are proxied — their Execute closures emit tool_call
+// envelopes that the launcher's multiplexer dispatches to its own
+// ToolDef, after its own placement and permission checks.
 var clawRunnerCmd = &cobra.Command{
 	Use:    "__claw-runner",
 	Short:  "Internal: run the claw backend inside an iterion sandbox container",
@@ -124,13 +124,15 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		}
 		task.Permission = pol
 	}
-	// V2-2 (refined): builtins (bash, read_file, glob, grep, file_edit,
-	// web_fetch, write_file) execute LOCALLY inside the runner so their
-	// filesystem effects land on the sandbox bind-mount, not on the
-	// launcher's host cwd. Everything else (MCP tools, ask_user, custom
-	// engine-side tools) still IPC-proxies back to the launcher.
+	// Every tool that starts a process, reaches a filesystem or opens a
+	// model-supplied URL executes LOCALLY inside the runner, so its effects
+	// land on the sandbox bind-mount and its requests leave through the
+	// container's network. Only launcher-owned tools (MCP, ask_user, the
+	// in-memory registries) IPC-proxy back; anything a sandboxed runner
+	// cannot honour is refused here rather than silently executed on the
+	// host — see [tool.SandboxPlacementOf].
 	//
-	// Without this hybrid, a sandboxed `bash ls` from an LLM ran in the
+	// Without this split, a sandboxed `bash ls` from an LLM ran in the
 	// launcher process's cwd — typically a wholly unrelated host
 	// directory — and recipe runs that wrote files (commit_changes
 	// downstream, fix_after_upgrade scaffolding, etc.) clobbered the
@@ -140,7 +142,11 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	workspace, _ := os.Getwd() // docker exec --workdir lands us at the
 	// bind-mount target (default /workspace); fall back gracefully when
 	// Getwd fails — bash/read_file relative paths still work via cwd.
-	task.ToolDefs = makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, stderr)
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace)
+	if toolErr != nil {
+		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
+	}
+	task.ToolDefs = toolDefs
 
 	// V2-4: build a local session store, seed it from any
 	// session_replay snapshots the launcher sent, and wire a sink that

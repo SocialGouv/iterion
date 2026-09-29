@@ -1562,14 +1562,14 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	if delegate.HasRunsReadCapability(effectiveCaps) && len(effectiveTools) > 0 {
 		effectiveTools = append(effectiveTools, delegate.RunToolsFor(effectiveCaps)...)
 	}
-	// Ultracode grants standing consent to orchestrate subagents AND
-	// workflows. On claw the orchestration surface is the `agent` subagent
-	// tool and the `workflow` tool (a deterministic fan-out script whose
-	// agent() resolves with typed results); ensure both are in the allowlist
-	// when the node restricts its tool set (mirrors the board-tools append
-	// above). An unrestricted tool set already exposes the claw builtins,
-	// and the claude_code backend orchestrates via its native mechanism, so
-	// neither needs the explicit append.
+	// Ultracode grants standing consent to orchestrate subagents. On claw the
+	// orchestration surface is the `agent` subagent tool (claw's own
+	// `workflow` tool is not granted — see withClawOrchestrationTools); ensure
+	// it is in the allowlist when the node restricts its tool set (mirrors the
+	// board-tools append above). An unrestricted tool set already exposes the
+	// claw builtins, and the claude_code backend orchestrates via its native
+	// mechanism, so neither needs the explicit append. A sandboxed node keeps
+	// the grant: the runner registers `agent` in the container.
 	if ultracode && backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = withClawOrchestrationTools(effectiveTools)
 	}
@@ -1774,7 +1774,8 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 // resolved against the registry and an unknown name is an error, not a skip,
 // so a name granted without a registration kills the node at dispatch.
 // claw-code-go's own `workflow` tool is not among them: iterion builds its
-// own registry and wires the subagent runner into `agent` alone.
+// own registry and registers `agent` alone — today in claw's metadata-only
+// form, since no host wires a subagent runner into it.
 func withClawOrchestrationTools(tools []string) []string {
 	return ensureToolPresent(tools, "agent")
 }
