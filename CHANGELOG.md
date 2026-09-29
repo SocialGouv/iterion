@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.209.0](https://github.com/SocialGouv/iterion/compare/v3.208.0...v3.209.0) (2026-09-29)
+
+### Features
+
+* **product-docs:** a map step — the diagrams drawn once, before the campaign ([#1914](https://github.com/SocialGouv/iterion/issues/1914)) ([117ac07](https://github.com/SocialGouv/iterion/commit/117ac07ce3dc0223e27046d2178dd2899612ea3e))
+
+    <details><summary>why</summary>
+
+    Prody documents a product page by page but never draws the whole: a reader (and the campaign itself) had no single picture of what the product offers and how its screens belong together. The new `diagram` step draws it ONCE before the first pass — Mermaid pages under `<product_dir>/diagrams/`, screens and journeys a reader recognises, every box grounded on a source. The continuation loop re-enters at scan_hints, so later passes never redraw the map; from pass 2 on it is just pages the campaign…
+
+    </details>
+
 ## [3.208.0](https://github.com/SocialGouv/iterion/compare/v3.207.0...v3.208.0) (2026-09-29)
 
 ### Features
