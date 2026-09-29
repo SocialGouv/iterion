@@ -21,6 +21,28 @@ const optionsFrom = (
   labels: Record<string, string> = {},
 ): SelectOption[] => values.map((value) => ({ value, label: labels[value] ?? value }));
 
+// orderedFrom is optionsFrom with a curated display order: words the order
+// lists come in that order, a registry word the order misses appends sorted
+// (a new registry word still reaches the dropdown) — and dslOptions.test.ts
+// pins the curated orders to cover the registry exactly, so that new word
+// also reddens the suite until the curation catches up.
+const orderedFrom = (
+  values: readonly string[],
+  order: readonly string[],
+  labels: Record<string, string> = {},
+): SelectOption[] => {
+  const rank = new Map(order.map((value, i) => [value, i]));
+  const sorted = [...values].sort((a, b) => {
+    const ra = rank.get(a);
+    const rb = rank.get(b);
+    if (ra !== undefined && rb !== undefined) return ra - rb;
+    if (ra !== undefined) return -1;
+    if (rb !== undefined) return 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return optionsFrom(sorted, labels);
+};
+
 // No registry enum counterpart: `backend` is a String property
 // (pkg/dsl/spec/spec.go pBackend) — a {{vars.x}} reference or ${VAR:-default}
 // resolves at run time, so the accepted words live only in the doc string.
@@ -46,7 +68,12 @@ export const AWAIT_OPTIONS: SelectOption[] = optionsFrom(iterDslEnumValuesByProp
 export const AWAIT_HELP =
   "Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready. Unset = no await (default).";
 
-export const SESSION_OPTIONS: SelectOption[] = optionsFrom(iterDslEnumValuesByProperty.session);
+// Curated order: the default (fresh) first, then the inherit family.
+const SESSION_ORDER = ["fresh", "inherit", "inherit_if_available", "fork", "artifacts_only", "persist"] as const;
+export const SESSION_OPTIONS: SelectOption[] = orderedFrom(
+  iterDslEnumValuesByProperty.session,
+  SESSION_ORDER,
+);
 
 export const SESSION_HELP =
   "fresh = new context; inherit = reuse parent conversation; inherit_if_available = inherit, retried fresh once if the session cannot load; fork = non-consuming branch from parent session; artifacts_only = share published artifacts only; persist = resume this node's own last CLI conversation on re-entry (trunk nodes only).";
@@ -63,8 +90,14 @@ export const INTERACTION_HELP =
 
 // Human nodes pre-select "human" by default and frame the choices in
 // terms of what happens at the pause point — a curated SUBSET of the
-// interaction enum (review/async/human_or_host are not human-node modes),
-// derived from the registry so a renamed word still reddens.
+// interaction enum. Only `async` is refused on a human node (C240);
+// `review` and `human_or_host` are valid human-node modes (the human
+// kind carries the full interaction + review-gate fields, spec.go)
+// omitted here pending form support — so an existing
+// `interaction: review` / `human_or_host` human node matches no option
+// and the select displays its first entry, "human (always pause)".
+// The test pins this exact subset: adding a mode (e.g. the C240-refused
+// async) reddens.
 const HUMAN_INTERACTION_MODES = ["human", "llm", "llm_or_human"] as const;
 export const HUMAN_INTERACTION_OPTIONS: SelectOption[] = optionsFrom(
   iterDslEnumValuesByProperty.interaction.filter((v) =>
@@ -108,9 +141,11 @@ export const PERMISSION_HELP =
 export const PERMISSION_RULES_HELP =
   "A non-empty list REPLACES the workflow's list of this kind — never a union, and independently per kind. Restate anything from the workflow's list of this kind you still want. Empty inherits it. Tool(pattern) syntax, e.g. Bash(git diff:*).";
 
+// Curated order: ascending effort, the orchestration tier last.
+const REASONING_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "", label: "(default)" },
-  ...optionsFrom(iterDslEnumValuesByProperty.reasoning_effort, {
+  ...orderedFrom(iterDslEnumValuesByProperty.reasoning_effort, REASONING_EFFORT_ORDER, {
     ultracode: "ultracode (xhigh + orchestration)",
   }),
 ];

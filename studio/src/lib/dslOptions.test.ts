@@ -40,12 +40,53 @@ describe("dslOptions registry-derived groups", () => {
     );
   });
 
-  it("HUMAN_INTERACTION_OPTIONS is a non-empty subset of the registry interaction enum", () => {
-    const human = values(HUMAN_INTERACTION_OPTIONS);
-    expect(human.length).toBeGreaterThan(0);
-    for (const v of human) {
+  it("HUMAN_INTERACTION_OPTIONS is exactly the curated human-node subset", () => {
+    // Only `async` is refused on a human node (C240); review/human_or_host
+    // are omitted pending form support. Pinning the exact set reddens a
+    // careless edit — e.g. adding async, which the compiler would refuse.
+    expect(sorted(values(HUMAN_INTERACTION_OPTIONS))).toEqual(["human", "llm", "llm_or_human"]);
+    for (const v of values(HUMAN_INTERACTION_OPTIONS)) {
       expect(iterDslEnumValuesByProperty.interaction, v).toContain(v);
     }
+  });
+});
+
+describe("dslOptions curated orders", () => {
+  it("SESSION_OPTIONS keeps fresh first and covers every registry word in place", () => {
+    // Order-sensitive: a new registry word appends sorted at the end and
+    // reddens here until the curation names its place.
+    expect(values(SESSION_OPTIONS)).toEqual([
+      "fresh",
+      "inherit",
+      "inherit_if_available",
+      "fork",
+      "artifacts_only",
+      "persist",
+    ]);
+  });
+
+  it("REASONING_EFFORT_OPTIONS reads ascending behind its (default) sentinel", () => {
+    expect(values(REASONING_EFFORT_OPTIONS)).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultracode"]);
+  });
+});
+
+describe("dslOptions curated labels", () => {
+  // Labels that describe BEHAVIOUR are pinned: a swap between two of them
+  // would actively mislead (pause semantics, orchestration consent), while
+  // the set-equality tests above stay green.
+  const labelOf = (options: { value: string; label: string }[], value: string) =>
+    options.find((o) => o.value === value)?.label;
+
+  it("pins the reasoning-effort labels that name a different tier", () => {
+    expect(labelOf(REASONING_EFFORT_OPTIONS, "")).toBe("(default)");
+    expect(labelOf(REASONING_EFFORT_OPTIONS, "ultracode")).toBe("ultracode (xhigh + orchestration)");
+  });
+
+  it("pins the human-node interaction labels that describe pause behaviour", () => {
+    expect(labelOf(HUMAN_INTERACTION_OPTIONS, "human")).toBe("human (always pause)");
+    expect(labelOf(HUMAN_INTERACTION_OPTIONS, "llm")).toBe("llm (auto-answer)");
+    expect(labelOf(HUMAN_INTERACTION_OPTIONS, "llm_or_human")).toBe("llm_or_human (escalation)");
+    expect(labelOf(INTERACTION_OPTIONS, "llm_or_human")).toBe("llm_or_human (escalation)");
   });
 
   it("labels are present and non-empty on every derived option", () => {
