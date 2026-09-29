@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -80,14 +81,10 @@ func exportTarget(t *testing.T) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	ws := filepath.Join(t.TempDir(), "clone")
-	for _, args := range [][]string{{"init", "-q", ws}, {"-C", ws, "commit", "-q", "--allow-empty", "-m", "init"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	parent := t.TempDir()
+	ws := filepath.Join(parent, "clone")
+	gittest.Run(t, parent, "init", "-q", ws)
+	gittest.Run(t, ws, "commit", "-q", "--allow-empty", "-m", "init")
 	want, err := filepath.EvalSymlinks(ws)
 	if err != nil {
 		t.Fatal(err)
@@ -213,11 +210,7 @@ func TestExportWorkspace_NeverRetriesAKubectlFailure(t *testing.T) {
 func TestExportWorkspace_ClearsLooseRefsBeforeEveryAttempt(t *testing.T) {
 	fastExportRetries(t)
 	ws := exportTarget(t)
-	branch := exec.Command("git", "-C", ws, "branch", "feature")
-	branch.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
-	if out, err := branch.CombinedOutput(); err != nil {
-		t.Fatalf("git branch: %v\n%s", err, out)
-	}
+	gittest.Run(t, ws, "branch", "feature")
 	if _, err := os.Stat(filepath.Join(ws, ".git/refs/heads/feature")); err != nil {
 		t.Fatalf("the host clone does not carry the loose ref the scenario needs: %v", err)
 	}
