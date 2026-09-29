@@ -544,9 +544,11 @@ func TestProdWatch_SentryHostileJSONIsTakenWhole(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	for name, raw := range map[string]map[string]string{
-		"a lone surrogate in the title":   {"title": `"\ud800 boom"`},
-		"a count in superscript digits":   {"count": `"²"`},
-		"a count longer than int() takes": {"count": `"` + strings.Repeat("9", 5000) + `"`},
+		"a lone surrogate in the title":               {"title": `"\ud800 boom"`},
+		"a count in superscript digits":               {"count": `"²"`},
+		"a count longer than int() takes":             {"count": `"` + strings.Repeat("9", 5000) + `"`},
+		"a count of 400 digits as a JSON number":      {"count": strings.Repeat("9", 400)},
+		"a user count of 400 digits as a JSON number": {"userCount": strings.Repeat("9", 400)},
 	} {
 		name, raw := name, raw
 		t.Run(name, func(t *testing.T) {
@@ -588,6 +590,31 @@ func TestProdWatch_SentryLocalClockIsReadBeforeTheWalk(t *testing.T) {
 	}
 }
 
+// TestProdWatch_SentryControlCharactersNeverReachThePost: a NUL or another
+// control character in attacker text is dropped before the post — Mattermost
+// cannot store a NUL, the delivery would fail and the tick replay for ever.
+func TestProdWatch_SentryControlCharactersNeverReachThePost(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "4601", ShortID: strp("P-4601"), Title: "boom\x00 x", Culprit: "a\x00b\x07c\x1b[31md\u0085e",
+		FirstProcessed: now, LastSeen: now, Count: 1})
+	n := len(h.bodies())
+	sentryTick(t, h, wf)
+	body := strings.Join(h.bodies()[n:], "\n")
+	if !strings.Contains(body, "P-4601") {
+		t.Fatalf("setup: the issue did not post:\n%s", body)
+	}
+	for _, r := range body {
+		if r != '\n' && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) {
+			t.Fatalf("control character %U reached the post:\n%q", r, body)
+		}
+	}
+}
+
 // TestProdWatch_SentryLabelsCannotBreakACodeSpan: the operator's label words
 // render as written, a backtick or a backslash in them escaped — never pairing
 // with a value's code span, or escaping its opening backtick, to let the
@@ -596,8 +623,14 @@ func TestProdWatch_SentryLabelsCannotBreakACodeSpan(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	for name, label := range map[string]string{
-		"a stray backtick":           "{level} · l`origine : {culprit}",
-		"a backslash before a value": `{level} · C:\{culprit}`,
+		"a stray backtick":               "{level} · l`origine : {culprit}",
+		"a backslash before a value":     `{level} · C:\{culprit}`,
+		"emphasis around a value":        "{level} · **{culprit}**",
+		"a URL around a value":           "{level} · https://github.com/o/r/search?q={culprit}",
+		"a bare host around a value":     "{level} · www.runbook.example/{culprit}",
+		"a markdown link around a value": "{level} · [search](https://s.example/?q={culprit})",
+		"angle brackets around a value":  "{level} · <{culprit}>",
+		"a Slack link around a value":    "{level} · <https://s.example/?q={culprit}|search>",
 	} {
 		name, label := name, label
 		t.Run(name, func(t *testing.T) {
@@ -620,6 +653,11 @@ func TestProdWatch_SentryLabelsCannotBreakACodeSpan(t *testing.T) {
 			for _, line := range strings.Split(body, "\n") {
 				if o := pwOutsideCode(line); strings.Contains(o, "@channel") || strings.Contains(o, "evil-sso") {
 					t.Fatalf("%s in the label let the value out of its code span:\n%s", name, line)
+				}
+				if strings.Contains(line, "`@channel see www.evil-sso.com/login`") {
+					if bad := pwUnescapedActives(line); len(bad) > 0 {
+						t.Fatalf("%s: the label's own markdown stays live around the value (%q):\n%s", name, bad, line)
+					}
 				}
 			}
 		})

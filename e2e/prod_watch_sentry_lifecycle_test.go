@@ -1001,7 +1001,7 @@ func TestProdWatch_SentryCountLabelNamesItsScope(t *testing.T) {
 	h.sentry.put(&pwSentryIssue{ID: "3301", ShortID: strp("P-3301"), Title: "x", FirstProcessed: now, LastSeen: now, Count: 7})
 	n := len(h.bodies())
 	sentryTick(t, h, wf)
-	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, "event(s) in 14 days") {
+	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event\(s\) in 14 days`) {
 		t.Fatalf("the NEW alert does not name the lists' 14 days:\n%s", b)
 	}
 	// Hours later, out of the new-issue window: read by id only.
@@ -1017,7 +1017,7 @@ func TestProdWatch_SentryCountLabelNamesItsScope(t *testing.T) {
 	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "reminder:P-3301:medium" {
 		t.Fatalf("setup: want a reminder, got %v", got)
 	}
-	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, "event(s) in total") {
+	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event\(s\) in total`) {
 		t.Fatalf("a count read by id does not say \"in total\":\n%s", b)
 	}
 }

@@ -233,10 +233,13 @@ reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
   lane off for days, or a lowered level floor admitting issues it never
   knew, posts no old regression as news. The floor spares a transition
   the armed lane watched in the list from within `max_catchup_hours` of
-  it (undated there — a failing lookup, the check cap — or back after a
-  closure): dated however late, it posts. One dated after the arming that
-  the floor still makes history is named in the coverage note. The level
-  floor does not apply to an issue the lane already knows.
+  it with its date still unknown (undated, or a re-check deferred or
+  failed — a closure the lane never read included); the watch ends when
+  the issue leaves a list read whole. Dated however late, it posts, and
+  every transition alert says when it happened (`dated …`). One dated
+  after the arming that the floor still makes history is named in the
+  coverage note — carried until a note says it. The level floor does not
+  apply to an issue the lane already knows.
 - **tracked** — the alerted (or pending) issues by id — open, being
   reprocessed, or archived (Sentry reopens an archived issue as ongoing)
   — their current status and last event. Over `max_tracked` they take
@@ -252,10 +255,11 @@ of the `Link` header is followed, never its URL; a short page with
 `Date` (the runner's clock, read before the first request, only when
 the header is missing — the walk says `clock: local`). `deadline_secs`
 is a wall clock over each exchange: a server or proxy trickling bytes
-into the headers, a chunk-size line or the body cannot outlast it. The
-cursor advances
-whenever the new-issue list was read whole (an activity lookup failing
-holds nothing). A cursor older than `max_catchup_hours` opens at that
+into the headers, a chunk-size line or the body cannot outlast it, nor
+can one address of several the host resolves to hanging on connect (the
+walk stops; it does not move on to the next address). The cursor
+advances whenever the new-issue list was read whole (an activity lookup
+failing holds nothing). A cursor older than `max_catchup_hours` opens at that
 floor and the gap is declared — only a cursor itself below the floor:
 the overlap below it was read already (`overlap_minutes` must stay below
 `max_catchup_hours` × 60).
@@ -305,7 +309,10 @@ count over its whole life — the detail says which), the users, the
 culprit, and ONE clickable link built
 from the configured base URL, org and the digit id — never the API's
 `permalink`, rendered only when it is exactly that shape. Severity comes
-from the level (`severity` map), capped by `max_severity`.
+from the level (`severity` map), capped by `max_severity` — a lowered cap
+applies to the severities the lane already recorded too. A severity never
+goes down on its own otherwise, and never rises while the issue is closed
+(the reopening's sighting says the escalation).
 
 **Redaction.** Titles, culprits and metadata go to the scratch handoff
 only; `leak_scan` scrubs every field (bounded first, cut to display size
@@ -331,9 +338,12 @@ another). Issue text anyone can write never pings nor links: every value
 a message quotes — title, culprit, any lane's field, a sample — renders
 as inline code, where Mattermost parses neither mentions nor links —
 flattened to one line first, U+2424 included (Mattermost's markdown
-reads that symbol as a line break, which would end the span); the
-label's own words render as written (a backtick or a backslash in them
-escaped), and a value is never scanned for placeholders. Escaping alone
+reads that symbol as a line break, which would end the span), control
+characters dropped (Mattermost cannot store a NUL); the label's own words
+render as written — every markdown character in them escaped, so no
+emphasis, link, tag or autolink can wrap a value — a value is never
+scanned for placeholders, and a message over `max_message_chars` is cut
+on a line boundary. Escaping alone
 is not enough: the autolinker takes a host after a hyphen, a word
 character or a parenthesis, whatever precedes it.
 

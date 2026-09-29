@@ -1951,7 +1951,7 @@ func TestProdWatch_NotifyRendersAnyFieldName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, stderr)
 	}
-	if text := fmt.Sprint(out["messages"]); !strings.Contains(text, "`2` line(s) since") {
+	if text := fmt.Sprint(out["messages"]); !strings.Contains(text, "`2` line\\(s\\) since") {
 		t.Fatalf("the detail renders: %s", text)
 	}
 }

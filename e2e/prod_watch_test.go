@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -1565,6 +1566,43 @@ func pwOutsideCode(line string) string {
 		}
 	}
 	return out.String()
+}
+
+// pwUnescapedActives lists what, outside inline code, Mattermost would still
+// read as markdown or a link: an unescaped emphasis, link, tag or table
+// opener, a live URL scheme, a bare www.
+func pwUnescapedActives(line string) []string {
+	var found []string
+	var plain strings.Builder
+	rs := []rune(line)
+	for i := 0; i < len(rs); i++ {
+		switch c := rs[i]; {
+		case c == '\\' && i+1 < len(rs):
+			plain.WriteRune(' ')
+			i++
+		case c == '`':
+			j := strings.IndexRune(string(rs[i+1:]), '`')
+			if j < 0 {
+				plain.WriteString(string(rs[i:]))
+				i = len(rs)
+				continue
+			}
+			i += len([]rune(string(rs[i+1:])[:j])) + 1
+			plain.WriteRune(' ')
+		default:
+			if strings.ContainsRune("*_[]()<>~|!#", c) {
+				found = append(found, string(c))
+			}
+			plain.WriteRune(c)
+		}
+	}
+	low := strings.ToLower(plain.String())
+	for _, live := range []string{"http://", "https://", "www.", "mailto:"} {
+		if strings.Contains(low, live) {
+			found = append(found, live)
+		}
+	}
+	return found
 }
 
 // pwQuietFPs lists the fingerprints decide posted a "not observed any more"
@@ -3279,6 +3317,57 @@ func TestProdWatch_NotifyRendersUntrustedTextInert(t *testing.T) {
 	}
 }
 
+// TestProdWatch_NotifyCutsAMessageOnALineBoundary: a message over
+// max_message_chars is cut on a line boundary — a cut inside a value's code
+// span would leave it open and the rest rendered as markdown.
+func TestProdWatch_NotifyCutsAMessageOnALineBoundary(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	alerts := []map[string]any{{"fingerprint": "loki:t", "kind": "loki", "severity": "medium", "state": "new", "title_key": "loki_template",
+		"title_arg": "ERROR x", "detail_key": "loki_detail", "fields": map[string]any{"count": 2, "first": "2026-09-29T10:00",
+			"streams": "api @channel see www.evil-sso.com/login " + strings.Repeat("padding ", 20)},
+		"evidence": map[string]any{}, "count": 2, "first_seen": "2026-09-29T10:00:00+00:00"}}
+	render := func(max int) string {
+		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
+			"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
+			"labels": map[string]any{"loki_detail": "{count} line(s) since {first}, containers: {streams}"}, "app": map[string]any{"name": "demo"},
+			"release": "", "release_known": false, "dry_run": true, "max_message_chars": max}, nil, map[string]string{"webhooks": h.webhooksFile}))
+		if err != nil {
+			t.Fatalf("notify: %v %s", err, stderr)
+		}
+		msgs := out["messages"].([]any)
+		if len(msgs) != 1 {
+			t.Fatalf("setup: want one message, got %v", msgs)
+		}
+		return msgs[0].(map[string]any)["text"].(string)
+	}
+	// The cuts land inside the value's code span wherever the layout puts it:
+	// just past "@channel", mid-span, one character before the span closes
+	// (max_message_chars counts code points, as Python does).
+	full := render(14000)
+	at := strings.Index(full, "@channel")
+	if at < 0 || strings.LastIndexByte(full[:at], '`') < 0 {
+		t.Fatalf("setup: the value is not in a code span:\n%s", full)
+	}
+	end := strings.IndexByte(full[at:], '`')
+	if end < 0 {
+		t.Fatalf("setup: the value's code span does not close:\n%s", full)
+	}
+	from, to := utf8.RuneCountInString(full[:at]), utf8.RuneCountInString(full[:at+end])
+	for _, max := range []int{from + len("@channel"), (from + to) / 2, to - 1} {
+		text := render(max)
+		if utf8.RuneCountInString(text) > max {
+			t.Fatalf("max %d: the message was not cut (%d characters)", max, utf8.RuneCountInString(text))
+		}
+		for _, line := range strings.Split(text, "\n") {
+			if o := pwOutsideCode(line); strings.Contains(o, "@channel") || strings.Contains(o, "evil-sso") {
+				t.Fatalf("max %d: the cut left a code span open: %q", max, text)
+			}
+		}
+	}
+}
+
 // TestProdWatch_NotifyRendersTheReleaseInert: the release comes from the
 // app's health endpoint — text the bot does not own — and renders as inline
 // code like every other value: no mention, no link; the meta line's own
@@ -3299,6 +3388,11 @@ func TestProdWatch_NotifyRendersTheReleaseInert(t *testing.T) {
 		t.Fatalf("notify: %v %s", err, stderr)
 	}
 	text := fmt.Sprint(out["messages"])
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "CRITICAL") && strings.HasPrefix(strings.TrimSpace(line), "_") {
+			t.Fatalf("the meta line is wrapped in emphasis — a value's underscore can close it: %s", line)
+		}
+	}
 	if !strings.Contains(text, "`v1 @channel www.evil-sso.com/login`") {
 		t.Fatalf("the release did not render inside inline code: %s", text)
 	}
@@ -3557,7 +3651,8 @@ func TestProdWatch_TrickledEndpointsFailAtTheirTimeout(t *testing.T) {
 		input func(plan map[string]any, h *pwHarness) map[string]any
 	}{
 		{"the health probe", "probe_http", func(plan map[string]any, h *pwHarness) map[string]any {
-			return map[string]any{"probes": plan["probes"], "timeout_secs": 2, "allow_private": true}
+			// The lane default is 30: the probe's own timeout_secs (2) must bound it.
+			return map[string]any{"probes": plan["probes"], "timeout_secs": 30, "allow_private": true}
 		}},
 		{"the release endpoint", "resolve_release", func(plan map[string]any, h *pwHarness) map[string]any {
 			return map[string]any{"release": plan["release"], "timeout_secs": 2, "allow_private": true}
@@ -3592,7 +3687,7 @@ func TestProdWatch_TrickledEndpointsFailAtTheirTimeout(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v %s", c.node, err, stderr)
 			}
-			if took > 15*time.Second || !strings.Contains(fmt.Sprint(out), "TimeoutError") {
+			if took > 15*time.Second || !strings.Contains(fmt.Sprint(out), "ExchangeTimeout") {
 				t.Fatalf("%s held %v on a trickled answer (timeout 2 s), or did not name the timeout: %v", c.name, took, out)
 			}
 		})
