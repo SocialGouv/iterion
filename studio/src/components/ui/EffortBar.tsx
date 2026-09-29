@@ -92,14 +92,17 @@ export function EffortBar({ level, live, muted, supported, className, title }: P
   const tone = TONE[level];
   // Normalise to the model's supported range when known; "high" on a
   // 4-level model fills 4/4. Else use the global low→max scale.
-  const supportedIdx = supported ? supported.indexOf(level) : -1;
-  const total = supported && supportedIdx >= 0 ? supported.length : 5;
-  // none draws an empty bar on every scale — including a normalised one,
-  // where index 0 + 1 would otherwise paint a cell on exactly the backends
-  // (pi, codex fallback) whose supported list carries the level.
-  const filled = level === "none" ? 0 : supportedIdx >= 0 ? supportedIdx + 1 : FILLED[level];
+  // none is the absence of reasoning, not a rung: it never occupies a cell
+  // of the normalised scale, so a model's lowest real level fills exactly
+  // one cell whether or not the model also carries none (pi, GPT-6
+  // Sol/Luna) — and none itself draws that same scale empty.
+  const scale = supported ? supported.filter((s) => s !== "none") : [];
+  const scaleIdx = scale.indexOf(level);
+  const normalised = scaleIdx >= 0 || (level === "none" && scale.length > 0 && !!supported?.includes("none"));
+  const total = normalised ? scale.length : 5;
+  const filled = level === "none" ? 0 : scaleIdx >= 0 ? scaleIdx + 1 : FILLED[level];
   const cells = Array.from({ length: total }, (_, i) => i);
-  const isModelMax = supportedIdx >= 0 && supportedIdx === total - 1;
+  const isModelMax = scaleIdx >= 0 && scaleIdx === total - 1;
   const defaultTitle = muted
     ? `reasoning_effort: ${level} (provider default)`
     : isModelMax
