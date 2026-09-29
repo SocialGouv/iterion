@@ -37,6 +37,8 @@ type productDocsState struct {
 	alignedBy    int    // campaign reports docs_aligned=true on/after this pass
 	hintCount    int    // advisory hint count reported every pass (never a gate)
 	oraclePath   string // the golden-master net catalog_ingest resolved; "" = none
+	routes       []any  // the declared routes route_table hands over
+	routesSource string // where route_table read them: committed, probe, or ""
 	inventory    []any
 	pass         int
 	failLogsSeen []string
@@ -62,8 +64,23 @@ func stubProductDocs(exec *scenarioExecutor, st *productDocsState) {
 			"inventory": st.inventory, "sources_stamp": "demo-src@deadbeef",
 			"repo_count": 1, "ok_count": 1, "degraded_count": 0, "redacted_count": 2,
 			"previous_stamp": "", "delta_unavailable": false,
-			"oracle_path": st.oraclePath,
-			"log":         "cloned 1 repo", "_tokens": 1,
+			"oracle_path": st.oraclePath, "base_sha": "cafe0123",
+			"log": "cloned 1 repo", "_tokens": 1,
+		}, nil
+	})
+	// route_table resolves the declared routes ONCE, at the run base; the
+	// baseline hands over an empty table, the no-net shape.
+	exec.on("route_table", func(in map[string]any) (map[string]any, error) {
+		st.gateInputs["route_table"] = in
+		routes := st.routes
+		if routes == nil {
+			routes = []any{}
+		}
+		return map[string]any{
+			"routes": routes, "source": st.routesSource, "note": "",
+			"degraded": st.oraclePath != "" && len(routes) == 0, "dropped": 0,
+			"log": "ROUTE TABLE", "_tokens": 1,
+			"net_digest": map[string]any{"corpus.json": "c0ffee"},
 		}, nil
 	})
 	exec.on("scan_hints", func(_ map[string]any) (map[string]any, error) {
@@ -109,6 +126,7 @@ func stubProductDocs(exec *scenarioExecutor, st *productDocsState) {
 	// gate's fail_log reads, so BOTH must answer or the gate concatenates
 	// a nil.
 	exec.on("diagram", func(in map[string]any) (map[string]any, error) {
+		st.gateInputs["diagram"] = in
 		return map[string]any{
 			"diagrams_written": []any{"documentation_produits/demo/diagrams/README.md"},
 			"pages":            1, "summary": "context map drawn", "_tokens": 5,
@@ -321,6 +339,61 @@ func TestProductDocs_CoverageViolationBlocksConvergence(t *testing.T) {
 	}
 	if render(in["oracle_path"]) != "/ws/.golden-master" {
 		t.Errorf("coverage_check oracle_path = %v, want the net catalog_ingest resolved", in["oracle_path"])
+	}
+}
+
+// TestProductDocs_RouteTableIsResolvedOnceForEveryReader: the declared routes
+// are resolved ONCE, at the run base catalog_ingest recorded, before the map
+// is drawn — and that one frozen answer is what the map step, the campaign and
+// both route gates read on every pass. A table re-resolved inside the loop
+// would be one the campaign's own writes could move.
+func TestProductDocs_RouteTableIsResolvedOnceForEveryReader(t *testing.T) {
+	t.Parallel()
+	exec := newScenarioExecutor()
+	st := &productDocsState{
+		alignedBy: 2, oraclePath: "/ws/.golden-master",
+		routes: []any{"/", "/dashboard/items"}, routesSource: "probe",
+	}
+	stubProductDocs(exec, st)
+
+	runProductDocs(t, exec, "run-pd-routes", nil)
+
+	if got := exec.callCount("campaign"); got != 2 {
+		t.Fatalf("campaign called %d times, want 2 — the scenario needs a second pass to show the table is not re-resolved", got)
+	}
+	if got := exec.callCount("route_table"); got != 1 {
+		t.Errorf("route_table called %d times, want 1 — the table is frozen at the run base, never re-read inside the loop", got)
+	}
+	first := func(id string) int {
+		for i, c := range exec.calls {
+			if c == id {
+				return i
+			}
+		}
+		return -1
+	}
+	if rt, d := first("route_table"), first("diagram"); rt < 0 || d < 0 || rt > d {
+		t.Errorf("route_table at %d, diagram at %d — the map is drawn against the resolved table, so the table comes first", rt, d)
+	}
+	in := st.gateInputs["route_table"]
+	if render(in["oracle_path"]) != "/ws/.golden-master" || render(in["base_sha"]) != "cafe0123" {
+		t.Errorf("route_table input = %v, want the net and the run base catalog_ingest resolved", in)
+	}
+	for _, reader := range []string{"diagram", "diagram_lint", "coverage_check"} {
+		got := st.gateInputs[reader]
+		if !strings.Contains(render(got["routes"]), "/dashboard/items") || render(got["routes_source"]) != "probe" {
+			t.Errorf("%s routes = %v (source %v), want the table route_table resolved", reader, got["routes"], got["routes_source"])
+		}
+	}
+	// The gates judge the net as route_table fingerprinted it when the run
+	// began, so the fingerprint must reach both of them.
+	for _, gate := range []string{"diagram_lint", "coverage_check"} {
+		if !strings.Contains(render(st.gateInputs[gate]["net_digest"]), "c0ffee") {
+			t.Errorf("%s net_digest = %v, want route_table's fingerprint of the net", gate, st.gateInputs[gate]["net_digest"])
+		}
+	}
+	if !strings.Contains(render(st.campaignIn["routes"]), "/dashboard/items") {
+		t.Errorf("campaign routes = %v, want the table route_table resolved — the agent is told which screens it must document", st.campaignIn["routes"])
 	}
 }
 

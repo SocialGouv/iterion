@@ -66,8 +66,8 @@ authorise the bot to invent. See
 ## Shape
 
 ```
-catalog_ingest ─▶ diagram ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint
-               ─▶ diagram_lint ─▶ coverage_check ─▶ gate
+catalog_ingest ─▶ route_table ─▶ diagram ─▶ scan_hints ─▶ campaign ─▶ scope_check
+               ─▶ page_lint ─▶ diagram_lint ─▶ coverage_check ─▶ gate
 gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr
                                           ─▶ surface_pr_link ─▶ done
 gate ─────────────────▶ scan_hints          (continuation_loop, max_passes)
@@ -79,7 +79,14 @@ gate ─────────────────▶ scan_hints          
   could not clone is present as a `degraded` entry **with a reason**,
   never absent. A missing catalog, an unknown product or an entry without
   `docs.product_dir` fails the run **loudly**: documenting the wrong
-  directory is worse than not running.
+  directory is worse than not running. The clones must live out of
+  tree: a `scratch_dir` that resolves inside the docs workspace is
+  refused, and no link in the scratch — the scratch itself, `sources/`,
+  the askpass helper, a clone or its `.git` — is ever followed.
+- **`route_table`** (deterministic, once, outside the loop) — the routes
+  the application declares, resolved from the golden-master net **at
+  the run base** and handed as data to the map step, the campaign and
+  both route gates. See *The route table* below.
 - **`diagram`** (one agent, once, before the first pass) — draws the
   reader-facing **map** of the product: Mermaid pages under
   `<product_dir>/diagrams/`, screens and journeys a reader recognises,
@@ -251,17 +258,90 @@ What the gate deliberately does not assume:
   inside the net directory; an absolute path or a `..` escape is a
   refusal, like `oracle_dir`.
 
-**The route table is a degradation, and a loud one.** golden-master
-states its routes through `config.json`'s `routes_probe` — a command it
-replays at every gate — and commits **no artifact** for them; its
-`route-coverage.json` carries only the justified exclusions. So
-`coverage_routes_file` usually names a file that is not there, the path
-check falls back to the corpus alone, and the gate says so in its log
-and in `routes_degraded`. Degraded still **refuses**: a cited path that
-matches no corpus entry path is named a `PHANTOM_DOC` with the
-degradation attached. Lifting it takes one artifact on the
-golden-master side — the `routes_probe` stdout committed as
-`<oracle_dir>/routes.txt`.
+**The route table is the net's own statement, resolved once, at a
+commit** ([ADR-104](../../docs/adr/104-product-docs-route-table-resolved-once-at-the-run-base.md)). golden-master states its routes through `config.json`'s
+`routes_probe` — a command it replays at every gate, reading its output
+and its errors merged — and commits no artifact for them; its
+`route-coverage.json` carries only the justified exclusions.
+`route_table` resolves them ONCE per run, before any page is written:
+
+- **A route file wins, read at the run base.** `<oracle_dir>/<coverage_routes_file>`
+  is read from the run base commit, never from the working tree, and
+  only as a regular committed file: a link or an LFS pointer is named
+  and degrades. A file the tree holds and no commit does is named and
+  set aside: the agent these gates judge cannot write the table it is
+  judged by. A table that declares nothing is refused.
+- **Otherwise the probe is replayed, at the run base, in a throwaway
+  clone** with no remote and no git hook: whatever the probe writes,
+  files or git state, lands there, never in the repository the scope
+  gate judges, and none of that repository's local state (sparse
+  checkout, config) shapes what it reads. The probe runs under a
+  guardian that kills its process group the moment the node is gone,
+  and the node kills the group when the probe returns or outlives
+  `coverage_routes_probe_timeout` (golden-master's 120 s). Its output is
+  read up to a 1 MiB bound and decoded tolerantly; a line naming a file
+  inside the checkout is build chatter, counted and set aside.
+- **Only the workspace's own net is replayed** — `<workspace>/<oracle_dir>`
+  in the workspace's own repository. Any other net, a source clone's
+  wherever it lives, is someone else's code: `catalog_ingest` has just
+  cloned it and no agent has run, so its route file is read as cloned —
+  a regular file, reached without following a link. Its command is data
+  and is never executed, and the table says so.
+- **What reaches the gates is bounded.** A line that is not a route
+  (whitespace, longer than 512 characters) is set aside and counted:
+  the table reaches the agents' prompts. A table past 100 000 bytes of
+  JSON as the engine renders it (compact, `<` `>` `&` escaped) — what a
+  gate can receive through its environment — degrades, named, before the
+  map and the first pass are paid. Git reads ignore replace refs and
+  grafts, here and in `scope_check`.
+
+**The net as the run found it.** When it starts — before any agent
+runs and before anything can degrade the table — `route_table` also
+fingerprints the net files the gates read (`corpus.json`,
+`feature-coverage.json`, `verify-oracle.sh`, `REPORT.md`), read exactly
+as the gates read them. Both gates refuse a file that is no longer the
+one fingerprinted: a net that changes during the run cannot certify it.
+A change to the workspace's own net is a restore to make — it lies
+outside the writeable set, like any file `scope_check` refuses — and
+nothing else is judged until it is made; a change to a source clone's
+net stops the run before the loop. (A commit fixes the route
+table; the fingerprint is of what the gates read, so an eol attribute,
+an LFS smudge or an untracked net is judged, not refused.)
+
+The frozen table is the run base as it is: a route a change adds is
+demanded from the next run on, and nothing the campaign writes during
+this run can move it. Without a table (no file, no probe, a probe that
+fails, outlives its bound or prints nothing) the path checks fall back
+to the corpus alone, **with the cause**, in their logs and in
+`routes_degraded`. Degraded still **refuses**: a cited path that matches
+no corpus entry path is named a `PHANTOM_DOC` with the degradation
+attached.
+
+**A route is documented by its screen.** A block documents a route when
+it cites a corpus entry that exercises it (the entry carries the path it
+captured, query aside) or the route itself. Each citation is credited
+to the **most specific** declared route it fits: `/items/new` documents
+the create screen, never the detail `/items/{id}` its path also fits.
+**A heading documents nothing**, and a block owes prose in shares of
+`coverage_min_prose` characters and words: one per feature it pairs
+(their entries' routes ride that prose), and half of one per route it
+credits otherwise — cited by its path, or reached through an entry cited
+without its feature. One rule for both channels: the same prose
+documents the same routes whichever citation carries them, and two
+spellings of one route shape (`/x/{id}`, `/x/{itemId}`) are one screen.
+**One prose credits once**: a sentence copied under several routes —
+numbers aside — documents none of them. A refusal names the block it
+measured, what it wrote and what it owed. A catch-all route proves
+nothing and is never demanded.
+
+**A value is not a route.** A concrete path that fits a declared route
+only through a placeholder names a value the table cannot vouch for: it
+is grounded when the net captured it, otherwise it is a phantom — on a
+page (`PHANTOM_DOC`) and on the map (`PHANTOM_MAP`). A page cites such a
+route as declared (`/items/{id}`). The map lint grounds a mapped path on
+the table or, where the table misses it, on a path the net captured. In
+the relayed log, route refusals come after every other cause, so a long
+run of them never pushes a feature gap out of sight.
 
 **The escape hatch has a ceiling, and the refusal knows it.**
 `coverage_max_anchorless` (default **2**, what the bundle's own
@@ -288,7 +368,7 @@ it must not be.
 (`net_unproven`) the way it says `routes_degraded` — and even when they
 do, their presence is a trace, not a verdict: neither file is stamped
 with the commit it judged. The ask on the golden-master side is one
-artifact carrying that stamp, alongside the `routes_probe` output.
+artifact carrying that stamp.
 
 What it does **not** judge is the prose. That stays with its reader.
 
@@ -386,12 +466,13 @@ computed is **never** reported as an empty one.
 | `coverage_exclusions_heading` | `exclusions` | Title a heading must carry, WHOLE and anchored, to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive). Empty while the net declares a hole stops the run: no page could ever name one |
 | `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token, and only when a net is present; empty disables the escape hatch |
 | `coverage_max_anchorless` | `2` | Ceiling on the chapters that may declare they restitute nothing. The anchor refusal offers the marker only while headroom remains. The exclusions chapter is anchored by its role and never counts |
-| `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
+| `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar: read at the run base commit for the workspace's own net, as cloned for a source clone's. A committed file wins; absent ⇒ `route_table` replays the net's committed `routes_probe` in a throwaway clone of the run base (the workspace's own net only); no table either way ⇒ the path checks degrade to the corpus and say why |
+| `coverage_routes_probe_timeout` | `120` | Seconds the replayed `routes_probe` may run (golden-master's own bound), a whole number in 1..2147483. Past it the path checks degrade, naming the timeout; any other value is refused |
 | `coverage_citation_open` / `coverage_citation_close` | `[[ref:` / `]]` | The citation syntax. A reference is what the page says is one; a code span is prose. Both are declared so a repo already using `[[…]]` can pick another spelling; either one empty is a refusal that stops the run |
 | `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page documents a feature or names an exclusion |
 | `coverage_min_prose` | `60` | Minimum prose characters, outside the citations and the markup, in the block (paragraph, list item, table row) naming an exclusion or documenting a feature — for EACH feature that block documents |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
-| `scratch_dir` | `${PROJECT_SCRATCH_DIR}/product-docs` | Out-of-tree scratch: the source clones + the promises ledger |
+| `scratch_dir` | `${PROJECT_SCRATCH_DIR}/product-docs` | Out-of-tree scratch: the source clones + the promises ledger. Refused if it resolves inside the docs workspace |
 | `max_passes` | `4` | Continuation-loop cap: the loop back to `scan_hints` is taken at most this many times, so a run makes up to `max_passes + 1` campaign passes |
 | `open_mr` | `false` | Push the page series + open ONE PR at the end |
 | `mr_draft` | `true` | Open that PR as a **draft** — human validation happens on the forge |
