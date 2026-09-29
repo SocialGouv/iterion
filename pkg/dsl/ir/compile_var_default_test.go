@@ -244,9 +244,9 @@ func TestLookupDependentFormsAreUnverifiable(t *testing.T) {
 // If the two readings drifted, C182 would judge a value no run uses.
 func TestConstrainedVarDefaultExpansionAgreesWithTheRun(t *testing.T) {
 	const def = "${SOMEVAR:-a}"
-	compileReading, err := resolveVarTextAsWritten(def, VarString)
+	compileReading, err := compileTimeDefaultReading(def)
 	if err != nil {
-		t.Fatalf("resolveVarTextAsWritten: %v", err)
+		t.Fatalf("compileTimeDefaultReading: %v", err)
 	}
 	runReading, err := ResolveVarText(def, VarString, func(string) string { return "" })
 	if err != nil {
