@@ -42,23 +42,22 @@ const engineVarSentinel = "\x00iterion-engine-var\x00"
 // gate iterates the operator's inputs only, so a default excused here is
 // checked on no path at all while its declaration reads as constrained.
 //
-// A default the compiler can read WHOLE is judged with the literal
-// path's verdicts (C126/C161, errors): the value it will start with is
-// known, and it violates. "Whole" covers two shapes:
+// A default the compiler can read WHOLE — the text as written, when it
+// carries no reference the expander acts on (a `$` alone is not a
+// reference) — is judged with the literal path's verdicts (C126/C161,
+// errors): the value it will start with is known, and it violates.
 //
-//   - the text as written, when it carries no reference the expander
-//     acts on (a `$` alone is not a reference);
-//   - a default whose references are all forms the expander does NOT
-//     support (`${VAR:+alt}`, `${VAR-default}` — no `:-`, so the segment
-//     is looked up under a name no launch can define and reads as the
-//     empty string whatever the environment holds): the expansion is
-//     environment-independent, measured by expanding under two lookups
-//     that answer differently and getting the same text back.
-//
-// Every other default carrying an env reference is expanded through the
-// compile-time reading (the `${VAR:-default}` forms resolve, the
-// engine-supplied names answer a sentinel, anything else stays as
-// written), then:
+// Every default carrying a reference is expanded through the compile-time
+// reading (the `${VAR:-default}` forms resolve, the engine-supplied names
+// answer a sentinel, anything else stays as written) — and only that
+// reading: no reference is environment-independent. Every rewrite the
+// run's expander makes consults its lookup, and that lookup is the
+// process environment with no name filter (varExpandFn ends in
+// os.Getenv), so `${VAR:+alt}` and `${VAR-default}` — the expander has no
+// `:+` / `-` operators — are lookups of a variable literally named
+// `VAR:+alt`, which a launch can set, and a computed name (`${${SEL}}`,
+// `${PRE${X}}`) resolves inside-out to whatever the environment makes
+// of it. Then:
 //
 //   - a live reference REMAINS (an unresolvable name, or an
 //     engine-supplied one) → C181, a warning: the constraint is
@@ -73,7 +72,7 @@ const engineVarSentinel = "\x00iterion-engine-var\x00"
 //     that runs clean under the operator's env.
 func (c *compiler) checkConstrainedVarDefault(f *ast.VarField, v *Var, s string) {
 	if !carriesLiveReference(s) {
-		c.checkLiteralVarDefault(f, v, s, false)
+		c.checkLiteralVarDefault(f, v, s)
 		return
 	}
 	expanded, err := resolveVarText(s, VarString, varExpander(VarString, compileTimeVarLookup, true))
@@ -83,14 +82,6 @@ func (c *compiler) checkConstrainedVarDefault(f *ast.VarField, v *Var, s string)
 		// every reference carried a `:-default`. The launch environment
 		// still decides: warn (C182), never the literal path's error.
 		c.checkExpandedVarDefault(f, v, s, es)
-		return
-	}
-	if det, deterministic := deterministicVarReading(s); deterministic {
-		// `${VAR:+alt}` / `${VAR-default}` and kin: the expander has no
-		// `:+` / `-` operators, so the run reads these as the empty
-		// string WHATEVER the environment holds — as judgeable as a
-		// literal, and judged with the literal path's verdicts.
-		c.checkLiteralVarDefault(f, v, det, true)
 		return
 	}
 	c.warnfAtSpan(DiagVarDefaultUnverifiable, f.Span,
@@ -107,51 +98,6 @@ func compileTimeVarLookup(key string) string {
 		return engineVarSentinel
 	}
 	return ""
-}
-
-// deterministicVarReading reports the expansion of s when it does not
-// depend on ANY lookup: the same text under a lookup that answers ""
-// for everything it does not know and one that answers a sentinel for
-// every name a launch could actually SET (letters, digits, `_` — a
-// `:`/`+`/`-` in the segment means it is an unsupported-operator form,
-// which names no variable a launch can define). That is the signature
-// of `${VAR:+alt}` / `${VAR-default}`: the run's expander reads those
-// as the empty string by construction. An engine-supplied name anywhere
-// in the reading disqualifies it: the run answers those itself.
-func deterministicVarReading(s string) (string, bool) {
-	sentinelLookup := func(key string) string {
-		if v := compileTimeVarLookup(key); v != "" {
-			return v
-		}
-		if settableEnvName(key) {
-			return liveRefSentinel
-		}
-		return ""
-	}
-	det, _ := resolveVarText(s, VarString, varExpander(VarString, compileTimeVarLookup, false))
-	detS, _ := resolveVarText(s, VarString, varExpander(VarString, sentinelLookup, false))
-	ds, ok1 := det.(string)
-	dss, ok2 := detS.(string)
-	if !ok1 || !ok2 || ds != dss || strings.Contains(ds, engineVarSentinel) {
-		return "", false
-	}
-	return ds, true
-}
-
-// settableEnvName reports whether key is a name a launch environment can
-// actually carry — letters, digits and `_` only. A segment with anything
-// else (`X:+a`, `X-default`) is an unsupported-operator form: it names no
-// variable, and the expander reads it as the empty string on every path.
-func settableEnvName(key string) bool {
-	if key == "" {
-		return false
-	}
-	for i := 0; i < len(key); i++ {
-		if !isAlnum(key[i]) && key[i] != '_' {
-			return false
-		}
-	}
-	return true
 }
 
 // checkExpandedVarDefault is the C182 arm: the default's references all
@@ -179,21 +125,12 @@ func (c *compiler) checkExpandedVarDefault(f *ast.VarField, v *Var, written, rea
 }
 
 // checkLiteralVarDefault is the literal arm: C126/C161, errors, on a
-// value the compiler reads whole — the text exactly as written, or (via
-// expanded) the deterministic reading of a default whose only references
-// are forms the expander does not support (`${VAR:+alt}`,
-// `${VAR-default}`), which the run reads as the empty string whatever
-// the environment holds.
-func (c *compiler) checkLiteralVarDefault(f *ast.VarField, v *Var, s string, expanded bool) {
-	name := func() string {
-		if expanded {
-			return fmt.Sprintf("var %q default, which always expands to %q (the expander has no `:+`/`-` operators — those forms read as the empty string whatever the launch environment holds),", f.Name, s)
-		}
-		return fmt.Sprintf("var %q default %q", f.Name, s)
-	}
+// default the compiler reads whole — the text exactly as written, which
+// carries no reference the expander acts on.
+func (c *compiler) checkLiteralVarDefault(f *ast.VarField, v *Var, s string) {
 	if len(v.EnumValues) > 0 && !slices.Contains(v.EnumValues, s) {
 		c.errorfAtSpan(DiagVarDefaultNotInEnum, f.Span,
-			"%s is not one of the enum values (%s)", name(), quoteList(v.EnumValues))
+			"var %q default %q is not one of the enum values (%s)", f.Name, s, quoteList(v.EnumValues))
 	}
 	if v.Matching == "" {
 		return
@@ -209,7 +146,7 @@ func (c *compiler) checkLiteralVarDefault(f *ast.VarField, v *Var, s string, exp
 			"var %q: declared pattern %q does not compile: %v", f.Name, v.Matching, err)
 	case !matched:
 		c.errorfAtSpan(DiagVarDefaultNotMatching, f.Span,
-			"%s does not match its own pattern %q", name(), v.Matching)
+			"var %q default %q does not match its own pattern %q", f.Name, s, v.Matching)
 	}
 }
 

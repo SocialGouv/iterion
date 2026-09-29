@@ -93,10 +93,11 @@ compile-time reading may) — the constraint is then checked on no
 path for that default: named, never silently excused — and [C182](references/diagnostics.md)
 when the compile-time reading violates (it is still only the value a launch
 with nothing set starts with, and the operator's env is an explicit choice).
-Two shapes stay on the literal path: text whose `$` is no reference at all,
-and the forms the expander does not support (`${VAR:+alt}`, `${VAR-default}`)
-— the run reads those as the empty string whatever the environment holds,
-so they are as judgeable as a literal and earn the literal verdicts.
+Only text whose `$` is no reference at all stays on the literal path. `:-` is
+the only operator the expander has, so `${VAR:+alt}` and `${VAR-default}`
+look up a variable literally named `VAR:+alt` / `VAR-default` (the run's
+lookup filters no name), and a computed name (`${${SEL}}`, `${PRE${X}}`)
+resolves to whatever the launch environment makes of it: both are C181.
 An operator-supplied value
 (`--var`, an HTTP payload, a dispatcher's `bot_args`, a preset overlay) is
 refused **at launch**, before a worktree or a sandbox is created, naming the
