@@ -485,8 +485,8 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 	// line — no @SpringBootApplication class to carry them: the Kotlin
 	// DSL form and the pre-plugins-block idiom. A regex that misses
 	// either loses a deployable and the count below reddens.
-	write("app2/build.gradle.kts", "plugins { id(\"org.springframework.boot\") version \"3.3.4\" }\n")
-	write("app3/build.gradle", "apply plugin: 'org.springframework.boot'\n")
+	write("app2/build.gradle.kts", "plugins { id(\"org.springframework.boot\") version \"3.3.4\" }\njvmToolchain(17)\n")
+	write("app3/build.gradle", "apply plugin: 'org.springframework.boot'\nsourceCompatibility = JavaVersion.VERSION_17\n")
 	// A build output COMMITTED to the tree — legacy repositories carry
 	// them, and only the extractor's output exclusion keeps them out of
 	// the declared surface. Untracked, git objects would hide it and the
@@ -565,6 +565,21 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 	}
 	if got := strings.Count(string(runs), `"boot": true`); got != 4 {
 		t.Errorf("java-runnables.json publishes %d deployables, want 4 (root and app1..app3) — a monorepo collapsed into one name:\n%s", got, runs)
+	}
+	// The two idioms a legacy tree actually writes its JVM version in:
+	// the Kotlin-DSL shorthand and JavaVersion.VERSION_*. Missing them
+	// is the DEGRADED symptom this extractor exists to fix.
+	vers, err := os.ReadFile(filepath.Join(scratch, "java-versions.json"))
+	if err != nil {
+		t.Fatalf("java-versions.json: %v", err)
+	}
+	for _, want := range []string{
+		`{"component": "java.toolchain", "version": "17", "evidence": "app2/build.gradle.kts"}`,
+		`{"component": "java.sourceCompatibility", "version": "17", "evidence": "app3/build.gradle"}`,
+	} {
+		if !strings.Contains(string(vers), want) {
+			t.Errorf("java-versions.json misses the declared version %s — the idiom is not read:\n%s", want, vers)
+		}
 	}
 }
 

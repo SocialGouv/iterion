@@ -179,6 +179,11 @@ GRADLE_JAVA = [
     ("java.toolchain", re.compile(r"JavaLanguageVersion\.of\(\s*([0-9]+)\s*\)")),
     ("java.release", re.compile(r"options\.release\.(?:set\()?\s*([0-9]+)")),
     ("java.release", re.compile(r"options\.release\s*=\s*(['\"]?)([0-9]+)\1")),
+    # The legacy Groovy dominant form and the Kotlin-DSL shorthand: the
+    # exact trees this extractor exists for declare their JVM in THESE,
+    # and missing them is the DEGRADED symptom this skill exists to fix.
+    ("java.sourceCompatibility", re.compile(r"sourceCompatibility\s*=\s*JavaVersion\.VERSION_([0-9_]+)")),
+    ("java.toolchain", re.compile(r"jvmToolchain\(\s*([0-9]+)\s*\)")),
 ]
 GRADLE_BOOT = re.compile(r"id\s*\(?[\s]*['\"]org\.springframework\.boot['\"]\)?[\s]*(?:version[\s]*)?['\"]([^'\"]+)['\"]")
 WRAPPER = re.compile(r"gradle-([0-9][0-9.]*)-(?:bin|all)\.zip")
