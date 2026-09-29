@@ -138,8 +138,9 @@ the hours this one spent.
   fails open restores confidence over real work.
 - [docs/merge-policy.md](../merge-policy.md) — how a change reaches `main`:
   the merge queue, the required checks, and the admin bypass. Read it when
-  **nobody can merge** — four required checks (`test`, `vendor-check`,
-  `golangci`, `brand`) run on the organisation's self-hosted `arc-runners` scale set,
+  **nobody can merge** — every required check from `tests.yml` (`test`,
+  `race`, `vendor-check`, `mongo-conformance`, `golangci`, `brand`) runs on the
+  organisation's self-hosted `arc-runners` scale set,
   which sits outside this repository and was dead unnoticed for over a year,
   so the first thing to try is the `CI_SELF_HOSTED=off` repository variable
   (a variable, not a commit: repairing by merging does not work when merging

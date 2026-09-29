@@ -74,10 +74,10 @@ green.
   > alert is a state, not a stream. Any other advisory job whose failure
   > nobody would notice wants the same treatment rather than promotion to
   > required.
-- **Four required checks run on self-hosted runners** — `test`,
-  `vendor-check`, `golangci` and `brand` route to the organisation's
-  `arc-runners` scale set on `merge_group`, because the 20-job cap above is what makes a
-  cycle slow. That scale set is **outside this repository**, and it was dead
+- **Every required check from `tests.yml` runs on self-hosted runners** —
+  `test`, `race`, `vendor-check`, `mongo-conformance`, `golangci` and `brand`
+  route to the organisation's `arc-runners` scale set on `merge_group`, because
+  the 20-job cap above is what makes a cycle slow. That scale set is **outside this repository**, and it was dead
   and unnoticed for over a year before 2026-09-08.
 
   > **If nobody can merge and the checks never report, this is the first thing
