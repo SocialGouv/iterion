@@ -248,6 +248,44 @@ func TestLoadDirReadsUnderTheRootAndNoFurther(t *testing.T) {
 	}
 }
 
+// TestAFragmentResolvingOutsideNamesTheImportAsWritten: the confinement
+// refusal names the fragment by the path the import wrote, never the
+// resolved host path — a load refusal is forwarded to studio clients, and
+// a resolved path outside the unit discloses the server's filesystem
+// layout (#1918).
+func TestAFragmentResolvingOutsideNamesTheImportAsWritten(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "x.bot"), []byte("agent z:\n  description: \"z\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "lib", "ext")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.bot"), []byte("import \"lib/ext/x.bot\"\n\nworkflow w:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u := LoadDir(filepath.Join(root, "main.bot"))
+	var msg string
+	for _, d := range u.Diagnostics {
+		if d.Code == parser.DiagImportUnreadable {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatalf("the fragment resolving outside was read: %v", u.Diagnostics)
+	}
+	if strings.Contains(msg, outside) {
+		t.Fatalf("the refusal discloses the resolved host path: %s", msg)
+	}
+	if !strings.Contains(msg, "lib/ext/x.bot") {
+		t.Fatalf("the refusal does not name the import as written: %s", msg)
+	}
+}
+
 // A file that is not there, or that does not parse, is reported where it
 // is — the main included.
 func TestAMissingOrBrokenFileIsReportedInPlace(t *testing.T) {

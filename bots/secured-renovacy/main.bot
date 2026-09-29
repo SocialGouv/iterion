@@ -2098,8 +2098,9 @@ schema commit_result:
   sha: string
   ## The empty batch ledger the per-package audit edge binds. This node
   ## commits ONE package, so the list is always empty; a `with:` literal
-  ## `"[]"` would reach write_audit_md's json field as text (C152) and
-  ## the expr language has no list literal, so the producer prints it.
+  ## `"[]"` would reach write_audit_md's json field as text (C152), so
+  ## the producer prints it (a compute `expr:` `"[]"` literal would do
+  ## as well — the printed form predates it).
   batch_packages: json
 
 schema revert_input:

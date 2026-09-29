@@ -3,6 +3,99 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.212.1](https://github.com/SocialGouv/iterion/compare/v3.212.0...v3.212.1) (2026-09-29)
+
+### Bug Fixes
+
+* **dsl:** the launch fallback screen resolves a {{vars.x}} node backend with the run's vars ([#1606](https://github.com/SocialGouv/iterion/issues/1606)) ([#1921](https://github.com/SocialGouv/iterion/issues/1921)) ([4805334](https://github.com/SocialGouv/iterion/commit/480533446576b965e8e333c8c4662e33c09aa6bc))
+
+    <details><summary>why</summary>
+
+    ApplyRunFallback — the launch-time admission for an operator's --fallback / Studio Launch row — screened each route against the node's backend, but its signature carried no vars, so a `backend: "{{vars.x}}"` node read as undecided and the four C176 predicates (the tools: inversion, session continuity, the permission gate, the unresolvable-tools check) silently did not apply to it. The compile side is silent on that shape by design — a launch may override the var — which left it with no screen…
+
+    </details>
+* **studio:** derive the wire mode unions from the DSL registry ([#1935](https://github.com/SocialGouv/iterion/issues/1935)) ([#1939](https://github.com/SocialGouv/iterion/issues/1939)) ([3e09df4](https://github.com/SocialGouv/iterion/commit/3e09df4d30d0a5ab3c57494b7d367ea085e44806)), references [#1930s](https://github.com/SocialGouv/iterion/issues/1930s)
+
+    <details><summary>why</summary>
+
+    SessionMode, AwaitMode and InteractionMode in studio/src/api/types.ts were a third hand copy of the registry enums, drifted: AwaitMode carried a "none" the parser refuses and InteractionMode missed review/async/human_or_host.
+
+    </details>
+
+## [3.212.0](https://github.com/SocialGouv/iterion/compare/v3.211.0...v3.212.0) (2026-09-29)
+
+### Features
+
+* **models:** reasoning_effort none — DSL, adapters and studio parity ([#1837](https://github.com/SocialGouv/iterion/issues/1837)) ([#1900](https://github.com/SocialGouv/iterion/issues/1900)) ([4486221](https://github.com/SocialGouv/iterion/commit/448622104b6a01e16bd36d567061567133998152))
+
+    <details><summary>why</summary>
+
+    GPT-6 Sol/Luna accept reasoning_effort "none" and the model backend already transmitted it on Responses when handed the value directly, but the authoring path and the adapters each dropped it at a different seam:
+
+    </details>
+
+## [3.211.0](https://github.com/SocialGouv/iterion/compare/v3.210.0...v3.211.0) (2026-09-29)
+
+### Features
+
+* **dsl:** five compile diagnostics — tree-noise shell traps, duplicate preset keys, sync interaction on CLI backends, review-gate values ([#1555](https://github.com/SocialGouv/iterion/issues/1555) [#1661](https://github.com/SocialGouv/iterion/issues/1661) [#1644](https://github.com/SocialGouv/iterion/issues/1644) [#1094](https://github.com/SocialGouv/iterion/issues/1094)) ([#1925](https://github.com/SocialGouv/iterion/issues/1925)) ([9dfab04](https://github.com/SocialGouv/iterion/commit/9dfab04be103cbb4dde5c38a698ddf3f7f9c7413))
+
+    <details><summary>why</summary>
+
+    An unknown posture/merge_strategy word used to read as the DEFAULT (human_required / squash): fail-safe for the tree, but a silent replacement of the author's explicit choice — the shape C142 refuses for worktree:. Refused at the choke point where the default is applied; the IR keeps the fail-safe value so a launch surface that ignores compile errors still gates on a human and still squashes.
+
+    </details>
+
+## [3.210.0](https://github.com/SocialGouv/iterion/compare/v3.209.0...v3.210.0) (2026-09-29)
+
+### Features
+
+* **assessment:** a Java stack extractor — versions, deployables, HTTP entrypoints ([#1920](https://github.com/SocialGouv/iterion/issues/1920)) ([63175c6](https://github.com/SocialGouv/iterion/commit/63175c69e846abfeef3f20115a7e265966382be4))
+
+    <details><summary>why</summary>
+
+    The bundle shipped Go and Node extractors; a Java repository measured DEGRADED — the HTTP surface hand-counted, the toolchain versions undeclared, the stack named as unmeasured. The assessment's own report names the debt: the primary stack sits where no extractor measures.
+
+    </details>
+
+## [3.209.0](https://github.com/SocialGouv/iterion/compare/v3.208.0...v3.209.0) (2026-09-29)
+
+### Features
+
+* **product-docs:** a map step — the diagrams drawn once, before the campaign ([#1914](https://github.com/SocialGouv/iterion/issues/1914)) ([117ac07](https://github.com/SocialGouv/iterion/commit/117ac07ce3dc0223e27046d2178dd2899612ea3e))
+
+    <details><summary>why</summary>
+
+    Prody documents a product page by page but never draws the whole: a reader (and the campaign itself) had no single picture of what the product offers and how its screens belong together. The new `diagram` step draws it ONCE before the first pass — Mermaid pages under `<product_dir>/diagrams/`, screens and journeys a reader recognises, every box grounded on a source. The continuation loop re-enters at scan_hints, so later passes never redraw the map; from pass 2 on it is just pages the campaign…
+
+    </details>
+
+## [3.208.0](https://github.com/SocialGouv/iterion/compare/v3.207.0...v3.208.0) (2026-09-29)
+
+### Features
+
+* **dsl:** list and object literals in expr: ([#1525](https://github.com/SocialGouv/iterion/issues/1525)) ([#1915](https://github.com/SocialGouv/iterion/issues/1915)) ([9b0c1ce](https://github.com/SocialGouv/iterion/commit/9b0c1ce686dc7d54ae6c9d316f56c5ed4a017f8d)), references [#1497](https://github.com/SocialGouv/iterion/issues/1497)
+
+    <details><summary>why</summary>
+
+    The typed-collection remedy (C152, PR #1497) had exactly one expressible form because the expression language had no list or object literal. The literal lands in both syntax profiles — it is additive, and a profile gates changes of MEANING, not forms that were parse errors:
+
+    </details>
+* **product-docs:** the gate demands every declared route be cited ([#1912](https://github.com/SocialGouv/iterion/issues/1912)) ([256a12f](https://github.com/SocialGouv/iterion/commit/256a12fb0ec252f7eb836efd45c37d7f57733fd2))
+
+    <details><summary>why</summary>
+
+    The POSS assessment's deployable declared a pattern that matched nothing in the Dockerfile it named — the agent wrote the pattern without reading the file. The survey skill now teaches: read the file, pick the line that identifies the service, write the pattern that matches it verbatim.
+
+    </details>
+* **server:** the per-file editor carries import and dsl: profile changes ([#1680](https://github.com/SocialGouv/iterion/issues/1680)) ([#1917](https://github.com/SocialGouv/iterion/issues/1917)) ([569c536](https://github.com/SocialGouv/iterion/commit/569c5366f8c947fdab71b167d42d8d8ff89feb49)), references [#1665](https://github.com/SocialGouv/iterion/issues/1665)
+
+    <details><summary>why</summary>
+
+    Since #1665 the studio's per-file Source view refused both edits by name: the save rebuilt every file's header (its import lines, its dsl: profile) from the STORED files, so an applied change was silently dropped — a removed import emptied the orphan fragment with a 200, an added one made every later save refuse, a profile change was never written while the declarations had been read under the new one.
+
+    </details>
+
 ## [3.207.0](https://github.com/SocialGouv/iterion/compare/v3.206.0...v3.207.0) (2026-09-28)
 
 ### Features

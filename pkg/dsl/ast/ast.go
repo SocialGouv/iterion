@@ -625,7 +625,7 @@ type LLMDecl struct {
 	Skills            []string         // skill-library skills referenced by the node (nil = inherit workflow default)
 	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
-	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "xhigh", "max"
+	ReasoningEffort   string           // reasoning effort level: "none", "low", "medium", "high", "xhigh", "max"
 	Timeout           string           // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = none; may contain ${VAR} env refs
 	Readonly          bool             // when true, node is not considered mutating for workspace safety
 	FullAccess        bool             // when true, lift the codex backend sandbox to danger-full-access (network + out-of-workspace writes); off by default; other backends ignore it
@@ -723,7 +723,7 @@ type RouterDecl struct {
 	System          string   // prompt ref, only for mode: llm
 	User            string   // prompt ref, only for mode: llm
 	Multi           bool     // multi-route selection, only for mode: llm
-	ReasoningEffort string   // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
+	ReasoningEffort string   // reasoning effort level: "none", "low", "medium", "high", "xhigh", "max" (only for mode: llm)
 	Over            string   // array source template, only for mode: fan_out_each (e.g. "{{outputs.decompose.tickets}}")
 	As              string   // per-item binding name, only for mode: fan_out_each (default: "item")
 	Key             string   // item field holding its unique id, only for mode: fan_out_each (enables DAG scheduling)

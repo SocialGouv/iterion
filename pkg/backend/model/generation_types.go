@@ -19,7 +19,7 @@ type RequestInfo struct {
 	ToolCount int
 
 	// ReasoningEffort is the resolved reasoning_effort spec sent on the
-	// request, when set ("low", "medium", "high", "xhigh", "max"). Empty
+	// request, when set ("none", "low", "medium", "high", "xhigh", "max"). Empty
 	// when the node did not request a reasoning level.
 	ReasoningEffort string
 

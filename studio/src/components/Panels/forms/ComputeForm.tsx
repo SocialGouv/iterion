@@ -91,13 +91,15 @@ export default function ComputeForm({ decl }: Props) {
       />
       <SelectField
         label="Await"
-        value={decl.await ?? "none"}
+        value={decl.await ?? ""}
         onChange={(v) =>
           updateCompute(decl.name, {
-            await: (v === "none" ? undefined : v) as AwaitMode | undefined,
+            await: (v || undefined) as AwaitMode | undefined,
           })
         }
         options={AWAIT_OPTIONS}
+        allowEmpty
+        emptyLabel="-- no await (default) --"
       />
 
       <div className="border-t border-border-default pt-2 mt-2">

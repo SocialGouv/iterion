@@ -773,6 +773,29 @@ func TestAgentReasoningEffortMax(t *testing.T) {
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "max")
 }
 
+// Bare `none` reads as a plain identifier, not a keyword — the enum
+// switch is what admitted it (issue #1837: the parser refused the
+// unquoted form while the model backend already honoured the value).
+func TestAgentReasoningEffortNone(t *testing.T) {
+	src := `agent planner:
+  model: "openai/gpt-6-sol"
+  reasoning_effort: none
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "none")
+}
+
+func TestAgentReasoningEffortNoneQuoted(t *testing.T) {
+	src := `agent planner:
+  model: "openai/gpt-6-sol"
+  reasoning_effort: "none"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "none")
+}
+
 func TestJudgeReasoningEffort(t *testing.T) {
 	src := `judge reviewer:
   model: "claude-4"

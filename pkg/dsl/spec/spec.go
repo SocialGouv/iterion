@@ -315,8 +315,8 @@ var (
 	pInteraction     = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
 	pInteractionP    = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
 	pInteractionM    = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
-	pReasoning       = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"low", "medium", "high", "xhigh", "max", "ultracode"},
-		Doc: "Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
+	pReasoning       = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"},
+		Doc: "Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
 	pSandbox = Property{Name: "sandbox", Form: BlockOrIdent, Body: "sandbox", Values: []string{"none", "auto"},
 		Doc: "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"}
 )
@@ -485,9 +485,9 @@ var Kinds = append([]Kind{
 			pAwait,
 			word(prop("review_url", String, "review: the PR/MR the gate reviews (a {{…}} reference is accepted)")),
 			Property{Name: "posture", Form: StringOrIdent, Values: []string{"human_required", "agent_verdict_ok"},
-				Doc: "review: who may merge — human_required (default) or agent_verdict_ok; not validated at compile, another word reads as the default"},
+				Doc: "review: who may merge — human_required (default) or agent_verdict_ok; another word is refused at compile (C156)"},
 			Property{Name: "merge_strategy", Form: StringOrIdent, Values: []string{"squash", "merge"},
-				Doc: "review: squash (default) or merge; not validated at compile"},
+				Doc: "review: squash (default) or merge; another word is refused at compile (C156)"},
 			word(prop("merge_into", StringOrIdent, "review: current (default), none or a branch name")),
 			prop("max_turns", Int, "review: conversation turns before the gate escalates"),
 		}},

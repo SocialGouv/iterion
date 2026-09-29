@@ -60,7 +60,16 @@ func openPath(t *testing.T, s *Server, path string) (*httptest.ResponseRecorder,
 
 func savePath(t *testing.T, s *Server, path string, document json.RawMessage, revision string) (*httptest.ResponseRecorder, saveFileResponse) {
 	t.Helper()
-	body, _ := json.Marshal(saveFileRequest{Path: path, Document: document, Revision: revision})
+	return savePathClaimed(t, s, path, document, revision, nil)
+}
+
+// savePathClaimed is savePath carrying the unit's file list as the client
+// holds it (unit_files) — what a save after a per-file edit of a header
+// presents, so the file's profile and import lines are written from the
+// claim rather than rebuilt from the stored files.
+func savePathClaimed(t *testing.T, s *Server, path string, document json.RawMessage, revision string, unitFiles []unitFileInfo) (*httptest.ResponseRecorder, saveFileResponse) {
+	t.Helper()
+	body, _ := json.Marshal(saveFileRequest{Path: path, Document: document, Revision: revision, UnitFiles: unitFiles})
 	req := httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleSaveFile(rec, req)

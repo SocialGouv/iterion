@@ -228,7 +228,7 @@ func TestApplyRunFallback_ReadsDialsOnBothSides(t *testing.T) {
 		{Backend: "claude_code", Model: "claude-opus-5"},
 		{Backend: "${C1389_UNSET:-claude_code}", Model: "claude-opus-5"},
 	} {
-		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false)
+		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil)
 		if len(refusals) != 1 {
 			t.Errorf("route %q: %d refusals, want 1 (the claw node has no tools: list)", route.Backend, len(refusals))
 			continue
@@ -244,7 +244,7 @@ func TestApplyRunFallback_ReadsDialsOnBothSides(t *testing.T) {
 		{Backend: "claw", Model: "anthropic/glm-5.2"},
 		{Backend: "${C1389_UNSET:-claw}", Model: "anthropic/glm-5.2"},
 	} {
-		if refusals := ApplyRunFallback(fresh(), []Fallback{route}, false); len(refusals) != 0 {
+		if refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil); len(refusals) != 0 {
 			t.Errorf("route %q to the node's OWN backend was refused: %v", route.Backend, refusals)
 		}
 	}
@@ -401,7 +401,7 @@ func TestApplyRunFallback_RefusesADialledCodexRouteInASandbox(t *testing.T) {
 		if w == nil {
 			t.Fatal("the fixture does not compile")
 		}
-		refusals := ApplyRunFallback(w, []Fallback{{Backend: spelling, Model: "gpt-5"}}, true)
+		refusals := ApplyRunFallback(w, []Fallback{{Backend: spelling, Model: "gpt-5"}}, true, nil)
 		if len(refusals) != 1 {
 			t.Errorf("route %q in a sandbox: %d refusals, want 1", spelling, len(refusals))
 			continue
@@ -502,7 +502,7 @@ func TestApplyRunFallback_UsesTheRunReadingNotTheSourceOne(t *testing.T) {
 	if got := sourceBackend.name("${C1389_LAUNCH:-claw}"); got != "claw" {
 		t.Fatalf("the source reading = %q, want claw — the fixture proves nothing", got)
 	}
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false)
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals, want 1: %v", len(refusals), refusals)
 	}
@@ -523,7 +523,7 @@ func TestApplyRunFallback_UsesTheRunReadingNotTheSourceOne(t *testing.T) {
 	if got := sourceBackend.routeName("${C1389_LAUNCH_ROUTE:-claw}"); got != "claw" {
 		t.Fatalf("the source reading of the route = %q, want claw — the fixture proves nothing", got)
 	}
-	routed := ApplyRunFallback(clawNode, []Fallback{{Backend: "${C1389_LAUNCH_ROUTE:-claw}", Model: "claude-opus-5"}}, false)
+	routed := ApplyRunFallback(clawNode, []Fallback{{Backend: "${C1389_LAUNCH_ROUTE:-claw}", Model: "claude-opus-5"}}, false, nil)
 	if len(routed) != 1 {
 		t.Fatalf("%d refusals for a dialled route, want 1: %v", len(routed), routed)
 	}
@@ -553,5 +553,477 @@ func TestWorkflowDefaultReachesTheNodeLevelScreens(t *testing.T) {
 	}
 	if got := countCode(compileFallbackSrc(t, src("claude_code", hint)), DiagProviderChainIgnored); got != 0 {
 		t.Errorf("C088 count = %d with default_backend: claude_code, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #1606 — a backend written as `{{vars.x}}` is screened by what the LAUNCH
+// resolves, the way a dial is screened by what the environment resolves
+// ---------------------------------------------------------------------------
+
+// The RUN reading with the launch's vars: the template resolves first, the
+// field's own `${…}` expansion after — resolveRoutingField's order — and a
+// reference the launch cannot answer stays a field nothing decided. A nil
+// view is the compiler's reading, unchanged.
+func TestRunBackendReading_WithVars(t *testing.T) {
+	t.Setenv("C1606_SET", "kimi")
+	view := map[string]any{
+		"b":    "claw",
+		"dial": "${C1606_SET:-claw}",
+		"raw":  "${C1606_SET}",
+	}
+	run := runBackend.withVars(view)
+	cases := []struct{ in, want string }{
+		{"{{vars.b}}", "claw"},
+		{"{{ vars.b }}", "claw"},
+		// The template-then-env order: the var's VALUE is expanded as the
+		// field's own text would be, by default and by the environment.
+		{"{{vars.dial}}", "kimi"},
+		{"{{vars.raw}}", "kimi"},
+		// What the view cannot answer is not a backend name.
+		{"{{vars.missing}}", ""},
+		{"{{vars.cfg.on}}", ""},
+		// A literal and a dial read exactly as without the view — vars do
+		// not leak into a field that names no var.
+		{"claw", "claw"},
+		{"${C1606_UNSET:-claw}", "claw"},
+	}
+	for _, c := range cases {
+		if got := run.name(c.in); got != c.want {
+			t.Errorf("runBackend.withVars(view).name(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// The launch vars view: the declared defaults under the launch's overrides,
+// and a launch value for a var the workflow does not declare is dropped —
+// the two rules resolveVars runs the run itself by.
+func TestLaunchVarsView(t *testing.T) {
+	w := &Workflow{Vars: map[string]*Var{
+		"b":         {Name: "b", Type: VarString, HasDefault: true, Default: "claw"},
+		"nodefault": {Name: "nodefault", Type: VarString},
+		"n":         {Name: "n", Type: VarInt, HasDefault: true, Default: int64(3)},
+	}}
+	if got := launchVarsView(&Workflow{}, map[string]string{"b": "x"}); got != nil {
+		t.Errorf("no vars declared: view = %v, want nil — nothing may change hands", got)
+	}
+	view := launchVarsView(w, map[string]string{"b": "codex", "nodefault": "claude_code", "zz": "grok"})
+	// Values are typed as resolveVars types them — ResolveVarText is the
+	// shared reading — so the int default is an int64, not its text.
+	want := map[string]any{"b": "codex", "nodefault": "claude_code", "n": int64(3)}
+	if len(view) != len(want) {
+		t.Fatalf("view = %v, want %v", view, want)
+	}
+	for k, v := range want {
+		if view[k] != v {
+			t.Errorf("view[%q] = %v, want %v (full view %v)", k, view[k], v, view)
+		}
+	}
+}
+
+// The screen reads a `{{vars.x}}` node backend by what the launch resolves —
+// the crossing refusals C176 applies to a literal apply to the reference, on
+// the node's side and on the route's.
+func TestApplyRunFallback_ReadsVarsOnBothSides(t *testing.T) {
+	src := "vars:\n  b: string = \"claw\"\n  route_b: string = \"claude_code\"\n\n" +
+		"agent x:\n  backend: \"{{vars.b}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	// A FRESH workflow per route: ApplyRunFallback writes the accepted route
+	// into the IR, and a node that carries one is then skipped.
+	fresh := func() *Workflow {
+		w := compileFallbackSrc(t, src).Workflow
+		if w == nil {
+			t.Fatal("the fixture does not compile")
+		}
+		return w
+	}
+	// A CLI route crosses the boundary — spelled literally, or through a
+	// var on the ROUTE's side.
+	for _, route := range []Fallback{
+		{Backend: "claude_code", Model: "claude-opus-5"},
+		{Backend: "{{vars.route_b}}", Model: "claude-opus-5"},
+	} {
+		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil)
+		if len(refusals) != 1 {
+			t.Errorf("route %q: %d refusals, want 1 (the claw node has no tools: list)", route.Backend, len(refusals))
+			continue
+		}
+		if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+			t.Errorf("route %q refused for the wrong reason: %s", route.Backend, refusals[0])
+		}
+	}
+	// A route to the SAME backend is not a crossing.
+	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil); len(refusals) != 0 {
+		t.Errorf("a route to the node's own (vars-resolved) backend was refused: %v", refusals)
+	}
+}
+
+// The launch's override, not the declared default, is the run's reading:
+// the same source screens as claude_code when `--var b=claude_code` launches
+// it, and as claw when `--var b=claw` does.
+func TestApplyRunFallback_LaunchVarDecidesWhatTheSourceLeftOpen(t *testing.T) {
+	src := func(def string) string {
+		return "vars:\n  b: string = \"" + def + "\"\n\n" +
+			"agent x:\n  backend: \"{{vars.b}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	}
+	fresh := func(def string) *Workflow {
+		w := compileFallbackSrc(t, src(def)).Workflow
+		if w == nil {
+			t.Fatal("the fixture does not compile")
+		}
+		return w
+	}
+	// The source's default is claw, the launch says claude_code: the run
+	// dispatches claude_code, so a claude_code route crosses nothing.
+	agent := fresh("claw")
+	if refusals := ApplyRunFallback(agent, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"b": "claude_code"}); len(refusals) != 0 {
+		t.Errorf("the launch's reading (claude_code) was overridden by the source's default: %v", refusals)
+	}
+	// And the other direction: the source's default is claude_code, the
+	// launch says claw — a CLI route on the tools-less claw node is the
+	// refusal, and it is invisible to whoever reads only the default.
+	refusals := ApplyRunFallback(fresh("claude_code"), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"b": "claw"})
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1: %v", len(refusals), refusals)
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The session-continuity refusal is one of the four predicates that used to
+// short-circuit on the empty reading: inherit across a backend change has no
+// cross-backend meaning, vars-resolved or not.
+func TestApplyRunFallback_SessionContinuityCrossingOnAVarsBackend(t *testing.T) {
+	agent := applyAgent("work", "{{vars.b}}", "", []string{"read_file"}, nil)
+	agent.Session = SessionInherit
+	w := &Workflow{
+		Nodes: map[string]Node{"work": agent},
+		Vars:  map[string]*Var{"b": {Name: "b", Type: VarString, HasDefault: true, Default: "claude_code"}},
+	}
+	// A declared tools: list makes the CLI→claw direction no inversion, so
+	// only the session predicate can fire.
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil)
+	if len(refusals) == 0 {
+		t.Fatal("no refusal — a session: inherit node changed backend through a vars-resolved crossing")
+	}
+	if !strings.Contains(refusals[0], "session continuity has no cross-backend meaning") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// What the launch cannot decide stays undecided — never a guess. A var the
+// workflow does not declare is dropped by the run itself (resolveVars), so
+// the screen must not resolve it either; a declared var with no default and
+// no launch value resolves to nothing either. Both screen exactly as before
+// the vars reached ApplyRunFallback.
+func TestApplyRunFallback_WhatTheLaunchCannotAnswerStaysUndecided(t *testing.T) {
+	src := "agent x:\n  backend: \"{{vars.zz}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	w := compileFallbackSrc(t, src).Workflow
+	if w == nil {
+		t.Fatal("the fixture does not compile")
+	}
+	// zz is undeclared: the screen must not resolve it, and dispatch does
+	// not either — the run's vars never carry it. resolveVars drops it, and
+	// the executor seeding takes the same rule (runview.BuildExecutor;
+	// an undeclared key allowed through by --allow-unknown-inputs rides as
+	// a run INPUT for subbot forwarding, never as a var — its witness is
+	// TestBuildExecutor_UndeclaredLaunchVarDoesNotReachTheExecutorVars).
+	// An undecided field does NOT fall through to default_backend: (that
+	// rule is TestEffectiveNodeBackend_DoesNotSubstituteForAnUndecidedField's).
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"zz": "claw"})
+	if len(refusals) != 0 {
+		t.Errorf("an undeclared var resolved for the screen: %v", refusals)
+	}
+	if got := runBackend.withVars(launchVarsView(w, map[string]string{"zz": "claw"})).name("{{vars.zz}}"); got != "" {
+		t.Errorf("undeclared {{vars.zz}} resolved to %q, want undecided", got)
+	}
+}
+
+// The view reads a var's text the way resolveVars does at dispatch — through
+// the PROCESS ENVIRONMENT (varExpandFn ends in os.Getenv), never through the
+// ITERION_ settings overlay, which is LookupEnv's alone. A view built on the
+// overlay's reading screens a backend the run will never use.
+func TestLaunchVarsView_ReadsVarTextThroughTheProcessEnv(t *testing.T) {
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_ZZPROBE_BACKEND" {
+			return "claw", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${ITERION_ZZPROBE_BACKEND}"},
+		"o": {Name: "o", Type: VarString},
+	}}
+	// The overlay says claw; the process environment says nothing. Dispatch
+	// stores "" — the view must too.
+	if got := launchVarsView(w, nil)["b"]; got != "" {
+		t.Errorf("view[b] = %q, want \"\" — the overlay is not the run's reading of a var's text", got)
+	}
+	// Overrides take the same reading (resolveVars expands both), here with
+	// the process env answering.
+	t.Setenv("C1606_OVERRIDE", "kimi")
+	if got := launchVarsView(w, map[string]string{"o": "${C1606_OVERRIDE}"})["o"]; got != "kimi" {
+		t.Errorf("view[o] = %q, want kimi — an override's ${…} is expanded as the run expands it", got)
+	}
+}
+
+// Dispatch expands TWICE: resolveVars expands the var's text, then
+// resolveRoutingField expands the field the value lands in. The view stores
+// the first expansion and the reader runs the second, so a value that is
+// itself a reference resolves to the same backend on both sides.
+func TestLaunchVarsView_ExpandsAsManyTimesAsDispatch(t *testing.T) {
+	t.Setenv("C1606_INNER", "${C1606_OUTER}")
+	t.Setenv("C1606_OUTER", "claw")
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_INNER}"},
+	}}
+	got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}")
+	if got != "claw" {
+		t.Errorf("run reading of {{vars.b}} = %q, want claw — dispatch expands the substituted value a second time", got)
+	}
+}
+
+// The screen-level consequence, on the reviewer's fixture: a var default
+// written against an ITERION_ name the overlay answers but the process
+// environment does not. Dispatch reads "" — the node backend is undecided
+// and the crossing screens take no opinion — while a view on the overlay's
+// reading screened it as claw and refused a route the run would have taken.
+func TestApplyRunFallback_VarsBackendReadThroughTheProcessEnvNotTheOverlay(t *testing.T) {
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_ZZPROBE_BACKEND" {
+			return "claw", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+	src := "vars:\n  b: string = \"${ITERION_ZZPROBE_BACKEND}\"\n\n" +
+		"agent x:\n  backend: \"{{vars.b}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	fresh := func() *Workflow {
+		w := compileFallbackSrc(t, src).Workflow
+		if w == nil {
+			t.Fatal("the fixture does not compile")
+		}
+		return w
+	}
+	route := []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}
+	// Process env unset: dispatch resolves the var to "" and the node is
+	// undecided — no refusal.
+	if refusals := ApplyRunFallback(fresh(), route, false, nil); len(refusals) != 0 {
+		t.Errorf("refused on the overlay's reading, which the run never makes: %v", refusals)
+	}
+	// Control: the process env answering IS the run's reading — the same
+	// route on the tools-less claw node is the refusal.
+	t.Setenv("ITERION_ZZPROBE_BACKEND", "claw")
+	refusals := ApplyRunFallback(fresh(), route, false, nil)
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals with the process env set, want 1: %v", len(refusals), refusals)
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The RUN reading drills a dotted reference into a json var's document,
+// exactly as dispatch's TemplateResolver does (drillTemplatePath: maps only,
+// a missing member or a non-map segment is not found — kept as written).
+// A flat-name-only view left the node undecided while dispatch resolved it.
+func TestRunBackendReading_DrillsJSONVars(t *testing.T) {
+	t.Setenv("C1606_JSON_LEAF", "kimi")
+	w := &Workflow{Vars: map[string]*Var{
+		"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend": "claw"}`},
+		"env": {Name: "env", Type: VarJSON, HasDefault: true, Default: `{"backend": "${C1606_JSON_LEAF:-claw}"}`},
+		"s":   {Name: "s", Type: VarString, HasDefault: true, Default: "claw"},
+	}}
+	view := launchVarsView(w, map[string]string{"cfg": `{"backend": "claude_code"}`})
+	run := runBackend.withVars(view)
+	cases := []struct{ in, want string }{
+		// The launch override — parsed as the document it is — wins over
+		// the declared default, and the drill reads its member.
+		{"{{vars.cfg.backend}}", "claude_code"},
+		// A json leaf is env-expanded the way resolveVars expands leaves
+		// (braced-only, the process environment).
+		{"{{vars.env.backend}}", "kimi"},
+		// drillTemplatePath's misses: no such member, and a scalar holds
+		// no members at all — both kept as written, hence undecided.
+		{"{{vars.cfg.nope}}", ""},
+		{"{{vars.s.backend}}", ""},
+		// The whole document formats the way formatValue prints it.
+		{"{{vars.env}}", `{"backend":"kimi"}`},
+	}
+	for _, c := range cases {
+		if got := run.name(c.in); got != c.want {
+			t.Errorf("runBackend.withVars(view).name(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// The reviewer's executed bypass: a node whose backend is a drilled json
+// reference screened as undecided, so the tools-inversion refusal was
+// SKIPPED — while dispatch resolved "claw" and the crossing was real.
+// (IR built directly: the launchVarsView contract is on the compiled Var,
+// and a json object default's .bot spelling rides the escape profiles —
+// irrelevant to what the screen does with the parsed document.)
+func TestApplyRunFallback_DrilledJSONVarIsScreened(t *testing.T) {
+	fresh := func() *Workflow {
+		return &Workflow{
+			Nodes: map[string]Node{"x": applyAgent("x", "{{vars.cfg.backend}}", "", nil, nil)},
+			Vars: map[string]*Var{
+				"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend": "claw"}`},
+			},
+		}
+	}
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil)
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1 — dispatch resolves the node to claw and the crossing is real", len(refusals))
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil); len(refusals) != 0 {
+		t.Errorf("a route to the node's own (drilled) backend was refused: %v", refusals)
+	}
+}
+
+// The five names varExpandFn answers from engine state — PROJECT_DIR,
+// BUNDLE_DIR, BUNDLE_SKILLS_DIR, PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR —
+// read "" through the screen's process-env expansion, where dispatch reads
+// a path: decided-empty where the run is decided-full is a disagreement.
+// A var whose text references one stays UNDECIDED for the screen — the same
+// posture as a var nothing answers anywhere else.
+func TestLaunchVarsView_EngineSuppliedNamesStayUndecided(t *testing.T) {
+	for _, name := range []string{"PROJECT_DIR", "BUNDLE_DIR", "BUNDLE_SKILLS_DIR", "PROJECT_MEMORY_DIR", "PROJECT_SCRATCH_DIR"} {
+		w := &Workflow{Vars: map[string]*Var{
+			"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${" + name + "}/x"},
+		}}
+		if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+			t.Errorf("{{vars.b}} with ${%s} in its text = %q, want undecided — the path comes from engine state the screen does not have", name, got)
+		}
+	}
+	// Nested behind a default: the engine name is consulted inside-out.
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_UNSET:-${PROJECT_DIR}}"},
+	}}
+	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+		t.Errorf("a nested ${PROJECT_DIR} = %q, want undecided", got)
+	}
+	// Control: an ordinary dial still decides, on its default.
+	w.Vars["d"] = &Var{Name: "d", Type: VarString, HasDefault: true, Default: "${C1606_UNSET:-claw}"}
+	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.d}}"); got != "claw" {
+		t.Errorf("a plain dial = %q, want claw — the guard must not swallow ordinary expansions", got)
+	}
+}
+
+// A coercion failure does not drop the var at dispatch: resolveVars logs and
+// runs the RAW value, env-expanded (engine_resolve.go's read fallback), and a
+// FLAT {{vars.b}} reads it fine. Omitting the var from the view read the node
+// as undecided — and let a real crossing sail through a launch the pre-drill
+// screen refused.
+func TestLaunchVarsView_CoercionFailureFallsBackLikeResolveVars(t *testing.T) {
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarInt, HasDefault: true, Default: int64(1)},
+	}}
+	// --var b=claw cannot coerce to int: dispatch stores the raw "claw".
+	if got := runBackend.withVars(launchVarsView(w, map[string]string{"b": "claw"})).name("{{vars.b}}"); got != "claw" {
+		t.Errorf("{{vars.b}} with a non-coercible override = %q, want claw — dispatch falls back to the raw value", got)
+	}
+}
+
+func TestApplyRunFallback_CoercionFailureKeepsTheFlatReading(t *testing.T) {
+	fresh := func() *Workflow {
+		return &Workflow{
+			Nodes: map[string]Node{"x": applyAgent("x", "{{vars.b}}", "", nil, nil)},
+			Vars:  map[string]*Var{"b": {Name: "b", Type: VarInt, HasDefault: true, Default: int64(1)}},
+		}
+	}
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
+		map[string]string{"b": "claw"})
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1 — dispatch runs the node on claw, the crossing is real", len(refusals))
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The engine-name probe reads a var's text the way dispatch expands THAT
+// TYPE: a json var's string leaves get the braced-only reading and its keys
+// are never expanded, so a bare `$PROJECT_DIR` in a leaf is DATA — the var
+// stays, the drill resolves. Probing the raw text with the full reading
+// omitted the whole var and took the screen off a real crossing.
+func TestLaunchVarsView_JSONProbeReadsLeavesBracedOnly(t *testing.T) {
+	w := &Workflow{Vars: map[string]*Var{
+		"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend":"claw","note":"$PROJECT_DIR"}`},
+		"doc": {Name: "doc", Type: VarJSON, HasDefault: true, Default: `{"backend":"${PROJECT_DIR}"}`},
+	}}
+	run := runBackend.withVars(launchVarsView(w, nil))
+	if got := run.name("{{vars.cfg.backend}}"); got != "claw" {
+		t.Errorf("{{vars.cfg.backend}} = %q, want claw — a bare $NAME in a json leaf is data, the var must not be omitted", got)
+	}
+	// A braced ${…} in a leaf IS an expansion dispatch runs (on the leaf) —
+	// the engine-supplied name keeps the whole var undecided.
+	if got := run.name("{{vars.doc.backend}}"); got != "" {
+		t.Errorf("{{vars.doc.backend}} = %q, want undecided — the leaf expands ${PROJECT_DIR} at dispatch", got)
+	}
+}
+
+func TestApplyRunFallback_JSONLeafHoldingDataKeepsTheScreen(t *testing.T) {
+	fresh := func() *Workflow {
+		return &Workflow{
+			Nodes: map[string]Node{"x": applyAgent("x", "{{vars.cfg.backend}}", "", nil, nil)},
+			Vars: map[string]*Var{
+				"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend":"claw","note":"$PROJECT_DIR"}`},
+			},
+		}
+	}
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil)
+	if len(refusals) != 1 {
+		t.Fatalf("%d refusals, want 1 — the note is data, the backend member resolves to claw, the crossing is real", len(refusals))
+	}
+	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
+		t.Errorf("refused for the wrong reason: %s", refusals[0])
+	}
+}
+
+// The accepted over-conservatism, pinned so it is a choice rather than an
+// accident: a name CONSULTED but discarded — `${SET:-${PROJECT_DIR}}` with
+// SET in the environment — omits the var all the same, where dispatch
+// decides the outer value. The inside-out expansion consults the inner
+// segment before the outer short-circuits, and tracking whether a consulted
+// name's value reaches the result would price the fix above the shape's
+// frequency. Undecided never refuses a route the run would take; it only
+// screens less, which is the pre-#1606 posture for every var.
+func TestLaunchVarsView_ConsultedButDiscardedStaysUndecided(t *testing.T) {
+	t.Setenv("C1606_OUTER_SET", "claw")
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_OUTER_SET:-${PROJECT_DIR}}"},
+	}}
+	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+		t.Errorf("{{vars.b}} = %q, want undecided — the probe cannot see that dispatch discards the inner expansion", got)
+	}
+}
+
+// The probe sees an engine-supplied name reached through an INDIRECTION:
+// resolveBracedSegment parses the outer name from the resolved inner text,
+// so `${${A}}` with A=PROJECT_DIR in the environment consults PROJECT_DIR in
+// dispatch's varExpandFn. A probe lookup answering "" for everything
+// resolved the inner segment to nothing and never saw it — the screen then
+// read the var as decided-empty where dispatch reads a path. The probe
+// answers non-listed names from the process environment (the one the screen
+// itself expands with); a listed name's consult is still recorded.
+func TestLaunchVarsView_IndirectEngineNameStaysUndecided(t *testing.T) {
+	t.Setenv("C1606_INDIRECT", "PROJECT_DIR")
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${${C1606_INDIRECT}}"},
+	}}
+	if _, ok := launchVarsView(w, nil)["b"]; ok {
+		t.Errorf("view[b] present — dispatch resolves ${${C1606_INDIRECT}} to the PROJECT_DIR path; the var must stay undecided")
 	}
 }

@@ -217,7 +217,7 @@ llm_prop = "description" ":" str_value NEWLINE
 
 session_mode = "fresh" | "inherit" | "inherit_if_available"
              | "fork" | "artifacts_only" | "persist" ;
-reasoning_effort = "low" | "medium" | "high" | "xhigh" | "max"
+reasoning_effort = "none" | "low" | "medium" | "high" | "xhigh" | "max"
                  | "ultracode" | STRING_LIT ;
 await_mode = "wait_all" | "best_effort" ;
 interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review"
@@ -553,8 +553,11 @@ additive = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
 unary = "-" unary | postfix ;
 postfix = primary { "[" expression "]" } ;
-primary = NUMBER_LIT | EXPR_STRING | BOOL_LIT | path | function_call
-        | lambda_combinator | "(" expression ")" ;
+primary = NUMBER_LIT | EXPR_STRING | BOOL_LIT | list_literal | object_literal
+        | path | function_call | lambda_combinator | "(" expression ")" ;
+list_literal = "[" [ expression { "," expression } ] "]" ;
+object_literal = "{" [ object_pair { "," object_pair } ] "}" ;
+object_pair = ( IDENT | EXPR_STRING ) ":" expression ;
 path = IDENT { "." IDENT } ;
 function_call = IDENT "(" [ expression { "," expression } ] ")" ;
 lambda_combinator = ( "map" | "filter" ) "(" expression "," lambda ")"
@@ -564,7 +567,10 @@ lambda = ( IDENT | "(" IDENT { "," IDENT } ")" ) "=>" expression ;
 (* `compute` expressions and quoted `when` clauses carry this language inside
    a DSL STRING_LIT. Standard namespaces are vars, input, outputs, artifacts,
    loop, and run. Built-ins are length, concat, unique, contains, join, tail,
-   if, sort, keys, values, slice, sum, min, max, flatten, map, filter, reduce. *)
+   if, sort, keys, values, slice, sum, min, max, flatten, map, filter, reduce.
+   A list literal evaluates to an array, an object literal to a JSON object;
+   a repeated object key is refused at parse, neither form takes a trailing
+   comma. *)
 
 (* ---------- Template references ---------- *)
 

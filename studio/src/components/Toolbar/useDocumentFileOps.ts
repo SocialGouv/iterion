@@ -262,8 +262,11 @@ export function useDocumentFileOps({
       const asked = stampEditor(documentStore.getState());
       try {
         // A bot in several files presents the revision it was opened at,
-        // and keeps the one the save returns.
-        const result = await api.saveFile(path, document, unit ? { revision: unit.revision } : undefined);
+        // and keeps the one the save returns. Its file list goes with it:
+        // a per-file Apply may have changed a file's `import` lines or its
+        // `dsl:` profile — the two header fields the document does not
+        // carry — and the save writes them from the claim.
+        const result = await api.saveFile(path, document, unit ? { revision: unit.revision, unitFiles: unit.files } : undefined);
         pushRecent(path);
         // The answer is about the document it wrote. A tab that has moved to
         // another file meanwhile — or reopened this same one, which is a new

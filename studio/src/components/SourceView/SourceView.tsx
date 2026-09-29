@@ -254,8 +254,12 @@ export default function SourceView() {
           // ONE file of the unit, rendered from the document by
           // provenance. A file the writer cannot reproduce comes back as
           // ITS OWN text with the reason — never the writer's, which would
-          // be a text the author's file does not contain.
-          const res = await api.unparseUnitFile(document, currentFilePath, selected);
+          // be a text the author's file does not contain. The file list
+          // the client holds goes with it: a per-file edit may have
+          // changed a file's `import` lines or its `dsl:` profile, and the
+          // render must show the claimed header — showing the stored one
+          // would invite a re-apply that silently reverts the edit.
+          const res = await api.unparseUnitFile(document, currentFilePath, selected, unit?.files);
           if (gen !== renderGen.current) return;
           setRendered({ key, doc: document });
           setSource(res.source);

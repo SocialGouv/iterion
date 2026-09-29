@@ -43,11 +43,14 @@ or forced-tool controls before network I/O. Legacy explicit IDs keep their
 previous behavior. GPT-6 uses Responses for both API-key and OAuth clients,
 including requests inheriting a client model; other compatible providers keep
 their existing transport. Sol/Luna also accept effort `none`; Astra does not.
-All three accept low, medium, high, xhigh and max at the provider API. These
-capabilities do not extend the DSL effort vocabulary: `none` is not yet
-authorable there, and CLI adapters retain their existing effort mapping.
-Explicit authored efforts and token limits remain unchanged. Opus 5.5's
-implicit effort is medium.
+All three accept low, medium, high, xhigh and max at the provider API. Since
+#1837 `none` is authorable in the DSL (`reasoning_effort: none`, bare or
+quoted), resolves through env substitution, and reaches the wire on the model
+backend and the Codex adapter (EffortNone). On routes whose models do not
+carry it the behaviour is per-route: claw and claude_code clamp to `low`, pi
+maps it to its `off` spelling, codex's CLI refuses it, opencode passes it
+through. Explicit authored efforts and token limits remain
+unchanged. Opus 5.5's implicit effort is medium.
 
 Offline context/output limits are 1M/128k for Opus and 1.05M/128k for GPT-6.
 The static cost fallback has nonzero current short-context rates; it remains

@@ -1400,6 +1400,7 @@ func perTaskSpawnOpts(task Task) []claudesdk.Option {
 	if effort == "" {
 		effort = defaultClaudeCodeEffort
 	}
+	effort = claudeCodeEffort(effort)
 	opts := []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort)}
 	opts = append(opts, autoMemoryOpts(task)...)
 	opts = append(opts, taskExtraEnvOpts(task)...)
@@ -1407,6 +1408,20 @@ func perTaskSpawnOpts(task Task) []claudesdk.Option {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
 	}
 	return opts
+}
+
+// claudeCodeEffort coerces an iterion effort level to one Claude Code
+// accepts. Anthropic's effort dial starts at "low" — no Claude model (Opus
+// 5.5 included) carries "none" — so a DSL `reasoning_effort: none` clamps
+// to "low", the same floor the claw route applies through
+// model.coerceEffort for these models (claw ↔ claude_code parity). The
+// coercion is documented, not silent-by-accident: better a degraded run
+// than a node refused for a level only OpenAI's GPT-6 Sol/Luna expose.
+func claudeCodeEffort(effort string) string {
+	if effort == "none" {
+		return "low"
+	}
+	return effort
 }
 
 // autoMemoryOpts wires the node's resolved auto-memory decision into the CLI

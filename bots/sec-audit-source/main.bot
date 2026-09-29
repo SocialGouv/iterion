@@ -1038,10 +1038,10 @@ schema select_finding_output:
   remaining:  int
   attempted:  string
   ## The typed empty list patch_author's `prior_attempts` binds to. A
-  ## `with:` literal `"[]"` would reach that json field as text (C152)
-  ## and the expr language has no list literal, so the producer prints
-  ## the value. D5a runs one attempt per finding; D5b's nested retry
-  ## loop fills this ledger.
+  ## `with:` literal `"[]"` would reach that json field as text (C152);
+  ## the producer prints the value (a compute `expr:` `"[]"` literal
+  ## would do as well — the printed form predates it). D5a runs one
+  ## attempt per finding; D5b's nested retry loop fills this ledger.
   prior_attempts: json
 
 ## fix_ledger output. Passthrough that re-publishes select_finding's

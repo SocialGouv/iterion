@@ -410,11 +410,11 @@ agent verify_build:
   user: verify_user
   session: fresh
   interaction: human
-  fallbacks:
-    kimi_quota:
-      backend: "kimi"
-      model: "kimi-code/kimi-for-coding"
-      on: [usage_window, unavailable]
+  ## No kimi_quota fallback here, on purpose: a synchronous interaction:
+  ## is inert on kimi — no ask_user wiring reaches CLI-agent backends
+  ## (pkg/backend/delegate/cliagent.go; the diagnostics wave names it
+  ## C271) — so the node would run its gate without ever pausing. On
+  ## quota exhaustion the run waits for Claude rather than losing the pause.
 
 ## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
 ## <scratch_dir>/verify.sh and reports the REAL exit code. No language /

@@ -66,8 +66,8 @@ authorise the bot to invent. See
 ## Shape
 
 ```
-catalog_ingest ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint
-               ─▶ coverage_check ─▶ gate
+catalog_ingest ─▶ diagram ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint
+               ─▶ diagram_lint ─▶ coverage_check ─▶ gate
 gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr
                                           ─▶ surface_pr_link ─▶ done
 gate ─────────────────▶ scan_hints          (continuation_loop, max_passes)
@@ -80,6 +80,21 @@ gate ─────────────────▶ scan_hints          
   never absent. A missing catalog, an unknown product or an entry without
   `docs.product_dir` fails the run **loudly**: documenting the wrong
   directory is worse than not running.
+- **`diagram`** (one agent, once, before the first pass) — draws the
+  reader-facing **map** of the product: Mermaid pages under
+  `<product_dir>/diagrams/`, screens and journeys a reader recognises,
+  every box grounded on a source (a screen nobody serves never makes
+  the map). The loop re-enters at `scan_hints`, so later passes never
+  redraw it — from pass 2 on the map is just pages the campaign
+  maintains like any other page. It gives the campaign a first mapping
+  to organize its work around.
+- **`diagram_lint`** (deterministic truth gate) — the verdict on the
+  map, judged on its FINAL state: the map exists (`MAP_ABSENT`), every
+  page draws a closed, non-empty mermaid block (`MAP_NOT_A_DIAGRAM`),
+  and every mapped path instantiates a declared route (`PHANTOM_MAP`).
+  With no route table the path check degrades VISIBLY
+  (`routes_unverified`), never silently green. It judges existence and
+  grounding, never the art of the drawing.
 - **`scan_hints`** (deterministic, advisory) — dead intra-doc links and
   anchors, orphan pages (in a hub-and-step model an unlinked page is
   invisible), catalog surfaces no page covers, empty pages, the editorial
@@ -99,9 +114,9 @@ gate ─────────────────▶ scan_hints          
   pass.
 - **`coverage_check`** (deterministic truth gate, armed only with a net)
   — the exhaustiveness gate. See below.
-- **`gate`** — `converged = scope_ok ∧ lint_ok ∧ coverage_ok ∧
-  docs_aligned`. Nothing else; the hint counts are telemetry, never
-  conditions.
+- **`gate`** — `converged = scope_ok ∧ lint_ok ∧ diagram_ok ∧
+  coverage_ok ∧ docs_aligned`. Nothing else; the hint counts are
+  telemetry, never conditions.
 
 A documentation-only change cannot break a build, so there is no build
 gate — `page_lint` is this bot's equivalent truth oracle on the artifact

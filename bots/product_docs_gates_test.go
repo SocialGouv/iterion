@@ -2024,6 +2024,16 @@ func runCoverage(t *testing.T, ws string) coverageOut {
 	t.Helper()
 	var got coverageOut
 	runJSON(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), &got)
+	// The log quotes the oracle dir, whose path carries the RANDOM temp-dir
+	// number — and assertions on the log grep it for SHORT NUMERIC spans
+	// ("999", "250", "404"): a temp dir like ...126250226 named the code
+	// span "250" and ...38999964916 "verified" "999" (measured in CI,
+	// 2026-09-28). Scrub the fixture's plumbing out of the verdict text so
+	// every assertion judges what the gate SAID, not where the fixture
+	// happened to live.
+	if got.OracleUsed != "" {
+		got.Log = strings.ReplaceAll(got.Log, got.OracleUsed, "<oracle>")
+	}
 	return got
 }
 
@@ -2282,6 +2292,19 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 					"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
 			},
 		},
+		{
+			// THE OTHER DIRECTION of the route check: the route table is not
+			// only the whitelist citations are judged against — every route it
+			// declares is a screen the application serves, and a served screen
+			// no page describes is a hole the gate stayed green over. The
+			// repair lands INSIDE the writeable set: document the screen.
+			name: "ROUTE_UNDOCUMENTED: a declared route no page cites",
+			want: "ROUTE_UNDOCUMENTED -- /dashboard/exports: the declared route /dashboard/exports is cited by NO page",
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/routes.txt",
+					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/exports\n# a comment line\nGET /{slug}\n")
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2300,6 +2323,68 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead:
+// the route check runs ONCE, after every anchor line of every page has been
+// read. A route first cited on the LAST page must not be refused while the
+// gate is still reading the first — the check lives outside the per-line
+// loop, and the test that proves it cites the route from a page that sorts
+// after every other one. It also settles the DIRECTION of the match: a
+// concrete citation covers the parameterized route it instantiates.
+func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *testing.T) {
+	requireGitPython(t)
+	// One route the corpus never exercised, documented only from the route
+	// table — the corpus-free documentation the declared routes widen for.
+	writeRoutes := func(t *testing.T, ws string) {
+		t.Helper()
+		writeFile(t, ws, ".golden-master/routes.txt",
+			"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/exports/{id}\n# a comment line\nGET /{slug}\n")
+	}
+	t.Run("a route cited on the last page is covered", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeRoutes(t, ws)
+		writeFile(t, ws, "docs/demo/z-exports.md", "# The exports\n"+
+			"\n"+
+			"## The export screen — [[ref:/dashboard/exports/9]]\n"+
+			"\n"+
+			"The manager exports the filtered list from [[ref:/dashboard/exports/9]] as\n"+
+			"a CSV file, one row per item, carrying the columns of the current view.\n")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a route cited on the LAST page was refused while the gate was reading the first — the check ran inside the per-line loop:\n%s", got.Log)
+		}
+		if got.RoutesTotal != 5 {
+			t.Fatalf("routes_declared = %d, want 5 (four real routes plus the catch-all)", got.RoutesTotal)
+		}
+	})
+	t.Run("a route cited only through a query-bearing citation is covered", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		// Drop the plain citation of /dashboard/items: the only path
+		// citation left that could cover the route carries a query —
+		// the shape the gate verifies parameters for. The heading keeps
+		// its corpus anchor, so no chapter goes unanchored.
+		mutate(t, ws, "docs/demo/README.md",
+			"## The item list — [[ref:/dashboard/items]] [[ref:026]]",
+			"## The item list — [[ref:026]]")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a route whose only citation carries a query was refused — the screen the documentation already describes:\n%s", got.Log)
+		}
+	})
+	t.Run("a concrete citation covers its parameterized route", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeRoutes(t, ws)
+		mutate(t, ws, "docs/demo/README.md",
+			"newest first, each one showing its owner, its status and its last change.",
+			"newest first, each one showing its owner, its status and its last change.\n"+
+				"From this screen the manager exports the list to a CSV file\n"+
+				"([[ref:/dashboard/exports/42]]), one row per item of the current view.")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a concrete citation did not cover the parameterized route it instantiates:\n%s", got.Log)
+		}
+	})
 }
 
 // TestProductDocsCoverageGateRefusesAnIndexTable: CO-PRESENCE IS NOT
@@ -2608,6 +2693,23 @@ func TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem(t *testing.T)
 		if strings.Contains(got.Log, tok) {
 			t.Fatalf("the gate verified %q, a citation inside an HTML comment:\n%s", tok, got.Log)
 		}
+	}
+}
+
+// TestProductDocsCoverageGateLogCarriesNoFixturePath: the log quotes the
+// oracle dir, whose temp path carries RANDOM digits that substring-match the
+// short numeric spans some assertions scan for. The fixture's plumbing is
+// scrubbed at the ONE door every assertion reads through; this test reddens
+// deterministically if the scrub is dropped, where the assertions it protects
+// only redden by chance.
+func TestProductDocsCoverageGateLogCarriesNoFixturePath(t *testing.T) {
+	requireGitPython(t)
+	got := runCoverage(t, newCoverageFixture(t))
+	if got.OracleUsed == "" {
+		t.Fatalf("oracle_dir_used is empty — the scrub has nothing to key on")
+	}
+	if strings.Contains(got.Log, got.OracleUsed) {
+		t.Fatalf("the log still carries the fixture's temp path %q — assertions on the log substring-match its random digits:\n%s", got.OracleUsed, got.Log)
 	}
 }
 
@@ -4451,5 +4553,233 @@ func TestProductDocsCoverageGateHidesScriptBodies(t *testing.T) {
 	}
 	if !strings.Contains(got.Log, "GAP -- items.detail") {
 		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+// ─── diagram_lint — the verdict on the map the diagram step drew ──────
+
+type diagramOut struct {
+	OK               bool             `json:"diagram_ok"`
+	Causes           []map[string]any `json:"causes"`
+	CauseCount       int              `json:"cause_count"`
+	DiagramPages     int              `json:"diagram_pages"`
+	MermaidBlocks    int              `json:"mermaid_blocks"`
+	RoutesOnMap      int              `json:"routes_on_map"`
+	RoutesUnverified bool             `json:"routes_unverified"`
+	Log              string           `json:"log"`
+}
+
+// diagramMapPage builds a map page the lint must bless: one mermaid
+// flowchart whose every path instantiates a declared route concretely,
+// plus a comment carrying an external URL — which is NOT a mapped path
+// and must never phantom.
+func diagramMapPage() string {
+	return "# The map of the product\n" +
+		"\n" +
+		"The screens below are the ones the product serves.\n" +
+		"\n" +
+		"```mermaid\n" +
+		"flowchart TD\n" +
+		"  home[\"/ — l'accueil\"] -->|consulte| list[\"/dashboard/items — la liste\"]\n" +
+		"  list -->|ouvre| detail[\"/dashboard/items/42 — un objet\"]\n" +
+		"  %% voir https://example.com/aide pour l'aide en ligne\n" +
+		"```\n"
+}
+
+func diagramCommand(t *testing.T, ws, productDir, oraclePath, routes string) string {
+	t.Helper()
+	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "diagram_lint"), map[string]string{
+		"vars.workspace_dir":        ws,
+		"input.product_dir":         productDir,
+		"input.oracle_path":         oraclePath,
+		"vars.coverage_routes_file": routes,
+	})
+}
+
+func runDiagramLint(t *testing.T, ws string) diagramOut {
+	t.Helper()
+	var got diagramOut
+	runJSON(t, diagramCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "routes.txt"), &got)
+	return got
+}
+
+// TestProductDocsDiagramLintBlessesAGroundedMap is the positive control:
+// a map that exists, draws, and grounds every path on a declared route.
+func TestProductDocsDiagramLintBlessesAGroundedMap(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	got := runDiagramLint(t, ws)
+	if !got.OK {
+		t.Fatalf("the lint refused a grounded map:\n%s", got.Log)
+	}
+	if got.DiagramPages != 1 || got.MermaidBlocks != 1 {
+		t.Fatalf("pages=%d blocks=%d, want 1 and 1", got.DiagramPages, got.MermaidBlocks)
+	}
+	// The BARE root route "/" is not a token this lint can see: a lone
+	// slash is indistinguishable from prose. Whether "/" is mapped at all
+	// is the route-presence checks' business (coverage_check), not the
+	// map-grounding verdict's.
+	if got.RoutesOnMap < 2 {
+		t.Fatalf("routes_on_map=%d, want at least the two mapped screens with a path", got.RoutesOnMap)
+	}
+	if got.RoutesUnverified {
+		t.Fatalf("a net with a route table must verify the map: routes_unverified=true\n%s", got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintFalsification breaks the fixture once per
+// refusal cause and requires the lint to redden FOR THAT CAUSE.
+func TestProductDocsDiagramLintFalsification(t *testing.T) {
+	requireGitPython(t)
+	cases := []struct {
+		name string
+		want string
+		map_ string // written to docs/demo/diagrams/README.md ("" = absent)
+	}{
+		{
+			name: "MAP_ABSENT: the map directory holds nothing",
+			want: "the map directory holds NO page",
+		},
+		{
+			name: "MAP_NOT_A_DIAGRAM: a page that draws nothing",
+			want: "carries NO fenced mermaid block",
+			map_: "# The map\n\nJust prose, no diagram at all.\n",
+		},
+		{
+			name: "MAP_NOT_A_DIAGRAM: a fence the renderer cannot close",
+			want: "a mermaid block is never CLOSED",
+			map_: "# The map\n\n```mermaid\nflowchart TD\n  home[\"/ — l'accueil\"]\n",
+		},
+		{
+			name: "MAP_NOT_A_DIAGRAM: a block that diagrams nothing",
+			want: "a mermaid block is EMPTY",
+			map_: "# The map\n\n```mermaid\n```\n",
+		},
+		{
+			name: "PHANTOM_MAP: a box the application does not serve",
+			want: "PHANTOM_MAP -- /dashboard/invented: the mapped path /dashboard/invented matches NO declared route",
+			map_: "# The map\n\n```mermaid\nflowchart TD\n  ghost[\"/dashboard/invented — l'écran fantôme\"]\n```\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			if tc.map_ != "" {
+				writeFile(t, ws, "docs/demo/diagrams/README.md", tc.map_)
+			}
+			got := runDiagramLint(t, ws)
+			if got.OK {
+				t.Fatalf("the lint stayed GREEN under sabotage — it falsifies nothing:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, tc.want) {
+				t.Fatalf("the lint is red WITHOUT the expected cause %q:\n%s", tc.want, got.Log)
+			}
+		})
+	}
+}
+
+// TestProductDocsDiagramLintGroundsHyphenatedAndQueryTokens: a map draws
+// REAL screens, and real routes carry hyphens and query strings. A token
+// truncated at its hyphen or matched WITH its query can never match its
+// declared route — the faithful rendering of the screen reddens as a
+// phantom, and the campaign's only repair is deleting the truth.
+func TestProductDocsDiagramLintGroundsHyphenatedAndQueryTokens(t *testing.T) {
+	requireGitPython(t)
+	t.Run("a hyphenated route is grounded whole", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		// NO catch-all in the table: /{slug} would match the token the
+		// truncated regex extracts (/user), and the mutant would ride it
+		// to green.
+		writeFile(t, ws, ".golden-master/routes.txt",
+			"GET /\nGET /dashboard/items\nGET /user-settings\n")
+		writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+			"\n"+
+			"```mermaid\n"+
+			"flowchart TD\n"+
+			"  prefs[\"/user-settings — les préférences\"]\n"+
+			"```\n")
+		got := runDiagramLint(t, ws)
+		if !got.OK {
+			t.Fatalf("a hyphenated route was truncated and refused as a phantom:\n%s", got.Log)
+		}
+	})
+	t.Run("a query-bearing map token is grounded on its path", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+			"\n"+
+			"```mermaid\n"+
+			"flowchart TD\n"+
+			"  page2[\"/dashboard/items?page=2 — la deuxième page\"]\n"+
+			"```\n")
+		got := runDiagramLint(t, ws)
+		if !got.OK {
+			t.Fatalf("a legitimate screen drawn with its query was refused as a phantom:\n%s", got.Log)
+		}
+	})
+}
+
+// TestProductDocsDiagramLintDegradesBehindCatchAlls: a token grounded
+// ONLY by a catch-all route (/{x}, /**) is not grounded — the catch-all
+// declares every path and proves none, the same doctrine as the sibling
+// gate. The gate must say so OUT LOUD (a visible note, the run still
+// blesses a well-formed map) and never silently green it.
+func TestProductDocsDiagramLintDegradesBehindCatchAlls(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt",
+		"GET /\nGET /**\n")
+	writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+		"\n"+
+		"```mermaid\n"+
+		"flowchart TD\n"+
+		"  ghost[\"/dashboard/unheard-of — un écran que rien ne déclare\"]\n"+
+		"```\n")
+	got := runDiagramLint(t, ws)
+	if !got.OK {
+		t.Fatalf("a map grounded only behind catch-alls was REFUSED — the doctrine is a visible degradation, not a refusal:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "matches only catch-all route(s)") {
+		t.Fatalf("the gate blessed a token only catch-alls could ground without saying so:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "1 mapped path(s) unverified behind catch-all routes") {
+		t.Fatalf("the summary does not count the unverified tokens:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintNamesAnEscapedRoutesFile: the route table is
+// read from inside the net, never from an absolute path or a dot-dot
+// escape — same rule, same refusal shape as the coverage gate.
+func TestProductDocsDiagramLintNamesAnEscapedRoutesFile(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	var got diagramOut
+	runJSON(t, diagramCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "../routes.txt"), &got)
+	if got.OK {
+		t.Fatalf("a dot-dot route table was accepted:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "absolute path or a dot-dot escape") {
+		t.Fatalf("the refusal does not name the escape:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintDegradesVisiblyWithoutRoutes: with no net the
+// mapped paths cannot be verified — the map is still judged for existence
+// and renderability, and the degradation is VISIBLE, never silently green.
+func TestProductDocsDiagramLintDegradesVisiblyWithoutRoutes(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	var got diagramOut
+	runJSON(t, diagramCommand(t, ws, "docs/demo", "", "routes.txt"), &got)
+	if !got.OK {
+		t.Fatalf("a well-formed map was refused for a net it never needed:\n%s", got.Log)
+	}
+	if !got.RoutesUnverified {
+		t.Fatalf("routes_unverified=false with no route table — the degradation is hidden")
+	}
+	if !strings.Contains(got.Log, "ABSENT -- mapped paths unverified") {
+		t.Fatalf("the log does not name the degradation:\n%s", got.Log)
 	}
 }

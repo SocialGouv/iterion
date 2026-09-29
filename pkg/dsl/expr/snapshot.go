@@ -13,6 +13,8 @@ const (
 	SnapBinary
 	SnapFuncCall
 	SnapIndex      // recv[index] — Children: [recv, index]
+	SnapList       // [e, ...] literal — Children: the elements
+	SnapObject     // {k: v, ...} literal — Keys: entry keys, Children: the values, paired by position
 	SnapLambdaComb // map/filter/reduce — Func set; Children: [coll] or [coll, init]
 )
 
@@ -33,6 +35,7 @@ type Snapshot struct {
 	Namespace string // path namespace for SnapPath (vars, input, outputs, …)
 	Path      []string
 	Str       string      // string-literal value (SnapString)
+	Keys      []string    // object-literal entry keys (SnapObject), paired with Children
 	Children  []*Snapshot // operands (unary: 1, binary: 2, funccall: N)
 }
 
@@ -71,6 +74,18 @@ func snap(n node) *Snapshot {
 		return &Snapshot{Kind: SnapFuncCall, Func: t.name, Children: kids}
 	case *indexNode:
 		return &Snapshot{Kind: SnapIndex, Children: []*Snapshot{snap(t.recv), snap(t.index)}}
+	case *listLit:
+		kids := make([]*Snapshot, len(t.elems))
+		for i, el := range t.elems {
+			kids[i] = snap(el)
+		}
+		return &Snapshot{Kind: SnapList, Children: kids}
+	case *objectLit:
+		kids := make([]*Snapshot, len(t.vals))
+		for i, val := range t.vals {
+			kids[i] = snap(val)
+		}
+		return &Snapshot{Kind: SnapObject, Keys: append([]string(nil), t.keys...), Children: kids}
 	case *lambdaCombNode:
 		// The lambda body is deliberately NOT mirrored: it references
 		// lambda-bound parameters that are not real schema refs, so the

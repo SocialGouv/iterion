@@ -12,10 +12,15 @@ import (
 // workflow's `default_backend:`. The
 // executor resolves `{{vars.…}}` there (resolveRoutingField), nothing else:
 // the route is decided before the node runs, so no input, output, artifact
-// or loop exists to read. An undeclared var is C033 like everywhere; every
-// other `{{…}}` span is C148 — a foreign namespace, a misspelt one
-// (`{{var.m}}`, `{{Vars.m}}`, `{{env.HOME}}`), a span with no path, a dotted
-// var path, the `{{!…}}` raw form, an opening with no close. The scan
+// or loop exists to read. An undeclared var is C033 like everywhere — at any
+// depth, the first segment being the name. A dotted path under a `json` var
+// resolves: the executor DRILLS the document (drillTemplatePath), and the
+// launch-time screen reads it the same way, so there is nothing to warn
+// about. Every other `{{…}}` span is C148 — a foreign namespace, a misspelt
+// one (`{{var.m}}`, `{{Vars.m}}`, `{{env.HOME}}`), a span with no path, a
+// dotted path under a scalar or list var (a string holds no members — the
+// drill finds nothing and the text reaches the backend as written), the
+// `{{!…}}` raw form, an opening with no close. The scan
 // mirrors the executor's resolver, which treats any `{{…}}` as a reference
 // and keeps what it cannot resolve as written: left alone, that text reached
 // the backend (an invalid spec on claw, a model literally named `{{var.m}}`
@@ -34,15 +39,25 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 			loc := fmt.Sprintf("%s %q %s", node.NodeKind(), node.NodeID(), rf.name)
 			spans, unterminated := templateSpans(rf.value)
 			for _, span := range spans {
-				// Exactly one path segment, and not the `{{!…}}` raw form:
-				// vars are scalars, so the executor looks `{{vars.m.id}}` up
-				// as the key "m.id", which no declaration can be, and its
-				// resolver splits `!vars` as a namespace it has not — both
-				// spans would reach the backend as written with
-				// validateVarsRef content with "m".
+				// Any depth of vars path, and not the `{{!…}}` raw form:
+				// the first segment is the declaration C033 checks. A
+				// dotted path resolves at dispatch by DRILLING into a
+				// `json` var's document (drillTemplatePath); under a scalar
+				// or list var it can never resolve — a string holds no
+				// members — and that shape is C148's, with the mechanism
+				// said straight. The `{{!…}}` raw form splits `!vars` as a
+				// namespace the resolver has not, and stays with the
+				// foreign spans.
 				refs, err := ParseRefs(span)
-				if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 && !refs[0].Unquoted {
+				if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && !refs[0].Unquoted {
 					c.validateVarsRef(w, refContext{Ref: refs[0], NodeID: node.NodeID(), Location: loc})
+					if len(refs[0].Path) > 1 {
+						if v, declared := w.Vars[refs[0].Path[0]]; declared && v != nil && v.Type != VarJSON {
+							c.warnfAt(DiagRoutingFieldRef, node.NodeID(), "",
+								"%s: %s drills into %q, a %s var — the executor resolves a dotted vars path by drilling a json var's document, and a %s holds no members, so the text reaches the backend as written and the node fails at its first delegation (declare the var `json` and move the member into it, write the id, a ${VAR:-default}, or a flat declared var)",
+								loc, span, refs[0].Path[0], v.Type, v.Type)
+						}
+					}
 					continue
 				}
 				c.warnfAt(DiagRoutingFieldRef, node.NodeID(), "",
@@ -60,8 +75,15 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 	spans, unterminated := templateSpans(w.DefaultBackend)
 	for _, span := range spans {
 		refs, err := ParseRefs(span)
-		if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && len(refs[0].Path) == 1 && !refs[0].Unquoted {
+		if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && !refs[0].Unquoted {
 			c.validateVarsRef(w, refContext{Ref: refs[0], Location: "workflow default_backend"})
+			if len(refs[0].Path) > 1 {
+				if v, declared := w.Vars[refs[0].Path[0]]; declared && v != nil && v.Type != VarJSON {
+					c.warnf(DiagRoutingFieldRef,
+						"workflow default_backend: %s drills into %q, a %s var — only a json var's document has members to drill; the text becomes the backend name at dispatch and every node that names no backend fails at its first delegation",
+						span, refs[0].Path[0], v.Type)
+				}
+			}
 			continue
 		}
 		c.warnf(DiagRoutingFieldRef,

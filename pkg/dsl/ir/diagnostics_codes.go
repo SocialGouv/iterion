@@ -81,11 +81,17 @@ const (
 	// Review-gate diagnostics (interaction: review).
 	DiagReviewNeedsWorktree DiagCode = "C100" // interaction: review without worktree: auto — nothing to merge (error)
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
+	// C156 is allocated from the free C156-C159 band: C100/C101 above and the
+	// enum-value errors around them leave no contiguous room. Same shape as
+	// C142 (worktree:): an unknown value used to read as the DEFAULT
+	// (human_required / squash), silently replacing the author's explicit
+	// choice — refused at compile, the IR keeps the fail-safe default.
+	DiagInvalidReviewGateValue DiagCode = "C156" // review posture not one of human_required|agent_verdict_ok, or merge_strategy not one of squash|merge (error)
 
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
-	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, the route being decided before the node runs (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
+	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, a dotted path drilling a json var's document included, the route being decided before the node runs (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
@@ -166,6 +172,7 @@ const (
 	DiagVarMatchingUnanchored      DiagCode = "C163" // the pattern is not anchored, so it matches anywhere in the value (warning)
 	DiagVarRedeclaredUnconstrained DiagCode = "C164" // a var is redeclared without the constraint its earlier declaration carries (error)
 	DiagPresetViolatesConstraint   DiagCode = "C165" // a preset value is outside the enum, or off the matching pattern, its var declares (warning: only a run selecting that preset is affected, and the launch gate refuses it)
+	DiagPresetKeyShadowed          DiagCode = "C166" // a preset sets the same key twice — the earlier value is read by no run (warning, like C127: the last value wins, the program is unambiguous)
 	// Expression builtins: a call the evaluator cannot satisfy. The NAME is
 	// already refused at parse (C040); the ARITY is not visible there, so a
 	// call with the wrong argument count used to compile and die mid-run.
@@ -182,6 +189,15 @@ const (
 
 	DiagUnknownLoopRef   DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (warning; the runtime renders no value for it)
 	DiagUnknownRunMember DiagCode = "C153" // {{run.<member>.…}} names a member the namespace has not (warning; the runtime renders no value for it — and an exclusion list that renders empty turns a tree gate off in silence, #1464)
+	// The tree-noise channel in an EXECUTABLE body (#1555, the #1464/#1530
+	// class): the prompt rendering lands as ONE word no file matches
+	// (shell-escaped in a command, JSON-quoted in a shell script), and the
+	// quoted env var collapses the same way — or never expands at all under
+	// single quotes. Both shell bodies only: a js/py script consumes the ref
+	// as data. Both warnings — the catalogue carries zero instances (the
+	// tree_noise_channel tests prove it), so the change is additive.
+	DiagTreeNoiseRefInExecBody DiagCode = "C157" // {{run.tree_noise}} (not the bang form) in a shell-bound tool command/script/postcondition (warning; use {{!run.tree_noise}} or $ITERION_TREE_NOISE unquoted)
+	DiagTreeNoiseEnvQuoted     DiagCode = "C158" // a standalone quoted word holding exactly $ITERION_TREE_NOISE in a shell-bound tool body (warning; double quotes collapse the list to one pathspec, single quotes never expand — only that unambiguous shape is named: tests, assignments, concatenations, comments, heredocs and \$ escapes stay silent by design)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).
@@ -228,8 +244,24 @@ const (
 	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:`/`timeout:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
 
 	DiagAsyncBackendUnsupported DiagCode = "C267" // interaction: async on a backend without async question tools (error)
+	// The SYNC half of the same capability screen (#1644): no ask_user tool
+	// reaches the agent on these backends, so a node declaring interaction:
+	// human / llm / llm_or_human / human_or_host runs to completion without
+	// ever pausing. A warning, not C267's error: the async pair is
+	// type-asserted at dispatch and fails without it, while the sync form
+	// degrades to prompt text — the requirement is "not silence", not a
+	// break at upgrade.
+	DiagSyncInteractionInert DiagCode = "C271" // interaction: (sync) on a backend no ask_user tool reaches (warning — the node never pauses)
 
 	DiagSubbotAuthorSource DiagCode = "C305" // subbot `source:` names an author document (.bot.yaml): a child is a .bot (error)
+
+	// Collection literals in `expr:` (#1525). The literal itself parses or
+	// fails through C040 like any expression; these two warn where the
+	// literal parses fine but the runtime semantics surprise: collection
+	// equality is never a value comparison, and a compute field holds the
+	// literal to its declared type.
+	DiagCollectionCompare            DiagCode = "C306" // `==`/`!=` with a collection (a list/object literal, or two statically-known string[] values): equals() never walks into a slice or map, so the comparison is constant — == false, != true (warning)
+	DiagCollectionLiteralConformance DiagCode = "C307" // a compute field fed by a collection literal its declared type cannot hold (a non-string element under string[], a collection under a scalar): fails SCHEMA_VALIDATION at run time (warning)
 
 	// `with:` mapping references and literals. C149–C152 catch shapes the
 	// runtime cannot honour in a data mapping, so a typo or a namespace
