@@ -115,8 +115,22 @@ type ExecutorSpec struct {
 	// runtime.WorkflowSandboxActive so the fallback screen refuses codex
 	// stages on exactly the runs the engine will sandbox — the same
 	// precedence, never a parallel resolution.
+	//
+	// They also arm the MCP manager's launcher-start policy. A spec that
+	// leaves them empty when the run may in fact be sandboxed is not a
+	// neutral omission: the policy then starts as "undecided", which
+	// starts only operator-controlled servers until the engine settles
+	// the sandbox for real. Pass them.
 	SandboxOverride string
 	SandboxDefault  string
+	// SandboxTiersKnown tells the two cases the empty strings cannot:
+	// "this surface knows the tiers and they are genuinely empty" from
+	// "this surface did not look". Set it wherever both tiers above are
+	// filled in from the surface's real configuration — including when
+	// that configuration is empty. It exists because the sandbox
+	// question fails CLOSED: a surface that did not look must not be
+	// read as one that looked and found no sandbox.
+	SandboxTiersKnown bool
 
 	// RunFallback is the operator's ordered run-level fallback chain
 	// (studio Launch row / CLI --fallback). Empty = none.
@@ -491,7 +505,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithToolPolicy(checker))
 	}
 
-	mcpManager, oauthBroker, mcpErr := buildMCPManager(spec.Workflow, spec.StoreDir, spec.Logger)
+	mcpManager, oauthBroker, mcpErr := buildMCPManager(spec.Workflow, spec.StoreDir, spec.Logger,
+		predictedStartPolicy(spec))
 	if mcpErr != nil {
 		return nil, mcpErr
 	}
@@ -656,9 +671,12 @@ func workflowUsesWorkspaceDiagnostics(wf *ir.Workflow) bool {
 }
 
 // MCPHealthCheck runs the executor's optional MCP health-check
-// implementation. The `iterion run` and `iterion resume` paths invoke
-// this just before eng.Run / eng.Resume so a misconfigured catalog
-// surfaces an error before any node is dispatched.
+// implementation. `iterion run` invokes it just before eng.Run so a
+// misconfigured catalog surfaces an error before any node is dispatched.
+// It is the only caller: a resume does not health-check.
+//
+// The manager skips (and logs) the servers this launcher may not start —
+// probing one would be the connection the start policy exists to refuse.
 func MCPHealthCheck(ctx context.Context, executor runtime.NodeExecutor, servers []string) error {
 	if len(servers) == 0 || !mcp.HealthCheckEnabled() {
 		return nil
@@ -681,23 +699,81 @@ func MCPHealthCheck(ctx context.Context, executor runtime.NodeExecutor, servers 
 // PrepareAuth failures are fatal — continuing would dispatch the run
 // with AuthFunc == nil and surface as 401s later, hiding the root
 // cause from the operator.
-func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (*mcp.Manager, *mcp.OAuthBroker, error) {
+// expandsAgainstLauncherEnv reports whether a server of this origin may
+// read the launcher's environment when its config is expanded.
+func expandsAgainstLauncherEnv(o mcp.Origin) bool {
+	return o.OperatorControlled() || mcp.ExpandUntrustedEnvEnabled()
+}
+
+// expandWithoutLauncherEnv returns an expander that resolves `${X:-default}`
+// from the default alone and every other reference to the empty string,
+// naming each dropped variable once in the log — by NAME, never by value.
+func expandWithoutLauncherEnv(name string, server *ir.MCPServer, logger *iterlog.Logger) func(string) string {
+	warned := map[string]bool{}
+	return func(s string) string {
+		return ir.ExpandWithDefault(s, func(v string) string {
+			if !warned[v] {
+				warned[v] = true
+				logger.Warn("mcp: server %q (origin: %s) references ${%s}; it is not expanded against this process's "+
+					"environment because the server's definition comes from the workflow, not from the operator "+
+					"(set %s=true to restore the previous behaviour)",
+					name, server.Origin, v, mcp.EnvExpandUntrustedEnv)
+			}
+			return ""
+		})
+	}
+}
+
+// predictedStartPolicy answers, as far as the launch surface can, whether
+// this run's MCP servers may be started beside the launcher.
+//
+// It is a PREDICTION, and it is only ever allowed to be the permissive
+// answer when the surface actually knows the sandbox tiers: a spec that
+// did not look leaves the policy undecided, which starts operator
+// servers only. The engine replaces the prediction with the settled
+// fact — ClawExecutor.SetSandbox, called with the live sandbox or with
+// nil when the run settles without one.
+func predictedStartPolicy(spec ExecutorSpec) mcp.StartPolicy {
+	if !spec.SandboxTiersKnown {
+		return mcp.StartPolicyUnknown
+	}
+	if runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault) {
+		return mcp.StartOperatorServersOnly
+	}
+	return mcp.StartAllServers
+}
+
+func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, policy mcp.StartPolicy) (*mcp.Manager, *mcp.OAuthBroker, error) {
 	if len(wf.ResolvedMCPServers) == 0 {
 		return nil, nil, nil
 	}
 	catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
-	hasAuth := false
+	operatorAuth := false
 	for name, server := range wf.ResolvedMCPServers {
+		origin := mcp.Origin(server.Origin)
+		// Whose environment answers `${VAR}` here? The launcher's — an
+		// operator's shell, or the runner pod holding the platform's
+		// credentials. That is the right answer for a server the operator
+		// installed, and the wrong one for a server the workflow's source
+		// tree declares: the expanded value travels into the container as
+		// the CLI backends' MCP config, so a repository could name any
+		// variable the launcher holds and read it back out. Untrusted
+		// origins expand against nothing, keeping `${X:-default}`.
+		expand := ir.ExpandEnvWithDefault
+		if !expandsAgainstLauncherEnv(origin) {
+			expand = expandWithoutLauncherEnv(name, server, logger)
+		}
 		expandedArgs := make([]string, len(server.Args))
 		for i, a := range server.Args {
-			expandedArgs[i] = ir.ExpandEnvWithDefault(a)
+			expandedArgs[i] = expand(a)
 		}
 		catalog[name] = &mcp.ServerConfig{
 			Name:      server.Name,
+			Origin:    origin,
 			Transport: mcp.FromIRTransport(server.Transport),
-			Command:   ir.ExpandEnvWithDefault(server.Command),
+			Command:   expand(server.Command),
 			Args:      expandedArgs,
-			URL:       ir.ExpandEnvWithDefault(server.URL),
+			URL:       expand(server.URL),
 			Headers:   server.Headers,
 			// Env is already fully resolved at catalog-build time (plugin
 			// {{config.*}} placeholders expanded by loadPluginServers) — copy
@@ -706,22 +782,32 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (
 			Env:  server.Env,
 			Auth: mcp.FromIRAuth(server.Auth),
 		}
-		if server.Auth != nil {
-			hasAuth = true
+		if server.Auth != nil && origin.OperatorControlled() {
+			operatorAuth = true
 		}
 	}
 
+	// OAuth preparation follows the same line as the start gate. A
+	// malformed `auth:` block on an OPERATOR server is the operator's own
+	// mistake and stays fatal — dispatching with AuthFunc == nil would
+	// resurface as unexplained 401s mid-run. The same block on a
+	// workflow-controlled server fails THAT server, at its first use, and
+	// nothing else: a file in the repository under review must not be able
+	// to abort the run before the refusal and fallback paths exist.
 	broker, brokerErr := mcp.NewOAuthBroker(storeDir)
 	if brokerErr != nil {
-		if hasAuth {
+		if operatorAuth {
 			return nil, nil, fmt.Errorf("mcp: oauth broker init (required by catalog Auth): %w", brokerErr)
 		}
 		logger.Warn("mcp: oauth broker init: %v", brokerErr)
-	} else if err := mcp.PrepareAuth(catalog, broker); err != nil {
-		if hasAuth {
-			return nil, nil, fmt.Errorf("mcp: prepare oauth auth: %w", err)
+	} else {
+		for name, err := range mcp.PrepareAuthPerServer(catalog, broker) {
+			if catalog[name].Origin.OperatorControlled() {
+				return nil, nil, fmt.Errorf("mcp: prepare oauth auth for %q: %w", name, err)
+			}
+			logger.Warn("mcp: server %q (origin: %s) will not start — %v", name, catalog[name].Origin, err)
+			catalog[name].StartErr = err
 		}
-		logger.Warn("mcp: prepare oauth auth: %v", err)
 	}
 
 	mcpOpts := []mcp.ManagerOption{mcp.WithLogger(logger)}

@@ -17,6 +17,7 @@ import (
 	// log timestamps and time.Local then honour the operator's timezone.
 	_ "time/tzdata"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -211,6 +212,14 @@ func rejectUnknownSubcommands(cmd *cobra.Command) {
 // value. We deliberately don't pull in godotenv to avoid a
 // dependency for ~30 lines of code.
 func loadDotEnvFromCwd() {
+	// Before the first line of any `.env` is applied: record the variables
+	// that select iterion's control plane as INHERITED. A `.env` sits in a
+	// repository — including one under review — and fills in every key the
+	// operator left unset, ITERION_HOME among them. Trust decisions read the
+	// snapshot, so a repository can still point the iterion home wherever it
+	// likes without inheriting the operator's authority.
+	envtrust.SnapshotControlPlane()
+
 	dir, err := os.Getwd()
 	if err != nil {
 		return

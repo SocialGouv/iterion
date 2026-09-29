@@ -997,6 +997,18 @@ mode `deny`).
 > `tool_policy` allowlist is applied to the in-container tools when the
 > node is built: a tool it denies is not advertised at all. The full table
 > and its reasons: [sandbox.md](sandbox.md#claw-backend-in-sandbox).
+>
+> The same boundary applies to MCP SERVERS, which are processes rather
+> than tools. `claude_code` and pi start their own, so a sandboxed node's
+> servers run in the container; claw connects them in the launcher, so
+> under an active sandbox it starts only the operator's (an enabled
+> plugin, installed under the iterion home the operator's environment
+> names). A server the node inherited is dropped with an
+> `mcp_server_degraded` event; a server it names refuses the node when it
+> executes, so a `claude_code` or pi fallback — which starts that server
+> in the container — gets its turn. Origins, and the two rules that
+> travel with them:
+> [sandbox.md](sandbox.md#mcp-servers-under-a-sandbox).
 
 ## Transient-error & network resilience
 

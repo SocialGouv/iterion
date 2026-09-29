@@ -10,6 +10,14 @@ import (
 // against the given workspace. A registry-load failure yields an empty map —
 // a broken plugin must never break MCP setup for a run. This is the bridge
 // between the plugin "mcp" contribution kind and the existing MCP catalog.
+//
+// Origin is OriginPlugin only for a plugin whose CODE is the operator's — a
+// builtin, or a manifest under the iterion home the inherited environment
+// names (Registry.OperatorControlled). A plugin loaded from a home a project
+// `.env` selected keeps every other behaviour and loses only that authority:
+// its servers are OriginUnknown, so the launcher will not start them while a
+// sandbox is active. Without the distinction, a repository carrying `.env` and
+// a `default_enabled` manifest would classify its own code as the operator's.
 func loadPluginServers(workspace string) map[string]*ServerConfig {
 	reg, err := plugin.Load()
 	if err != nil {
@@ -18,6 +26,10 @@ func loadPluginServers(workspace string) map[string]*ServerConfig {
 	out := map[string]*ServerConfig{}
 	for _, p := range reg.Enabled() {
 		exp := reg.ExpandContextFor(p.Name(), workspace)
+		origin := OriginUnknown
+		if reg.OperatorControlled(p) {
+			origin = OriginPlugin
+		}
 		for _, s := range p.Manifest.Contributes.MCPServers {
 			transport := Transport(s.Transport)
 			if transport == "" {
@@ -33,6 +45,7 @@ func loadPluginServers(workspace string) map[string]*ServerConfig {
 			}
 			out[s.Name] = &ServerConfig{
 				Name:      s.Name,
+				Origin:    origin,
 				Transport: transport,
 				Command:   exp.Expand(s.Command),
 				Args:      args,

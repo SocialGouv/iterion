@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -200,8 +201,8 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // On the sandbox-routed path each tool runs where its
 // [tool.SandboxPlacementOf] says: in the container, proxied back to the
 // launcher, or not at all — docs/sandbox.md lists the refusals (tools with
-// no in-container form, Ask-capable permission policies, async
-// interaction).
+// no in-container form, Ask-capable permission policies, async interaction,
+// and an MCP server this launcher may not start for a sandboxed run).
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result delegate.Result, err error) {
 	defer func() {
 		if err == nil && task.SessionSlot != "" {
@@ -274,6 +275,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if task.PostAsyncQuestion != nil {
 			return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
 				NodeID: task.NodeID, Backend: delegate.BackendClaw, Capability: "interaction: async in a sandboxed run"}
+		}
+		// This node named an MCP server whose process the launcher may not
+		// start under the run's sandbox. claw connects its MCP servers in
+		// the launcher process, so this route cannot serve the node —
+		// refused by type, at execution, so a route that starts the server
+		// inside the container (claude_code, pi) is still tried.
+		if len(task.MCPServersRefusedOnLauncher) > 0 {
+			return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+				NodeID: task.NodeID, Backend: delegate.BackendClaw,
+				Capability: "MCP " + refusedMCPServerSummary(task.MCPServersRefusedOnLauncher) + " in a sandboxed run"}
 		}
 		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
 		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
@@ -1584,6 +1595,25 @@ func withoutUnplaceableToolsThePolicyDenies(task delegate.Task) []delegate.ToolD
 // so the node's `fallbacks:` still get their turn; the build-time effects
 // (llm_prompt, board token) have fired, but no runner starts and no token is
 // spent.
+// refusedMCPServerSummary names the refused servers in a stable order, so
+// the capability string a fallback decision is logged under does not change
+// from run to run over one map's iteration order.
+func refusedMCPServerSummary(refused map[string]string) string {
+	names := make([]string, 0, len(refused))
+	for name := range refused {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 1 {
+		return fmt.Sprintf("server %q", names[0])
+	}
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	return "servers " + strings.Join(quoted, ", ")
+}
+
 func refuseToolsWithNoSandboxPlacement(task delegate.Task) error {
 	for _, td := range task.ToolDefs {
 		if placement, reason := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused {

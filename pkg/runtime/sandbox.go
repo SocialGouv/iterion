@@ -1804,6 +1804,16 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if active != nil {
 		e.attachmentsContainerDir = active.attachmentsDir
 	}
+	if active == nil || active.run == nil {
+		// Settled WITHOUT a sandbox — the declared one degraded (no
+		// container runtime), or none was declared. Say so, rather than
+		// leaving the executor unable to tell "no sandbox" from "not
+		// settled yet": a guard that must fail closed while the question
+		// is open needs to hear the answer even when it is "no".
+		if s, ok := e.executor.(sandboxSetter); ok {
+			s.SetSandbox(nil)
+		}
+	}
 	if active != nil && active.run != nil {
 		// The facts a subbot child needs to execute in this sandbox.
 		e.activeShare = &SharedSandbox{

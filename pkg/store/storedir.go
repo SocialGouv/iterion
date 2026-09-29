@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // StoreDirName is the conventional directory name for an iterion run
@@ -117,6 +119,30 @@ func GlobalIterionDataDir() string {
 		return filepath.Join(home, StoreDirName)
 	}
 	return filepath.Join(os.TempDir(), "iterion-data")
+}
+
+// InheritedIterionDataDir resolves the same data dir as
+// GlobalIterionDataDir, but strictly from the environment the process
+// INHERITED — never from a value a project `.env` filled in (see
+// internal/envtrust).
+//
+// It answers one question: which iterion home did the OPERATOR choose?
+// Callers that merely need to read or write data use
+// GlobalIterionDataDir; callers deciding whether something carries the
+// operator's authority — today, whether an installed plugin's servers
+// may start on the launcher of a sandboxed run — use this one.
+//
+// Returns "" when the inherited environment names no home at all, which
+// no caller may read as "anywhere": it means "the operator said
+// nothing", and a trust decision on it fails closed.
+func InheritedIterionDataDir() string {
+	if dir := strings.TrimRight(envtrust.Inherited("ITERION_HOME"), string(filepath.Separator)); dir != "" {
+		return dir
+	}
+	if home := strings.TrimRight(envtrust.Inherited("HOME"), string(filepath.Separator)); home != "" {
+		return filepath.Join(home, StoreDirName)
+	}
+	return ""
 }
 
 // EncodeWorkDirKey produces a deterministic, filesystem-safe key

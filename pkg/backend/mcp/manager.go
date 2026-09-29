@@ -81,6 +81,82 @@ func WithLogger(l *iterlog.Logger) ManagerOption {
 	return func(m *Manager) { m.logger = l }
 }
 
+// WithStartPolicy arms the manager's launcher-start policy at
+// construction, from what the launch surface can predict about the
+// run's sandbox. Left unset it stays StartPolicyUnknown, which starts
+// only operator-controlled servers — the safe answer while the question
+// is open. SetStartPolicy replaces it once the engine settles the
+// sandbox for real.
+func WithStartPolicy(p StartPolicy) ManagerOption {
+	return func(m *Manager) { m.startPolicy = p }
+}
+
+// SetStartPolicy installs the policy the run's SETTLED sandbox implies.
+// The engine calls it through the executor once resolveAndStartSandbox
+// has returned — either with a live sandbox (tighten) or without one
+// (relax); a prediction is never the last word, because a
+// sandbox-by-default run on a host with no container runtime degrades
+// to unsandboxed, and several launch surfaces cannot predict at all.
+//
+// Tightening also closes the clients the new policy refuses: their
+// server processes are already running beside the launcher, and nothing
+// else would stop them before the run ends.
+func (m *Manager) SetStartPolicy(p StartPolicy) {
+	m.policyMu.Lock()
+	m.startPolicy = p
+	m.policyMu.Unlock()
+
+	var refused []*serverState
+	m.mu.Lock()
+	for _, state := range m.states {
+		if !p.Allows(state.cfg.Origin) {
+			refused = append(refused, state)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, state := range refused {
+		state.mu.Lock()
+		client := state.client
+		state.client = nil
+		state.discovered = false
+		state.mu.Unlock()
+		if client == nil {
+			continue
+		}
+		if err := client.Close(); err != nil {
+			m.logger.Warn("mcp: closing %q after the start policy tightened: %v", state.cfg.Name, err)
+		} else {
+			m.logger.Info("mcp: closed %q (origin: %s) — %s", state.cfg.Name, state.cfg.Origin, p)
+		}
+	}
+}
+
+// StartPolicy returns the policy in force.
+func (m *Manager) StartPolicy() StartPolicy {
+	m.policyMu.RLock()
+	defer m.policyMu.RUnlock()
+	return m.startPolicy
+}
+
+// checkStart is THE gate. It answers "may this server's process be
+// started (or kept in use) by this launcher, right now" and is consulted
+// on every protocol operation, not once at creation: a client built
+// while the policy was open must not still be usable after it closed.
+func (m *Manager) checkStart(cfg *ServerConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("mcp: start check on a nil server config")
+	}
+	if cfg.StartErr != nil {
+		return fmt.Errorf("mcp: server %q cannot start: %w", cfg.Name, cfg.StartErr)
+	}
+	policy := m.StartPolicy()
+	if policy.Allows(cfg.Origin) {
+		return nil
+	}
+	return &ServerNotStartableError{Server: cfg.Name, Origin: cfg.Origin, Policy: policy}
+}
+
 // Manager lazily connects to MCP servers, caches clients and tool discovery,
 // and bridges discovered tools into a tool.Registry.
 type Manager struct {
@@ -91,6 +167,13 @@ type Manager struct {
 	cache             *ToolCache
 	fingerprints      *FingerprintStore
 	logger            *iterlog.Logger
+
+	// policyMu guards startPolicy alone, on its own lock: the gate is
+	// read from inside a client's start path, which already holds that
+	// client's lock, while SetStartPolicy runs on the engine's
+	// goroutine when the run's sandbox settles.
+	policyMu    sync.RWMutex
+	startPolicy StartPolicy
 }
 
 type serverState struct {
@@ -178,6 +261,7 @@ func (m *Manager) EnsureServers(ctx context.Context, registry *tool.Registry, se
 // otherwise leak the goroutine for the lifetime of the daemon
 // even after HealthCheck returns. The timeout bounds that leak.
 func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
+	servers = m.startableForHealthCheck(servers)
 	if len(servers) == 0 {
 		return nil
 	}
@@ -229,6 +313,32 @@ func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// startableForHealthCheck drops the servers this launcher may not start.
+//
+// Probing them would be the very thing the policy forbids — the probe IS a
+// connection, and for a stdio server a spawn. It is not an error either: a
+// claude_code or pi node starts that server inside the container later, and a
+// claw node is refused by type when it executes. Each skip is logged, because
+// a health check that silently checks less than it was asked to reads as a
+// clean bill of health.
+func (m *Manager) startableForHealthCheck(servers []string) []string {
+	out := servers[:0:0]
+	for _, server := range servers {
+		cfg, ok := m.ServerConfig(server)
+		if !ok {
+			// Unknown here: let the health check report it as it always has.
+			out = append(out, server)
+			continue
+		}
+		if err := m.checkStart(cfg); err != nil {
+			m.logger.Info("mcp: health check skips %q (origin: %s) — %v", server, cfg.Origin, err)
+			continue
+		}
+		out = append(out, server)
+	}
+	return out
 }
 
 // mcpHealthPingTimeout bounds the per-server Ping in HealthCheck. An
@@ -535,7 +645,19 @@ func (m *Manager) state(server string) (*serverState, error) {
 	return state, nil
 }
 
+// clientForState returns the state's client, creating it if needed.
+//
+// Creating a client starts nothing: the transport is dialled (and, for
+// stdio, the process spawned) lazily on the first protocol operation,
+// and a tool-cache hit means discovery registers closures over a client
+// that was never started. The start gate therefore cannot live here —
+// it lives at sdkClient.ensureStarted, which every operation crosses.
+// The refusal is repeated here only so discovery fails early and with
+// the typed error rather than at the model's first tool call.
 func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
+	if err := m.checkStart(state.cfg); err != nil {
+		return nil, err
+	}
 	if state.client != nil {
 		return state.client, nil
 	}
@@ -545,7 +667,8 @@ func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
 		Version: appinfo.FullVersion(),
 	}
 
-	state.client = newSDKClient(state.cfg, info)
+	cfg := state.cfg
+	state.client = newSDKClient(cfg, info, func() error { return m.checkStart(cfg) })
 	return state.client, nil
 }
 

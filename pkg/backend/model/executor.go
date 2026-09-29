@@ -361,12 +361,26 @@ func mergeProcessEnv(base, overlay []string) []string {
 
 // SetSandbox installs the live sandbox handle on the executor. The
 // engine calls this once per run, after [resolveAndStartSandbox]
-// returns. Subsequent tool node and backend invocations consult the
-// handle to route through the sandbox transparently.
+// returns — with the handle when a sandbox started, with nil when the
+// run settled without one. Subsequent tool node and backend invocations
+// consult the handle to route through the sandbox transparently.
 //
-// Passing nil clears the previous handle (used between runs).
+// It is also where the MCP manager learns the SETTLED answer to "may an
+// MCP server's process run beside this launcher". Until this call the
+// manager holds a prediction from the launch surface, which is not
+// always available and can be wrong in the permissive direction (a
+// sandbox-by-default run degrades to the host when no container runtime
+// is there). Both directions matter: the call tightens a run that turned
+// out sandboxed, and opens a run that turned out not to be.
 func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 	e.sandbox = run
+	if e.mcpManager != nil {
+		if run != nil {
+			e.mcpManager.SetStartPolicy(mcp.StartOperatorServersOnly)
+		} else {
+			e.mcpManager.SetStartPolicy(mcp.StartAllServers)
+		}
+	}
 }
 
 // SetSharedStateDir records a directory reachable at the SAME absolute path

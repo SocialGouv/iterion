@@ -38,7 +38,7 @@ func TestResolveToolsForNode_SandboxedNodeWithholdsContainerToolsThePolicyDenies
 	}
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "worker"}}
 
-	defs, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash", "todo_write"})
+	defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash", "todo_write"})
 	if err != nil {
 		t.Fatalf("resolveToolsForNode: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestResolveToolsForNode_SandboxedNodeWithholdsAnUnplaceableToolThePolicyDen
 	}
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "worker"}}
 
-	defs, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "lsp"})
+	defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "lsp"})
 	if err != nil {
 		t.Fatalf("resolveToolsForNode: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestResolveToolsForNode_SandboxPreCheckNeverConsultsTheClassifier(t *testin
 	}
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "worker"}}
 
-	defs, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash"})
+	defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash"})
 	if err != nil {
 		t.Fatalf("resolveToolsForNode: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestResolveToolsForNode_SandboxPreCheckResolvesAliasesLikeTheGuard(t *testi
 		return e
 	}
 
-	hostDefs, err := newExecutor(false).resolveToolsForNode(ctx, node, []string{"read_file", "bash"})
+	hostDefs, _, err := newExecutor(false).resolveToolsForNode(ctx, node, []string{"read_file", "bash"})
 	if err != nil {
 		t.Fatalf("resolveToolsForNode (unsandboxed): %v", err)
 	}
@@ -152,7 +152,7 @@ func TestResolveToolsForNode_SandboxPreCheckResolvesAliasesLikeTheGuard(t *testi
 		guardAllows[td.Name] = callErr == nil
 	}
 
-	sandboxedDefs, err := newExecutor(true).resolveToolsForNode(ctx, node, []string{"read_file", "bash"})
+	sandboxedDefs, _, err := newExecutor(true).resolveToolsForNode(ctx, node, []string{"read_file", "bash"})
 	if err != nil {
 		t.Fatalf("resolveToolsForNode (sandboxed): %v", err)
 	}
@@ -177,7 +177,7 @@ func TestResolveToolsForNode_UnsandboxedNodeKeepsTheCallTimeGuard(t *testing.T) 
 	}
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "worker"}}
 
-	defs, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash"})
+	defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash"})
 	if err != nil {
 		t.Fatalf("resolveToolsForNode: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestResolveToolsForNode_SandboxedNodeNamesTheClassifierGap(t *testing.T) {
 	}
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "worker"}}
 
-	if _, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash", "lsp"}); err != nil {
+	if _, _, err := e.resolveToolsForNode(context.Background(), node, []string{"read_file", "bash", "lsp"}); err != nil {
 		t.Fatalf("resolveToolsForNode: %v", err)
 	}
 	logged := buf.String()

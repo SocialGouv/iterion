@@ -1044,6 +1044,13 @@ type MCPServer struct {
 	// server would fall back to its public API.
 	Env  map[string]string
 	Auth *MCPAuth
+	// Origin records who controls this server's definition — the
+	// workflow's source tree, the bot author, or the operator's plugin
+	// root. Resolved when the catalog is built (pkg/backend/mcp), it is
+	// a plain string here so the IR keeps no dependency on the MCP
+	// package. Empty means unknown, which downstream treats as
+	// untrusted.
+	Origin string
 }
 
 // MCPAuth describes how to authenticate against an MCP server.

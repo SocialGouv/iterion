@@ -155,6 +155,11 @@ type Registry struct {
 	// is safe) must treat a non-empty list as "the enumeration is
 	// partial", not as "nothing enabled".
 	loadSkips []string
+	// homeOperatorChosen is true when `home` is the iterion home the
+	// OPERATOR chose — the one named by the inherited environment — as
+	// opposed to one a project `.env` selected. It answers
+	// OperatorControlled for installed plugins; see that method.
+	homeOperatorChosen bool
 }
 
 // LoadSkips returns one human-readable reason per installed plugin that
@@ -169,7 +174,22 @@ func (r *Registry) LoadSkips() []string {
 // (LoadSkips); a malformed builtin is a programming error and fails the load.
 func Load() (*Registry, error) {
 	home := store.GlobalIterionDataDir()
-	r := &Registry{home: home}
+	return loadFrom(home, store.InheritedIterionDataDir())
+}
+
+// LoadFromForTest builds a registry over an explicit home and an explicit
+// operator-chosen home, without consulting the environment. TESTS ONLY —
+// production goes through Load, whose trusted root comes from the inherited
+// environment.
+func LoadFromForTest(home, operatorHome string) (*Registry, error) {
+	return loadFrom(home, operatorHome)
+}
+
+func loadFrom(home, operatorHome string) (*Registry, error) {
+	// An operator home of "" means the inherited environment named none:
+	// "the operator said nothing", which is not "anything goes". Trust
+	// fails closed, so only builtins stay operator-controlled.
+	r := &Registry{home: home, homeOperatorChosen: operatorHome != "" && sameDir(home, operatorHome)}
 	if err := r.loadState(); err != nil {
 		return nil, err
 	}
@@ -330,6 +350,34 @@ func (r *Registry) Get(name string) (*Plugin, bool) {
 func (r *Registry) IsEnabled(name string) bool {
 	p, ok := r.Get(name)
 	return ok && p.Enabled
+}
+
+// OperatorControlled reports whether p's CODE is the operator's: a builtin
+// embedded in this binary, or a manifest installed under the iterion home the
+// operator's own environment names.
+//
+// It is false for a plugin loaded from a home a project `.env` selected. The
+// plugin still loads and still runs wherever the workflow itself runs; what it
+// does not get is the operator's authority — notably the right to start an MCP
+// server on the LAUNCHER of a sandboxed run, which is the one placement the
+// sandbox cannot contain.
+func (r *Registry) OperatorControlled(p *Plugin) bool {
+	if p == nil {
+		return false
+	}
+	return p.Builtin || r.homeOperatorChosen
+}
+
+// sameDir reports whether two paths name the same directory, comparing them
+// cleaned and absolute. A relative ITERION_HOME (`.env` writing `ITERION_HOME=
+// ./x`) must not match the operator's absolute home by string luck.
+func sameDir(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
 }
 
 // Enabled returns the enabled plugins, sorted by name (stable chain order).

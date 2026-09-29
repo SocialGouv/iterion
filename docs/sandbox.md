@@ -758,7 +758,7 @@ your repo root and `sandbox: auto` will pick them up.
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **sandboxed**: shell and script recipes run inside the container (`bash -c`); a registry-tool recipe (`command: <tool>`) is a launcher closure, so it runs only for a launcher-placed tool and is refused otherwise — under a Verified Action (`postcondition:`) that refusal fails the node whatever its `policy:`, since no rung can make the recipe runnable |
-| MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers remain host-side for Claude Code, but pi RPC starts them beside pi (inside the sandbox). See [MCP tools in a sandbox](#mcp-tools-in-a-sandbox). |
+| MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers are started by the `claude_code` CLI itself (in the container when the node is sandboxed) and beside pi for pi RPC. claw connects them in the LAUNCHER, so under an active sandbox it starts only operator-installed ones — see [MCP servers under a sandbox](#mcp-servers-under-a-sandbox). |
 
 ### Claw backend in sandbox
 
@@ -1007,9 +1007,12 @@ Each request is authenticated by an ephemeral `X-Iterion-Run` token the
 runtime mints and registers for the run, so a sandboxed agent can call
 these tools but nothing else can. Outside a sandbox the same capabilities
 are wired as host-side stdio MCP servers (`iterion __mcp-board` /
-`iterion __mcp-ask-user`). Arbitrary user-declared stdio MCP servers on
-`claude_code` still run host-side; running them container-side is a future
-item.
+`iterion __mcp-ask-user`). A user-declared stdio MCP server on `claude_code`
+is started by the CLI itself, from the config iterion hands it on
+`--mcp-config` — so it runs wherever the CLI runs, in the container for a
+sandboxed node. That config is logged redacted: it carries each server's
+`env` and `headers` inline, and on a cloud run the backend's log is persisted
+with the run.
 
 Pi's RPC extension owns a separate MCP client. In a sandbox it uses the same
 per-run HTTP board endpoint, while `ask_user` and async questions ride its
@@ -1017,6 +1020,50 @@ embedded control channel rather than MCP. Workflow-declared HTTP/SSE servers
 are contacted from the pi process, and declared stdio servers are spawned next
 to that process — therefore container-side when pi itself is sandboxed. Pi
 print mode loads no extension and gets none of these bridges.
+
+### MCP servers under a sandbox
+
+An external MCP server is a PROCESS, and where it runs is not where its tools
+appear. `claude_code` and pi start their own servers, so a sandboxed node's
+servers run in the container with it. claw connects them in the launcher
+process — the operator's machine, or the cloud runner pod — so for claw, and
+only for claw, a declared server would run OUTSIDE the isolation the run
+asked for, with the launcher's environment.
+
+The launcher therefore starts a server only when the OPERATOR is the one who
+put it there. What decides is the server's origin — who controls its
+definition, not who benefits from it:
+
+| Origin | Where the definition comes from | Started by the launcher of a SANDBOXED run |
+|---|---|---|
+| `plugin` | an enabled plugin, installed under the iterion home the operator's own environment names | yes, as before |
+| `project` | `.mcp.json` next to the `.bot`, or at the root of the repository the cloud runner cloned | no |
+| `workflow` | the DSL `mcp_server:` block | no |
+| unknown (the zero value) | — | no |
+
+Consequences for a claw node under an active sandbox:
+
+- a server it INHERITED (ambient: the repo's `.mcp.json`, the plugin catalog)
+  is dropped with an `mcp_server_degraded` event naming the origin — the node
+  runs without those tools, loudly;
+- a server it NAMES (`tools: [mcp.srv.*]`, or an exact `mcp.srv.tool`) refuses
+  the node at execution time, as a typed capability refusal — so the node's
+  `fallbacks:` are walked and a `claude_code` or pi route, which starts the
+  server in the container, can serve it;
+- the pre-run health check skips those servers rather than probing them: the
+  probe IS a connection, and for a stdio server a spawn.
+
+Unsandboxed runs are unchanged: the run already executes beside the launcher,
+so a workflow-controlled server there adds no exposure the run does not have.
+
+Two related rules travel with this one. A workflow-controlled server's
+`command`/`args`/`url` no longer expand `${VAR}` against the launcher's
+environment (`ITERION_MCP_EXPAND_UNTRUSTED_ENV=true` restores it); and
+`list_mcp_resources`, `read_mcp_resource` and `mcp_auth`, which take a server
+NAME the model writes, are restricted to the node's own active MCP servers.
+
+Running claw's own MCP servers inside the container — parity with
+`claude_code` and pi — is the end state, and a follow-up.
 
 ## Drivers
 

@@ -30,10 +30,20 @@ type sdkClient struct {
 	started       bool
 	startErr      error
 	session       *mcp.ClientSession
+
+	// gate is consulted before every protocol operation, including on an
+	// already-started session. The manager's start policy can tighten
+	// mid-run (the engine settles the sandbox after the launch surface's
+	// prediction), and a client handed to a registered tool closure is
+	// reachable for the rest of the run without passing through the
+	// manager again — so the check belongs here, at the one point every
+	// operation crosses. Nil means no gate (tests, and any host that
+	// builds a client directly).
+	gate func() error
 }
 
-func newSDKClient(cfg *ServerConfig, info clientInfo) *sdkClient {
-	return &sdkClient{cfg: cloneServerConfig(cfg), info: info}
+func newSDKClient(cfg *ServerConfig, info clientInfo, gate func() error) *sdkClient {
+	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate}
 }
 
 // protocolVersion20260728 is the first MCP revision that removed the
@@ -158,6 +168,15 @@ func (c *sdkClient) Close() error {
 }
 
 func (c *sdkClient) ensureStarted(ctx context.Context) error {
+	// The start gate first, and before the started short-circuit: this
+	// is the launcher's boundary. A server whose process must not run
+	// beside the launcher is refused here whether it is about to be
+	// spawned or was spawned earlier under a looser policy.
+	if c.gate != nil {
+		if err := c.gate(); err != nil {
+			return err
+		}
+	}
 	// Concurrent ListTools/CallTool callers must not serialise on a
 	// mutex held across slow I/O (HTTP dial / process spawn). We also
 	// must not permanently cache a context.DeadlineExceeded from one

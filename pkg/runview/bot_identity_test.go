@@ -2,12 +2,6 @@ package runview
 
 import (
 	"go/ast"
-	"go/parser"
-	"go/token"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -120,50 +114,7 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 		"pkg/botreplay/record.go": "replay harness: single node, no memory space",
 	}
 
-	repoRoot := filepath.Join("..", "..")
-	var offenders []string
-	err := filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
-				return filepath.SkipDir
-			}
-			// A directory carrying its own .git is a NESTED CHECKOUT — a git
-			// worktree or a sibling clone an operator keeps on disk. Its files
-			// belong to another tree (none are tracked here), and its older
-			// copies would report as offenders of a rule they predate. Detect
-			// them by that marker rather than by directory name: where someone
-			// parks their checkouts is their business, not this test's.
-			if path != repoRoot {
-				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		rel := filepath.ToSlash(strings.TrimPrefix(path, repoRoot+string(filepath.Separator)))
-		if _, ok := exempt[rel]; ok {
-			return nil
-		}
-		file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-		if perr != nil {
-			t.Errorf("parse %s: %v", rel, perr)
-			return nil
-		}
-		if executorSpecMissesBotID(file) {
-			offenders = append(offenders, rel)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
+	offenders := executorSpecSitesMissing(t, "BotID", exempt)
 	if len(offenders) > 0 {
 		t.Errorf("these build an executor without deciding its bot identity, so its bot-scoped memory "+
 			"falls back to the WORKFLOW name and silently diverges from every surface that sets it: %v\n"+
@@ -172,10 +123,15 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 	}
 }
 
-// executorSpecMissesBotID reports whether a file builds an ExecutorSpec without
-// setting BotID, by either construction shape: a composite literal, or a
-// variable whose fields are assigned one at a time.
-func executorSpecMissesBotID(file *ast.File) bool {
+// executorSpecMissesField reports whether a file builds an ExecutorSpec
+// without setting `field`, by either construction shape: a composite literal,
+// or a variable whose fields are assigned one at a time.
+//
+// The walk is the field-independent part, and several fields of this spec are
+// load-bearing in the same way — decided at every construction site or
+// silently wrong at the one that forgot. Each such field gets its own test
+// over this one traversal.
+func executorSpecMissesField(file *ast.File, field string) bool {
 	missing := false
 
 	// Shape 1 — `ExecutorSpec{…}` / `runview.ExecutorSpec{…}`, including the
@@ -216,7 +172,7 @@ func executorSpecMissesBotID(file *ast.File) bool {
 		}
 		for _, el := range lit.Elts {
 			if kv, ok := el.(*ast.KeyValueExpr); ok {
-				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "BotID" {
+				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == field {
 					return true
 				}
 			}
@@ -293,7 +249,7 @@ func executorSpecMissesBotID(file *ast.File) bool {
 			}
 			for _, lhs := range as.Lhs {
 				sel, ok := lhs.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "BotID" {
+				if !ok || sel.Sel.Name != field {
 					continue
 				}
 				if id, ok := sel.X.(*ast.Ident); ok {

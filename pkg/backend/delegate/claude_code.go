@@ -517,8 +517,8 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 			// concrete `docker exec` command. Without this every silent
 			// claude exit is opaque even with stderr capture. (Logger
 			// methods are nil-safe — no guard needed.)
-			preview := append([]string{path}, args...)
-			b.Logger.Info("claude-code: exec %v (cwd=%s, env_keys=%d, stdin=%v)", preview, cwd, len(env), openStdin)
+			b.Logger.Info("claude-code: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
+				redactedArgvPreview(path, args), cwd, len(env), openStdin)
 			// KeepStdinOpen mirrors the SDK's OpenStdin flag so the docker
 			// driver adds `--interactive` to docker exec. Without this,
 			// Session-mode (NDJSON over stdin) silently fails: the SDK
@@ -546,7 +546,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 			}
 			sort.Strings(keys)
 			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
-				append([]string{path}, args...), cwd, openStdin, keys)
+				redactedArgvPreview(path, args), cwd, openStdin, keys)
 			cmd := exec.CommandContext(ctx, path, args...)
 			if cwd != "" {
 				cmd.Dir = cwd

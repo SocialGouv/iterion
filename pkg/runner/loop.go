@@ -2909,7 +2909,10 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// that will run sandboxed, and sandboxed-or-not is this value's
 		// call for an inherit-everything node.
 		SandboxOverride: r.cfg.SandboxOverride,
-		SandboxDefault:  r.cfg.SandboxDefault,
+		// Both tiers come from the runner's own configuration — the same
+		// two the engine receives below.
+		SandboxTiersKnown: true,
+		SandboxDefault:    r.cfg.SandboxDefault,
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the

@@ -1271,11 +1271,16 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 				clawTools = append(clawTools, "mcp."+srv+".*")
 			}
 		}
-		toolDefs, toolErr := e.resolveToolsForNode(ctx, node, clawTools)
+		toolDefs, refusedMCP, toolErr := e.resolveToolsForNode(ctx, node, clawTools)
 		if toolErr != nil {
 			return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
 		task.ToolDefs = toolDefs
+		// Carried, not raised. A build error aborts the node before its
+		// fallback chain is walked; this refusal must reach Execute, where a
+		// route that starts the server inside the container still gets its
+		// turn.
+		task.MCPServersRefusedOnLauncher = refusedMCP
 		task.HasTools = true // claw needs the tool loop active for ask_user
 	}
 

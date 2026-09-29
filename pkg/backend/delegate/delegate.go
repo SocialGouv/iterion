@@ -482,6 +482,19 @@ type Task struct {
 	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef
 
+	// MCPServersRefusedOnLauncher maps each MCP server this node named and
+	// the launcher may not start — the run is sandboxed and the server's
+	// definition is not the operator's — to the reason. Empty on every
+	// other run.
+	//
+	// It travels on the task rather than failing the build because a build
+	// error aborts the node before its fallback chain: a backend that starts
+	// the server INSIDE the container (claude_code, pi) can still serve this
+	// node, and only a refusal raised at execution time lets it try.
+	//
+	// In-process only: it never crosses the sandbox IPC.
+	MCPServersRefusedOnLauncher map[string]string `json:"-"`
+
 	// MCPServers are the user/plugin-declared MCP servers active for this
 	// node (from the workflow `mcp_server` decls, project .mcp.json, and
 	// enabled plugins' mcp_servers contributions). CLI backends

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -23,24 +24,37 @@ var nodeActiveMCPServers = ir.NodeActiveMCPServers
 // instances for a specific node, ensuring that only tools from the node's
 // active MCP servers are exposed. Wildcard entries like "mcp.<server>.*"
 // are expanded to all tools discovered from that server.
-func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]delegate.ToolDef, error) {
+func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]delegate.ToolDef, map[string]string, error) {
 	// Expand wildcards (e.g. mcp.claude_code.*) into concrete tool names.
-	expanded, err := e.expandWildcards(ctx, node, names)
+	expanded, refused, err := e.expandWildcards(ctx, node, names)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	if err := e.ensureMCPServers(ctx, node, expanded); err != nil {
-		return nil, err
+	// Servers this launcher may not start (the run is sandboxed and their
+	// definition is not the operator's) are collected, not raised: the node
+	// is refused later, when it EXECUTES, so its `fallbacks:` are walked and
+	// a backend that starts the server inside the container can serve it. A
+	// boot failure — a server that is allowed here and broken — stays fatal.
+	if err := e.collectRefusedMCPServers(ctx, node, expanded, refused); err != nil {
+		return nil, nil, err
 	}
 
 	var tools []delegate.ToolDef
 	var unclassified []string
 	seen := make(map[string]string, len(expanded))
 	for _, name := range expanded {
+		// A tool of a refused server is not resolved at all: discovery never
+		// ran, so the registry has no definition for it and resolution would
+		// fail as "unknown tool" — an error that names neither the server nor
+		// the reason, and that kills the node at build time, before any
+		// fallback.
+		if refusedMCPServerFor(name, refused) {
+			continue
+		}
 		definition, ok, err := e.resolveSingleToolForNode(ctx, node, name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !ok {
 			continue
@@ -48,7 +62,7 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 		t := definition.ToDelegateDef()
 		if prior, exists := seen[t.Name]; exists {
 			if prior != definition.QualifiedName {
-				return nil, fmt.Errorf("model: tools %q and %q have the same model tool name %q", prior, definition.QualifiedName, t.Name)
+				return nil, nil, fmt.Errorf("model: tools %q and %q have the same model tool name %q", prior, definition.QualifiedName, t.Name)
 			}
 			continue
 		}
@@ -77,13 +91,19 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 			}
 			t = e.guardTool(ctx, t, node, definition.QualifiedName)
 		}
+		// Outside the policy branch: the node's MCP scope is the author's
+		// declaration, not a permission rule, so it holds whether or not a
+		// tool_policy is configured. The wrapper travels with the ToolDef, so
+		// it applies in-process and on the launcher's side of a sandboxed
+		// run, which executes these same definitions.
+		t = e.scopeMCPServerNamingTool(t, node)
 		tools = append(tools, t)
 	}
 	if mc, ok := e.toolPolicy.(tool.ModelConsultingChecker); ok && mc.ConsultsModel() && len(unclassified) > 0 && e.logger != nil {
 		e.logger.Warn("[%s] the LLM tool classifier does not see the calls a sandboxed runner executes in-container %v: "+
 			"only a tool_policy allowlist, if one is declared, applies to them", node.NodeID(), unclassified)
 	}
-	return tools, nil
+	return tools, refused, nil
 }
 
 // resolveTaskMCPServers projects the node's active MCP server names into
@@ -120,8 +140,9 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the
 // concrete tool names discovered from that MCP server.
-func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, error) {
+func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, map[string]string, error) {
 	var expanded []string
+	refused := map[string]string{}
 	for _, name := range names {
 		if !tool.IsMCPWildcard(name) {
 			expanded = append(expanded, name)
@@ -129,7 +150,15 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		}
 		server, err := tool.ParseMCPWildcard(name)
 		if err != nil {
-			return nil, fmt.Errorf("model: invalid wildcard %q: %w", name, err)
+			return nil, nil, fmt.Errorf("model: invalid wildcard %q: %w", name, err)
+		}
+		// Least privilege: a wildcard for a server this node cannot use must
+		// not START that server. checkNodeToolAccess refuses its tools a few
+		// lines below, which is too late — the process is already running
+		// beside the launcher by then.
+		if !mcpServerActiveForNode(node, server) {
+			e.logger.Warn("wildcard %q names MCP server %q, which is not active for node %q — not started", name, server, node.NodeID())
+			continue
 		}
 		// Ensure the server is connected so its tools are in the registry.
 		//
@@ -147,18 +176,25 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		// booted and has nothing to offer.
 		if e.mcpManager != nil && e.toolRegistry != nil {
 			if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{server}); err != nil {
+				// A server the launcher must not start is not a boot failure:
+				// record it and carry on, so the refusal reaches Execute and
+				// the node's fallbacks get their turn.
+				if mcp.ServerNotStartable(err) {
+					refused[server] = err.Error()
+					continue
+				}
 				// State the RULE, not the instance: at this point the code
 				// cannot tell a node-declared server from an ambient one that
 				// was already ensured, so naming the provenance would assert
 				// something it does not know.
-				return nil, fmt.Errorf("model: MCP server %q, required by this node as %q, cannot boot: %w "+
+				return nil, nil, fmt.Errorf("model: MCP server %q, required by this node as %q, cannot boot: %w "+
 					"(a server the node names explicitly is a declared dependency and fails the node; the same "+
 					"server inherited from the target repo's .mcp.json or the plugin catalog degrades to a "+
 					"warning instead)", server, name, err)
 			}
 		}
 		if e.toolRegistry == nil {
-			return nil, fmt.Errorf("model: wildcard %q requires a tool registry", name)
+			return nil, nil, fmt.Errorf("model: wildcard %q requires a tool registry", name)
 		}
 		serverTools := e.toolRegistry.ListByServer(server)
 		if len(serverTools) == 0 {
@@ -168,7 +204,7 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 			expanded = append(expanded, td.QualifiedName)
 		}
 	}
-	return expanded, nil
+	return expanded, refused, nil
 }
 
 // resolveSingleToolForNode resolves one tool name in the context of a node.
@@ -204,6 +240,121 @@ func (e *ClawExecutor) resolveToolReference(ctx context.Context, name string) (*
 		}
 	}
 	return td, err
+}
+
+// mcpServerNamingTools are the three claw builtins that do not belong to one
+// MCP server but take the server's NAME as an argument the model writes.
+// Every other MCP tool is registered per server as `mcp.<server>.<tool>` and
+// is therefore scoped by checkNodeToolAccess; these three are not, and they
+// reach the launcher's MCP provider, which connects the named server — for a
+// stdio server, starts its process.
+var mcpServerNamingTools = map[string]bool{
+	"list_mcp_resources": true,
+	"read_mcp_resource":  true,
+	"mcp_auth":           true,
+}
+
+// scopeMCPServerNamingTool restricts those three to the node's own active MCP
+// servers.
+//
+// checkNodeToolAccess cannot serve here: it reads an EMPTY active set as
+// "unrestricted" (correct for a tool node, which has no MCP scope at all),
+// which for an LLM node that declares `inherit: false` says the opposite of
+// what the author wrote. The three states are distinguished explicitly: no
+// scope at all leaves the tool alone, an empty allowlist denies every server,
+// and a populated one allows exactly its members.
+func (e *ClawExecutor) scopeMCPServerNamingTool(t delegate.ToolDef, node ir.Node) delegate.ToolDef {
+	if !mcpServerNamingTools[t.Name] || node == nil {
+		return t
+	}
+	if _, isLLM := node.(ir.LLMNode); !isLLM {
+		return t
+	}
+	allowed := nodeActiveMCPServers(node)
+	original := t.Execute
+	toolName := t.Name
+	nodeID := node.NodeID()
+	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
+		var args struct {
+			Server string `json:"server"`
+		}
+		if len(input) > 0 && string(input) != "null" {
+			if err := json.Unmarshal(input, &args); err != nil {
+				return "", fmt.Errorf("model: node %q: %s: decode input: %w", nodeID, toolName, err)
+			}
+		}
+		// claw defaults a missing server to "default"; mirror it so the
+		// check judges the name the provider would actually receive.
+		server := args.Server
+		if server == "" {
+			server = "default"
+		}
+		for _, name := range allowed {
+			if name == server {
+				return original(ctx, input)
+			}
+		}
+		return "", fmt.Errorf("model: node %q cannot reach MCP server %q through %s: the node's active MCP servers are %v",
+			nodeID, server, toolName, allowed)
+	}
+	return t
+}
+
+// collectRefusedMCPServers ensures the node's active MCP servers for the
+// given tool names and folds every launcher-start refusal into `refused`
+// (server → reason). Any other failure is returned as before: a server this
+// launcher may start and cannot boot is a broken dependency, and the node
+// must fail on it.
+func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Node, names []string, refused map[string]string) error {
+	if e.mcpManager == nil || e.toolRegistry == nil {
+		return nil
+	}
+	for _, server := range activeMCPServersForNames(node, names) {
+		if _, already := refused[server]; already {
+			continue
+		}
+		err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{server})
+		if err == nil {
+			continue
+		}
+		if mcp.ServerNotStartable(err) {
+			refused[server] = err.Error()
+			continue
+		}
+		return err
+	}
+	return nil
+}
+
+// refusedMCPServerFor reports whether a tool name belongs to a server the
+// launcher refused to start. Non-MCP names never match.
+func refusedMCPServerFor(name string, refused map[string]string) bool {
+	if len(refused) == 0 {
+		return false
+	}
+	server, _, err := tool.ParseMCPName(name)
+	if err != nil {
+		return false
+	}
+	_, ok := refused[server]
+	return ok
+}
+
+// mcpServerActiveForNode reports whether `server` is in the node's active MCP
+// set. A node with no set (a tool node, or an LLM node inheriting everything)
+// is not restricted here — checkNodeToolAccess owns that rule; this is only
+// about not STARTING a server the node cannot reach anyway.
+func mcpServerActiveForNode(node ir.Node, server string) bool {
+	active := nodeActiveMCPServers(node)
+	if len(active) == 0 {
+		return true
+	}
+	for _, name := range active {
+		if name == server {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *ClawExecutor) ensureMCPServers(ctx context.Context, node ir.Node, names []string) error {
