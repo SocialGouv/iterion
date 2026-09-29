@@ -200,9 +200,13 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 // spread into its argv, one word per element (the mechanism
 // DiagVarListDefaultRouting describes), and an object — or a list holding
 // a collection — arrives as ONE JSON token where a string was declared.
-// Any other destination reads the collection itself: a prompt renders its
-// JSON text (formatValue), an `expr:` sees the list or the object — the
-// message names the reading of the destination at hand. A warning, like
+// That mechanism is named only for a tool whose `command:` reads
+// `{{input.<key>}}` in the escaped form (commandReadsInputEscaped). Every
+// other reader takes the collection itself or its JSON text: a prompt
+// renders its JSON text (formatValue), a `script:` body a JSON literal
+// (jsonLiteralValue), the `{{!…}}` raw form the JSON text unquoted, an
+// `expr:` sees the list or the object — the message never names a
+// `command:` the destination does not have. A warning, like
 // C152: a tolerant consumer (an LLM prompt, a text template) reads the
 // rendered value without breaking, and a refusal would reject a shape a
 // run can survive.
@@ -230,10 +234,11 @@ func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *S
 	spread := fmt.Sprintf("its `command:` reading {{input.%[1]s}} gets the list spread into its argv, one word per element (in a `VAR={{input.%[1]s}}` assignment the first element is kept, the rest become a command of their own)", dm.Key)
 	token := fmt.Sprintf("its `command:` reading {{input.%s}} gets it as ONE JSON token, and every consumer reads a collection where the declaration promises a string", dm.Key)
 	either := "if it is a list, " + spread + "; an object arrives as ONE JSON token"
-	if dst.NodeKind() != NodeTool {
-		// Only a tool's command renders the field through the shell; any
-		// other destination reads the collection itself.
-		spread = "the node reads the collection where its schema promises a string — a prompt renders its JSON text, an `expr:` sees the collection itself"
+	if !commandReadsInputEscaped(dst, dm.Key) {
+		// Only a tool's `command:` reading the field in the escaped form
+		// renders it through shellEscapeValue; every other reader takes
+		// the collection itself or its JSON text.
+		spread = "the node reads the collection where its schema promises a string — a prompt renders its JSON text, a `script:` body a JSON literal, an `expr:` sees the collection itself"
 		token, either = spread, spread
 	}
 	var arrives, breaks string
@@ -274,6 +279,21 @@ func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *S
 	c.warnfAt(DiagWithWholeRefListToString, e.From, edgeID(e.From, e.To),
 		"edge %s -> %s, with %q: the mapping is exactly one reference to the `%s` var %q, so the value passes through with its type — %s arrives WHOLE on the `string` field %q of input schema %q on %s %s node, and nothing checks a `with:` value's type at run time: %s; declare the field `string[]` or `json`, or interpolate the reference into prose if one string is meant",
 		e.From, e.To, dm.Key, v.Type, ref.Path[0], arrives, dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(), breaks)
+}
+
+// commandReadsInputEscaped reports whether dst is a tool whose `command:`
+// reads `{{input.<key>}}` whole in the escaped form — the one reading
+// renderCommand hands to shellEscapeValue. A `script:` or an `action:`
+// recipe has no command, the raw `{{!input.<key>}}` form splices the JSON
+// text unquoted, and a drilled `{{input.<key>.x}}` reads a leaf.
+func commandReadsInputEscaped(dst Node, key string) bool {
+	tool, ok := dst.(*ToolNode)
+	if !ok {
+		return false
+	}
+	return slices.ContainsFunc(tool.CommandRefs, func(r *Ref) bool {
+		return r != nil && r.Kind == RefInput && !r.Unquoted && len(r.Path) == 1 && r.Path[0] == key
+	})
 }
 
 // aAn is the indefinite article for s, by its initial letter — the

@@ -266,3 +266,59 @@ workflow w:
 		}
 	}
 }
+
+// TestC180_ShellMechanismOnlyWhereACommandReadsTheField: the argv spread
+// is shellEscapeValue's, and only a tool `command:` reading
+// {{input.<key>}} in the escaped form reaches it. A `script:` tool has no
+// command at all (its body gets a JSON literal), the raw `{{!…}}` form
+// splices the JSON text unquoted, and a command that never reads the field
+// spreads nothing — naming a command's argv on any of them would be a
+// false claim in the diagnostic's own text.
+func TestC180_ShellMechanismOnlyWhereACommandReadsTheField(t *testing.T) {
+	fixture := func(toolBody string) string {
+		return strings.Replace(c180Fixture(`  b: string[] = "claw,claude_code"`, "string", `"{{vars.b}}"`),
+			"  command: `printf 'label=<%s>\\n' {{input.label}}`\n", toolBody, 1)
+	}
+	cases := []struct {
+		name, toolBody string
+		spread         bool
+	}{
+		{"a command reading the field escaped spreads it",
+			"  command: `printf 'label=<%s>\\n' {{input.label}}`\n", true},
+		{"a script body gets a JSON literal, and has no command",
+			"  language: py\n  script: |\n    print({{input.label}})\n", false},
+		{"the raw form splices the JSON text unquoted",
+			"  command: `printf '%s\\n' {{!input.label}}`\n", false},
+		{"a command that never reads the field spreads nothing",
+			"  command: `echo hi`\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := fixture(tc.toolBody)
+			if !strings.Contains(src, tc.toolBody) {
+				t.Fatalf("fixture is inert: the tool body was not spliced in\n%s", src)
+			}
+			r := compileText(t, src)
+			var msg string
+			for _, d := range r.Diagnostics {
+				if d.Code == DiagWithWholeRefListToString {
+					msg = d.Message
+				}
+			}
+			if msg == "" {
+				t.Fatalf("no C180 raised\ndiagnostics: %v", r.Diagnostics)
+			}
+			if got := strings.Contains(msg, "spread into its argv"); got != tc.spread {
+				t.Errorf("message names the argv spread = %v, want %v: %q", got, tc.spread, msg)
+			}
+			if !tc.spread {
+				if strings.Contains(msg, "command:") {
+					t.Errorf("message %q names a `command:` reading the field — this tool has none", msg)
+				}
+				if !strings.Contains(msg, "a `script:` body a JSON literal") {
+					t.Errorf("message %q does not name the non-shell readings", msg)
+				}
+			}
+		})
+	}
+}
