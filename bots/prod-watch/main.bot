@@ -726,7 +726,7 @@ tool plan:
         for f in ('short_id', 'level', 'link', 'substatus', 'status', 'pending'):
             if rec.get(f) is not None and not isinstance(rec[f], str):
                 refuse_state(where + '.' + f, rec[f], 'a string')
-        for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since'):
+        for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since', 'transition_seen_at'):
             if rec.get(f) is not None and not is_iso(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
         if rec.get('backlog') is not None and not isinstance(rec['backlog'], bool):
@@ -936,7 +936,7 @@ tool resolve_release:
   output: release_output
   language: py
   script: |
-    import json, re, socket, ipaddress
+    import json, re, socket, ipaddress, signal
     import urllib.request, urllib.error
     from urllib.parse import urlsplit
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -977,6 +977,13 @@ tool resolve_release:
 
     url = release.get('health_url') or ''
     field = release.get('field') or 'version'
+    ## A wall clock over each HTTP exchange: an answer trickling in a byte
+    ## at a time resets the socket timeout on every byte — the status line,
+    ## the headers, the body — so an alarm bounds it, failing it as the
+    ## timeout it is (fetch_timeout_secs is the escape hatch).
+    def _exchange_alarm(signum, frame):
+        raise TimeoutError('the answer outlasted its timeout (it trickled in, or never finished)')
+    signal.signal(signal.SIGALRM, _exchange_alarm)
     note, value = '', ''
     try:
         parts = urlsplit(url)
@@ -984,8 +991,12 @@ tool resolve_release:
             raise ValueError('unsupported URL scheme ' + repr(parts.scheme))
         _validate_host(parts.hostname or '')
         req = urllib.request.Request(url, headers={'User-Agent': 'prod-watch/0.1 (iterion)', 'Accept': 'application/json'})
-        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout) as r:
-            body = json.loads(r.read(1024 * 1024).decode('utf-8'))
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        try:
+            with urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout) as r:
+                body = json.loads(r.read(1024 * 1024).decode('utf-8'))
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
         cur = body
         for key in field.split('.'):
             cur = cur.get(key) if isinstance(cur, dict) else None
@@ -1021,7 +1032,7 @@ tool poll_loki:
   output: loki_output
   language: py
   script: |
-    import json, os, socket, ipaddress, time, sys, hashlib, http
+    import json, os, socket, ipaddress, time, sys, hashlib, http, signal
     import urllib.request, urllib.error
     from urllib.parse import urlsplit, urlencode
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1148,6 +1159,13 @@ tool poll_loki:
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
     _opener = urllib.request.build_opener(_NoRedirect())
+    ## A wall clock over each HTTP exchange: an answer trickling in a byte
+    ## at a time resets the socket timeout on every byte — the status line,
+    ## the headers, the body — so an alarm bounds it, failing it as the
+    ## timeout it is (fetch_timeout_secs is the escape hatch).
+    def _exchange_alarm(signum, frame):
+        raise TimeoutError('the answer outlasted its timeout (it trickled in, or never finished)')
+    signal.signal(signal.SIGALRM, _exchange_alarm)
 
     def get(path, params):
         url = base + path + '?' + urlencode(params)
@@ -1158,6 +1176,7 @@ tool poll_loki:
             if attempt:
                 time.sleep(2)
             try:
+                signal.setitimer(signal.ITIMER_REAL, timeout)
                 with _opener.open(req, timeout=timeout) as r:
                     return json.loads(r.read(32 * 1024 * 1024).decode('utf-8'))
             except urllib.error.HTTPError as e:
@@ -1169,6 +1188,8 @@ tool poll_loki:
                     raise
             except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
                 last = e
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
         raise last
 
     def word(v):
@@ -1415,7 +1436,7 @@ tool poll_prom:
   output: prom_output
   language: py
   script: |
-    import json, os, socket, ipaddress, time, math, http
+    import json, os, socket, ipaddress, time, math, http, signal
     import urllib.request, urllib.error
     from urllib.parse import urlsplit, urlencode
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1510,6 +1531,13 @@ tool poll_prom:
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
     _opener = urllib.request.build_opener(_NoRedirect())
+    ## A wall clock over each HTTP exchange: an answer trickling in a byte
+    ## at a time resets the socket timeout on every byte — the status line,
+    ## the headers, the body — so an alarm bounds it, failing it as the
+    ## timeout it is (fetch_timeout_secs is the escape hatch).
+    def _exchange_alarm(signum, frame):
+        raise TimeoutError('the answer outlasted its timeout (it trickled in, or never finished)')
+    signal.signal(signal.SIGALRM, _exchange_alarm)
 
     def get(path, params):
         url = base + path + '?' + urlencode(params)
@@ -1520,6 +1548,7 @@ tool poll_prom:
             if attempt:
                 time.sleep(2)
             try:
+                signal.setitimer(signal.ITIMER_REAL, timeout)
                 with _opener.open(req, timeout=timeout) as r:
                     return json.loads(r.read(8 * 1024 * 1024).decode('utf-8'))
             except urllib.error.HTTPError as e:
@@ -1531,6 +1560,8 @@ tool poll_prom:
                     raise
             except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
                 last = e
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
         raise last
 
     def word(v):
@@ -1616,7 +1647,7 @@ tool poll_sentry:
   output: sentry_output
   language: py
   script: |
-    import json, os, socket, ipaddress, time, re, http, datetime
+    import json, os, socket, ipaddress, time, re, http, datetime, signal
     import urllib.request, urllib.error
     from urllib.parse import urlsplit, urlencode, quote
     from email.utils import parsedate_to_datetime
@@ -1723,6 +1754,14 @@ tool poll_sentry:
     deadline = time.monotonic() + int(cfg.get('deadline_secs') or 120)
     server_date = []
     MAX_BODY = 8 * 1024 * 1024
+    ## The deadline is a wall clock. A server — or a proxy in front of it —
+    ## that trickles a byte at a time resets the socket timeout on every
+    ## byte, in the status line and headers, a chunk-size line or the
+    ## trailers as much as in the body: an alarm bounds each exchange whole.
+    calling = ['']
+    def _deadline_alarm(signum, frame):
+        raise DeadlineReached('the walk passed its deadline_secs during ' + calling[0])
+    signal.signal(signal.SIGALRM, _deadline_alarm)
 
     def get(path, params, what):
         ## `what` names the call in every error; a URL is never quoted (its
@@ -1741,13 +1780,13 @@ tool poll_sentry:
             if left <= 0:
                 raise DeadlineReached('the walk passed its deadline_secs during ' + what)
             try:
+                calling[0] = what
+                signal.setitimer(signal.ITIMER_REAL, left)
                 with _opener.open(req, timeout=max(1, min(timeout, left))) as r:
                     if not server_date and r.headers.get('Date'):
                         server_date.append(r.headers.get('Date'))
                     ## One recv at a time (read1), the deadline checked between
-                    ## them: a body dripping a byte at a time resets the socket
-                    ## timeout on every byte, and read(n) would wait for all n.
-                    ## The overrun is bounded by one socket timeout.
+                    ## them too: read(n) would wait for all n bytes.
                     chunks, size = [], 0
                     while True:
                         if time.monotonic() >= deadline:
@@ -1774,6 +1813,8 @@ tool poll_sentry:
                     ## The call was cut by the deadline cap on its timeout.
                     raise DeadlineReached('the walk passed its deadline_secs during ' + what) from None
                 last = e
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
         raise last
 
     CURSOR = re.compile(r'[0-9]+(?:\.[0-9]+)?:[0-9]+:[01]')
@@ -1838,7 +1879,7 @@ tool poll_sentry:
             short = i.get('shortId')
             md = i.get('metadata') if isinstance(i.get('metadata'), dict) else {}
             cnt = i.get('count')
-            cnt = int(cnt) if isinstance(cnt, str) and cnt.isascii() and cnt.isdigit() else (cnt if isinstance(cnt, int) and not isinstance(cnt, bool) else None)
+            cnt = int(cnt) if isinstance(cnt, str) and cnt.isascii() and cnt.isdigit() and len(cnt) <= 18 else (cnt if isinstance(cnt, int) and not isinstance(cnt, bool) else None)
             users = i.get('userCount')
             rec = {'id': i['id'],
                    'short_id': short if isinstance(short, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', short) else '',
@@ -1992,15 +2033,15 @@ tool poll_sentry:
                 if env:
                     p['environment'] = env
                 body, _ = get('/api/0/organizations/' + org + '/issues/', p, 'the tracked issues')
-                ## Asked and answered: an id missing from the answer is gone
-                ## (deleted, merged) — a fact about that incident.
-                requested.extend(ids[n:n + 100])
                 stats['pages'] += 1
                 if not isinstance(body, list):
                     raise LaneError('the answer to the tracked issues is not a list (its text is withheld)')
                 flags['answered'] = True
                 for i in body:
                     take(i, 'tracked')
+                ## Asked and answered, whole: an id missing from the answer is
+                ## gone (deleted, merged) — a fact about that incident.
+                requested.extend(ids[n:n + 100])
             complete['tracked'] = True
         except DeadlineReached:
             deadline_hit = True
@@ -2057,7 +2098,7 @@ tool probe_http:
   output: http_output
   language: py
   script: |
-    import json, socket, ipaddress, time
+    import json, socket, ipaddress, time, signal
     import urllib.request, urllib.error
     from urllib.parse import urlsplit
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -2095,6 +2136,13 @@ tool probe_http:
             _validate_host(parts.hostname or '')
             return super().redirect_request(req, fp, code, msg, headers, newurl)
     _opener = urllib.request.build_opener(_SafeRedirect())
+    ## A wall clock over each HTTP exchange: an answer trickling in a byte
+    ## at a time resets the socket timeout on every byte — the status line,
+    ## the headers, the body — so an alarm bounds it, failing it as the
+    ## timeout it is (fetch_timeout_secs is the escape hatch).
+    def _exchange_alarm(signum, frame):
+        raise TimeoutError('the answer outlasted its timeout (it trickled in, or never finished)')
+    signal.signal(signal.SIGALRM, _exchange_alarm)
 
     results = []
     for p in probes:
@@ -2114,6 +2162,9 @@ tool probe_http:
                 if attempt:
                     time.sleep(2)
                 try:
+                    ## A probe slower than its timeout fails as one, the
+                    ## redirects it follows included.
+                    signal.setitimer(signal.ITIMER_REAL, int(p.get('timeout_secs') or default_timeout))
                     with _opener.open(req, timeout=int(p.get('timeout_secs') or default_timeout)) as r:
                         res['status'] = r.status
                         r.read(64 * 1024)
@@ -2125,6 +2176,8 @@ tool probe_http:
                 except (TimeoutError, socket.timeout, urllib.error.URLError):
                     if attempt:
                         raise
+                finally:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
             res['ok'] = res['status'] == res['expected']
             if not res['ok']:
                 res['error'] = 'HTTP ' + str(res['status'])
@@ -2268,7 +2321,7 @@ tool leak_scan:
         text = BELT_BARE.sub('<num>', text)
         return BELT_GROUPED.sub(lambda m: '<num>' if sum(ch.isdigit() for ch in m.group(0)) >= 12 else m.group(0), text)
 
-    PLACEHOLDER = re.compile(r'[*xX•#.]+|\[[^\]]*\]|<[^>]*>|\([^)]*\)|\{+[^}]*\}+|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%\([^)]*\)s')
+    PLACEHOLDER = re.compile(r'[*xX•#.]+|\[[^\]]*\]|<[^>]*>|\([^)]*\)|\{+[^{}]*\}+|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%\([^)]*\)s')
     PAGING = re.compile(r'(?ai)(?:next|page|continuation|sync|resume|cursor|marker|pagination)[_.-]?$')
     def secret_ok(m):
         ## What a secret key can hold that is no secret: a logger's own mask
@@ -2315,7 +2368,7 @@ tool leak_scan:
                                                          m.group(0)[:m.start(m.lastindex) - m.start(0)]) \
                 and re.fullmatch(r'[a-z]+(?:_[a-z0-9]+)+', k):
             return False   # a status feed under a bare `*pass` key — quoted, DSN and flag values are credentials
-        if m.lastindex in (6, 7, 8, 9, 10) and re.fullmatch(r'[A-Z0-9_]+_[A-Z0-9_]+', k):
+        if m.lastindex in (6, 7, 8, 9, 10) and re.fullmatch(r'[A-Z0-9_]+', k) and '_' in k[1:-1]:
             return False   # a shout-case placeholder after a flag (`--pass CHANGE_ME`)
         if m.lastindex in (3, 4, 8, 9, 13, 14) and (raw[:1] == ' ' or ';' in v or re.search(r'[)}\]]', v) or v.count(' ') >= 3):
             ## A quote never closed: the tail must read like the rest of a
@@ -2398,7 +2451,9 @@ tool leak_scan:
         ## of numbers, not a card.
         ('card', re.compile(r'(?<!\d)(?:\d{15,19}|\d{1,6}(?:([^\dA-Za-z\n])\d{1,6})(?:\1\d{1,6}){1,8})(?!\d|\.\d|\1\d)'), lambda m: card_ok(m)),
         ('num', None, None),
-        ('email', re.compile(r'(?a)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
+        ## The local part starts where its run starts (the lookbehind): from
+        ## every word boundary inside a long run, the scan was quadratic.
+        ('email', re.compile(r'(?a)(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), None),
         ('phone_fr', re.compile(r'(?a)(?<![\d+])(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}(?!\d)'), None),
     ]
     def mask(cls, value):
@@ -2418,8 +2473,10 @@ tool leak_scan:
         ## "０６１２…" phone or a decorative NIR is still seen, and every run
         ## of blanks (tabs, double spaces) to one space so a PAN's groups
         ## keep their shape for every class. Bounded: one NFKC pass, no
-        ## decoding of encodings (the policy slice adds them).
-        return re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFKC', line))
+        ## decoding of encodings (the policy slice adds them), and the fold's
+        ## output cut too — NFKC multiplies a crafted line (U+33C2 folds to
+        ## four characters, U+FDFA to eighteen).
+        return re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFKC', line)[:8000])
 
     findings = {}
     def note(cls, value, q, stream, ts, qs=(), into=None):
@@ -2898,6 +2955,7 @@ tool decide:
     s_emitted = set()
     s_leaks = {}
     s_pending, s_fresh, s_notes = [], [], []
+    s_history = []
     ## Read by id this tick: in the answer, or asked and absent (deleted or
     ## merged) — a note about an incident needs a fact about THAT incident,
     ## never the whole walk being complete.
@@ -2933,11 +2991,13 @@ tool decide:
         floor = s_dt(sentry_cfg.get('catchup_floor'))
         if post_from is not None and floor is not None and floor > post_from:
             post_from = floor
+        catchup_td = datetime.timedelta(hours=int(sentry_cfg.get('max_catchup_hours') or 24))
         for sid, it in sorted(s_issues.items()):
             fp = 'sentry:' + sid
             prev = incidents.get(fp)
             prev_seen = (prev or {}).get('sentry_last_seen')
             prev_sev = (prev or {}).get('severity') or ''
+            prev_status = (prev or {}).get('status') or ''
             rec = s_record(it, fp)
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
@@ -2945,22 +3005,46 @@ tool decide:
                 rec['tracked_read_at'] = now_iso
             sev_now = s_sev(it.get('level') or '')
             sighted = bool(it.get('last_seen')) and (not prev_seen or it['last_seen'] > prev_seen)
+            ## Closed in Sentry right now (read by id: resolved, archived …):
+            ## its events are no news — Sentry keeps ingesting an archived
+            ## issue's — so no reminder, no escalation, and the closing note
+            ## already said is not owed again.
+            closed_now = bool(it.get('in_tracked')) and (it.get('status') or '') not in S_OPEN
+            if closed_now:
+                rec['transition_seen_at'] = None
             tr_at = s_dt(it.get('transition_at'))
-            dated = (it.get('in_transition') and it.get('transition_kind') in ('regressed', 'escalating') and tr_at is not None
-                     and (not rec.get('transition_at') or it['transition_at'] > rec['transition_at']))
+            in_tr = it.get('in_transition') and it.get('transition_kind') in ('regressed', 'escalating')
+            dated = in_tr and tr_at is not None and (not rec.get('transition_at') or it['transition_at'] > rec['transition_at'])
+            if in_tr and not dated and (tr_at is None or prev_status not in S_OPEN):
+                ## Watched in the transition list and not dated yet (undated,
+                ## or back in it after a closure, its new date still to
+                ## check): when the date comes, however late, the transition
+                ## the lane watched happen is news — the catch-up floor is
+                ## for a lane that was off, or an issue it never knew.
+                rec['transition_seen_at'] = rec.get('transition_seen_at') or now_iso
+            seen_tr = s_dt(rec.get('transition_seen_at'))
+            limit = post_from
+            if dated and armed is not None and seen_tr is not None and tr_at <= seen_tr and seen_tr - tr_at < catchup_td:
+                limit = armed - overlap_td
             word_ = None
-            if dated and post_from is not None and tr_at >= post_from:
+            if dated and limit is not None and tr_at >= limit:
                 word_ = it['transition_kind']
             elif dated:
                 ## Dated before the arming or the catch-up floor: history,
                 ## recorded — whatever the record — so it is neither re-dated
-                ## every tick nor posted.
+                ## every tick nor posted. One dated after the arming (the
+                ## floor made it history) is said in the coverage note.
                 rec['transition_at'] = it['transition_at']
+                rec['transition_seen_at'] = None
+                if armed is not None and tr_at >= armed - overlap_td:
+                    s_history.append(s_label(it))
             if word_ is None and prev is None and it.get('in_new'):
                 word_ = 'new'
             elif word_ is None and prev is None:
                 rec['backlog'] = True
-            elif word_ is None and rec.get('alerted') and sighted:
+            elif word_ is None and rec.get('alerted') and sighted and not closed_now and not rec.get('pending'):
+                ## (A pending alert goes out first: a reminder must not stand
+                ## in for a pending regression.)
                 if RANK.get(sev_now, 0) > RANK.get(prev_sev or 'low', 0):
                     word_ = 'escalated'
                 elif rec.get('last_notified') and not said_within(rec['last_notified'], renotify_h):
@@ -2971,7 +3055,8 @@ tool decide:
             if sighted:
                 rec['sentry_last_seen'] = it['last_seen']
                 rec['last_seen'] = now_iso
-                rec['quiet_noted'] = False
+                if not closed_now:
+                    rec['quiet_noted'] = False
                 rec['count'] = int(rec.get('count') or 0) + 1
             if (word_ is None and it.get('in_tracked') and (it.get('status') or '') not in S_OPEN
                     and rec.get('alerted') and not rec.get('quiet_noted') and not rec.get('pending')):
@@ -3003,7 +3088,7 @@ tool decide:
             sid = fp.split(':', 1)[1]
             it = s_issues.get(sid)
             read_now = (it is not None and it.get('in_tracked')) or sid in s_requested
-            if rec.get('pending') in ('new', 'regressed', 'escalating'):
+            if rec.get('pending') in ('new', 'regressed', 'escalating', 'escalated'):
                 ## Cut by the per-run cap on an earlier tick: re-emitted until
                 ## posted (ahead of fresh alerts: see the cap below), from this
                 ## tick's text when the issue was read, from its short id and
@@ -3113,8 +3198,14 @@ tool decide:
     observe_ok = dict(lane_ok, loki=loki_complete, prometheus=prom_ok, sentry=sentry_ok and not sentry_truncated)
     sources = {'prometheus': {r.get('id') for r in prom_results}, 'probes': {r.get('id') for r in http_results}, 'loki': set(loki_per_query),
                'sentry': {'sentry'} if lanes.get('sentry') else set()}
+    def pending_lane_on(rec):
+        ## A pending alert of a log template or a leak class is re-emitted
+        ## while its lane is on (below), and kept until then — the same rule
+        ## as a pending Sentry issue, whose re-emission needs the lane too.
+        lane_k = {'loki': 'loki', 'leak': 'loki', 'sentry_leak': 'sentry'}.get(rec.get('kind'))
+        return bool(lane_k) and rec.get('pending') == 'new' and (s_on if lane_k == 'sentry' else bool(lanes.get(lane_k)))
     for fp, rec in list(incidents.items()):
-        if fp in seen_fps:
+        if fp in seen_fps or pending_lane_on(rec):
             continue
         gone_h = age_h(rec.get('last_seen') or rec.get('first_seen') or now_iso)
         if gone_h >= forget_d * 24:
@@ -3193,7 +3284,7 @@ tool decide:
     ## component is new or its last mention is older than renotify_hours,
     ## whatever the combination: a lane flapping, or kinds coming and going
     ## together, never re-post it every tick.
-    coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors
+    coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors or s_history
                              or (lanes.get('sentry') and (sentry_errors or sentry_truncated))) else 'full'
     gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
     truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
@@ -3210,6 +3301,9 @@ tool decide:
     if signals.get('templates_cut'):
         pieces.append(('cut', 'template list cut: ' + str(signals.get('templates_total') or '?') +
                        ' templates, the 200 with the most live lines kept'))
+    for lbl in s_history:
+        pieces.insert(0, ('sentry history: ' + lbl, 'sentry: ' + lbl + ' regressed or escalated after the arming but was dated only '
+                          'past max_catchup_hours — recorded as history, not posted'))
     if s_on and not s_armed_now:
         ## A bootstrap that could not read the new-issue list whole posts
         ## nothing — said, not hidden behind a healthy lane.
@@ -3257,7 +3351,7 @@ tool decide:
     ## true; Sentry issues have their own pending path above.)
     already = {a['fingerprint'] for a in alerts}
     for fp, rec in sorted(incidents.items(), key=lambda kv: (str(kv[1].get('pending_since') or ''), kv[0])):
-        if fp in already or rec.get('kind') not in ('loki', 'leak', 'sentry_leak') or rec.get('pending') != 'new':
+        if fp in already or not pending_lane_on(rec):
             continue
         alerts.append({'fingerprint': fp, 'kind': rec.get('kind'), 'severity': rec.get('severity') or 'medium', 'state': 'new',
                        'title_key': rec.get('title_key'), 'title_arg': rec.get('title_arg'), 'detail_key': rec.get('detail_key'),
@@ -3293,7 +3387,7 @@ tool decide:
         queues = {}
         for a in alerts[i:j]:
             queues.setdefault(lane_of(a), []).append(a)
-        lanes_in_tier = sorted(queues)
+        lanes_in_tier = sorted(queues, key=lambda q: (pending_first(queues[q][0]), q))
         while any(queues[q] for q in lanes_in_tier):
             for q in lanes_in_tier:
                 if queues[q]:
@@ -3317,8 +3411,10 @@ tool decide:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
             ## Posted again (a transition, a pending alert): its closing note
-            ## is owed again.
+            ## is owed again, and the idle clock restarts — a transition
+            ## posted without an event here must not read idle next tick.
             rec['quiet_noted'] = False
+            rec['last_seen'] = now_iso
         if rec.get('pending') and a['state'] not in ('quiet', 'resolved'):
             rec['pending'] = None
             rec['pending_since'] = None
@@ -3326,13 +3422,19 @@ tool decide:
             rec['pending_transition_at'] = None
             if a['state'] in ('regressed', 'escalating') and a.get('transition_at'):
                 rec['transition_at'] = a['transition_at']
+                rec['transition_seen_at'] = None
             if a['state'] not in ('quiet', 'resolved'):
                 rec['backlog'] = False
     for a in deferred:
         rec = incidents.get(a['fingerprint'])
-        if rec is not None and a['state'] == 'escalated' and a.get('prev_severity'):
+        if rec is not None and a['state'] == 'escalated' and a.get('prev_severity') and a['kind'] != 'sentry':
+            ## The chassis re-derives an escalation from the present (a
+            ## probe, a metric, a template's count): the previous severity
+            ## makes the same rule re-select it. A Sentry escalation came
+            ## from a sighting that will not recur: it stays pending, at the
+            ## severity it reached.
             rec['severity'] = a['prev_severity']
-        if rec is not None and a['kind'] == 'sentry' and a['state'] in ('new', 'regressed', 'escalating'):
+        if rec is not None and a['kind'] == 'sentry' and a['state'] in ('new', 'regressed', 'escalating', 'escalated'):
             rec['pending'] = a['state']
             rec['pending_transition_at'] = a.get('transition_at')
             rec['pending_since'] = rec.get('pending_since') or now_iso
@@ -3460,37 +3562,43 @@ tool notify:
         print(json.dumps(o, ensure_ascii=False))
         raise SystemExit(0)
     def flat(s, cap=300):
-        return re.sub(r'\s+', ' ', str(s if s is not None else '')).strip()[:cap]
+        ## U+2424 (SYMBOL FOR NEWLINE) is a line break to Mattermost's markdown,
+        ## which reads it as one before parsing: it would end a code span.
+        return re.sub(r'[\s\u2424]+', ' ', str(s if s is not None else '')).strip()[:cap]
     def inert(s, cap=300):
         ## Untrusted text (a log line, a metric title, a container name) is
         ## rendered with every markdown active escaped and bare URL schemes
         ## defanged: a line an attacker influenced must never become a
         ## clickable link, a heading or a second alert block in the channel.
         t = re.sub(r'([\\`*_\[\]()~>|#!-])', lambda m: '\\' + m.group(1), flat(s, cap))
-        return re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t)
+        return re.sub(r'(?i)(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t)
     def code(s, cap=300):
         ## Inline code renders no markdown; a URL scheme is still defanged so
         ## nothing a reader copies out of the span is a live link either.
         t = flat(s, cap).replace('`', "'")
-        return '`' + re.sub(r'(?i)\b(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
+        return '`' + re.sub(r'(?i)(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
+    def lab(t):
+        ## The label's own words are the operator's, rendered as written — a
+        ## backtick or a backslash in them escaped, or it would pair with a
+        ## value's code span, or escape its opening backtick.
+        return str(t).replace('\\', '\\\\').replace('`', '\\`')
     def fmt(label, /, **kw):
         ## Every value filled into a label is inline code: a Sentry culprit, a
         ## container, a URL — anything an attacker can write — can neither
         ## mention (@channel) nor autolink there (Mattermost's markdown turns
         ## a bare `host.tld/path`, `www1.` or a scheme glued to a word into a
-        ## link in plain text, whatever escaping precedes it). The label's own
-        ## words are the operator's.
+        ## link in plain text, whatever escaping precedes it). One pass over
+        ## the LABEL's placeholders: a value is never scanned for more.
         t = labels.get(label) or label
-        for k, v in kw.items():
-            t = t.replace('{' + k + '}', code(v, 200))
-        return t
+        return ''.join(code(kw[x[1:-1]], 200) if x[:1] == '{' and x[-1:] == '}' and x[1:-1] in kw else lab(x)
+                       for x in re.split(r'(\{\w+\})', t))
 
     scope = flat(app.get('name'), 60) + ('/' + flat(app.get('environment'), 40) if app.get('environment') else '')
     messages = []
     for a in alerts:
         sev = a.get('severity') or 'medium'
         state = a.get('state') or 'new'
-        head = fmt(a.get('title_key') or 'alert')
+        head = labels.get(a.get('title_key') or 'alert') or (a.get('title_key') or 'alert')
         ## A closed Sentry issue's note names its status: resolved, archived,
         ## or gone (deleted, merged).
         closed = {'resolved': 'sentry_resolved', 'ignored': 'sentry_archived'}.get(str((a.get('evidence') or {}).get('status') or ''), 'sentry_closed')
@@ -3503,11 +3611,11 @@ tool notify:
         fields = a.get('fields') or {}
         if a.get('detail_key'):
             lines.append(fmt(a['detail_key'], **{k: v for k, v in fields.items()}))
-        meta = [labels.get('severity', 'severity') + ' ' + sev.upper(),
+        meta = [lab(labels.get('severity', 'severity')) + ' ' + sev.upper(),
                 fmt('new_since', date=(a.get('first_seen') or '')[:16]),
                 fmt('count', n=a.get('count') or 0)]
         if release:
-            meta.append(labels.get('release', 'release') + ' ' + code(release, 60) +
+            meta.append(lab(labels.get('release', 'release')) + ' ' + code(release, 60) +
                         ('' if release_known else ' (' + inert(labels.get('release_unverified', 'unverified'), 40) + ')'))
         lines.append('_' + ' · '.join(meta) + '_')
         ev = a.get('evidence') or {}

@@ -76,7 +76,12 @@ overrides).
   defaults**: check they exist on your cluster (a probe returning no
   series posts a `no_data` incident rather than reading as healthy).
 - `probes` — the app's own health URLs. Public hosts only unless
-  `--var allow_private_sources=true` (on-prem / hermetic tests).
+  `--var allow_private_sources=true` (on-prem / hermetic tests). A probe's
+  `timeout_secs` (10) bounds it end to end, redirects included: an app
+  trickling its answer fails the probe as a timeout. Every other fetch —
+  the release endpoint, each Grafana call — is bounded the same way by
+  `--var fetch_timeout_secs` (20); raise it for a slow but legitimate
+  answer (a large Loki page over a slow link).
 - `sentry` — absent or `null`: the lane is off. `base_url` (https, no
   query, fragment or credentials; the prefix of the ONE clickable link
   the bot renders), `org` and `project` (slugs), `environment` (strongly
@@ -93,7 +98,7 @@ overrides).
   `max_issues` (per list, pages of 100; default 200),
   `max_transition_checks` (activity lookups per tick; 20),
   `max_tracked` (alerted issues re-read by id each tick; 200 — over it
-  they take turns), `deadline_secs` (120: the walk stops there, partial,
+  they take turns), `deadline_secs` (120, a wall clock: the walk stops there, partial,
   never the tick's death), `max_catchup_hours` (24, above
   `overlap_minutes`: a cursor older than that — the lane turned off, a
   long outage — opens at the floor and declares the gap instead of
@@ -114,7 +119,9 @@ overrides).
 - `labels` — message-wording overrides (any language). Keys and their
   English defaults live in the bot's `plan` node; placeholders in braces
   are substituted with each value as inline code (neither a mention nor
-  a link can come out of it), truncated to 200 characters.
+  a link can come out of it), truncated to 200 characters; the label's
+  own words render as written, a backtick or a backslash in them
+  included.
 
 ## The secrets
 
@@ -277,7 +284,11 @@ managed secret under the name `forge_token` (see vuln-watch's
   deadline): each tick bootstraps again until it can, and nothing posts
   from the lane meanwhile — its health is not stamped either, so a
   silent-source note follows. Raise `max_issues` or `deadline_secs`, or
-  shorten `overlap_minutes`.
+  shorten `overlap_minutes`. **`sentry: P-… regressed or escalated after
+  the arming but was dated only past max_catchup_hours — recorded as
+  history`** — a transition the lane first saw too late to call news (it
+  was off, the level floor was lowered, or the issue was new to it):
+  named once, never posted.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

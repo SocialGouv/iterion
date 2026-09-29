@@ -1102,3 +1102,524 @@ func TestProdWatch_SentryGoneIssueTakesItsTurn(t *testing.T) {
 		t.Fatalf("max_tracked 1: an issue gone from Sentry held the slot, the other's resolution was never read: %v", all)
 	}
 }
+
+// anyPrefix: one of xs starts with prefix.
+func anyPrefix(xs []string, prefix string) bool {
+	for _, x := range xs {
+		if strings.HasPrefix(x, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestProdWatch_SentryArchivedIssueStillFiringIsNotedOnce: an archived issue
+// keeps receiving events (Sentry ingests them and moves lastSeen) and stays
+// read by id; its archived note is owed ONCE, not on every tick with an event.
+func TestProdWatch_SentryArchivedIssueStillFiringIsNotedOnce(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "91", ShortID: strp("P-91"), Title: "x", FirstProcessed: now, LastSeen: now, Count: 1})
+	sentryTick(t, h, wf)
+	h.sentry.edit("91", func(i *pwSentryIssue) {
+		i.FirstProcessed = now.Add(-3 * time.Hour)
+		i.Status = "ignored"
+		i.Substatus = strp("archived_forever")
+	})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "resolved:P-91:low" {
+		t.Fatalf("setup archived note: %v", got)
+	}
+	var seq []string
+	for k := 0; k < 3; k++ {
+		h.sentry.edit("91", func(i *pwSentryIssue) {
+			i.LastSeen = time.Now().Add(time.Duration(k+1) * time.Second)
+			i.Count += 10
+		})
+		seq = append(seq, sentryAlerts(sentryTick(t, h, wf))...)
+	}
+	if len(seq) != 0 {
+		t.Fatalf("an archived issue that keeps receiving events re-posted its closing note on every tick: %v", seq)
+	}
+}
+
+// TestProdWatch_SentryArchivedIssueStillFiringGetsNoReminder: a new event on
+// an issue the operator archived is not "still open".
+func TestProdWatch_SentryArchivedIssueStillFiringGetsNoReminder(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "92", ShortID: strp("P-92"), Title: "x", FirstProcessed: now, LastSeen: now, Count: 1})
+	sentryTick(t, h, wf)
+	h.sentry.edit("92", func(i *pwSentryIssue) {
+		i.FirstProcessed = now.Add(-3 * time.Hour)
+		i.Status = "ignored"
+		i.Substatus = strp("archived_forever")
+	})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "resolved:P-92:low" {
+		t.Fatalf("setup archived note: %v", got)
+	}
+	st := h.state(t)
+	st["incidents"].(map[string]any)["sentry:92"].(map[string]any)["last_notified"] = time.Now().Add(-25 * time.Hour).UTC().Format(time.RFC3339)
+	h.setState(t, st)
+	h.sentry.edit("92", func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(time.Second); i.Count += 10 })
+	if got := sentryAlerts(sentryTick(t, h, wf)); len(got) != 0 {
+		t.Fatalf("an archived issue's new event posted as if it were open: %v", got)
+	}
+}
+
+// TestProdWatch_PendingAlertIsNotStarvedByAnEarlierKind: inside a rank the
+// kinds holding a pending alert start the round — one fresh alert a tick of
+// an alphabetically earlier kind never holds a pending one back.
+func TestProdWatch_PendingAlertIsNotStarvedByAnEarlierKind(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	t.Run("a pending Sentry leak behind one fresh fatal issue per tick", func(t *testing.T) {
+		t.Parallel()
+		h := newPWHarness(t)
+		h.writeConfig(t, sentryOnly(h, nil))
+		sentryTick(t, h, wf)
+		h.alertCap.Store(1)
+		now := time.Now()
+		h.sentry.put(&pwSentryIssue{ID: "51", ShortID: strp("P-51"), Title: "boom", Level: "fatal", FirstProcessed: now, LastSeen: now})
+		h.sentry.put(&pwSentryIssue{ID: "52", ShortID: strp("P-52"), Title: "UserNotFound: helene.zq7rtx@qz9mail.fr", FirstProcessed: now, LastSeen: now})
+		if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:P-51:high" {
+			t.Fatalf("setup: %v", got)
+		}
+		var seq []string
+		for k := 0; k < 3; k++ {
+			id := fmt.Sprint(53 + k)
+			h.sentry.put(&pwSentryIssue{ID: id, ShortID: strp("P-" + id), Title: "boom " + id, Level: "fatal", FirstProcessed: time.Now(), LastSeen: time.Now()})
+			seq = append(seq, sentryAlerts(sentryTick(t, h, wf))...)
+		}
+		if !anyPrefix(seq, "new:leak-email:high") {
+			t.Fatalf("cap 1: a pending leak alert (high) was held back by one fresh high Sentry issue per tick, 3 ticks: %v", seq)
+		}
+	})
+	t.Run("a pending Sentry regression behind one new log template per tick", func(t *testing.T) {
+		t.Parallel()
+		h := newPWHarness(t)
+		h.prom.Store(map[string]pwProm{"restarts-q": {Value: "0"}})
+		h.writeConfig(t, func(cfg map[string]any) {
+			cfg["sentry"] = map[string]any{"base_url": h.srv.URL, "org": "org", "project": "proj", "environment": "preprod",
+				"min_level": "error", "overlap_minutes": 60}
+		})
+		h.lines.Store([]pwLine{{TS: nsAgo(3 * time.Minute), Line: "ERROR warmup", Container: "api", Q: "errors-q"}})
+		h.tick(t, wf, false) // bootstrap of both lanes
+		h.alertCap.Store(1)
+		now := time.Now()
+		h.sentry.put(&pwSentryIssue{ID: "9", ShortID: strp("P-9"), Title: "real regression", Substatus: strp("regressed"),
+			FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now, Acts: []pwSentryAct{{Type: "set_regression", At: now}}})
+		var seq []string
+		for k := 0; k < 4; k++ {
+			time.Sleep(20 * time.Millisecond)
+			h.lines.Store(append(h.lines.Load().([]pwLine),
+				pwLine{TS: time.Now().UnixNano() - 5*int64(time.Millisecond), Line: "ERROR outage " + r8Word(k+3) + " refused", Container: "api", Q: "errors-q"}))
+			time.Sleep(20 * time.Millisecond)
+			seq = append(seq, alertsOf(t, h.tick(t, wf, false))...)
+			if k == 0 {
+				if rec := sentryIncident(t, h, "9"); rec == nil || rec["pending"] != "regressed" {
+					t.Fatalf("setup: the regression is not pending after the first tick: %v (%v)", rec, seq)
+				}
+			}
+		}
+		if !anyPrefix(seq, "sentry:regressed:medium") {
+			t.Fatalf("cap 1: a pending Sentry regression (medium) was held back by one new medium log template per tick, 4 ticks: %v", seq)
+		}
+	})
+}
+
+// TestProdWatch_SentryEscalationCutByTheCapIsPending: a Sentry escalation
+// comes from a sighting that will not recur — cut by the cap, it stays
+// pending at the severity it reached until it posts.
+func TestProdWatch_SentryEscalationCutByTheCapIsPending(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "10", ShortID: strp("P-10"), Title: "x", FirstProcessed: now, LastSeen: now})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:P-10:medium" {
+		t.Fatalf("setup: %v", got)
+	}
+	h.alertCap.Store(1)
+	t1 := time.Now().Add(time.Second)
+	h.sentry.edit("10", func(i *pwSentryIssue) { i.Level = "fatal"; i.LastSeen = t1; i.FirstProcessed = now.Add(-3 * time.Hour) })
+	h.sentry.put(&pwSentryIssue{ID: "09", ShortID: strp("P-09"), Title: "y", Level: "fatal", FirstProcessed: time.Now(), LastSeen: time.Now()})
+	o := sentryTick(t, h, wf)
+	if got := sentryAlerts(o); strings.Join(got, " ") != "new:P-09:high" || fmt.Sprint(o["decide"]["overflow_count"]) != "1" {
+		t.Fatalf("setup: want new:P-09 posted and the escalation cut (overflow 1): %v overflow=%v", got, o["decide"]["overflow_count"])
+	}
+	// The next tick's by-id read fails: the escalation goes out from the
+	// record alone, at the severity it reached.
+	h.sentry.failNext("tracked", 500, 500)
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "escalated:P-10:high" {
+		t.Fatalf("a Sentry escalation cut by the cap did not go out from its record at the severity it reached: %v; severity now %v",
+			got, sentryIncident(t, h, "10")["severity"])
+	}
+}
+
+// TestProdWatch_SentryHistoryAfterTheArmingIsSaid: a regression dated after
+// the arming that the catch-up floor still makes history (the lane first
+// watched it past max_catchup_hours: the activity lookup failing, the check
+// cap going to newer ones) is named in the coverage note, never dropped
+// silently.
+func TestProdWatch_SentryHistoryAfterTheArmingIsSaid(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	arm30h := func(t *testing.T, h *pwHarness) {
+		st := h.state(t)
+		st["cursors"].(map[string]any)["sentry"].(map[string]any)["armed_at"] = time.Now().Add(-30 * time.Hour).UTC().Format(time.RFC3339)
+		h.setState(t, st)
+	}
+	t.Run("the activity lookup failing", func(t *testing.T) {
+		t.Parallel()
+		h := newPWHarness(t)
+		h.writeConfig(t, sentryWithProbe(h, nil))
+		sentryTick(t, h, wf)
+		arm30h(t, h)
+		now := time.Now()
+		h.sentry.put(&pwSentryIssue{ID: "7", ShortID: strp("P-7"), Title: "r", Substatus: strp("regressed"),
+			FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now.Add(-time.Minute),
+			Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(-25 * time.Hour)}}})
+		h.sentry.failNext("activities", 500, 500)
+		o := sentryTick(t, h, wf)
+		if got := sentryAlerts(o); len(got) != 0 || o["poll_sentry"]["ok"] != false {
+			t.Fatalf("setup: want the activity lookup failing and nothing posted: %v %v", got, o["poll_sentry"]["summary"])
+		}
+		// (The record the lane made of P-7 while it could not date it, ~25 h ago.)
+		st := h.state(t)
+		st["incidents"].(map[string]any)["sentry:7"].(map[string]any)["first_seen"] = now.Add(-25 * time.Hour).UTC().Format(time.RFC3339)
+		h.setState(t, st)
+		n := len(h.bodies())
+		o = sentryTick(t, h, wf)
+		posted := anyPrefix(sentryAlerts(o), "regressed:P-7")
+		said := strings.Contains(strings.Join(h.bodies()[n:], "\n"), "P-7")
+		if !posted && !said {
+			t.Fatalf("a regression dated after the arming was recorded as history silently once dated past the floor: alerts %v, "+
+				"record %v, channel:\n%s", sentryAlerts(o), sentryIncident(t, h, "7")["transition_at"], strings.Join(h.bodies()[n:], "\n"))
+		}
+	})
+	t.Run("the check cap going to newer regressions", func(t *testing.T) {
+		t.Parallel()
+		h := newPWHarness(t)
+		h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_transition_checks"] = 1 }))
+		sentryTick(t, h, wf)
+		arm30h(t, h)
+		now := time.Now()
+		h.sentry.put(&pwSentryIssue{ID: "7", ShortID: strp("P-7"), Title: "r", Substatus: strp("regressed"),
+			FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now.Add(-2 * time.Hour),
+			Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(-25 * time.Hour)}}})
+		for k := 0; k < 3; k++ { // one newer regression per tick takes the only check
+			id := fmt.Sprint(20 + k)
+			ts := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: id, ShortID: strp("P-" + id), Title: "r", Substatus: strp("regressed"),
+				FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: ts, Acts: []pwSentryAct{{Type: "set_regression", At: ts}}})
+			sentryTick(t, h, wf)
+		}
+		for _, c := range h.sentry.callsTo("activities") {
+			if strings.Contains(c.Path, "/issues/7/") {
+				t.Fatalf("setup: P-7 was checked during the inflow")
+			}
+		}
+		n := len(h.bodies())
+		o := sentryTick(t, h, wf)
+		posted := anyPrefix(sentryAlerts(o), "regressed:P-7")
+		said := strings.Contains(strings.Join(h.bodies()[n:], "\n"), "P-7")
+		if !posted && !said {
+			t.Fatalf("an armed lane saw P-7 regressed on every tick, could not date it (the check cap), and recorded it as history "+
+				"silently: alerts %v, record %v", sentryAlerts(o), sentryIncident(t, h, "7")["transition_at"])
+		}
+	})
+}
+
+// TestProdWatch_SentryReminderWaitsForAPendingRegression: while a regression
+// cut by the cap is pending, a sighting posts no reminder in its place —
+// resolved again before the regression is re-dated, the channel must still
+// read "regressed".
+func TestProdWatch_SentryReminderWaitsForAPendingRegression(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "81", ShortID: strp("P-81"), Title: "x", FirstProcessed: now, LastSeen: now})
+	sentryTick(t, h, wf)
+	h.sentry.edit("81", func(i *pwSentryIssue) { i.Status = "resolved"; i.FirstProcessed = now.Add(-3 * time.Hour) })
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "resolved:P-81:low" {
+		t.Fatalf("setup resolved: %v", got)
+	}
+	h.alertCap.Store(1)
+	t1 := time.Now().Add(time.Second)
+	h.sentry.edit("81", func(i *pwSentryIssue) {
+		i.Status = "unresolved"
+		i.Substatus = strp("regressed")
+		i.LastSeen = t1
+		i.Acts = append(i.Acts, pwSentryAct{Type: "set_regression", At: t1})
+	})
+	h.sentry.put(&pwSentryIssue{ID: "82", ShortID: strp("P-82"), Title: "boom", Level: "fatal", FirstProcessed: time.Now(), LastSeen: time.Now()})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:P-82:high" {
+		t.Fatalf("setup: %v", got)
+	}
+	if rec := sentryIncident(t, h, "81"); rec["pending"] != "regressed" {
+		t.Fatalf("setup: the regression is not pending: %v", rec)
+	}
+	// The next tick: a new event (renotify window elapsed) while the activity
+	// lookup fails once; then the issue is resolved again.
+	st := h.state(t)
+	st["incidents"].(map[string]any)["sentry:81"].(map[string]any)["last_notified"] = time.Now().Add(-25 * time.Hour).UTC().Format(time.RFC3339)
+	h.setState(t, st)
+	h.sentry.edit("81", func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(2 * time.Second) })
+	h.sentry.failNext("activities", 500, 500)
+	seq := sentryAlerts(sentryTick(t, h, wf))
+	h.sentry.edit("81", func(i *pwSentryIssue) { i.Status = "resolved" })
+	for k := 0; k < 2; k++ {
+		seq = append(seq, sentryAlerts(sentryTick(t, h, wf))...)
+	}
+	if !anyPrefix(seq, "regressed:P-81") {
+		t.Fatalf("a regression cut by the cap was consumed by a reminder and never posted: %v", seq)
+	}
+}
+
+// TestProdWatch_SentryPostedTransitionRestartsTheIdleClock: a regression
+// posted without an event here (the substatus is project-wide) restarts the
+// idle clock — no "not observed any more" the very next tick.
+func TestProdWatch_SentryPostedTransitionRestartsTheIdleClock(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "81", ShortID: strp("P-81"), Title: "x", FirstProcessed: now, LastSeen: now})
+	sentryTick(t, h, wf)
+	h.sentry.edit("81", func(i *pwSentryIssue) { i.Status = "resolved"; i.FirstProcessed = now.Add(-3 * time.Hour) })
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "resolved:P-81:low" {
+		t.Fatalf("setup resolved: %v", got)
+	}
+	ageIncidents(t, h, 72*time.Hour, "81") // last sighted here three days ago
+	t1 := time.Now().Add(time.Second)
+	h.sentry.edit("81", func(i *pwSentryIssue) {
+		i.Status = "unresolved"
+		i.Substatus = strp("regressed")
+		i.Acts = append(i.Acts, pwSentryAct{Type: "set_regression", At: t1}) // the event came from another environment
+	})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "regressed:P-81:medium" {
+		t.Fatalf("setup regression: %v", got)
+	}
+	if got := sentryAlerts(sentryTick(t, h, wf)); len(got) != 0 {
+		t.Fatalf("the tick right after a posted regression concluded the issue idle: %v", got)
+	}
+}
+
+// TestProdWatch_SentryUnreadTrackedIssueGetsNoNote: a tracked-issues answer
+// that is not a list is an error, not an answer — its ids do not count as
+// asked and absent, and no note is concluded about them.
+func TestProdWatch_SentryUnreadTrackedIssueGetsNoNote(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "61", ShortID: strp("P-61"), Title: "x", FirstProcessed: now, LastSeen: now})
+	sentryTick(t, h, wf)
+	// Still firing in Sentry; the record's last sighting is 49 h old.
+	h.sentry.edit("61", func(i *pwSentryIssue) {
+		i.FirstProcessed = now.Add(-3 * time.Hour)
+		i.LastSeen = time.Now().Add(time.Second)
+	})
+	ageIncidents(t, h, 49*time.Hour, "61")
+	h.sentry.mu.Lock()
+	h.sentry.failBody = `{"detail": "maintenance"}`
+	h.sentry.mu.Unlock()
+	h.sentry.failNext("tracked", 200)
+	o := sentryTick(t, h, wf)
+	if o["poll_sentry"]["ok"] != false {
+		t.Fatalf("setup: the non-list answer was not refused: %v", o["poll_sentry"]["summary"])
+	}
+	if got := sentryAlerts(o); len(got) != 0 {
+		t.Fatalf("a tracked issue the lane could not read (the answer was not a list) got a note: %v", got)
+	}
+}
+
+// TestProdWatch_SentryLaneOffHoldsBothPendingAlike: the Sentry lane turned off
+// with an issue and a leak class pending: both pending paths follow one rule.
+func TestProdWatch_SentryLaneOffHoldsBothPendingAlike(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryWithProbe(h, nil))
+	sentryTick(t, h, wf)
+	h.alertCap.Store(1)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "51", ShortID: strp("P-51"), Title: "boom", Level: "fatal", FirstProcessed: now, LastSeen: now})
+	h.sentry.put(&pwSentryIssue{ID: "52", ShortID: strp("P-52"), Title: "UserNotFound: helene.zq7rtx@qz9mail.fr", FirstProcessed: now, LastSeen: now})
+	sentryTick(t, h, wf)
+	h.alertCap.Store(0)
+	h.writeConfig(t, func(cfg map[string]any) {
+		sentryWithProbe(h, nil)(cfg)
+		delete(cfg, "sentry")
+	})
+	got := sentryAlerts(h.tick(t, wf, false))
+	leak, issue := anyPrefix(got, "new:leak-email"), anyPrefix(got, "new:P-52")
+	if leak != issue {
+		t.Fatalf("lane off: the pending leak re-emitted=%v, the pending issue re-emitted=%v (%v)", leak, issue, got)
+	}
+}
+
+// TestProdWatch_SentryPendingLeakOutlivesRetention: a pending alert re-emitted
+// from its record (a leak class, a log template) survives retention like a
+// pending Sentry issue does.
+func TestProdWatch_SentryPendingLeakOutlivesRetention(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	h.alertCap.Store(1)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "51", ShortID: strp("P-51"), Title: "boom", Level: "fatal", FirstProcessed: now, LastSeen: now})
+	h.sentry.put(&pwSentryIssue{ID: "52", ShortID: strp("P-52"), Title: "UserNotFound: helene.zq7rtx@qz9mail.fr", FirstProcessed: now, LastSeen: now})
+	sentryTick(t, h, wf) // P-51 posts; the leak and P-52 are pending
+	st := h.state(t)
+	inc := st["incidents"].(map[string]any)
+	leak, _ := inc["sentry_leak:email"].(map[string]any)
+	if leak == nil || leak["pending"] != "new" {
+		t.Fatalf("setup: the leak is not pending: %v", leak)
+	}
+	old := time.Now().Add(-15 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	leak["last_seen"] = old
+	inc["sentry:52"].(map[string]any)["last_seen"] = old
+	h.setState(t, st)
+	h.alertCap.Store(0)
+	got := sentryAlerts(sentryTick(t, h, wf))
+	if !anyPrefix(got, "new:leak-email") || !anyPrefix(got, "new:P-52") {
+		t.Fatalf("pending alerts idle for forget_after_days: want both re-emitted like the pending Sentry issue, got %v", got)
+	}
+}
+
+// TestProdWatch_SentryLateDatedTransitionTheLaneWatchedPosts: a regression the
+// armed lane watched in the transition list from shortly after it happened,
+// but could not date until past max_catchup_hours (the activity lookup
+// failing), is the lane's news — it posts, late, instead of becoming history.
+func TestProdWatch_SentryLateDatedTransitionTheLaneWatchedPosts(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryWithProbe(h, nil))
+	sentryTick(t, h, wf)
+	st := h.state(t)
+	st["cursors"].(map[string]any)["sentry"].(map[string]any)["armed_at"] = time.Now().Add(-30 * time.Hour).UTC().Format(time.RFC3339)
+	h.setState(t, st)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "7", ShortID: strp("P-7"), Title: "r", Substatus: strp("regressed"),
+		FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now.Add(-time.Minute),
+		Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(-25 * time.Hour)}}})
+	h.sentry.failNext("activities", 500, 500)
+	if got := sentryAlerts(sentryTick(t, h, wf)); len(got) != 0 {
+		t.Fatalf("setup: the undated regression posted: %v", got)
+	}
+	st = h.state(t)
+	rec := st["incidents"].(map[string]any)["sentry:7"].(map[string]any)
+	if rec["transition_seen_at"] == nil {
+		t.Fatalf("setup: the lane did not stamp the transition it watched undated: %v", rec)
+	}
+	// The lane first watched it 24.9 h ago, minutes after it happened.
+	rec["transition_seen_at"] = now.Add(-24*time.Hour - 54*time.Minute).UTC().Format(time.RFC3339)
+	h.setState(t, st)
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "regressed:P-7:medium" {
+		t.Fatalf("a regression the lane watched from the start, dated past the catch-up floor, did not post: %v", got)
+	}
+}
+
+// TestProdWatch_SentryPendingOldestFirstAcrossPaths: pending Sentry alerts go
+// out oldest first whatever path emits them — a regression re-detected every
+// tick (its date is stamped only when it posts) and a new issue re-emitted
+// from its record — and a deferral keeps the first pending_since.
+func TestProdWatch_SentryPendingOldestFirstAcrossPaths(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	h.alertCap.Store(1)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "90", ShortID: strp("P-90"), Title: "boom", Level: "fatal", FirstProcessed: now, LastSeen: now})
+	h.sentry.put(&pwSentryIssue{ID: "40", ShortID: strp("P-40"), Title: "r", Substatus: strp("regressed"),
+		FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now, Acts: []pwSentryAct{{Type: "set_regression", At: now}}})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:P-90:high" {
+		t.Fatalf("setup T1: %v", got)
+	}
+	time.Sleep(1100 * time.Millisecond) // pending_since has a one-second resolution
+	h.sentry.put(&pwSentryIssue{ID: "91", ShortID: strp("P-91"), Title: "boom", Level: "fatal", FirstProcessed: time.Now(), LastSeen: time.Now()})
+	h.sentry.put(&pwSentryIssue{ID: "41", ShortID: strp("P-41"), Title: "n", FirstProcessed: time.Now(), LastSeen: time.Now()})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:P-91:high" {
+		t.Fatalf("setup T2: %v", got)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	h.sentry.put(&pwSentryIssue{ID: "39", ShortID: strp("P-39"), Title: "n", FirstProcessed: time.Now(), LastSeen: time.Now()})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "regressed:P-40:medium" {
+		t.Fatalf("cap 1: the regression pending since T1 must go before the issue pending since T2 and the fresh one: %v", got)
+	}
+	if ps := sentryIncident(t, h, "40")["pending_since"]; ps != nil {
+		t.Fatalf("a posted alert kept its pending_since (%v): a later deferral would read as older than it is", ps)
+	}
+}
+
+// TestProdWatch_SentryArchivedNoteCutByTheCapFollowsFromTheRecord: an archived
+// note the cap cut goes out on a later tick from the recorded status, even
+// when the by-id read fails that tick.
+func TestProdWatch_SentryArchivedNoteCutByTheCapFollowsFromTheRecord(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryWithProbe(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "71", ShortID: strp("P-71"), Title: "x", FirstProcessed: now, LastSeen: now})
+	sentryTick(t, h, wf)
+	h.alertCap.Store(1)
+	h.sentry.edit("71", func(i *pwSentryIssue) { i.FirstProcessed = now.Add(-3 * time.Hour); i.Status = "ignored" })
+	h.sentry.put(&pwSentryIssue{ID: "72", ShortID: strp("P-72"), Title: "boom", Level: "fatal", FirstProcessed: time.Now(), LastSeen: time.Now()})
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:P-72:high" {
+		t.Fatalf("setup: want the fatal issue posted and the archived note cut: %v", got)
+	}
+	h.sentry.failNext("tracked", 500, 500)
+	o := sentryTick(t, h, wf)
+	if o["poll_sentry"]["ok"] != false {
+		t.Fatalf("setup: the tracked read did not fail: %v", o["poll_sentry"]["summary"])
+	}
+	if got := sentryAlerts(o); strings.Join(got, " ") != "resolved:P-71:low" {
+		t.Fatalf("an archived note cut by the cap did not follow from the recorded status: %v", got)
+	}
+}
+
+// TestProdWatch_SentryGoneIssueGetsItsIdleNote: an alerted issue deleted or
+// merged in Sentry — asked by id, absent from the answer — was read: idle for
+// quiet_after_hours, it gets its note.
+func TestProdWatch_SentryGoneIssueGetsItsIdleNote(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "61", ShortID: strp("P-61"), Title: "x", FirstProcessed: now, LastSeen: now})
+	sentryTick(t, h, wf)
+	h.sentry.mu.Lock()
+	delete(h.sentry.issues, "61")
+	h.sentry.mu.Unlock()
+	ageIncidents(t, h, 49*time.Hour, "61")
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "quiet:P-61:low" {
+		t.Fatalf("an issue gone from Sentry, idle 49 h, got no note: %v", got)
+	}
+}

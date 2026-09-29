@@ -231,8 +231,12 @@ reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
   A transition dated before the arming (minus the overlap) or before the
   catch-up floor (now − `max_catchup_hours`) is recorded as history: a
   lane off for days, or a lowered level floor admitting issues it never
-  knew, posts no old regression as news. The level floor does not apply
-  to an issue the lane already knows.
+  knew, posts no old regression as news. The floor spares a transition
+  the armed lane watched in the list from within `max_catchup_hours` of
+  it (undated there — a failing lookup, the check cap — or back after a
+  closure): dated however late, it posts. One dated after the arming that
+  the floor still makes history is named in the coverage note. The level
+  floor does not apply to an issue the lane already knows.
 - **tracked** — the alerted (or pending) issues by id — open, being
   reprocessed, or archived (Sentry reopens an archived issue as ongoing)
   — their current status and last event. Over `max_tracked` they take
@@ -246,7 +250,10 @@ empty list — indistinguishable from "no issue"). Only the `cursor=` value
 of the `Link` header is followed, never its URL; a short page with
 `results="true"` is not the end. The cursor's `since` is Sentry's own
 `Date` (the runner's clock, read before the first request, only when
-the header is missing — the walk says `clock: local`), and advances
+the header is missing — the walk says `clock: local`). `deadline_secs`
+is a wall clock over each exchange: a server or proxy trickling bytes
+into the headers, a chunk-size line or the body cannot outlast it. The
+cursor advances
 whenever the new-issue list was read whole (an activity lookup failing
 holds nothing). A cursor older than `max_catchup_hours` opens at that
 floor and the gap is declared — only a cursor itself below the floor:
@@ -269,17 +276,24 @@ tracked or not, backlog or not, with or without a new event this tick
 (the substatus is project-wide, the counts environment-scoped); an
 untracked issue of the new list posts NEW; an alerted issue whose last
 event moved is a sighting — `ESCALATED` when its level-mapped severity
-rose, `STILL OPEN` once per `renotify_hours`; an alerted issue Sentry
-reports closed gets one note naming the status (`RESOLVED IN SENTRY`,
-`ARCHIVED IN SENTRY`, `DELETED OR MERGED IN SENTRY` — after any pending
-alert of it went out), one idle for `quiet_after_hours` (while the by-id
-read was complete) one `NOT OBSERVED ANY MORE`. An alert the per-run cap
-cuts stays PENDING and is re-emitted every tick until posted (a new issue
-or a dated transition does not recur by itself), ahead of the tick's
-fresh alerts, oldest first; a cut closing note is re-emitted from the
-recorded status, and a posted transition owes its closing note again.
-The same holds for a Sentry leak class, a new log template and a log
-leak class. Anything else read is tracked silently: a backlog issue
+rose, `STILL OPEN` once per `renotify_hours` (neither while an alert of
+it is pending); an alerted issue Sentry reports closed gets one note
+naming the status (`RESOLVED IN SENTRY`, `ARCHIVED IN SENTRY`, `DELETED
+OR MERGED IN SENTRY` — after any pending alert of it went out) and, while
+it stays closed, its events are no news (Sentry keeps ingesting an
+archived issue's: no reminder, no escalation, the note is not owed
+again); one idle for `quiet_after_hours` (read by id this tick) one
+`NOT OBSERVED ANY MORE`. Any posted alert restarts the idle clock. An
+alert the per-run cap cuts stays PENDING and is re-emitted every tick
+until posted (a new issue, a dated transition or an escalation does not
+recur by itself — an escalation stays pending at the severity it
+reached), ahead of the tick's fresh alerts, oldest first — and the kinds
+holding one start their rank's turns; a cut closing note is re-emitted
+from the recorded status, and a posted transition owes its closing note
+again. The same holds for a Sentry leak class, a new log template and a
+log leak class, while their lane is on (off, the pending record waits,
+and retention may forget it, like a pending Sentry issue's). Anything
+else read is tracked silently: a backlog issue
 never posts on mere recurrence, and an issue merely re-read for
 `forget_after_days` leaves the tracked set — not while it is still in
 the regressed/escalating list (forgotten, its transition would be
@@ -298,8 +312,10 @@ only; `leak_scan` scrubs every field (bounded first, cut to display size
 after the scrub), and counts a class found in an issue's text once per
 sighting of that issue — a `sentry_leak:<class>` incident with a masked
 sample, never a value. The classes are written for text an attacker
-controls: no repeated group has overlapping alternatives, so a crafted
-field cannot stall the scan. No event body is read in this slice: the user
+controls — no repeated group with overlapping alternatives, an email
+local part matched from where its run starts, the NFKC fold's output
+cut too (a character can fold to eighteen) — so a crafted field or log
+line cannot stall the scan. No event body is read in this slice: the user
 block, the request, frame locals and breadcrumbs stay in Sentry — the
 leak classes cover issue text only.
 
@@ -313,9 +329,13 @@ Sentry issue, a Sentry leak, a log template, a log leak, a probe —
 takes its turn under the cap, so a flood never holds it against
 another). Issue text anyone can write never pings nor links: every value
 a message quotes — title, culprit, any lane's field, a sample — renders
-as inline code, where Mattermost parses neither mentions nor links.
-Escaping is not enough: its autolinker takes a host after a hyphen, a
-word character or a parenthesis, whatever precedes it.
+as inline code, where Mattermost parses neither mentions nor links —
+flattened to one line first, U+2424 included (Mattermost's markdown
+reads that symbol as a line break, which would end the span); the
+label's own words render as written (a backtick or a backslash in them
+escaped), and a value is never scanned for placeholders. Escaping alone
+is not enough: the autolinker takes a host after a hyphen, a word
+character or a parenthesis, whatever precedes it.
 
 ## Health probes
 

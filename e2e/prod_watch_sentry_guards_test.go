@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -109,7 +110,8 @@ func TestProdWatch_SentryServerTextIsWithheld(t *testing.T) {
 // is not enough — Mattermost autolinks a host after a word character or a
 // hyphen (`-sso-portal.com/reset`, `_https://`, `éhttps://`, `www1.`, a host
 // in parentheses) whatever backslashes precede it — so every value renders
-// inside inline code, which neither links nor notifies.
+// inside inline code, which neither links nor notifies; and U+2424, a line
+// break to Mattermost's markdown, never reaches the channel to end a span.
 func TestProdWatch_SentryAttackerTextCannotPingOrLink(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -117,20 +119,32 @@ func TestProdWatch_SentryAttackerTextCannotPingOrLink(t *testing.T) {
 	h.writeConfig(t, sentryOnly(h, nil))
 	sentryTick(t, h, wf)
 	now := time.Now()
-	culprits := []string{"@here @jo please re-login at www.evillogin.example/reset", "please re-login at -sso-portal.com/reset",
-		"_https://evil.com/reset", "éhttps://evil.com/reset", "see www1.evil.com/reset", "please re-login (evil.com/reset)"}
-	for i, c := range culprits {
+	cases := []struct{ culprit, rendered string }{
+		{"@here @jo please re-login at www.evillogin.example/reset", "@here @jo please re-login at www.evillogin.example/reset"},
+		{"please re-login at -sso-portal.com/reset", "please re-login at -sso-portal.com/reset"},
+		{"_https://evil.com/reset", "_https\u200b://evil.com/reset"},
+		{"éhttps://evil.com/reset", "éhttps\u200b://evil.com/reset"},
+		{"see www1.evil.com/reset", "see www1.evil.com/reset"},
+		{"please re-login (evil.com/reset)", "please re-login (evil.com/reset)"},
+		{"app\u2424\u2424www.evil-sso.com/login", "app www.evil-sso.com/login"},
+		{"x\u2424\u2424# FORGED HEADING", "x # FORGED HEADING"},
+		{"a {short_id} b www.evil-sso.com/x", "a {short_id} b www.evil-sso.com/x"},
+	}
+	for i, c := range cases {
 		h.sentry.put(&pwSentryIssue{ID: strconv.Itoa(1501 + i), ShortID: strp("PROJ-" + strconv.Itoa(150+i)),
-			Title: "@channel @all read www.evillogin.example/reset", Culprit: c, FirstProcessed: now, LastSeen: now, Count: 1})
+			Title: "@channel @all read www.evillogin.example/reset", Culprit: c.culprit, FirstProcessed: now, LastSeen: now, Count: 1})
 	}
 	sentryTick(t, h, wf)
 	body := strings.Join(h.bodies(), "\n")
-	for _, c := range culprits {
-		if !strings.Contains(body, "`"+c+"`") {
-			t.Fatalf("culprit %q did not render inside inline code:\n%s", c, body)
+	if strings.ContainsRune(body, '\u2424') {
+		t.Fatalf("U+2424 reached the channel (a line break to Mattermost's markdown, it ends a code span):\n%s", body)
+	}
+	for _, c := range cases {
+		if !strings.Contains(body, "`"+c.rendered+"`") {
+			t.Fatalf("culprit %q did not render as %q inside inline code:\n%s", c.culprit, c.rendered, body)
 		}
 	}
-	for _, bad := range []string{"@channel", "@all", "@here", "@jo", "www.evillogin", "portal.com", "evil.com"} {
+	for _, bad := range []string{"@channel", "@all", "@here", "@jo", "www.evillogin", "portal.com", "evil.com", "evil-sso", "FORGED"} {
 		for _, line := range strings.Split(body, "\n") {
 			if strings.Contains(pwOutsideCode(line), bad) {
 				t.Fatalf("attacker text %q reached the channel outside inline code:\n%s", bad, line)
@@ -409,6 +423,7 @@ func TestProdWatch_SentryForeignIncidentFieldIsRefusedByName(t *testing.T) {
 		{"backlog", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "backlog": "yes"}}}},
 		{"tracked_read_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "tracked_read_at": 5}}}},
 		{"pending_since", map[string]any{"incidents": map[string]any{"leak:email": map[string]any{"kind": "leak", "pending_since": "soon"}}}},
+		{"transition_seen_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "transition_seen_at": 5}}}},
 		{"sentry_identity", map[string]any{"incidents": map[string]any{}, "sentry_identity": 7}},
 	}
 	for _, c := range cases {
@@ -488,6 +503,14 @@ func TestProdWatch_SentrySecretScanResistsBacktracking(t *testing.T) {
 		"flag, single quote":       `--password '` + pairs,
 		"sql, single quote":        `identified by '` + pairs,
 		"sql, double quote":        `identified by "` + pairs,
+		// More text after the value: the alternatives that run to the end of
+		// the line have to fail too.
+		"assignment, double quote, then a line": `password="` + pairs + "\nx",
+		"assignment, single quote, then a line": `password='` + pairs + "\nx",
+		"flag, double quote, then a line":       `--password "` + pairs + "\nx",
+		"flag, single quote, then a line":       `--password '` + pairs + "\nx",
+		"sql, single quote, then a line":        `identified by '` + pairs + "\nx",
+		"sql, double quote, then a line":        `identified by "` + pairs + "\nx",
 	}
 	for name, text := range cases {
 		name, text := name, text
@@ -521,8 +544,9 @@ func TestProdWatch_SentryHostileJSONIsTakenWhole(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	for name, raw := range map[string]map[string]string{
-		"a lone surrogate in the title": {"title": `"\ud800 boom"`},
-		"a count in superscript digits": {"count": `"²"`},
+		"a lone surrogate in the title":   {"title": `"\ud800 boom"`},
+		"a count in superscript digits":   {"count": `"²"`},
+		"a count longer than int() takes": {"count": `"` + strings.Repeat("9", 5000) + `"`},
 	} {
 		name, raw := name, raw
 		t.Run(name, func(t *testing.T) {
@@ -561,5 +585,154 @@ func TestProdWatch_SentryLocalClockIsReadBeforeTheWalk(t *testing.T) {
 	h.sentry.mu.Unlock()
 	if asOf.After(first) {
 		t.Fatalf("the local clock was read %v after the first request (the walk took ≥ 3 s)", asOf.Sub(first))
+	}
+}
+
+// TestProdWatch_SentryLabelsCannotBreakACodeSpan: the operator's label words
+// render as written, a backtick or a backslash in them escaped — never pairing
+// with a value's code span, or escaping its opening backtick, to let the
+// attacker's text out.
+func TestProdWatch_SentryLabelsCannotBreakACodeSpan(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for name, label := range map[string]string{
+		"a stray backtick":           "{level} · l`origine : {culprit}",
+		"a backslash before a value": `{level} · C:\{culprit}`,
+	} {
+		name, label := name, label
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, func(cfg map[string]any) {
+				sentryOnly(h, nil)(cfg)
+				cfg["labels"] = map[string]any{"sentry_detail": label}
+			})
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "4501", ShortID: strp("P-4501"), Title: "x", Culprit: "@channel see www.evil-sso.com/login",
+				FirstProcessed: now, LastSeen: now, Count: 1})
+			n := len(h.bodies())
+			sentryTick(t, h, wf)
+			body := strings.Join(h.bodies()[n:], "\n")
+			if !strings.Contains(body, "`@channel see www.evil-sso.com/login`") {
+				t.Fatalf("the culprit did not render inside inline code:\n%s", body)
+			}
+			for _, line := range strings.Split(body, "\n") {
+				if o := pwOutsideCode(line); strings.Contains(o, "@channel") || strings.Contains(o, "evil-sso") {
+					t.Fatalf("%s in the label let the value out of its code span:\n%s", name, line)
+				}
+			}
+		})
+	}
+}
+
+// pwRawServer answers every connection with head, then trickles tail one byte
+// every 400 ms — until the client hangs up or 60 bytes went out (24 s).
+func pwRawServer(t *testing.T, head, tail string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4096)
+				_, _ = c.Read(buf) // the request (small, one read)
+				if _, err := c.Write([]byte(head)); err != nil {
+					return
+				}
+				for i := 0; i < 60 && i < len(tail); i++ {
+					time.Sleep(400 * time.Millisecond)
+					if _, err := c.Write([]byte{tail[i]}); err != nil {
+						return
+					}
+				}
+			}(c)
+		}
+	}()
+	return "http://" + ln.Addr().String()
+}
+
+// TestProdWatch_SentryTrickledExchangeStopsAtTheDeadline: the deadline is a
+// wall clock over the whole exchange — a server (or a proxy) trickling a byte
+// at a time in the status line and headers or in a chunk-size line resets the
+// socket timeout on every byte, and the walk still stops at deadline_secs.
+func TestProdWatch_SentryTrickledExchangeStopsAtTheDeadline(t *testing.T) {
+	t.Parallel()
+	pad := strings.Repeat("a", 60)
+	for name, srv := range map[string][2]string{
+		"a trickled header":          {"HTTP/1.1 200 OK\r\nX-Pad: ", pad},
+		"a trickled chunk-size line": {"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n", strings.Repeat("0", 60)},
+	} {
+		name, srv := name, srv
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			base := pwRawServer(t, srv[0], srv[1])
+			h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["base_url"] = base; s["deadline_secs"] = 10; delete(s, "environment") }))
+			plan, vars, secrets := sentryPlan(t, h, "prod-watch/main.bot")
+			start := time.Now()
+			out, _ := runPollSentry(t, h, plan, vars, secrets, true, nil)
+			if took := time.Since(start); took > 15*time.Second || !strings.Contains(fmt.Sprint(out["errors"]), "deadline") {
+				t.Fatalf("%s held poll_sentry %v past a 10 s deadline (errors: %v)", name, took, out["errors"])
+			}
+		})
+	}
+}
+
+// TestProdWatch_LeakScanStaysLinearOnCraftedLines: log lines anyone can shape
+// (a request path, a header) scan in linear time — an email local part is
+// matched from where its run starts, a placeholder's braces and a shout-case
+// value are read without backtracking, and the NFKC fold's output is cut
+// (U+FDFA folds to eighteen characters). Quadratic, each shape took seconds
+// for a few dozen lines, and the run budget dies long before max_lines.
+func TestProdWatch_LeakScanStaysLinearOnCraftedLines(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	cases := []struct {
+		name  string
+		lines int
+		limit time.Duration
+		line  func(i int) string
+	}{
+		{"an email-class run without an at sign", 120, 3 * time.Second, func(i int) string { return strings.Repeat("㏂", 3990) + strconv.Itoa(i) }},
+		{"a secret value of open braces", 60, 2500 * time.Millisecond, func(i int) string { return "password=" + strings.Repeat("{", 3980) + strconv.Itoa(i) }},
+		{"a flag value shout-cased but for its end", 300, 2 * time.Second, func(i int) string { return "--pass " + strings.Repeat("A_", 1990) + "!" + strconv.Itoa(i) }},
+		{"a line NFKC multiplies", 200, 4 * time.Second, func(i int) string { return strings.Repeat("ﷺ", 3990) + strconv.Itoa(i) }},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			raw := filepath.Join(h.scratch, "raw-crafted.jsonl")
+			var b strings.Builder
+			for i := 0; i < c.lines; i++ {
+				rec, _ := json.Marshal(map[string]any{"q": "errors", "ts": strconv.FormatInt(1_700_000_000_000_000_000+int64(i), 10),
+					"line": c.line(i), "stream": map[string]any{"container": "web"}})
+				b.Write(rec)
+				b.WriteByte('\n')
+			}
+			if err := os.WriteFile(raw, []byte(b.String()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+				"raw_file": raw, "per_query": map[string]any{"errors": map[string]any{"lines": c.lines, "history_to_ns": "0"}},
+				"app": map[string]any{"name": "demo"}, "scratch_dir": h.scratch}, nil, nil))
+			if err != nil {
+				t.Fatalf("leak_scan: %v %s", err, stderr)
+			}
+			if d := time.Since(start); d > c.limit {
+				t.Fatalf("%d crafted lines took %v (limit %v): a class backtracks on them", c.lines, d, c.limit)
+			}
+		})
 	}
 }
