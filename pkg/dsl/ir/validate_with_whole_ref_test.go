@@ -212,3 +212,57 @@ func TestC180_MessageMatchesTheDocumentShape(t *testing.T) {
 		}
 	}
 }
+
+// TestC180_MessageNamesTheDestinationsOwnReading: the shell mechanism is a
+// tool's. On an agent the list reaches a prompt, which renders its JSON
+// text — a message naming a `command:` there would describe a node that
+// does not exist on this edge.
+func TestC180_MessageNamesTheDestinationsOwnReading(t *testing.T) {
+	src := `dsl: 2
+
+vars:
+  b: string[] = "claw,claude_code"
+
+schema sink:
+  label: string
+
+schema out:
+  ok: bool
+
+prompt p:
+  Label: {{input.label}}
+
+emit go:
+  event: "go"
+
+agent show:
+  input: sink
+  output: out
+  system: p
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: go
+  go -> show with { label: "{{vars.b}}" }
+  show -> done
+`
+	r := compileText(t, src)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagWithWholeRefListToString {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatalf("no C180 raised on an agent destination\ndiagnostics: %v", r.Diagnostics)
+	}
+	if !strings.Contains(msg, "a prompt renders its JSON text") {
+		t.Errorf("message %q does not name the agent's own reading", msg)
+	}
+	for _, bad := range []string{"command:", "argv"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("message %q names %q — a tool's mechanism, on an agent node", msg, bad)
+		}
+	}
+}
