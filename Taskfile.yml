@@ -1137,7 +1137,7 @@ tasks:
 
   # --- Cloud-mode docker-compose (plan §F T-38, T-39) -------------
   cloud:up:
-    desc: Bring up the cloud-mode local stack (Mongo + NATS + MinIO + iterion)
+    desc: Bring up the cloud-mode local stack (Mongo + NATS + SeaweedFS + iterion)
     cmds:
       - docker compose -f docker-compose.cloud.yml up -d --build
 
@@ -1152,9 +1152,19 @@ tasks:
       - docker compose -f docker-compose.cloud.yml logs -f --tail=100
 
   cloud:up:deps:
-    desc: Bring up only the backing services (Mongo + NATS + MinIO) without iterion
+    desc: Bring up only the backing services (Mongo + NATS + SeaweedFS) without iterion
     cmds:
-      - docker compose -f docker-compose.cloud.yml up -d mongo nats minio minio-init
+      - docker compose -f docker-compose.cloud.yml up -d mongo nats seaweedfs s3-init
+
+  cloud:test:s3:
+    desc: Run the S3 gateway compatibility bench against the local stack's SeaweedFS (after task cloud:up:deps)
+    env:
+      ITERION_TEST_S3_ENDPOINT: http://127.0.0.1:8333
+      ITERION_TEST_S3_ACCESS_KEY_ID: iterion-dev
+      ITERION_TEST_S3_SECRET_ACCESS_KEY: iterion-dev-secret
+      ITERION_TEST_S3_BUCKET: iterion-artifacts
+    cmds:
+      - go test -count=1 -run TestGatewayCompat -v ./pkg/store/blob/
 
   cloud:dev:
     desc: Hot-reload iterion in the cloud stack via watchexec rebuild + container restart

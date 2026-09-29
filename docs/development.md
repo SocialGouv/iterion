@@ -124,7 +124,8 @@ from.
 task studio:dev              # backend + Vite HMR
 task studio:dev:backend
 task studio:dev:frontend
-task cloud:up                # local Mongo/NATS/MinIO/server stack
+task cloud:up                # local Mongo/NATS/SeaweedFS/server stack
+task cloud:test:s3           # S3 compatibility bench against its SeaweedFS
 task cloud:logs
 task cloud:down              # also removes compose volumes
 ```
