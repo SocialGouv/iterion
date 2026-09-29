@@ -419,7 +419,7 @@ func TestRoutingFieldConsequenceIsTheSites(t *testing.T) {
 			want: []string{"as any JSON object has, makes the rest that attempt's model"}},
 		{name: "a list recovery.model aborts the recovery, it does not fail a delegation",
 			body: "tool a:\n  command: \"./deploy.sh\"\n  output: s\n  goal: \"deployed\"\n  postcondition: \"./check.sh\"\n  policy: recover\n  recovery:\n    max_agent_attempts: 1\n    model: \"{{vars.bs}}\"\n",
-			want: []string{"recovery.model", "the recovery rungs abort on it", "as if it had no recovery"},
+			want: []string{"recovery.model", "no recovery rung runs on it", "as if it had no recovery"},
 			bad:  []string{"first delegation"}},
 		{name: "a list provider on a fallbacks route is ignored the same way",
 			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n  fallbacks:\n    alt:\n      backend: \"claw\"\n      provider: \"{{vars.bs}}\"\n"),

@@ -229,7 +229,7 @@ func routingConsequences(node Node, field string) (unroutable, empty string) {
 		unroutable = "a model spec no provider answers to; the interaction's model call fails on it"
 		empty = field + " is then EMPTY at dispatch, and a companion model has no default to fall back to: the interaction's model call fails on the empty spec (give the var a scalar default)"
 	case field == "recovery.model":
-		unroutable = "a model spec no provider answers to; the recovery rungs abort on it with a log line and never run, so a missed postcondition fails the node as if it had no recovery"
+		unroutable = "a model spec no provider answers to; no recovery rung runs on it (a budgeted rung aborts with a log line), so a missed postcondition fails the node as if it had no recovery"
 	case strings.HasPrefix(field, "fallbacks."):
 		unroutable = "a name no backend or model answers to; the route fails when the node falls back to it"
 	}
