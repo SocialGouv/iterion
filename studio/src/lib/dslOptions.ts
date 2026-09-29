@@ -1,13 +1,29 @@
-// Shared select-option constants for the DSL forms. Centralised so a
-// new value (e.g. a new backend, or a new InteractionMode) only needs
-// to be added in one place. The form components import these instead
-// of re-declaring the lists inline.
+// Shared select-option constants for the DSL forms. The VALUE sets of the
+// registry-enum-backed groups are derived from iterDsl.generated.ts
+// (iterDslEnumValuesByProperty, regenerated from pkg/dsl/spec by `task
+// dsl:gen`), so a new enum word rides the same dsl:check freshness gate as
+// the Monaco keywords and dslOptions.test.ts reddens on drift. Labels and
+// help text stay curated here. The groups WITHOUT a registry enum
+// counterpart (backend, permission, fallback on, worktree) keep their hand
+// lists — the reason is stated on each one.
+
+import { iterDslEnumValuesByProperty } from "./iterDsl.generated";
 
 export interface SelectOption {
   value: string;
   label: string;
 }
 
+// optionsFrom maps registry enum words to SelectOptions, with per-value
+// label overrides where the bare word reads poorly in a dropdown.
+const optionsFrom = (
+  values: readonly string[],
+  labels: Record<string, string> = {},
+): SelectOption[] => values.map((value) => ({ value, label: labels[value] ?? value }));
+
+// No registry enum counterpart: `backend` is a String property
+// (pkg/dsl/spec/spec.go pBackend) — a {{vars.x}} reference or ${VAR:-default}
+// resolves at run time, so the accepted words live only in the doc string.
 export const BACKEND_OPTIONS: SelectOption[] = [
   { value: "", label: "(unset · resolves to claw)" },
   { value: "claw", label: "claw" },
@@ -22,49 +38,51 @@ export const BACKEND_OPTIONS: SelectOption[] = [
 export const BACKEND_HELP =
   "Execution backend. Empty resolves to the workflow default (claw if not set). claw runs in-process; every other value shells out to that agent CLI. Pick pi/kimi/grok/opencode to reach a model claude_code cannot. pi supports iterion's permission gate, ask_user, board capabilities and mcp_server blocks through an embedded extension; kimi, grok and opencode run their own tool set, so those blocks do not apply to them. opencode cannot enforce the permission gate at all, so a gated node routed to it is refused at compile time.";
 
-export const AWAIT_OPTIONS: SelectOption[] = [
-  { value: "none", label: "none" },
-  { value: "wait_all", label: "wait_all" },
-  { value: "best_effort", label: "best_effort" },
-];
+// "No await" is the ABSENT property, not a value — the registry enum knows
+// only wait_all and best_effort, so the forms pass allowEmpty for the
+// default instead of listing a `none` option (which the parser refuses).
+export const AWAIT_OPTIONS: SelectOption[] = optionsFrom(iterDslEnumValuesByProperty.await);
 
 export const AWAIT_HELP =
-  "Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready; none = no await (default).";
+  "Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready. Unset = no await (default).";
 
-export const SESSION_OPTIONS: SelectOption[] = [
-  { value: "fresh", label: "fresh" },
-  { value: "inherit", label: "inherit" },
-  { value: "fork", label: "fork" },
-  { value: "artifacts_only", label: "artifacts_only" },
-];
+export const SESSION_OPTIONS: SelectOption[] = optionsFrom(iterDslEnumValuesByProperty.session);
 
 export const SESSION_HELP =
-  "fresh = new context; inherit = reuse parent conversation; fork = non-consuming branch from parent session; artifacts_only = share published artifacts only.";
+  "fresh = new context; inherit = reuse parent conversation; inherit_if_available = inherit, retried fresh once if the session cannot load; fork = non-consuming branch from parent session; artifacts_only = share published artifacts only; persist = resume this node's own last CLI conversation on re-entry (trunk nodes only).";
 
 // Empty value means "inherit workflow default" on agent/judge forms,
 // or "none" semantically. Forms decide the empty-label wording.
-export const INTERACTION_OPTIONS: SelectOption[] = [
-  { value: "none", label: "none" },
-  { value: "human", label: "human" },
-  { value: "llm", label: "llm" },
-  { value: "llm_or_human", label: "llm_or_human (escalation)" },
-];
+export const INTERACTION_OPTIONS: SelectOption[] = optionsFrom(
+  iterDslEnumValuesByProperty.interaction,
+  { llm_or_human: "llm_or_human (escalation)" },
+);
 
 export const INTERACTION_HELP =
-  "How ask_user / human-in-the-loop requests are routed. llm_or_human asks the LLM first, escalates to a human if undecided.";
+  "How ask_user / human-in-the-loop requests are routed. llm_or_human asks the LLM first, escalates to a human if undecided; human_or_host lets the host application answer in the operator's place, whichever comes first; review opens a review gate; async (agent/judge only) posts non-blocking questions and keeps working.";
 
 // Human nodes pre-select "human" by default and frame the choices in
-// terms of what happens at the pause point. Same enum, different
-// surface wording.
-export const HUMAN_INTERACTION_OPTIONS: SelectOption[] = [
-  { value: "human", label: "human (always pause)" },
-  { value: "llm", label: "llm (auto-answer)" },
-  { value: "llm_or_human", label: "llm_or_human (escalation)" },
-];
+// terms of what happens at the pause point — a curated SUBSET of the
+// interaction enum (review/async/human_or_host are not human-node modes),
+// derived from the registry so a renamed word still reddens.
+const HUMAN_INTERACTION_MODES = ["human", "llm", "llm_or_human"] as const;
+export const HUMAN_INTERACTION_OPTIONS: SelectOption[] = optionsFrom(
+  iterDslEnumValuesByProperty.interaction.filter((v) =>
+    (HUMAN_INTERACTION_MODES as readonly string[]).includes(v),
+  ),
+  {
+    human: "human (always pause)",
+    llm: "llm (auto-answer)",
+    llm_or_human: "llm_or_human (escalation)",
+  },
+);
 
 export const HUMAN_INTERACTION_HELP =
   "human = always wait for input; llm = LLM generates answer (requires model); llm_or_human = LLM tries first, escalates to human if undecided.";
 
+// No registry enum counterpart: `permission` is declared with checked()
+// (Ident form narrowed by the compiler, spec.go pPermission), so its words
+// never reach iterDslEnumValuesByProperty.
 // Node-level tool-permission gate (docs/permissions.md). The empty value is
 // "inherit the workflow's mode", which is why the forms pass allowEmpty
 // rather than listing a fourth option.
@@ -92,18 +110,18 @@ export const PERMISSION_RULES_HELP =
 
 export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "", label: "(default)" },
-  { value: "low", label: "low" },
-  { value: "medium", label: "medium" },
-  { value: "high", label: "high" },
-  { value: "xhigh", label: "xhigh" },
-  { value: "max", label: "max" },
-  { value: "ultracode", label: "ultracode (xhigh + orchestration)" },
+  ...optionsFrom(iterDslEnumValuesByProperty.reasoning_effort, {
+    ultracode: "ultracode (xhigh + orchestration)",
+  }),
 ];
 
 export const REASONING_EFFORT_HELP =
   "For reasoning-capable models (e.g. o-series, claude-extended-thinking). " +
   "ultracode = xhigh + standing consent to orchestrate multi-agent workflows; reliable only on claude-opus-4-8.";
 
+// No registry enum counterpart: a fallback route's `on:` is an IdentList
+// (spec.go), not an Enum — a list of triggers, so its words are not
+// exported as enum values.
 export const FALLBACK_ON_OPTIONS: SelectOption[] = [
   { value: "usage_window", label: "usage_window" },
   { value: "unavailable", label: "unavailable" },
@@ -117,6 +135,9 @@ export const FALLBACKS_HELP =
   "A route that changes backend must pin its own model. Empty `on:` defaults to usage_window + unavailable. " +
   "Judges are never re-routed by the launch-level fallback; only this block applies.";
 
+// No registry enum counterpart: `worktree` is declared with checked()
+// (Ident form, spec.go), so its words never reach
+// iterDslEnumValuesByProperty.
 export const WORKTREE_OPTIONS: SelectOption[] = [
   { value: "auto", label: "auto (per-run worktree)" },
   { value: "none", label: "none (run in place)" },
