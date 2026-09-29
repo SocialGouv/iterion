@@ -40,7 +40,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
-| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267; session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
+| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
@@ -87,6 +87,10 @@ from a plausible one (#1417). The cells:
 - **refused (C-code)** — the compiler refuses the capability on this
   backend with a typed diagnostic; see
   [the diagnostics reference](references/diagnostics.md).
+- **warned (C-code)** — the compiler names the capability as unwired on
+  this backend with a warning: the run goes through, degraded (e.g. a
+  sync `interaction:` whose pause can never fire), and the author sees
+  it before launch.
 - **unwired (gap)** — no code path **and** no diagnostic guards it: the
   parity rule above ("wired — or typed-refused — for the other") is not
   yet honoured. Each one is a gap a session can pick up.
@@ -103,11 +107,11 @@ from a plausible one (#1417). The cells:
 |---|---|---|---|---|---|---|---|---|---|
 | `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | proven | unknown | unknown | unknown | proven |
 | `claw` | proven | proven | proven (fork) · unknown (resume) | proven | unknown | unknown | proven | proven | proven |
-| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | unknown | proven (readonly) | unwired (gap) | unknown | unwired (gap) |
+| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | unknown | proven (readonly) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
 | `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unwired (gap) |
-| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown | unwired (gap) |
-| `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | unknown | unwired (gap) |
-| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · unwired (sync) | unwired (gap) |
+| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+| `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
 
 The citations, per cell that is not self-evident from the table:
 
@@ -251,7 +255,10 @@ The citations, per cell that is not self-evident from the table:
   WebSearch lifecycle; the cost *figure* is only a token estimate, and
   that estimate's accuracy is unproven — hence unknown. `ask` is
   refused (C176): codex runs `bypassPermissions` and is absent from the
-  gate-enforcing table (`pkg/dsl/ir/validate_fallbacks.go`).
+  gate-enforcing table (`pkg/dsl/ir/validate_fallbacks.go`). ask_user
+  has no wiring at all — the async pair is refused (C267), the sync
+  form warned (C271): only the interaction protocol's prompt text
+  reaches the model, so the node never pauses.
 - **pi.** Everything is wired through the embedded extension — gate,
   ask_user, MCP servers, session fork, provider-computed cost — and all
   of it on the **rpc transport only**; under `ITERION_PI_MODE=print` a
@@ -262,8 +269,9 @@ The citations, per cell that is not self-evident from the table:
   exposes no `PreToolUse` hook at all, and its own declarative policy
   (`OPENCODE_PERMISSION`) is deliberately not wired — gate membership is
   earned by a live denial, and none has been bought. `ask_user` is
-  `refused (C267)` for the async pair and unwired for the synchronous one
-  (the tool list never reaches the CLI). Sandbox is `unwired (no image)`:
+  `refused (C267)` for the async pair and `warned (C271)` for the
+  synchronous one (the tool list never reaches the CLI, so the node
+  never pauses — the interaction protocol is prompt text only). Sandbox is `unwired (no image)`:
   the stock image ships no opencode binary, so a sandboxed node dies at
   `exec: not found` with nothing refusing it earlier — see
   [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork:
@@ -286,8 +294,10 @@ The citations, per cell that is not self-evident from the table:
   (`pkg/backend/model/executor_build_task.go`,
   `mcpForwardingBackends`). Structured output, cost (token estimate
   that drops the field when the model is unpriced — the
-  `delegate_*`-at-$0 risk), sandbox and ask_user (prompt-fallback only)
-  are wired at best and unproven: unknown.
+  `delegate_*`-at-$0 risk) and sandbox are wired at best and unproven:
+  unknown. ask_user is prompt-fallback only — no tool ever reaches the
+  CLI — so the async pair is refused (C267) and the sync form warned
+  (C271): the node runs to completion without ever pausing.
 - **`{{outputs.*}}` / `{{run.*}}`.** The resolver is engine-side — the
   executor substitutes templates before any backend sees the prompt
   (`pkg/backend/model/executor_template.go`), one resolver for seven
@@ -1707,7 +1717,7 @@ moves fast, so re-measure before trusting a claim against another build.
   is "pause and ask the operator".
 - **No async questions.** `interaction: async` is refused by **C267**;
   `interaction:` in its synchronous form is inert, as on every CLI-agent
-  backend.
+  backend, and **C271** now says so at compile time.
 - **No session resume or fork.** The CLI has `-s/--session` and every event
   carries a `sessionID`, so the pieces exist, but nothing is wired: a
   `session: persist` node logs `backend "opencode" cannot resume; running

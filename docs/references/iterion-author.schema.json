@@ -1376,7 +1376,7 @@
           "type": "string"
         },
         "merge_strategy": {
-          "description": "review: squash (default) or merge; not validated at compile",
+          "description": "review: squash (default) or merge; another word is refused at compile (C156)",
           "type": "string"
         },
         "min_answers": {
@@ -1396,7 +1396,7 @@
           "type": "string"
         },
         "posture": {
-          "description": "review: who may merge — human_required (default) or agent_verdict_ok; not validated at compile, another word reads as the default",
+          "description": "review: who may merge — human_required (default) or agent_verdict_ok; another word is refused at compile (C156)",
           "type": "string"
         },
         "publish": {
@@ -4024,7 +4024,7 @@
           "type": "string"
         },
         "merge_strategy": {
-          "description": "review: squash (default) or merge; not validated at compile",
+          "description": "review: squash (default) or merge; another word is refused at compile (C156)",
           "type": "string"
         },
         "min_answers": {
@@ -4044,7 +4044,7 @@
           "type": "string"
         },
         "posture": {
-          "description": "review: who may merge — human_required (default) or agent_verdict_ok; not validated at compile, another word reads as the default",
+          "description": "review: who may merge — human_required (default) or agent_verdict_ok; another word is refused at compile (C156)",
           "type": "string"
         },
         "publish": {

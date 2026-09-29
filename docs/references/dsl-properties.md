@@ -379,8 +379,8 @@ A node: `human <name>:` at the top level or inside a `group`.
 | `min_answers` | int | Answers required before the node resumes |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `review_url` | string | review: the PR/MR the gate reviews (a {{…}} reference is accepted) |
-| `posture` | string\|ident — `human_required`, `agent_verdict_ok` | review: who may merge — human_required (default) or agent_verdict_ok; not validated at compile, another word reads as the default |
-| `merge_strategy` | string\|ident — `squash`, `merge` | review: squash (default) or merge; not validated at compile |
+| `posture` | string\|ident — `human_required`, `agent_verdict_ok` | review: who may merge — human_required (default) or agent_verdict_ok; another word is refused at compile (C156) |
+| `merge_strategy` | string\|ident — `squash`, `merge` | review: squash (default) or merge; another word is refused at compile (C156) |
 | `merge_into` | string\|ident | review: current (default), none or a branch name |
 | `max_turns` | int | review: conversation turns before the gate escalates |
 

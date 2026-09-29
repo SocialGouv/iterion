@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"fmt"
 	"regexp"
 	"regexp/syntax"
 	"strings"
@@ -469,13 +470,11 @@ func TestC165_PresetViolatesConstraint(t *testing.T) {
 		{
 			// A key written twice keeps the LAST, and the last is legal:
 			// the shadowed text is read by no run, so C165 says nothing.
-			//
-			// KNOWN GAP, recorded rather than decided: nothing says the
-			// shadowed line is dead either. A duplicate var is E010, a
-			// duplicate preset NAME is C072, a duplicate enum value is
-			// C127 — a duplicate preset KEY is silence. Out of this
-			// change's scope; the case is here so the silence is visible.
-			name:    "a shadowed duplicate key raises no C165 (and nothing else warns about it)",
+			// The shadowed line itself IS named now — C166 (#1661), the
+			// duplicate-key sibling of E010 / C072 / C127 this case used
+			// to record as a known gap. C166 has its own test below; here
+			// the case stays to pin that C165 judges only what lands.
+			name:    "a shadowed duplicate key raises no C165 (C166 names the dead line)",
 			vars:    `  mode: string [enum: "fast", "slow"] = "fast"`,
 			presets: "  probe:\n    mode: \"yolo\"\n    mode: \"fast\"\n",
 			want:    0,
@@ -682,4 +681,93 @@ func TestCarriesLiveReferenceAsksTheExpander(t *testing.T) {
 			t.Errorf("carriesLiveReference(%q) = false, but the run rewrites it — judging it would judge text the run never uses", s)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// C166 — a preset key written twice (#1661)
+// ---------------------------------------------------------------------------
+
+// TestC166_NamesTheShadowedPresetValue: every occurrence of a written-twice
+// key but the last is dead text, and the warning lands on THE dead line —
+// naming the preset, the key, and the line of the value that wins. A
+// warning, like C127 (the duplicate-enum-value precedent): the last value
+// wins, the program is unambiguous, so nothing is broken — the author has
+// written a line that does nothing.
+//
+// Mutation that reddens it: drop the DiagPresetKeyShadowed emission from
+// compilePresets' second loop.
+func TestC166_NamesTheShadowedPresetValue(t *testing.T) {
+	src := presetSrc(
+		`  mode: string [enum: "fast", "slow"] = "fast"`+"\n  depth: int = 1",
+		"  probe:\n    mode: \"yolo\"\n    depth: 2\n    mode: \"fast\"\n    depth: 3\n",
+	)
+	r := compileFile(t, src)
+	var diags []Diagnostic
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagPresetKeyShadowed {
+			diags = append(diags, d)
+			if d.Severity != SeverityWarning {
+				t.Errorf("C166 severity = %v, want warning — the last value wins, nothing is broken", d.Severity)
+			}
+		}
+	}
+	if len(diags) != 2 {
+		t.Fatalf("C166 count = %d, want 2 (one per shadowed line)\ndiagnostics: %v", len(diags), r.Diagnostics)
+	}
+	lines := strings.Split(src, "\n")
+	// One warning per dead line, positioned ON it, in source order.
+	for i, wantLineText := range []string{`mode: "yolo"`, "depth: 2"} {
+		d := diags[i]
+		if d.Line == 0 || d.Line > len(lines) || !strings.Contains(lines[d.Line-1], wantLineText) {
+			t.Errorf("C166 #%d points at line %d, want the line carrying %q\ndiagnostic: %+v", i, d.Line, wantLineText, d)
+		}
+	}
+	// The message names the preset, the key, and the line that wins, so the
+	// author sees both ends of the shadowing without opening the file twice.
+	mode := diags[0]
+	for _, want := range []string{`preset "probe"`, `"mode"`, "replaced by the one at line"} {
+		if !strings.Contains(mode.Message, want) {
+			t.Errorf("message %q does not carry %q", mode.Message, want)
+		}
+	}
+	winnerLine := 0
+	for i, l := range lines {
+		if strings.Contains(l, `mode: "fast"`) {
+			winnerLine = i + 1
+		}
+	}
+	if !strings.Contains(mode.Message, fmt.Sprintf("line %d", winnerLine)) {
+		t.Errorf("message %q must name the winning line %d", mode.Message, winnerLine)
+	}
+	// The landed values are untouched: the preset still reads the last wins.
+	if got := r.Workflow.Presets["probe"].Values["mode"]; got != "fast" {
+		t.Errorf("preset \"probe\" carries mode = %#v, want \"fast\" (the landed value)", got)
+	}
+	if r.HasErrors() {
+		t.Errorf("a shadowed preset key made the program fail to compile\ndiagnostics: %v", r.Diagnostics)
+	}
+}
+
+// TestC166_StaysSilentWhenNoKeyRepeats is the negative witness: a preset
+// whose keys are all distinct draws nothing, and neither does a key
+// repeated ACROSS presets (each entry is its own scope).
+func TestC166_StaysSilentWhenNoKeyRepeats(t *testing.T) {
+	r := compileFile(t, presetSrc(
+		`  mode: string = "fast"`+"\n  depth: int = 1",
+		"  one:\n    mode: \"slow\"\n    depth: 2\n  two:\n    mode: \"fast\"\n",
+	))
+	expectNoDiag(t, r, DiagPresetKeyShadowed)
+}
+
+// TestC166_NotWhenEveryOccurrenceWasRefused: a key whose occurrences ALL
+// failed earlier (unknown var, type mismatch) has no landed winner — the
+// refusals already said everything, and a shadowing warning on top would
+// invent a winner that does not exist.
+func TestC166_NotWhenEveryOccurrenceWasRefused(t *testing.T) {
+	r := compileFile(t, presetSrc(
+		`  mode: string = "fast"`,
+		"  probe:\n    ghosts: \"a\"\n    ghosts: \"b\"\n",
+	))
+	expectDiag(t, r, DiagPresetUnknownVar)
+	expectNoDiag(t, r, DiagPresetKeyShadowed)
 }
