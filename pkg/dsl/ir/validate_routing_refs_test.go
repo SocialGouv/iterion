@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -205,8 +206,11 @@ schema s:
 			body: agent("  backend: \"{{vars.j0}}\"\n"), want: 1},
 		{name: "a json var with no default warns (the launch supplies the document)",
 			body: agent("  backend: \"{{vars.jx}}\"\n"), want: 1},
-		{name: "a json var whose default carries a ${...} reference warns",
-			body: agent("  backend: \"{{vars.je}}\"\n"), want: 1},
+		// A `${...}` never changes a document's shape: the run parses the
+		// default first (not JSON → a string) and only then expands it, so
+		// `"${BACKEND_JSON}"` is the routable string it expands to.
+		{name: "a json var whose default is a ${...} reference stays silent (it resolves to a string)",
+			body: agent("  backend: \"{{vars.je}}\"\n"), want: 0},
 		// The round-2 MEDIUM: a json leaf's `$1` is DATA under the run's
 		// braced-only reading — never expanded — and the document is the
 		// scalar string. Warn here was a doubly-false mechanism.
@@ -256,42 +260,55 @@ func TestRoutingFieldListTypedVarMessage(t *testing.T) {
 	}
 }
 
-// TestBracedLivenessMatchesTheJsonRunReading pins the rule the json arm's
-// liveness check rests on to the expander's BEHAVIOUR: under the run's
-// braced-only json reading, `${...}` is live and a bare `$NAME` is data.
-// A check that read the bare form would false-positive C148 on a scalar
-// document with a launch dependency that does not exist (the round-2
-// MEDIUM, executed: `cost: json = `"gpt $1"“ resolved to "gpt $1").
-func TestBracedLivenessMatchesTheJsonRunReading(t *testing.T) {
-	live := []string{`"${BACKEND_JSON}"`, `{"dir": "${PROJECT_DIR}/x"}`, `"${A:-b}"`}
-	data := []string{`"gpt $1"`, `{"awk": "{print $1}"}`, `"$HOME of the brave"`, `"100$"`}
-	for _, s := range live {
-		if !carriesLiveReferenceBraced(s) {
-			t.Errorf("carriesLiveReferenceBraced(%q) = false, but the run's braced-only reading rewrites it", s)
+// TestJsonDefaultShapeIsFixedByItsText pins the run behaviour the json
+// arm's reading (jsonDefaultDocument) rests on: ResolveVarText parses a
+// json default BEFORE it expands anything, and expands only the string
+// leaves, braced-only. So a reference never changes the document's shape
+// — whatever the environment holds, even a list-looking text — and a
+// json leaf's bare `$NAME` is data the run never touches (the round-2
+// MEDIUM, executed: a json default "gpt $1" resolved to "gpt $1"). If
+// the run ever re-parsed an expansion, `"${DOC}"` could become a list and
+// C148/C180 would read the wrong shape.
+func TestJsonDefaultShapeIsFixedByItsText(t *testing.T) {
+	listLooking := func(string) string { return `["a","b"]` }
+	cases := []struct {
+		def  string
+		want string // the shape both readings must agree on
+	}{
+		{`${DOC}`, "string"},
+		{`"${DOC}"`, "string"},
+		{`{"a": ${DOC}}`, "string"}, // not JSON as written: the text stays a string
+		{`["${DOC}"]`, "list"},
+		{`{"dir": "${PROJECT_DIR}/x"}`, "object"},
+		{`"gpt $1"`, "string"},
+		{`{"awk": "{print $1}"}`, "object"},
+	}
+	shape := func(v any) string {
+		switch v.(type) {
+		case string:
+			return "string"
+		case []any:
+			return "list"
+		case map[string]any:
+			return "object"
+		}
+		return fmt.Sprintf("%T", v)
+	}
+	for _, c := range cases {
+		static, _ := jsonDefaultDocument(&Var{Type: VarJSON, HasDefault: true, Default: c.def})
+		run, err := ResolveVarText(c.def, VarJSON, listLooking)
+		if err != nil {
+			t.Fatalf("ResolveVarText(%q): %v", c.def, err)
+		}
+		if shape(static) != c.want || shape(run) != c.want {
+			t.Errorf("%s: static shape %s, run shape %s, want %s — the run's reading moved the document's shape", c.def, shape(static), shape(run), c.want)
 		}
 	}
-	for _, s := range data {
-		if carriesLiveReferenceBraced(s) {
-			t.Errorf("carriesLiveReferenceBraced(%q) = true, but a json leaf's bare $ is data the run never expands", s)
-		}
-		// The run's own reading agrees — that is what makes the document
-		// judgeable as written: no leaf is rewritten, even under a
-		// lookup that answers every name it is asked.
-		v, err := ResolveVarText(s, VarJSON, func(string) string { return "SET" })
-		if err != nil {
-			t.Fatalf("ResolveVarText(%q): %v", s, err)
-		}
-		switch x := v.(type) {
-		case string:
-			if strings.Contains(x, "SET") || !strings.Contains(x, "$") {
-				t.Errorf("the run rewrote the json string leaf of %q into %q — the liveness check and the run disagree", s, x)
-			}
-		case map[string]any:
-			for _, leaf := range x {
-				if str, ok := leaf.(string); ok && strings.Contains(str, "SET") {
-					t.Errorf("the run rewrote a leaf of %q into %q", s, str)
-				}
-			}
+	// A bare `$NAME` in a json leaf is data: the run leaves it as written.
+	for _, def := range []string{`"gpt $1"`, `"$HOME of the brave"`, `"100$"`} {
+		v, err := ResolveVarText(def, VarJSON, func(string) string { return "SET" })
+		if s, ok := v.(string); err != nil || !ok || strings.Contains(s, "SET") || !strings.Contains(s, "$") {
+			t.Errorf("the run rewrote the json leaf of %s into %#v (err %v) — a bare $ is data", def, v, err)
 		}
 	}
 }
