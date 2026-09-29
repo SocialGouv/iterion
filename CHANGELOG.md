@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.211.0](https://github.com/SocialGouv/iterion/compare/v3.210.0...v3.211.0) (2026-09-29)
+
+### Features
+
+* **dsl:** five compile diagnostics — tree-noise shell traps, duplicate preset keys, sync interaction on CLI backends, review-gate values ([#1555](https://github.com/SocialGouv/iterion/issues/1555) [#1661](https://github.com/SocialGouv/iterion/issues/1661) [#1644](https://github.com/SocialGouv/iterion/issues/1644) [#1094](https://github.com/SocialGouv/iterion/issues/1094)) ([#1925](https://github.com/SocialGouv/iterion/issues/1925)) ([9dfab04](https://github.com/SocialGouv/iterion/commit/9dfab04be103cbb4dde5c38a698ddf3f7f9c7413))
+
+    <details><summary>why</summary>
+
+    An unknown posture/merge_strategy word used to read as the DEFAULT (human_required / squash): fail-safe for the tree, but a silent replacement of the author's explicit choice — the shape C142 refuses for worktree:. Refused at the choke point where the default is applied; the IR keeps the fail-safe value so a launch surface that ignores compile errors still gates on a human and still squashes.
+
+    </details>
+
 ## [3.210.0](https://github.com/SocialGouv/iterion/compare/v3.209.0...v3.210.0) (2026-09-29)
 
 ### Features
