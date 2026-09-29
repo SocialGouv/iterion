@@ -136,6 +136,18 @@ entry points. Never wire tracing "while you're at it".
   format envs, and "how to point this at Sentry or GlitchTip" land in
   the repo's own docs, wherever it documents configuration. An
   undocumented env var does not exist.
+- **Capture-endpoint E2E (the net, not just the code path).** Boot the
+  instrumented process — or its entry seam — with the sink pointed at a
+  LOCAL capture endpoint (a tiny HTTP server collecting envelopes;
+  decode gzip before asserting) and assert over the WHOLE envelope set:
+  events and transactions flow at the configured rate, and **no raw
+  secret or identity appears anywhere** — request fields including the
+  query string and cookies, stack-trace frame-locals the SDK serializes,
+  free-form message interpolation, breadcrumbs included. The
+  mock-transport unit tests prove the code path; the capture test proves
+  the net. (Paid: an OAuth `code` and a ProConnect `sub` crossed a
+  shipped scrubber through the query string and frame-locals while every
+  mock-transport test stayed green.)
 
 ## 5. Honesty
 

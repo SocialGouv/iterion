@@ -477,9 +477,22 @@ prompt review_system:
   into clean=true ships the diff straight into a pull request.
 
   Read the `code-review-invariants` skill FIRST. It is the checklist: the
-  six recurring classes of cross-cutting defect (sibling-consistency,
+  recurring classes of cross-cutting defect (sibling-consistency,
   lifecycle parity for new persistent state, isolation/scoping parity,
-  authority gates on background mutators, provable claims, loud failure).
+  authority gates on background mutators, provable claims, loud failure,
+  redaction nets and outbound data paths, written invariants that must
+  be tested). Two of them deserve emphasis on observability diffs:
+  - **Redaction nets**: when the diff touches a scrubber/filter or any
+    code forwarding data to an outbound sink, attack the net itself —
+    enumerate EVERY path a value travels to the sink (request fields
+    including query_string and cookies, stack-trace frame-locals the SDK
+    serializes, free-form message interpolation, breadcrumbs) and verify
+    each is scrubbed. Then prove it against a local capture endpoint: no
+    raw secret or identity anywhere in the envelopes.
+  - **Written invariants**: every guarantee in code or docs ("the sub
+    never reaches a log store") must have a test that fails when it
+    breaks — sweep the call sites by the SHAPE of the violation, not the
+    exact string.
 
   Procedure:
     1. If `build_passed` is false AND `build_skipped` is false, the tree is
@@ -1028,8 +1041,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## review — adversarial in-loop self-review (readonly). Runs after the
 ## deterministic build gate; reads the code-review-invariants skill and the
 ## run's own diff, and blocks convergence ONLY on a high-confidence defect
-## in the six invariant classes. This is the refinement the downstream
-## reviewer would otherwise do — moved INTO the loop so the PR ships clean.
+## in the invariant classes. This is the refinement the downstream
 ## claude_code (full read/git toolset), readonly so it cannot mutate;
 ## session: fresh. Convergent by design: light no-op on a red build, strict
 ## no-re-raise, blocks only verified real bugs (see review_system).

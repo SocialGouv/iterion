@@ -1,7 +1,14 @@
 name: instrument
 display_name: Obsy
 icon: 📡
-version: 0.2.1
+version: 0.2.2
+## 0.2.2 — the in-loop review gains a redaction-net class (attack every
+## outbound path a value travels: query string, cookies, stack-trace
+## frame-locals, free-text interpolation — paid: an OAuth code and a
+## ProConnect sub crossed a shipped scrubber) and the gate gains a
+## Docker image build when CI builds images (a yanked/unavailable pin
+## fails the real build, not the sandbox). lang-python: the
+## capture-endpoint E2E pattern and the framework-log-config gotcha.
 ## 0.2.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 0.1.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,

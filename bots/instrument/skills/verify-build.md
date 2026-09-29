@@ -102,6 +102,25 @@ red-in-CI. This is not optional whenever the repo commits generated artifacts:
   `<the repo's regen command> && git diff --exit-code -- <the generated
   paths>` — a non-empty diff means stale, which is a real red.
 
+## 1c. Include the Docker image builds CI runs
+
+Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
+docker-compose services) that the local sandbox never builds. The image build
+resolves the dependency lock against the **index the CI actually uses** — an
+index that can lack a version your sandbox resolved (yanked upstream, dropped
+by a mirror). A dependency that installs fine locally but is yanked on the CI
+index fails **every image build** while your local suite stays green.
+
+- Read the CI config for the image-build jobs (`BUILD_*`, `docker build`,
+  `buildx`) and build the same images locally with the same build args:
+  `docker build -f <dockerfile> --build-arg … <context>` — it must at least
+  reach the dependency-resolution step without "no matching distribution".
+- If a pinned dependency is yanked/unavailable upstream, that is a **real
+  red to fix in the same change** (bump to a carried version) — do not ship
+  a branch whose image cannot build. (Paid: `litellm==1.51.0` yanked from
+  PyPI after the sandbox resolved it — every api image build failed while
+  the local suite stayed green.)
+
 If you changed code that feeds a generator (a new HTTP route, a new exported
 type in a schema-bearing package), regenerating and committing the output is
 part of the work — the gate is here to force it. (iterion specifically:
