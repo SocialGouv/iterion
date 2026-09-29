@@ -237,9 +237,11 @@ export default function AgentForm({ decl, kind }: Props) {
       />
       <SelectField
         label="Await"
-        value={decl.await ?? "none"}
-        onChange={(v) => update({ await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
+        value={decl.await ?? ""}
+        onChange={(v) => update({ await: (v || undefined) as AwaitMode | undefined })}
         options={AWAIT_OPTIONS}
+        allowEmpty
+        emptyLabel="-- no await (default) --"
         help={AWAIT_HELP}
       />
       <TagListField
