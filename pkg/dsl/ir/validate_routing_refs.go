@@ -212,8 +212,8 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, node Node, loc, field, v
 //     so an empty one is refused where every other empty routing field
 //     falls back to its default;
 //   - recovery.model feeds the verified action's recovery rungs (run only
-//     under policy: recover — routingFieldRead), which abort on a model
-//     they cannot build with a log line and never run.
+//     under policy: recover — routingFieldRead): a budgeted rung aborts on
+//     a model it cannot build with a log line, so no rung runs on it.
 func routingConsequences(node Node, field string) (unroutable, empty string) {
 	unroutable = "a name no backend, model or provider answers to; the node fails at its first delegation"
 	empty = field + " is then UNSET at dispatch and silently falls back to its default instead of the route the field names (give the var a scalar default, or declare it `string` if the fallback is meant)"
