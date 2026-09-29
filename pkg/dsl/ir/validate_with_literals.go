@@ -192,9 +192,11 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 // parses the default before it expands anything, so the static text
 // decides (jsonDefaultDocument, C148's reading of the same var): a list
 // or an object fires, a scalar or a null document stays silent — a
-// string arrives, or nothing does — and a var with no default fires on
-// what the launch may supply. Nothing checks a `with:` value's type at
-// run time (InputSchema has no non-test reader in pkg/runtime), and a
+// scalar arrives, as a scalar var's value would (a number or a bool on a
+// `string` field is another divergence, not this one), or nothing does —
+// and a var with no default fires on what the launch may supply. Nothing
+// checks a `with:` value's type at run time (InputSchema has no non-test
+// reader in pkg/runtime), and a
 // field declared `string` declares no shape, so a tool `command:` reading
 // it takes shellEscapeValue's ShapeUndeclared arm: a list of scalars is
 // spread into its argv, one word per element (the mechanism
@@ -271,7 +273,7 @@ func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *S
 		case map[string]any:
 			arrives, breaks = "its default document, an object,", token
 		default:
-			return // a scalar or a null document: a string arrives, or nothing does
+			return // a scalar or a null document: a scalar arrives, or nothing does
 		}
 	default:
 		return
