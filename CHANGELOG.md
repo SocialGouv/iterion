@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.213.0](https://github.com/SocialGouv/iterion/compare/v3.212.2...v3.213.0) (2026-09-29)
+
+### Features
+
+* **dsl:** C183 — enum membership is compile-checked for literal values ([#1916](https://github.com/SocialGouv/iterion/issues/1916)) ([#1928](https://github.com/SocialGouv/iterion/issues/1928)) ([b680e37](https://github.com/SocialGouv/iterion/commit/b680e37780ba0b4876c59de2801ca4a7d6212cd0)), references [#1525](https://github.com/SocialGouv/iterion/issues/1525) [#1915](https://github.com/SocialGouv/iterion/issues/1915)
+
+    <details><summary>why</summary>
+
+    A compute field declared `string [enum: ...]` fed by a static string literal outside the enum (`s: "'zzz'"`) used to compile clean and fail SCHEMA_VALIDATION at the node — the enum arm of checkFieldType (pkg/backend/model/validate.go). C183 names it at compile time, as a warning per the prefer-warn stance: a scalar literal is held against a `string` field's enum, an all-string list literal against a `string[]` field's per-element enum; anything the compiler cannot fully evaluate stays silent,…
+
+    </details>
+
 ## [3.212.2](https://github.com/SocialGouv/iterion/compare/v3.212.1...v3.212.2) (2026-09-29)
 
 ### Bug Fixes
