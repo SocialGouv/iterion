@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -1270,16 +1271,84 @@ func clearHostLooseRefs(gitDir string) error {
 // deletions are fully represented via the exported `.git`; only an
 // uncommitted working-tree deletion is left behind, as an untracked
 // leftover.
+//
+// A writer racing the archive (a git process still finishing in the pod)
+// makes tar warn "file changed as we read it" and exit 1 although the
+// archive is complete. That one failure is retried, up to exportAttempts;
+// a tree that keeps changing, and every other failure, stays an error.
 func (r *Run) ExportWorkspace(ctx context.Context) error {
 	if r.info.WorkspacePath == "" {
 		return nil // workspace-less run — nothing was populated
 	}
 	hostDst := resolveCloneRoot(ctx, r.info.WorkspacePath)
 	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
-	if err := clearHostLooseRefs(filepath.Join(hostDst, ".git")); err != nil {
-		return fmt.Errorf("clear host loose refs before export extract: %w", err)
+	var last error
+	for attempt := 1; attempt <= exportAttempts; attempt++ {
+		// Cleared before EVERY attempt: a pod-side gc between two attempts
+		// may pack a ref the previous extract wrote loose, and a stale loose
+		// file would shadow the packed value this attempt brings.
+		if err := clearHostLooseRefs(filepath.Join(hostDst, ".git")); err != nil {
+			return fmt.Errorf("clear host loose refs before export extract: %w", err)
+		}
+		retryable, err := r.exportOnce(ctx, hostDst)
+		if err == nil {
+			if attempt > 1 {
+				r.driver.logger.Warn("sandbox: workspace export succeeded on attempt %d/%d, after tar saw files change mid-archive", attempt, exportAttempts)
+			}
+			return nil
+		}
+		if !retryable {
+			return err
+		}
+		last = err
+		r.driver.logger.Warn("sandbox: workspace export attempt %d/%d: tar saw files change mid-archive, retrying", attempt, exportAttempts)
+		if attempt < exportAttempts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("workspace export retry abandoned (%v): %w", ctx.Err(), last)
+			case <-time.After(exportRetryPause):
+			}
+		}
 	}
+	return fmt.Errorf("the pod workspace kept changing under the export after %d attempts: %w", exportAttempts, last)
+}
 
+// exportAttempts bounds how many archives a racing writer can cost the export.
+const exportAttempts = 3
+
+// exportRetryPause lets the racing writer finish between two attempts.
+var exportRetryPause = 500 * time.Millisecond
+
+// tarFileChangedWarning is GNU tar's warning for a file that changed while it
+// was archived: the archive is complete, but tar exits 1.
+const tarFileChangedWarning = "file changed as we read it"
+
+// onlyFileChangedWarnings reports whether err is an exit status 1 whose stderr
+// carries nothing but tar's file-changed warning — the one failure a retry can
+// cure. kubectl reports its own failures with exit 1 too, on other lines, so the
+// stderr content is what tells them apart.
+func onlyFileChangedWarnings(err error, stderr string) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		return false
+	}
+	seen := false
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "tar: ") || !strings.HasSuffix(line, tarFileChangedWarning) {
+			return false
+		}
+		seen = true
+	}
+	return seen
+}
+
+// exportOnce streams one archive of the pod workspace into hostDst. retryable
+// reports a failure onlyFileChangedWarnings accepts as transient.
+func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, err error) {
 	kubectlArgs := []string{"--namespace", r.namespace,
 		"exec", r.podName, "--container", "workload", "--",
 		"tar", "-C", r.prepared.workspace}
@@ -1292,7 +1361,7 @@ func (r *Run) ExportWorkspace(ctx context.Context) error {
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("pod tar stdout pipe: %w", err)
+		return false, fmt.Errorf("pod tar stdout pipe: %w", err)
 	}
 	hostTar.Stdin = pipe
 	var podErr, hostErr bytes.Buffer
@@ -1300,16 +1369,17 @@ func (r *Run) ExportWorkspace(ctx context.Context) error {
 	hostTar.Stderr = &hostErr
 
 	if err := hostTar.Start(); err != nil {
-		return fmt.Errorf("start host tar extract: %w", err)
+		return false, fmt.Errorf("start host tar extract: %w", err)
 	}
 	if err := podTar.Run(); err != nil {
 		_ = hostTar.Wait()
-		return fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, strings.TrimSpace(podErr.String()))
+		stderr := strings.TrimSpace(podErr.String())
+		return onlyFileChangedWarnings(err, stderr), fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
 	}
 	if err := hostTar.Wait(); err != nil {
-		return fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
+		return false, fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
 	}
-	return nil
+	return false, nil
 }
 
 // fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on
