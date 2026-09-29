@@ -251,17 +251,27 @@ What the gate deliberately does not assume:
   inside the net directory; an absolute path or a `..` escape is a
   refusal, like `oracle_dir`.
 
-**The route table is a degradation, and a loud one.** golden-master
+**The route table is the net's own statement, replayed.** golden-master
 states its routes through `config.json`'s `routes_probe` — a command it
-replays at every gate — and commits **no artifact** for them; its
-`route-coverage.json` carries only the justified exclusions. So
-`coverage_routes_file` usually names a file that is not there, the path
-check falls back to the corpus alone, and the gate says so in its log
-and in `routes_degraded`. Degraded still **refuses**: a cited path that
-matches no corpus entry path is named a `PHANTOM_DOC` with the
-degradation attached. Lifting it takes one artifact on the
-golden-master side — the `routes_probe` stdout committed as
-`<oracle_dir>/routes.txt`.
+replays at every gate — and commits no artifact for them; its
+`route-coverage.json` carries only the justified exclusions. The gates
+do the same: with no `<oracle_dir>/routes.txt` committed (a committed
+table still wins), `coverage_check` and `diagram_lint` replay that
+`routes_probe` from the docs workspace root, bounded by
+`coverage_routes_probe_timeout` — the 120 s golden-master's harness
+gives the same command. A replayed table is the tree as it is; a
+committed snapshot would stop demanding the route a later change adds.
+
+The replay has one boundary: it runs only for a net that lives **inside
+the docs workspace**. A net found in a source clone is someone else's
+code — its command is data, never executed — and the gate says so.
+Without a table (no file, no probe, a probe that fails or outlives its
+bound) the path check falls back to the corpus alone, **with the
+cause**, in its log and in `routes_degraded`. Degraded still
+**refuses**: a cited path that matches no corpus entry path is named a
+`PHANTOM_DOC` with the degradation attached. A probe that runs and
+declares nothing is a broken table, refused like an empty committed
+file.
 
 **The escape hatch has a ceiling, and the refusal knows it.**
 `coverage_max_anchorless` (default **2**, what the bundle's own
@@ -288,7 +298,7 @@ it must not be.
 (`net_unproven`) the way it says `routes_degraded` — and even when they
 do, their presence is a trace, not a verdict: neither file is stamped
 with the commit it judged. The ask on the golden-master side is one
-artifact carrying that stamp, alongside the `routes_probe` output.
+artifact carrying that stamp.
 
 What it does **not** judge is the prose. That stays with its reader.
 
@@ -386,7 +396,8 @@ computed is **never** reported as an empty one.
 | `coverage_exclusions_heading` | `exclusions` | Title a heading must carry, WHOLE and anchored, to open the chapter under which an exclusion counts as NAMED (case- and accent-insensitive). Empty while the net declares a hole stops the run: no page could ever name one |
 | `coverage_no_anchor_marker` | `<!--no-anchor-->` | What a chapter carries to declare it restitutes no reference. `page_lint` exempts exactly this token, and only when a net is present; empty disables the escape hatch |
 | `coverage_max_anchorless` | `2` | Ceiling on the chapters that may declare they restitute nothing. The anchor refusal offers the marker only while headroom remains. The exclusions chapter is anchored by its role and never counts |
-| `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar. Absent ⇒ the path check degrades to the corpus and says so |
+| `coverage_routes_file` | `routes.txt` | Declared route table inside `oracle_dir` (relative, no `..`), in the golden-master `routes_probe` grammar. A committed file wins; absent ⇒ the gates replay the net's `routes_probe` (net inside the docs workspace only); no table either way ⇒ the path check degrades to the corpus and says why |
+| `coverage_routes_probe_timeout` | `120` | Seconds the replayed `routes_probe` may run (golden-master's own bound). Past it the path check degrades, naming the timeout; a non-positive value is refused |
 | `coverage_citation_open` / `coverage_citation_close` | `[[ref:` / `]]` | The citation syntax. A reference is what the page says is one; a code span is prose. Both are declared so a repo already using `[[…]]` can pick another spelling; either one empty is a refusal that stops the run |
 | `coverage_placeholders` | `TODO,FIXME,…` | Substitutes that do not count as writing when a page documents a feature or names an exclusion |
 | `coverage_min_prose` | `60` | Minimum prose characters, outside the citations and the markup, in the block (paragraph, list item, table row) naming an exclusion or documenting a feature — for EACH feature that block documents |

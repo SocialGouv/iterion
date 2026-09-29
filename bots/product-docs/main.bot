@@ -252,12 +252,22 @@ vars:
   ## a named refusal that STOPS the run, because its repair is a launch
   ## var this run may not write. One route per line in the
   ## golden-master `routes_probe` grammar — `METHOD /path/{id}` or a
-  ## bare `/path`, `#` comments allowed. golden-master today RUNS that
-  ## probe at every gate and commits no artifact, so the file is
-  ## usually absent: the gate then DEGRADES the path check to the
-  ## corpus alone and says so, in its log and in `routes_degraded`.
+  ## bare `/path`, `#` comments allowed. A committed file wins. Absent,
+  ## the gates REPLAY the `routes_probe` the net declares in its
+  ## `config.json`, from the docs workspace root, the way golden-master
+  ## replays it at every gate — so the table is the tree as it IS, not a
+  ## snapshot a later route outgrew. The probe runs only when the net
+  ## lives INSIDE the docs workspace: a net found in a source clone is
+  ## untrusted input, and its command is data, never code. No file and
+  ## no runnable probe: the path check DEGRADES to the corpus alone and
+  ## says so, with the cause, in its log and in `routes_degraded`.
   ## Degraded is loud and still refuses; it is never silently green.
   coverage_routes_file: string = "routes.txt"
+
+  ## How long the replayed `routes_probe` may run, in seconds — the bound
+  ## golden-master's harness gives the same command. Past it the table is
+  ## unavailable and the path check degrades, naming the timeout.
+  coverage_routes_probe_timeout: int = 120
 
   ## THE CITATION SYNTAX. A reference is what a page SAYS is one --
   ## `coverage_citation_open` + token + `coverage_citation_close` -- and
@@ -2586,13 +2596,14 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 ## sign in the python body.
 tool diagram_lint:
   input: maplint_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} ORACLE_PATH={{input.oracle_path}} ROUTES_FILE={{vars.coverage_routes_file}} python3 -c "
-import os, json, re, glob
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} ORACLE_PATH={{input.oracle_path}} ROUTES_FILE={{vars.coverage_routes_file}} PROBE_TIMEOUT={{vars.coverage_routes_probe_timeout}} python3 -c "
+import os, json, re, glob, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
 product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
 oracle = (os.environ.get('ORACLE_PATH') or '').strip()
 routes_file = (os.environ.get('ROUTES_FILE') or '').strip()
+probe_timeout_raw = (os.environ.get('PROBE_TIMEOUT') or '').strip()
 causes = []
 notes = []
 def refuse(cause, where, detail):
@@ -2636,22 +2647,72 @@ for page in pages:
         refuse('MAP_NOT_A_DIAGRAM', page, 'a mermaid block is never CLOSED -- a fence the renderer cannot close renders nothing; close the block')
     elif not fence_open:
         refuse('MAP_NOT_A_DIAGRAM', page, 'the map page carries NO fenced mermaid block -- a page in diagrams/ that diagrams nothing is dead weight; draw the diagram or move the prose into the pages it belongs to')
+def parse_route_table(text):
+    routes = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        head, _sep, tail = line.partition(' ')
+        pat = tail.strip() if (tail.strip() and head.isalpha() and head.isupper()) else line
+        if pat.startswith('/'):
+            routes.append(pat)
+    return routes
+## The net's OWN statement of its routes, replayed the way golden-master
+## replays it at every gate -> (routes, why_none, broken); broken is a probe
+## that RAN and declared nothing. Only a net INSIDE the docs workspace is
+## replayed: a source clone is untrusted input, and its command is data.
+def replay_routes_probe(net, root, timeout):
+    none_declared = 'the net commits no route table and its config.json declares no routes_probe'
+    cfg_path = os.path.join(net, 'config.json')
+    if not os.path.isfile(cfg_path):
+        return [], none_declared, False
+    try:
+        with open(cfg_path, encoding='utf-8') as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return [], 'the net config.json is unreadable -- ' + ' '.join(str(exc).split())[:200], False
+    cmd = cfg.get('routes_probe') if isinstance(cfg, dict) else None
+    if not isinstance(cmd, str) or not cmd.strip():
+        return [], none_declared, False
+    real_root = os.path.realpath(root)
+    real_net = os.path.realpath(net)
+    if real_net != real_root and not real_net.startswith(real_root + os.sep):
+        return [], 'the net lives OUTSIDE the docs workspace, in a source clone: its routes_probe is untrusted input and is NOT executed', False
+    try:
+        proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return [], 'the net routes_probe did not finish within ' + str(timeout) + ' s', False
+    except OSError as exc:
+        return [], 'the net routes_probe could not start -- ' + ' '.join(str(exc).split())[:200], False
+    if proc.returncode != 0:
+        tail = ' '.join(((proc.stderr or '') + ' ' + (proc.stdout or '')).split())
+        return [], 'the net routes_probe exited ' + str(proc.returncode) + ' -- ' + tail[-200:], False
+    routes = parse_route_table(proc.stdout or '')
+    if not routes:
+        return [], 'the net routes_probe ran and printed NO route', True
+    return routes, '', False
 declared = []
-routes_unverified = True
+route_note = ''
+route_from_probe = False
+try:
+    probe_timeout = int(probe_timeout_raw)
+except ValueError:
+    probe_timeout = 0
 if oracle and routes_file and (os.path.isabs(routes_file) or '..' in routes_file.split('/')):
     refuse('MAP_UNREADABLE', 'coverage_routes_file', 'the declared route table is named by an absolute path or a dot-dot escape -- it is read from inside the net directory and nowhere else')
-elif oracle and routes_file:
-    routes_path = os.path.join(oracle, routes_file)
-    if os.path.isfile(routes_path):
+elif oracle:
+    routes_path = os.path.join(oracle, routes_file) if routes_file else ''
+    if routes_path and os.path.isfile(routes_path):
         with open(routes_path, encoding='utf-8') as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                head, _sep, tail = line.partition(' ')
-                pat = tail.strip() if (tail.strip() and head.isalpha() and head.isupper()) else line
-                if pat.startswith('/'):
-                    declared.append(pat)
+            declared = parse_route_table(fh.read())
+        if not declared:
+            route_note = 'the committed route table ' + routes_file + ' declares NO route'
+    elif probe_timeout <= 0:
+        refuse('MAP_UNREADABLE', 'coverage_routes_probe_timeout', 'the routes_probe bound is not a positive number of seconds (got ' + (probe_timeout_raw or 'nothing') + ') -- an unbounded probe could hang the gate')
+    else:
+        declared, route_note, _broken = replay_routes_probe(oracle, ws, probe_timeout)
+        route_from_probe = bool(declared)
 routes_unverified = not declared
 def segments(path):
     return [s for s in path.split('/') if s != '']
@@ -2699,7 +2760,7 @@ for tok in sorted(routes_on_map):
     refuse('PHANTOM_MAP', tok, 'the mapped path ' + tok + ' matches NO declared route -- a box on the map the application does not serve; ground it on a route the sources declare or take it off the map')
 if unverified_tokens:
     notes.append('DIAGRAM LINT: ' + str(len(unverified_tokens)) + ' mapped path(s) unverified behind catch-all routes -- visible, never a silent pass')
-log_lines = ['DIAGRAM LINT: ' + str(len(pages)) + ' map page(s), ' + str(blocks_total) + ' mermaid block(s), ' + str(len(routes_on_map)) + ' mapped path token(s), route table ' + ('present (' + str(len(declared)) + ' routes)' if declared else 'ABSENT -- mapped paths unverified')]
+log_lines = ['DIAGRAM LINT: ' + str(len(pages)) + ' map page(s), ' + str(blocks_total) + ' mermaid block(s), ' + str(len(routes_on_map)) + ' mapped path token(s), route table ' + ('present (' + str(len(declared)) + ' routes' + (', replayed from the net routes_probe' if route_from_probe else '') + ')' if declared else 'ABSENT -- mapped paths unverified: ' + (route_note or 'no net to read it from'))]
 log_lines.extend(notes)
 for c in causes[:40]:
     log_lines.append('DIAGRAM LINT: ' + c['cause'] + ' -- ' + c['where'] + ': ' + c['detail'])
@@ -2713,8 +2774,8 @@ raise SystemExit(0)
 
 tool coverage_check:
   input: coverage_input
-  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES_FILE={{vars.coverage_routes_file}} CITE_OPEN={{vars.coverage_citation_open}} CITE_CLOSE={{vars.coverage_citation_close}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} MAX_ANCHORLESS={{vars.coverage_max_anchorless}} python3 -c "
-import os, json, glob, re, unicodedata
+  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES_FILE={{vars.coverage_routes_file}} PROBE_TIMEOUT={{vars.coverage_routes_probe_timeout}} CITE_OPEN={{vars.coverage_citation_open}} CITE_CLOSE={{vars.coverage_citation_close}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} MAX_ANCHORLESS={{vars.coverage_max_anchorless}} python3 -c "
+import os, json, glob, re, unicodedata, subprocess
 from urllib.parse import urlsplit, parse_qsl
 ws = os.environ['WS']
 os.chdir(ws)
@@ -2723,6 +2784,7 @@ product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
 excl_token = (os.environ.get('EXCL_HEADING') or '').strip()
 no_anchor = (os.environ.get('NO_ANCHOR') or '').strip()
 routes_file = (os.environ.get('ROUTES_FILE') or '').strip()
+probe_timeout_raw = (os.environ.get('PROBE_TIMEOUT') or '').strip()
 cite_open = (os.environ.get('CITE_OPEN') or '').strip()
 cite_close = (os.environ.get('CITE_CLOSE') or '').strip()
 placeholders = [p.strip() for p in (os.environ.get('PLACEHOLDERS') or '').split(',') if p.strip()]
@@ -2876,33 +2938,88 @@ for name in feature_names:
     if absent:
         refuse('NET_UNREADABLE', name, 'the inventory maps it to corpus entries that DO NOT EXIST (' + ', '.join(absent) + ') -- the map points at evidence that is not there, and no page can satisfy both the gap rule and the phantom rule', True)
 
-## The DECLARED route table. Goldy runs its own routes_probe at every gate
-## and commits no artifact, so this file is OPTIONAL: absent, the path check
-## DEGRADES to the corpus alone and says so in the log and in
-## routes_degraded. Degraded is visible; it is never silently green.
+## The DECLARED route table: the committed file first; absent, the
+## routes_probe the net declares, replayed from the docs workspace root the
+## way golden-master replays it at every gate -- the table is the tree as it
+## IS, never a snapshot a later route outgrew. A net found in a source clone
+## is untrusted input: its command is data, never run. No file and no
+## runnable probe: the path check DEGRADES to the corpus alone, with the
+## cause, in the log and in routes_degraded. Degraded is visible; it is
+## never silently green.
+def parse_route_table(text):
+    routes = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        head, _sep, tail = line.partition(' ')
+        pat = tail.strip() if (tail.strip() and head.isalpha() and head.isupper()) else line
+        if pat.startswith('/'):
+            routes.append(pat)
+    return routes
+## The net's OWN statement of its routes, replayed the way golden-master
+## replays it at every gate -> (routes, why_none, broken); broken is a probe
+## that RAN and declared nothing. Only a net INSIDE the docs workspace is
+## replayed: a source clone is untrusted input, and its command is data.
+def replay_routes_probe(net, root, timeout):
+    none_declared = 'the net commits no route table and its config.json declares no routes_probe'
+    cfg_path = os.path.join(net, 'config.json')
+    if not os.path.isfile(cfg_path):
+        return [], none_declared, False
+    try:
+        with open(cfg_path, encoding='utf-8') as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return [], 'the net config.json is unreadable -- ' + ' '.join(str(exc).split())[:200], False
+    cmd = cfg.get('routes_probe') if isinstance(cfg, dict) else None
+    if not isinstance(cmd, str) or not cmd.strip():
+        return [], none_declared, False
+    real_root = os.path.realpath(root)
+    real_net = os.path.realpath(net)
+    if real_net != real_root and not real_net.startswith(real_root + os.sep):
+        return [], 'the net lives OUTSIDE the docs workspace, in a source clone: its routes_probe is untrusted input and is NOT executed', False
+    try:
+        proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return [], 'the net routes_probe did not finish within ' + str(timeout) + ' s', False
+    except OSError as exc:
+        return [], 'the net routes_probe could not start -- ' + ' '.join(str(exc).split())[:200], False
+    if proc.returncode != 0:
+        tail = ' '.join(((proc.stderr or '') + ' ' + (proc.stdout or '')).split())
+        return [], 'the net routes_probe exited ' + str(proc.returncode) + ' -- ' + tail[-200:], False
+    routes = parse_route_table(proc.stdout or '')
+    if not routes:
+        return [], 'the net routes_probe ran and printed NO route', True
+    return routes, '', False
 declared = []
 routes_path = ''
+route_note = ''
+route_from_probe = False
+try:
+    probe_timeout = int(probe_timeout_raw)
+except ValueError:
+    probe_timeout = 0
 if routes_file and (os.path.isabs(routes_file) or '..' in routes_file.split('/')):
     ## Same guard as oracle_dir: the route table is read from INSIDE the net,
     ## never from an absolute path or a dot-dot escape an operator typed once.
     refuse('NET_UNREADABLE', 'coverage_routes_file', 'the declared route table is named by an absolute path or a dot-dot escape -- it is read from inside the net directory and nowhere else', True)
-elif routes_file:
+elif routes_file and os.path.isfile(os.path.join(oracle, routes_file)):
     routes_path = os.path.join(oracle, routes_file)
-    if os.path.isfile(routes_path):
-        try:
-            with open(routes_path, encoding='utf-8') as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    head, _sep, tail = line.partition(' ')
-                    pat = tail.strip() if (tail.strip() and head.isalpha() and head.isupper()) else line
-                    if pat.startswith('/'):
-                        declared.append(pat)
-        except OSError as exc:
-            refuse('NET_UNREADABLE', routes_path, 'the declared route table is unreadable -- ' + ' '.join(str(exc).split())[:200], True)
-        if not declared:
-            refuse('NET_UNREADABLE', routes_path, 'the declared route table is EMPTY -- a table that declares nothing is not a degraded check, it is a broken one: a refusal, not a vacuous pass', True)
+    try:
+        with open(routes_path, encoding='utf-8') as fh:
+            declared = parse_route_table(fh.read())
+    except OSError as exc:
+        refuse('NET_UNREADABLE', routes_path, 'the declared route table is unreadable -- ' + ' '.join(str(exc).split())[:200], True)
+    if not declared:
+        refuse('NET_UNREADABLE', routes_path, 'the declared route table is EMPTY -- a table that declares nothing is not a degraded check, it is a broken one: a refusal, not a vacuous pass', True)
+elif probe_timeout <= 0:
+    route_note = 'the routes_probe bound is invalid'
+    refuse('NET_UNREADABLE', 'coverage_routes_probe_timeout', 'the routes_probe bound is not a positive number of seconds (got ' + (probe_timeout_raw or 'nothing') + ') -- an unbounded probe could hang the gate', True)
+else:
+    declared, route_note, probe_broken = replay_routes_probe(oracle, ws, probe_timeout)
+    route_from_probe = bool(declared)
+    if probe_broken:
+        refuse('NET_UNREADABLE', os.path.join(oracle, 'config.json'), 'the net routes_probe ran and printed NO route -- a table that declares nothing is not a degraded check, it is a broken one: a refusal, not a vacuous pass', True)
 routes_degraded = not declared
 ## PRODY TRUSTS THE NET WITHOUT PROOF THAT THE NET OWN GATE RAN ON IT. A rite
 ## emits its runner (verify-oracle.sh, which replays the gate) and REPORT.md
@@ -3569,7 +3686,9 @@ if net_unproven:
     ## loop the pre-flight rule exists to prevent.
     notes.append('COVERAGE GATE: DEGRADED -- the net at ' + oracle + ' carries NO trace of its own gate (neither verify-oracle.sh nor REPORT.md). This gate reads the inventory and the corpus as given; nothing here proves a harness ever scored them. OPERATOR-SIDE ONLY, never a repair for this run: the rite emissions live with the net, outside ' + (product_dir or '<product_dir>') + '/**/*.md, and a verdict stamped with the commit it judged would be better still.')
 if routes_degraded:
-    notes.append('COVERAGE GATE: DEGRADED -- no declared route table at ' + (routes_path or '<coverage_routes_file>') + '. golden-master runs its route table through config.json routes_probe and commits no artifact, so a cited path is checked against the CORPUS ONLY: a route the corpus never touches cannot be recognised and is refused. OPERATOR-SIDE ONLY, never a repair for this run: the routes_probe output lands with the net, outside ' + (product_dir or '<product_dir>') + '/**/*.md.')
+    notes.append('COVERAGE GATE: DEGRADED -- no declared route table: ' + (route_note or 'none could be read') + '. A cited path is therefore checked against the CORPUS ONLY: a route the corpus never touches cannot be recognised and is refused. OPERATOR-SIDE ONLY, never a repair for this run: the route table lives with the net, outside ' + (product_dir or '<product_dir>') + '/**/*.md.')
+elif route_from_probe:
+    notes.append('COVERAGE GATE: route table -- ' + str(len(declared)) + ' route(s) replayed from the net routes_probe, no committed ' + (routes_file or 'route table') + ' to read')
 for m in marked:
     notes.append('COVERAGE GATE: chapter declared anchorless -- ' + m['page'] + ':' + str(m['line']) + ' ' + m['title'])
 for c in causes[:60]:
