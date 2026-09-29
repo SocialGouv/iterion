@@ -83,8 +83,22 @@ bracket is refused rather than merged — and both are enforced independently:
 
 **Where each is checked.** A literal **default** is checked at compile time
 ([C126](references/diagnostics.md) / [C161](references/diagnostics.md)) on the
-text as written — a default is never re-checked later, so `= "${AGENT}"` on a
-constrained var is refused rather than excused. An operator-supplied value
+text as written — a default is never re-checked later. A default carrying an
+env reference expands at run start, not at compile time, so the verbatim
+comparison could not judge it: the compiler expands what has an answer with
+no environment (the `${VAR:-default}` forms) and **warns** instead — [C181](references/diagnostics.md)
+when a reference stays unresolvable, which includes the engine-supplied
+names (`${PROJECT_DIR}` and kin: the RUN answers those itself, so no
+compile-time reading may) — the constraint is then checked on no
+path for that default: named, never silently excused — and [C182](references/diagnostics.md)
+when the compile-time reading violates (it is still only the value a launch
+with nothing set starts with, and the operator's env is an explicit choice).
+Only text whose `$` is no reference at all stays on the literal path. `:-` is
+the only operator the expander has, so `${VAR:+alt}` and `${VAR-default}`
+look up a variable literally named `VAR:+alt` / `VAR-default` (the run's
+lookup filters no name), and a computed name (`${${SEL}}`, `${PRE${X}}`)
+resolves to whatever the launch environment makes of it: both are C181.
+An operator-supplied value
 (`--var`, an HTTP payload, a dispatcher's `bot_args`, a preset overlay) is
 refused **at launch**, before a worktree or a sandbox is created, naming the
 var, the offending value and what it failed. Launch values are judged after

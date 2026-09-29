@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 )
 
 // validateWithMappingLiterals warns (C152) when an edge `with:` value
-// reaches a typed input field of the destination as TEXT. A `with:`
+// reaches a typed input field of the destination as TEXT, and (C180) when
+// a whole-reference mapping delivers a LIST into a field declared
+// `string` — the two directions of the same divergence. A `with:`
 // value is a template: the runtime hands the destination a string for
 // every mapping except one that is exactly a single `{{…}}` block
 // covering the whole text — that one passes the referenced value
@@ -72,14 +75,18 @@ func (c *compiler) validateWithMappingLiterals(w *Workflow) {
 			continue // C002 handles the missing schema
 		}
 		for _, dm := range e.With {
-			if dm == nil || !mappingArrivesAsText(dm) {
+			if dm == nil {
 				continue
 			}
 			f := findField(schema, dm.Key)
 			if f == nil {
 				continue // C028/C034 flag the mismatch on the key
 			}
-			c.checkWithLiteral(e, dm, f, inSchema, dst)
+			if mappingArrivesAsText(dm) {
+				c.checkWithLiteral(e, dm, f, inSchema, dst)
+				continue
+			}
+			c.checkWithWholeRef(w, e, dm, f, inSchema, dst)
 		}
 	}
 }
@@ -174,6 +181,121 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 		"edge %s -> %s, with %q: value %q reaches the `%s` field %q of input schema %q on %s %s node as %s; %s",
 		e.From, e.To, dm.Key, dm.Raw, f.Type, dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(),
 		withLiteralArrival(f.Type, dm.Raw, len(dm.Refs) == 0), withLiteralRemedy(f.Type, dm.Key, dm.Raw))
+}
+
+// checkWithWholeRef is C152's mirror in the other direction (#1604): the
+// mapping is exactly one reference, so the runtime passes the value
+// through WITH its type — and a typed value can land on a field declared
+// `string`, the arm C152 deliberately stays silent on because there a
+// string is the legal value. A `string[]` var IS a list on every path
+// since #1285. A `json` var is whatever its document is, and the run
+// parses the default before it expands anything, so the static text
+// decides (jsonDefaultDocument, C148's reading of the same var): a list
+// or an object fires, a scalar or a null document stays silent — a
+// scalar arrives, as a scalar var's value would (a number or a bool on a
+// `string` field is another divergence, not this one), or nothing does —
+// and a var with no default fires on what the launch may supply. Nothing
+// checks a `with:` value's type at run time (InputSchema has no non-test
+// reader in pkg/runtime), and a
+// field declared `string` declares no shape, so a tool `command:` reading
+// it takes shellEscapeValue's ShapeUndeclared arm: a list of scalars is
+// spread into its argv, one word per element (the mechanism
+// DiagVarListDefaultRouting describes), and an object — or a list holding
+// a collection — arrives as ONE JSON token where a string was declared.
+// That mechanism is named only for a tool whose `command:` reads
+// `{{input.<key>}}` in the escaped form (commandReadsInputEscaped). Every
+// other reader takes the collection itself or its JSON text: a prompt
+// renders its JSON text (formatValue), a `script:` body a JSON literal
+// (jsonLiteralValue), the `{{!…}}` raw form the JSON text unquoted, an
+// `expr:` sees the list or the object — the message never names a
+// `command:` the destination does not have. A warning, like
+// C152: a tolerant consumer (an LLM prompt, a text template) reads the
+// rendered value without breaking, and a refusal would reject a shape a
+// run can survive.
+//
+// Only a `{{vars.<name>}}` reference carries a statically-known type
+// here. An `{{outputs.<node>…}}` whole reference earns no opinion: C031/
+// C032 check that the referenced field EXISTS, never its type — so a
+// list-typed output delivered whole into a `string` field is a known
+// gap, not a case covered elsewhere. Edge mappings only, like C152: a
+// subbot's target is a child bot loaded separately (its input schema is
+// unknown here), an emit has no typed destination, and a `fail message:`
+// is a string sink.
+func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *SchemaField, inSchema string, dst Node) {
+	if f.Type != FieldTypeString || len(dm.Refs) != 1 {
+		return
+	}
+	ref := dm.Refs[0]
+	if ref.Kind != RefVars || len(ref.Path) != 1 {
+		return
+	}
+	v := w.Vars[ref.Path[0]]
+	if v == nil {
+		return // C033 owns the undeclared name
+	}
+	spread := fmt.Sprintf("its `command:` reading {{input.%[1]s}} gets the list spread into its argv, one word per element (in a `VAR={{input.%[1]s}}` assignment the first element is kept, the rest become a command of their own)", dm.Key)
+	token := fmt.Sprintf("its `command:` reading {{input.%s}} gets it as ONE JSON token, and every consumer reads a collection where the declaration promises a string", dm.Key)
+	either := "if it is a list, " + spread + "; an object arrives as ONE JSON token"
+	if !commandReadsInputEscaped(dst, dm.Key) {
+		// Only a tool's `command:` reading the field in the escaped form
+		// renders it through shellEscapeValue; every other reader takes
+		// the collection itself or its JSON text.
+		spread = "the node reads the collection where its schema promises a string — a prompt renders its JSON text, a `script:` body a JSON literal, an `expr:` sees the collection itself"
+		token, either = spread, spread
+	}
+	var arrives, breaks string
+	switch v.Type {
+	case VarStringArray:
+		arrives, breaks = "a list", spread
+	case VarJSON:
+		doc, known := jsonDefaultDocument(v)
+		if !known {
+			arrives = "the document the launch supplies (the var has no default)"
+			breaks = either
+			break
+		}
+		switch d := doc.(type) {
+		case []any:
+			// shellEscapeValue's own split (sliceHasComplexElement): one
+			// nested list or object makes the whole list one JSON token.
+			holdsCollection := slices.ContainsFunc(d, func(x any) bool {
+				switch x.(type) {
+				case []any, map[string]any:
+					return true
+				}
+				return false
+			})
+			if holdsCollection {
+				arrives, breaks = "its default document, a list holding a collection,", token
+			} else {
+				arrives, breaks = "its default document, a list,", spread
+			}
+		case map[string]any:
+			arrives, breaks = "its default document, an object,", token
+		default:
+			return // a scalar or a null document: a scalar arrives, or nothing does
+		}
+	default:
+		return
+	}
+	c.warnfAt(DiagWithWholeRefListToString, e.From, edgeID(e.From, e.To),
+		"edge %s -> %s, with %q: the mapping is exactly one reference to the `%s` var %q, so the value passes through with its type — %s arrives WHOLE on the `string` field %q of input schema %q on %s %s node, and nothing checks a `with:` value's type at run time: %s; declare the field `string[]` or `json`, or interpolate the reference into prose if one string is meant",
+		e.From, e.To, dm.Key, v.Type, ref.Path[0], arrives, dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(), breaks)
+}
+
+// commandReadsInputEscaped reports whether dst is a tool whose `command:`
+// reads `{{input.<key>}}` whole in the escaped form — the one reading
+// renderCommand hands to shellEscapeValue. A `script:` or an `action:`
+// recipe has no command, the raw `{{!input.<key>}}` form splices the JSON
+// text unquoted, and a drilled `{{input.<key>.x}}` reads a leaf.
+func commandReadsInputEscaped(dst Node, key string) bool {
+	tool, ok := dst.(*ToolNode)
+	if !ok {
+		return false
+	}
+	return slices.ContainsFunc(tool.CommandRefs, func(r *Ref) bool {
+		return r != nil && r.Kind == RefInput && !r.Unquoted && len(r.Path) == 1 && r.Path[0] == key
+	})
 }
 
 // aAn is the indefinite article for s, by its initial letter — the
