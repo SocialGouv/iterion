@@ -10,7 +10,7 @@ package runner
 //
 // Gated on ITERION_TEST_NATS_URI (mirror of ITERION_TEST_MONGO_URI in
 // pkg/store/mongo): a plain `go test ./...` skips it, CI's
-// `nats-conformance` job provides a `nats -js` service container.
+// `nats-conformance` job starts a `nats -js` broker.
 
 import (
 	"context"
