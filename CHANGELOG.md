@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.208.0](https://github.com/SocialGouv/iterion/compare/v3.207.0...v3.208.0) (2026-09-29)
+
+### Features
+
+* **dsl:** list and object literals in expr: ([#1525](https://github.com/SocialGouv/iterion/issues/1525)) ([#1915](https://github.com/SocialGouv/iterion/issues/1915)) ([9b0c1ce](https://github.com/SocialGouv/iterion/commit/9b0c1ce686dc7d54ae6c9d316f56c5ed4a017f8d)), references [#1497](https://github.com/SocialGouv/iterion/issues/1497)
+
+    <details><summary>why</summary>
+
+    The typed-collection remedy (C152, PR #1497) had exactly one expressible form because the expression language had no list or object literal. The literal lands in both syntax profiles — it is additive, and a profile gates changes of MEANING, not forms that were parse errors:
+
+    </details>
+* **product-docs:** the gate demands every declared route be cited ([#1912](https://github.com/SocialGouv/iterion/issues/1912)) ([256a12f](https://github.com/SocialGouv/iterion/commit/256a12fb0ec252f7eb836efd45c37d7f57733fd2))
+
+    <details><summary>why</summary>
+
+    The POSS assessment's deployable declared a pattern that matched nothing in the Dockerfile it named — the agent wrote the pattern without reading the file. The survey skill now teaches: read the file, pick the line that identifies the service, write the pattern that matches it verbatim.
+
+    </details>
+* **server:** the per-file editor carries import and dsl: profile changes ([#1680](https://github.com/SocialGouv/iterion/issues/1680)) ([#1917](https://github.com/SocialGouv/iterion/issues/1917)) ([569c536](https://github.com/SocialGouv/iterion/commit/569c5366f8c947fdab71b167d42d8d8ff89feb49)), references [#1665](https://github.com/SocialGouv/iterion/issues/1665)
+
+    <details><summary>why</summary>
+
+    Since #1665 the studio's per-file Source view refused both edits by name: the save rebuilt every file's header (its import lines, its dsl: profile) from the STORED files, so an applied change was silently dropped — a removed import emptied the orphan fragment with a 200, an added one made every later save refuse, a profile change was never written while the declarations had been read under the new one.
+
+    </details>
+
 ## [3.207.0](https://github.com/SocialGouv/iterion/compare/v3.206.0...v3.207.0) (2026-09-28)
 
 ### Features
