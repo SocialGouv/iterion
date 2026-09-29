@@ -1175,6 +1175,11 @@ tasks:
     cmds:
       - go run ./cmd/release-floors {{.CLI_ARGS}}
 
+  ci:queue-stats:
+    desc: "Measure main's merge queue over a window — enqueue→merge latency, merges that skipped the queue, queue builds a direct push discarded, failing tests (read-only, needs gh; e.g. `task ci:queue-stats -- --since 2026-09-22 --until 2026-09-28`)"
+    cmds:
+      - bash scripts/diagnostics/queue-stats.sh {{.CLI_ARGS}}
+
   # --- Helm chart targets (plan §F T-36, T-39) --------------------
   chart:sync-version:
     desc: Sync charts/iterion/Chart.yaml version + appVersion with package.json so `helm upgrade` picks up the right image tag

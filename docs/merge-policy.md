@@ -27,11 +27,11 @@ green.
   run once per batch). A lone PR still merges after
   `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
-  `mongo-conformance`, `golangci`, `revi/review` — and `nats-conformance` once
-  an admin adds it to ruleset 18857412. `brand` and `fmt-check` are STAGED:
-  they report on the pull request AND in the queue, so the context is already
-  there the day the ruleset names them, and `internal/ciguard`'s
-  `requiredChecks` carries that list. Editing that ruleset from the API needs
+  `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
+  `nats-conformance` once an admin adds it to ruleset 18857412. `fmt-check` is
+  STAGED: it reports on the pull request AND in the queue, so the context is
+  already there the day the ruleset names it, and `internal/ciguard`'s
+  `requiredChecks` carries it. Editing that ruleset from the API needs
   `PUT /repos/{owner}/{repo}/rulesets/{id}` with the **complete** representation
   (`name`, `target`, `enforcement`, `bypass_actors`, `conditions`, `rules`); a
   `PATCH`, or a `PUT` missing any of those, answers `404` — which reads exactly
@@ -46,10 +46,10 @@ green.
   > `desktop-vet-linux`, `desktop-vet-cross`, `docs-links`, `docs-build` — carry
   > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`:
   > a job that cannot block a merge should not hold a runner slot the queue
-  > needs. (`brand` and `fmt-check` are not listed above and carry no skip:
-  > they are STAGED to become required — named in `internal/ciguard`'s
-  > `requiredChecks`, not yet in the ruleset — and stay in the queue so their
-  > context exists the day it names them.) Adding one to this ruleset
+  > needs. (`fmt-check` is not listed above and carries no skip: it is STAGED
+  > to become required — named in `internal/ciguard`'s `requiredChecks`, not
+  > yet in the ruleset — and stays in the queue so its context exists the day
+  > it names it.) Adding one to this ruleset
   > **without deleting its skip** is worse
   > than a stalled queue: a job skipped by a job-level `if:` reports
   > **Success**, so the required check is satisfied by a job that never ran —
@@ -74,9 +74,9 @@ green.
   > alert is a state, not a stream. Any other advisory job whose failure
   > nobody would notice wants the same treatment rather than promotion to
   > required.
-- **Three required checks run on self-hosted runners** — `test`,
-  `vendor-check` and `golangci` route to the organisation's `arc-runners`
-  scale set on `merge_group`, because the 20-job cap above is what makes a
+- **Four required checks run on self-hosted runners** — `test`,
+  `vendor-check`, `golangci` and `brand` route to the organisation's
+  `arc-runners` scale set on `merge_group`, because the 20-job cap above is what makes a
   cycle slow. That scale set is **outside this repository**, and it was dead
   and unnoticed for over a year before 2026-09-08.
 
@@ -124,7 +124,7 @@ gh pr merge <n> --repo <owner>/<repo> --squash --admin
 
 Before using it, the same proofs the queue would have demanded must already be
 green **on the PR head**: every required check (`test`, `race`, `vendor-check`,
-`mongo-conformance`, `golangci`) and `revi/review`. The bypass skips the
+`mongo-conformance`, `golangci`, `brand`) and `revi/review`. The bypass skips the
 *rebuild against the queue's other members*, nothing else — so it is legitimate
 when the PR is small, or touches files no queued PR touches, and reckless when
 it is a wide refactor.
@@ -146,9 +146,105 @@ Two consequences worth stating plainly:
   must not be given them; an incident fix launched by a bot waits in the queue
   like everything else, or a human takes it through the hatch above.
 - **The durable fix is queue throughput, not exceptions.** Every direct push to
-  `main` — the release commit, and until recently the brew-tap commit —
-  invalidates and replays the head group. Removing the tap push from `main` is
-  what buys every PR back its second CI run; an exception buys it for one.
+  `main` invalidates every merge group in flight: each one rebuilds from
+  scratch on the new base. That is why the brew-tap update lands through the
+  queue as its own pull request, and why the release waits for the queue to
+  drain ([below](#releases-and-the-queue)); an exception buys the rebuild back
+  for one PR only.
+
+## Releases and the queue
+
+A release is a direct push to `main` — `version.yml` runs release-it, which
+commits `chore: release vX.Y.Z` and its tag, the token-bureau App bypassing
+the ruleset — so it invalidates every merge group in flight like any other
+direct push. Releasing after every merge discards the build of whatever is
+queued behind the merged PR while it runs. Measured with `task ci:queue-stats`
+over 2026-09-22..28: 58 releases for 102 merges, and 20 queue
+builds discarded by a direct push while they ran — 15 by a release commit, 5 by
+a pull request merged directly (31 of the 102 skipped the queue through the
+admin bypass, and each of those is a direct push too). Over 2026-09-01..28: 387
+of 1096 queue builds, 242 of them by a release.
+
+So `version.yml` holds a **merged pull request's** release while a merge group
+is building — any `gh-readonly-queue/main/*` branch exists — and the merge that
+drains the queue releases everything merged since the last tag. The **nightly**
+(22:27 UTC) and a **`workflow_dispatch`** release regardless, without reading
+the queue at all: the nightly is the backstop for a queue that drains without a merge (its
+last entry ejected) or never drains, and a dispatch is an operator's explicit
+request. A release delayed by a busy queue therefore waits at most until the
+next drain or the next nightly; to ship now, dispatch it.
+
+GitHub sometimes leaves a `gh-readonly-queue/main/*` branch behind after its
+group merged (seen on mastodon, cilium, zed, flutter). Counted as a live
+group, one such orphan would hold every merged PR's release until the nightly.
+A branch is named after the pull request at the tail of its group
+(`pr-<n>-<base>`), and a group only exists while that pull request waits in
+the queue, so the hold counts a branch only while its pull request is **open**
+— and, as a backstop for one dequeued but kept open, while its head commit
+(dated when the entry was queued; rebuilds keep the date) is less than a day
+old; from their last enqueue to their merge, the 221 queue merges of
+2026-09-15..29 waited 16 minutes at the median and 80 at most.
+The job's log names every branch it ignored with its pull request's state:
+check it, then **delete it** — `gh api -X DELETE
+repos/SocialGouv/iterion/git/refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`.
+
+The hold is **best effort, not a lock**. The branch list is read just before
+the run moves to `main`'s tip — in that order, so a group that merges between
+the two holds the release rather than leaving release-it on a stale tree — and
+release-it still builds for a few minutes before it pushes; a group that starts
+between the read and the push rebuilds once. What is left is measured, not
+assumed: `task ci:queue-stats` counts the queue builds discarded by a release
+([Measuring the queue](#measuring-the-queue)) — which also counts the nightly
+and dispatched releases that invalidate on purpose; the script cannot tell them
+apart from a merged PR's release that slipped through the window.
+
+Two release runs never overlap, whatever triggered them: `version.yml` has one
+concurrency group for every trigger, with `queue: max`, and each run that
+releases moves to `main`'s tip before release-it — a run queued behind a
+release finds it already tagged and releases nothing (a nightly or a dispatch
+checks for new commits first, since a dispatch's explicit increment would
+otherwise cut an empty release). Overlap is what must never happen — when a
+push is rejected, release-it rolls back by deleting the remote tag of the
+version it computed, and if the other run had just pushed that same version,
+that is the other run's tag. `queue: max` is there because a group otherwise
+keeps a single pending run and silently replaces it with the next one: a merged
+pull request's run could replace a pending nightly or dispatch, then hold its
+release while the queue builds.
+
+## Measuring the queue
+
+`devbox run -- task ci:queue-stats -- --since 2026-09-22 --until 2026-09-28`
+(`scripts/diagnostics/queue-stats.sh`, read-only, needs an authenticated `gh`)
+answers the three questions a queue change has to be judged on, over a fixed
+window in UTC so two periods compare:
+
+- **how long a merge takes** — minutes from a pull request's first enqueue to
+  its merge, p50/p75/p90/max, per author (the brew-tap bot's PRs are counted
+  apart), for the pull requests the queue merged; the ones merged directly —
+  the admin bypass, a dequeue followed by an admin merge included — are
+  counted apart, since each is a push to `main`. Also the removals from the
+  queue that were not a merge (`failed_checks`, `merge_conflict`, `manual`),
+  among the pull requests merged in the window;
+- **what the window paid for** — the Tests runs on `merge_group`, and for
+  every rebuild, its cause, read from the clock — a direct push to `main` (a
+  release, a direct merge, any other push) committed at most 90 seconds before
+  the rebuild, or the queue itself (an entry ahead failed or left, a dequeue
+  and a re-enqueue) — and the state of the build it replaced: for a push,
+  whether it was already green or still running when the push hit (the queue
+  does not cancel the run of a group it discards; a build that had already
+  finished red had ejected its pull request, so its rebuild is a re-enqueue,
+  counted as the queue's). **Queue
+  builds discarded by a direct push** is the line the release hold above
+  exists to shrink. Runs are read day by day and checked against the count the
+  API announces: a query answers at most 1000 runs, and paging has returned a
+  run twice;
+- **what failed the queue** — for each failed build, the failing jobs and
+  steps and, unless `--no-logs`, the `--- FAIL:` tests in their logs, ranked.
+  A build is named after the pull request at the tail of its group, so a
+  failure that an entry ahead caused repeats in every group behind it. A test
+  that fails the queue once and never again is a flake candidate; one that
+  fails it with a generated-file freshness message is two PRs editing the same
+  generated artefact.
 
 ## For the bot factory
 
