@@ -112,14 +112,16 @@ net**. The paths that leak are the ones you did not enumerate:
   message or exception string never meets a key-based rule — it needs a
   shape-based rule (uuid, token shape) or the leak ships.
 - **Breadcrumbs and secondary payloads**: hooks that only scrub the main
-  event leave breadcrumbs, attachments, and nested contexts untouched.
+  event leave breadcrumbs, attachments, nested contexts and process argv
+  (the Python SDK attaches `sys.argv` to every event) untouched.
 
 Verify each path **against a capture endpoint**: boot the instrumented
 process with the sink pointed at a local collector, trigger the paths,
-assert FIRST that every envelope you triggered arrived and was decoded,
-then that no secret appears in any decoded value (JSON-unescaped,
-percent-decoded — never a grep of the raw bytes). A unit test with a mock
-transport proves the code path; the capture test proves the net.
+assert FIRST that every event you triggered arrived as its own item, then
+that no planted value appears anywhere, searched raw AND decoded
+(JSON-unescaped, percent-decoded until stable, numbers and non-JSON items
+included). A unit test with a mock transport proves the code path; the
+capture test proves the net.
 
 ## 8. Written invariants must be tested — and their call sites swept
 

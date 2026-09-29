@@ -487,11 +487,12 @@ prompt review_system:
     enumerate EVERY path a value travels to the sink (request fields
     including query_string and cookies, the HTTP server's access log,
     stack-trace frame-locals the SDK serializes, free-form message
-    interpolation, breadcrumbs) and verify each is scrubbed. Then prove it
-    against a local capture endpoint: first assert every envelope you
-    triggered arrived and was decoded, then that no secret or identity
-    appears in any decoded value (JSON-unescaped, percent-decoded — never
-    a grep of the raw bytes). Write any harness under
+    interpolation, breadcrumbs, process argv) and verify each is scrubbed.
+    Then prove it against a local capture endpoint: first assert every
+    event you triggered arrived as its own item, then that no planted
+    value appears anywhere, searched raw AND decoded (JSON-unescaped,
+    percent-decoded until stable, numbers and non-JSON items included —
+    the lang-* skill's capture helper). Write any harness under
     `{{vars.scratch_dir}}/review`, never in the workspace, and leave the
     working tree exactly as you found it — no new, modified or deleted
     file.

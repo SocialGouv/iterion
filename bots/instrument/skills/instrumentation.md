@@ -145,11 +145,12 @@ entry points. Never wire tracing "while you're at it".
   triggered error event arrived (and, only when tracing is in scope, one
   transaction per unit of work with the sample rate forced to 1.0 for
   the test), THEN that **no secret or identity appears anywhere**,
-  searched in the decoded values (JSON-unescaped, percent-decoded), never
-  the raw bytes — request fields including the query string and cookies,
+  searched raw AND decoded (JSON-unescaped, percent-decoded until stable,
+  numbers and non-JSON items included — the `lang-*` skill's capture
+  helper) — request fields including the query string and cookies,
   stack-trace frame-locals the SDK serializes, free-form message
-  interpolation, breadcrumbs included. Over an empty, partial or
-  undecoded capture, "nothing leaked" is vacuously true. The
+  interpolation, breadcrumbs, process argv included. Over an empty,
+  partial or undecoded capture, "nothing leaked" is vacuously true. The
   mock-transport unit tests prove the code path; the capture test proves
   the net. (Paid: in a campaign's own diff, an OAuth `code` crossed the
   scrubber through the request's query string and the stack's
