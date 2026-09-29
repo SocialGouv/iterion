@@ -276,8 +276,8 @@ const (
 	// C180+ — the var-typing wave (#1604, #1610). Kept in one contiguous
 	// hunk, away from the C15x family another in-flight branch extends.
 	DiagWithWholeRefListToString   DiagCode = "C180" // a `with:` mapping that is exactly one reference to a `string[]`/`json` var delivers the value WHOLE — a list, an object — into a field declared `string`, and nothing checks a `with:` value's type at run time (warning, the mirror of C152 in the other direction)
-	DiagVarDefaultUnverifiable     DiagCode = "C181" // a constrained var's default carries an env reference compile time cannot resolve, so the constraint is checked on NO path for it — the launch gate reads the operator's values, never a default (warning: named, never silently excused)
-	DiagVarDefaultExpandedViolates DiagCode = "C182" // a constrained var's default expands — with nothing set — to a value outside its enum / off its pattern (warning, not C126/C161's error: the launch environment decides the actual value)
+	DiagVarDefaultUnverifiable     DiagCode = "C181" // a constrained var's default carries a reference compile time cannot resolve — an environment variable, or an engine-supplied name (PROJECT_DIR and kin) the RUN answers itself — so the constraint is checked on NO path for it (warning: named, never silently excused)
+	DiagVarDefaultExpandedViolates DiagCode = "C182" // a constrained var's default whose references are all environment `${VAR:-default}` forms expands — with nothing set in the launch environment — to a value outside its enum / off its pattern (warning, not C126/C161's error: the launch environment decides the actual value)
 
 	// Compute-field enum membership (#1916): a statically-known literal the
 	// runtime enum arm (checkFieldType, pkg/backend/model/validate.go) will
