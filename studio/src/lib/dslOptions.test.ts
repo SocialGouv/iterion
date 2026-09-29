@@ -66,7 +66,16 @@ describe("dslOptions curated orders", () => {
   });
 
   it("REASONING_EFFORT_OPTIONS reads ascending behind its (default) sentinel", () => {
-    expect(values(REASONING_EFFORT_OPTIONS)).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultracode"]);
+    expect(values(REASONING_EFFORT_OPTIONS)).toEqual([
+      "",
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultracode",
+    ]);
   });
 });
 
@@ -79,6 +88,7 @@ describe("dslOptions curated labels", () => {
 
   it("pins the reasoning-effort labels that name a different tier", () => {
     expect(labelOf(REASONING_EFFORT_OPTIONS, "")).toBe("(default)");
+    expect(labelOf(REASONING_EFFORT_OPTIONS, "none")).toBe("none (no reasoning)");
     expect(labelOf(REASONING_EFFORT_OPTIONS, "ultracode")).toBe("ultracode (xhigh + orchestration)");
   });
 
