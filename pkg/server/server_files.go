@@ -43,6 +43,14 @@ type saveFileRequest struct {
 	// Revision is the unit revision the document was opened at (the open
 	// response's unit.revision); required for a bot in several files.
 	Revision string `json:"revision,omitempty"`
+	// UnitFiles is the file list the client last holds for the unit (its
+	// unit.files): each file's profile and import lines AS THE CLIENT
+	// KNOWS them, which a per-file edit of the Source view may have changed
+	// — the two header fields the merged document does not carry. A save
+	// with it rebuilds the unit the claim describes and writes each file's
+	// header from the claim; a save without it rebuilds every header from
+	// the stored files, and a header change is dropped.
+	UnitFiles []unitFileInfo `json:"unit_files,omitempty"`
 }
 
 type saveFileResponse struct {
