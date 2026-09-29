@@ -497,9 +497,14 @@ that stack. It is resolved per node like every routing field (`model:`,
 `backend:`, `provider:`, `interaction_model:`, a `fallbacks:` route's three
 fields, a verified action's `recovery.model`, the workflow's
 `default_backend:`): a `{{vars.<name>}}` reference
-first — the run's vars are the one namespace that exists before the node
+first — a dotted `{{vars.<doc>.<member>}}` included, drilled into a `json`
+var's document; the run's vars are the one namespace that exists before the node
 runs; any other template warns C148 at compile time and reaches the backend
-as text — then `${VAR}` / `${VAR:-default}` expansion.
+as text — then `${VAR}` / `${VAR:-default}` expansion. A dotted reference
+whose var holds a scalar at run time (a `--var cfg=claw` override replacing
+the declared document) resolves nothing on either side of the launch screen:
+the value holds no members to drill, the text reaches the backend as written
+and the node fails at its first delegation.
 
 Known hints:
 
@@ -932,6 +937,15 @@ silently taken — and what makes it visible to the three pre-run
 analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
 crossings the compiler refuses in the `.bot`.
+
+The screen reads a node's backend the way the run itself will: a
+`${VAR:-default}` dial by the launching process's environment, and a
+`{{vars.<name>}}` reference by the launch's vars (the declared defaults
+under that launch's `--var` overrides) — the same template-then-env
+reading `resolveRoutingField` makes at dispatch, var values expanded
+through the process environment exactly as `resolveVars` expands them.
+A reference neither answers stays undecided and is screened as before:
+no opinion, no guess.
 
 The route does **not** propagate into a `subbot:` child. A subbot is a
 different bot with its own routes, its own judges and its own permission

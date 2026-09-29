@@ -88,3 +88,47 @@ func TestRoutingFieldRefs(t *testing.T) {
 		})
 	}
 }
+
+// A dotted vars path is not one shape but three: under a `json` var the
+// executor DRILLS the document (drillTemplatePath) and resolves the member
+// — the launch screen reads it the same way — so there is nothing to warn
+// about; under a scalar or list var it can never resolve (a string holds no
+// members) and the text reaches the backend as written, which is C148; an
+// undeclared root is C033, as a flat undeclared ref draws.
+func TestRoutingFieldRefsDottedVarPath(t *testing.T) {
+	const head = "vars:\n  cfg: json = \"{\\\"backend\\\": \\\"claw\\\"}\"\n  m: string = \"x\"\n  tags: string[] = \"a,b\"\n\n" +
+		"prompt p:\n  Hi.\n\n"
+	agent := func(props string) string { return "agent a:\n  system: p\n" + props }
+	cases := []struct {
+		name string
+		body string
+		want DiagCode // "" = no C033/C148
+	}{
+		{"a member of a json var resolves at dispatch", agent("  backend: \"{{vars.cfg.backend}}\"\n"), ""},
+		{"a dotted path under a scalar can never resolve", agent("  backend: \"{{vars.m.id}}\"\n"), DiagRoutingFieldRef},
+		{"a dotted path under a list can never resolve", agent("  backend: \"{{vars.tags.0}}\"\n"), DiagRoutingFieldRef},
+		{"an undeclared root is C033 like a flat one", agent("  backend: \"{{vars.nope.id}}\"\n"), DiagUndeclaredVar},
+		{"workflow default_backend drilling a json var", agent(""), ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			wf := "workflow w:\n  entry: a\n  a -> done\n"
+			if c.name == "workflow default_backend drilling a json var" {
+				wf = "workflow w:\n  default_backend: \"{{vars.cfg.backend}}\"\n  entry: a\n  a -> done\n"
+			}
+			_, diags := compileSource(t, head+c.body+"\n"+wf)
+			var seen []DiagCode
+			for _, d := range diags {
+				if d.Code == DiagUndeclaredVar || d.Code == DiagRoutingFieldRef {
+					seen = append(seen, d.Code)
+				}
+			}
+			switch {
+			case c.want == "" && len(seen) != 0:
+				t.Fatalf("unexpected routing diagnostics %v in\n%s", seen, diags)
+			case c.want != "" && (len(seen) != 1 || seen[0] != c.want):
+				t.Fatalf("want exactly one %s, got %v in\n%s", c.want, seen, diags)
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -582,6 +583,22 @@ type backendReader struct {
 	// `${X}` with no `:-` reads as a field the SOURCE does not decide
 	// rather than as an absent one.
 	asWritten bool
+	// vars is the launch's vars view a `{{vars.<name>}}` reference
+	// resolves against — nil for a reading that has no vars (the
+	// compiler's, where a launch may still override the var, so the
+	// reference stays undecided). The launch-time screen carries it:
+	// there the vars are as fixed as the process environment. Values are
+	// typed as resolveVars types them: a `json` var is its parsed
+	// document, so a dotted `{{vars.cfg.backend}}` drills into it.
+	vars map[string]any
+}
+
+// withVars returns the reading resolved against a launch's vars — the
+// runtime's own order (resolveRoutingField): the `{{vars.<name>}}`
+// template first, the field's `${…}` expansion after.
+func (r backendReader) withVars(vars map[string]any) backendReader {
+	r.vars = vars
+	return r
 }
 
 var (
@@ -618,12 +635,94 @@ func (r backendReader) field(name string) (string, bool) {
 // naming a backend `$MY_BACKEND` refused a gated workflow that was fine
 // and passed a claw⇄CLI crossing that was not.
 func (r backendReader) resolve(name string) (string, bool) {
-	expanded, _ := expandWithDefault(name, r.lookup, expandPolicy{keepUnresolved: r.asWritten})
+	expanded := expandVarsRefs(name, r.vars)
+	expanded, _ = expandWithDefault(expanded, r.lookup, expandPolicy{keepUnresolved: r.asWritten})
 	expanded = strings.TrimSpace(expanded)
 	if strings.ContainsRune(expanded, '$') || strings.Contains(expanded, "{{") {
 		return "", false
 	}
 	return expanded, true
+}
+
+// expandVarsRefs substitutes the `{{vars.<name>}}` spans of a routing
+// field from the launch's vars view — the one namespace a routing field
+// resolves (DiagRoutingFieldRef). A dotted path drills into a `json`
+// var's document, the executor's own semantics (drillTemplatePath: maps
+// only, a missing member or a non-map segment is not found). A span the
+// view cannot answer — an undeclared var, a drilled `{{vars.cfg.on}}`
+// with no such member — is kept as written, so the residual-`{{` check
+// above still reads the field as one nothing decided. A nil view
+// resolves nothing, which is exactly the compiler's reading.
+func expandVarsRefs(s string, vars map[string]any) string {
+	if len(vars) == 0 || !strings.Contains(s, "{{") {
+		return s
+	}
+	var b strings.Builder
+	remaining := s
+	for {
+		start := strings.Index(remaining, "{{")
+		if start == -1 {
+			b.WriteString(remaining)
+			break
+		}
+		end := strings.Index(remaining[start:], "}}")
+		if end == -1 {
+			b.WriteString(remaining)
+			break
+		}
+		end += start + 2
+		b.WriteString(remaining[:start])
+		if path, ok := strings.CutPrefix(strings.TrimSpace(remaining[start+2:end-2]), "vars."); ok {
+			if v, found := drillVarsView(vars, strings.Split(path, ".")); found {
+				b.WriteString(formatVarValue(v))
+				remaining = remaining[end:]
+				continue
+			}
+		}
+		b.WriteString(remaining[start:end])
+		remaining = remaining[end:]
+	}
+	return b.String()
+}
+
+// drillVarsView is drillTemplatePath's twin
+// (pkg/backend/model/executor_template.go) for the launch view: the vars
+// map is the root, the path's first segment names the var, and every
+// further segment walks nested maps — a missing key or a non-map segment
+// is not found. The layering forbids importing the executor's version;
+// keep the two in sync.
+func drillVarsView(vars map[string]any, path []string) (any, bool) {
+	var cur any = vars
+	for _, p := range path {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		v, ok := m[p]
+		if !ok {
+			return nil, false
+		}
+		cur = v
+	}
+	return cur, true
+}
+
+// formatVarValue renders a drilled value the way the template resolver's
+// formatValue prints it: a string as is, nil as empty, anything else as
+// JSON — so `{{vars.cfg}}` substitutes the same text dispatch shows.
+func formatVarValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case nil:
+		return ""
+	default:
+		b, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", val)
+		}
+		return string(b)
+	}
 }
 
 // name is field without the decision bit, for a site that only screens a
