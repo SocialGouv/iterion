@@ -1,9 +1,13 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 )
 
 // TestEffortCapabilities_ClawOpus48 proves the endpoint returns the full
@@ -109,6 +113,52 @@ func TestEffortCapabilities_ClawOpenAI(t *testing.T) {
 	)
 }
 
+// TestEffortCapabilities_GPT6SolLunaCarryNone proves the GPT-6 effort
+// matrices come through with the split the provider documents: Sol and
+// Luna accept reasoning_effort `none`, Astra does not. The studio picker
+// reads this list verbatim, so a registry regression that dropped none
+// would silently remove the level from the only models that honour it.
+func TestEffortCapabilities_GPT6SolLunaCarryNone(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
+		got := getEffortCaps(t, hs.URL, "claw", model)
+		assertEffortLevels(t, got.Supported,
+			[]string{"none"},      // required
+			[]string{"ultracode"}, // forbidden
+		)
+	}
+	got := getEffortCaps(t, hs.URL, "claw", "gpt-6-astra")
+	assertEffortLevels(t, got.Supported,
+		nil,              // required
+		[]string{"none"}, // forbidden
+	)
+}
+
+// TestCodexEffortFallbackGatesNone pins the static matrix emitted when the
+// Codex CLI is unreachable: it mirrors the SDK's Effort constants every
+// codex model accepts, and offers none ONLY for the models the claw
+// registry (the catalogue of record) marks as none-carriers — promising it
+// for every codex model would sell a level the CLI refuses at run time.
+func TestCodexEffortFallbackGatesNone(t *testing.T) {
+	assertEffortLevels(t, codexEffortFallback,
+		[]string{"low", "medium", "high", "max"}, // required
+		[]string{"none", "ultracode", "xhigh"},   // forbidden
+	)
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna", "openai/gpt-6-sol"} {
+		assertEffortLevels(t, codexEffortFallbackFor(model),
+			[]string{"none", "low", "medium", "high", "max"}, // required
+			nil, // forbidden
+		)
+	}
+	for _, model := range []string{"gpt-6-astra", "gpt-5.5", "totally-unknown-model"} {
+		assertEffortLevels(t, codexEffortFallbackFor(model),
+			[]string{"low", "medium", "high", "max"}, // required
+			[]string{"none"},                         // forbidden
+		)
+	}
+}
+
 // TestEffortCapabilities_Pi proves the pi backend returns its static
 // model-independent matrix — the levels iterion can express, dropped
 // down from pi's full off|minimal|low|medium|high|xhigh|max dial. This
@@ -125,7 +175,7 @@ func TestEffortCapabilities_Pi(t *testing.T) {
 		t.Errorf("Default=%q, want %q", got.Default, "medium")
 	}
 	assertEffortLevels(t, got.Supported,
-		[]string{"low", "medium", "high", "xhigh", "max"},
+		[]string{"none", "low", "medium", "high", "xhigh", "max"},
 		nil,
 	)
 
@@ -239,6 +289,22 @@ func TestResolveEffort_EnvSubstitutionUsesSetValue(t *testing.T) {
 	got := getResolveEffort(t, hs.URL, "${_ITERION_EFFORT_TEST_SET:-low}")
 	if got.Resolved != "xhigh" {
 		t.Errorf("Resolved=%q, want %q (env value should win over fallback)", got.Resolved, "xhigh")
+	}
+}
+
+// TestResolveEffort_EnvExpandsToNone proves an env expansion to `none`
+// survives resolution instead of being erased to "" — the regression
+// from issue #1837, where ResolveEffortLiteral rejected a level the
+// DSL did not yet enumerate and the studio canvas showed no effort at
+// all for a node that explicitly asked for none.
+func TestResolveEffort_EnvExpandsToNone(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_EFFORT_TEST_NONE", "none")
+
+	got := getResolveEffort(t, hs.URL, "${_ITERION_EFFORT_TEST_NONE:-low}")
+	if got.Resolved != "none" {
+		t.Errorf("Resolved=%q, want %q (a resolved none must not be erased)", got.Resolved, "none")
 	}
 }
 
@@ -505,4 +571,68 @@ func sameStringSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// seedCodexModelCache installs a fake Codex model/list response so
+// codexCapabilities exercises its live-list path without spawning the CLI.
+func seedCodexModelCache(t *testing.T, models []codexsdk.ModelInfo) {
+	t.Helper()
+	codexCacheMu.Lock()
+	codexCache = &codexCacheEntry{models: models, fetchedAt: time.Now()}
+	codexCacheMu.Unlock()
+	t.Cleanup(func() {
+		codexCacheMu.Lock()
+		codexCache = nil
+		codexCacheMu.Unlock()
+	})
+}
+
+// TestCodexCapabilities_LiveListOffersNoneForCarriers reproduces the
+// live-list vs fallback divergence: codex 0.156.1's model/list reports
+// low/medium/high/max even for gpt-6-sol, yet the runtime accepts none
+// for Sol/Luna (and 400s it for Astra). The endpoint must agree with the
+// runtime truth on BOTH paths — a picker that offers none only when the
+// CLI is down is lying whenever the CLI is up.
+func TestCodexCapabilities_LiveListOffersNoneForCarriers(t *testing.T) {
+	cliList := []codexsdk.ModelInfo{
+		{
+			ID:    "gpt-6-sol",
+			Model: "gpt-6-sol",
+			// What codex 0.156.1 actually reports — no none.
+			SupportedReasoningEfforts: []codexsdk.ReasoningEffortOption{
+				{Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "max"},
+			},
+			DefaultReasoningEffort: "medium",
+		},
+		{
+			ID:    "gpt-6-astra",
+			Model: "gpt-6-astra",
+			SupportedReasoningEfforts: []codexsdk.ReasoningEffortOption{
+				{Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "max"},
+			},
+			DefaultReasoningEffort: "medium",
+		},
+	}
+	seedCodexModelCache(t, cliList)
+
+	sol, err := codexCapabilities(context.Background(), "gpt-6-sol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sol.Source != "codex-cli" {
+		t.Fatalf("Source=%q, want codex-cli (live path)", sol.Source)
+	}
+	assertEffortLevels(t, sol.Supported,
+		[]string{"none", "low", "medium", "high", "max"}, // required
+		nil, // forbidden
+	)
+
+	astra, err := codexCapabilities(context.Background(), "gpt-6-astra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEffortLevels(t, astra.Supported,
+		[]string{"low", "medium", "high", "max"}, // required
+		[]string{"none"},                         // forbidden: the runtime 400s it
+	)
 }

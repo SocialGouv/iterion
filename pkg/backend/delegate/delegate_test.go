@@ -196,6 +196,7 @@ func TestMapReasoningEffort(t *testing.T) {
 		{"high", codexsdk.EffortHigh},
 		{"xhigh", codexsdk.EffortHigh},
 		{"max", codexsdk.EffortMax},
+		{"none", codexsdk.EffortNone},
 		{"unknown", codexsdk.EffortMedium},
 	}
 	for _, tt := range tests {

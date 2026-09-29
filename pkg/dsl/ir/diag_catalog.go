@@ -60,7 +60,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagLLMRouterConditionEdge:    {"LLM router edge has condition", "Remove `when` from the edges of an `llm` router; the model selects the target."},
 	DiagRouterLLMOnlyProperty:     {"LLM-only property on non-LLM router", "`model`, `backend`, `system`, `user`, `multi` and `reasoning_effort` belong to `mode: llm`; remove them or change the mode."},
 	DiagInvalidLoopIterations:     {"Invalid loop iterations", "A loop cap must be at least 1."},
-	DiagInvalidReasoningEffort:    {"Invalid reasoning effort", "Use `low`, `medium`, `high`, `xhigh`, `max` or `ultracode` (or a quoted `${VAR}` string)."},
+	DiagInvalidReasoningEffort:    {"Invalid reasoning effort", "Use `none`, `low`, `medium`, `high`, `xhigh`, `max` or `ultracode` (or a quoted `${VAR}` string)."},
 	DiagDuplicateWithKey:          {"Duplicate with-mapping key", "The same `with` key reaches one target from several unconditional edges; use distinct keys or make the edges conditional."},
 	DiagUnknownRefNode:            {"Unknown outputs node reference", "`{{outputs.<node>}}` names a node that is not declared; declare it or fix the typo."},
 	DiagRefFieldNotInSchema:       {"Outputs ref field not in output schema", "Reference a field the node's `output:` schema declares, or add it to the schema."},

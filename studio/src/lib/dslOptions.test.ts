@@ -65,8 +65,8 @@ describe("dslOptions curated orders", () => {
     ]);
   });
 
-  it("REASONING_EFFORT_OPTIONS reads ascending behind its (default) sentinel", () => {
-    expect(values(REASONING_EFFORT_OPTIONS)).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultracode"]);
+  it("REASONING_EFFORT_OPTIONS reads ascending behind its (default) sentinel, no-reasoning first", () => {
+    expect(values(REASONING_EFFORT_OPTIONS)).toEqual(["", "none", "low", "medium", "high", "xhigh", "max", "ultracode"]);
   });
 });
 

@@ -564,6 +564,7 @@ export const iterDslEnumValuesByProperty = {
     "low",
     "max",
     "medium",
+    "none",
     "ultracode",
     "xhigh"
   ],
