@@ -180,8 +180,10 @@ def leaks(captured, planted):
     each percent-decoded until stable, JWT segments base64url-decoded, backslash escapes
     peeled at any depth (u- and x-escapes behind any run of backslashes, as repr() doubles
     them; Latin-1 bytes; JSON's escaped slash), matched case-insensitively on ANY 8-character
-    run of a planted value (the whole value when shorter): a truncated copy (`sub[:8]`) or a
-    dash-stripped one (`uuid.hex`) counts."""
+    run of letters and digits of a planted value (the whole value when it has none): a
+    truncated copy (`sub[:8]`) or a dash-stripped one (`uuid.hex`) counts. A run across a
+    separator is too weak to count: across a uuid4's fixed `-4xxx-8xxx-` it carries ~18
+    bits and matches unrelated uuid4s."""
     texts = []
     for line in captured:
         texts.append(line.decode("utf-8", "replace"))
@@ -189,7 +191,8 @@ def leaks(captured, planted):
             texts.extend(_strings(json.loads(line)))
         except ValueError:
             pass
-    runs = {p: {p[i:i + 8].casefold() for i in range(max(1, len(p) - 7))} for p in planted}
+    runs = {p: {w.casefold() for i in range(len(p) - 7) for w in (p[i:i + 8],) if w.isalnum()}
+            or {p.casefold()} for p in planted}
     return sorted({p for t in texts for v in _variants(t) for c in (v.casefold(),) for p in planted
                    if any(r in c for r in runs[p])})
 ```
@@ -207,17 +210,22 @@ match its `r["attributes"]["sentry.message.template"]["value"]` among
 before asserting absence: an earlier batch of startup or access lines
 satisfies a mere "a log item arrived". Then assert
 `leaks(captured, planted) == []`. The helper reports ANY 8-character run of
-a planted value, so every run must be distinctive: generate the values
-(`secrets.token_hex`, `uuid.uuid4()`) into a data file — no word or field
+letters and digits of a planted value, so every such run must be
+distinctive: generate the values
+(`secrets.token_hex`, `uuid.uuid4()`) into a data file — of a token (a JWT)
+plant only its distinctive part (a claim, the signature), never its header
+(two tokens of one `alg` share it); no word or field
 name inside a value (a planted `Password123!` matches the `password` key a
 working scrubber kept), no domain or IP prefix the app talks to (an email
-at `@beta.gouv.fr` matches `.gouv.fr` in any ProConnect URL), no
+at `@solidarites-sante.gouv.fr` matches that domain in any of the app's
+URLs), no
 time-ordered id minted at test time (ObjectIds or UUIDv7 of the same second
 share their first runs) — and trigger the same paths once more with a
 SECOND planted set: `leaks()` of that capture against the first set must
-be `[]`, or a hit proves nothing. A value under 8 characters is matched
-whole (make it rare, or longer); a copy is seen only when 8 contiguous
-characters survive unchanged — a separator every few characters, a
+be `[]`, or a hit proves nothing. A value with no run of 8 letters and
+digits (shorter, or cut by separators) is matched whole (make it rare, or
+longer); a copy is seen only when 8 contiguous letters and digits survive
+unchanged — a separator every few characters, a
 re-encoding, accent folding or NFD defeat it. Load the values from that
 file — a literal in a source file on the captured stack comes back
 through the SDK's source context and fakes a hit — and plant each

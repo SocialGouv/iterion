@@ -61,7 +61,8 @@ Detect the stack from its markers; honour any pinned toolchain
   interfaces + fakes for boundaries.
 - **Run:** `go test ./path/...` ; per-package; whole module `go test ./...`.
 - **Coverage:** `go test -cover ./...` ; profile
-  `go test -coverprofile=cover.out ./... && go tool cover -func=cover.out`.
+  `go test -coverprofile=cover.out ./...`, then `go tool cover -func=cover.out`
+  (two commands: in a gate, a chain hides its first failure).
 - **Property:** `testing/quick`, or native fuzz `func FuzzX(f *testing.F)`.
 - **Bench:** `func BenchmarkX(b *testing.B)`.
 

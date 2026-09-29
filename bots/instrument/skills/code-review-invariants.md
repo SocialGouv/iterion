@@ -120,7 +120,8 @@ process with the sink pointed at a local collector, trigger the paths,
 assert FIRST that every event you triggered arrived as its own item
 (batched items included: logs ship in batches, so wait for the triggered
 record itself), then that no planted value — nor any 8-character run of
-one: a truncated `sub[:8]`, a dash-stripped uuid — appears anywhere,
+letters and digits of one: a truncated `sub[:8]`, a dash-stripped uuid —
+appears anywhere,
 searched raw AND decoded
 (JSON-unescaped, percent-decoded until stable, numbers and non-JSON items
 included). A unit test with a mock transport proves the code path; the

@@ -487,7 +487,7 @@ prompt review_system:
     any batch — then that no planted value appears anywhere, searched raw
     AND decoded (JSON-unescaped, percent-decoded until stable, numbers and
     non-JSON items included — lang-python ships the helper; on other
-    stacks port its decoding). The campaign's own capture test proves only
+    stacks port its decoding and its matching). The campaign's own capture test proves only
     the paths it triggers, under the assertions it makes: run it, and give
     every other path you listed your own harness, under
     `{{vars.scratch_dir}}/review`, never in the workspace, leaving the
@@ -590,7 +590,9 @@ prompt finalize_mr_system:
        scope_notes for context). When the repository's CI builds Docker
        images (a Dockerfile or compose service it builds), add a line
        naming them as NOT built by this run's gate — CI's own image
-       build is the signal.
+       build is the signal — and copy the NOT COVERED lines of
+       {{vars.scratch_dir}}/verify.log (a suite the gate left out)
+       into the description.
     5. If source_issue_ref is set, post the opened PR URL back to it: a
        forge issue URL → comment via the same forge CLI; a "native:<id>"
        ref → use the board comment tool. Set back_linked accordingly.
@@ -1078,6 +1080,13 @@ if rc == 0:
             if fresh:
                 rc = 4
                 out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+if rc == 0:
+    # A NOT COVERED line is printed FIRST in verify.sh, off the exit path: a
+    # green run carries it into the log tail, wherever the bot reports it.
+    nc_lines = [l for l in out.splitlines() if l.startswith('NOT COVERED:')]
+    nc_lines = [l for l in dict.fromkeys(nc_lines) if l not in out[-4000:]]
+    if nc_lines:
+        out = out + chr(10) + chr(10).join(nc_lines)
 try:
     with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)

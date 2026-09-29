@@ -11,9 +11,10 @@ version: 0.2.2
 ## `leaks()` (planted values searched raw AND decoded, escapes peeled at any
 ## depth, case-insensitive).
 ## Convergence changes on purpose: an unproven redaction or isolation claim
-## now blocks the loop. verify-build: no `docker` command in verify.sh (the
-## sandbox has no daemon), and the PR body names the images CI builds as not
-## covered by the gate. lang-python: when uvicorn's log config undoes the
+## now blocks the loop. verify-build: no docker command in verify.sh (an
+## image build or a test suite's service: CI runs them), a check gates only
+## as a plain command, and the PR body names what the gate does not cover
+## (NOT COVERED lines, printed first and lifted into a green tail). lang-python: when uvicorn's log config undoes the
 ## seam, per launch mode, and the lifespan flush uvicorn's SIGTERM needs.
 ## 0.2.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 0.1.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
