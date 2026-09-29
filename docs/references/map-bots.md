@@ -23,7 +23,7 @@
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 1 · 8 | 3.6.0 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 1 · 5 | 0.5.1 |
 | `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 1 · 8 | 0.1.4 |
-| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.7.1 |
+| `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.7.2 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 1 · 3 | 2.4.1 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1 · 3 | 1.6.3 |
 | `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 4 · 6 | 0.1.5 |

@@ -234,7 +234,7 @@ func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
 	}
 	wf := cr.Workflow
 
-	for _, nodeID := range []string{"plan", "plan_revise", "verify_build", "review", "finalize_mr"} {
+	for _, nodeID := range []string{"plan", "plan_revise", "review", "finalize_mr"} {
 		node, ok := wf.Nodes[nodeID]
 		if !ok {
 			t.Fatalf("feature-dev: node %q missing", nodeID)
@@ -261,6 +261,20 @@ func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
 		}
 		if len(kimi.On) != 2 || kimi.On[0] != "usage_window" || kimi.On[1] != "unavailable" {
 			t.Errorf("feature-dev: node %q kimi_quota triggers = %v, want [usage_window unavailable]", nodeID, kimi.On)
+		}
+	}
+
+	// verify_build declares interaction: human, which is inert on kimi (no
+	// ask_user wiring on CLI-agent backends, #1910; the diagnostics wave names it C271): a kimi_quota
+	// route would run the gate without ever pausing, so the node has none
+	// and usage-window recovery waits for Claude instead.
+	verify, ok := wf.Nodes["verify_build"].(ir.LLMNode)
+	if !ok {
+		t.Fatalf("feature-dev: node %q is %T, want LLM node", "verify_build", wf.Nodes["verify_build"])
+	}
+	for i := range verify.GetFallbacks() {
+		if verify.GetFallbacks()[i].Backend == "kimi" {
+			t.Error("feature-dev: verify_build cannot fall back to Kimi, where its interaction: human is inert (#1910)")
 		}
 	}
 
