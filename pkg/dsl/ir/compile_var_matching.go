@@ -199,8 +199,8 @@ func (c *compiler) checkPresetConstraint(preset string, pv *ast.PresetValue, v *
 
 // liveRefSentinel is what liveness checks substitute for every name: a
 // string no expansion can produce by accident, so a text that comes back
-// unchanged was never asked about. Shared by carriesLiveReference, its
-// braced-only twin and the deterministic-reading check.
+// unchanged was never asked about. Shared by carriesLiveReference and its
+// braced-only twin.
 const liveRefSentinel = "\x00iterion-live-ref\x00"
 
 // carriesLiveReference reports whether the run's expander would REWRITE s —

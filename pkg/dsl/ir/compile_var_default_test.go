@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -55,15 +56,27 @@ func TestC181_C182_ConstrainedVarDefaultWithEnvReference(t *testing.T) {
 			`  scratch: string [matching: "^/.+$"] = "${PROJECT_SCRATCH_DIR}"`, DiagVarDefaultUnverifiable, 1},
 		{"every engine-owned name is treated as run-answered",
 			`  scratch: string [matching: "^/.+$"] = "${PROJECT_DIR:-x}${PROJECT_MEMORY_DIR:-y}${BUNDLE_DIR:-z}${BUNDLE_SKILLS_DIR:-w}"`, DiagVarDefaultUnverifiable, 1},
-		// LOW 1: the unsupported-operator forms read as the empty string
-		// WHATEVER the environment holds — deterministic, judged with the
-		// literal path's verdicts, never C181's "the launch decides".
-		{"${X:+alt} reads as the empty string, deterministically — a violation is C126",
-			`  mode: string [enum: "a", "b"] = "${X:+a}"`, "", 0}, // → C126, asserted below
-		{"${X-default} reads as the empty string, deterministically — a violation is C161",
-			`  agent: string [matching: "^[a-z]+$"] = "${X-default}"`, "", 0}, // → C161, asserted below
-		{"a deterministic reading that satisfies stays silent",
-			`  agent: string [matching: "^.*$"] = "${X:+ignored}${Y-also-ignored}"`, "", 0},
+		// No reference is environment-independent: the run's lookup is the
+		// process environment with no name filter, and a nested segment's
+		// answer is the next lookup's KEY. The unsupported-operator forms
+		// look up a variable literally named `X:+a`, a computed name is
+		// whatever the environment makes of it — C181, never the literal
+		// path's "always expands to" error (both executed in
+		// TestLookupDependentFormsAreUnverifiable).
+		{"${X:+alt} looks up a variable named X:+alt — unverifiable, not C126",
+			`  mode: string [enum: "a", "b"] = "${X:+a}"`, DiagVarDefaultUnverifiable, 1},
+		{"${X-default} looks up a variable named X-default — unverifiable, not C161",
+			`  agent: string [matching: "^[a-z]+$"] = "${X-default}"`, DiagVarDefaultUnverifiable, 1},
+		{"unsupported-operator forms the constraint would admit as empty are unverifiable all the same",
+			`  agent: string [matching: "^.*$"] = "${X:+ignored}${Y-also-ignored}"`, DiagVarDefaultUnverifiable, 1},
+		{"a computed name resolves at launch — unverifiable, not C126",
+			`  mode: string [enum: "a", "b"] = "${${SELECTOR}}"`, DiagVarDefaultUnverifiable, 1},
+		{"a name computed from a prefix and a reference — unverifiable, not C126",
+			`  mode: string [enum: "a", "b"] = "${PRE${X}}"`, DiagVarDefaultUnverifiable, 1},
+		{"a name computed from a bare reference — unverifiable, not C126",
+			`  mode: string [enum: "a", "b"] = "${$X}"`, DiagVarDefaultUnverifiable, 1},
+		{"a nested :-default chain resolves with nothing set — judged, and it violates",
+			`  mode: string [enum: "a", "b"] = "${${X:-A}:-c}"`, DiagVarDefaultExpandedViolates, 1},
 		{"a {{vars.x}} default is NOT an env reference — the literal-text rule stands",
 			`  mode: string [enum: "a", "b"] = "{{vars.other}}"`, "", 0}, // → C126, asserted below
 		{"a trailing dollar is not a reference — the literal-text rule stands",
@@ -85,8 +98,7 @@ func TestC181_C182_ConstrainedVarDefaultWithEnvReference(t *testing.T) {
 			}
 			// The false error is gone in every one of these shapes: no
 			// C126/C161 may ride along — except where the case IS the
-			// literal rule (deterministic readings included), asserted
-			// separately below.
+			// literal rule, asserted separately below.
 			if tc.code == "" {
 				return
 			}
@@ -173,47 +185,55 @@ func TestLiteralDefaultsWithDollarsStayErrors(t *testing.T) {
 	}
 }
 
-// TestUnsupportedOperatorFormsAreDeterministic is LOW 1's verdict: the
-// expander has no `:+` / `-` operators, so `${X:+alt}` and `${X-default}`
-// read as the empty string WHATEVER the launch environment holds. That
-// is as judgeable as a literal — and earns the literal path's verdicts
-// (C126/C161, errors), never C181's "the launch environment decides".
-// The message must say WHY the compiler can judge it, naming the
-// deterministic reading.
-func TestUnsupportedOperatorFormsAreDeterministic(t *testing.T) {
-	r := compileFile(t, varDefaultSrc(`  mode: string [enum: "a", "b"] = "${X:+a}"`))
-	if got := countCode(r, DiagVarDefaultNotInEnum); got != 1 {
-		t.Fatalf("C126 count = %d, want 1 — ${X:+a} deterministically reads as the empty string\ndiagnostics: %v", got, r.Diagnostics)
-	}
-	if got := countCode(r, DiagVarDefaultUnverifiable); got != 0 {
-		t.Errorf("C181 count = %d, want 0 — nothing about this value depends on the launch", got)
-	}
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagVarDefaultNotInEnum {
-			for _, want := range []string{"always expands to", ":+", "-"} {
-				if !strings.Contains(d.Message, want) {
-					t.Errorf("message %q does not carry %q — it must say why the value is judgeable", d.Message, want)
-				}
+// TestLookupDependentFormsAreUnverifiable: a default whose reading any
+// launch can move is C181, never the literal path's error. Two shapes
+// once read as "always the empty string" and were refused — both false,
+// executed here through the run's own reading:
+//
+//   - `${X:+alt}` / `${X-default}`: the expander has no `:+` / `-`
+//     operators, so the segment is looked up WHOLE as a name, and the
+//     run's lookup ends in a bare os.Getenv (varExpandFn,
+//     pkg/runtime/engine_resolve.go) — a launch environment carrying a
+//     variable named `X:+a` answers it;
+//   - a computed name (`${${SELECTOR}}`, `${PRE${X}}`, `${$X}`): the
+//     segments resolve inside-out, so one lookup's answer is the next
+//     lookup's KEY.
+func TestLookupDependentFormsAreUnverifiable(t *testing.T) {
+	for _, line := range []string{
+		`  mode: string [enum: "a", "b"] = "${X:+a}"`,
+		`  agent: string [matching: "^[a-z]+$"] = "${X-default}"`,
+		`  mode: string [enum: "a", "b"] = "${${SELECTOR}}"`,
+	} {
+		r := compileFile(t, varDefaultSrc(line))
+		if got := countCode(r, DiagVarDefaultUnverifiable); got != 1 {
+			t.Errorf("%s: C181 count = %d, want 1\ndiagnostics: %v", line, got, r.Diagnostics)
+		}
+		for _, code := range []DiagCode{DiagVarDefaultNotInEnum, DiagVarDefaultNotMatching} {
+			if got := countCode(r, code); got != 0 {
+				t.Errorf("%s: %s count = %d, want 0 — the run's reading depends on the launch environment\ndiagnostics: %v", line, code, got, r.Diagnostics)
 			}
 		}
-	}
-	r = compileFile(t, varDefaultSrc(`  agent: string [matching: "^[a-z]+$"] = "${X-default}"`))
-	if got := countCode(r, DiagVarDefaultNotMatching); got != 1 {
-		t.Errorf("C161 count = %d, want 1\ndiagnostics: %v", got, r.Diagnostics)
-	}
-	// A deterministic reading the constraint admits is silent.
-	r = compileFile(t, varDefaultSrc(`  agent: string [matching: "^.*$"] = "${X:+ignored}"`))
-	for _, code := range []DiagCode{DiagVarDefaultNotMatching, DiagVarDefaultUnverifiable, DiagVarDefaultExpandedViolates} {
-		if got := countCode(r, code); got != 0 {
-			t.Errorf("%s count = %d, want 0 — \"\" satisfies ^.*$\ndiagnostics: %v", code, got, r.Diagnostics)
+		if r.HasErrors() {
+			t.Errorf("%s: the program fails to compile: %v", line, r.Diagnostics)
 		}
 	}
-	// …and the fixture is not inert: the run's own reading of the form
-	// under a real launch environment (no variable named `X:+a` can
-	// reach os.Getenv from a shell) is the empty string.
-	v, err := ResolveVarText("${X:+a}", VarString, func(string) string { return "" })
-	if err != nil || v != "" {
-		t.Fatalf("fixture is inert: the run reads ${X:+a} as %#v (err %v), want \"\"", v, err)
+
+	// The witnesses: the run's reading of each form moves with the
+	// environment, to a value the constraint admits.
+	t.Setenv("X:+a", "b")
+	if v, err := ResolveVarText("${X:+a}", VarString, os.Getenv); err != nil || v != "b" {
+		t.Errorf("the run reads ${X:+a} as %#v (err %v) under X:+a=b, want \"b\" — the fixture is inert", v, err)
+	}
+	env := map[string]string{"SELECTOR": "TARGET", "TARGET": "a", "X": "FIX", "PREFIX": "a", "T": "a"}
+	lookup := func(k string) string { return env[k] }
+	for _, def := range []string{"${${SELECTOR}}", "${PRE${X}}"} {
+		if v, err := ResolveVarText(def, VarString, lookup); err != nil || v != "a" {
+			t.Errorf("the run reads %s as %#v (err %v), want \"a\" — the fixture is inert", def, v, err)
+		}
+	}
+	env["X"] = "T"
+	if v, err := ResolveVarText("${$X}", VarString, lookup); err != nil || v != "a" {
+		t.Errorf("the run reads ${$X} as %#v (err %v), want \"a\" — the fixture is inert", v, err)
 	}
 }
 
