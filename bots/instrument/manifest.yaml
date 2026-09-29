@@ -8,10 +8,12 @@ version: 0.2.2
 ## an OAuth code and a ProConnect sub crossed a campaign's own scrubber),
 ## proven against a capture endpoint: lang-python ships the collector (gzip
 ## AND br) with `items()` (arrival asserted on each event item) and
-## `leaks()` (planted values searched raw AND decoded). verify-build: never
-## `docker build` in verify.sh (the sandbox has no daemon), and the images CI
-## builds are named in the summary as not covered by the gate. lang-python:
-## when uvicorn's log config undoes the seam, per launch mode.
+## `leaks()` (planted values searched raw AND decoded, escapes peeled).
+## Convergence changes on purpose: an unproven redaction or isolation claim
+## now blocks the loop. verify-build: no `docker` command in verify.sh (the
+## sandbox has no daemon), and the PR body names the images CI builds as not
+## covered by the gate. lang-python: when uvicorn's log config undoes the
+## seam, per launch mode, and the lifespan flush uvicorn's SIGTERM needs.
 ## 0.2.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 0.1.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,

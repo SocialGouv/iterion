@@ -42,7 +42,10 @@ def init_errtrack() -> bool:
   inside the existing handler.
 - **Flush/atexit**: the SDK flushes on interpreter exit via its atexit
   integration; for daemons with custom shutdown, call
-  `sentry_sdk.flush(timeout=2)` explicitly.
+  `sentry_sdk.flush(timeout=2)` explicitly. uvicorn re-raises SIGTERM
+  after its graceful shutdown, so atexit never runs there: call
+  `sentry_sdk.flush(timeout=2)` in the lifespan shutdown (a no-op under
+  `--lifespan off`), or queued events are lost at every rollout.
 - Dependency: add `sentry-sdk` via the repo's own dependency manager
   (pyproject/poetry/uv/requirements) with the house pinning style.
 
@@ -103,7 +106,7 @@ Mock transports prove the code path. The net is proven by booting the
 instrumented process with the sink pointed at a LOCAL collector:
 
 ```python
-import base64, gzip, http.server, json, threading, urllib.parse
+import base64, gzip, http.server, json, re, threading, urllib.parse
 captured, arrived = [], threading.Event()
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -123,15 +126,15 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
 def items(captured):
-    """(type, payload) of every event/transaction item. Assert arrival on THESE: a message
-    also rides later events' breadcrumbs, so a substring match can report a dropped event."""
+    """(type, payload) of every event, transaction and log item. Assert arrival on THESE: a
+    message also rides later events' breadcrumbs, so a substring match can report a dropped event."""
     out, i = [], 0
     while i < len(captured) - 1:
         try:
             head = json.loads(captured[i])
         except ValueError:
             head = None
-        if isinstance(head, dict) and head.get("type") in ("event", "transaction"):
+        if isinstance(head, dict) and head.get("type") in ("event", "transaction", "log"):
             try:
                 out.append((head["type"], json.loads(captured[i + 1])))
                 i += 2
@@ -164,12 +167,16 @@ def _variants(s):
                     out.add(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)).decode("utf-8", "replace"))
                 except ValueError:
                     pass
+    for v in list(out):                    # escapes: "H\\u00e9" (JSON in a string), b'H\\xc3\\xa9' (bytes repr)
+        u = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m[1], 16)), v).encode("utf-8", "surrogatepass")
+        out.add(re.sub(rb"\\x([0-9a-fA-F]{2})", lambda m: bytes([int(m[1], 16)]), u).decode("utf-8", "replace"))
     return out
 
 def leaks(captured, planted):
     """Planted values found anywhere in the capture, raw AND decoded: every line as raw
     text (numbers and non-JSON items included), every JSON key and string value unescaped,
-    each percent-decoded until stable, JWT segments base64url-decoded."""
+    each percent-decoded until stable, JWT segments base64url-decoded, backslash escapes
+    peeled (a nested JSON's u-escapes, a bytes repr's x-escapes)."""
     texts = []
     for line in captured:
         texts.append(line.decode("utf-8", "replace"))
@@ -184,7 +191,11 @@ The SDK sends from a background thread: after triggering the paths, call
 `sentry_sdk.flush()` in-process; for a booted process, poll with a
 deadline until every event you triggered is among `items(captured)` —
 match its own `event_id`, `logentry.message` or exception value;
-`arrived` only says the first envelope landed. Then assert
+`arrived` only says the first envelope landed. Batched items do not ride
+the event: with `enable_logs`, log records ship as `log` items every ~5 s
+and `before_send` never sees them (scrub them in `before_send_log`) —
+poll until a `("log", …)` item is among `items(captured)` too, or
+flush, before asserting absence. Then assert
 `leaks(captured, planted) == []`. Plant distinctive values and load them
 from a data file — a literal in a source file on the captured stack comes
 back through the SDK's source context and fakes a hit — and plant each

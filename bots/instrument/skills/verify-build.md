@@ -68,7 +68,7 @@ and the correct toolchain:
     its `build` + `test` scripts if defined.
   - Rust (`Cargo.toml`): `cargo build && cargo test`.
   - Python (`pyproject.toml`/`setup.py`): the configured test runner, e.g.
-    `python -m pytest`, plus a type/lint check if the project defines one.
+    `python3 -m pytest`, plus a type/lint check if the project defines one.
   - Anything else: build + unit-test the way the repo's CI does — read
     `.github/workflows/*` (or other CI config) if present; CI is the source of
     truth for "how this repo is built".
@@ -135,9 +135,10 @@ Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
 docker-compose services). §1b tells you to mirror CI's gates; the image build is
 the one you must NOT mirror:
 
-- **Never put `docker build` in verify.sh**: the iterion sandbox has no Docker
-  daemon by design (no socket, no `--privileged`), so the step fails on every
-  pass and the gate never goes green. Do not replay the image's dependency
+- **Never put a `docker` command in verify.sh** (build, run, compose): the
+  iterion sandbox has no Docker CLI or daemon by design (no socket, no
+  `--privileged`), so the step fails on every pass and the gate never goes
+  green. Do not replay the image's dependency
   resolution either: it needs pip (absent from the default image), pips before
   25.3 download every wheel in full (a torch pin alone is 800 MB), and its
   verdict depends on the local interpreter and on which indexes the image

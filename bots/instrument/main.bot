@@ -96,7 +96,8 @@ vars:
   mission_notes: string = ""
 
   ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
-  ## verify script/log ONLY. The engine resolves ${PROJECT_SCRATCH_DIR}
+  ## verify script/log and the review's capture harnesses (under review/)
+  ## ONLY. The engine resolves ${PROJECT_SCRATCH_DIR}
   ## to ~/.iterion/projects/<key>/scratch non-sandboxed and to the
   ## container-writable /tmp/iterion-scratch under a sandbox (never
   ## hardcode ~/.iterion here — the -full image's pinned non-host User
@@ -234,8 +235,10 @@ prompt campaign_system:
      parallel abstractions when an existing seam fits) → implement the
      SMALLEST coherent version, tests included where the behaviour
      warrants them (the tracker coupling and the JSON format DESERVE
-     unit tests — use the SDK's in-memory/mock transport, NEVER a real
-     network call in tests) → build → run the affected tests → COMMIT
+     unit tests — use the SDK's in-memory/mock transport, never a real or
+     remote sink in tests; the loopback collector of the `instrumentation`
+     skill's capture-endpoint E2E is the one exception) → build → run the
+     affected tests → COMMIT
      it with a semantic message (`feat(scope): <precise slice>`, or the
      `type(scope):` that fits). A few edits per commit, validation
      BEFORE the commit — never commit code you have not built and
@@ -492,10 +495,11 @@ prompt review_system:
     event you triggered arrived as its own item, then that no planted
     value appears anywhere, searched raw AND decoded (JSON-unescaped,
     percent-decoded until stable, numbers and non-JSON items included —
-    the lang-* skill's capture helper). Write any harness under
-    `{{vars.scratch_dir}}/review`, never in the workspace, and leave the
-    working tree exactly as you found it — no new, modified or deleted
-    file.
+    lang-python ships the helper; on other stacks port its decoding). Run
+    the campaign's own capture test when it exists; write a harness only
+    when none does, under `{{vars.scratch_dir}}/review`, never in the
+    workspace, and leave the working tree exactly as you found it — no
+    new, modified or deleted file.
   - **Written invariants**: every guarantee in code or docs ("the sub
     never reaches a log store") must have a test that fails when it
     breaks — sweep the call sites by the SHAPE of the violation, not the
@@ -591,7 +595,10 @@ prompt finalize_mr_system:
     4. Push HEAD to the branch on the origin remote, then open the PR
        from that branch into the base, with a clear title + body
        summarising the instrumentation and the slices landed (use
-       scope_notes for context).
+       scope_notes for context). When the repository's CI builds Docker
+       images (a Dockerfile or compose service it builds), add a line
+       naming them as NOT built by this run's gate — CI's own image
+       build is the signal.
     5. If source_issue_ref is set, post the opened PR URL back to it: a
        forge issue URL → comment via the same forge CLI; a "native:<id>"
        ref → use the board comment tool. Set back_linked accordingly.
