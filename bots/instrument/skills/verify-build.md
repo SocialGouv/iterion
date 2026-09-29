@@ -102,25 +102,6 @@ red-in-CI. This is not optional whenever the repo commits generated artifacts:
   `<the repo's regen command> && git diff --exit-code -- <the generated
   paths>` — a non-empty diff means stale, which is a real red.
 
-## 1c. Include the Docker image builds CI runs
-
-Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
-docker-compose services) that the local sandbox never builds. The image build
-resolves the dependency lock against the **index the CI actually uses** — an
-index that can lack a version your sandbox resolved (yanked upstream, dropped
-by a mirror). A dependency that installs fine locally but is yanked on the CI
-index fails **every image build** while your local suite stays green.
-
-- Read the CI config for the image-build jobs (`BUILD_*`, `docker build`,
-  `buildx`) and build the same images locally with the same build args:
-  `docker build -f <dockerfile> --build-arg … <context>` — it must at least
-  reach the dependency-resolution step without "no matching distribution".
-- If a pinned dependency is yanked/unavailable upstream, that is a **real
-  red to fix in the same change** (bump to a carried version) — do not ship
-  a branch whose image cannot build. (Paid: `litellm==1.51.0` yanked from
-  PyPI after the sandbox resolved it — every api image build failed while
-  the local suite stayed green.)
-
 If you changed code that feeds a generator (a new HTTP route, a new exported
 type in a schema-bearing package), regenerating and committing the output is
 part of the work — the gate is here to force it. (iterion specifically:
@@ -145,6 +126,34 @@ CI enforces a drift gate and `verify.sh` carries none of these, the gate fails
 with DRIFT GATE MISSING (exit 3); a green verify that leaves new changes in the
 tree fails with UNCOMMITTED REGEN OUTPUT (exit 4). Writing the gate here is
 cheaper than being bounced by the enforcement.
+
+## 1c. Replay the dependency resolution of the images CI builds
+
+Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
+docker-compose services) that this sandbox never builds. The image build
+resolves the dependency set against the **index the CI actually uses** — an
+index that may not carry a version your sandbox resolved (deleted upstream, or
+absent from the mirror CI uses; a merely *yanked* release still installs when
+pinned with `==`). A pin the CI index does not carry fails **every image
+build** while your local suite stays green.
+
+- Read the CI config for the image-build jobs (`BUILD_*`, `docker build`,
+  `buildx`) and find the dependency-install step each Dockerfile runs.
+  **Never put `docker build` in verify.sh**: the iterion sandbox has no Docker
+  daemon by design (no socket, no `--privileged`), so the step exits 127 on
+  every pass and the gate never goes green. Replay the image's resolution step
+  with the repo's own resolver instead, against the index CI uses — e.g.
+  `python -m pip install --dry-run --ignore-installed -r <the file the
+  Dockerfile installs>` (it resolves the full transitive tree and fails with
+  the same "No matching distribution" the image build would). If no
+  resolver-level equivalent exists, report the image build as **unavailable**
+  in the summary — it neither passes nor fails the gate.
+- A pin the CI index does not carry is a **real red to fix in the same
+  change** (bump to a carried version, or drop the dependency when nothing
+  imports it) — do not ship a branch whose image cannot build. (Paid: a
+  transitive pin, dragged in by a never-imported dependency, was no longer
+  carried by the index the CI resolves against — every api image build failed
+  while the sandbox suite stayed green.)
 
 ## 2. Write the verify script to the scratch dir
 

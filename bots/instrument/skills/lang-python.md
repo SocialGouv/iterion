@@ -71,17 +71,22 @@ older SDK lines — match the pinned version).
 - **Prod default**: JSON on server/daemon/worker entry points,
   human/console on interactive CLI; both switchable by the repo's
   log-format env convention.
-- **🪤 Framework log config runs AFTER your setup.** `uvicorn.run(...)` /
-  the uvicorn CLI applies its own dictConfig *after* the app module is
-  imported — it re-handles the `uvicorn.*` loggers and can undo the
-  root-handler routing the seam installed. Either clear the uvicorn
-  loggers' handlers and set `propagate = True` inside the seam setup
-  (called at import), or pass a `log_config` that routes through the
-  same handlers. Assert over the WHOLE captured stdout+stderr of a
-  booted process — not record-by-record: a framework that re-applies
-  its own log config puts non-JSON lines back after your setup ran.
-  (Paid: 18 of 19 captured lines non-JSON while every record-level test
-  was green.)
+- **🪤 uvicorn's own log config, and WHEN it runs.** uvicorn applies its
+  dictConfig when `Config()` is constructed: `uvicorn`, `uvicorn.error`
+  and `uvicorn.access` get their own plain-text handlers with
+  `propagate=False` (root routing is untouched). Under the uvicorn CLI
+  or `uvicorn.run("mod:app")` that happens BEFORE the app import, so
+  clearing those loggers' handlers and setting `propagate = True` in the
+  seam (called at import) works; under `uvicorn.run(app)` with an
+  already-imported app it happens AFTER the seam and undoes it — pass
+  `log_config=None` there (or a dict routing through the seam's
+  handlers). Assert over the WHOLE captured stdout+stderr of a booted
+  process — every line JSON **and** no raw secret in any line — not
+  record-by-record. Strip the query string in an access-log filter:
+  `uvicorn.access` prints the raw request line (`GET /callback?code=…`)
+  straight into the log store. (Paid: on a campaign's own diff, the
+  uvicorn lines of the production entry point stayed plain text while
+  every record-level test was green.)
 
 ## Capture-endpoint E2E (the net, not just the code path)
 
@@ -90,24 +95,34 @@ instrumented process with the sink pointed at a LOCAL collector:
 
 ```python
 import gzip, http.server, threading
-captured = []
+captured, arrived = [], threading.Event()
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        if self.headers.get("Content-Encoding") == "gzip" or body[:2] == b"\x1f\x8b":
-            try: body = gzip.decompress(body)
-            except OSError: pass
-        for line in body.splitlines():            # envelope = header + items
-            if line.strip(): captured.append(line)
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        enc = self.headers.get("Content-Encoding")
+        if enc == "gzip":
+            body = gzip.decompress(body)
+        elif enc == "br":                  # sentry-sdk's DEFAULT when `brotli` is importable
+            import brotli
+            body = brotli.decompress(body)
+        elif enc:                          # never assert over bytes you did not decode
+            raise ValueError(f"undecoded Content-Encoding {enc!r}")
+        captured.extend(l for l in body.splitlines() if l.strip())  # envelope = header + items
+        arrived.set()
         self.send_response(200); self.send_header("Content-Length", "2")
         self.end_headers(); self.wfile.write(b"ok")
     def log_message(self, *a): pass
 ```
 
-Then assert over EVERY captured line: no raw secret/identity (emails,
-`sub` uuids, OAuth codes, request query strings, cookies, stack-trace
-frame-locals) appears anywhere — the leaks ride the fields and frame
-vars unit tests never build.
+The SDK sends from a background thread: after triggering the paths,
+call `sentry_sdk.flush()` in-process, or wait on `arrived` with a
+deadline for a booted process. Assert FIRST that the envelopes you
+triggered are there (the event's message or `event_id`) — over an empty
+or undecoded capture, "no secret found" is vacuously true — then assert
+over EVERY captured line: no raw secret/identity (emails, `sub` uuids,
+OAuth codes, request query strings, cookies, stack-trace frame-locals)
+appears anywhere — the leaks ride the fields and frame vars unit tests
+never build.
 
 ## Stray sweep targets (Python)
 

@@ -102,7 +102,9 @@ net**. The paths that leak are the ones you did not enumerate:
 
 - **Request fields beyond the body**: the query string (OAuth codes, CSRF
   state), cookies, and headers ride *separate* fields of the event the
-  SDK builds — scrubbing `request.data` alone leaves the rest.
+  SDK builds — scrubbing `request.data` alone leaves the rest. And the
+  HTTP server's access log (uvicorn.access, gunicorn, a proxy) prints the
+  raw request line, query string included, straight into the log store.
 - **Stack-trace frame-locals**: SDKs serialize the variables of every
   frame in a captured stack — a scrubber that only handles the top-level
   payload misses the same secret repeated inside the locals.
@@ -114,7 +116,8 @@ net**. The paths that leak are the ones you did not enumerate:
 
 Verify each path **against a capture endpoint**: boot the instrumented
 process with the sink pointed at a local collector, trigger the paths,
-and assert nothing raw arrives. A unit test with a mock transport proves
+assert FIRST that the envelopes you triggered arrived and were decoded,
+then assert nothing raw arrives. A unit test with a mock transport proves
 the code path; the capture test proves the net.
 
 ## 8. Written invariants must be tested — and their call sites swept
@@ -126,12 +129,13 @@ violate it. An invariant written but not asserted is worse than none:
 the next author trusts it untested. Grep for the *shape* of the violation
 (the raw value in a format string, the unprefixed key) — half-closed
 classes (some sites hashed, some still raw) are the documented residue.
+An untested invariant is a finding, not a block — unless it is a
+redaction or isolation claim the diff makes: an unproven one of those
+blocks as a false-claim defect (§5).
 
 ## 9. Fit and rot — did we build the RIGHT thing, and only that
 
-## 8. Fit and rot — did we build the RIGHT thing, and only that
-
-Sections 1–7 catch code that is *wrong*. This one catches code that is
+Sections 1–8 catch code that is *wrong*. This one catches code that is
 *correct but hollow* — it compiles, passes, reviews clean, and still isn't
 what the task needed. Two failure modes, opposite directions:
 
@@ -161,7 +165,7 @@ lens sharpens the diff, it never gates it.
 ## How to use this in a self-review pass
 
 1. `git diff <base>` and `git diff --stat` — see the *whole* change.
-2. For each new/changed unit, walk sections 1–8. Most changes only touch a
+2. For each new/changed unit, walk sections 1–9. Most changes only touch a
    few; be honest about which apply.
 3. For anything you find, **fix it now** and note it. Do not defer.
 4. Only when a section genuinely doesn't apply (no new state, no new
