@@ -131,10 +131,12 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 // scalar "claude_code", no override involved). So the json arm reads the
 // static default's shape (jsonDefaultDocument) and stays SILENT on a
 // scalar document — a string, a number, a bool — warning on a list, an
-// object, null, and on no default at all (the launch supplies the
-// document). A `${...}` in the default moves nothing: the run parses the
-// document before it expands a leaf, so `"${BACKEND}"` is the routable
-// string it expands to.
+// object, and on no default at all (the launch supplies the document). A
+// null document warns for what it does instead: it renders as the empty
+// string, so the field is UNSET at dispatch and silently falls back to
+// its default. A `${...}` in the default moves nothing: the run parses
+// the document before it expands a leaf, so `"${BACKEND}"` is the
+// routable string it expands to.
 func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string) {
 	v := w.Vars[varName]
 	if v == nil {
@@ -143,8 +145,19 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varN
 	switch v.Type {
 	case VarStringArray:
 	case VarJSON:
-		if doc, known := jsonDefaultDocument(v); known && isScalarDocument(doc) {
+		doc, known := jsonDefaultDocument(v)
+		if known && isScalarDocument(doc) {
 			return // a scalar document resolves to a routable scalar
+		}
+		if known && doc == nil {
+			// null renders as the empty string (formatValue), and an empty
+			// routing field is an UNSET one: nothing fails — the route
+			// silently falls back to the default the field was written to
+			// override.
+			c.warnfAt(DiagRoutingFieldRef, nodeID, "",
+				"%s: {{vars.%s}} resolves, but the `json` var's default document is null, which renders as the empty string — %s is then UNSET at dispatch and silently falls back to its default instead of the route the field names (give the var a scalar default, or declare it `string` if the fallback is meant)",
+				loc, varName, field)
+			return
 		}
 	default:
 		return
