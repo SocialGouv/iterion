@@ -8,30 +8,18 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
-// engineSuppliedVarNames are the names the RUN's expander answers itself,
-// whatever the launch environment holds (varExpandFn,
-// pkg/runtime/engine_resolve.go) — keep in sync with it. A compile-time
-// reading that resolved one of them against an empty environment would
-// certify a value no run ever starts with (#1610's HIGH review finding,
-// executed both directions): `${PROJECT_SCRATCH_DIR:-relative}` read as
-// "relative" false-positive C182 on a var every run satisfies, and
-// `${PROJECT_SCRATCH_DIR:-/tmp/x}` read as "/tmp/x" compiled SILENT on a
-// var every run violates.
-//
-// NOTE: PR #1921 (pr/engine-fallback-vars) owns the canonical list as
-// ir.EngineSuppliedVarNames — switch to it when it lands and delete this.
-var engineSuppliedVarNames = []string{
-	"PROJECT_DIR",
-	"PROJECT_SCRATCH_DIR",
-	"PROJECT_MEMORY_DIR",
-	"BUNDLE_DIR",
-	"BUNDLE_SKILLS_DIR",
-}
-
 // engineVarSentinel is what the compile-time lookup answers for an
-// engine-supplied name: never "", so a `${PROJECT_DIR:-fallback}` form
+// engine-supplied name (EngineSuppliedVarNames, fallback_apply.go — the
+// names the RUN's expander answers itself, pinned against varExpandFn by
+// a pkg/runtime test): never "", so a `${PROJECT_DIR:-fallback}` form
 // never reads its fallback, and a marker the still-live check recognises
-// (it contains no `$`, so carriesLiveReference alone would miss it).
+// (it contains no `$`, so carriesLiveReference alone would miss it). A
+// compile-time reading that resolved one of them against an empty
+// environment would certify a value no run ever starts with (#1610's
+// HIGH review finding, executed both directions):
+// `${PROJECT_SCRATCH_DIR:-relative}` read as "relative" false-positive
+// C182 on a var every run satisfies, and `${PROJECT_SCRATCH_DIR:-/tmp/x}`
+// read as "/tmp/x" compiled SILENT on a var every run violates.
 const engineVarSentinel = "\x00iterion-engine-var\x00"
 
 // checkConstrainedVarDefault holds a constrained var's default to its
@@ -86,7 +74,7 @@ func (c *compiler) checkConstrainedVarDefault(f *ast.VarField, v *Var, s string)
 	}
 	c.warnfAtSpan(DiagVarDefaultUnverifiable, f.Span,
 		"var %q default %q carries a reference compile time cannot resolve — an environment variable, or an engine-supplied name (%s) the RUN answers itself — so its constraint (%s) is checked on NO path: the launch gate reads the operator's values, never a default; make the default literal, or know that the value it expands to at launch is unchecked",
-		f.Name, s, strings.Join(engineSuppliedVarNames, ", "), constraintSummary(v))
+		f.Name, s, strings.Join(EngineSuppliedVarNames, ", "), constraintSummary(v))
 }
 
 // compileTimeDefaultReading is the compile-time reading of a constrained
@@ -103,7 +91,7 @@ func compileTimeDefaultReading(s string) (any, error) {
 // engine-supplied names — the run answers those itself, so no reading
 // taken here may resolve them.
 func compileTimeVarLookup(key string) string {
-	if slices.Contains(engineSuppliedVarNames, key) {
+	if slices.Contains(EngineSuppliedVarNames, key) {
 		return engineVarSentinel
 	}
 	return ""
