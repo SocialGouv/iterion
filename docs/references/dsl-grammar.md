@@ -551,7 +551,10 @@ add = multiply { ( "+" | "-" ) multiply } ;
 multiply = unary { ( "*" | "/" | "%" ) unary } ;
 unary = "-" unary | postfix ;
 postfix = primary { "[" expr "]" } ;
-primary = number | string | bool | path | call | lambda_call | "(" expr ")" ;
+primary = number | string | bool | list | object | path | call | lambda_call | "(" expr ")" ;
+list = "[" [ expr { "," expr } ] "]" ;
+object = "{" [ pair { "," pair } ] "}" ;
+pair = ( IDENT | string ) ":" expr ;
 path = IDENT { "." IDENT } ;
 call = IDENT "(" [ expr { "," expr } ] ")" ;
 lambda_call = ( "map" | "filter" ) "(" expr "," lambda ")"
@@ -559,7 +562,7 @@ lambda_call = ( "map" | "filter" ) "(" expr "," lambda ")"
 lambda = ( IDENT | "(" IDENT { "," IDENT } ")" ) "=>" expr ;
 ```
 
-Standard namespaces are `vars`, `input`, `outputs`, `artifacts`, `loop`, and `run`. Built-ins are `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, `round`, `map`, `filter`, and `reduce`. `min`/`max` accept either one array or two or more values (arguments are flattened one level). Lambdas are confined to finite combinators, expression depth is capped, and one evaluation may visit at most 100,000 elements.
+Standard namespaces are `vars`, `input`, `outputs`, `artifacts`, `loop`, and `run`. Built-ins are `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, `round`, `map`, `filter`, and `reduce`. `min`/`max` accept either one array or two or more values (arguments are flattened one level). A `list` literal evaluates to an array (an all-string one conforms to `string[]`), an `object` to a JSON object; a repeated object key is refused at parse, and neither form accepts a trailing comma. Lambdas are confined to finite combinators, expression depth is capped, and one evaluation may visit at most 100,000 elements.
 
 ## Template references
 

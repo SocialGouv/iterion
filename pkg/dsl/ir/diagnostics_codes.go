@@ -231,6 +231,14 @@ const (
 
 	DiagSubbotAuthorSource DiagCode = "C305" // subbot `source:` names an author document (.bot.yaml): a child is a .bot (error)
 
+	// Collection literals in `expr:` (#1525). The literal itself parses or
+	// fails through C040 like any expression; these two warn where the
+	// literal parses fine but the runtime semantics surprise: collection
+	// equality is never a value comparison, and a compute field holds the
+	// literal to its declared type.
+	DiagCollectionCompare            DiagCode = "C306" // `==`/`!=` with a collection (a list/object literal, or two statically-known string[] values): equals() never walks into a slice or map, so the comparison is constant — == false, != true (warning)
+	DiagCollectionLiteralConformance DiagCode = "C307" // a compute field fed by a collection literal its declared type cannot hold (a non-string element under string[], a collection under a scalar): fails SCHEMA_VALIDATION at run time (warning)
+
 	// `with:` mapping references and literals. C149–C152 catch shapes the
 	// runtime cannot honour in a data mapping, so a typo or a namespace
 	// mismatch fires at compile time instead of resolving to nil (or a
