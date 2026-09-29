@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.210.0](https://github.com/SocialGouv/iterion/compare/v3.209.0...v3.210.0) (2026-09-29)
+
+### Features
+
+* **assessment:** a Java stack extractor — versions, deployables, HTTP entrypoints ([#1920](https://github.com/SocialGouv/iterion/issues/1920)) ([63175c6](https://github.com/SocialGouv/iterion/commit/63175c69e846abfeef3f20115a7e265966382be4))
+
+    <details><summary>why</summary>
+
+    The bundle shipped Go and Node extractors; a Java repository measured DEGRADED — the HTTP surface hand-counted, the toolchain versions undeclared, the stack named as unmeasured. The assessment's own report names the debt: the primary stack sits where no extractor measures.
+
+    </details>
+
 ## [3.209.0](https://github.com/SocialGouv/iterion/compare/v3.208.0...v3.209.0) (2026-09-29)
 
 ### Features
