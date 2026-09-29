@@ -191,8 +191,12 @@ POM_JAVA = [
 ]
 
 rows, versions = [], []
-for m in read_manifests():
-    text = blob(m)
+# ONE batched pass, never blob() per manifest: a blob() call re-runs a
+# full `git ls-tree -r` plus a fresh cat-file process, and this
+# extractor exists for large multi-module trees where that is hundreds
+# of full tree walks -- the runner-wall death the batching comments
+# above warn about.
+for m, text in blobs(sorted(read_manifests())):
     declared = {}
     base = os.path.basename(m)
     if base == "gradle-wrapper.properties":
@@ -339,24 +343,25 @@ def is_output(path):
 # the tree declares; the survey's deployable declarations are the
 # correction for tooling that over-counts.
 BOOT_APP = re.compile(r"@SpringBootApplication\b")
-BOOT_PLUGIN_GRADLE = re.compile(r"org\.springframework\.boot.*\b(?:springBoot|bootJar|org\.springframework\.boot\.gradle\.plugin)\b|id[\s]*['\"]org\.springframework\.boot['\"]")
+# Same tolerance as GRADLE_BOOT above: the Kotlin DSL writes id("..."),
+# the pre-plugins-block idiom writes apply plugin: '...'.
+BOOT_PLUGIN_GRADLE = re.compile(r"org\.springframework\.boot.*\b(?:springBoot|bootJar|org\.springframework\.boot\.gradle\.plugin)\b|id\s*\(?[\s]*['\"]org\.springframework\.boot['\"]|apply\s+plugin\s*:\s*['\"]org\.springframework\.boot['\"]")
 BOOT_PLUGIN_POM = re.compile(r"spring-boot-maven-plugin")
 
-def module_name(path, settings_names):
-    # The module a source file or build script belongs to: the nearest
-    # settings file at or above it, named by rootProject.name. The walk
-    # tests the ROOT too -- dirname of a root-level script is '' and a
-    # `while d` loop stops one step short of it, splitting one module in
-    # two under two names.
+def module_dir(path, build_dirs):
+    # The module a source file or build script BELONGS to: the nearest
+    # ancestor directory that holds a build descriptor. The settings
+    # walk named every file after the ROOT project, so a monorepo with
+    # two Boot submodules published two deployables as one.
     d = os.path.dirname(path)
     while True:
-        if d in settings_names:
-            return settings_names[d]
+        if d in build_dirs:
+            return d
         parent = os.path.dirname(d)
         if parent == d:
             break
         d = parent
-    return d or "."
+    return d
 
 files = [f for f in tree() if f.endswith(SOURCE) and not is_output(f)]
 apps = []
@@ -364,13 +369,6 @@ seen_files = set()
 for f, text in blobs(files):
     if BOOT_APP.search(text):
         seen_files.add(f)
-settings = {}
-for f in tree():
-    base = os.path.basename(f)
-    if base in ("settings.gradle", "settings.gradle.kts") and not is_output(f):
-        text = blob(f)
-        match = re.search(r"rootProject\.name\s*=\s*['\"]([^'\"]+)['\"]", text)
-        settings[os.path.dirname(f)] = match.group(1) if match else "."
 builds = []
 for f in tree():
     base = os.path.basename(f)
@@ -382,15 +380,31 @@ boot_builds = set()
 for f, text in blobs(builds):
     if BOOT_PLUGIN_GRADLE.search(text) or BOOT_PLUGIN_POM.search(text):
         boot_builds.add(f)
-# ONE identity per module: app classes and build scripts resolve through
-# the SAME settings walk, so a root application would otherwise be
-# counted twice -- once by its class, once by its build script, under
-# two names -- and the measurement would publish two deployables for
-# one artefact.
+# The IDENTITY of a module is the directory that carries its build
+# descriptor; app classes resolve to the nearest ancestor that holds
+# one. rootProject.name is a DISPLAY name, never the dedup key: named
+# after the root, a monorepo with two Boot submodules published two
+# deployables as one. App classes and build scripts resolve through the
+# SAME walk, so one application is still one entry -- not two under two
+# names.
+build_dirs = {os.path.dirname(f) for f in builds}
 modules = set()
 for f in sorted(seen_files | boot_builds):
-    modules.add(module_name(f, settings))
-runnable = [{"module": m, "boot": True} for m in sorted(modules)]
+    modules.add(module_dir(f, build_dirs))
+root_name = ""
+for f in tree():
+    base = os.path.basename(f)
+    if base in ("settings.gradle", "settings.gradle.kts") and not is_output(f) and os.path.dirname(f) == "":
+        text = blob(f)
+        match = re.search(r"rootProject\.name\s*=\s*['\"]([^'\"]+)['\"]", text)
+        if match:
+            root_name = match.group(1)
+runnable = []
+for d in sorted(modules):
+    if d == "" and root_name:
+        runnable.append({"module": ".", "name": root_name, "boot": True})
+    else:
+        runnable.append({"module": d or ".", "boot": True})
 print(json.dumps({
     "stack": "java",
     "extractor": "runnables",

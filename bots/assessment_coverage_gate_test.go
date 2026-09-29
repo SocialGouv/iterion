@@ -476,12 +476,25 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 	write("package.json", `{"name": "app", "engines": {"node": "20.0.0"}}`)
 	write("build.gradle", "plugins { id 'org.springframework.boot' version '3.3.4' }\njava { sourceCompatibility = '17' }\n")
 	write("src/main/java/demo/ThingController.java", "@RestController\npublic class ThingController {\n    @GetMapping\n    public Object list() { return null; }\n    @PostMapping\n    public Object create() { return null; }\n}\n")
+	// A SECOND Boot module in the KOTLIN DSL: the plugin form the groovy
+	// regex missed (id("...")), and a second identity the settings walk
+	// used to collapse into the root's name.
+	write("app1/build.gradle.kts", "plugins { id(\"org.springframework.boot\") version \"3.3.4\" }\n")
+	write("app1/src/main/java/demo/SecondApp.java", "@SpringBootApplication\npublic class SecondApp {}\n")
+	// Two modules that declare shippability ONLY through the plugin
+	// line — no @SpringBootApplication class to carry them: the Kotlin
+	// DSL form and the pre-plugins-block idiom. A regex that misses
+	// either loses a deployable and the count below reddens.
+	write("app2/build.gradle.kts", "plugins { id(\"org.springframework.boot\") version \"3.3.4\" }\n")
+	write("app3/build.gradle", "apply plugin: 'org.springframework.boot'\n")
 	// A build output COMMITTED to the tree — legacy repositories carry
 	// them, and only the extractor's output exclusion keeps them out of
 	// the declared surface. Untracked, git objects would hide it and the
 	// assertion would pass for the wrong reason.
 	write("build/generated/Gen.java", "@RestController\npublic class Gen {\n    @GetMapping\n    public Object g() { return null; }\n}\n")
-	gittest.Run(t, ws, "add", "go.mod", "package.json", "build.gradle", "src/main/java/demo/ThingController.java", "build/generated/Gen.java")
+	gittest.Run(t, ws, "add", "go.mod", "package.json", "build.gradle", "src/main/java/demo/ThingController.java", "build/generated/Gen.java",
+		"app1/build.gradle.kts", "app1/src/main/java/demo/SecondApp.java",
+		"app2/build.gradle.kts", "app3/build.gradle")
 	gittest.Run(t, ws, "commit", "-qm", "the commit under assessment")
 	sha := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
 
@@ -537,6 +550,21 @@ func TestAssessmentShippedExtractorsReadTheCommitNotTheCheckout(t *testing.T) {
 	if strings.Contains(string(entry), "Gen.java") {
 		t.Errorf("java-entrypoints.json counts build/generated/Gen.java — a build output the "+
 			"commit may hold but no one declares: an over-count nobody can correct\n%s", entry)
+	}
+	// The deployables: root + app1, TWO identities — the settings walk
+	// used to name both after the root and publish one for two. The
+	// Kotlin-DSL plugin line must count as a Boot build.
+	runs, err := os.ReadFile(filepath.Join(scratch, "java-runnables.json"))
+	if err != nil {
+		t.Fatalf("java-runnables.json: %v", err)
+	}
+	for _, module := range []string{"app1", "app2", "app3"} {
+		if !strings.Contains(string(runs), `"`+module+`"`) {
+			t.Errorf("java-runnables.json does not carry the %s module — its Boot build was not recognised as a deployable of its own:\n%s", module, runs)
+		}
+	}
+	if got := strings.Count(string(runs), `"boot": true`); got != 4 {
+		t.Errorf("java-runnables.json publishes %d deployables, want 4 (root and app1..app3) — a monorepo collapsed into one name:\n%s", got, runs)
 	}
 }
 
