@@ -208,9 +208,10 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 // here. An `{{outputs.<node>…}}` whole reference earns no opinion: C031/
 // C032 check that the referenced field EXISTS, never its type — so a
 // list-typed output delivered whole into a `string` field is a known
-// gap, not a case covered elsewhere. Edges only: a subbot's or an emit's
-// own `with:` has no `input:` schema to type the destination (C149's
-// reasoning), and a `fail message:` is a string sink.
+// gap, not a case covered elsewhere. Edge mappings only, like C152: a
+// subbot's target is a child bot loaded separately (its input schema is
+// unknown here), an emit has no typed destination, and a `fail message:`
+// is a string sink.
 func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *SchemaField, inSchema string, dst Node) {
 	if f.Type != FieldTypeString || len(dm.Refs) != 1 {
 		return
