@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.216.0](https://github.com/SocialGouv/iterion/compare/v3.215.0...v3.216.0) (2026-09-29)
+
+### Features
+
+* **product-docs:** the route checks judge by the net route table, resolved once at the run base ([#1951](https://github.com/SocialGouv/iterion/issues/1951)) ([9b25ef5](https://github.com/SocialGouv/iterion/commit/9b25ef5612ebfd3f4e39d844c918e6f2d0240137))
+
+    <details><summary>why</summary>
+
+    golden-master states its routes through config.json `routes_probe`, a command it replays at every gate, and commits no artifact for them. The docs gates read only a committed <net>/routes.txt, so on a net built the usual way the route checks ran DEGRADED with zero declared routes: the "every declared route is cited" rule and the map's grounding had nothing to hold the documentation to. Committing the table instead would go stale the moment a change adds a route, and the gates would stop…
+
+    </details>
+
 ## [3.215.0](https://github.com/SocialGouv/iterion/compare/v3.214.1...v3.215.0) (2026-09-29)
 
 ### Features
