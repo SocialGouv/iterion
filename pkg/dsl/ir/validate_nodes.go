@@ -763,7 +763,7 @@ func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
 }
 
 // ---------------------------------------------------------------------------
-// C024 — invalid reasoning_effort value
+// C027 — invalid reasoning_effort value
 // ---------------------------------------------------------------------------
 
 // ValidReasoningEfforts is the set of accepted reasoning effort levels.
@@ -774,7 +774,9 @@ func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
 // honoured by the models whose matrix carries it (GPT-6 Sol/Luna today). Per
 // route when the model lacks it: claw and claude_code clamp to the lowest
 // real level (see model.coerceEffort and the claudeCodeEffort mapping), pi
-// spells it off, codex's CLI refuses it, opencode passes it through.
+// spells it off, codex's CLI refuses it, grok and opencode pass it through,
+// kimi has no dial and ignores it. The author-facing statement is the
+// registry's reasoning_effort Doc (pkg/dsl/spec).
 var ValidReasoningEfforts = map[string]bool{
 	"none":   true,
 	"low":    true,

@@ -49,8 +49,10 @@ quoted), resolves through env substitution, and reaches the wire on the model
 backend and the Codex adapter (EffortNone). On routes whose models do not
 carry it the behaviour is per-route: claw and claude_code clamp to `low`, pi
 maps it to its `off` spelling, codex's CLI refuses it, opencode passes it
-through. Explicit authored efforts and token limits remain
-unchanged. Opus 5.5's implicit effort is medium.
+through (a model without that variant drops it silently), grok passes it to
+`--reasoning-effort` verbatim (not verified live), and kimi has no effort
+dial, so it is ignored like every other level. Explicit authored efforts and
+token limits remain unchanged. Opus 5.5's implicit effort is medium.
 
 Offline context/output limits are 1M/128k for Opus and 1.05M/128k for GPT-6.
 The static cost fallback has nonzero current short-context rates; it remains

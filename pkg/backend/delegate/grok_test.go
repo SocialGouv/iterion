@@ -38,6 +38,9 @@ func TestGrokMapEffort(t *testing.T) {
 	}{
 		{"", nil},
 		{"high", []string{"--reasoning-effort", "high"}},
+		// Verbatim, as the reasoning_effort registry Doc states for grok —
+		// clamping or refusing it here must update that Doc too (#1837).
+		{"none", []string{"--reasoning-effort", "none"}},
 		{"ultracode", []string{"--reasoning-effort", "high"}},
 		{"  Medium  ", []string{"--reasoning-effort", "medium"}},
 	}

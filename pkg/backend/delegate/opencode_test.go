@@ -96,6 +96,7 @@ func TestOpenCodeProtocolLeavesSiblingsAlone(t *testing.T) {
 func TestOpenCodeMapEffort(t *testing.T) {
 	cases := map[string][]string{
 		"":          nil,
+		"none":      {"--variant", "none"}, // verbatim, as the reasoning_effort registry Doc states (#1837)
 		"low":       {"--variant", "low"},
 		"high":      {"--variant", "high"},
 		"max":       {"--variant", "max"},
