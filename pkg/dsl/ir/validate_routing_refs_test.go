@@ -183,7 +183,14 @@ schema s:
 		{name: "a json var as backend", body: agent("  backend: \"{{vars.cfg}}\"\n"), want: 1},
 		{name: "a string[] var as model", body: agent("  model: \"{{vars.bs}}\"\n"), want: 1},
 		{name: "a string[] var as provider", body: agent("  provider: \"{{vars.bs}}\"\n"), want: 1},
-		{name: "a string[] var as interaction_model", body: agent("  interaction_model: \"{{vars.bs}}\"\n"), want: 1},
+		{name: "a string[] var as interaction_model", body: agent("  interaction: llm\n  interaction_model: \"{{vars.bs}}\"\n"), want: 1},
+		// A value the run never reads routes nothing: an agent reads its
+		// interaction_model only under an llm / llm_or_human interaction,
+		// and a human node never reads its own (its call uses model:).
+		{name: "an interaction_model outside an llm interaction is never read — silent",
+			body: agent("  interaction_model: \"{{vars.bs}}\"\n"), want: 0},
+		{name: "a human node's interaction_model is never read — silent",
+			body: "human a:\n  instructions: p\n  output: s\n  interaction: llm\n  system: p\n  model: \"anthropic/claude-sonnet-4-6\"\n  interaction_model: \"{{vars.bs}}\"\n", want: 0},
 		{name: "a string[] var on a fallback route",
 			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n  fallbacks:\n    alt:\n      backend: \"claw\"\n      model: \"{{vars.bs}}\"\n"), want: 1},
 		{name: "a string[] var as the workflow default_backend", body: agent(""), wf: "  default_backend: \"{{vars.bs}}\"\n", want: 1},
@@ -373,11 +380,13 @@ func TestJsonDefaultShapeIsFixedByItsText(t *testing.T) {
 // to fall back to — the interaction's model call refuses an empty spec
 // (executeHumanLLM → registry.Resolve) — so "silently falls back" there
 // was the inversion of a loud failure; a provider hint no backend knows is
-// ignored (C087's reading), so "the node fails" there was one too; the
+// ignored on a fallbacks route (C087's reading), while a node's own
+// provider is a chain whose colon makes the rest a model that fails; the
+// recovery rungs abort on a model they cannot build and never run; the
 // workflow's default_backend is read only by the nodes that name no
 // backend, and a fallbacks route only when the node falls back to it.
 func TestRoutingFieldConsequenceIsTheSites(t *testing.T) {
-	const head = "vars:\n  bs: string[] = \"claw,claude_code\"\n  j0: json = \"null\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
+	const head = "vars:\n  bs: string[] = \"claw,claude_code\"\n  j0: json = \"null\"\n  po: json = `{\"hint\": \"zai\"}`\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
 	human := func(props string) string {
 		return "human a:\n  instructions: p\n  output: s\n  interaction: llm\n  system: p\n" + props
 	}
@@ -398,10 +407,16 @@ func TestRoutingFieldConsequenceIsTheSites(t *testing.T) {
 			body: human("  model: \"{{vars.bs}}\"\n"),
 			want: []string{"the interaction's model call fails on it"},
 			bad:  []string{"first delegation"}},
-		{name: "a list provider hint is ignored, it fails nothing",
+		{name: "a list on a node's provider names both outcomes of the chain split",
 			body: agent("  provider: \"{{vars.bs}}\"\n"),
-			want: []string{"every backend but pi ignores it", "default credential precedence"},
-			bad:  []string{"fails"}},
+			want: []string{"split on its commas", "every backend but pi ignores", "default credential precedence", "fails the node at its first delegation"}},
+		{name: "an object on a node's provider names the colon that makes a model",
+			body: agent("  provider: \"{{vars.po}}\"\n"),
+			want: []string{"as any JSON object has, makes the rest that attempt's model"}},
+		{name: "a list recovery.model aborts the recovery, it does not fail a delegation",
+			body: "tool a:\n  command: \"./deploy.sh\"\n  output: s\n  goal: \"deployed\"\n  postcondition: \"./check.sh\"\n  policy: recover\n  recovery:\n    max_agent_attempts: 1\n    model: \"{{vars.bs}}\"\n",
+			want: []string{"recovery.model", "the recovery rungs abort on it", "as if it had no recovery"},
+			bad:  []string{"first delegation"}},
 		{name: "a list provider on a fallbacks route is ignored the same way",
 			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n  fallbacks:\n    alt:\n      backend: \"claw\"\n      provider: \"{{vars.bs}}\"\n"),
 			want: []string{"every backend but pi ignores it"},

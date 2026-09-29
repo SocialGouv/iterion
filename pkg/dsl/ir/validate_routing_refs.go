@@ -152,6 +152,9 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, node Node, loc, field, v
 	if v == nil {
 		return // C033 owns the undeclared name
 	}
+	if !routingFieldRead(node, field) {
+		return // a value the run never reads routes nothing
+	}
 	nodeID := ""
 	if node != nil {
 		nodeID = node.NodeID()
@@ -196,13 +199,19 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, node Node, loc, field, v
 //   - a fallbacks route is dispatched only when the node falls back to it;
 //   - a provider hint no backend knows is ignored by every backend but pi
 //     (hintIgnoringBackends; claude_code's credential selection reads an
-//     unknown hint as none — C087's reading), so a JSON spelling there
-//     fails nothing: the route is silently dropped;
-//   - a companion model — a human node's model or interaction_model, an
-//     agent's or a judge's interaction_model — has no default: the
-//     interaction's model call resolves the spec it is given
-//     (executeHumanLLM → registry.Resolve), so an empty one is refused
-//     where every other empty routing field falls back to its default.
+//     unknown hint as none — C087's reading), so on a fallbacks route the
+//     JSON spelling fails nothing: the route is silently dropped. A
+//     node's own provider is a CHAIN (resolveProviderChain): split on its
+//     commas, each piece split on its first colon into a hint and that
+//     attempt's model — and any JSON object carries a colon, so the rest
+//     becomes a model spec that fails the node;
+//   - a companion model — a human node's model, an agent's or a judge's
+//     interaction_model — has no default: the interaction's model call
+//     resolves the spec it is given (executeHumanLLM → registry.Resolve),
+//     so an empty one is refused where every other empty routing field
+//     falls back to its default;
+//   - recovery.model feeds the verified action's recovery rungs, which
+//     abort on a model they cannot build with a log line and never run.
 func routingConsequences(node Node, field string) (unroutable, empty string) {
 	unroutable = "a name no backend, model or provider answers to; the node fails at its first delegation"
 	empty = field + " is then UNSET at dispatch and silently falls back to its default instead of the route the field names (give the var a scalar default, or declare it `string` if the fallback is meant)"
@@ -210,15 +219,40 @@ func routingConsequences(node Node, field string) (unroutable, empty string) {
 	switch {
 	case node == nil:
 		unroutable = "a backend name nobody registered; every node that names no backend fails at its first delegation"
-	case field == "provider" || strings.HasSuffix(field, ".provider"):
-		unroutable = "a provider hint no backend knows — every backend but pi ignores it (pi hands it to its CLI), so the node silently runs on default credential precedence instead of the route the field names"
+	case field == "provider":
+		unroutable = "a provider chain split on its commas: a piece with no colon is a hint no backend knows, which every backend but pi ignores (pi hands it to its CLI) — the node silently runs on default credential precedence — and a piece with one, as any JSON object has, makes the rest that attempt's model, which fails the node at its first delegation"
+	case strings.HasSuffix(field, ".provider"):
+		unroutable = "a provider hint no backend knows — every backend but pi ignores it (pi hands it to its CLI), so the route silently runs on default credential precedence instead of the one the field names"
 	case human || field == "interaction_model":
 		unroutable = "a model spec no provider answers to; the interaction's model call fails on it"
 		empty = field + " is then EMPTY at dispatch, and a companion model has no default to fall back to: the interaction's model call fails on the empty spec (give the var a scalar default)"
+	case field == "recovery.model":
+		unroutable = "a model spec no provider answers to; the recovery rungs abort on it with a log line and never run, so a missed postcondition fails the node as if it had no recovery"
 	case strings.HasPrefix(field, "fallbacks."):
 		unroutable = "a name no backend or model answers to; the route fails when the node falls back to it"
 	}
 	return unroutable, empty
+}
+
+// routingFieldRead reports whether the run ever reads the field's value.
+// A human node's interaction_model is never read — its model call and its
+// review companion both use `model:`, and InteractionModel serves only an
+// agent's or a judge's delegate questions (ExecuteHumanLLMForInteraction)
+// — and an agent's or a judge's is read only under an llm / llm_or_human
+// interaction. A collection in a field the run never reads routes
+// nothing, so the declared-type arm has nothing true to claim there.
+func routingFieldRead(node Node, field string) bool {
+	if field != "interaction_model" {
+		return true
+	}
+	switch n := node.(type) {
+	case *HumanNode:
+		return false
+	case LLMNode:
+		mode := n.GetInteractionFields().Interaction
+		return mode == InteractionLLM || mode == InteractionLLMOrHuman
+	}
+	return true
 }
 
 // jsonDefaultDocument is the document a `json` var's static default
