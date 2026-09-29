@@ -489,6 +489,43 @@ func readForfaitAccessToken(dir string) string {
 	return secrets.AnthropicForfaitAccessToken(dir)
 }
 
+// forfaitSpawn records the forfait access token one CLI spawn was handed and
+// the host dir it was read from. A CLI holds that token for its whole life,
+// while the store's refresh worker rotates the record under it — revoking the
+// token — and the runner rewrites the file with the rotation. The pair tells
+// that stale token apart from a dead credential. Zero when the spawn carried
+// no forfait token.
+type forfaitSpawn struct {
+	dir   string
+	token string
+}
+
+// forfaitSpawnOf reads the forfait token out of the credential env a spawn is
+// about to be handed. Only claudeForfaitEnv sets a non-empty
+// CLAUDE_CODE_OAUTH_TOKEN there, from the run's claude_code dir.
+func forfaitSpawnOf(ctx context.Context, credEnv map[string]string) forfaitSpawn {
+	token := credEnv["CLAUDE_CODE_OAUTH_TOKEN"]
+	if token == "" {
+		return forfaitSpawn{}
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return forfaitSpawn{}
+	}
+	return forfaitSpawn{dir: creds.OAuthDir(string(secrets.OAuthKindClaudeCode)), token: token}
+}
+
+// renewed reports that the forfait file now carries another access token than
+// the one this spawn was handed: the credential was rotated under the running
+// CLI, not rejected.
+func (s forfaitSpawn) renewed() bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	now := readForfaitAccessToken(s.dir)
+	return now != "" && now != s.token
+}
+
 // sandboxed reports that the CLI subprocess will execute inside a REAL
 // sandbox container (docker/kubernetes — not the host-passthrough noop), so
 // forfait credential paths must resolve to in-container locations.

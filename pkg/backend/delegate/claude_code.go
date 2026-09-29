@@ -380,9 +380,10 @@ func (b *ClaudeCodeBackend) retryDelay() time.Duration {
 }
 
 // formatPass runs one formatting pass: the CLI, or the test seam.
-func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error) {
+func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, error) {
 	if b.formatOutputFn != nil {
-		return b.formatOutputFn(ctx, task, sessionID)
+		rm, err := b.formatOutputFn(ctx, task, sessionID)
+		return rm, forfaitSpawn{}, err
 	}
 	return b.formatOutput(ctx, task, sessionID)
 }
@@ -638,7 +639,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// Inject Anthropic-flavoured credentials and resolve session resume/fork
 	// (see helper). The returned fingerprint is recorded on the Result so a
 	// later resume can detect a credential change.
-	opts, currentFingerprint, credErr := b.setupCredsAndSession(ctx, task, opts)
+	opts, currentFingerprint, spawn, credErr := b.setupCredsAndSession(ctx, task, opts)
 	if credErr != nil {
 		return Result{BackendName: BackendClaudeCode, ExitCode: -1}, credErr
 	}
@@ -801,7 +802,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// Every guard on the result TEXT lives in renderedFailure, shared with
 	// the formatting passes: a render is never an answer, on any pass. The
 	// session was billed all the same: its cost goes out with the verdict.
-	if err := b.renderedFailure(rm, task, "pass 1"); err != nil {
+	if err := b.renderedFailureAfter(spawn, rm, task, "pass 1"); err != nil {
 		typed := typedFailure(&result, task, totalIn, totalOut, err, rm)
 		return result, typed
 	}
@@ -831,6 +832,24 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 
 	annotateCost(&result, task, totalIn, totalOut, rm, recoveryRM)
 	return result, nil
+}
+
+// renderedFailureAfter is renderedFailure for the result of one spawn, whose
+// forfait token it knows. A CLI keeps the token it was spawned with, and the
+// store's refresh worker revokes that token when it rotates the record; the
+// runner then writes the rotation into the forfait file. An auth render on a
+// token the file no longer carries is that rotation, not a dead credential:
+// it is typed transient, so the executor retries on a spawn that reads the
+// new token (resuming the session the dead attempt opened), and it files no
+// auth evidence, which would bench a healthy forfait.
+func (b *ClaudeCodeBackend) renderedFailureAfter(spawn forfaitSpawn, rm *claudesdk.ResultMessage, task Task, pass string) error {
+	if rm != nil && rm.Result != nil && isAuthErrorResult(*rm.Result) && spawn.renewed() {
+		detail := redactAuthRender(strings.TrimSpace(*rm.Result))
+		b.Logger.Warn("[%s#%d/claude-code %s] the forfait token was renewed under the running CLI — retrying on the new token, no auth evidence filed: %.160s",
+			task.NodeID, task.Iteration, pass, detail)
+		return &ErrTransient{Provider: BackendClaudeCode, Reason: "forfait token renewed under the running CLI", Detail: detail}
+	}
+	return b.renderedFailure(rm, task, pass)
 }
 
 // renderedFailure re-types a result whose TEXT is the CLI's render of an
@@ -1217,7 +1236,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 	var ranRMs []*claudesdk.ResultMessage
 	for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 		b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
-		fmtRM, fmtErr := b.formatPass(ctx, task, rm.SessionID)
+		fmtRM, fmtSpawn, fmtErr := b.formatPass(ctx, task, rm.SessionID)
 		if fmtErr == nil {
 			ranRMs = append(ranRMs, fmtRM)
 			// The pass ran and was billed, whatever its result says: its
@@ -1230,7 +1249,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 			result.FormattingPassUsed = true
 			// The formatter's result is read through the same predicate as
 			// pass 1: a render here would otherwise be parsed as the output.
-			if rerr := b.renderedFailure(fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts)); rerr != nil {
+			if rerr := b.renderedFailureAfter(fmtSpawn, fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts)); rerr != nil {
 				if !renderRetryable(rerr) {
 					// A credential, model or window verdict is terminal: a
 					// second attempt re-spends the pass against a provider
@@ -1296,18 +1315,19 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 // setupCredsAndSession injects Anthropic-flavoured credentials into the CLI
 // subprocess (single helper so Pass 1 and Pass 2 stay symmetric) and, when
 // the task carries a SessionID, decides whether to resume/fork that session
-// or drop it on a provider-fingerprint mismatch. Returns the extended opts
-// and the current provider fingerprint.
+// or drop it on a provider-fingerprint mismatch. Returns the extended opts,
+// the current provider fingerprint and the forfait token the spawn is
+// handed.
 //
 // A node pinned to a facade provider with no key reachable is REFUSED here,
 // by name. The env it would otherwise spawn with has every Anthropic-flavoured
 // channel suppressed on purpose, so the CLI can only die on "Not logged in" —
 // a message naming neither the provider the operator pinned nor the credential
 // that was missing, and only after paying for the spawn.
-func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, error) {
+func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, forfaitSpawn, error) {
 	credEnv := anthropicCredEnvForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
-		return opts, "", err
+		return opts, "", forfaitSpawn{}, err
 	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
 	currentFingerprint := providerFingerprint(anthropicFingerprintEnvForTask(task, credEnv))
@@ -1324,7 +1344,7 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 			}
 		}
 	}
-	return opts, currentFingerprint, nil
+	return opts, currentFingerprint, forfaitSpawnOf(ctx, credEnv), nil
 }
 
 // runRecoveryFormatterPass is the single-pass safety net: when a schema is
@@ -1342,7 +1362,7 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 // its CLI-reported cost, not just Pass 1's.
 func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) (*claudesdk.ResultMessage, error) {
 	b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", sessionID)
-	fmtRM, fmtErr := b.formatPass(ctx, task, sessionID)
+	fmtRM, fmtSpawn, fmtErr := b.formatPass(ctx, task, sessionID)
 	if fmtErr != nil {
 		b.Logger.Warn("claude-code: recovery formatting pass failed: %v", fmtErr)
 		return nil, nil
@@ -1357,7 +1377,7 @@ func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task T
 	// A render on the recovery pass is typed and returned, never parsed as
 	// the output nor swallowed into an opaque schema failure — with its
 	// message, so the caller's cost annotation sees the billed pass.
-	if rerr := b.renderedFailure(fmtRM, task, "recovery formatting pass"); rerr != nil {
+	if rerr := b.renderedFailureAfter(fmtSpawn, fmtRM, task, "recovery formatting pass"); rerr != nil {
 		return fmtRM, rerr
 	}
 	fmtOutput, fmtRawLen, fmtFallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
@@ -1503,7 +1523,7 @@ func taskExtraEnvOpts(task Task) []claudesdk.Option {
 // task has its native surface withheld here instead. The sentence that used
 // to sit here — "(no tools)" — is what kept that gap invisible for five
 // rounds; what it names is the instruction, not the toolset.
-func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error) {
+func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, error) {
 	// Use the parent context directly — the runtime already enforces budget
 	// timeouts. Adding a short artificial timeout here risks cancelling the
 	// formatting pass while the CLI is still loading the resumed session.
@@ -1511,7 +1531,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	var schema map[string]any
 	if err := json.Unmarshal(task.OutputSchema, &schema); err != nil {
-		return nil, fmt.Errorf("invalid output schema: %w", err)
+		return nil, forfaitSpawn{}, fmt.Errorf("invalid output schema: %w", err)
 	}
 
 	opts := []claudesdk.Option{
@@ -1659,7 +1679,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	opts = append(opts, perTaskSpawnOpts(task)...)
 	credEnv := anthropicCredEnvForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
-		return nil, err
+		return nil, forfaitSpawn{}, err
 	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
 
@@ -1677,7 +1697,8 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		prompt += " Do not call any tool other than StructuredOutput; just return the JSON."
 	}
 
-	return promptWithTimeout(fmtCtx, prompt, killAll, opts...)
+	rm, err := promptWithTimeout(fmtCtx, prompt, killAll, opts...)
+	return rm, forfaitSpawnOf(ctx, credEnv), err
 }
 
 // promptWithTimeout wraps claudesdk.Prompt in a goroutine with
