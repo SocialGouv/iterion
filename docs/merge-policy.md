@@ -188,26 +188,28 @@ The job's log names every branch it ignored with its pull request's state:
 check it, then **delete it** — `gh api -X DELETE
 repos/SocialGouv/iterion/git/refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`.
 
-The hold is **best effort, not a lock**. The branch list is read right before
-release-it, which still builds for a few minutes before it pushes; a group
-that starts inside that window rebuilds once. What is left is measured, not
+The hold is **best effort, not a lock**. The branch list is read just before
+the run moves to `main`'s tip — in that order, so a group that merges between
+the two holds the release rather than leaving release-it on a stale tree — and
+release-it still builds for a few minutes before it pushes; a group that starts
+between the read and the push rebuilds once. What is left is measured, not
 assumed: `task ci:queue-stats` counts the queue builds discarded by a release
 ([Measuring the queue](#measuring-the-queue)) — which also counts the nightly
-and dispatched releases that invalidate on purpose; the script cannot tell
-them apart from a merged PR's release that slipped through the window.
+and dispatched releases that invalidate on purpose; the script cannot tell them
+apart from a merged PR's release that slipped through the window.
 
 Two release runs never overlap, whatever triggered them: `version.yml` has one
-concurrency group for every trigger, with `queue: max`, and each run moves to
-`main`'s tip right before release-it — a run queued behind a release finds it
-already tagged and releases nothing (a nightly or a dispatch checks for new
-commits first, since a dispatch's explicit increment would otherwise cut an
-empty release). Overlap is what must never happen — when a
+concurrency group for every trigger, with `queue: max`, and each run that
+releases moves to `main`'s tip before release-it — a run queued behind a
+release finds it already tagged and releases nothing (a nightly or a dispatch
+checks for new commits first, since a dispatch's explicit increment would
+otherwise cut an empty release). Overlap is what must never happen — when a
 push is rejected, release-it rolls back by deleting the remote tag of the
 version it computed, and if the other run had just pushed that same version,
 that is the other run's tag. `queue: max` is there because a group otherwise
-keeps a single pending run and silently replaces it with the next one: a
-merged pull request's run could replace a pending nightly or dispatch, then
-hold its release while the queue builds.
+keeps a single pending run and silently replaces it with the next one: a merged
+pull request's run could replace a pending nightly or dispatch, then hold its
+release while the queue builds.
 
 ## Measuring the queue
 

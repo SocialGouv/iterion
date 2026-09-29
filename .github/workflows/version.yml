@@ -95,52 +95,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Release main's tip as it is now
-        # The checkout above ran minutes ago, and runs wait in line behind one
-        # another: a merge landing in between — typically the one that drains
-        # the queue — would make release-it commit onto a stale tree and its
-        # push fail. Move to main's current tip first; reinstall the
-        # dependencies only when the lockfile moved with it.
-        run: |
-          set -euo pipefail
-          before="$(git rev-parse HEAD)"
-          git fetch --quiet origin main
-          git checkout --quiet -B main origin/main
-          if [ "$(git rev-parse HEAD)" != "$before" ]; then
-            echo "main moved from ${before:0:9} to $(git rev-parse --short HEAD) since the checkout"
-            if ! git diff --quiet "$before" HEAD -- package.json pnpm-lock.yaml pnpm-workspace.yaml; then
-              pnpm install --frozen-lockfile
-            fi
-          fi
-
-      - name: Skip the release when nothing changed since the last tag
-        # A queued run can find main's tip already released by the run ahead
-        # of it. For a merged pull request, release-it's conventional-changelog
-        # plugin then declines on its own ("No new version to release"); a
-        # dispatch passes an explicit increment (`minor` by default), which
-        # would cut an empty release — so the nightly and a dispatch check
-        # first.
-        id: changes
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-          if [ -z "$LAST_TAG" ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "no previous tag — releasing"
-          elif [ "$(git rev-list --count "${LAST_TAG}..HEAD")" -gt 0 ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "commits since ${LAST_TAG} — releasing"
-          else
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no commit since ${LAST_TAG} — nothing to release"
-          fi
-
       - name: Hold the release while the merge queue is building
         # Only a merged pull request's release is held: the nightly and a
         # dispatch release regardless and do not read the queue at all.
         #
-        # Read right before release-it, after the dependency install. A merge
+        # Read after the dependency install and BEFORE the move to main's tip:
+        # a group in flight at this read is the only queue merge that could
+        # land before release-it pushes, and it holds the release; whatever
+        # lands before the move is in the tree release-it commits onto. A merge
         # group under construction exists as a gh-readonly-queue/main/*
         # branch, and those branches are exactly what a push to main
         # invalidates — contents: read is all it takes. Best effort, not a
@@ -200,6 +162,49 @@ jobs:
           printf 'merge groups in flight:\n%s' "$live"
           echo "::notice::Release held: ${count} merge group(s) in flight. The merge that drains the queue releases everything merged since the last tag; the nightly releases regardless; so does a workflow_dispatch."
           echo "busy=true" >> "$GITHUB_OUTPUT"
+
+      - name: Release main's tip as it is now
+        # The checkout above ran minutes ago, and runs wait in line behind one
+        # another: a merge landing in between — typically the one that drains
+        # the queue — would make release-it commit onto a stale tree and its
+        # push fail. Move to main's current tip first; reinstall the
+        # dependencies only when the lockfile moved with it. A held release
+        # has nothing to move for.
+        if: steps.queue.outputs.busy != 'true'
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse HEAD)"
+          git fetch --quiet origin main
+          git checkout --quiet -B main origin/main
+          if [ "$(git rev-parse HEAD)" != "$before" ]; then
+            echo "main moved from ${before:0:9} to $(git rev-parse --short HEAD) since the checkout"
+            if ! git diff --quiet "$before" HEAD -- package.json pnpm-lock.yaml pnpm-workspace.yaml; then
+              pnpm install --frozen-lockfile
+            fi
+          fi
+
+      - name: Skip the release when nothing changed since the last tag
+        # A queued run can find main's tip already released by the run ahead
+        # of it. For a merged pull request, release-it's conventional-changelog
+        # plugin then declines on its own ("No new version to release"); a
+        # dispatch passes an explicit increment (`minor` by default), which
+        # would cut an empty release — so the nightly and a dispatch check
+        # first.
+        id: changes
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$LAST_TAG" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "no previous tag — releasing"
+          elif [ "$(git rev-list --count "${LAST_TAG}..HEAD")" -gt 0 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "commits since ${LAST_TAG} — releasing"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no commit since ${LAST_TAG} — nothing to release"
+          fi
 
       - name: Run release-it
         if: steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false')
