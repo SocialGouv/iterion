@@ -216,6 +216,35 @@ func TestRoutingFieldListTypedVarMessage(t *testing.T) {
 	}
 }
 
+// TestRoutingFieldNullJsonVarMessage: a null document does not resolve to
+// a JSON spelling and does not fail a delegation — it renders as the
+// empty string (formatValue), and an empty routing field is an unset one
+// that falls back to its default (resolveBackend reads "" as "not
+// named"). The message says that, never the list mechanism.
+func TestRoutingFieldNullJsonVarMessage(t *testing.T) {
+	const src = "vars:\n  j0: json = \"null\"\n\nprompt p:\n  Hi.\n\nagent a:\n  system: p\n  backend: \"{{vars.j0}}\"\n\nworkflow w:\n  entry: a\n  a -> done\n"
+	_, diags := compileSource(t, src)
+	var msg string
+	for _, d := range diags {
+		if d.Code == DiagRoutingFieldRef {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatalf("no C148 raised\ndiagnostics: %v", diags)
+	}
+	for _, want := range []string{"{{vars.j0}}", "null", "empty string", "UNSET", "falls back"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q does not carry %q", msg, want)
+		}
+	}
+	for _, bad := range []string{"JSON spelling", "first delegation"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("message %q claims %q — a null document renders empty and fails nothing", msg, bad)
+		}
+	}
+}
+
 // TestJsonDefaultShapeIsFixedByItsText pins the run behaviour the json
 // arm's reading (jsonDefaultDocument) rests on: ResolveVarText parses a
 // json default BEFORE it expands anything, and expands only the string
