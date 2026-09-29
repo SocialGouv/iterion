@@ -11,7 +11,7 @@ export interface ModelPref {
   key: string;
   model?: string;
   backend?: string;
-  // reasoning_effort (low|medium|high|xhigh|max|ultracode). Rejected with a
+  // reasoning_effort (none|low|medium|high|xhigh|max|ultracode). Rejected with a
   // 400 when it is not one of those.
   effort?: string;
   // set distinguishes "never recorded" (fall back to the bot's own defaults)

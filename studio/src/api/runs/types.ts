@@ -982,7 +982,7 @@ export interface ModelOverrideEntry {
   backend?: string;
   model?: string;
   provider?: string;
-  // reasoning_effort for the matched nodes (low|medium|high|xhigh|max|
+  // reasoning_effort for the matched nodes (none|low|medium|high|xhigh|max|
   // ultracode). Rejected with a 400 when it is not one of those — the value
   // reaches the provider verbatim. Wins over the node's DSL reasoning_effort:
   // AND over a dynamic _reasoning_effort edge mapping.

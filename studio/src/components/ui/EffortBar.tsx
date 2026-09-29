@@ -31,8 +31,9 @@ interface Props {
   // "this is what the provider would use anyway".
   muted?: boolean;
   // Model's supported effort levels (low→high). When provided the
-  // bar normalises to this range so the model's top level always
-  // fills every cell — gpt-5 at "high" renders 4/4 instead of 3/5.
+  // bar normalises to this range — none excluded, it is no rung — so
+  // the model's top level always fills every cell — gpt-5 at "high"
+  // renders 4/4 instead of 3/5.
   // Falls back to the global low/medium/high/xhigh/max scale when
   // omitted or when level isn't in the list.
   supported?: string[];
