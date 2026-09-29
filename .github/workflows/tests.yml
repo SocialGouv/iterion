@@ -8,7 +8,7 @@ name: 🧪 Tests
 # other red on the same commit is enough to redden the PR and disarm auto-merge.
 #
 # `merge_group` is load-bearing: test/race/vendor-check/mongo-conformance/
-# golangci are REQUIRED checks, and the queue branch
+# golangci/brand are REQUIRED checks, and the queue branch
 # (gh-readonly-queue/main/...) used to get them from that unfiltered push. A
 # queue build with no checks waits for a context that never arrives and
 # dequeues the PR after the 60-minute timeout.
@@ -35,9 +35,9 @@ concurrency:
 #
 # The line to hold: the jobs carrying that skip are exactly the complement of
 # the ruleset's required checks (test, race, vendor-check, mongo-conformance,
-# golangci, revi/review) — plus the jobs STAGED to become required, `brand`
-# and `fmt-check`, which stay in the queue so their context already exists the
-# day the ruleset names them (a required check first reported at promotion
+# golangci, brand, revi/review) — plus the job STAGED to become required,
+# `fmt-check`, which stays in the queue so its context already exists the
+# day the ruleset names it (a required check first reported at promotion
 # leaves the queue waiting for one that never arrives). internal/ciguard's
 # requiredChecks is that staging list, and is what refuses a job that picks
 # neither side. Promoting one of the advisory jobs to required means deleting
@@ -84,19 +84,19 @@ concurrency:
 # content is first-party.
 #
 # THE ESCAPE HATCH: setting the repository variable CI_SELF_HOSTED to `off`
-# sends every job back to GitHub-hosted runners. It exists because three
-# REQUIRED checks route here on merge_group, so a scale set that stops serving
+# sends every job back to GitHub-hosted runners. It exists because REQUIRED
+# checks route here on merge_group, so a scale set that stops serving
 # makes every queue entry wait check_response_timeout_minutes (60) for a check
 # that never reports, and then fail — all pull requests at once. A variable is
 # deliberately the mechanism rather than an edit to this file: repairing by
 # merging does not work when merging is what is broken. Unset means on.
 #
-# Five jobs carry a GitHub-hosted label whatever the ref. Three say why at
-# their own definition: the upstream image ships no C compiler, which -race
-# needs — that one is settled — plus a startup race and an unexplained kind
-# failure; #981 carries the remedy. Each says what is measured, and what is
-# not. Measured 2026-09-08, on the six jobs routed self-hosted at the time:
-# all six passed there, nine runner pods starting at once with no queueing.
+# Three jobs carry a GitHub-hosted label whatever the ref: cloud-e2e and
+# desktop-vet-linux, each saying why at its own definition, and docs-links,
+# advisory and outside the queue. Every REQUIRED job routes through the
+# expression below. Measured 2026-09-08, on the six jobs routed self-hosted at
+# the time: all six passed there, nine runner pods starting at once with no
+# queueing.
 #
 # So the expression below reads, in three clauses:
 #
@@ -125,6 +125,28 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+
+      - name: Generated artefacts are fresh (fail fast)
+        # Two pull requests that each regenerate the same committed artefact
+        # can merge clean and stale together — the queue's most frequent
+        # failure. The freshness tests that catch it take seconds, but the
+        # unit step reaches them fifteen minutes in; run them first, so such
+        # an entry leaves the queue in minutes. The unit step still runs them.
+        # A `-run` pattern that matches nothing passes, so the step also
+        # checks that every test it names ran.
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(TestGeneratedMapsAreFresh TestGeneratedDSLDocsAreFresh)
+          pattern="^($(IFS='|'; echo "${tests[*]}"))\$"
+          log="$RUNNER_TEMP/fresh.log"
+          status=0
+          go test -mod=vendor -count=1 -v -run "$pattern" ./pkg/repomap/ ./pkg/dsl/spec/ > "$log" 2>&1 || status=$?
+          cat "$log"
+          [ "$status" -eq 0 ] || exit "$status"
+          for t in "${tests[@]}"; do
+            grep -q -- "^--- PASS: ${t} " "$log" || { echo "::error::${t} did not PASS — skipped, renamed or moved? A freshness gate that does not run proves nothing."; exit 1; }
+          done
 
       - name: Watcher resource limits
         # Read-only evidence for #1198. inotify EMFILE can be a process FD
@@ -293,13 +315,12 @@ jobs:
     # store's parallel-branch turn writes in pkg/store). Without this job a
     # data race regresses silently until it flakes a developer's machine.
     #
-    # -race REQUIRES cgo, so this job overrides the repo-wide CGO_ENABLED=0
-    # (ubuntu-latest ships gcc). Runs in parallel with `test`; a compile error
-    # surfaces here too, so no `needs:` ordering. ~2-3x slower than the plain
-    # test job, hence the wider -timeout and job budget.
-    # GitHub-hosted: -race needs cgo, and the self-hosted image has no C
-    # compiler (`cgo: C compiler "gcc" not found`, every package build-failed).
-    runs-on: ubuntu-latest
+    # -race REQUIRES cgo, so this job overrides the repo-wide CGO_ENABLED=0;
+    # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.
+    # Runs in parallel with `test`; a compile error surfaces here too, so no
+    # `needs:` ordering. ~2-3x slower than the plain test job, hence the wider
+    # -timeout and job budget.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 45
     env:
       CGO_ENABLED: "1"
@@ -311,6 +332,19 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # No Go cache (#1839, like fmt-check): the restore is keyed on go.sum
+          # and carries whichever job saved first — a build -race recompiles
+          # anyway — and on the scale set a slow restore of that ~400 MB
+          # archive has run past ten minutes.
+          cache: false
+
+      # Tests that run a real `script:` node (language js) exec `node`, and
+      # without it they fail (TestLiteralTemplateRealScriptAndRecipe) or skip.
+      # GitHub-hosted images ship Node; the scale set's image does not.
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
 
       # The modernize bot-level tests execute the bot's real plan_read /
       # lot_verify / mark_done scripts, which read the programme contract
@@ -347,27 +381,8 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
-    # GitHub-hosted: the runner agent's container-init phase races the dind
-    # sidecar. Measured — runner up 14:34:57, `dial unix
-    # /run/docker/docker.sock` at 14:35:05, eight seconds in — while a sibling
-    # job's `docker run` succeeds 76 s after ITS start. So the daemon does come
-    # up; the agent just asks too early. A dind-readiness gate would move this
-    # job; see #981.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 15
-    services:
-      # Plain mongo here because GitHub-Actions service containers can't
-      # run `rs.initiate()` ergonomically. The init step below brings up
-      # the replica set explicitly via docker exec on the same container.
-      mongo:
-        image: mongo:8.0
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -376,20 +391,23 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # No Go cache (#1839, like fmt-check): -mod=vendor needs no module
+          # cache, the build cache it restores is another job's, and on the
+          # scale set a slow restore of that ~400 MB archive has taken eleven
+          # minutes of this fifteen-minute budget (nats-conformance, the same
+          # setup, cancelled twice on 2026-09-29).
+          cache: false
 
-      - name: Reconfigure mongo as a replica set
-        # The default service container starts plain mongod. We restart
-        # it with --replSet rs0 + run rs.initiate() so change-streams
-        # and transactions work — both required by the conformance suite
-        # (event seq monotonicity + LockExclusivity).
+      - name: Start mongo as a replica set
+        # No services: block — a service container cannot be given
+        # --replSet. The step runs mongod with --replSet rs0 + rs.initiate()
+        # so change-streams and transactions work — both required by the
+        # conformance suite (event seq monotonicity + LockExclusivity). Same
+        # docker-run pattern as nats-conformance.
         run: |
           set -euo pipefail
-          # Find the running mongo container started by the service block.
-          CID=$(docker ps -q --filter "ancestor=mongo:8.0")
-          docker stop "$CID"
-          docker rm "$CID"
           docker run -d --name mongo-rs \
-            -p 27017:27017 \
+            -p 127.0.0.1:27017:27017 \
             mongo:8.0 \
             --replSet rs0 --bind_ip_all
           for i in $(seq 1 30); do
@@ -482,13 +500,15 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # No Go cache, same reason as mongo-conformance (#1839).
+          cache: false
 
       - name: Start NATS with JetStream
         # No services: block — it cannot pass `-js` to the container
         # command. Same docker-run pattern as the mongo replica-set step.
         run: |
           set -euo pipefail
-          docker run -d --name nats-js -p 4222:4222 nats:2.14-alpine -js
+          docker run -d --name nats-js -p 127.0.0.1:4222:4222 nats:2.14-alpine -js
           ready=0
           for i in $(seq 1 30); do
             logs="$(docker logs nats-js 2>&1)"
@@ -955,7 +975,8 @@ jobs:
     # It is GREEN today, and red only on something worth acting on: a
     # formattable bot that drifted, a file that newly cannot be formatted,
     # or a line in `.fmt-refused` that nothing refuses any more (the
-    # ratchet — #1612 landing must shrink that list). `task fmt:check` runs
+    # ratchet — the list stands empty since #1612 gave the writer its
+    # multi-line forms, and stays as the guard). `task fmt:check` runs
     # exactly this command.
     # The org's runners, like every other pure-Go job that stays in the
     # queue: a GitHub-hosted slot is one of the 20 the org shares, and this

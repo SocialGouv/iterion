@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -487,6 +488,80 @@ func claudeForfaitEnv(dir string, sandboxed bool) map[string]string {
 // when the file is absent or malformed — the caller degrades to the file path.
 func readForfaitAccessToken(dir string) string {
 	return secrets.AnthropicForfaitAccessToken(dir)
+}
+
+// forfaitSpawn records the forfait access token one CLI spawn was handed and
+// the host dir it was read from. A CLI holds that token for its whole life,
+// while the store's refresh worker rotates the record under it — revoking the
+// token — and the runner rewrites the file with the rotation. The pair tells
+// that stale token apart from a dead credential. Zero when the spawn carried
+// no forfait token.
+type forfaitSpawn struct {
+	dir   string
+	token string
+}
+
+// forfaitSpawnOf reads the forfait token out of the credential env a spawn is
+// about to be handed. Only claudeForfaitEnv sets a non-empty
+// CLAUDE_CODE_OAUTH_TOKEN there, from the run's claude_code dir.
+func forfaitSpawnOf(ctx context.Context, credEnv map[string]string) forfaitSpawn {
+	token := credEnv["CLAUDE_CODE_OAUTH_TOKEN"]
+	if token == "" {
+		return forfaitSpawn{}
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return forfaitSpawn{}
+	}
+	return forfaitSpawn{dir: creds.OAuthDir(string(secrets.OAuthKindClaudeCode)), token: token}
+}
+
+// renewed reports that the forfait file now carries another access token than
+// the one this spawn was handed: the credential was rotated under the running
+// CLI, not rejected.
+func (s forfaitSpawn) renewed() bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	now := readForfaitAccessToken(s.dir)
+	return now != "" && now != s.token
+}
+
+// defaultForfaitRenewalWait covers the runner's follow of the store's record
+// (once a minute, pkg/runner/oauth_refresh.go) with slack: the provider
+// refuses a rotated token at once — measured 16 s after the rotation — and
+// the new one reaches the forfait file on the runner's next pass.
+const defaultForfaitRenewalWait = 75 * time.Second
+
+// renewedWithin is renewed, watched for up to wait: a spawn that carried no
+// forfait token answers at once, and so does a cancelled ctx.
+func (s forfaitSpawn) renewedWithin(ctx context.Context, wait time.Duration) bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if s.renewed() {
+			return true
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(min(time.Second, left)):
+		}
+	}
+}
+
+// forfaitRenewalWait is the backend's bound for renewedWithin.
+func (b *ClaudeCodeBackend) forfaitRenewalWait() time.Duration {
+	if b.renewalWait > 0 {
+		return b.renewalWait
+	}
+	return defaultForfaitRenewalWait
 }
 
 // sandboxed reports that the CLI subprocess will execute inside a REAL

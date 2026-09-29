@@ -539,3 +539,21 @@ func TestBuildSystemPrompt_Modes(t *testing.T) {
 		}
 	}
 }
+
+// TestUltracodeInstructionCollectsBackgroundSubagents: an ultracode node is told
+// to fan out subagents, and its session is not interactive — a background
+// subagent reports only when waited on, and the final output ends the session.
+// Told only to dispatch, a campaign node ended its turn "waiting for the
+// auditors", the structured output closed the session, and every background
+// finding was lost, pass after pass.
+func TestUltracodeInstructionCollectsBackgroundSubagents(t *testing.T) {
+	got := Task{SystemPrompt: "author", Ultracode: true}.BuildSystemPrompt()
+	for _, want := range []string{"not interactive", "TaskOutput", "collect every one before that output", "is lost"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the ultracode instruction does not carry %q — background subagents die with the session", want)
+		}
+	}
+	if strings.Contains(Task{SystemPrompt: "author"}.BuildSystemPrompt(), "TaskOutput") {
+		t.Error("a node that is not ultracode was handed the orchestration rule")
+	}
+}

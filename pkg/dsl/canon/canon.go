@@ -85,15 +85,15 @@ func Text(name string, f *ast.File, src []byte) (string, error) {
 // or of two texts somebody else produced — a write route that receives
 // file CONTENT rather than a document.
 //
-// The writer has ONE multi-line form, the backtick raw string, and it
-// abandons that form for the WHOLE file the moment a single value needs
-// the strict escape (unparse.str: a backtick together with a quote, a
-// carriage return, a newline inside a group body — and every value under
-// `## strict-escape`). So a render is all or nothing: one that folds
-// anything has no value left over its lines at all. That is what is asked
-// here — incoming folds something AND keeps nothing spread — and against a
-// render it is exact, which is why every spread value of stored folds and
-// naming the first of them is right.
+// The writer has TWO multi-line forms — the block scalar at a property
+// line (`key: |`), the backtick raw string elsewhere and for the values
+// the block scalar cannot carry — and abandons BOTH for the WHOLE file the
+// moment a single value can take neither (unparse.render: one folded value
+// re-renders the file without either form). So a render is all or nothing:
+// one that folds anything has no value left over its lines at all. That is
+// what is asked here — incoming folds something AND keeps nothing spread —
+// and against a render it is exact, which is why every spread value of
+// stored folds and naming the first of them is right.
 //
 // Against text an author wrote by hand the same question is a tight
 // approximation rather than a proof: such a file may hold an escaped

@@ -23,9 +23,10 @@ import (
 //	-parallel 8          100.7 s   green
 //	-parallel 32 (= GOMAXPROCS)  204.7 s   two await-answers rows timed out
 //
-// 8 is where the curve flattens. CI's 4-vCPU runner never reaches the cap
-// (GOMAXPROCS = 4 there), so this only bites on a developer's or a
-// self-hosted machine.
+// 8 is where the curve flattens. A GitHub-hosted runner (GOMAXPROCS = 4)
+// stays under it; the organisation's self-hosted runners, which run `test`
+// and `race` with no CPU limit, see all their node's CPUs (8 or 16 measured)
+// and run at the cap.
 const e2eParallelCap = 8
 
 // ITERION_E2E_PARALLEL overrides the cap; an explicit `-parallel` on the

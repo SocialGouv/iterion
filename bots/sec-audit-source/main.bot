@@ -37,7 +37,7 @@
 dsl: 2
 
 vars:
-  workspace_dir:       string = "${PROJECT_DIR}"
+  workspace_dir: string = "${PROJECT_DIR}"
   ## Where a tool node reads a machine-readable `iterion:` block out of a
   ## skill. The engine resets this directory and refills it from the bundle
   ## on every mirror pass, so it carries the bundle's bytes under only the
@@ -52,9 +52,9 @@ vars:
   ## literal a studio form re-sends unmodified. The second branch is what the
   ## compile-time default check (C161) reads — it compares the LITERAL text,
   ## never the expansion, so a bare "^/" would refuse this very default.
-  bundle_skills_dir:   string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
-  scope_notes:         string = ""
-  severity_threshold:  string = "low"
+  bundle_skills_dir: string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
+  scope_notes: string = ""
+  severity_threshold: string = "low"
   ## Per-run scanner output (JSON envelopes + shard plumbing). Pure
   ## scratch — regenerated on every run, never operator-consumed — so it
   ## lives in the engine's out-of-tree scratch dir (the workspace scratch
@@ -62,7 +62,7 @@ vars:
   ## scatters state into the target repo. Durable operator-facing state
   ## (FP memory, file records, context, patches) lives under the repo's
   ## .sec-audit/ dotdir instead — see the vars below.
-  scan_dir:            string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan"
+  scan_dir: string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan"
   ## TTL (in days) for the per-run subdirs the scan_dir carries. THREE
   ## shapes accumulate one directory per pass under it: the scanner
   ## scratch `pass-<run.id>/` every writer and reader resolves through
@@ -85,14 +85,14 @@ vars:
   ## concept describes. Pointed elsewhere, deepsec_out names an operator's
   ## file no build of this node wrote or reads, and the pass leaves it
   ## alone (revi R46d8a4).
-  scan_dir_ttl_days:   int    = 30
+  scan_dir_ttl_days: int = 30
   ## Overflow guard. gosec/semgrep can emit thousands of findings on a
   ## large repo; triage reads the scanner JSON and overflows the model
   ## context. cap_findings keeps at most this many findings per scanner
   ## file (severity-sorted, bulky per-finding fields trimmed) and surfaces
   ## the truncation explicitly. Raise it for exhaustive small-repo runs;
   ## lower it on a tighter-context model.
-  findings_cap_per_file: int    = 50
+  findings_cap_per_file: int = 50
   ## Transport for the capped findings, in BYTES. 0 (the default) means
   ## triage opens the scanner JSON itself through json_paths — the cheapest
   ## route, because it lets triage grep and read selectively.
@@ -106,7 +106,7 @@ vars:
   ## in the envelope instead, which makes the node backend-independent. It
   ## costs context: the whole payload lands in the prompt whether or not
   ## triage would have read all of it.
-  triage_inline_max_bytes: int  = 0
+  triage_inline_max_bytes: int = 0
   ## Anti-façade smoke gate. The always-on generic scanners (gitleaks,
   ## trivy, semgrep --config=p/default) MUST each write a JSON file on any repo
   ## when they actually run — a missing file means the tool crashed or was
@@ -121,56 +121,56 @@ vars:
   ## 3 and says so -- min_generic_requested / min_generic_clamped in its
   ## envelope, a NOTE in the report -- rather than replacing the setting in
   ## silence.
-  min_generic_scanners: int    = 2
-  fp_path:             string = "${PROJECT_DIR}/.sec-audit/fp-known.yaml"
+  min_generic_scanners: int = 2
+  fp_path: string = "${PROJECT_DIR}/.sec-audit/fp-known.yaml"
   ## Per-file append-only analysis cache; see skills/file-records.md.
   ## The bot writes one JSON per scanned file to skip the (expensive)
   ## revalidate phase on unchanged files in subsequent runs.
-  records_dir:         string = "${PROJECT_DIR}/.sec-audit/files"
-  scanner_version:     string = "sec-audit-source@0.1.0"
-  records_ttl_days:    int    = 30
+  records_dir: string = "${PROJECT_DIR}/.sec-audit/files"
+  scanner_version: string = "sec-audit-source@0.1.0"
+  records_ttl_days: int = 30
   ## Programmatic matchers directory (Cap. 2); see
   ## skills/programmatic-matchers.md. Operators drop executable
   ## matcher files here; the bundle ships an example under
   ## attachments/matchers/example-secrets.py as a copy-paste
   ## template. Override via --var matchers_dir=... to point at a
   ## different location.
-  matchers_dir:        string = "${PROJECT_DIR}/.sec-audit/matchers"
+  matchers_dir: string = "${PROJECT_DIR}/.sec-audit/matchers"
   ## Cap. 3 — distributed scans. When shard_size > 0, the parent
   ## run does detect_tech + plans + dispatches; N child runs each
   ## handle a slice of the file list via `iterion __scan-shards`.
   ## When shard_size == 0 (default), the parent runs the full
   ## pipeline single-process. See docs/security-bots-distributed.md.
-  shard_size:          int    = 0
-  shard_concurrency:   int    = 4
+  shard_size: int = 0
+  shard_concurrency: int = 4
   ## file_filter is a comma-separated list of relative paths.
   ## Empty (the default) means "no filter — process every candidate".
   ## Children spawned by dispatch_shards set this to scope their
   ## LLM workload to their assigned slice. Tools (scanners) ignore
   ## it; triage applies it post-scanner.
-  file_filter:         string = ""
+  file_filter: string = ""
   ## Path to THIS workflow file; children re-invoke it with
   ## shard_size=0 + file_filter set. Defaults to the bundle's
   ## conventional location; override when the bundle is installed
   ## elsewhere (e.g. --var workflow_path=/opt/bots/sec-audit-source/main.bot).
-  workflow_path:       string = "${PROJECT_DIR}/bots/sec-audit-source/main.bot"
+  workflow_path: string = "${PROJECT_DIR}/bots/sec-audit-source/main.bot"
   ## Path to the project security context (committable markdown). Loaded
   ## by triage + revalidate as authoritative scoping. Auto-generated on
   ## first run if absent (project_context_load → project_context_generate);
   ## refresh with --var force_context_refresh=true. See
   ## skills/project-context.md for the file shape and contract.
-  context_path:           string = "${PROJECT_DIR}/.sec-audit/context.md"
+  context_path: string = "${PROJECT_DIR}/.sec-audit/context.md"
   ## How many days an auto-generated context.md remains fresh. Past this
   ## age, project_context_load reports `stale: true` and the workflow
   ## regenerates via project_context_generate. Set to 0 to disable auto-
   ## regen (operator manages the file by hand; staleness is ignored).
-  context_ttl_days:       int    = 90
+  context_ttl_days: int = 90
   ## Force regeneration of context.md even if present and within ttl.
-  force_context_refresh:  bool   = false
+  force_context_refresh: bool = false
   ## When false, skip both project_context_load and project_context_generate
   ## (Enhancement 1 entirely off — triage + revalidate see an empty context).
   ## Useful for testing or hostile envs where no context is safer.
-  enable_project_context: bool   = true
+  enable_project_context: bool = true
   ## Optional diff/incremental scoping (Enhancement 3). When set to a git
   ## ref (branch/tag/commit), restricts triage to files changed between
   ## the working tree and `git merge-base diff_base HEAD` — committed AND
@@ -180,7 +180,7 @@ vars:
   ## (= uncommitted only). Scanners still walk the whole tree; the
   ## narrowing happens at triage via file_filter — same mechanism as
   ## Cap. 3 shard child runs.
-  diff_base:           string = ""
+  diff_base: string = ""
   ## deepsec backend (Enhancement 4) — https://github.com/vercel-labs/deepsec.
   ## OPT-IN (default false): deepsec is the run's dominant time/cost sink —
   ## its `process` step makes LLM calls per candidate batch and has been the
@@ -200,7 +200,7 @@ vars:
   ## fails the run (the envelope carries an errors[] tail; the report notes
   ## "deepsec degraded"). LLM cost is capped by deepsec_process_limit.
   ## See skills/scanner-deepsec.md for the field mapping.
-  enable_deepsec:      bool   = false
+  enable_deepsec: bool = false
   ## Note: deepsec's CLI does not expose a tier/`--tier` flag (verified
   ## against deepsec packages/deepsec/src/cli.ts v2.0.x — `scan` runs the
   ## full ~110 regex matcher pack; per-run narrowing is via `--matchers
@@ -208,13 +208,13 @@ vars:
   ## deepsec_concurrency caps the in-flight LLM batches during the
   ## `process` step. deepsec's default is `cores - 1`; we ship a
   ## conservative 4 to bound cost on shared dev hosts.
-  deepsec_concurrency: int    = 4
+  deepsec_concurrency: int = 4
   ## Cost guard for the `process` step. deepsec's per-file LLM batches
   ## can cost ~$0.05-$0.30 with Opus; cap at this many files per run
   ## so a default --var enable_deepsec=true on a 2k-file repo does not
   ## blow the budget. Operators raise this (or omit via the env var
   ## ITERION_DEEPSEC_PROCESS_LIMIT=0) for exhaustive scans.
-  deepsec_process_limit: int  = 50
+  deepsec_process_limit: int = 50
   ## Local clone of the deepsec reference checkout used ONLY for the
   ## graceful-degrade detection step (the tool probes this path to
   ## decide whether deepsec is locally available BEFORE attempting the
@@ -222,7 +222,7 @@ vars:
   ## (the tool reads $ITERION_REFERENCES_ROOT).
   ## The actual runtime workspace lives under deepsec_out's parent
   ## (<scratch>/sec-audit-source/scan/deepsec) — created by `deepsec init`.
-  deepsec_root:        string = "${HOME}/lab/ai/references/deepsec"
+  deepsec_root: string = "${HOME}/lab/ai/references/deepsec"
   ## BASE template for the deepsec JSON export. run_deepsec_scanner derives
   ## the per-run file from it -- <dirname>/deepsec-out-<run.id>/<basename> --
   ## and publishes that path in json_paths.deepsec, the ONLY route by which
@@ -232,7 +232,7 @@ vars:
   ## preflight, and read by nobody. The removal keys on the path set NOW --
   ## a dirname or basename changed across an upgrade leaves the old file in
   ## place, to remove by hand.
-  deepsec_out:         string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan/deepsec.json"
+  deepsec_out: string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan/deepsec.json"
   ## Byte budget for bank_deepsec_findings — how much of the export is
   ## carried OUT of the pod inside the published artifact, so a pass that
   ## dies later (triage, jury, usage cap) does not take the findings with
@@ -242,7 +242,7 @@ vars:
   ## Approximate rather than exact: the size is summed from per-finding
   ## json.dumps LENGTHS (characters, not bytes), so an export heavy in
   ## non-ASCII can overshoot the number set here.
-  deepsec_bank_max_bytes: int  = 524288
+  deepsec_bank_max_bytes: int = 524288
   ## Which agent plugin deepsec investigates with, and on which model.
   ##
   ## deepsec has its OWN backend system, unrelated to iterion's: it drives
@@ -271,8 +271,8 @@ vars:
   ## deepsec binary produces (#1350). The node keeps its own guard as a
   ## belt: this line and that case statement admit the same values, which
   ## bots/sec_audit_deepsec_agent_pattern_test.go holds them to.
-  deepsec_agent:       string [matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$"] = ""
-  deepsec_model:       string = ""
+  deepsec_agent: string [matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$"] = ""
+  deepsec_model: string = ""
   ## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
   ## The revalidate phase is a FIXED POOL OF 3 always-on adversarial
   ## "disprove" voters; majority vote drives the final verdict
@@ -285,14 +285,13 @@ vars:
   ## majority of 3. Set to 3 to require unanimity (precision over
   ## recall); set to 1 to surface any voter's confirm (recall over
   ## precision). Dismiss threshold tracks symmetrically.
-  confirm_threshold:   int    = 2
+  confirm_threshold: int = 2
   ## FP-append policy. "unanimous_dismiss" appends to fp-known.yaml
   ## ONLY when all 3 voters dismiss AND at least one cites a
   ## `dismissed_by_guard` file:line — the strictest safeguard against
   ## the bot suppressing real signal via voter coordination failure.
   ## "never" disables fp-known.yaml appends entirely.
-  fp_append_policy:    string = "unanimous_dismiss"
-
+  fp_append_policy: string = "unanimous_dismiss"
   ## ─── D5a — Verification-ladder remediation phase ─────────────────
   ## Gates the whole remediation phase. DEFAULT false → Seki is a
   ## read-only SAST auditor out of the box (detect → scan → triage →
@@ -310,8 +309,7 @@ vars:
   ## `task studio:dev` (a mid-run backend restart can strand the checkout
   ## on the temp branch). The phase is still a clean no-op when there are
   ## zero patchable findings (remediation_plan.enabled=false → done).
-  remediate:           bool   = false
-
+  remediate: bool = false
   ## Categories that hard-stop without auto-patching even when the
   ## ladder could plausibly verify the fix. Comma-separated finding_type
   ## values. Defaults: crypto (silent failure modes; see
@@ -319,24 +317,20 @@ vars:
   ## remediation_plan filters these into hard_stopped[]; defence-in-depth
   ## is enforced again inside patch_author per its skill.
   hard_stop_categories: string = "crypto,secrets"
-
   ## Max findings the loop will attempt per run. The patch_loop cap is
   ## the structural budget; raise it once a real-world feedback loop
   ## proves the phase budget-safe.
-  max_fix_per_run:     int    = 10
-
+  max_fix_per_run: int = 10
   ## Inner per-finding retry budget. D5a keeps this at 1 (no nested
   ## retry loop yet — the design's patch_attempts is a later pass).
-  patch_attempts:      int    = 1
-
+  patch_attempts: int = 1
   ## Where the propose-mode patch artifacts land. The diff for each
   ## attempted finding is written under <finding_id>-<status>.diff
   ## (e.g. F-001-verified.diff). Defaults to the same durable
   ## .sec-audit/ tree as the bot's other operator-facing state — the
   ## diffs are the audit trail the operator inspects at the
   ## approve_fixes pause, not per-run scratch.
-  patch_dir:           string = "${PROJECT_DIR}/.sec-audit/patches"
-
+  patch_dir: string = "${PROJECT_DIR}/.sec-audit/patches"
   ## ─── D5b — Apply machinery on top of D5a's propose ladder ────────
   ## How the workflow disposes of VERIFIED fixes at the end of the
   ## per-finding ladder. Three values:
@@ -361,865 +355,9 @@ vars:
   ## have their working-tree changes reverted (so a rejected attempt
   ## never pollutes the temp branch), and the <patch_dir>/<finding_id>-
   ## <status>.diff artifact is written for the audit trail.
-  remediation_mode:    string = "apply_gated"
-
-## ─── Schemas ──────────────────────────────────────────────────────
-
-schema tech_output:
-  ## langs feeds the lang-<id>.md skill dispatcher + scanner selection. It is
-  ## typed `json` (NOT string[]) deliberately: a string[] field is substituted
-  ## into tool-node shell commands as an unquoted space-separated Go slice
-  ## ([Go TypeScript ...]), which word-splits the `LANGS=...` assignment and
-  ## fails the shell (exit 127, "TypeScript: command not found") — a json field
-  ## substitutes shell-safe (compact, like every other LLM-JSON field here).
-  ## The model may return langs as a flat array OR a nested
-  ## {primary:[{name:Go}],secondary:…} object; _norm_langs (below + in
-  ## scan_health) normalizes ANY shape to flat lowercase ids, so a nested
-  ## object no longer silently yields zero language scanners.
-  langs:            json
-  frameworks:       json
-  package_managers: json
-  build_systems:    json
-  summary:          string
-
-schema inventory_output:
-  listing:          string
-
-schema scanner_output:
-  scanner:        string
-  subscanners:    json
-  json_paths:     json
-  finding_count:  int
-  errors:         json
-  ## How much of the tree a deep scan reached, read from the run metadata the
-  ## scanner writes about itself rather than from its log. Eleven fields, the
-  ## same eleven on every path: source, steps_failed, candidates_found,
-  ## candidate_files, files_processed, scan_phase, process_phase, process_limit,
-  ## limit_truncated, process_failed, process_complete. Only
-  ## run_deepsec_scanner fills it; the shell scanners omit it, and an omitted
-  ## field is absent, not zero.
-  ##
-  ## Ten are scalars and steps_failed is a list, drawn from a closed vocabulary
-  ## this node writes (init, scan, process, export, export_unusable) and
-  ## filtered against it by the reader. Every other field is coerced before it
-  ## is emitted: counts must be real numbers and are never bool (bool is a
-  ## subclass of int in python, so a JSON true would have travelled as a
-  ## count); phases must be short alphabetic strings. That is what makes
-  ## "these fields cannot carry an instruction" a property of the code rather
-  ## than an intention, which matters because report_card holds bash,
-  ## write_file and board.create.
-  ##
-  ## The meta is matched to THIS pass by run id -- runs/<id>.json, the id each
-  ## step prints for the run it wrote -- with the run window as a floor and a
-  ## ceiling beneath it. Selecting the newest meta in a window instead let a
-  ## concurrent run, a second project in the same data root, or a future-dated
-  ## meta author this pass verdict; the scratch is shared between runs by
-  ## design, so none of those is hypothetical.
-  ##
-  ## candidate_files is deepsec filesScanned, which is records.length: the
-  ## number of files carrying at least one candidate, returned to deepsec own
-  ## caller as candidateCount. It is NOT a repository size -- no field here is.
-  ##
-  ## steps_failed carries the verdicts of init, scan and export, which live
-  ## only in this shell and in no meta. Without it, a scan that exited non-zero
-  ## AFTER recording phase=done reached the report as a complete audit.
-  ##
-  ## process_complete is CONSERVATIVE, and it compares nothing across units.
-  ## Three earlier shapes of this predicate were wrong, each for a reason
-  ## worth keeping written down:
-  ##   - a phase is not a completion signal: the scanner records "done" after
-  ##     a quota wall too, and after "nothing to claim, 0 files processed";
-  ##   - its own numbers are not commensurable: --limit counts FILES (its own
-  ##     help text says so), candidatesFound sums CANDIDATES over the current
-  ##     scan, and process draws from a persistent on-disk backlog that
-  ##     neither number measures;
-  ##   - so any ratio built from them reads a healthy unlimited pass as
-  ##     incomplete as soon as one file carries two candidates.
-  ## The predicate therefore uses only terms this node owns outright: the
-  ## process step did not fail, the scanner recorded done, and something was
-  ## actually processed. The CAP is deliberately not one of them -- it is an
-  ## independent fact with its own banner, and folding it in made every run in
-  ## shipped configuration (limit 50) incomplete for a reason no field carried.
-  ##
-  ## "The step did not fail" is the shell verdict, and it is not the exit code
-  ## alone: a retry that RESUMES a run the scanner already marked done exits
-  ## zero without investigating anything, so that resume counts as a failure to
-  ## have completed. A retry with no run id to resume is a different thing -- a
-  ## fresh pass over what is still pending -- and must not be counted as one,
-  ## or a retry that covered the whole tree gets bannered as a partial audit.
-  ##
-  ## What that buys, stated exactly: it never claims more than the scanner
-  ## claims about itself, plus what this node knows about the cap it set. It
-  ## does NOT detect a pass that exited zero while silently skipping files —
-  ## and no reading of the scanner own bookkeeping would, because that
-  ## bookkeeping is what would be lying. The three counters travel alongside
-  ## so a human can judge; they are reportable facts, never terms of an
-  ## equation.
-  ##
-  ## limit_truncated is false only when no cap was set. With a cap it is null,
-  ## never true or false: --limit cuts a backlog whose size nothing records,
-  ## so whether the cap BIT cannot be established — only that coverage is
-  ## unprovable.
-  coverage:       json
-
-## The deep scanner writes its findings to a file inside the sandbox, and the
-## pod is destroyed with the run: a pass that dies after it — at triage, at the
-## jury, on a usage cap — takes its whole contribution with it. Measured
-## 2026-09-10: 88 minutes of investigation lost that way, twice in one day.
-## deepsec_bank carries the findings THEMSELVES out of the pod, capped by a
-## byte budget, with the two counts that make truncation visible.
-schema deepsec_bank:
-  findings:   json
-  embedded:   int
-  total:      int
-  truncated:  bool
-  note:       string
-
-## The scanner scratch of THIS pass, derived once by compute
-## scan_dir_resolve and carried IN on every edge that reaches a node writing
-## into it or reading out of it. A tool command resolves {{input.X}} and
-## {{vars.X}}; an {{outputs.X}} ref written in a body is refused catalogue-wide
-## (bots/catalog_command_refs_test.go), so the edge is the transport.
-schema scan_scratch_input:
-  scan_dir:  string
-
-schema lang_input:
-  langs:  json
-
-## run_lang_scanners reads the same langs as the ladder rungs plus the pass's
-## scan scratch; lang_input stays what build_rung / regress_rung need.
-schema lang_scan_input:
-  langs:     json
-  scan_dir:  string
-
-## The two nodes that used to locate the deep scan by NAME take it from the
-## producer instead, carried on the edge and read as {{input.X}}. (A tool
-## command DOES substitute a plain `{{outputs.NODE.field}}` — scan_dir_resolve
-## is read that way by seven scanner nodes — but a FAN-OUT branch output,
-## `branch_<router>_<node>`, does not resolve there.)
-schema deepsec_bank_input:
-  json_paths:  json
-
-schema scan_health_input:
-  langs:          json
-  deepsec_paths:  json
-  scan_dir:       string
-
-schema scan_join_output:
-  generic_scan:  json
-  lang_scan:     json
-  custom_scan:   json
-  ## Enhancement 4 — deepsec backend. When vars.enable_deepsec=false
-  ## (the default), the deepsec_gate routes around run_deepsec_scanner
-  ## and this field resolves to an empty object (the runtime tolerates
-  ## missing-node refs in compute exprs; see compute scan_join).
-  deepsec_scan:  json
-  ## Coverage scalars projected out of the deepsec envelope so report_card
-  ## never sees the envelope's log tail. Empty when deepsec did not run.
-  deepsec_coverage: json
-  ## The scanner's own json_paths, projected for scan_health. Empty when
-  ## deepsec did not run, and {} whenever it refused -- which is how a
-  ## downstream reader tells "this pass exported" from "something is lying
-  ## at the shared slot". Projected, not the whole envelope: errors[] carries
-  ## a log tail the audited tree can write into.
-  deepsec_paths: json
-  ## Findings count from the deep pass envelope, alongside deepsec_coverage.
-  ## report_card reads it to distinguish a workspace whose backlog is
-  ## exhausted (files_processed=0 with findings from earlier passes) from a
-  ## pass that analysed nothing and produced nothing (#1328).
-  deepsec_finding_count: int
-
-## cap_findings input — carries the producer's json_paths for the deep
-## scan alongside vars.scan_dir. Since #1322 keyed the deepsec export on
-## {{run.id}}, its file lives at scan_dir/deepsec-out-<run.id>/deepsec.json — outside
-## the non-recursive glob cap_findings walks over scan_dir/*.json. Without
-## this explicit route the array-shaped deepsec export never enters the
-## harvest, so `inline` misses it entirely; on claw/codex triage (which
-## reads inline as its ONLY transport, cf. triage_system rule 1a) that is
-## the silent thinning the transport exists to end. Never widen the glob
-## to recurse: doing so would sweep other passes' per-run subdirs and
-## reopen #1322 with a neighbour attribution.
-schema cap_findings_input:
-  ## deepsec_paths is projected off the producer envelope by scan_join
-  ## (`if(vars.enable_deepsec, outputs.run_deepsec_scanner.json_paths, '')`),
-  ## so it is `""` when the deep gate routed around the scanner and `{}`
-  ## when it refused. Only json_paths.deepsec is consulted.
-  deepsec_paths: json
-  scan_dir:      string
-
-## cap_findings emits the truncation budget so triage can surface it in
-## the report (explicit, never-silent signal loss). per_scanner is a list
-## of {file, array, raw, kept, capped}.
-schema findings_budget_output:
-  total_raw:     int
-  total_kept:    int
-  total_capped:  int
-  truncated:     bool
-  per_file_cap:  int
-  per_scanner:   json
-  ## The capped findings THEMSELVES, when vars.triage_inline_max_bytes > 0.
-  ## Empty list otherwise, which is the signal to read json_paths instead.
-  ## A list of {file, array, findings}. The two counts make a budget cut
-  ## visible the same way the deepsec bank does: whole findings are dropped,
-  ## never truncated mid-object, and the gap is a subtraction.
-  inline:            json
-  inline_embedded:   int
-  inline_total:      int
-  inline_truncated:  bool
-  ## The deep-scan export this pass published -- the only file the
-  ## deep-scan group of inline can come from -- or the fact that none was.
-  ## The shared slot under scan_dir is never a source (see cap_findings).
-  deepsec_harvest:   string
-
-## scan_health emits the scanner-coverage signal so a broken toolchain
-## (scanners that crashed / are absent in the sandbox and produced no
-## output file) is never mistaken for a clean repo. missing[] is a list
-## of {file, status, group}; healthy is true only when the generic layer
-## ran and nothing is missing.
-schema scanner_health_output:
-  generic_expected:      int
-  generic_present:       int
-  min_generic:           int
-  ## The operator's min_generic_scanners as set, and whether scan_health
-  ## clamped it to the trio's size. min_generic above is the floor the gate
-  ## actually ran with.
-  min_generic_requested: int
-  min_generic_clamped:   bool
-  present:               json
-  missing:               json
-  total_findings_seen:   int
-  healthy:               bool
-  degraded:              bool
-
-schema triage_input:
-  workspace_dir:  string
-  tech:           json
-  findings_budget: json
-  generic_scan:   json
-  lang_scan:      json
-  custom_scan:    json
-  fp_path:        string
-  ## Comma-separated list of relative paths the triage MUST restrict
-  ## itself to. Empty = no filter. Used when this run is a shard
-  ## dispatched by a parent (see Cap. 3), AND by Enhancement 3's
-  ## diff/incremental mode (vars.diff_base).
-  file_filter:    string
-  ## Project security context (Enhancement 1). Markdown body from
-  ## .sec-audit/context.md (committed or auto-generated).
-  ## Empty when vars.enable_project_context is false.
-  project_context: string
-  ## Enhancement 4 — deepsec scanner envelope. Carries json_paths.deepsec
-  ## pointing at the exported JSON when vars.enable_deepsec=true; an empty
-  ## object otherwise. Triage reads the file via read_file and maps
-  ## fields per skills/scanner-deepsec.md.
-  deepsec_scan:    json
-
-schema shard_plan_output:
-  enabled:        bool
-  shard_size:     int
-  files_path:     string
-  file_count:     int
-
-schema shard_dispatch_input:
-  workspace_dir:       string
-  scan_dir:            string
-  shard_size:          int
-  shard_concurrency:   int
-  severity_threshold:  string
-  fp_path:             string
-  records_dir:         string
-  matchers_dir:        string
-  files_path:          string
-  workflow_path:       string
-
-schema shard_dispatch_output:
-  shards_planned:    int
-  shards_finished:   int
-  shards_failed:     int
-  duration_secs:     int
-  envelope_path:     string
-  summary:           string
-
-schema triage_output:
-  candidates:    json
-  suppressed:    json
-  stats:         json
-
-schema filter_files_input:
-  workspace_dir:    string
-  records_dir:      string
-  scanner_version:  string
-  ttl_days:         int
-  candidates:       json
-
-## A FileRecord cache lookup result: fresh_candidates[] are candidates
-## whose source file changed (or has no prior record); cached_verdicts[]
-## are revalidate-shape verdicts replayed from the latest history entry
-## for cache-hit files.
-schema filter_files_output:
-  fresh_candidates:    json
-  cached_verdicts:     json
-  cached_candidates:   json
-  file_hashes:         json
-  cache_stats:         json
-
-## Per-voter input. Each of the 3 voters receives the SAME candidates
-## payload + project context; only voter_id differs (parameterises the
-## user prompt so each model knows which slot it occupies and can shape
-## the rationale). See skills/disprove-voting.md for the protocol.
-schema voter_input:
-  candidates:       json
-  workspace_dir:    string
-  fp_path:          string
-  project_context:  string
-  voter_id:         string
-
-## Per-voter output. `verdicts` is a list of per-candidate verdict
-## objects, one per candidate in the input, each carrying:
-##   {candidate_id, vote: "confirm"|"dismiss"|"uncertain",
-##    confidence, rationale, git_signal, dismissed_by_guard,
-##    exploit_step_anchor}
-## See disprove_voter_system prompt + skills/disprove-voting.md for
-## the exact shape downstream majority_verdict expects.
-schema voter_output:
-  voter_id:  string
-  verdicts:  json
-
-## majority_verdict input. The three voter verdicts + the fresh
-## candidates are mapped via the incoming edge's with{} (tool
-## command:` strings only interpolate input/vars, not outputs).
-schema majority_verdict_input:
-  v1:          json
-  v2:          json
-  v3:          json
-  candidates:  json
-
-## majority_verdict (deterministic Python tool) output. Extends the
-## merged_verdicts shape with vote-audit fields so report_card +
-## downstream tooling can surface agreement. `has_fp_appends` is a
-## bool field so the workflow can branch via the C012-exhaustive
-## `when has_fp_appends` / `when not has_fp_appends` simple form.
-schema majority_verdict_output:
-  confirmed:           json
-  dismissed:           json
-  uncertain:           json
-  fp_appends:          json
-  stats:               json
-  has_fp_appends:      bool
-  per_candidate_votes: json
-  voter_agreement:     json
-
-## merge_with_cache compute output (replaces the old merge_verdicts).
-## Shape stable with what report_card and update_file_records already
-## consume — confirmed/dismissed/uncertain/fp_appends/stats — so the
-## downstream nodes need no schema change beyond renaming the source
-## reference from outputs.merge_verdicts -> outputs.merge_with_cache.
-schema merged_verdicts:
-  confirmed:   json
-  dismissed:   json
-  uncertain:   json
-  fp_appends:  json
-  stats:       json
-
-## fp_append (deterministic Python tool) input/output. Appends
-## fp_appends[] entries to the YAML at fp_path; format follows
-## skills/fp-memory.md (id, finding_type, file, line_range, matcher,
-## rationale, confirmed_by, confirmed_at, expires_at).
-schema fp_append_input:
-  fp_path:     string
-  fp_appends:  json
-
-schema fp_append_output:
-  appended_count:  int
-  summary:         string
-
-schema update_records_input:
-  workspace_dir:    string
-  records_dir:      string
-  scanner_version:  string
-  file_hashes:      json
-  candidates:       json
-  verdicts:         json
-  issues_created:   json
-
-schema update_records_output:
-  written_count:   int
-  summary:         string
-
-## ─── Enhancement 1 — Project security context ─────────────────────
-
-## project_context_load output. Deterministic staleness check on
-## `vars.context_path`: present? readable? has a recent
-## iterion_context_generated_at frontmatter within ttl? When
-## needs_generate=true, the workflow runs project_context_generate
-## before resolve; when false, load.contents is the final value.
-schema project_context_load_output:
-  path:           string
-  present:        bool
-  stale:          bool
-  generated_at:   string
-  contents:       string
-  needs_generate: bool
-
-## project_context_generate input. Consumed by the generator agent
-## so it can scope its bash budget to the actual workspace + the
-## detected tech (no full-tree walks).
-schema project_context_generate_input:
-  workspace_dir:  string
-  context_path:   string
-  inventory:      json
-  tech:           json
-  scope_notes:    string
-
-## Stable shape consumed by triage + revalidate via
-## project_context_resolve. `contents` is the markdown body capped
-## at ~12k chars; `source` records whether the operator committed
-## the file or the bot generated it this run.
-schema project_context_output:
-  contents:   string
-  source:     string
-  path:       string
-  truncated:  bool
-
-## ─── Enhancement 3 — Diff/incremental scoping ─────────────────────
-
-## diff_scope output. Empty `file_filter` (the default — when
-## vars.diff_base is unset or merge-base ambiguous) is semantically
-## identical to "no filter": triage already treats file_filter=""
-## as the full-scan case.
-schema diff_scope_output:
-  enabled:        bool
-  base_ref:       string
-  merge_base:     string
-  changed_files:  json
-  file_count:     int
-  file_filter:    string
-
-schema report_input:
-  workspace_dir:       string
-  severity_threshold:  string
-  confirmed:           json
-  uncertain:           json
-  suppressed:          json
-  stats:               json
-  findings_budget:     json
-  scanner_health:      json
-  ## Diff/incremental scope envelope (Enhancement 3). When
-  ## diff_scope.enabled is true, report_card surfaces a "Coverage:
-  ## diff mode" banner so a partial-scope run is never mistaken
-  ## for a full-repo clean bill of health.
-  diff_scope:          json
-  ## Voter agreement breakdown from majority_verdict (Enhancement 2).
-  ## Counts of {unanimous_confirm, unanimous_dismiss, split,
-  ## unanimous_uncertain}. Surfaced as a one-line "Verifier
-  ## agreement" banner near the top of the markdown report so the
-  ## operator sees the cross-voter confidence at a glance.
-  voter_agreement:     json
-  ## deepsec's coverage object ONLY — never the whole envelope. The
-  ## envelope's errors[] carries a 1500-character tail PER failed step
-  ## plus env.log, so up to about 9 000 characters, and deepsec echoes
-  ## target-controlled text into its logs (the paths it reads, the
-  ## output of the commands it runs). report_card holds bash,
-  ## write_file and board.create, so routing that tail into its prompt
-  ## would hand the audited repository a channel to the node that files
-  ## the findings.
-  ##
-  ## The coverage object cannot carry an instruction, and that is
-  ## enforced rather than assumed: the reader coerces every count to a
-  ## real number or null, every phase to a short alphabetic string or
-  ## null, and steps_failed to members of a closed vocabulary this node
-  ## writes. Without that coercion the claim rested on deepsec never
-  ## putting a string where a number belongs.
-  ##
-  ## Routed through scan_join so it inherits the SAME enable_deepsec
-  ## guard the rest of the graph uses (empty when the gate routed
-  ## around the scanner).
-  deepsec_coverage:    json
-  ## Finding count from the deep pass envelope, plumbed alongside the
-  ## coverage object. Discriminates "this pass analysed no new file while
-  ## earlier passes' findings are exported" (files_processed=0, count>0)
-  ## from "nothing was analysed and nothing came out" (files_processed=0,
-  ## count=0) so 3b's files_processed=0 branch renders a NOTE rather than
-  ## a ⚠ on the earlier-passes-carry-the-findings case (#1328). The NOTE
-  ## does NOT claim which fact made files_processed 0 (backlog exhausted
-  ## vs narrowed file_filter/diff_scope) -- no field distinguishes the
-  ## two, per revi R76c175. Empty (rendered 0 by the schema coercion)
-  ## when the gate routed around the deep scanner.
-  deepsec_finding_count: int
-
-schema report_output:
-  created_issues:  json
-  failed_issues:   json
-  report_path:     string
-  summary:         string
-
-## ─── D5a — Verification-ladder remediation schemas ────────────────
-
-## remediate_gate output. Mirrors the context_gate / deepsec_gate
-## pattern: lifts vars.remediate into a bool output field so the
-## downstream conditional edges use the simple-form (C012-exhaustive).
-schema remediate_gate_output:
-  enabled: bool
-
-## ─── D5b — Apply machinery schemas ───────────────────────────────
-
-## remediation_mode_gate output. Same lift-var-to-bool pattern as
-## remediate_gate / context_gate / deepsec_gate, but for the THREE
-## remediation_mode values. The bool fields drive C012-exhaustive
-## conditional edges:
-##   - is_propose      ⇔ remediation_mode == "propose"
-##   - is_apply        ⇔ remediation_mode in {"apply_gated","apply_auto"}
-##   - is_apply_auto   ⇔ remediation_mode == "apply_auto"
-##   - needs_gate      ⇔ remediation_mode == "apply_gated"
-## Exhaustiveness: every edge fan uses one of these bool fields and
-## its negation; no quoted-expression `when` clauses.
-schema remediation_mode_gate_output:
-  is_propose:    bool
-  is_apply:      bool
-  is_apply_auto: bool
-  needs_gate:    bool
-  mode:          string
-  ## Typed constants the remediation mappings need. A `with:` value is
-  ## text unless it is exactly one reference, so a literal `"false"` /
-  ## `"0"` reaches a bool / int field as a string (C152). The three
-  ## passthrough computes republish these, so every edge of the phase
-  ## has a typed source in scope.
-  const_false:   bool
-  const_true:    bool
-  const_zero:    int
-  const_one:     int
-
-## prepare_branch output. Runs once before the per-finding loop in
-## apply modes (gated AND auto). Captures the operator's original
-## branch, optionally stashes pre-existing dirty changes, then creates
-## + checks out the temporary fix branch off current HEAD. The temp
-## branch carries verified commits stacked one-per-finding; the
-## abandon / merge tools route back to original_branch downstream.
-##
-## A clean tree is preferred; a dirty tree is stashed and recorded in
-## `stashed: true`, so abandon_fixes / merge_fixes can restore the
-## stash on the user's original branch — we NEVER silently drop user
-## work. The branch suffix derives from {{run.id}} (a runtime
-## template var declared in dsl.md's Template Expressions table); on
-## the off-chance the runtime substitutes an empty string, the tool
-## falls back to a short git HEAD sha so the branch name stays unique.
-schema prepare_branch_output:
-  branch:           string
-  original_branch:  string
-  prepared:         bool
-  stashed:          bool
-  stash_ref:        string
-  note:             string
-
-## fix_summary input. The temp branch + original branch (from
-## prepare_branch) and the hard_stopped[] slice (from remediation_plan)
-## are mapped via the incoming edge's with{} so the tool command can
-## read them as {{input.*}} — tool command:` strings only interpolate
-## input/vars, not outputs.
-schema fix_summary_input:
-  branch:           string
-  original_branch:  string
-  hard_stopped:     json
-
-## fix_summary output. Runs once after the per-finding loop drains
-## (apply_gated only) to scan patch_dir for *-verified.diff /
-## *-uncertain.diff / *-rejected.diff and aggregate the counts the
-## operator sees on the approve_fixes prompt. Also (re)writes
-## REMEDIATION.md so the operator can inspect the same human-readable
-## summary BEFORE answering the gate — remediation_report's final
-## pass refreshes it later with the merge/abandon outcome.
-schema fix_summary_output:
-  verified_count:      int
-  uncertain_count:     int
-  rejected_count:      int
-  hard_stopped_count:  int
-  branch:              string
-  original_branch:     string
-  summary_md:          string
-  summary_path:        string
-
-## approve_fixes output. Single bool the operator submits when
-## resuming the paused run. The resume command shape is documented in
-## the approve_fixes_instructions prompt + the README; the workflow
-## conditional edges branch via `when approved` / `when not approved`
-## (C012-exhaustive).
-schema approve_fixes_input:
-  verified_count:     int
-  uncertain_count:    int
-  rejected_count:     int
-  hard_stopped_count: int
-  branch:             string
-  original_branch:    string
-  workspace_dir:      string
-  patch_dir:          string
-  summary_md:         string
-
-schema approve_fixes_output:
-  approved: bool
-
-## merge_fixes output. Checks out the original branch and merges the
-## temp branch into it (--no-ff to preserve a clear merge commit).
-## A clean no-op when zero verified commits landed on the temp branch
-## (just checkout the original; merged=false; commits_merged=0). Any
-## stash captured by prepare_branch is restored AFTER the merge so the
-## user's pre-existing working-tree changes return where they were.
-schema merge_fixes_input:
-  workspace_dir:     string
-  branch:            string
-  original_branch:   string
-  stashed:           bool
-  stash_ref:         string
-
-schema merge_fixes_output:
-  merged:           bool
-  original_branch:  string
-  branch:           string
-  merge_sha:        string
-  commits_merged:   int
-  note:             string
-
-## abandon_fixes output. Checks out the original branch so the user's
-## working tree returns to where they started, KEEPS the temp branch
-## for inspection, and restores any stash. No merge happens.
-schema abandon_fixes_input:
-  workspace_dir:     string
-  branch:            string
-  original_branch:   string
-  stashed:           bool
-  stash_ref:         string
-
-schema abandon_fixes_output:
-  abandoned:    bool
-  branch_kept:  string
-  note:         string
-
-## remediation_plan input. confirmed[] is mapped via the incoming
-## edge's with{} so the tool command can read it as {{input.confirmed}}
-## (tool command:` strings only interpolate input/vars, not outputs).
-schema remediation_plan_input:
-  confirmed:  json
-
-## remediation_plan output. Splits the confirmed[] stream into:
-##   - to_fix:       findings whose finding_type is NOT in
-##                   vars.hard_stop_categories (eligible for the loop).
-##   - hard_stopped: findings whose finding_type IS in
-##                   vars.hard_stop_categories (recorded as
-##                   hard_stopped in the final report).
-## enabled is the bool field downstream edges branch on — true when
-## remediate is enabled AND to_fix is non-empty. has_findings is the
-## bool field the post-plan edge uses to skip straight to done when the
-## plan is empty (zero confirmed findings, or all hard-stopped).
-schema remediation_plan_output:
-  to_fix:        json
-  hard_stopped:  json
-  enabled:       bool
-  has_findings:  bool
-  count:         int
-
-## select_finding input. attempted is the ledger of finding ids the
-## loop has already attempted (string list). The loop's with{} seeds
-## it as "[]" on the first pass and grows it via
-## outputs.select_finding.attempted on each loop-back. to_fix is the
-## remediation plan queue mapped onto every incoming edge (tool
-## command:` strings only interpolate input/vars, not outputs — the
-## queue must come in via with{}).
-schema select_finding_input:
-  attempted:  string
-  to_fix:     json
-  max:        int
-
-## select_finding output. Pops the next finding off to_fix using a
-## ledger of already-attempted candidate ids. has_more is the bool
-## field the loop edge branches on. remaining tracks the queue depth
-## (informational; surfaced in the remediation report).
-schema select_finding_output:
-  finding:    json
-  has_more:   bool
-  remaining:  int
-  attempted:  string
-  ## The typed empty list patch_author's `prior_attempts` binds to. A
-  ## `with:` literal `"[]"` would reach that json field as text (C152);
-  ## the producer prints the value (a compute `expr:` `"[]"` literal
-  ## would do as well — the printed form predates it). D5a runs one
-  ## attempt per finding; D5b's nested retry loop fills this ledger.
-  prior_attempts: json
-
-## fix_ledger output. Passthrough that re-publishes select_finding's
-## attempted ledger from a NON-loop-target node. A loop edge's with{}
-## cannot carry the loop TARGET's own output forward:
-## {{outputs.select_finding.attempted}} on the back-edge resolves empty
-## on re-entry, so the ledger never grows and select_finding re-picks the
-## same finding until the run times out. Routing the back-edge through
-## fix_ledger (which reads outputs.select_finding.attempted mid-iteration,
-## where it resolves fine) fixes the monotonic pop.
-schema fix_ledger_output:
-  attempted:  string
-
-## ladder_rung_input — shared input shape for the rungs that read the
-## current finding's metadata (reproduce_rung needs the scanner +
-## matcher; reattack needs the finding + candidate diff).
-schema ladder_rung_input:
-  workspace_dir: string
-  finding:       json
-  candidate:     json
-
-## patch_author input. The finding is the single shape produced by
-## select_finding.finding (a confirmed verdict from merge_with_cache
-## with finding_type / file / line_range / matcher / scanner /
-## rationale fields). prior_attempts is empty in D5a (patch_attempts=1)
-## but stays in the schema for D5b's nested retry loop.
-schema patch_author_input:
-  workspace_dir:  string
-  finding:        json
-  prior_attempts: json
-
-## patch_author output. The agent's structured fix proposal. The diff
-## is captured via `git diff` from inside the agent (and reverted by
-## record_finding after the ladder verifies). files_changed is the
-## list of workspace-relative paths the agent edited — record_finding
-## uses it to `git checkout --` the right set.
-schema patch_author_output:
-  applied:        bool
-  diff:           string
-  files_changed:  json
-  rationale:      string
-
-## ladder rung outputs (build, reproduce, regress).
-schema build_output:
-  ok:        bool
-  exit_code: int
-  output:    string
-  command:   string
-
-## reproduce_rung output. The ORIGINAL scanner+matcher is re-run against
-## the patched file via skills/reattack-oracles.md. The rung passes
-## (gone=true) when after_hits == 0. after_hits == -1 means "no oracle
-## available for this scanner" — treated as "no signal" → uncertain
-## (NOT verified) in aggregate_verdict.
-schema reproduce_output:
-  gone:        bool
-  after_hits:  int
-  command:     string
-  output:      string
-
-schema regress_output:
-  passed:       bool
-  test_command: string
-  exit_code:    int
-  output:       string
-
-## reattack judge input. The judge runs adversarially: same vuln class,
-## different inputs / sibling sinks across the package. attempt is the
-## current iteration index (D5a runs a single pass — kept in the
-## schema for D5b's reattack_attempts loop).
-schema reattack_input:
-  workspace_dir:  string
-  finding:        json
-  candidate:      json
-  attempt:        int
-
-## reattack judge output. held=true ⇔ zero new instances of the same
-## vuln class were found across the package. new_findings[] enumerates
-## any fresh hit so aggregate_verdict / record_finding can route it.
-schema reattack_output:
-  held:                bool
-  variants_attempted:  int
-  new_findings:        json
-  command_log:         string
-
-## review_isolation_input — STATICALLY MINIMAL. The reviewer judge sees
-## ONLY these four fields. The compute project_review_input is what
-## enforces the isolation: it is impossible for the judge to reference
-## the scanner_body / exploit_hypothesis / patch_author.rationale,
-## because the schema does not carry them. See
-## skills/reviewer-isolation.md for the full discipline.
-schema review_isolation_input:
-  file:     string
-  line:     json
-  category: string
-  diff:     string
-
-schema review_isolation_output:
-  approved:    bool
-  confidence:  string
-  rationale:   string
-  risk_flags:  json
-
-## aggregate_verdict output. status ∈ {verified, uncertain, rejected}.
-## verified ⇔ build.ok AND reproduce.gone AND regress.passed AND
-## reattack.held AND reviewer.approved. uncertain when reviewer
-## risk_flags[] is non-empty OR reproduce.after_hits == -1 (no oracle).
-## rejection_reason names the first failing rung when status != verified.
-schema patch_verdict_output:
-  finding_id:       string
-  status:           string
-  ladder:           json
-  diff:             string
-  rejection_reason: string
-
-## record_finding input. Threads the mode bools + temp branch from the
-## upstream remediation_mode_gate + prepare_branch via the loop's with{}.
-## D5a-only fields (workspace_dir, patch_dir, vars) are still pulled
-## from {{vars.*}} inline; this schema captures the per-run, per-loop
-## context the node needs to decide commit-vs-revert. verdict + author
-## are mapped on the incoming aggregate_verdict edge (tool command:`
-## strings only interpolate input/vars, not outputs).
-schema record_finding_input:
-  is_apply:         bool
-  branch:           string
-  original_branch:  string
-  verdict:          json
-  author:           json
-
-## record_finding output. ALWAYS writes the diff to
-## ${PROJECT_DIR}/.sec-audit/patches/<finding_id>-<status>.diff
-## (publishing the artifact for the audit trail). In propose mode,
-## reverts the working tree afterwards. In apply modes (gated/auto),
-## when status == "verified" commits the change on the temp branch
-## (committed=true, sha set) and DOES NOT revert — subsequent verified
-## findings stack on top of this commit. In apply modes for status !=
-## verified, reverts (so a rejected attempt does not pollute the temp
-## branch). committed / sha are empty in propose mode and on
-## non-verified outcomes in apply mode.
-schema record_finding_output:
-  artifact_path:  string
-  reverted:       bool
-  committed:      bool
-  sha:            string
-
-## remediation_report input. The per-finding verdicts are persisted on
-## disk as artifacts in vars.patch_dir (record_finding writes
-## <finding_id>-<status>.diff for each attempt); the agent enumerates
-## them via glob to reconstruct the verdict state. hard_stopped[] is
-## the only stream that bypasses the loop entirely (filtered upstream
-## by remediation_plan), so it is passed directly through the edge.
-##
-## D5b apply-outcome fields are threaded via the workflow's exit-routing
-## fan: propose mode leaves merged/approved/abandoned all false and
-## carries mode="propose"; apply_gated branches via approved (true →
-## merged, false → abandoned); apply_auto sets merged=true unconditionally
-## (zero-verified -> a clean no-op merge per merge_fixes). The fields
-## are surfaced in REMEDIATION.md + the board labels.
-schema remediation_report_input:
-  workspace_dir:   string
-  patch_dir:       string
-  hard_stopped:    json
-  mode:            string
-  branch:          string
-  original_branch: string
-  merged:          bool
-  approved:        bool
-  abandoned:       bool
-  commits_merged:  int
-  merge_sha:       string
-
-schema remediation_report_output:
-  report_path:    string
-  labels_applied: json
-  summary:        string
+  remediation_mode: string = "apply_gated"
 
 ## ─── Prompts ──────────────────────────────────────────────────────
-
 prompt detect_tech_system:
   You are surveying the repository at {{vars.workspace_dir}} to
   identify the languages, frameworks, package managers, and build
@@ -1999,7 +1137,6 @@ prompt project_context_generate_user:
   false if the body fits under 12k chars, else true.
 
 ## ─── D5a — Verification-ladder remediation prompts ────────────────
-
 prompt patch_author_system:
   You produce ONE candidate patch for ONE confirmed security finding.
 
@@ -2461,6 +1598,1215 @@ prompt approve_fixes_instructions:
     iterion resume --run-id <id> --answer approved=true
     iterion resume --run-id <id> --answer approved=false
 
+## ─── Schemas ──────────────────────────────────────────────────────
+schema tech_output:
+  ## langs feeds the lang-<id>.md skill dispatcher + scanner selection. It is
+  ## typed `json` (NOT string[]) deliberately: a string[] field is substituted
+  ## into tool-node shell commands as an unquoted space-separated Go slice
+  ## ([Go TypeScript ...]), which word-splits the `LANGS=...` assignment and
+  ## fails the shell (exit 127, "TypeScript: command not found") — a json field
+  ## substitutes shell-safe (compact, like every other LLM-JSON field here).
+  ## The model may return langs as a flat array OR a nested
+  ## {primary:[{name:Go}],secondary:…} object; _norm_langs (below + in
+  ## scan_health) normalizes ANY shape to flat lowercase ids, so a nested
+  ## object no longer silently yields zero language scanners.
+  langs: json
+  frameworks: json
+  package_managers: json
+  build_systems: json
+  summary: string
+
+schema inventory_output:
+  listing: string
+
+schema scanner_output:
+  scanner: string
+  subscanners: json
+  json_paths: json
+  finding_count: int
+  errors: json
+  ## How much of the tree a deep scan reached, read from the run metadata the
+  ## scanner writes about itself rather than from its log. Eleven fields, the
+  ## same eleven on every path: source, steps_failed, candidates_found,
+  ## candidate_files, files_processed, scan_phase, process_phase, process_limit,
+  ## limit_truncated, process_failed, process_complete. Only
+  ## run_deepsec_scanner fills it; the shell scanners omit it, and an omitted
+  ## field is absent, not zero.
+  ##
+  ## Ten are scalars and steps_failed is a list, drawn from a closed vocabulary
+  ## this node writes (init, scan, process, export, export_unusable) and
+  ## filtered against it by the reader. Every other field is coerced before it
+  ## is emitted: counts must be real numbers and are never bool (bool is a
+  ## subclass of int in python, so a JSON true would have travelled as a
+  ## count); phases must be short alphabetic strings. That is what makes
+  ## "these fields cannot carry an instruction" a property of the code rather
+  ## than an intention, which matters because report_card holds bash,
+  ## write_file and board.create.
+  ##
+  ## The meta is matched to THIS pass by run id -- runs/<id>.json, the id each
+  ## step prints for the run it wrote -- with the run window as a floor and a
+  ## ceiling beneath it. Selecting the newest meta in a window instead let a
+  ## concurrent run, a second project in the same data root, or a future-dated
+  ## meta author this pass verdict; the scratch is shared between runs by
+  ## design, so none of those is hypothetical.
+  ##
+  ## candidate_files is deepsec filesScanned, which is records.length: the
+  ## number of files carrying at least one candidate, returned to deepsec own
+  ## caller as candidateCount. It is NOT a repository size -- no field here is.
+  ##
+  ## steps_failed carries the verdicts of init, scan and export, which live
+  ## only in this shell and in no meta. Without it, a scan that exited non-zero
+  ## AFTER recording phase=done reached the report as a complete audit.
+  ##
+  ## process_complete is CONSERVATIVE, and it compares nothing across units.
+  ## Three earlier shapes of this predicate were wrong, each for a reason
+  ## worth keeping written down:
+  ##   - a phase is not a completion signal: the scanner records "done" after
+  ##     a quota wall too, and after "nothing to claim, 0 files processed";
+  ##   - its own numbers are not commensurable: --limit counts FILES (its own
+  ##     help text says so), candidatesFound sums CANDIDATES over the current
+  ##     scan, and process draws from a persistent on-disk backlog that
+  ##     neither number measures;
+  ##   - so any ratio built from them reads a healthy unlimited pass as
+  ##     incomplete as soon as one file carries two candidates.
+  ## The predicate therefore uses only terms this node owns outright: the
+  ## process step did not fail, the scanner recorded done, and something was
+  ## actually processed. The CAP is deliberately not one of them -- it is an
+  ## independent fact with its own banner, and folding it in made every run in
+  ## shipped configuration (limit 50) incomplete for a reason no field carried.
+  ##
+  ## "The step did not fail" is the shell verdict, and it is not the exit code
+  ## alone: a retry that RESUMES a run the scanner already marked done exits
+  ## zero without investigating anything, so that resume counts as a failure to
+  ## have completed. A retry with no run id to resume is a different thing -- a
+  ## fresh pass over what is still pending -- and must not be counted as one,
+  ## or a retry that covered the whole tree gets bannered as a partial audit.
+  ##
+  ## What that buys, stated exactly: it never claims more than the scanner
+  ## claims about itself, plus what this node knows about the cap it set. It
+  ## does NOT detect a pass that exited zero while silently skipping files —
+  ## and no reading of the scanner own bookkeeping would, because that
+  ## bookkeeping is what would be lying. The three counters travel alongside
+  ## so a human can judge; they are reportable facts, never terms of an
+  ## equation.
+  ##
+  ## limit_truncated is false only when no cap was set. With a cap it is null,
+  ## never true or false: --limit cuts a backlog whose size nothing records,
+  ## so whether the cap BIT cannot be established — only that coverage is
+  ## unprovable.
+  coverage: json
+
+## The deep scanner writes its findings to a file inside the sandbox, and the
+## pod is destroyed with the run: a pass that dies after it — at triage, at the
+## jury, on a usage cap — takes its whole contribution with it. Measured
+## 2026-09-10: 88 minutes of investigation lost that way, twice in one day.
+## deepsec_bank carries the findings THEMSELVES out of the pod, capped by a
+## byte budget, with the two counts that make truncation visible.
+schema deepsec_bank:
+  findings: json
+  embedded: int
+  total: int
+  truncated: bool
+  note: string
+
+## The scanner scratch of THIS pass, derived once by compute
+## scan_dir_resolve and carried IN on every edge that reaches a node writing
+## into it or reading out of it. A tool command resolves {{input.X}} and
+## {{vars.X}}; an {{outputs.X}} ref written in a body is refused catalogue-wide
+## (bots/catalog_command_refs_test.go), so the edge is the transport.
+schema scan_scratch_input:
+  scan_dir: string
+
+schema lang_input:
+  langs: json
+
+## run_lang_scanners reads the same langs as the ladder rungs plus the pass's
+## scan scratch; lang_input stays what build_rung / regress_rung need.
+schema lang_scan_input:
+  langs: json
+  scan_dir: string
+
+## The two nodes that used to locate the deep scan by NAME take it from the
+## producer instead, carried on the edge and read as {{input.X}}. (A tool
+## command DOES substitute a plain `{{outputs.NODE.field}}` — scan_dir_resolve
+## is read that way by seven scanner nodes — but a FAN-OUT branch output,
+## `branch_<router>_<node>`, does not resolve there.)
+schema deepsec_bank_input:
+  json_paths: json
+
+schema scan_health_input:
+  langs: json
+  deepsec_paths: json
+  scan_dir: string
+
+schema scan_join_output:
+  generic_scan: json
+  lang_scan: json
+  custom_scan: json
+  ## Enhancement 4 — deepsec backend. When vars.enable_deepsec=false
+  ## (the default), the deepsec_gate routes around run_deepsec_scanner
+  ## and this field resolves to an empty object (the runtime tolerates
+  ## missing-node refs in compute exprs; see compute scan_join).
+  deepsec_scan: json
+  ## Coverage scalars projected out of the deepsec envelope so report_card
+  ## never sees the envelope's log tail. Empty when deepsec did not run.
+  deepsec_coverage: json
+  ## The scanner's own json_paths, projected for scan_health. Empty when
+  ## deepsec did not run, and {} whenever it refused -- which is how a
+  ## downstream reader tells "this pass exported" from "something is lying
+  ## at the shared slot". Projected, not the whole envelope: errors[] carries
+  ## a log tail the audited tree can write into.
+  deepsec_paths: json
+  ## Findings count from the deep pass envelope, alongside deepsec_coverage.
+  ## report_card reads it to distinguish a workspace whose backlog is
+  ## exhausted (files_processed=0 with findings from earlier passes) from a
+  ## pass that analysed nothing and produced nothing (#1328).
+  deepsec_finding_count: int
+
+## cap_findings input — carries the producer's json_paths for the deep
+## scan alongside vars.scan_dir. Since #1322 keyed the deepsec export on
+## {{run.id}}, its file lives at scan_dir/deepsec-out-<run.id>/deepsec.json — outside
+## the non-recursive glob cap_findings walks over scan_dir/*.json. Without
+## this explicit route the array-shaped deepsec export never enters the
+## harvest, so `inline` misses it entirely; on claw/codex triage (which
+## reads inline as its ONLY transport, cf. triage_system rule 1a) that is
+## the silent thinning the transport exists to end. Never widen the glob
+## to recurse: doing so would sweep other passes' per-run subdirs and
+## reopen #1322 with a neighbour attribution.
+schema cap_findings_input:
+  ## deepsec_paths is projected off the producer envelope by scan_join
+  ## (`if(vars.enable_deepsec, outputs.run_deepsec_scanner.json_paths, '')`),
+  ## so it is `""` when the deep gate routed around the scanner and `{}`
+  ## when it refused. Only json_paths.deepsec is consulted.
+  deepsec_paths: json
+  scan_dir: string
+
+## cap_findings emits the truncation budget so triage can surface it in
+## the report (explicit, never-silent signal loss). per_scanner is a list
+## of {file, array, raw, kept, capped}.
+schema findings_budget_output:
+  total_raw: int
+  total_kept: int
+  total_capped: int
+  truncated: bool
+  per_file_cap: int
+  per_scanner: json
+  ## The capped findings THEMSELVES, when vars.triage_inline_max_bytes > 0.
+  ## Empty list otherwise, which is the signal to read json_paths instead.
+  ## A list of {file, array, findings}. The two counts make a budget cut
+  ## visible the same way the deepsec bank does: whole findings are dropped,
+  ## never truncated mid-object, and the gap is a subtraction.
+  inline: json
+  inline_embedded: int
+  inline_total: int
+  inline_truncated: bool
+  ## The deep-scan export this pass published -- the only file the
+  ## deep-scan group of inline can come from -- or the fact that none was.
+  ## The shared slot under scan_dir is never a source (see cap_findings).
+  deepsec_harvest: string
+
+## scan_health emits the scanner-coverage signal so a broken toolchain
+## (scanners that crashed / are absent in the sandbox and produced no
+## output file) is never mistaken for a clean repo. missing[] is a list
+## of {file, status, group}; healthy is true only when the generic layer
+## ran and nothing is missing.
+schema scanner_health_output:
+  generic_expected: int
+  generic_present: int
+  min_generic: int
+  ## The operator's min_generic_scanners as set, and whether scan_health
+  ## clamped it to the trio's size. min_generic above is the floor the gate
+  ## actually ran with.
+  min_generic_requested: int
+  min_generic_clamped: bool
+  present: json
+  missing: json
+  total_findings_seen: int
+  healthy: bool
+  degraded: bool
+
+schema triage_input:
+  workspace_dir: string
+  tech: json
+  findings_budget: json
+  generic_scan: json
+  lang_scan: json
+  custom_scan: json
+  fp_path: string
+  ## Comma-separated list of relative paths the triage MUST restrict
+  ## itself to. Empty = no filter. Used when this run is a shard
+  ## dispatched by a parent (see Cap. 3), AND by Enhancement 3's
+  ## diff/incremental mode (vars.diff_base).
+  file_filter: string
+  ## Project security context (Enhancement 1). Markdown body from
+  ## .sec-audit/context.md (committed or auto-generated).
+  ## Empty when vars.enable_project_context is false.
+  project_context: string
+  ## Enhancement 4 — deepsec scanner envelope. Carries json_paths.deepsec
+  ## pointing at the exported JSON when vars.enable_deepsec=true; an empty
+  ## object otherwise. Triage reads the file via read_file and maps
+  ## fields per skills/scanner-deepsec.md.
+  deepsec_scan: json
+
+schema shard_plan_output:
+  enabled: bool
+  shard_size: int
+  files_path: string
+  file_count: int
+
+schema shard_dispatch_input:
+  workspace_dir: string
+  scan_dir: string
+  shard_size: int
+  shard_concurrency: int
+  severity_threshold: string
+  fp_path: string
+  records_dir: string
+  matchers_dir: string
+  files_path: string
+  workflow_path: string
+
+schema shard_dispatch_output:
+  shards_planned: int
+  shards_finished: int
+  shards_failed: int
+  duration_secs: int
+  envelope_path: string
+  summary: string
+
+schema triage_output:
+  candidates: json
+  suppressed: json
+  stats: json
+
+schema filter_files_input:
+  workspace_dir: string
+  records_dir: string
+  scanner_version: string
+  ttl_days: int
+  candidates: json
+
+## A FileRecord cache lookup result: fresh_candidates[] are candidates
+## whose source file changed (or has no prior record); cached_verdicts[]
+## are revalidate-shape verdicts replayed from the latest history entry
+## for cache-hit files.
+schema filter_files_output:
+  fresh_candidates: json
+  cached_verdicts: json
+  cached_candidates: json
+  file_hashes: json
+  cache_stats: json
+
+## Per-voter input. Each of the 3 voters receives the SAME candidates
+## payload + project context; only voter_id differs (parameterises the
+## user prompt so each model knows which slot it occupies and can shape
+## the rationale). See skills/disprove-voting.md for the protocol.
+schema voter_input:
+  candidates: json
+  workspace_dir: string
+  fp_path: string
+  project_context: string
+  voter_id: string
+
+## Per-voter output. `verdicts` is a list of per-candidate verdict
+## objects, one per candidate in the input, each carrying:
+##   {candidate_id, vote: "confirm"|"dismiss"|"uncertain",
+##    confidence, rationale, git_signal, dismissed_by_guard,
+##    exploit_step_anchor}
+## See disprove_voter_system prompt + skills/disprove-voting.md for
+## the exact shape downstream majority_verdict expects.
+schema voter_output:
+  voter_id: string
+  verdicts: json
+
+## majority_verdict input. The three voter verdicts + the fresh
+## candidates are mapped via the incoming edge's with{} (tool
+## command:` strings only interpolate input/vars, not outputs).
+schema majority_verdict_input:
+  v1: json
+  v2: json
+  v3: json
+  candidates: json
+
+## majority_verdict (deterministic Python tool) output. Extends the
+## merged_verdicts shape with vote-audit fields so report_card +
+## downstream tooling can surface agreement. `has_fp_appends` is a
+## bool field so the workflow can branch via the C012-exhaustive
+## `when has_fp_appends` / `when not has_fp_appends` simple form.
+schema majority_verdict_output:
+  confirmed: json
+  dismissed: json
+  uncertain: json
+  fp_appends: json
+  stats: json
+  has_fp_appends: bool
+  per_candidate_votes: json
+  voter_agreement: json
+
+## merge_with_cache compute output (replaces the old merge_verdicts).
+## Shape stable with what report_card and update_file_records already
+## consume — confirmed/dismissed/uncertain/fp_appends/stats — so the
+## downstream nodes need no schema change beyond renaming the source
+## reference from outputs.merge_verdicts -> outputs.merge_with_cache.
+schema merged_verdicts:
+  confirmed: json
+  dismissed: json
+  uncertain: json
+  fp_appends: json
+  stats: json
+
+## fp_append (deterministic Python tool) input/output. Appends
+## fp_appends[] entries to the YAML at fp_path; format follows
+## skills/fp-memory.md (id, finding_type, file, line_range, matcher,
+## rationale, confirmed_by, confirmed_at, expires_at).
+schema fp_append_input:
+  fp_path: string
+  fp_appends: json
+
+schema fp_append_output:
+  appended_count: int
+  summary: string
+
+schema update_records_input:
+  workspace_dir: string
+  records_dir: string
+  scanner_version: string
+  file_hashes: json
+  candidates: json
+  verdicts: json
+  issues_created: json
+
+schema update_records_output:
+  written_count: int
+  summary: string
+
+## ─── Enhancement 1 — Project security context ─────────────────────
+
+## project_context_load output. Deterministic staleness check on
+## `vars.context_path`: present? readable? has a recent
+## iterion_context_generated_at frontmatter within ttl? When
+## needs_generate=true, the workflow runs project_context_generate
+## before resolve; when false, load.contents is the final value.
+schema project_context_load_output:
+  path: string
+  present: bool
+  stale: bool
+  generated_at: string
+  contents: string
+  needs_generate: bool
+
+## project_context_generate input. Consumed by the generator agent
+## so it can scope its bash budget to the actual workspace + the
+## detected tech (no full-tree walks).
+schema project_context_generate_input:
+  workspace_dir: string
+  context_path: string
+  inventory: json
+  tech: json
+  scope_notes: string
+
+## Stable shape consumed by triage + revalidate via
+## project_context_resolve. `contents` is the markdown body capped
+## at ~12k chars; `source` records whether the operator committed
+## the file or the bot generated it this run.
+schema project_context_output:
+  contents: string
+  source: string
+  path: string
+  truncated: bool
+
+## ─── Enhancement 3 — Diff/incremental scoping ─────────────────────
+
+## diff_scope output. Empty `file_filter` (the default — when
+## vars.diff_base is unset or merge-base ambiguous) is semantically
+## identical to "no filter": triage already treats file_filter=""
+## as the full-scan case.
+schema diff_scope_output:
+  enabled: bool
+  base_ref: string
+  merge_base: string
+  changed_files: json
+  file_count: int
+  file_filter: string
+
+schema report_input:
+  workspace_dir: string
+  severity_threshold: string
+  confirmed: json
+  uncertain: json
+  suppressed: json
+  stats: json
+  findings_budget: json
+  scanner_health: json
+  ## Diff/incremental scope envelope (Enhancement 3). When
+  ## diff_scope.enabled is true, report_card surfaces a "Coverage:
+  ## diff mode" banner so a partial-scope run is never mistaken
+  ## for a full-repo clean bill of health.
+  diff_scope: json
+  ## Voter agreement breakdown from majority_verdict (Enhancement 2).
+  ## Counts of {unanimous_confirm, unanimous_dismiss, split,
+  ## unanimous_uncertain}. Surfaced as a one-line "Verifier
+  ## agreement" banner near the top of the markdown report so the
+  ## operator sees the cross-voter confidence at a glance.
+  voter_agreement: json
+  ## deepsec's coverage object ONLY — never the whole envelope. The
+  ## envelope's errors[] carries a 1500-character tail PER failed step
+  ## plus env.log, so up to about 9 000 characters, and deepsec echoes
+  ## target-controlled text into its logs (the paths it reads, the
+  ## output of the commands it runs). report_card holds bash,
+  ## write_file and board.create, so routing that tail into its prompt
+  ## would hand the audited repository a channel to the node that files
+  ## the findings.
+  ##
+  ## The coverage object cannot carry an instruction, and that is
+  ## enforced rather than assumed: the reader coerces every count to a
+  ## real number or null, every phase to a short alphabetic string or
+  ## null, and steps_failed to members of a closed vocabulary this node
+  ## writes. Without that coercion the claim rested on deepsec never
+  ## putting a string where a number belongs.
+  ##
+  ## Routed through scan_join so it inherits the SAME enable_deepsec
+  ## guard the rest of the graph uses (empty when the gate routed
+  ## around the scanner).
+  deepsec_coverage: json
+  ## Finding count from the deep pass envelope, plumbed alongside the
+  ## coverage object. Discriminates "this pass analysed no new file while
+  ## earlier passes' findings are exported" (files_processed=0, count>0)
+  ## from "nothing was analysed and nothing came out" (files_processed=0,
+  ## count=0) so 3b's files_processed=0 branch renders a NOTE rather than
+  ## a ⚠ on the earlier-passes-carry-the-findings case (#1328). The NOTE
+  ## does NOT claim which fact made files_processed 0 (backlog exhausted
+  ## vs narrowed file_filter/diff_scope) -- no field distinguishes the
+  ## two, per revi R76c175. Empty (rendered 0 by the schema coercion)
+  ## when the gate routed around the deep scanner.
+  deepsec_finding_count: int
+
+schema report_output:
+  created_issues: json
+  failed_issues: json
+  report_path: string
+  summary: string
+
+## ─── D5a — Verification-ladder remediation schemas ────────────────
+
+## remediate_gate output. Mirrors the context_gate / deepsec_gate
+## pattern: lifts vars.remediate into a bool output field so the
+## downstream conditional edges use the simple-form (C012-exhaustive).
+schema remediate_gate_output:
+  enabled: bool
+
+## ─── D5b — Apply machinery schemas ───────────────────────────────
+
+## remediation_mode_gate output. Same lift-var-to-bool pattern as
+## remediate_gate / context_gate / deepsec_gate, but for the THREE
+## remediation_mode values. The bool fields drive C012-exhaustive
+## conditional edges:
+##   - is_propose      ⇔ remediation_mode == "propose"
+##   - is_apply        ⇔ remediation_mode in {"apply_gated","apply_auto"}
+##   - is_apply_auto   ⇔ remediation_mode == "apply_auto"
+##   - needs_gate      ⇔ remediation_mode == "apply_gated"
+## Exhaustiveness: every edge fan uses one of these bool fields and
+## its negation; no quoted-expression `when` clauses.
+schema remediation_mode_gate_output:
+  is_propose: bool
+  is_apply: bool
+  is_apply_auto: bool
+  needs_gate: bool
+  mode: string
+  ## Typed constants the remediation mappings need. A `with:` value is
+  ## text unless it is exactly one reference, so a literal `"false"` /
+  ## `"0"` reaches a bool / int field as a string (C152). The three
+  ## passthrough computes republish these, so every edge of the phase
+  ## has a typed source in scope.
+  const_false: bool
+  const_true: bool
+  const_zero: int
+  const_one: int
+
+## prepare_branch output. Runs once before the per-finding loop in
+## apply modes (gated AND auto). Captures the operator's original
+## branch, optionally stashes pre-existing dirty changes, then creates
+## + checks out the temporary fix branch off current HEAD. The temp
+## branch carries verified commits stacked one-per-finding; the
+## abandon / merge tools route back to original_branch downstream.
+##
+## A clean tree is preferred; a dirty tree is stashed and recorded in
+## `stashed: true`, so abandon_fixes / merge_fixes can restore the
+## stash on the user's original branch — we NEVER silently drop user
+## work. The branch suffix derives from {{run.id}} (a runtime
+## template var declared in dsl.md's Template Expressions table); on
+## the off-chance the runtime substitutes an empty string, the tool
+## falls back to a short git HEAD sha so the branch name stays unique.
+schema prepare_branch_output:
+  branch: string
+  original_branch: string
+  prepared: bool
+  stashed: bool
+  stash_ref: string
+  note: string
+
+## fix_summary input. The temp branch + original branch (from
+## prepare_branch) and the hard_stopped[] slice (from remediation_plan)
+## are mapped via the incoming edge's with{} so the tool command can
+## read them as {{input.*}} — tool command:` strings only interpolate
+## input/vars, not outputs.
+schema fix_summary_input:
+  branch: string
+  original_branch: string
+  hard_stopped: json
+
+## fix_summary output. Runs once after the per-finding loop drains
+## (apply_gated only) to scan patch_dir for *-verified.diff /
+## *-uncertain.diff / *-rejected.diff and aggregate the counts the
+## operator sees on the approve_fixes prompt. Also (re)writes
+## REMEDIATION.md so the operator can inspect the same human-readable
+## summary BEFORE answering the gate — remediation_report's final
+## pass refreshes it later with the merge/abandon outcome.
+schema fix_summary_output:
+  verified_count: int
+  uncertain_count: int
+  rejected_count: int
+  hard_stopped_count: int
+  branch: string
+  original_branch: string
+  summary_md: string
+  summary_path: string
+
+## approve_fixes output. Single bool the operator submits when
+## resuming the paused run. The resume command shape is documented in
+## the approve_fixes_instructions prompt + the README; the workflow
+## conditional edges branch via `when approved` / `when not approved`
+## (C012-exhaustive).
+schema approve_fixes_input:
+  verified_count: int
+  uncertain_count: int
+  rejected_count: int
+  hard_stopped_count: int
+  branch: string
+  original_branch: string
+  workspace_dir: string
+  patch_dir: string
+  summary_md: string
+
+schema approve_fixes_output:
+  approved: bool
+
+## merge_fixes output. Checks out the original branch and merges the
+## temp branch into it (--no-ff to preserve a clear merge commit).
+## A clean no-op when zero verified commits landed on the temp branch
+## (just checkout the original; merged=false; commits_merged=0). Any
+## stash captured by prepare_branch is restored AFTER the merge so the
+## user's pre-existing working-tree changes return where they were.
+schema merge_fixes_input:
+  workspace_dir: string
+  branch: string
+  original_branch: string
+  stashed: bool
+  stash_ref: string
+
+schema merge_fixes_output:
+  merged: bool
+  original_branch: string
+  branch: string
+  merge_sha: string
+  commits_merged: int
+  note: string
+
+## abandon_fixes output. Checks out the original branch so the user's
+## working tree returns to where they started, KEEPS the temp branch
+## for inspection, and restores any stash. No merge happens.
+schema abandon_fixes_input:
+  workspace_dir: string
+  branch: string
+  original_branch: string
+  stashed: bool
+  stash_ref: string
+
+schema abandon_fixes_output:
+  abandoned: bool
+  branch_kept: string
+  note: string
+
+## remediation_plan input. confirmed[] is mapped via the incoming
+## edge's with{} so the tool command can read it as {{input.confirmed}}
+## (tool command:` strings only interpolate input/vars, not outputs).
+schema remediation_plan_input:
+  confirmed: json
+
+## remediation_plan output. Splits the confirmed[] stream into:
+##   - to_fix:       findings whose finding_type is NOT in
+##                   vars.hard_stop_categories (eligible for the loop).
+##   - hard_stopped: findings whose finding_type IS in
+##                   vars.hard_stop_categories (recorded as
+##                   hard_stopped in the final report).
+## enabled is the bool field downstream edges branch on — true when
+## remediate is enabled AND to_fix is non-empty. has_findings is the
+## bool field the post-plan edge uses to skip straight to done when the
+## plan is empty (zero confirmed findings, or all hard-stopped).
+schema remediation_plan_output:
+  to_fix: json
+  hard_stopped: json
+  enabled: bool
+  has_findings: bool
+  count: int
+
+## select_finding input. attempted is the ledger of finding ids the
+## loop has already attempted (string list). The loop's with{} seeds
+## it as "[]" on the first pass and grows it via
+## outputs.select_finding.attempted on each loop-back. to_fix is the
+## remediation plan queue mapped onto every incoming edge (tool
+## command:` strings only interpolate input/vars, not outputs — the
+## queue must come in via with{}).
+schema select_finding_input:
+  attempted: string
+  to_fix: json
+  max: int
+
+## select_finding output. Pops the next finding off to_fix using a
+## ledger of already-attempted candidate ids. has_more is the bool
+## field the loop edge branches on. remaining tracks the queue depth
+## (informational; surfaced in the remediation report).
+schema select_finding_output:
+  finding: json
+  has_more: bool
+  remaining: int
+  attempted: string
+  ## The typed empty list patch_author's `prior_attempts` binds to. A
+  ## `with:` literal `"[]"` would reach that json field as text (C152);
+  ## the producer prints the value (a compute `expr:` `"[]"` literal
+  ## would do as well — the printed form predates it). D5a runs one
+  ## attempt per finding; D5b's nested retry loop fills this ledger.
+  prior_attempts: json
+
+## fix_ledger output. Passthrough that re-publishes select_finding's
+## attempted ledger from a NON-loop-target node. A loop edge's with{}
+## cannot carry the loop TARGET's own output forward:
+## {{outputs.select_finding.attempted}} on the back-edge resolves empty
+## on re-entry, so the ledger never grows and select_finding re-picks the
+## same finding until the run times out. Routing the back-edge through
+## fix_ledger (which reads outputs.select_finding.attempted mid-iteration,
+## where it resolves fine) fixes the monotonic pop.
+schema fix_ledger_output:
+  attempted: string
+
+## ladder_rung_input — shared input shape for the rungs that read the
+## current finding's metadata (reproduce_rung needs the scanner +
+## matcher; reattack needs the finding + candidate diff).
+schema ladder_rung_input:
+  workspace_dir: string
+  finding: json
+  candidate: json
+
+## patch_author input. The finding is the single shape produced by
+## select_finding.finding (a confirmed verdict from merge_with_cache
+## with finding_type / file / line_range / matcher / scanner /
+## rationale fields). prior_attempts is empty in D5a (patch_attempts=1)
+## but stays in the schema for D5b's nested retry loop.
+schema patch_author_input:
+  workspace_dir: string
+  finding: json
+  prior_attempts: json
+
+## patch_author output. The agent's structured fix proposal. The diff
+## is captured via `git diff` from inside the agent (and reverted by
+## record_finding after the ladder verifies). files_changed is the
+## list of workspace-relative paths the agent edited — record_finding
+## uses it to `git checkout --` the right set.
+schema patch_author_output:
+  applied: bool
+  diff: string
+  files_changed: json
+  rationale: string
+
+## ladder rung outputs (build, reproduce, regress).
+schema build_output:
+  ok: bool
+  exit_code: int
+  output: string
+  command: string
+
+## reproduce_rung output. The ORIGINAL scanner+matcher is re-run against
+## the patched file via skills/reattack-oracles.md. The rung passes
+## (gone=true) when after_hits == 0. after_hits == -1 means "no oracle
+## available for this scanner" — treated as "no signal" → uncertain
+## (NOT verified) in aggregate_verdict.
+schema reproduce_output:
+  gone: bool
+  after_hits: int
+  command: string
+  output: string
+
+schema regress_output:
+  passed: bool
+  test_command: string
+  exit_code: int
+  output: string
+
+## reattack judge input. The judge runs adversarially: same vuln class,
+## different inputs / sibling sinks across the package. attempt is the
+## current iteration index (D5a runs a single pass — kept in the
+## schema for D5b's reattack_attempts loop).
+schema reattack_input:
+  workspace_dir: string
+  finding: json
+  candidate: json
+  attempt: int
+
+## reattack judge output. held=true ⇔ zero new instances of the same
+## vuln class were found across the package. new_findings[] enumerates
+## any fresh hit so aggregate_verdict / record_finding can route it.
+schema reattack_output:
+  held: bool
+  variants_attempted: int
+  new_findings: json
+  command_log: string
+
+## review_isolation_input — STATICALLY MINIMAL. The reviewer judge sees
+## ONLY these four fields. The compute project_review_input is what
+## enforces the isolation: it is impossible for the judge to reference
+## the scanner_body / exploit_hypothesis / patch_author.rationale,
+## because the schema does not carry them. See
+## skills/reviewer-isolation.md for the full discipline.
+schema review_isolation_input:
+  file: string
+  line: json
+  category: string
+  diff: string
+
+schema review_isolation_output:
+  approved: bool
+  confidence: string
+  rationale: string
+  risk_flags: json
+
+## aggregate_verdict output. status ∈ {verified, uncertain, rejected}.
+## verified ⇔ build.ok AND reproduce.gone AND regress.passed AND
+## reattack.held AND reviewer.approved. uncertain when reviewer
+## risk_flags[] is non-empty OR reproduce.after_hits == -1 (no oracle).
+## rejection_reason names the first failing rung when status != verified.
+schema patch_verdict_output:
+  finding_id: string
+  status: string
+  ladder: json
+  diff: string
+  rejection_reason: string
+
+## record_finding input. Threads the mode bools + temp branch from the
+## upstream remediation_mode_gate + prepare_branch via the loop's with{}.
+## D5a-only fields (workspace_dir, patch_dir, vars) are still pulled
+## from {{vars.*}} inline; this schema captures the per-run, per-loop
+## context the node needs to decide commit-vs-revert. verdict + author
+## are mapped on the incoming aggregate_verdict edge (tool command:`
+## strings only interpolate input/vars, not outputs).
+schema record_finding_input:
+  is_apply: bool
+  branch: string
+  original_branch: string
+  verdict: json
+  author: json
+
+## record_finding output. ALWAYS writes the diff to
+## ${PROJECT_DIR}/.sec-audit/patches/<finding_id>-<status>.diff
+## (publishing the artifact for the audit trail). In propose mode,
+## reverts the working tree afterwards. In apply modes (gated/auto),
+## when status == "verified" commits the change on the temp branch
+## (committed=true, sha set) and DOES NOT revert — subsequent verified
+## findings stack on top of this commit. In apply modes for status !=
+## verified, reverts (so a rejected attempt does not pollute the temp
+## branch). committed / sha are empty in propose mode and on
+## non-verified outcomes in apply mode.
+schema record_finding_output:
+  artifact_path: string
+  reverted: bool
+  committed: bool
+  sha: string
+
+## remediation_report input. The per-finding verdicts are persisted on
+## disk as artifacts in vars.patch_dir (record_finding writes
+## <finding_id>-<status>.diff for each attempt); the agent enumerates
+## them via glob to reconstruct the verdict state. hard_stopped[] is
+## the only stream that bypasses the loop entirely (filtered upstream
+## by remediation_plan), so it is passed directly through the edge.
+##
+## D5b apply-outcome fields are threaded via the workflow's exit-routing
+## fan: propose mode leaves merged/approved/abandoned all false and
+## carries mode="propose"; apply_gated branches via approved (true →
+## merged, false → abandoned); apply_auto sets merged=true unconditionally
+## (zero-verified -> a clean no-op merge per merge_fixes). The fields
+## are surfaced in REMEDIATION.md + the board labels.
+schema remediation_report_input:
+  workspace_dir: string
+  patch_dir: string
+  hard_stopped: json
+  mode: string
+  branch: string
+  original_branch: string
+  merged: bool
+  approved: bool
+  abandoned: bool
+  commits_merged: int
+  merge_sha: string
+
+schema remediation_report_output:
+  report_path: string
+  labels_applied: json
+  summary: string
+
+## ─── Enhancement 1 — Project security context phase ───────────────
+
+## context_gate is a tiny passthrough compute that lifts
+## vars.enable_project_context into a bool output field. The
+## conditional edges downstream use the simple-form `when enabled`
+## / `when not enabled` which is C012-exhaustive (paired bool field
+## on the source node's output schema). Using quoted-expression
+## `when` clauses on detect_tech's outgoing edges would have lost
+## the exhaustiveness guarantee.
+schema context_gate_output:
+  enabled: bool
+
+## file_filter_resolve picks the EFFECTIVE triage file_filter, with
+## diff_scope.file_filter taking precedence over vars.file_filter.
+## Rationale: a parent run with --var diff_base=main wants triage
+## scoped to the diff; a Cap. 3 shard CHILD inherits vars.file_filter
+## from --shard-var but has diff_base="" → outputs.diff_scope.file_filter
+## is "" and we fall back to vars.file_filter (the shard slice). When
+## both are empty (single-process full scan), value is "" — same
+## "no filter" semantics triage already handles.
+schema file_filter_output:
+  effective: string
+
+## scan_dir_resolve keys the scanner scratch on the run. Every writer and
+## every reader below resolves its files under vars.scan_dir/pass-<run.id>/
+## rather than in the one shared directory, so two passes against the same
+## workspace never write shard-files.json, shards.json, gitleaks.json,
+## trivy.json, semgrep-auto.json, the per-language outputs or custom.json
+## into the same slot, and no reader resolves a filename to bytes its
+## neighbour wrote (#1475). It is the chokepoint #1322 applied to the deep
+## scanner export, generalised to the rest of the scratch: derived once
+## here, never re-derived at a use site.
+##
+## The TRANSPORT is the edge. A tool command resolves {{input.X}} and
+## {{vars.X}}; an {{outputs.X}} ref inside a command body is refused
+## catalogue-wide (bots/catalog_command_refs_test.go), so each node takes
+## the value as `scan_dir` on its incoming edge and reads {{input.scan_dir}}
+## — the same bridge the deep-scan json_paths already cross. A node added
+## here that writes into the scratch needs BOTH: a scan_dir field on its
+## input schema and the mapping on the edge that reaches it.
+##
+## The `pass-` prefix is load-bearing and carries the same argument the
+## deep scanner writes at its run-id guard: `.` and `..` are legal
+## FILENAMES but not usable raw path SEGMENTS, so prefixed they become the
+## literal directory names `pass-.` / `pass-..` instead of a path
+## navigation that would collapse back onto the shared slot (`.`) or
+## escape one level above it (`..`). The prefix is also what lets the
+## retention sweep in run_deepsec_scanner scope POSITIVELY on `pass-*`
+## alongside `deepsec-out-*` / `deepsec-logs-*`, rather than by a
+## deny-list of the names it does not own.
+##
+## Deliberately NOT moved under the per-pass dir: `deepsec-workspace/`
+## (the deep scanner data root, file-record cache and claim mutex — a
+## second pass skipping what a first analysed is the point) and the
+## `.sec-audit/` state (file records, fp-known.yaml, context.md), both
+## per-workspace by design.
+##
+## String concatenation is `+`. `concat()` is the ARRAY builtin and
+## refuses a string argument at RUNTIME ("concat() argument 1 is string,
+## want array") while `iterion validate` stays green.
+schema scan_dir_output:
+  ## vars.scan_dir + "/pass-" + run.id — the scanner scratch of THIS pass.
+  run_scan_dir: string
+
+## ─── Enhancement 4 — deepsec scanner backend ──────────────────────
+
+## deepsec_gate mirrors the context_gate pattern: lifts
+## vars.enable_deepsec into a bool output field so the downstream
+## edges use the simple-form `when enabled` / `when not enabled`
+## (C012-exhaustive). Required because the validator rejects quoted-
+## expression `when` clauses on non-router nodes; only `when <bool>`
+## from a node's bool output is exhaustive.
+schema deepsec_gate_output:
+  enabled: bool
+
+## detect_tech is a cheap classification step and keeps its OWN backend/model
+## env vars (ITERION_SEC_AUDIT_DETECT_*), independent of the spine
+## ITERION_SEC_AUDIT_BACKEND/MODEL that flips triage/voters. They previously
+## shared those vars with DIFFERENT defaults (detect_tech: claw/gpt-5.5 vs
+## triage: claude_code/opus), so a user setting ITERION_SEC_AUDIT_BACKEND=claude_code
+## to make triage "opus-first" (which is ALREADY the default) silently dragged
+## detect_tech onto claude_code+openai/gpt-6-sol — a model the Claude Code CLI
+## cannot run — killing the run at the first node. Decoupled here so the spine
+## override is safe. To force opus-first triage/voters, set NOTHING (it's the
+## default); only override the spine var to move OFF claude_code.
+agent detect_tech:
+  model: "${ITERION_SEC_AUDIT_DETECT_MODEL:-openai/gpt-6-sol}"
+  backend: "${ITERION_SEC_AUDIT_DETECT_BACKEND:-claw}"
+  output: tech_output
+  system: detect_tech_system
+  user: detect_tech_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 25
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_DETECT:-medium}"
+  readonly: true
+
+## project_context_generate runs only when project_context_load.needs_generate
+## is true (file absent / stale / forced refresh). It is the ONLY node in
+## this workflow that has write_file — and the prompt restricts the write
+## to vars.context_path. claude_code backend (subscription) matches the
+## report_card stack and supports write_file via the standard tool surface.
+agent project_context_generate:
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: project_context_generate_input
+  output: project_context_output
+  system: project_context_generate_system
+  user: project_context_generate_user
+  tools: [bash, read_file, write_file, glob, grep]
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_CONTEXT:-low}"
+
+## triage reads the full scanner JSON + cap_findings envelope + project
+## context — a LARGE input that historically stalled on gpt-5.5/forfait
+## (~200K effective window) on multi-language repos. The default now
+## routes through `claude_code` with a per-element provider:model
+## fallback chain so the node runs on a 1M-context model first (z.ai's
+## glm-5.2) and falls through to Anthropic's opus on a hard failure
+## (rate-limit / quota exhaustion). The chain form requires the
+## claude_code backend — `claw` ignores `provider:` and would emit C088;
+## the runtime collapses the chain to its head there, so a `claw`
+## override stays single-provider but still benefits from the bigger
+## default model. Env overrides:
+##   ITERION_SEC_AUDIT_BACKEND        — flip the spine nodes triage/voters/
+##                                       report (claude_code | claw | codex).
+##                                       Default claude_code so triage stops
+##                                       stalling on the heavy input out of
+##                                       the box (i.e. opus-first IS the
+##                                       default — set nothing to get it).
+##                                       Does NOT affect detect_tech, which
+##                                       has its own ITERION_SEC_AUDIT_DETECT_
+##                                       BACKEND/MODEL (default claw/gpt-5.5)
+##                                       so flipping this var can't drag the
+##                                       cheap classifier onto an incompatible
+##                                       model.
+##   ITERION_SEC_AUDIT_MODEL          — pin the baseline model (the
+##                                       fallback element inherits it
+##                                       when its `provider:model` slot
+##                                       has no model part).
+##   ITERION_SEC_AUDIT_PROVIDER_CHAIN — opt-in per-element provider:model
+##                                       chain. DEFAULT IS EMPTY → the
+##                                       node runs on the first-class model
+##                                       above (opus). Set e.g.
+##                                       `zai:glm-5.2,anthropic:claude-opus-5-5`
+##                                       to put z.ai's 1M-ctx glm first with
+##                                       opus on fall-through (ADR-043: GLM is
+##                                       a second-tier opt-in lane; opus is
+##                                       first-class + reliable structured
+##                                       output). See ADR-004.
+agent triage:
+  model: "${ITERION_SEC_AUDIT_MODEL:-claude-opus-5-5}"
+  backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
+  provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
+  input: triage_input
+  output: triage_output
+  system: triage_system
+  user: triage_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 40
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_TRIAGE:-high}"
+  readonly: true
+
+agent report_card:
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
+  ## claude_code is REQUIRED here: this node needs the bundled
+  ## skills/ mirrored to .claude/skills/ and the board MCP server
+  ## registered with capability-gated tools.
+  backend: "claude_code"
+  input: report_input
+  output: report_output
+  system: report_card_system
+  user: report_card_user
+  tools: [bash, read_file, write_file, glob, grep]
+  capabilities: [board.read, board.create, board.label]
+  tool_max_steps: 60
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REPORT:-medium}"
+
+## patch_author — the ONLY new MUTATING node in this phase. Edits
+## the workspace in place (the ladder verifies on the edited tree;
+## record_finding reverts after). claude_code backend so the bundled
+## skills (patch.md, reproducer-go.md, reproducer-ts.md,
+## crypto-handling.md) mirror into .claude/skills/ at run time and
+## the agent can read them directly.
+##
+## session: fresh — no context bleed from voter_v2's claude_code
+## judge context (or any prior node). This is critical: scanner_body
+## prose lives in finding.rationale and reaches patch_author here for
+## the first time.
+agent patch_author:
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: patch_author_input
+  output: patch_author_output
+  system: patch_author_system
+  user: patch_author_user
+  tools: [bash, read_file, write_file, file_edit, glob, grep]
+  tool_max_steps: 80
+  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_AUTHOR:-high}"
+
+## remediation_report — runs once after the per-finding loop drains.
+## Labels existing board issues with per-finding outcome and writes
+## REMEDIATION.md. capabilities: [board.read, board.label] — NO
+## board.create (Seki's report_card already filed issues upstream;
+## this node never creates new ones).
+##
+## NOTE: this node introduces NEW C082 warnings for board.read +
+## board.label under the sandbox — same class as the existing
+## warnings on report_card. Acceptable per the D5a contract.
+agent remediation_report:
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: remediation_report_input
+  output: remediation_report_output
+  system: remediation_report_system
+  user: remediation_report_user
+  tools: [bash, read_file, write_file, glob, grep]
+  capabilities: [board.read, board.label]
+  tool_max_steps: 60
+  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REPORT:-medium}"
+
+## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
+##
+## Replaces the old single `judge revalidate` two-phase judge with a
+## FIXED POOL OF 3 independent adversarial "disprove" voters whose
+## verdicts feed a deterministic `majority_verdict` tool. The pool is
+## structural — scaling means adding voter declarations here, not
+## flipping a var (the iterion DSL cannot cleanly gate fan-out edges
+## by a numeric var). Pattern mirrors Revi's 2-reviewer fan_out_all →
+## wait_all converge at bots/code-review/main.bot:353-401.
+##
+## Independent-session agreement signal: all voters default to Opus 5.5.
+## Cross-family diversity requires explicit deployment overrides. Each
+## voter is `readonly: true` + `session: fresh` so it cannot bleed
+## context from other voters and cannot mutate the workspace; the
+## ONLY mutator in this subgraph is fp_append, downstream of the
+## majority converge — preserves the one-mutating-branch rule.
+##
+## To scale to 5 voters: declare voter_v4 / voter_v5 here, extend the
+## sequential chain (voter_v3 -> voter_v4 -> voter_v5 -> majority_verdict)
+## with the same with{} mapping, raise confirm_threshold to 3, and add
+## V4/V5 env vars to the majority_verdict command.
+##
+## NOTE: voters run SEQUENTIALLY (not via a fan_out_all router) so their
+## outputs keep normal node keys (outputs.voter_vN) that majority_verdict
+## interpolates in its command — fan_out_all branch outputs
+## (branch_<router>_<node>/<node>) do NOT resolve in a tool command.
+## Independence is enforced by the prompt, not by parallelism.
+
+## Voter pool: each voter reads the SAME candidates and project context,
+## then git log/blame and the surrounding source. All three default to
+## claude_code + Opus 5.5 in separate sessions. v1/v3 keep configurable
+## backend/model/provider chains for deployments opting into cross-family
+## diversity; an unset chain provides no such diversity. Earlier capacity
+## incidents are recorded in docs/bot-runs/sec-audit-source.md.
+judge voter_v1:
+  model: "${ITERION_SEC_AUDIT_VOTER_V1_MODEL:-claude-opus-5-5}"
+  backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
+  provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
+  input: voter_input
+  output: voter_output
+  system: disprove_voter_system
+  user: disprove_voter_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 40
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
+  readonly: true
+
+judge voter_v2:
+  model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-5-5}"
+  ## Independent voter (claude_code subscription), pinned to the same
+  ## read-plus-shell surface as v1/v3. On claude_code an omitted `tools:`
+  ## list is the FULL native toolset, Write/Edit included
+  ## (pkg/backend/delegate/claude_code.go: claudeNativeDisallowedTools
+  ## removes nothing for an empty declaration), and `readonly: true` is
+  ## enforced by the codex and pi delegates only -- claude_code never reads
+  ## it. The list is the first line; the paragraph in disprove_voter_system
+  ## is the second.
+  backend: "claude_code"
+  input: voter_input
+  output: voter_output
+  system: disprove_voter_system
+  user: disprove_voter_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 40
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
+  readonly: true
+
+judge voter_v3:
+  model: "${ITERION_SEC_AUDIT_VOTER_V3_MODEL:-claude-opus-5-5}"
+  backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
+  provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
+  input: voter_input
+  output: voter_output
+  system: disprove_voter_system
+  user: disprove_voter_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 40
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
+  readonly: true
+
+## reattack — Tier 3. THE DISTINCTIVE RUNG. Fresh adversarial judge
+## (session: fresh) that probes the same vuln CLASS across the
+## package (not just the cited line). Uses skills/reattack-oracles.md
+## variant-hunt prose + skills/vuln-scan.md. Read-only.
+##
+## The judge has bash for git log / grep / scanner re-invocation —
+## the prompt restricts it to read-only flags.
+judge reattack:
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: reattack_input
+  output: reattack_output
+  system: reattack_system
+  user: reattack_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 60
+  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REATTACK:-high}"
+  readonly: true
+
+## reviewer_isolation — Tier 4. Sees ONLY the 4-field projection
+## above (statically enforced by the input schema). NO bash so it
+## cannot run scanners or read scanner output indirectly; readonly
+## strips write_file / file_edit. session: fresh so no
+## patch_author context bleeds in.
+judge reviewer_isolation:
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: review_isolation_input
+  output: review_isolation_output
+  system: reviewer_isolation_system
+  user: reviewer_isolation_user
+  tools: [read_file, glob, grep]
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REVIEW:-high}"
+  readonly: true
+
+## approve_fixes (D5b — apply_gated only). Pauses the run for the
+## operator. The runtime suspends budget on human pauses (per
+## bots/whats-next/main.bot's ask_continue rationale), so a long
+## review wait costs nothing. Single bool answer — `approved` — drives
+## the C012-exhaustive `when approved` / `when not approved` fan
+## downstream.
+##
+## Resume from the terminal:
+##   iterion resume --run-id <id> --answer approved=true
+##   iterion resume --run-id <id> --answer approved=false
+## (See docs/cli-reference.md "iterion resume" + the approve_fixes
+## instructions prompt for the inspection workflow before answering.)
+human approve_fixes:
+  input: approve_fixes_input
+  output: approve_fixes_output
+  interaction: human
+  instructions: approve_fixes_instructions
+  min_answers: 1
+
 ## ─── Nodes ────────────────────────────────────────────────────────
 
 ## inventory deterministically lists the top-level tree + manifest files
@@ -2494,44 +2840,6 @@ listing = 'TOP-LEVEL ENTRIES:\n' + '\n'.join(top) + '\n\nMANIFEST / BUILD FILES 
 print(json.dumps({'listing': listing}))
 "`
   output: inventory_output
-
-## detect_tech is a cheap classification step and keeps its OWN backend/model
-## env vars (ITERION_SEC_AUDIT_DETECT_*), independent of the spine
-## ITERION_SEC_AUDIT_BACKEND/MODEL that flips triage/voters. They previously
-## shared those vars with DIFFERENT defaults (detect_tech: claw/gpt-5.5 vs
-## triage: claude_code/opus), so a user setting ITERION_SEC_AUDIT_BACKEND=claude_code
-## to make triage "opus-first" (which is ALREADY the default) silently dragged
-## detect_tech onto claude_code+openai/gpt-6-sol — a model the Claude Code CLI
-## cannot run — killing the run at the first node. Decoupled here so the spine
-## override is safe. To force opus-first triage/voters, set NOTHING (it's the
-## default); only override the spine var to move OFF claude_code.
-agent detect_tech:
-  backend: "${ITERION_SEC_AUDIT_DETECT_BACKEND:-claw}"
-  model: "${ITERION_SEC_AUDIT_DETECT_MODEL:-openai/gpt-6-sol}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_DETECT:-medium}"
-  output: tech_output
-  system: detect_tech_system
-  user: detect_tech_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 25
-  readonly: true
-
-## ─── Enhancement 1 — Project security context phase ───────────────
-
-## context_gate is a tiny passthrough compute that lifts
-## vars.enable_project_context into a bool output field. The
-## conditional edges downstream use the simple-form `when enabled`
-## / `when not enabled` which is C012-exhaustive (paired bool field
-## on the source node's output schema). Using quoted-expression
-## `when` clauses on detect_tech's outgoing edges would have lost
-## the exhaustiveness guarantee.
-schema context_gate_output:
-  enabled: bool
-
-compute context_gate:
-  output: context_gate_output
-  expr:
-    enabled: "vars.enable_project_context"
 
 ## project_context_load (deterministic, no LLM). Reads vars.context_path
 ## (.sec-audit/context.md by default) when present, parses the
@@ -2593,34 +2901,6 @@ print(json.dumps({
 "`
   output: project_context_load_output
 
-## project_context_generate runs only when project_context_load.needs_generate
-## is true (file absent / stale / forced refresh). It is the ONLY node in
-## this workflow that has write_file — and the prompt restricts the write
-## to vars.context_path. claude_code backend (subscription) matches the
-## report_card stack and supports write_file via the standard tool surface.
-agent project_context_generate:
-  backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_CONTEXT:-low}"
-  input: project_context_generate_input
-  output: project_context_output
-  system: project_context_generate_system
-  user: project_context_generate_user
-  tools: [bash, read_file, write_file, glob, grep]
-  tool_max_steps: 20
-
-## project_context_resolve merges the load + generate paths into a single
-## stable shape consumed by triage + revalidate. Uses `if(cond, then, else)`
-## (compute built-in) keyed on load.needs_generate: when the generator ran,
-## use its contents; otherwise the load cache contents are authoritative.
-compute project_context_resolve:
-  output: project_context_output
-  expr:
-    contents:  "if(outputs.project_context_load.needs_generate, outputs.project_context_generate.contents, outputs.project_context_load.contents)"
-    source:    "if(outputs.project_context_load.needs_generate, 'generated', 'committed')"
-    path:      "outputs.project_context_load.path"
-    truncated: "if(outputs.project_context_load.needs_generate, outputs.project_context_generate.truncated, false)"
-
 ## ─── Enhancement 3 — Diff/incremental scoping ─────────────────────
 
 ## diff_scope (deterministic, no LLM). When vars.diff_base is non-empty,
@@ -2675,68 +2955,6 @@ print(json.dumps({
 "`
   output: diff_scope_output
   publish: diff_scope_artifact
-
-## file_filter_resolve picks the EFFECTIVE triage file_filter, with
-## diff_scope.file_filter taking precedence over vars.file_filter.
-## Rationale: a parent run with --var diff_base=main wants triage
-## scoped to the diff; a Cap. 3 shard CHILD inherits vars.file_filter
-## from --shard-var but has diff_base="" → outputs.diff_scope.file_filter
-## is "" and we fall back to vars.file_filter (the shard slice). When
-## both are empty (single-process full scan), value is "" — same
-## "no filter" semantics triage already handles.
-schema file_filter_output:
-  effective: string
-
-compute file_filter_resolve:
-  output: file_filter_output
-  expr:
-    effective: "if(length(outputs.diff_scope.file_filter) > 0, outputs.diff_scope.file_filter, vars.file_filter)"
-
-## scan_dir_resolve keys the scanner scratch on the run. Every writer and
-## every reader below resolves its files under vars.scan_dir/pass-<run.id>/
-## rather than in the one shared directory, so two passes against the same
-## workspace never write shard-files.json, shards.json, gitleaks.json,
-## trivy.json, semgrep-auto.json, the per-language outputs or custom.json
-## into the same slot, and no reader resolves a filename to bytes its
-## neighbour wrote (#1475). It is the chokepoint #1322 applied to the deep
-## scanner export, generalised to the rest of the scratch: derived once
-## here, never re-derived at a use site.
-##
-## The TRANSPORT is the edge. A tool command resolves {{input.X}} and
-## {{vars.X}}; an {{outputs.X}} ref inside a command body is refused
-## catalogue-wide (bots/catalog_command_refs_test.go), so each node takes
-## the value as `scan_dir` on its incoming edge and reads {{input.scan_dir}}
-## — the same bridge the deep-scan json_paths already cross. A node added
-## here that writes into the scratch needs BOTH: a scan_dir field on its
-## input schema and the mapping on the edge that reaches it.
-##
-## The `pass-` prefix is load-bearing and carries the same argument the
-## deep scanner writes at its run-id guard: `.` and `..` are legal
-## FILENAMES but not usable raw path SEGMENTS, so prefixed they become the
-## literal directory names `pass-.` / `pass-..` instead of a path
-## navigation that would collapse back onto the shared slot (`.`) or
-## escape one level above it (`..`). The prefix is also what lets the
-## retention sweep in run_deepsec_scanner scope POSITIVELY on `pass-*`
-## alongside `deepsec-out-*` / `deepsec-logs-*`, rather than by a
-## deny-list of the names it does not own.
-##
-## Deliberately NOT moved under the per-pass dir: `deepsec-workspace/`
-## (the deep scanner data root, file-record cache and claim mutex — a
-## second pass skipping what a first analysed is the point) and the
-## `.sec-audit/` state (file records, fp-known.yaml, context.md), both
-## per-workspace by design.
-##
-## String concatenation is `+`. `concat()` is the ARRAY builtin and
-## refuses a string argument at RUNTIME ("concat() argument 1 is string,
-## want array") while `iterion validate` stays green.
-schema scan_dir_output:
-  ## vars.scan_dir + "/pass-" + run.id — the scanner scratch of THIS pass.
-  run_scan_dir: string
-
-compute scan_dir_resolve:
-  output: scan_dir_output
-  expr:
-    run_scan_dir: "vars.scan_dir + '/pass-' + run.id"
 
 ## plan_shards (Cap. 3) walks the workspace and decides whether to
 ## fan the run out to N child runs. When shard_size > 0, it lists
@@ -3045,6 +3263,7 @@ print(json.dumps({'scanner': 'lang', 'subscanners': sub, 'json_paths': paths, 'f
 "`
   input: lang_scan_input
   output: scanner_output
+
 ## run_custom_matchers — programmatic matchers (Cap. 2). Enumerates
 ## executables under attachments/matchers/, invokes each with the
 ## standardised stdin JSON contract, aggregates findings. See
@@ -3126,22 +3345,6 @@ print(json.dumps({
 "`
   input: scan_scratch_input
   output: scanner_output
-
-## ─── Enhancement 4 — deepsec scanner backend ──────────────────────
-
-## deepsec_gate mirrors the context_gate pattern: lifts
-## vars.enable_deepsec into a bool output field so the downstream
-## edges use the simple-form `when enabled` / `when not enabled`
-## (C012-exhaustive). Required because the validator rejects quoted-
-## expression `when` clauses on non-router nodes; only `when <bool>`
-## from a node's bool output is exhaustive.
-schema deepsec_gate_output:
-  enabled: bool
-
-compute deepsec_gate:
-  output: deepsec_gate_output
-  expr:
-    enabled: "vars.enable_deepsec"
 
 ## run_deepsec_scanner — runs deepsec headlessly from the target
 ## workspace and emits a scanner_output envelope whose json_paths.deepsec
@@ -3999,41 +4202,6 @@ emit(kept, len(kept), len(items), len(kept) < len(items),
   output: deepsec_bank
   publish: deepsec_findings_bank
 
-## scan_join collects the five scanner outputs into one record for
-## triage. The scanners run as a single sequential branch (generic →
-## … → custom → [deepsec_gate → run_deepsec_scanner →
-## bank_deepsec_findings?] → scan_join),
-## so this is a plain collector, not a convergence point — each output
-## is carried forward along the chain. A scanner that no-ops or fails
-## (each command ends in `|| true`) shows up empty in its slot and the
-## triage prompt handles that. When vars.enable_deepsec=false the
-## deepsec slot resolves to an empty object via if(...) so the compute
-## never references a node that did not run.
-compute scan_join:
-  output: scan_join_output
-  expr:
-    generic_scan: "outputs.run_generic_scanners"
-    lang_scan:    "outputs.run_lang_scanners"
-    custom_scan:  "outputs.run_custom_matchers"
-    deepsec_scan: "if(vars.enable_deepsec, outputs.run_deepsec_scanner, '')"
-    ## The coverage scalars alone, behind the same guard. report_card reads
-    ## THIS, never deepsec_scan: the envelope's errors[] carries a log tail
-    ## the audited tree can write into, and report_card holds bash and
-    ## board.create.
-    deepsec_coverage: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.coverage, '')"
-    deepsec_paths: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.json_paths, '')"
-    ## The FINDING COUNT the deep pass emitted (whether it processed anything
-    ## on this pass or not), projected out for report_card. It travels beside
-    ## the coverage object because it discriminates a coverage warning: a
-    ## workspace with files_processed=0 and a non-zero finding count says
-    ## "this pass analysed no new file while earlier passes' findings are
-    ## exported" -- whether that is a backlog exhausted, a narrowed
-    ## file_filter/diff_scope or a shorter diff scope, the NOTE does not
-    ## claim (revi R76c175: no field distinguishes those causes). A scalar
-    ## int, never a string, so it carries no directive. Empty (rendered 0
-    ## by the schema coercion) when the gate routed around the scanner.
-    deepsec_finding_count: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.finding_count, 0)"
-
 ## scan_health (anti-façade smoke gate). Each scanner command ends in
 ## `|| true`, so a scanner that crashes or is absent (e.g. the sandbox
 ## lacks gosec/semgrep/trivy) fails silently and leaves no output file —
@@ -4541,56 +4709,6 @@ print(json.dumps({
   input: cap_findings_input
   output: findings_budget_output
 
-## triage reads the full scanner JSON + cap_findings envelope + project
-## context — a LARGE input that historically stalled on gpt-5.5/forfait
-## (~200K effective window) on multi-language repos. The default now
-## routes through `claude_code` with a per-element provider:model
-## fallback chain so the node runs on a 1M-context model first (z.ai's
-## glm-5.2) and falls through to Anthropic's opus on a hard failure
-## (rate-limit / quota exhaustion). The chain form requires the
-## claude_code backend — `claw` ignores `provider:` and would emit C088;
-## the runtime collapses the chain to its head there, so a `claw`
-## override stays single-provider but still benefits from the bigger
-## default model. Env overrides:
-##   ITERION_SEC_AUDIT_BACKEND        — flip the spine nodes triage/voters/
-##                                       report (claude_code | claw | codex).
-##                                       Default claude_code so triage stops
-##                                       stalling on the heavy input out of
-##                                       the box (i.e. opus-first IS the
-##                                       default — set nothing to get it).
-##                                       Does NOT affect detect_tech, which
-##                                       has its own ITERION_SEC_AUDIT_DETECT_
-##                                       BACKEND/MODEL (default claw/gpt-5.5)
-##                                       so flipping this var can't drag the
-##                                       cheap classifier onto an incompatible
-##                                       model.
-##   ITERION_SEC_AUDIT_MODEL          — pin the baseline model (the
-##                                       fallback element inherits it
-##                                       when its `provider:model` slot
-##                                       has no model part).
-##   ITERION_SEC_AUDIT_PROVIDER_CHAIN — opt-in per-element provider:model
-##                                       chain. DEFAULT IS EMPTY → the
-##                                       node runs on the first-class model
-##                                       above (opus). Set e.g.
-##                                       `zai:glm-5.2,anthropic:claude-opus-5-5`
-##                                       to put z.ai's 1M-ctx glm first with
-##                                       opus on fall-through (ADR-043: GLM is
-##                                       a second-tier opt-in lane; opus is
-##                                       first-class + reliable structured
-##                                       output). See ADR-004.
-agent triage:
-  backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_MODEL:-claude-opus-5-5}"
-  provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_TRIAGE:-high}"
-  input: triage_input
-  output: triage_output
-  system: triage_system
-  user: triage_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 40
-  readonly: true
-
 ## filter_cached_files reads `.sec-audit/files/*.json` records,
 ## computes the current sha256 of each file referenced by triage's
 ## candidates, and splits them into:
@@ -4709,89 +4827,6 @@ print(json.dumps({
 "`
   input: filter_files_input
   output: filter_files_output
-
-## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
-##
-## Replaces the old single `judge revalidate` two-phase judge with a
-## FIXED POOL OF 3 independent adversarial "disprove" voters whose
-## verdicts feed a deterministic `majority_verdict` tool. The pool is
-## structural — scaling means adding voter declarations here, not
-## flipping a var (the iterion DSL cannot cleanly gate fan-out edges
-## by a numeric var). Pattern mirrors Revi's 2-reviewer fan_out_all →
-## wait_all converge at bots/code-review/main.bot:353-401.
-##
-## Independent-session agreement signal: all voters default to Opus 5.5.
-## Cross-family diversity requires explicit deployment overrides. Each
-## voter is `readonly: true` + `session: fresh` so it cannot bleed
-## context from other voters and cannot mutate the workspace; the
-## ONLY mutator in this subgraph is fp_append, downstream of the
-## majority converge — preserves the one-mutating-branch rule.
-##
-## To scale to 5 voters: declare voter_v4 / voter_v5 here, extend the
-## sequential chain (voter_v3 -> voter_v4 -> voter_v5 -> majority_verdict)
-## with the same with{} mapping, raise confirm_threshold to 3, and add
-## V4/V5 env vars to the majority_verdict command.
-##
-## NOTE: voters run SEQUENTIALLY (not via a fan_out_all router) so their
-## outputs keep normal node keys (outputs.voter_vN) that majority_verdict
-## interpolates in its command — fan_out_all branch outputs
-## (branch_<router>_<node>/<node>) do NOT resolve in a tool command.
-## Independence is enforced by the prompt, not by parallelism.
-
-## Voter pool: each voter reads the SAME candidates and project context,
-## then git log/blame and the surrounding source. All three default to
-## claude_code + Opus 5.5 in separate sessions. v1/v3 keep configurable
-## backend/model/provider chains for deployments opting into cross-family
-## diversity; an unset chain provides no such diversity. Earlier capacity
-## incidents are recorded in docs/bot-runs/sec-audit-source.md.
-judge voter_v1:
-  backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_VOTER_V1_MODEL:-claude-opus-5-5}"
-  provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
-  input: voter_input
-  output: voter_output
-  system: disprove_voter_system
-  user: disprove_voter_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 40
-  session: fresh
-  readonly: true
-
-judge voter_v2:
-  ## Independent voter (claude_code subscription), pinned to the same
-  ## read-plus-shell surface as v1/v3. On claude_code an omitted `tools:`
-  ## list is the FULL native toolset, Write/Edit included
-  ## (pkg/backend/delegate/claude_code.go: claudeNativeDisallowedTools
-  ## removes nothing for an empty declaration), and `readonly: true` is
-  ## enforced by the codex and pi delegates only -- claude_code never reads
-  ## it. The list is the first line; the paragraph in disprove_voter_system
-  ## is the second.
-  backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
-  input: voter_input
-  output: voter_output
-  system: disprove_voter_system
-  user: disprove_voter_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 40
-  session: fresh
-  readonly: true
-
-judge voter_v3:
-  backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_VOTER_V3_MODEL:-claude-opus-5-5}"
-  provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
-  input: voter_input
-  output: voter_output
-  system: disprove_voter_system
-  user: disprove_voter_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 40
-  session: fresh
-  readonly: true
 
 ## majority_verdict (deterministic Python tool). Reads the three voter
 ## outputs via template interpolation, tallies per-candidate votes,
@@ -4977,8 +5012,8 @@ print(json.dumps({
 "`
   input: majority_verdict_input
   output: majority_verdict_output
-  await: best_effort
   publish: vote_audit_trail
+  await: best_effort
 
 ## fp_append (deterministic Python tool). The ONLY mutator in the
 ## post-triage subgraph: appends fp_appends[] entries to the YAML at
@@ -5076,37 +5111,6 @@ print(json.dumps({
   input: fp_append_input
   output: fp_append_output
 
-## merge_with_cache (replaces the old merge_verdicts compute). Unifies
-## the majority_verdict output with the cached verdicts replayed from
-## FileRecord history so report_card sees a single combined stream and
-## doesn't need to know which verdicts came from cache. Field shape
-## (confirmed/dismissed/uncertain/fp_appends/stats) is identical to
-## merge_verdicts — only the SOURCE node name changed
-## (outputs.revalidate -> outputs.majority_verdict).
-compute merge_with_cache:
-  output: merged_verdicts
-  expr:
-    confirmed:  "concat(outputs.majority_verdict.confirmed, outputs.filter_cached_files.cached_verdicts)"
-    dismissed:  "outputs.majority_verdict.dismissed"
-    uncertain:  "outputs.majority_verdict.uncertain"
-    fp_appends: "outputs.majority_verdict.fp_appends"
-    stats:      "outputs.majority_verdict.stats"
-
-agent report_card:
-  ## claude_code is REQUIRED here: this node needs the bundled
-  ## skills/ mirrored to .claude/skills/ and the board MCP server
-  ## registered with capability-gated tools.
-  backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REPORT:-medium}"
-  input: report_input
-  output: report_output
-  system: report_card_system
-  user: report_card_user
-  tools: [bash, read_file, write_file, glob, grep]
-  capabilities: [board.read, board.create, board.label]
-  tool_max_steps: 60
-
 ## update_file_records appends one history entry per scanned file to
 ## `<records_dir>/<sha1(path)>.json` so the next run can short-circuit
 ## the revalidate phase on unchanged files. See skills/file-records.md
@@ -5169,83 +5173,6 @@ print(json.dumps({'written_count': written, 'summary': 'Wrote %d FileRecords to 
 "`
   input: update_records_input
   output: update_records_output
-
-## ─── D5a — Verification-ladder remediation nodes ──────────────────
-
-## remediate_gate lifts vars.remediate into a bool output field so
-## the downstream conditional edges use the simple-form (C012-
-## exhaustive). Same proven pattern as context_gate / deepsec_gate.
-compute remediate_gate:
-  output: remediate_gate_output
-  expr:
-    enabled: "vars.remediate"
-
-## remediation_mode_gate (D5b). Lifts vars.remediation_mode into a
-## bundle of mutually-exclusive bool fields the downstream conditional
-## edges branch on (C012-exhaustive via pairs like is_apply /
-## not is_apply). All comparisons use the if()/contains() compute
-## built-ins (the runtime's compute-expr surface — no ternary, no &&).
-##
-## Truth table:
-##                      is_propose  is_apply  is_apply_auto  needs_gate
-##   "propose"          true        false     false          false
-##   "apply_gated"      false       true      false          true
-##   "apply_auto"       false       true      true           false
-##
-## Defaults: --var remediation_mode unset (apply_gated) ⇒ apply on, gate on.
-## --var remediation_mode=propose restores D5a propose-only behaviour.
-## --var remediation_mode=apply_auto skips the gate (for trusted CI).
-compute remediation_mode_gate:
-  output: remediation_mode_gate_output
-  expr:
-    is_propose:    "vars.remediation_mode == 'propose'"
-    is_apply:      "if(vars.remediation_mode == 'apply_gated', true, vars.remediation_mode == 'apply_auto')"
-    is_apply_auto: "vars.remediation_mode == 'apply_auto'"
-    needs_gate:    "vars.remediation_mode == 'apply_gated'"
-    mode:          "vars.remediation_mode"
-    const_false:   "false"
-    const_true:    "true"
-    const_zero:    "0"
-    const_one:     "1"
-
-## exit_router (D5b). Passthrough compute that re-publishes the mode
-## bools so the EXIT edges (after the per-finding loop) can branch
-## on a fresh bool source. Routing directly from select_finding on
-## remediation_mode_gate.is_propose would work but mixes loop-edge
-## semantics with mode-fan semantics on the same node; the dedicated
-## router keeps the loop exit (select_finding -> exit_router) clean
-## and the three-mode fan downstream cleanly DAG-shaped.
-compute exit_router:
-  output: remediation_mode_gate_output
-  expr:
-    is_propose:    "outputs.remediation_mode_gate.is_propose"
-    is_apply:      "outputs.remediation_mode_gate.is_apply"
-    is_apply_auto: "outputs.remediation_mode_gate.is_apply_auto"
-    needs_gate:    "outputs.remediation_mode_gate.needs_gate"
-    mode:          "outputs.remediation_mode_gate.mode"
-    const_false:   "false"
-    const_true:    "true"
-    const_zero:    "0"
-    const_one:     "1"
-
-## apply_router (D5b). Splits the two APPLY modes:
-##   - apply_auto:  -> merge_fixes  (no gate)
-##   - apply_gated: -> fix_summary -> approve_fixes -> ...
-## C012-exhaustive on the is_apply_auto / not is_apply_auto pair.
-## Same passthrough shape as exit_router so the bool fields are
-## available on this node's output for the edges.
-compute apply_router:
-  output: remediation_mode_gate_output
-  expr:
-    is_propose:    "outputs.remediation_mode_gate.is_propose"
-    is_apply:      "outputs.remediation_mode_gate.is_apply"
-    is_apply_auto: "outputs.remediation_mode_gate.is_apply_auto"
-    needs_gate:    "outputs.remediation_mode_gate.needs_gate"
-    mode:          "outputs.remediation_mode_gate.mode"
-    const_false:   "false"
-    const_true:    "true"
-    const_zero:    "0"
-    const_one:     "1"
 
 ## remediation_plan splits the confirmed[] stream into to_fix (loop
 ## eligible) and hard_stopped (recorded but never auto-patched). A
@@ -5479,29 +5406,6 @@ print(json.dumps({
   input: select_finding_input
   output: select_finding_output
 
-## patch_author — the ONLY new MUTATING node in this phase. Edits
-## the workspace in place (the ladder verifies on the edited tree;
-## record_finding reverts after). claude_code backend so the bundled
-## skills (patch.md, reproducer-go.md, reproducer-ts.md,
-## crypto-handling.md) mirror into .claude/skills/ at run time and
-## the agent can read them directly.
-##
-## session: fresh — no context bleed from voter_v2's claude_code
-## judge context (or any prior node). This is critical: scanner_body
-## prose lives in finding.rationale and reaches patch_author here for
-## the first time.
-agent patch_author:
-  backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_AUTHOR:-high}"
-  input: patch_author_input
-  output: patch_author_output
-  system: patch_author_system
-  user: patch_author_user
-  session: fresh
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 80
-
 ## build_rung — Tier 0. Adapts to the stack via outputs.detect_tech.langs.
 ## Always exits 0 so a missing toolchain never fails the run; the
 ## envelope carries ok=false + the captured output instead. Hint
@@ -5677,99 +5581,6 @@ except Exception as e:
 "`
   input: lang_input
   output: regress_output
-
-## reattack — Tier 3. THE DISTINCTIVE RUNG. Fresh adversarial judge
-## (session: fresh) that probes the same vuln CLASS across the
-## package (not just the cited line). Uses skills/reattack-oracles.md
-## variant-hunt prose + skills/vuln-scan.md. Read-only.
-##
-## The judge has bash for git log / grep / scanner re-invocation —
-## the prompt restricts it to read-only flags.
-judge reattack:
-  backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REATTACK:-high}"
-  input: reattack_input
-  output: reattack_output
-  system: reattack_system
-  user: reattack_user
-  session: fresh
-  readonly: true
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 60
-
-## project_review_input is what statically enforces reviewer
-## isolation. The compute projects the candidate to EXACTLY the four
-## fields review_isolation_input declares — file / line / category /
-## diff. It is impossible (statically) for reviewer_isolation to
-## reference finding.rationale, patch_author.rationale, or any other
-## tainted upstream field, because they are not on its input schema.
-##
-## file is taken from the finding's `file` (not patch_author's
-## files_changed[0]) so it stays anchored to the cited location even
-## when the patch touched neighbouring files (cf. root-cause fix
-## discipline in patch.md).
-compute project_review_input:
-  output: review_isolation_input
-  expr:
-    file:     "outputs.select_finding.finding.file"
-    line:     "outputs.select_finding.finding.line_range"
-    category: "outputs.select_finding.finding.finding_type"
-    diff:     "outputs.patch_author.diff"
-
-## reviewer_isolation — Tier 4. Sees ONLY the 4-field projection
-## above (statically enforced by the input schema). NO bash so it
-## cannot run scanners or read scanner output indirectly; readonly
-## strips write_file / file_edit. session: fresh so no
-## patch_author context bleeds in.
-judge reviewer_isolation:
-  backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REVIEW:-high}"
-  input: review_isolation_input
-  output: review_isolation_output
-  system: reviewer_isolation_system
-  user: reviewer_isolation_user
-  session: fresh
-  readonly: true
-  tools: [read_file, glob, grep]
-  tool_max_steps: 20
-
-## aggregate_verdict (deterministic compute). status = verified when
-## all five rungs pass AND risk_flags is empty AND a real oracle ran
-## (reproduce.after_hits != -1). When verified fails, uncertain when
-## risk_flags non-empty OR after_hits == -1 (no signal); else rejected.
-## Uses compute built-ins (if/length) — no ternary, no &&.
-##
-## verified_strict = all five rungs pass.
-## downgrade_to_uncertain = either risk_flags non-empty OR no-oracle.
-##
-## status logic (nested if):
-##   if verified_strict:
-##     if downgrade_to_uncertain: 'uncertain'
-##     else: 'verified'
-##   else (some rung failed):
-##     if downgrade_to_uncertain: 'uncertain'
-##     else: 'rejected'
-compute aggregate_verdict:
-  output: patch_verdict_output
-  expr:
-    finding_id:       "outputs.select_finding.finding.id"
-    status:           "if(outputs.build_rung.ok, if(outputs.reproduce_rung.gone, if(outputs.regress_rung.passed, if(outputs.reattack.held, if(outputs.reviewer_isolation.approved, if(length(outputs.reviewer_isolation.risk_flags) > 0, 'uncertain', if(outputs.reproduce_rung.after_hits == -1, 'uncertain', 'verified')), if(length(outputs.reviewer_isolation.risk_flags) > 0, 'uncertain', 'rejected')), if(outputs.reproduce_rung.after_hits == -1, 'uncertain', 'rejected')), 'rejected'), if(outputs.reproduce_rung.after_hits == -1, 'uncertain', 'rejected')), 'rejected')"
-    ladder:           "outputs.build_rung"
-    diff:             "outputs.patch_author.diff"
-    rejection_reason: "if(outputs.build_rung.ok, if(outputs.reproduce_rung.gone, if(outputs.regress_rung.passed, if(outputs.reattack.held, if(outputs.reviewer_isolation.approved, '', 'reviewer_rejected'), 'reattack_found_variants'), 'tests_failed'), 'reproduce_still_hits'), 'build_failed')"
-
-## fix_ledger — loop-carried ledger relay. Reads select_finding's
-## attempted list mid-iteration (a normal cross-node ref that resolves
-## fine) and re-publishes it so the back-edge to select_finding can carry
-## it forward. Without this relay the back-edge referenced the loop
-## TARGET's own output, which resolves empty on re-entry → the ledger
-## never grew → select_finding re-picked the same finding until timeout.
-compute fix_ledger:
-  output: fix_ledger_output
-  expr:
-    attempted: "outputs.select_finding.attempted"
 
 ## record_finding — mode-aware finalize.
 ##
@@ -5984,25 +5795,6 @@ print(json.dumps({
   output: fix_summary_output
   publish: fix_summary_artifact
 
-## approve_fixes (D5b — apply_gated only). Pauses the run for the
-## operator. The runtime suspends budget on human pauses (per
-## bots/whats-next/main.bot's ask_continue rationale), so a long
-## review wait costs nothing. Single bool answer — `approved` — drives
-## the C012-exhaustive `when approved` / `when not approved` fan
-## downstream.
-##
-## Resume from the terminal:
-##   iterion resume --run-id <id> --answer approved=true
-##   iterion resume --run-id <id> --answer approved=false
-## (See docs/cli-reference.md "iterion resume" + the approve_fixes
-## instructions prompt for the inspection workflow before answering.)
-human approve_fixes:
-  input: approve_fixes_input
-  output: approve_fixes_output
-  instructions: approve_fixes_instructions
-  interaction: human
-  min_answers: 1
-
 ## merge_fixes (D5b — apply modes, post-approval or apply_auto).
 ## Checks out original_branch, then `git merge --no-ff <temp branch>`
 ## so the merge commit is explicit (an --ff-only would hide the
@@ -6098,32 +5890,239 @@ out(result)
   input: abandon_fixes_input
   output: abandon_fixes_output
 
-## remediation_report — runs once after the per-finding loop drains.
-## Labels existing board issues with per-finding outcome and writes
-## REMEDIATION.md. capabilities: [board.read, board.label] — NO
-## board.create (Seki's report_card already filed issues upstream;
-## this node never creates new ones).
+compute context_gate:
+  output: context_gate_output
+  expr:
+    enabled: "vars.enable_project_context"
+
+## project_context_resolve merges the load + generate paths into a single
+## stable shape consumed by triage + revalidate. Uses `if(cond, then, else)`
+## (compute built-in) keyed on load.needs_generate: when the generator ran,
+## use its contents; otherwise the load cache contents are authoritative.
+compute project_context_resolve:
+  output: project_context_output
+  expr:
+    contents: "if(outputs.project_context_load.needs_generate, outputs.project_context_generate.contents, outputs.project_context_load.contents)"
+    source: "if(outputs.project_context_load.needs_generate, 'generated', 'committed')"
+    path: "outputs.project_context_load.path"
+    truncated: "if(outputs.project_context_load.needs_generate, outputs.project_context_generate.truncated, false)"
+
+compute file_filter_resolve:
+  output: file_filter_output
+  expr:
+    effective: "if(length(outputs.diff_scope.file_filter) > 0, outputs.diff_scope.file_filter, vars.file_filter)"
+
+compute scan_dir_resolve:
+  output: scan_dir_output
+  expr:
+    run_scan_dir: "vars.scan_dir + '/pass-' + run.id"
+
+compute deepsec_gate:
+  output: deepsec_gate_output
+  expr:
+    enabled: "vars.enable_deepsec"
+
+## scan_join collects the five scanner outputs into one record for
+## triage. The scanners run as a single sequential branch (generic →
+## … → custom → [deepsec_gate → run_deepsec_scanner →
+## bank_deepsec_findings?] → scan_join),
+## so this is a plain collector, not a convergence point — each output
+## is carried forward along the chain. A scanner that no-ops or fails
+## (each command ends in `|| true`) shows up empty in its slot and the
+## triage prompt handles that. When vars.enable_deepsec=false the
+## deepsec slot resolves to an empty object via if(...) so the compute
+## never references a node that did not run.
+compute scan_join:
+  output: scan_join_output
+  expr:
+    generic_scan: "outputs.run_generic_scanners"
+    lang_scan: "outputs.run_lang_scanners"
+    custom_scan: "outputs.run_custom_matchers"
+    deepsec_scan: "if(vars.enable_deepsec, outputs.run_deepsec_scanner, '')"
+    ## The coverage scalars alone, behind the same guard. report_card reads
+    ## THIS, never deepsec_scan: the envelope's errors[] carries a log tail
+    ## the audited tree can write into, and report_card holds bash and
+    ## board.create.
+    deepsec_coverage: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.coverage, '')"
+    deepsec_paths: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.json_paths, '')"
+    ## The FINDING COUNT the deep pass emitted (whether it processed anything
+    ## on this pass or not), projected out for report_card. It travels beside
+    ## the coverage object because it discriminates a coverage warning: a
+    ## workspace with files_processed=0 and a non-zero finding count says
+    ## "this pass analysed no new file while earlier passes' findings are
+    ## exported" -- whether that is a backlog exhausted, a narrowed
+    ## file_filter/diff_scope or a shorter diff scope, the NOTE does not
+    ## claim (revi R76c175: no field distinguishes those causes). A scalar
+    ## int, never a string, so it carries no directive. Empty (rendered 0
+    ## by the schema coercion) when the gate routed around the scanner.
+    deepsec_finding_count: "if(vars.enable_deepsec, outputs.run_deepsec_scanner.finding_count, 0)"
+
+## merge_with_cache (replaces the old merge_verdicts compute). Unifies
+## the majority_verdict output with the cached verdicts replayed from
+## FileRecord history so report_card sees a single combined stream and
+## doesn't need to know which verdicts came from cache. Field shape
+## (confirmed/dismissed/uncertain/fp_appends/stats) is identical to
+## merge_verdicts — only the SOURCE node name changed
+## (outputs.revalidate -> outputs.majority_verdict).
+compute merge_with_cache:
+  output: merged_verdicts
+  expr:
+    confirmed: "concat(outputs.majority_verdict.confirmed, outputs.filter_cached_files.cached_verdicts)"
+    dismissed: "outputs.majority_verdict.dismissed"
+    uncertain: "outputs.majority_verdict.uncertain"
+    fp_appends: "outputs.majority_verdict.fp_appends"
+    stats: "outputs.majority_verdict.stats"
+
+## ─── D5a — Verification-ladder remediation nodes ──────────────────
+
+## remediate_gate lifts vars.remediate into a bool output field so
+## the downstream conditional edges use the simple-form (C012-
+## exhaustive). Same proven pattern as context_gate / deepsec_gate.
+compute remediate_gate:
+  output: remediate_gate_output
+  expr:
+    enabled: "vars.remediate"
+
+## remediation_mode_gate (D5b). Lifts vars.remediation_mode into a
+## bundle of mutually-exclusive bool fields the downstream conditional
+## edges branch on (C012-exhaustive via pairs like is_apply /
+## not is_apply). All comparisons use the if()/contains() compute
+## built-ins (the runtime's compute-expr surface — no ternary, no &&).
 ##
-## NOTE: this node introduces NEW C082 warnings for board.read +
-## board.label under the sandbox — same class as the existing
-## warnings on report_card. Acceptable per the D5a contract.
-agent remediation_report:
-  backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REPORT:-medium}"
-  input: remediation_report_input
-  output: remediation_report_output
-  system: remediation_report_system
-  user: remediation_report_user
-  tools: [bash, read_file, write_file, glob, grep]
-  capabilities: [board.read, board.label]
-  tool_max_steps: 60
+## Truth table:
+##                      is_propose  is_apply  is_apply_auto  needs_gate
+##   "propose"          true        false     false          false
+##   "apply_gated"      false       true      false          true
+##   "apply_auto"       false       true      true           false
+##
+## Defaults: --var remediation_mode unset (apply_gated) ⇒ apply on, gate on.
+## --var remediation_mode=propose restores D5a propose-only behaviour.
+## --var remediation_mode=apply_auto skips the gate (for trusted CI).
+compute remediation_mode_gate:
+  output: remediation_mode_gate_output
+  expr:
+    is_propose: "vars.remediation_mode == 'propose'"
+    is_apply: "if(vars.remediation_mode == 'apply_gated', true, vars.remediation_mode == 'apply_auto')"
+    is_apply_auto: "vars.remediation_mode == 'apply_auto'"
+    needs_gate: "vars.remediation_mode == 'apply_gated'"
+    mode: "vars.remediation_mode"
+    const_false: "false"
+    const_true: "true"
+    const_zero: "0"
+    const_one: "1"
+
+## exit_router (D5b). Passthrough compute that re-publishes the mode
+## bools so the EXIT edges (after the per-finding loop) can branch
+## on a fresh bool source. Routing directly from select_finding on
+## remediation_mode_gate.is_propose would work but mixes loop-edge
+## semantics with mode-fan semantics on the same node; the dedicated
+## router keeps the loop exit (select_finding -> exit_router) clean
+## and the three-mode fan downstream cleanly DAG-shaped.
+compute exit_router:
+  output: remediation_mode_gate_output
+  expr:
+    is_propose: "outputs.remediation_mode_gate.is_propose"
+    is_apply: "outputs.remediation_mode_gate.is_apply"
+    is_apply_auto: "outputs.remediation_mode_gate.is_apply_auto"
+    needs_gate: "outputs.remediation_mode_gate.needs_gate"
+    mode: "outputs.remediation_mode_gate.mode"
+    const_false: "false"
+    const_true: "true"
+    const_zero: "0"
+    const_one: "1"
+
+## apply_router (D5b). Splits the two APPLY modes:
+##   - apply_auto:  -> merge_fixes  (no gate)
+##   - apply_gated: -> fix_summary -> approve_fixes -> ...
+## C012-exhaustive on the is_apply_auto / not is_apply_auto pair.
+## Same passthrough shape as exit_router so the bool fields are
+## available on this node's output for the edges.
+compute apply_router:
+  output: remediation_mode_gate_output
+  expr:
+    is_propose: "outputs.remediation_mode_gate.is_propose"
+    is_apply: "outputs.remediation_mode_gate.is_apply"
+    is_apply_auto: "outputs.remediation_mode_gate.is_apply_auto"
+    needs_gate: "outputs.remediation_mode_gate.needs_gate"
+    mode: "outputs.remediation_mode_gate.mode"
+    const_false: "false"
+    const_true: "true"
+    const_zero: "0"
+    const_one: "1"
+
+## project_review_input is what statically enforces reviewer
+## isolation. The compute projects the candidate to EXACTLY the four
+## fields review_isolation_input declares — file / line / category /
+## diff. It is impossible (statically) for reviewer_isolation to
+## reference finding.rationale, patch_author.rationale, or any other
+## tainted upstream field, because they are not on its input schema.
+##
+## file is taken from the finding's `file` (not patch_author's
+## files_changed[0]) so it stays anchored to the cited location even
+## when the patch touched neighbouring files (cf. root-cause fix
+## discipline in patch.md).
+compute project_review_input:
+  output: review_isolation_input
+  expr:
+    file: "outputs.select_finding.finding.file"
+    line: "outputs.select_finding.finding.line_range"
+    category: "outputs.select_finding.finding.finding_type"
+    diff: "outputs.patch_author.diff"
+
+## aggregate_verdict (deterministic compute). status = verified when
+## all five rungs pass AND risk_flags is empty AND a real oracle ran
+## (reproduce.after_hits != -1). When verified fails, uncertain when
+## risk_flags non-empty OR after_hits == -1 (no signal); else rejected.
+## Uses compute built-ins (if/length) — no ternary, no &&.
+##
+## verified_strict = all five rungs pass.
+## downgrade_to_uncertain = either risk_flags non-empty OR no-oracle.
+##
+## status logic (nested if):
+##   if verified_strict:
+##     if downgrade_to_uncertain: 'uncertain'
+##     else: 'verified'
+##   else (some rung failed):
+##     if downgrade_to_uncertain: 'uncertain'
+##     else: 'rejected'
+compute aggregate_verdict:
+  output: patch_verdict_output
+  expr:
+    finding_id: "outputs.select_finding.finding.id"
+    status: "if(outputs.build_rung.ok, if(outputs.reproduce_rung.gone, if(outputs.regress_rung.passed, if(outputs.reattack.held, if(outputs.reviewer_isolation.approved, if(length(outputs.reviewer_isolation.risk_flags) > 0, 'uncertain', if(outputs.reproduce_rung.after_hits == -1, 'uncertain', 'verified')), if(length(outputs.reviewer_isolation.risk_flags) > 0, 'uncertain', 'rejected')), if(outputs.reproduce_rung.after_hits == -1, 'uncertain', 'rejected')), 'rejected'), if(outputs.reproduce_rung.after_hits == -1, 'uncertain', 'rejected')), 'rejected')"
+    ladder: "outputs.build_rung"
+    diff: "outputs.patch_author.diff"
+    rejection_reason: "if(outputs.build_rung.ok, if(outputs.reproduce_rung.gone, if(outputs.regress_rung.passed, if(outputs.reattack.held, if(outputs.reviewer_isolation.approved, '', 'reviewer_rejected'), 'reattack_found_variants'), 'tests_failed'), 'reproduce_still_hits'), 'build_failed')"
+
+## fix_ledger — loop-carried ledger relay. Reads select_finding's
+## attempted list mid-iteration (a normal cross-node ref that resolves
+## fine) and re-publishes it so the back-edge to select_finding can carry
+## it forward. Without this relay the back-edge referenced the loop
+## TARGET's own output, which resolves empty on re-entry → the ledger
+## never grew → select_finding re-picked the same finding until timeout.
+compute fix_ledger:
+  output: fix_ledger_output
+  expr:
+    attempted: "outputs.select_finding.attempted"
 
 ## ─── Workflow ─────────────────────────────────────────────────────
-
 workflow sec_audit_source:
-  entry: inventory
-
+  ## An audit READS the repository it is pointed at. The mid-run workspace
+  ## checkpoint would `git add -A` the pod's tree — this bot's own
+  ## `.sec-audit/` state included, since it is untracked and nothing
+  ## ignores it — and force-push it as a BRANCH on that repository. On a
+  ## public target that publishes the findings of an audit whose whole
+  ## point is that they are not public yet. The findings live in node
+  ## outputs, durable in the store without any push.
+  ##
+  ## Known cost, accepted: an opt-in `remediate=true` pass DOES commit (a
+  ## temp branch in the checkout), and it loses the net here. Its
+  ## documented form is a dedicated local `iterion run`, where a
+  ## bind-mount driver never had a checkpoint anyway; only a CLOUD
+  ## remediation run is affected, and its patches are published node
+  ## outputs regardless. Re-enabling it per run needs a launch-level
+  ## override, which is not wired yet.
+  workspace_checkpoint: off
   ## The scanner tool-nodes (semgrep, gosec, gitleaks, trivy, …) need a
   ## host that actually ships those binaries — the slim/full sandbox
   ## images and a bare host do NOT, so without a scanner image every
@@ -6165,22 +6164,7 @@ workflow sec_audit_source:
     ## quoting — no value has a space — and the message uses single quotes.
     post_create: "set -u; want=0.156.1; pfx=$HOME/.npm-global; if ! $pfx/bin/codex --version 2>/dev/null | grep -q $want; then npm install -g --prefix $pfx @openai/codex@$want >/dev/null 2>&1 || echo 'iterion: could not install @openai/codex — deepsec falls back to the codex bundled in the image, which may be too old for the model requested' >&2; fi"
 
-  ## An audit READS the repository it is pointed at. The mid-run workspace
-  ## checkpoint would `git add -A` the pod's tree — this bot's own
-  ## `.sec-audit/` state included, since it is untracked and nothing
-  ## ignores it — and force-push it as a BRANCH on that repository. On a
-  ## public target that publishes the findings of an audit whose whole
-  ## point is that they are not public yet. The findings live in node
-  ## outputs, durable in the store without any push.
-  ##
-  ## Known cost, accepted: an opt-in `remediate=true` pass DOES commit (a
-  ## temp branch in the checkout), and it loses the net here. Its
-  ## documented form is a dedicated local `iterion run`, where a
-  ## bind-mount driver never had a checkpoint anyway; only a CLOUD
-  ## remediation run is affected, and its patches are published node
-  ## outputs regardless. Re-enabling it per run needs a launch-level
-  ## override, which is not wired yet.
-  workspace_checkpoint: off
+  entry: inventory
 
   budget:
     max_parallel_branches: 4
@@ -6212,6 +6196,7 @@ workflow sec_audit_source:
   detect_tech -> context_gate
 
   context_gate -> project_context_load when enabled
+
   context_gate -> diff_scope when not enabled
 
   ## project_context_load decides freshness deterministically:
@@ -6221,11 +6206,12 @@ workflow sec_audit_source:
   ##   or cached contents are authoritative.
   project_context_load -> project_context_generate when needs_generate with {
     workspace_dir: "{{vars.workspace_dir}}",
-    context_path:  "{{vars.context_path}}",
-    inventory:     "{{outputs.inventory}}",
-    tech:          "{{outputs.detect_tech}}",
-    scope_notes:   "{{vars.scope_notes}}"
+    context_path: "{{vars.context_path}}",
+    inventory: "{{outputs.inventory}}",
+    tech: "{{outputs.detect_tech}}",
+    scope_notes: "{{vars.scope_notes}}",
   }
+
   project_context_load -> project_context_resolve when not needs_generate
 
   project_context_generate -> project_context_resolve
@@ -6247,19 +6233,21 @@ workflow sec_audit_source:
   ## of every node that writes into it or reads out of it (#1475).
   file_filter_resolve -> scan_dir_resolve
 
-  scan_dir_resolve -> plan_shards with {scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
+  scan_dir_resolve -> plan_shards with {
+    scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"
+  }
 
   plan_shards -> dispatch_shards when enabled with {
-    workspace_dir:      "{{vars.workspace_dir}}",
-    scan_dir:           "{{outputs.scan_dir_resolve.run_scan_dir}}",
-    shard_size:         "{{vars.shard_size}}",
-    shard_concurrency:  "{{vars.shard_concurrency}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}",
+    shard_size: "{{vars.shard_size}}",
+    shard_concurrency: "{{vars.shard_concurrency}}",
     severity_threshold: "{{vars.severity_threshold}}",
-    fp_path:            "{{vars.fp_path}}",
-    records_dir:        "{{vars.records_dir}}",
-    matchers_dir:       "{{vars.matchers_dir}}",
-    files_path:         "{{outputs.plan_shards.files_path}}",
-    workflow_path:      "{{vars.workflow_path}}"
+    fp_path: "{{vars.fp_path}}",
+    records_dir: "{{vars.records_dir}}",
+    matchers_dir: "{{vars.matchers_dir}}",
+    files_path: "{{outputs.plan_shards.files_path}}",
+    workflow_path: "{{vars.workflow_path}}",
   }
 
   dispatch_shards -> done
@@ -6271,19 +6259,41 @@ workflow sec_audit_source:
   ## outputs. deepsec_gate routes through run_deepsec_scanner when
   ## vars.enable_deepsec=true; set it false to skip straight
   ## to scan_join (the pre-E4, deepsec-free workflow).
-  plan_shards -> run_generic_scanners when not enabled with {scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
+  plan_shards -> run_generic_scanners when not enabled with {
+    scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"
+  }
 
-  run_generic_scanners -> run_lang_scanners with {langs: "{{outputs.detect_tech.langs}}", scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
-  run_lang_scanners    -> run_custom_matchers with {scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
-  run_custom_matchers  -> deepsec_gate
+  run_generic_scanners -> run_lang_scanners with {
+    langs: "{{outputs.detect_tech.langs}}",
+    scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}",
+  }
+
+  run_lang_scanners -> run_custom_matchers with {
+    scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"
+  }
+
+  run_custom_matchers -> deepsec_gate
 
   deepsec_gate -> run_deepsec_scanner when enabled
+
   deepsec_gate -> scan_join when not enabled
-  run_deepsec_scanner -> bank_deepsec_findings with {json_paths: "{{outputs.run_deepsec_scanner.json_paths}}"}
+
+  run_deepsec_scanner -> bank_deepsec_findings with {
+    json_paths: "{{outputs.run_deepsec_scanner.json_paths}}"
+  }
+
   bank_deepsec_findings -> scan_join
 
-  scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}", deepsec_paths: "{{outputs.scan_join.deepsec_paths}}", scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
-  scan_health -> cap_findings with {deepsec_paths: "{{outputs.scan_join.deepsec_paths}}", scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}"}
+  scan_join -> scan_health with {
+    langs: "{{outputs.detect_tech.langs}}",
+    deepsec_paths: "{{outputs.scan_join.deepsec_paths}}",
+    scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}",
+  }
+
+  scan_health -> cap_findings with {
+    deepsec_paths: "{{outputs.scan_join.deepsec_paths}}",
+    scan_dir: "{{outputs.scan_dir_resolve.run_scan_dir}}",
+  }
 
   ## ZERO-FINDINGS IS DELIBERATELY NOT SHORT-CIRCUITED. On a clean repo
   ## cap_findings yields an empty set and triage runs one cheap LLM pass
@@ -6298,24 +6308,24 @@ workflow sec_audit_source:
   ## Safety on zero/huge candidate sets is already handled deterministically
   ## (cap_findings bounds triage's input; revalidate guards zero candidates).
   cap_findings -> triage with {
-    workspace_dir:   "{{vars.workspace_dir}}",
-    tech:            "{{outputs.detect_tech}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    tech: "{{outputs.detect_tech}}",
     findings_budget: "{{outputs.cap_findings}}",
-    generic_scan:    "{{outputs.scan_join.generic_scan}}",
-    lang_scan:       "{{outputs.scan_join.lang_scan}}",
-    custom_scan:     "{{outputs.scan_join.custom_scan}}",
-    deepsec_scan:    "{{outputs.scan_join.deepsec_scan}}",
-    fp_path:         "{{vars.fp_path}}",
-    file_filter:     "{{outputs.file_filter_resolve.effective}}",
-    project_context: "{{outputs.project_context_resolve.contents}}"
+    generic_scan: "{{outputs.scan_join.generic_scan}}",
+    lang_scan: "{{outputs.scan_join.lang_scan}}",
+    custom_scan: "{{outputs.scan_join.custom_scan}}",
+    deepsec_scan: "{{outputs.scan_join.deepsec_scan}}",
+    fp_path: "{{vars.fp_path}}",
+    file_filter: "{{outputs.file_filter_resolve.effective}}",
+    project_context: "{{outputs.project_context_resolve.contents}}",
   }
 
   triage -> filter_cached_files with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    records_dir:      "{{vars.records_dir}}",
-    scanner_version:  "{{vars.scanner_version}}",
-    ttl_days:         "{{vars.records_ttl_days}}",
-    candidates:       "{{outputs.triage.candidates}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    records_dir: "{{vars.records_dir}}",
+    scanner_version: "{{vars.scanner_version}}",
+    ttl_days: "{{vars.records_ttl_days}}",
+    candidates: "{{outputs.triage.candidates}}",
   }
 
   ## Enhancement 2 — N-vote adversarial revalidation.
@@ -6329,25 +6339,27 @@ workflow sec_audit_source:
   ## read each other), not by parallelism. candidates + project context
   ## come from earlier nodes, so each voter receives identical input.
   filter_cached_files -> voter_v1 with {
-    voter_id:        "v1",
-    candidates:      "{{outputs.filter_cached_files.fresh_candidates}}",
-    workspace_dir:   "{{vars.workspace_dir}}",
-    fp_path:         "{{vars.fp_path}}",
-    project_context: "{{outputs.project_context_resolve.contents}}"
+    voter_id: "v1",
+    candidates: "{{outputs.filter_cached_files.fresh_candidates}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    fp_path: "{{vars.fp_path}}",
+    project_context: "{{outputs.project_context_resolve.contents}}",
   }
+
   voter_v1 -> voter_v2 with {
-    voter_id:        "v2",
-    candidates:      "{{outputs.filter_cached_files.fresh_candidates}}",
-    workspace_dir:   "{{vars.workspace_dir}}",
-    fp_path:         "{{vars.fp_path}}",
-    project_context: "{{outputs.project_context_resolve.contents}}"
+    voter_id: "v2",
+    candidates: "{{outputs.filter_cached_files.fresh_candidates}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    fp_path: "{{vars.fp_path}}",
+    project_context: "{{outputs.project_context_resolve.contents}}",
   }
+
   voter_v2 -> voter_v3 with {
-    voter_id:        "v3",
-    candidates:      "{{outputs.filter_cached_files.fresh_candidates}}",
-    workspace_dir:   "{{vars.workspace_dir}}",
-    fp_path:         "{{vars.fp_path}}",
-    project_context: "{{outputs.project_context_resolve.contents}}"
+    voter_id: "v3",
+    candidates: "{{outputs.filter_cached_files.fresh_candidates}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    fp_path: "{{vars.fp_path}}",
+    project_context: "{{outputs.project_context_resolve.contents}}",
   }
 
   ## Converge: majority_verdict takes the three voter verdicts + the fresh
@@ -6356,10 +6368,10 @@ workflow sec_audit_source:
   ## {{outputs.NODE.field}} (scan_dir_resolve is read that way); what it
   ## does NOT resolve is a fan-out BRANCH output, branch_<router>_<node>.
   voter_v3 -> majority_verdict with {
-    v1:         "{{outputs.voter_v1.verdicts}}",
-    v2:         "{{outputs.voter_v2.verdicts}}",
-    v3:         "{{outputs.voter_v3.verdicts}}",
-    candidates: "{{outputs.filter_cached_files.fresh_candidates}}"
+    v1: "{{outputs.voter_v1.verdicts}}",
+    v2: "{{outputs.voter_v2.verdicts}}",
+    v3: "{{outputs.voter_v3.verdicts}}",
+    candidates: "{{outputs.filter_cached_files.fresh_candidates}}",
   }
 
   ## Conditional split on the bool field has_fp_appends (C012-exhaustive
@@ -6368,35 +6380,37 @@ workflow sec_audit_source:
   ## majority_verdict produced at least one unanimous-dismiss entry
   ## with a cited guard. Both branches converge on merge_with_cache.
   majority_verdict -> fp_append when has_fp_appends with {
-    fp_path:    "{{vars.fp_path}}",
-    fp_appends: "{{outputs.majority_verdict.fp_appends}}"
+    fp_path: "{{vars.fp_path}}",
+    fp_appends: "{{outputs.majority_verdict.fp_appends}}",
   }
+
   majority_verdict -> merge_with_cache when not has_fp_appends
+
   fp_append -> merge_with_cache
 
   merge_with_cache -> report_card with {
-    workspace_dir:      "{{vars.workspace_dir}}",
+    workspace_dir: "{{vars.workspace_dir}}",
     severity_threshold: "{{vars.severity_threshold}}",
-    confirmed:          "{{outputs.merge_with_cache.confirmed}}",
-    uncertain:          "{{outputs.merge_with_cache.uncertain}}",
-    suppressed:         "{{outputs.triage.suppressed}}",
-    stats:              "{{outputs.merge_with_cache.stats}}",
-    findings_budget:    "{{outputs.cap_findings}}",
-    scanner_health:     "{{outputs.scan_health}}",
-    diff_scope:         "{{outputs.diff_scope}}",
-    voter_agreement:    "{{outputs.majority_verdict.voter_agreement}}",
-    deepsec_coverage:   "{{outputs.scan_join.deepsec_coverage}}",
-    deepsec_finding_count: "{{outputs.scan_join.deepsec_finding_count}}"
+    confirmed: "{{outputs.merge_with_cache.confirmed}}",
+    uncertain: "{{outputs.merge_with_cache.uncertain}}",
+    suppressed: "{{outputs.triage.suppressed}}",
+    stats: "{{outputs.merge_with_cache.stats}}",
+    findings_budget: "{{outputs.cap_findings}}",
+    scanner_health: "{{outputs.scan_health}}",
+    diff_scope: "{{outputs.diff_scope}}",
+    voter_agreement: "{{outputs.majority_verdict.voter_agreement}}",
+    deepsec_coverage: "{{outputs.scan_join.deepsec_coverage}}",
+    deepsec_finding_count: "{{outputs.scan_join.deepsec_finding_count}}",
   }
 
   report_card -> update_file_records with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    records_dir:      "{{vars.records_dir}}",
-    scanner_version:  "{{vars.scanner_version}}",
-    file_hashes:      "{{outputs.filter_cached_files.file_hashes}}",
-    candidates:       "{{outputs.triage.candidates}}",
-    verdicts:         "{{outputs.merge_with_cache.confirmed}}",
-    issues_created:   "{{outputs.report_card.created_issues}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    records_dir: "{{vars.records_dir}}",
+    scanner_version: "{{vars.scanner_version}}",
+    file_hashes: "{{outputs.filter_cached_files.file_hashes}}",
+    candidates: "{{outputs.triage.candidates}}",
+    verdicts: "{{outputs.merge_with_cache.confirmed}}",
+    issues_created: "{{outputs.report_card.created_issues}}",
   }
 
   ## ─── D5a + D5b — Verification-ladder remediation phase ────────
@@ -6435,15 +6449,16 @@ workflow sec_audit_source:
   ## default --var remediation_mode=apply_gated PAUSES on the human
   ## gate; --var remediation_mode=propose restores D5a (no branch, no
   ## merge); --var remediation_mode=apply_auto skips the gate.
-
   update_file_records -> remediate_gate
 
   remediate_gate -> remediation_plan when enabled with {
     confirmed: "{{outputs.merge_with_cache.confirmed}}"
   }
+
   remediate_gate -> done when not enabled
 
   remediation_plan -> remediation_mode_gate when has_findings
+
   remediation_plan -> done when not has_findings
 
   ## Mode fan-in for the per-finding loop. In apply modes we run
@@ -6452,15 +6467,17 @@ workflow sec_audit_source:
   ## select_finding. Both paths converge on select_finding, which
   ## carries the mode + branch context onto the loop body via with{}.
   remediation_mode_gate -> prepare_branch when is_apply
+
   remediation_mode_gate -> select_finding when not is_apply with {
     attempted: "",
-    to_fix:    "{{outputs.remediation_plan.to_fix}}",
-    max:       "{{vars.max_fix_per_run}}"
+    to_fix: "{{outputs.remediation_plan.to_fix}}",
+    max: "{{vars.max_fix_per_run}}",
   }
+
   prepare_branch -> select_finding with {
     attempted: "",
-    to_fix:    "{{outputs.remediation_plan.to_fix}}",
-    max:       "{{vars.max_fix_per_run}}"
+    to_fix: "{{outputs.remediation_plan.to_fix}}",
+    max: "{{vars.max_fix_per_run}}",
   }
 
   ## Per-finding ladder. patch_author edits the workspace in place
@@ -6469,30 +6486,36 @@ workflow sec_audit_source:
   ## the temp branch in apply mode on a verified outcome (then the
   ## next finding stacks on top).
   select_finding -> patch_author when has_more with {
-    workspace_dir:  "{{vars.workspace_dir}}",
-    finding:        "{{outputs.select_finding.finding}}",
-    prior_attempts: "{{outputs.select_finding.prior_attempts}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    finding: "{{outputs.select_finding.finding}}",
+    prior_attempts: "{{outputs.select_finding.prior_attempts}}",
   }
+
   select_finding -> exit_router when not has_more
 
   patch_author -> build_rung with {
     langs: "{{outputs.detect_tech.langs}}"
   }
+
   build_rung -> reproduce_rung with {
     workspace_dir: "{{vars.workspace_dir}}",
-    finding:       "{{outputs.select_finding.finding}}",
-    candidate:     "{{outputs.patch_author}}"
+    finding: "{{outputs.select_finding.finding}}",
+    candidate: "{{outputs.patch_author}}",
   }
+
   reproduce_rung -> regress_rung with {
     langs: "{{outputs.detect_tech.langs}}"
   }
+
   regress_rung -> reattack with {
     workspace_dir: "{{vars.workspace_dir}}",
-    finding:       "{{outputs.select_finding.finding}}",
-    candidate:     "{{outputs.patch_author}}",
-    attempt:       "{{outputs.remediation_mode_gate.const_one}}"
+    finding: "{{outputs.select_finding.finding}}",
+    candidate: "{{outputs.patch_author}}",
+    attempt: "{{outputs.remediation_mode_gate.const_one}}",
   }
+
   reattack -> project_review_input
+
   ## Forward the 4-field projection into the judge's input. Without this
   ## with{}, reviewer_isolation received NO input, so its {{input.file/line/
   ## category/diff}} stayed literal placeholders and the judge fail-closed
@@ -6500,18 +6523,20 @@ workflow sec_audit_source:
   ## The compute already produces exactly these four fields (the isolation
   ## projection); the edge just has to carry them.
   project_review_input -> reviewer_isolation with {
-    file:     "{{outputs.project_review_input.file}}",
-    line:     "{{outputs.project_review_input.line}}",
+    file: "{{outputs.project_review_input.file}}",
+    line: "{{outputs.project_review_input.line}}",
     category: "{{outputs.project_review_input.category}}",
-    diff:     "{{outputs.project_review_input.diff}}"
+    diff: "{{outputs.project_review_input.diff}}",
   }
+
   reviewer_isolation -> aggregate_verdict
+
   aggregate_verdict -> record_finding with {
-    is_apply:        "{{outputs.remediation_mode_gate.is_apply}}",
-    branch:          "{{outputs.prepare_branch.branch}}",
+    is_apply: "{{outputs.remediation_mode_gate.is_apply}}",
+    branch: "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    verdict:         "{{outputs.aggregate_verdict}}",
-    author:          "{{outputs.patch_author}}"
+    verdict: "{{outputs.aggregate_verdict}}",
+    author: "{{outputs.patch_author}}",
   }
 
   ## Loop back to select_finding to process the next finding. The
@@ -6524,10 +6549,11 @@ workflow sec_audit_source:
   ## finding until timeout. fix_ledger re-publishes it from off the
   ## target, keeping select_finding's pop monotonic.
   record_finding -> fix_ledger
+
   fix_ledger -> select_finding as fix_loop(500) with {
     attempted: "{{outputs.fix_ledger.attempted}}",
-    to_fix:    "{{outputs.remediation_plan.to_fix}}",
-    max:       "{{vars.max_fix_per_run}}"
+    to_fix: "{{outputs.remediation_plan.to_fix}}",
+    max: "{{vars.max_fix_per_run}}",
   }
 
   ## The loop's exhaustion exit (C145, #1293): fix_loop's 500 is a safety
@@ -6548,63 +6574,65 @@ workflow sec_audit_source:
   ##   is_propose / not is_propose
   ##   is_apply_auto / not is_apply_auto  (under not is_propose)
   ## Each branch reaches remediation_report exactly once.
-
   exit_router -> remediation_report when is_propose with {
-    workspace_dir:   "{{vars.workspace_dir}}",
-    patch_dir:       "{{vars.patch_dir}}",
-    hard_stopped:    "{{outputs.remediation_plan.hard_stopped}}",
-    mode:            "{{outputs.remediation_mode_gate.mode}}",
-    branch:          "",
+    workspace_dir: "{{vars.workspace_dir}}",
+    patch_dir: "{{vars.patch_dir}}",
+    hard_stopped: "{{outputs.remediation_plan.hard_stopped}}",
+    mode: "{{outputs.remediation_mode_gate.mode}}",
+    branch: "",
     original_branch: "",
-    merged:          "{{outputs.exit_router.const_false}}",
-    approved:        "{{outputs.exit_router.const_false}}",
-    abandoned:       "{{outputs.exit_router.const_false}}",
-    commits_merged:  "{{outputs.exit_router.const_zero}}",
-    merge_sha:       ""
+    merged: "{{outputs.exit_router.const_false}}",
+    approved: "{{outputs.exit_router.const_false}}",
+    abandoned: "{{outputs.exit_router.const_false}}",
+    commits_merged: "{{outputs.exit_router.const_zero}}",
+    merge_sha: "",
   }
+
   exit_router -> apply_router when not is_propose
 
   ## apply_router splits the two apply modes. apply_auto -> merge
   ## without pausing. apply_gated -> fix_summary -> human gate ->
   ## merge OR abandon. Exhaustiveness on is_apply_auto / not.
   apply_router -> merge_fixes when is_apply_auto with {
-    workspace_dir:   "{{vars.workspace_dir}}",
-    branch:          "{{outputs.prepare_branch.branch}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    branch: "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    stashed:         "{{outputs.prepare_branch.stashed}}",
-    stash_ref:       "{{outputs.prepare_branch.stash_ref}}"
+    stashed: "{{outputs.prepare_branch.stashed}}",
+    stash_ref: "{{outputs.prepare_branch.stash_ref}}",
   }
+
   apply_router -> fix_summary when not is_apply_auto with {
-    branch:          "{{outputs.prepare_branch.branch}}",
+    branch: "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    hard_stopped:    "{{outputs.remediation_plan.hard_stopped}}"
+    hard_stopped: "{{outputs.remediation_plan.hard_stopped}}",
   }
 
   fix_summary -> approve_fixes with {
-    verified_count:     "{{outputs.fix_summary.verified_count}}",
-    uncertain_count:    "{{outputs.fix_summary.uncertain_count}}",
-    rejected_count:     "{{outputs.fix_summary.rejected_count}}",
+    verified_count: "{{outputs.fix_summary.verified_count}}",
+    uncertain_count: "{{outputs.fix_summary.uncertain_count}}",
+    rejected_count: "{{outputs.fix_summary.rejected_count}}",
     hard_stopped_count: "{{outputs.fix_summary.hard_stopped_count}}",
-    branch:             "{{outputs.fix_summary.branch}}",
-    original_branch:    "{{outputs.fix_summary.original_branch}}",
-    workspace_dir:      "{{vars.workspace_dir}}",
-    patch_dir:          "{{vars.patch_dir}}",
-    summary_md:         "{{outputs.fix_summary.summary_md}}"
+    branch: "{{outputs.fix_summary.branch}}",
+    original_branch: "{{outputs.fix_summary.original_branch}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    patch_dir: "{{vars.patch_dir}}",
+    summary_md: "{{outputs.fix_summary.summary_md}}",
   }
 
   approve_fixes -> merge_fixes when approved with {
-    workspace_dir:   "{{vars.workspace_dir}}",
-    branch:          "{{outputs.prepare_branch.branch}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    branch: "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    stashed:         "{{outputs.prepare_branch.stashed}}",
-    stash_ref:       "{{outputs.prepare_branch.stash_ref}}"
+    stashed: "{{outputs.prepare_branch.stashed}}",
+    stash_ref: "{{outputs.prepare_branch.stash_ref}}",
   }
+
   approve_fixes -> abandon_fixes when not approved with {
-    workspace_dir:   "{{vars.workspace_dir}}",
-    branch:          "{{outputs.prepare_branch.branch}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    branch: "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    stashed:         "{{outputs.prepare_branch.stashed}}",
-    stash_ref:       "{{outputs.prepare_branch.stash_ref}}"
+    stashed: "{{outputs.prepare_branch.stashed}}",
+    stash_ref: "{{outputs.prepare_branch.stash_ref}}",
   }
 
   ## Both apply outcomes converge on remediation_report so a single
@@ -6613,30 +6641,31 @@ workflow sec_audit_source:
   ## label table). merged_fixes / abandon_fixes carry the outcome
   ## payload on with{}; the unset fields default to empty/false.
   merge_fixes -> remediation_report with {
-    workspace_dir:   "{{vars.workspace_dir}}",
-    patch_dir:       "{{vars.patch_dir}}",
-    hard_stopped:    "{{outputs.remediation_plan.hard_stopped}}",
-    mode:            "{{outputs.remediation_mode_gate.mode}}",
-    branch:          "{{outputs.prepare_branch.branch}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    patch_dir: "{{vars.patch_dir}}",
+    hard_stopped: "{{outputs.remediation_plan.hard_stopped}}",
+    mode: "{{outputs.remediation_mode_gate.mode}}",
+    branch: "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    merged:          "{{outputs.merge_fixes.merged}}",
-    approved:        "{{outputs.exit_router.const_true}}",
-    abandoned:       "{{outputs.exit_router.const_false}}",
-    commits_merged:  "{{outputs.merge_fixes.commits_merged}}",
-    merge_sha:       "{{outputs.merge_fixes.merge_sha}}"
+    merged: "{{outputs.merge_fixes.merged}}",
+    approved: "{{outputs.exit_router.const_true}}",
+    abandoned: "{{outputs.exit_router.const_false}}",
+    commits_merged: "{{outputs.merge_fixes.commits_merged}}",
+    merge_sha: "{{outputs.merge_fixes.merge_sha}}",
   }
+
   abandon_fixes -> remediation_report with {
-    workspace_dir:   "{{vars.workspace_dir}}",
-    patch_dir:       "{{vars.patch_dir}}",
-    hard_stopped:    "{{outputs.remediation_plan.hard_stopped}}",
-    mode:            "{{outputs.remediation_mode_gate.mode}}",
-    branch:          "{{outputs.prepare_branch.branch}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    patch_dir: "{{vars.patch_dir}}",
+    hard_stopped: "{{outputs.remediation_plan.hard_stopped}}",
+    mode: "{{outputs.remediation_mode_gate.mode}}",
+    branch: "{{outputs.prepare_branch.branch}}",
     original_branch: "{{outputs.prepare_branch.original_branch}}",
-    merged:          "{{outputs.exit_router.const_false}}",
-    approved:        "{{outputs.exit_router.const_false}}",
-    abandoned:       "{{outputs.abandon_fixes.abandoned}}",
-    commits_merged:  "{{outputs.exit_router.const_zero}}",
-    merge_sha:       ""
+    merged: "{{outputs.exit_router.const_false}}",
+    approved: "{{outputs.exit_router.const_false}}",
+    abandoned: "{{outputs.abandon_fixes.abandoned}}",
+    commits_merged: "{{outputs.exit_router.const_zero}}",
+    merge_sha: "",
   }
 
   remediation_report -> done

@@ -57,6 +57,68 @@
 
 dsl: 2
 
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## watch = poll sources, match inventory, alert, commit state.
+  ## (Single mode today; the enum leaves room for refresh/recap modes.)
+  mode: string [enum: "watch"] = "watch"
+  ## Workspace-relative config file (JSON). See skills/senti-config.md.
+  config_path: string = "vuln-watch.json"
+  ## Workspace-relative technology inventory (JSON): technologies →
+  ## match keywords + projects; projects → repos. Overridable from the
+  ## config's own `inventory_path` field; this var is the fallback.
+  inventory_path: string = "inventory.json"
+  ## Workspace-relative state root (gitignore it, or set
+  ## state_commit=true to version it — required on ephemeral runners).
+  state_dir: string = ".vuln-watch"
+  ## Prepare + print every message and payload, deliver nothing, persist
+  ## nothing (the next real run recomputes the same alerts).
+  dry_run: bool = false
+  ## Commit (and push) the state dir after each mutation. Needs the
+  ## state_dir NOT gitignored and push credentials on the workspace.
+  state_commit: bool = false
+  ## Ceiling on advisory + Dependabot lookups the version confirmation may
+  ## spend in one run. The confirmation is a precision nicety: it must never
+  ## be the reason an hourly tick hangs or hammers the forge.
+  max_version_lookups: int = 40
+  ## ...and a COUNT of lookups is not a wall-clock bound. At the defaults, 40
+  ## sequential requests x a 20s per-request timeout is 800s against a 900s
+  ## max_duration — before DNS, body reads, and the three polling lanes that
+  ## run first. confirm_versions sits upstream of BOTH notify and
+  ## commit_state, so overrunning the workflow budget means no message
+  ## delivered and no state consumed: the bot goes silent for exactly as long
+  ## as GitHub is slow, which is plausibly when it matters most. This deadline
+  ## is what makes the "never the reason a tick hangs" contract above true.
+  ## 0 disables it (the lookup ceiling then bounds the node on its own).
+  max_version_seconds: int = 120
+  ## Per-request HTTP timeout (feeds, APIs).
+  fetch_timeout_secs: int = 20
+  ## SSRF posture for every outbound fetch (feeds, GitHub API, KEV,
+  ## EPSS, advisory JSON). Default (false) is strict: http/https only,
+  ## and any host resolving to a private / loopback / link-local /
+  ## cloud-metadata address is refused, up-front and on every redirect
+  ## hop. true relaxes it (private hosts + file:// sources) for trusted
+  ## on-prem deployments and hermetic tests ONLY.
+  allow_private_sources: bool = false
+  ## Per-run cap on posted alerts. Overflow units stay OBSERVED (they
+  ## re-fire next run) and the overflow is announced explicitly — never
+  ## a silent truncation.
+  max_alerts_per_run: int = 20
+  ## Days a non-alerted CVE stays in the observation window, re-scored
+  ## against KEV/EPSS every run (the re-fire mechanism).
+  observe_window_days: int = 60
+  ## Age belt on the KEV lane: a catalog entry older than this is never
+  ## treated as fresh, whatever the state says. Bounds the blast radius of
+  ## a lost/corrupted cursor (which would otherwise replay the whole
+  ## catalog) while leaving a long outage room to catch up.
+  kev_max_age_days: int = 90
+  ## Hours without a successful poll of a configured source before the
+  ## bot announces the silence on the sinks (at most once per window) —
+  ## the "finished is not delivered" lesson. 0 disables.
+  source_stale_hours: int = 24
+  ## Out-of-tree scratch for the inter-node handoff files.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/vuln-watch"
+
 secrets:
   ## JSON map of webhook name → incoming-webhook URL (same contract as
   ## feed-watch). Config sinks reference entries by NAME so URLs never
@@ -64,7 +126,6 @@ secrets:
   webhooks:
     as: file
     optional: true
-
   ## JSON map of github org login (lowercase) → API token able to read
   ## that org's Dependabot alerts. On an iterion cloud deployment the
   ## forge refresh worker maintains this secret from the GitHub App
@@ -77,7 +138,6 @@ secrets:
   dependabot_tokens:
     as: file
     optional: true
-
   ## Forge API token, mounted read-only as a FILE (path/env only). Used
   ## by state_commit=true runs so the cloud runner injects it into the
   ## clone URL and the bot's `git push` of the state dir authenticates.
@@ -86,85 +146,7 @@ secrets:
     as: file
     optional: true
 
-vars:
-  workspace_dir: string = "${PROJECT_DIR}"
-
-  ## watch = poll sources, match inventory, alert, commit state.
-  ## (Single mode today; the enum leaves room for refresh/recap modes.)
-  mode: string [enum: "watch"] = "watch"
-
-  ## Workspace-relative config file (JSON). See skills/senti-config.md.
-  config_path: string = "vuln-watch.json"
-
-  ## Workspace-relative technology inventory (JSON): technologies →
-  ## match keywords + projects; projects → repos. Overridable from the
-  ## config's own `inventory_path` field; this var is the fallback.
-  inventory_path: string = "inventory.json"
-
-  ## Workspace-relative state root (gitignore it, or set
-  ## state_commit=true to version it — required on ephemeral runners).
-  state_dir: string = ".vuln-watch"
-
-  ## Prepare + print every message and payload, deliver nothing, persist
-  ## nothing (the next real run recomputes the same alerts).
-  dry_run: bool = false
-
-  ## Commit (and push) the state dir after each mutation. Needs the
-  ## state_dir NOT gitignored and push credentials on the workspace.
-  state_commit: bool = false
-
-  ## Ceiling on advisory + Dependabot lookups the version confirmation may
-  ## spend in one run. The confirmation is a precision nicety: it must never
-  ## be the reason an hourly tick hangs or hammers the forge.
-  max_version_lookups: int = 40
-
-  ## ...and a COUNT of lookups is not a wall-clock bound. At the defaults, 40
-  ## sequential requests x a 20s per-request timeout is 800s against a 900s
-  ## max_duration — before DNS, body reads, and the three polling lanes that
-  ## run first. confirm_versions sits upstream of BOTH notify and
-  ## commit_state, so overrunning the workflow budget means no message
-  ## delivered and no state consumed: the bot goes silent for exactly as long
-  ## as GitHub is slow, which is plausibly when it matters most. This deadline
-  ## is what makes the "never the reason a tick hangs" contract above true.
-  ## 0 disables it (the lookup ceiling then bounds the node on its own).
-  max_version_seconds: int = 120
-
-  ## Per-request HTTP timeout (feeds, APIs).
-  fetch_timeout_secs: int = 20
-
-  ## SSRF posture for every outbound fetch (feeds, GitHub API, KEV,
-  ## EPSS, advisory JSON). Default (false) is strict: http/https only,
-  ## and any host resolving to a private / loopback / link-local /
-  ## cloud-metadata address is refused, up-front and on every redirect
-  ## hop. true relaxes it (private hosts + file:// sources) for trusted
-  ## on-prem deployments and hermetic tests ONLY.
-  allow_private_sources: bool = false
-
-  ## Per-run cap on posted alerts. Overflow units stay OBSERVED (they
-  ## re-fire next run) and the overflow is announced explicitly — never
-  ## a silent truncation.
-  max_alerts_per_run: int = 20
-
-  ## Days a non-alerted CVE stays in the observation window, re-scored
-  ## against KEV/EPSS every run (the re-fire mechanism).
-  observe_window_days: int = 60
-
-  ## Age belt on the KEV lane: a catalog entry older than this is never
-  ## treated as fresh, whatever the state says. Bounds the blast radius of
-  ## a lost/corrupted cursor (which would otherwise replay the whole
-  ## catalog) while leaving a long outage room to catch up.
-  kev_max_age_days: int = 90
-
-  ## Hours without a successful poll of a configured source before the
-  ## bot announces the silence on the sinks (at most once per window) —
-  ## the "finished is not delivered" lesson. 0 disables.
-  source_stale_hours: int = 24
-
-  ## Out-of-tree scratch for the inter-node handoff files.
-  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/vuln-watch"
-
 ## ─── Schemas ────────────────────────────────────────────────────
-
 schema plan_output:
   ## Normalized config, ready for the poll/match nodes.
   github_orgs: string[]
@@ -347,8 +329,6 @@ schema commit_output:
 ## defaults, merge message labels. Config problems fail HERE, loudly,
 ## before any network work.
 tool plan:
-  output: plan_output
-  language: py
   script: |
     import json, os
     ws = {{vars.workspace_dir}}
@@ -460,6 +440,9 @@ tool plan:
                       'sinks': sinks, 'labels': labels, 'inventory_path': inv_path,
                       'summary': summary}, ensure_ascii=False))
 
+  language: py
+  output: plan_output
+
 ## Lane A: GitHub org Dependabot alerts. Walks each org's open alerts
 ## (sorted created desc) until the per-org cursor from the state; the
 ## cursor itself only advances in commit_state, after delivery. A
@@ -468,9 +451,6 @@ tool plan:
 ## be a zero-alert façade). Transient failures (5xx, timeout) are
 ## collected per org; the health net announces a source silent >24h.
 tool poll_dependabot:
-  input: dependabot_input
-  output: dependabot_output
-  language: py
   script: |
     import json, os, socket, ipaddress, time
     import urllib.request, urllib.error
@@ -675,6 +655,10 @@ tool poll_dependabot:
     print(json.dumps({'alerts_file': out_path, 'new_alerts': total, 'orgs_ok': ok,
                       'orgs_failed': len(errors), 'errors': errors}, ensure_ascii=False))
 
+  language: py
+  input: dependabot_input
+  output: dependabot_output
+
 ## Lane B: advisory feeds. Parses each RSS/Atom feed (stdlib), keeps the
 ## entries whose id is not in the seen state, and enriches each new one
 ## through the CERT-FR-style `<link>/json/` endpoint (cves[] +
@@ -682,9 +666,6 @@ tool poll_dependabot:
 ## summary carry the match text and CVE ids are regex-extracted. Same
 ## SSRF guard as feed-watch: config-supplied URLs are untrusted input.
 tool poll_advisories:
-  input: advisories_input
-  output: advisories_output
-  language: py
   script: |
     import json, os, re, zlib, socket, ipaddress, time
     import urllib.request, urllib.error
@@ -949,6 +930,10 @@ tool poll_advisories:
     print(json.dumps({'units_file': out_path, 'new_units': len(units), 'feeds_ok': ok,
                       'feeds_failed': len(errors), 'errors': errors}, ensure_ascii=False))
 
+  language: py
+  input: advisories_input
+  output: advisories_output
+
 ## Lane C (half 1): the CISA KEV catalog — the full set every run (the
 ## lookup that answers "is this CVE exploited?" for every lane) plus the
 ## diff-by-dateAdded that match_policy joins directly against the
@@ -956,9 +941,6 @@ tool poll_advisories:
 ## CVE first). A fetch failure is reported, not fatal: the other lanes
 ## still alert, and the health net announces a KEV silent >24h.
 tool poll_exploit:
-  input: exploit_input
-  output: exploit_output
-  language: py
   script: |
     import json, os, zlib, socket, ipaddress, time
     import urllib.request, urllib.error
@@ -1057,6 +1039,10 @@ tool poll_exploit:
     print(json.dumps({'kev_file': out_path, 'kev_count': len(data.get('vulnerabilities') or []),
                       'kev_ok': not error, 'error': error}, ensure_ascii=False))
 
+  language: py
+  input: exploit_input
+  output: exploit_output
+
 ## The brain — pure computation over the polled files + the seen state:
 ## inventory matching (word-boundary keyword regexes), EPSS batch
 ## scoring of the candidate CVEs, the exploitation-driven alert policy,
@@ -1065,9 +1051,6 @@ tool poll_exploit:
 ## and the NEXT state staged out-of-tree. Persists nothing: a failed
 ## delivery downstream must replay these alerts, not lose them.
 tool match_policy:
-  input: match_input
-  output: match_output
-  language: py
   script: |
     import json, os, re, datetime, socket, ipaddress
     import urllib.request, urllib.error
@@ -1726,39 +1709,16 @@ tool match_policy:
                       'state_next_file': state_next, 'alertlog_file': alertlog,
                       'summary': summary}, ensure_ascii=False))
 
+  language: py
+  input: match_input
+  output: match_output
+
 ## Deterministic delivery: render each alert from the label templates
 ## (language comes from config, structure from here) and POST one
 ## message per alert + one overflow note + one staleness warning to the
 ## configured sinks. The techno→projects join arrives pre-resolved —
 ## this node is a renderer and a courier, nothing more.
 tool confirm_versions:
-  ## Turns "these 53 projects declare this technology" into "this repo runs
-  ## a version the advisory names, and here is the fix".
-  ##
-  ## The inventory match is deliberately keyword-based and therefore
-  ## VERSION-BLIND: it answers "who uses React", not "who is vulnerable".
-  ## Measured on the first live tick: a React Server Components advisory
-  ## named 53 projects; exactly ONE repository carried an affected package.
-  ## An alert that over-names by 53x is the kind operators stop reading,
-  ## which is the failure this whole bot exists to avoid.
-  ##
-  ## Two GitHub reads per alerted unit, both server-side filtered:
-  ##   1. /advisories?cve_id=...  -> the packages the advisory actually names
-  ##   2. /orgs/{org}/dependabot/alerts?package=...  -> who runs them
-  ##
-  ## GOTCHA, paid for: `state=all` is NOT a valid value for that endpoint,
-  ## and GitHub answers 200 with an EMPTY list instead of an error — the
-  ## confirmation would have been silently, permanently empty. Measured
-  ## `state=open&package=uuid` -> 73, `state=all&package=uuid` -> 0, no state
-  ## param -> 78. The REASON, per GitHub's own OpenAPI description: `state` is
-  ## a comma-separated LIST over {auto_dismissed, dismissed, fixed, open}, and
-  ## `all` is simply not a member — so it matches nothing rather than
-  ## everything. `open,fixed` is the valid spelling of what this node wants
-  ## (an exposure, and the window of a closed one), and it drops both
-  ## dismissal states server-side: a dismissal is a decision, not an exposure.
-  input: confirm_input
-  output: confirm_output
-  language: py
   script: |
     import json, os, socket, time, ipaddress
     import urllib.request
@@ -2148,10 +2108,35 @@ tool confirm_versions:
                       'lookups': lookups[0], 'errors': errors,
                       'summary': ', '.join(parts)}))
 
-tool notify:
-  input: notify_input
-  output: notify_output
   language: py
+  ## Turns "these 53 projects declare this technology" into "this repo runs
+  ## a version the advisory names, and here is the fix".
+  ##
+  ## The inventory match is deliberately keyword-based and therefore
+  ## VERSION-BLIND: it answers "who uses React", not "who is vulnerable".
+  ## Measured on the first live tick: a React Server Components advisory
+  ## named 53 projects; exactly ONE repository carried an affected package.
+  ## An alert that over-names by 53x is the kind operators stop reading,
+  ## which is the failure this whole bot exists to avoid.
+  ##
+  ## Two GitHub reads per alerted unit, both server-side filtered:
+  ##   1. /advisories?cve_id=...  -> the packages the advisory actually names
+  ##   2. /orgs/{org}/dependabot/alerts?package=...  -> who runs them
+  ##
+  ## GOTCHA, paid for: `state=all` is NOT a valid value for that endpoint,
+  ## and GitHub answers 200 with an EMPTY list instead of an error — the
+  ## confirmation would have been silently, permanently empty. Measured
+  ## `state=open&package=uuid` -> 73, `state=all&package=uuid` -> 0, no state
+  ## param -> 78. The REASON, per GitHub's own OpenAPI description: `state` is
+  ## a comma-separated LIST over {auto_dismissed, dismissed, fixed, open}, and
+  ## `all` is simply not a member — so it matches nothing rather than
+  ## everything. `open,fixed` is the valid spelling of what this node wants
+  ## (an exposure, and the window of a closed one), and it drops both
+  ## dismissal states server-side: a dismissal is a decision, not an exposure.
+  input: confirm_input
+  output: confirm_output
+
+tool notify:
   script: |
     import json, os, re, sys, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -2414,15 +2399,16 @@ tool notify:
     out({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered,
          'consume': consume, 'targets': sorted(set(targets)), 'summary': summary})
 
+  language: py
+  input: notify_input
+  output: notify_output
+
 ## Persist the staged state under flock: write state.json, append the
 ## alert log, and — with state_commit=true — commit+push the state dir
 ## with the rebase-retry discipline (ephemeral cloud runners share the
 ## branch). Runs ONLY after delivery succeeded (or nothing needed
 ## delivering): a failed post replays next run instead of losing alerts.
 tool commit_state:
-  input: commit_input
-  output: commit_output
-  language: py
   script: |
     import json, os, fcntl, subprocess
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -2543,20 +2529,22 @@ tool commit_state:
                       'summary': 'state persisted (' + str(appended) + ' alert(s) logged)' +
                                  (', pushed' if committed else '')}, ensure_ascii=False))
 
+  language: py
+  input: commit_input
+  output: commit_output
+
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow vuln_watch:
-  entry: plan
-
   ## The state (seen/cursors/health + alert log) IS the product and must
   ## persist in the workspace across runs — a run worktree would isolate
   ## the writes and discard them at finalization. Never auto.
   worktree: none
-
   ## This bot never builds the target repo: it reads two JSON files and
   ## talks to security APIs. Realising the workspace's toolchain would
   ## buy nothing and slow the hourly tick.
   repo_devbox: off
+
+  entry: plan
 
   budget:
     max_parallel_branches: 1
@@ -2571,7 +2559,7 @@ workflow vuln_watch:
     scratch_dir: "{{vars.scratch_dir}}",
     allow_private: "{{vars.allow_private_sources}}",
     workspace: "{{vars.workspace_dir}}",
-    state_dir: "{{vars.state_dir}}"
+    state_dir: "{{vars.state_dir}}",
   }
 
   poll_dependabot -> poll_advisories with {
@@ -2580,14 +2568,14 @@ workflow vuln_watch:
     scratch_dir: "{{vars.scratch_dir}}",
     allow_private: "{{vars.allow_private_sources}}",
     workspace: "{{vars.workspace_dir}}",
-    state_dir: "{{vars.state_dir}}"
+    state_dir: "{{vars.state_dir}}",
   }
 
   poll_advisories -> poll_exploit with {
     kev_url: "{{outputs.plan.kev_url}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     scratch_dir: "{{vars.scratch_dir}}",
-    allow_private: "{{vars.allow_private_sources}}"
+    allow_private: "{{vars.allow_private_sources}}",
   }
 
   poll_exploit -> match_policy with {
@@ -2613,7 +2601,7 @@ workflow vuln_watch:
     max_alerts: "{{vars.max_alerts_per_run}}",
     kev_max_age_days: "{{vars.kev_max_age_days}}",
     observe_window_days: "{{vars.observe_window_days}}",
-    source_stale_hours: "{{vars.source_stale_hours}}"
+    source_stale_hours: "{{vars.source_stale_hours}}",
   }
 
   match_policy -> confirm_versions with {
@@ -2623,7 +2611,7 @@ workflow vuln_watch:
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     allow_private: "{{vars.allow_private_sources}}",
     max_lookups: "{{vars.max_version_lookups}}",
-    max_seconds: "{{vars.max_version_seconds}}"
+    max_seconds: "{{vars.max_version_seconds}}",
   }
 
   confirm_versions -> notify with {
@@ -2632,18 +2620,20 @@ workflow vuln_watch:
     stale_sources: "{{outputs.match_policy.stale_sources}}",
     sinks: "{{outputs.plan.sinks}}",
     labels: "{{outputs.plan.labels}}",
-    dry_run: "{{vars.dry_run}}"
+    dry_run: "{{vars.dry_run}}",
   }
 
   ## Only a completed delivery (or a nothing-to-deliver tick) consumes
   ## the staged state; dry-runs and sink-less alert runs keep the old
   ## state so the SAME alerts recompute next run (at-least-once).
   notify -> done when not consume
+
   notify -> commit_state when consume with {
     state_next_file: "{{outputs.match_policy.state_next_file}}",
     alertlog_file: "{{outputs.match_policy.alertlog_file}}",
     state_commit: "{{vars.state_commit}}",
     workspace: "{{vars.workspace_dir}}",
-    state_dir: "{{vars.state_dir}}"
+    state_dir: "{{vars.state_dir}}",
   }
+
   commit_state -> done
