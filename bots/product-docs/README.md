@@ -258,7 +258,7 @@ What the gate deliberately does not assume:
   refusal, like `oracle_dir`.
 
 **The route table is the net's own statement, resolved once, at a
-commit.** golden-master states its routes through `config.json`'s
+commit** ([ADR-104](../../docs/adr/104-product-docs-route-table-resolved-once-at-the-run-base.md)). golden-master states its routes through `config.json`'s
 `routes_probe` — a command it replays at every gate, reading its output
 and its errors merged — and commits no artifact for them; its
 `route-coverage.json` carries only the justified exclusions.
