@@ -2024,6 +2024,16 @@ func runCoverage(t *testing.T, ws string) coverageOut {
 	t.Helper()
 	var got coverageOut
 	runJSON(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), &got)
+	// The log quotes the oracle dir, whose path carries the RANDOM temp-dir
+	// number — and assertions on the log grep it for SHORT NUMERIC spans
+	// ("999", "250", "404"): a temp dir like ...126250226 named the code
+	// span "250" and ...38999964916 "verified" "999" (measured in CI,
+	// 2026-09-28). Scrub the fixture's plumbing out of the verdict text so
+	// every assertion judges what the gate SAID, not where the fixture
+	// happened to live.
+	if got.OracleUsed != "" {
+		got.Log = strings.ReplaceAll(got.Log, got.OracleUsed, "<oracle>")
+	}
 	return got
 }
 
@@ -2282,6 +2292,19 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 					"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
 			},
 		},
+		{
+			// THE OTHER DIRECTION of the route check: the route table is not
+			// only the whitelist citations are judged against — every route it
+			// declares is a screen the application serves, and a served screen
+			// no page describes is a hole the gate stayed green over. The
+			// repair lands INSIDE the writeable set: document the screen.
+			name: "ROUTE_UNDOCUMENTED: a declared route no page cites",
+			want: "ROUTE_UNDOCUMENTED -- /dashboard/exports: the declared route /dashboard/exports is cited by NO page",
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/routes.txt",
+					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/exports\n# a comment line\nGET /{slug}\n")
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2300,6 +2323,68 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead:
+// the route check runs ONCE, after every anchor line of every page has been
+// read. A route first cited on the LAST page must not be refused while the
+// gate is still reading the first — the check lives outside the per-line
+// loop, and the test that proves it cites the route from a page that sorts
+// after every other one. It also settles the DIRECTION of the match: a
+// concrete citation covers the parameterized route it instantiates.
+func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *testing.T) {
+	requireGitPython(t)
+	// One route the corpus never exercised, documented only from the route
+	// table — the corpus-free documentation the declared routes widen for.
+	writeRoutes := func(t *testing.T, ws string) {
+		t.Helper()
+		writeFile(t, ws, ".golden-master/routes.txt",
+			"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/exports/{id}\n# a comment line\nGET /{slug}\n")
+	}
+	t.Run("a route cited on the last page is covered", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeRoutes(t, ws)
+		writeFile(t, ws, "docs/demo/z-exports.md", "# The exports\n"+
+			"\n"+
+			"## The export screen — [[ref:/dashboard/exports/9]]\n"+
+			"\n"+
+			"The manager exports the filtered list from [[ref:/dashboard/exports/9]] as\n"+
+			"a CSV file, one row per item, carrying the columns of the current view.\n")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a route cited on the LAST page was refused while the gate was reading the first — the check ran inside the per-line loop:\n%s", got.Log)
+		}
+		if got.RoutesTotal != 5 {
+			t.Fatalf("routes_declared = %d, want 5 (four real routes plus the catch-all)", got.RoutesTotal)
+		}
+	})
+	t.Run("a route cited only through a query-bearing citation is covered", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		// Drop the plain citation of /dashboard/items: the only path
+		// citation left that could cover the route carries a query —
+		// the shape the gate verifies parameters for. The heading keeps
+		// its corpus anchor, so no chapter goes unanchored.
+		mutate(t, ws, "docs/demo/README.md",
+			"## The item list — [[ref:/dashboard/items]] [[ref:026]]",
+			"## The item list — [[ref:026]]")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a route whose only citation carries a query was refused — the screen the documentation already describes:\n%s", got.Log)
+		}
+	})
+	t.Run("a concrete citation covers its parameterized route", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeRoutes(t, ws)
+		mutate(t, ws, "docs/demo/README.md",
+			"newest first, each one showing its owner, its status and its last change.",
+			"newest first, each one showing its owner, its status and its last change.\n"+
+				"From this screen the manager exports the list to a CSV file\n"+
+				"([[ref:/dashboard/exports/42]]), one row per item of the current view.")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a concrete citation did not cover the parameterized route it instantiates:\n%s", got.Log)
+		}
+	})
 }
 
 // TestProductDocsCoverageGateRefusesAnIndexTable: CO-PRESENCE IS NOT
@@ -2608,6 +2693,23 @@ func TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem(t *testing.T)
 		if strings.Contains(got.Log, tok) {
 			t.Fatalf("the gate verified %q, a citation inside an HTML comment:\n%s", tok, got.Log)
 		}
+	}
+}
+
+// TestProductDocsCoverageGateLogCarriesNoFixturePath: the log quotes the
+// oracle dir, whose temp path carries RANDOM digits that substring-match the
+// short numeric spans some assertions scan for. The fixture's plumbing is
+// scrubbed at the ONE door every assertion reads through; this test reddens
+// deterministically if the scrub is dropped, where the assertions it protects
+// only redden by chance.
+func TestProductDocsCoverageGateLogCarriesNoFixturePath(t *testing.T) {
+	requireGitPython(t)
+	got := runCoverage(t, newCoverageFixture(t))
+	if got.OracleUsed == "" {
+		t.Fatalf("oracle_dir_used is empty — the scrub has nothing to key on")
+	}
+	if strings.Contains(got.Log, got.OracleUsed) {
+		t.Fatalf("the log still carries the fixture's temp path %q — assertions on the log substring-match its random digits:\n%s", got.OracleUsed, got.Log)
 	}
 }
 

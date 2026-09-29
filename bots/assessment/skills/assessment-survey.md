@@ -78,6 +78,15 @@ stack you know well is `false` when no skill ships for it.
 | `tests` | what holds tests — a subtree, or a file | `path` is a file OR a directory in the tree |
 | `entrypoint` | the ways in that one artefact exposes — HTTP routes, CLI commands, scheduled jobs, queue consumers | `path` exists; `pattern` matches when given; `count` says HOW MANY |
 
+**A `pattern` matches lines INSIDE the file the declaration names — read that
+file before writing the pattern.** A deployable's pattern must match a line
+of the Dockerfile (or compose entry) it points at — the base image, the
+service name, the command that runs it: read the file, pick the line that
+identifies the service, write the pattern that matches it verbatim. A pattern
+that matches nothing is a claim the named file refuses, and the run stops
+there. Same for an entrypoint's pattern: read the controller, pick the
+annotation line, write the pattern that matches it.
+
 **The rules the lint re-verifies, and the shapes it demands — read before
 declaring anything, because a refused declaration stops the run:**
 
