@@ -218,6 +218,19 @@ schema s:
 			body: agent("  model: \"{{vars.jcost}}\"\n"), want: 0},
 		{name: "a json object whose leaf carries $-data still warns for the document's shape, not its text",
 			body: agent("  backend: \"{{vars.jawk}}\"\n"), want: 1},
+		// A dotted path belongs to the drill arm (#1606), never to this
+		// one: the declared-type check reads a FLAT reference only, on a
+		// node's fields and on the workflow's default_backend alike — a
+		// member of a json object resolves to a routable scalar, and a
+		// dotted path under a list is the drill arm's single C148.
+		{name: "a member of a json object as backend stays silent (the drill resolves it)",
+			body: agent("  backend: \"{{vars.cfg.backend}}\"\n"), want: 0},
+		{name: "a member of a json object as the workflow default_backend stays silent",
+			body: agent(""), wf: "  default_backend: \"{{vars.cfg.backend}}\"\n", want: 0},
+		{name: "a json object as the workflow default_backend warns",
+			body: agent(""), wf: "  default_backend: \"{{vars.cfg}}\"\n", want: 1},
+		{name: "a dotted path under a list as the workflow default_backend warns once",
+			body: agent(""), wf: "  default_backend: \"{{vars.bs.0}}\"\n", want: 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
