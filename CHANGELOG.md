@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.215.0](https://github.com/SocialGouv/iterion/compare/v3.214.1...v3.215.0) (2026-09-29)
+
+### Features
+
+* **dsl:** type-consistency for whole-ref with: mappings, routing fields, and constrained env defaults ([#1604](https://github.com/SocialGouv/iterion/issues/1604) [#1605](https://github.com/SocialGouv/iterion/issues/1605) [#1610](https://github.com/SocialGouv/iterion/issues/1610)) ([#1926](https://github.com/SocialGouv/iterion/issues/1926)) ([4fd951a](https://github.com/SocialGouv/iterion/commit/4fd951ad4ccde1eee65c8f3f6bc9918cb86cd040)), references [#1285](https://github.com/SocialGouv/iterion/issues/1285) [#1320](https://github.com/SocialGouv/iterion/issues/1320) [#1389](https://github.com/SocialGouv/iterion/issues/1389) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [pre-#1915](https://github.com/pre-/issues/1915) [#1915](https://github.com/SocialGouv/iterion/issues/1915) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1919](https://github.com/SocialGouv/iterion/issues/1919)
+
+    <details><summary>why</summary>
+
+    An edge with: mapping that is exactly one {{vars.<name>}} reference passes the value through with its type, and since #1285 a string[]/json var IS a list on the default path as much as on the override one — so the list (or object) arrives WHOLE on a field declared string, compiles clean, and nothing checks a with: value's type at run time: the arity simply moves (a tool whose command reads the field executes once per element).
+
+    </details>
+
 ## [3.214.1](https://github.com/SocialGouv/iterion/compare/v3.214.0...v3.214.1) (2026-09-29)
 
 ### Bug Fixes
