@@ -120,6 +120,16 @@ func TestC180_MessageNamesTheVarAndTheRemedy(t *testing.T) {
 			t.Errorf("message %q does not carry %q", msg, want)
 		}
 	}
+	// The named mechanism is the one the reviewer EXECUTED (the MEDIUM
+	// finding): one node execution, the list spread into the command's
+	// argv — never a per-element execution, which does not exist
+	// anywhere in the engine.
+	if !strings.Contains(msg, "spread into its argv") {
+		t.Errorf("message %q does not name the argv-spread mechanism", msg)
+	}
+	if strings.Contains(msg, "once per element") {
+		t.Errorf("message %q names a per-element execution that does not exist", msg)
+	}
 }
 
 // TestC180_FiresOncePerMapping: one mapping, one diagnostic — the check

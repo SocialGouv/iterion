@@ -101,7 +101,30 @@ func TestRoutingFieldRefs(t *testing.T) {
 // describe, and a warning like the rest of it: a launch override can
 // still hand the var a scalar.
 func TestRoutingFieldListTypedVar(t *testing.T) {
-	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n  bs: string[] = \"claw,claude_code\"\n  cfg: json = \"{\\\"backend\\\": \\\"claw\\\"}\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
+	// The json defaults are written as the catalogue writes them — a
+	// backtick document, or a bare word/number — because a profile-1 `\"`
+	// escapes nothing and the compiler keeps the backslashes (the default
+	// is then not JSON at all, and the run reads it as the string it is).
+	const head = `vars:
+  m: string = "anthropic/claude-sonnet-4-6"
+  b: string = "claw"
+  bs: string[] = "claw,claude_code"
+  cfg: json = ` + "`" + `{"backend": "claw"}` + "`" + `
+  js: json = ` + "`" + `"claude_code"` + "`" + `
+  jn: json = "3"
+  jw: json = "claude_code"
+  ja: json = ` + "`" + `["a", "b"]` + "`" + `
+  j0: json = "null"
+  je: json = "${BACKEND_JSON}"
+  jx: json
+
+prompt p:
+  Hi.
+
+schema s:
+  ok: bool
+
+`
 	agent := func(props string) string { return "agent a:\n  system: p\n" + props }
 	cases := []struct {
 		name string
@@ -121,6 +144,23 @@ func TestRoutingFieldListTypedVar(t *testing.T) {
 			body: agent("  model: \"{{vars.bs}}\"\n  backend: \"{{vars.cfg}}\"\n"), want: 2},
 		{name: "scalar vars stay silent", body: agent("  model: \"{{vars.m}}\"\n  backend: \"{{vars.b}}\"\n"), want: 0},
 		{name: "a scalar workflow default_backend stays silent", body: agent(""), wf: "  default_backend: \"{{vars.b}}\"\n", want: 0},
+		// The MEDIUM review finding: a `json` var is not a list by
+		// declaration — its default DOCUMENT decides. A scalar document
+		// resolves to the routable scalar with no override involved.
+		{name: "a json var whose default document is a string scalar stays silent",
+			body: agent("  backend: \"{{vars.js}}\"\n"), want: 0},
+		{name: "a json var whose default document is a number stays silent",
+			body: agent("  backend: \"{{vars.jn}}\"\n"), want: 0},
+		{name: "a json var whose default is a non-JSON word stays silent (it resolves to that word)",
+			body: agent("  backend: \"{{vars.jw}}\"\n"), want: 0},
+		{name: "a json var whose default document is a list warns",
+			body: agent("  backend: \"{{vars.ja}}\"\n"), want: 1},
+		{name: "a json var whose default document is null warns",
+			body: agent("  backend: \"{{vars.j0}}\"\n"), want: 1},
+		{name: "a json var with no default warns (the launch supplies the document)",
+			body: agent("  backend: \"{{vars.jx}}\"\n"), want: 1},
+		{name: "a json var whose default carries an env reference warns",
+			body: agent("  backend: \"{{vars.je}}\"\n"), want: 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
