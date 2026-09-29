@@ -114,12 +114,12 @@
 | `pkg/dsl/author` | reads and writes the YAML twin of a `.bot` file — the author document of lot 5 of #1010: the same declarations as the `.bot`, in the `.bot`'s… | — | 7 · 5 |
 | `pkg/dsl/author/internal/probecheck` | Command probecheck is the harness of the F20 authoring probe for the YAML twin (docs/references/dsl-authoring-probe.md): it reads author documents… | — | 1 · 0 |
 | `pkg/dsl/canon` | gives a `.bot` file its canonical form: the text the studio saves (pkg/dsl/unparse), proven to read as the same program AND to carry the same… | — | 3 · 8 |
-| `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 27 |
+| `pkg/dsl/expr` | implements a small expression language used by iterion's `compute` nodes and `when` edge clauses. | — | 2 · 29 |
 | `pkg/dsl/fix` | applies the mechanical remedies of compile diagnostics to a `.bot` text — the edits a diagnostic can carry because its fix is the same every time… | — | 1 · 6 |
 | `pkg/dsl/internal/docfences` | reads the fenced code blocks of the repository's documentation — the programs and documents a reader, human or agent, copies — for the tests that… | — | 1 · 4 |
 | `pkg/dsl/internal/dsltest` | holds the equivalence oracle the DSL packages' tests share: "the program that comes out of this transport, serialiser or editor is the program that… | — | 1 · 2 |
 | `pkg/dsl/internal/rewrite` | holds the primitives a surgical rewrite of a `.bot` text needs — the text the lexer reads (BOM stripped, CRLF folded) with the way back to the… | — | 1 · 10 |
-| `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 47 · 476 |
+| `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` | 47 · 478 |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — | 1 · 6 |
 | `pkg/dsl/parser` | — | — | 23 · 238 |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — | 9 · 77 |
