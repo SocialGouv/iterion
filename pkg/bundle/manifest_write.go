@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -97,8 +98,9 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	}
 
 	var out []byte
+	var beforeKeys map[string]bool
 	if len(bytes.TrimSpace(body)) > 0 {
-		out, err = patchManifestText(body, patch)
+		out, beforeKeys, err = patchManifestText(body, patch)
 	} else {
 		out, err = scaffoldManifest(patch)
 	}
@@ -122,10 +124,42 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	if err := manifestPatchReadBack(m, patch); err != nil {
 		return nil, fmt.Errorf("bundle: rewritten manifest does not read back the patch: %w", err)
 	}
+	// And the patched fields are not the whole story: a patch ADDS and
+	// REPLACES keys, it never deletes one. Comparing only the patched
+	// fields let a flow-collection span running to the file's end wipe
+	// every key below it in silence (revi round); the whole document's key
+	// set is the gate that says it.
+	if beforeKeys != nil {
+		afterKeys, err := manifestTopKeys(out)
+		if err != nil {
+			return nil, fmt.Errorf("bundle: rewritten manifest does not re-parse: %w", err)
+		}
+		for k := range beforeKeys {
+			if !afterKeys[k] {
+				return nil, fmt.Errorf("bundle: rewritten manifest lost top-level key %q", k)
+			}
+		}
+	}
 	if err := store.WriteFileAtomic(path, out, 0o644); err != nil {
 		return nil, fmt.Errorf("bundle: write manifest %s: %w", path, err)
 	}
 	return m, nil
+}
+
+// manifestTopKeys is the set of a manifest's top-level keys.
+func manifestTopKeys(body []byte) (map[string]bool, error) {
+	var doc yamlv3.Node
+	if err := yamlv3.Unmarshal(body, &doc); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	if doc.Kind == yamlv3.DocumentNode && len(doc.Content) > 0 && doc.Content[0].Kind == yamlv3.MappingNode {
+		root := doc.Content[0]
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			out[root.Content[i].Value] = true
+		}
+	}
+	return out, nil
 }
 
 // manifestPatchReadBack is the read-back gate: every field the patch sets
@@ -184,17 +218,34 @@ type manifestEdit struct {
 
 // patchManifestText applies patch to the authored text of an existing
 // manifest: the tree gives every key's position, and only the lines of a
-// patched key are replaced.
-func patchManifestText(body []byte, patch ManifestPatch) ([]byte, error) {
+// patched key are replaced. The second return is the document's top-level
+// key set before the patch (the key-set gate's "before").
+func patchManifestText(body []byte, patch ManifestPatch) ([]byte, map[string]bool, error) {
 	var doc yamlv3.Node
 	if err := yamlv3.Unmarshal(body, &doc); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if doc.Kind != yamlv3.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yamlv3.MappingNode {
-		return nil, fmt.Errorf("the manifest is not a YAML mapping")
+	if doc.Kind != yamlv3.DocumentNode || len(doc.Content) == 0 {
+		// A comments-only document is an empty manifest with notes above
+		// it: the scaffold path, the notes kept (the pre-surgical writer
+		// scaffolded too, and dropped them). A document that is a list or
+		// a scalar is no manifest at all and stays refused below.
+		out, err := scaffoldManifest(patch)
+		if err != nil {
+			return nil, nil, err
+		}
+		text := strings.TrimRight(string(body), "\n") + "\n" + string(out)
+		return []byte(text), map[string]bool{}, nil
+	}
+	if doc.Content[0].Kind != yamlv3.MappingNode {
+		return nil, nil, fmt.Errorf("the manifest is not a YAML mapping")
 	}
 	root := doc.Content[0]
 	lines := strings.Split(string(body), "\n")
+	beforeKeys, err := manifestTopKeys(body)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	var edits []manifestEdit
 	// Guarantee a schema_version so the file stays loadable; an existing
@@ -203,7 +254,7 @@ func patchManifestText(body []byte, patch ManifestPatch) ([]byte, error) {
 	if _, ok := findMapKey(root, "schema_version"); !ok {
 		line, err := manifestValueLines("schema_version", CurrentManifestSchema, false)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		edits = append(edits, manifestEdit{start: appendPos(lines), end: appendPos(lines), text: line})
 	}
@@ -217,7 +268,7 @@ func patchManifestText(body []byte, patch ManifestPatch) ([]byte, error) {
 	// the schema_version guarantee is a pure append at the file's end,
 	// which touches no span and is anchor-safe by construction (round 2).
 	if !manifestPatchEmpty(patch) && treeHoldsAnchor(root) {
-		return nil, fmt.Errorf("the manifest holds YAML anchors or aliases: edit it by hand, the patch writer cannot follow them")
+		return nil, nil, fmt.Errorf("the manifest holds YAML anchors or aliases: edit it by hand, the patch writer cannot follow them")
 	}
 
 	apply := func(key string, value any, literal bool, afterKey string) error {
@@ -242,76 +293,82 @@ func patchManifestText(body []byte, patch ManifestPatch) ([]byte, error) {
 
 	if patch.Name != nil {
 		if err := apply("name", *patch.Name, false, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.DisplayName != nil {
 		if err := apply("display_name", *patch.DisplayName, false, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Icon != nil {
 		if err := apply("icon", *patch.Icon, false, "display_name"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Version != nil {
 		if err := apply("version", *patch.Version, false, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Description != nil {
 		if err := apply("description", *patch.Description, true, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Author != nil {
 		if err := apply("author", *patch.Author, false, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.WhenToUse != nil {
 		if err := apply("when_to_use", *patch.WhenToUse, true, "description"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Enabled != nil {
 		if err := apply("enabled", *patch.Enabled, false, "description"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Triggers != nil {
 		if err := apply("triggers", *patch.Triggers, false, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Forge != nil {
 		if err := apply("forge", *patch.Forge, false, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if patch.Requires != nil {
 		if err := apply("requires", *patch.Requires, false, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	return []byte(applyManifestEdits(lines, edits)), nil
+	return []byte(applyManifestEdits(lines, edits)), beforeKeys, nil
 }
 
 // applyManifestEdits splices every edit into lines. Edits are computed
-// against the ORIGINAL line numbering, so they apply bottom-up; two
-// insertions at the same position land in reverse patch order — what the
-// pre-surgical writer produced (each new key inserted directly after the
-// anchor pushes the previously inserted one down).
+// against the ORIGINAL line numbering, so they apply bottom-up — and the
+// ordering must be exact, not just deterministic: when an INSERTION's
+// position coincides with a REPLACEMENT's span start (a key inserted after
+// `description` lands on the line of the entry that follows it, and that
+// entry is itself patched — the studio's every-autosave shape), the
+// replacement must splice first, or it overwrites the inserted lines
+// (duplicated key, absorbed body — the revi gate's corpus probe). The sort
+// is therefore by start DESCENDING with the longer span first on a tie:
+// an insertion has start == end, so any coincident replacement wins.
+// Two insertions at the same position keep landing in reverse patch
+// order, as the pre-surgical writer produced.
 func applyManifestEdits(lines []string, edits []manifestEdit) string {
-	for i := 0; i < len(edits); i++ {
-		for j := i + 1; j < len(edits); j++ {
-			if edits[j].start > edits[i].start {
-				edits[i], edits[j] = edits[j], edits[i]
-			}
+	sort.SliceStable(edits, func(i, j int) bool {
+		if edits[i].start != edits[j].start {
+			return edits[i].start > edits[j].start
 		}
-	}
+		return edits[i].end > edits[j].end
+	})
 	for _, e := range edits {
 		tail := append([]string{}, lines[e.end:]...)
 		lines = append(append(lines[:e.start], e.text...), tail...)
@@ -345,7 +402,11 @@ func replaceKeyLines(lines []string, name string, key, val *yamlv3.Node, text []
 	if comment == "" {
 		comment = key.LineComment // a block scalar's `| # note` rides the key
 	}
-	if end == key.Line && len(text) == 1 && !strings.Contains(text[0], "\n") {
+	if end == key.Line && val.Tag != "!!null" && len(text) == 1 && !strings.Contains(text[0], "\n") {
+		// (An implicit null — `author:` with nothing after the colon — has
+		// no value text on the line to keep the line around: the in-line
+		// fast path would write `author:someone` with no space, which no
+		// YAML reads. The span path below renders the line whole.)
 		line := lines[start]
 		head := line[:val.Column-1]
 		// The rendered form is `key: value`; take the value, keep the line.
@@ -353,7 +414,26 @@ func replaceKeyLines(lines []string, name string, key, val *yamlv3.Node, text []
 		return manifestEdit{start: start, end: start + 1,
 			text: []string{head + rendered + lineCommentSuffix(line[val.Column-1:], comment)}}
 	}
-	text[0] = lines[start][:key.Column-1] + text[0] + lineCommentSuffix(lines[start][key.Column-1:], comment)
+	text[0] = lines[start][:key.Column-1] + text[0] + lineCommentSuffix(lines[start][key.Column-1+len(name):], comment)
+	if val.Kind != yamlv3.ScalarNode {
+		// The entry's rationale: comment (and blank) lines sitting between
+		// the key line and the block's first child are carried into the new
+		// block verbatim — dropping them would lose the note, leaving them
+		// out of the span would keep the old child beside the new one
+		// (revi round, the shipped `requires:` convention).
+		var lead []string
+		for i := start + 1; i < end; i++ {
+			t := strings.TrimSpace(lines[i])
+			if t != "" && !strings.HasPrefix(t, "#") {
+				break
+			}
+			lead = append(lead, lines[i])
+		}
+		if len(lead) > 0 {
+			tail := append([]string{}, text[1:]...)
+			text = append(append(text[:1], lead...), tail...)
+		}
+	}
 	return manifestEdit{start: start, end: end, text: text}
 }
 
@@ -391,6 +471,7 @@ func entryEnd(lines []string, key, val *yamlv3.Node) int {
 	blockScalar := val.Kind == yamlv3.ScalarNode && val.Style&(yamlv3.LiteralStyle|yamlv3.FoldedStyle) != 0
 	end := key.Line // 0-based index of the line after the key's
 	keepBlanks := blockScalar && (strings.Contains(lines[key.Line-1], "|+") || strings.Contains(lines[key.Line-1], ">+"))
+	seenContent := false
 	for end < len(lines) {
 		l := lines[end]
 		t := strings.TrimSpace(l)
@@ -402,13 +483,24 @@ func entryEnd(lines []string, key, val *yamlv3.Node) int {
 			break
 		}
 		if !blockScalar && strings.HasPrefix(t, "#") {
-			// A comment is content only of a block scalar: anywhere else it
-			// is not the span's to take, and it stays, below the replaced
-			// span. (An INTERIOR comment with children after it leaves the
-			// old tail on disk — the read-back gate refuses that loudly
-			// rather than delete the comment in silence.)
-			break
+			if seenContent {
+				// A comment is content only of a block scalar: past the
+				// block's first child it is not the span's to take, and it
+				// stays, below the replaced span. (An INTERIOR comment
+				// between children leaves the old tail on disk — the
+				// read-back gate refuses that loudly rather than delete
+				// the comment in silence.)
+				break
+			}
+			// A comment between the key line and its first child is the
+			// ENTRY's rationale (the shipped `requires:` convention): it is
+			// the span's, carried into the new block by replaceKeyLines —
+			// left out, the old child survived beside the new one and the
+			// strict decoder refused the duplicate (revi round).
+			end++
+			continue
 		}
+		seenContent = true
 		end++
 	}
 	if !keepBlanks {
@@ -455,11 +547,17 @@ func quotedSpanEnd(lines []string, lineIdx, col int, style yamlv3.Style) int {
 }
 
 // flowSpanEnd is the 0-based line index just past a flow collection: the
-// line its brackets balance on. Quoted strings inside are skipped, so a
-// bracket in a string does not count.
+// line its brackets balance on. A quote OPENS a scalar only where a scalar
+// can start — after a flow separator (`[`, `{`, `,`, `:`), whitespace, or
+// at the scan's start: an apostrophe inside a plain flow item (`don't`,
+// `what's-up`) is content, not an opening quote — treating it as one ran
+// the span to the end of the file and the patch deleted every key below
+// the collection in silence (revi round). Quotes inside a quoted scalar
+// are skipped by the style's escapes.
 func flowSpanEnd(lines []string, lineIdx, col int) int {
 	depth := 0
 	var quote byte
+	prev := byte(0) // the character before the current one, outside quotes
 	for i := lineIdx; i < len(lines); i++ {
 		s := lines[i]
 		j := 0
@@ -476,11 +574,14 @@ func flowSpanEnd(lines []string, lineIdx, col int) int {
 				if c == quote {
 					quote = 0
 				}
+				prev = c
 				continue
 			}
 			switch c {
 			case '"', '\'':
-				quote = c
+				if prev == 0 || prev == '[' || prev == '{' || prev == ',' || prev == ':' || prev == ' ' || prev == '\t' {
+					quote = c
+				}
 			case '[', '{':
 				depth++
 			case ']', '}':
@@ -489,8 +590,13 @@ func flowSpanEnd(lines []string, lineIdx, col int) int {
 					return i + 1
 				}
 			}
+			prev = c
 		}
 	}
+	// Accepted miss direction: an unbalanced quote inside a flow COMMENT or
+	// a genuinely quoted-but-unterminated plain item runs the span to the
+	// file's end — and the whole-document key-set gate then refuses LOUDLY
+	// with the original file intact, never a silent write.
 	return len(lines) // unbalanced: the read-back gate refuses the result
 }
 

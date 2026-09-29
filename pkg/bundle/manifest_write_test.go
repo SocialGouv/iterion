@@ -257,6 +257,75 @@ func TestWriteManifest_BlockFootCommentSurvives(t *testing.T) {
 	}
 }
 
+// The rationale block between a mapping key and its first child is carried
+// verbatim into the new block — byte-identical and contiguous — through a
+// Requires patch: a comment with a colon and quotes, a deeper-indented
+// `##`, two comment blocks separated by a blank line (the re-attack's
+// probe shapes; without the carry the whole suite stayed green while
+// every requires: patch silently deleted them).
+func TestWriteManifest_RequiresRationaleCarriedVerbatim(t *testing.T) {
+	rationale := `  ## The floor [matching: ...] asks for (parser.VarMatchingSince, via
+  ## bundle's syntax-floor table): below it the engine does not know the
+  ## form.
+    ## a deeper-indented note
+
+  ## a second comment block, after a blank line
+  ## and its second line`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: testbot\nschema_version: 1\nrequires:\n" + rationale + "\n  iterion: \">= 3.141.0\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Requires: &Requires{Iterion: ">= 9.99.0"}}); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	want := "requires:\n" + rationale + "\n  iterion: \">= 9.99.0\"\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("the rationale block did not survive byte-identical and contiguous\n--- got ---\n%s\n--- want the block ---\n%s", got, want)
+	}
+	if strings.Count(got, "iterion:") != 1 {
+		t.Errorf("the old floor survived beside the new one\n---\n%s", got)
+	}
+}
+
+// An insertion landing where a replacement starts must lose to the
+// replacement: a manifest with no `icon` patched with icon AND the key
+// that follows display_name — the studio's shape. Without the
+// longer-span-first tie-break the insertion applies first and the
+// replacement overwrites it.
+func TestWriteManifest_InsertionBeforeReplacementTieBreak(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: compass\ndisplay_name: Compass\ndescription: |\n  Points the way.\n  Second line.\nauthor: me <me@example.com>\nschema_version: 1\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{
+		Icon:        ptr("🧭"),
+		Description: ptr("A new blurb.\nTwo lines.\n"),
+	})
+	if err != nil {
+		t.Fatalf("the insertion/replacement collision must not corrupt: %v", err)
+	}
+	if m.Icon != "🧭" {
+		t.Errorf("the inserted icon was overwritten by the replacement: %q", m.Icon)
+	}
+	if m.Description != "A new blurb.\nTwo lines.\n" {
+		t.Errorf("Description=%q — the old body bled into the replacement", m.Description)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	if strings.Count(got, "description:") != 1 || strings.Count(got, "icon:") != 1 {
+		t.Errorf("a key was duplicated or lost\n---\n%s", got)
+	}
+	if !strings.Contains(got, "icon: 🧭") {
+		t.Errorf("the icon line is not there\n---\n%s", got)
+	}
+}
+
 // YAML 1.1 spellings are never written plain: `yes` is a string to yaml.v3
 // but a bool to the v2 loader the gate uses. The probe is the v2 decoder
 // itself — not a denylist — so the rule cannot drift from the reader, and
@@ -399,6 +468,82 @@ func TestWriteManifest_PaddedIconIsStoredTrimmed(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if !strings.Contains(string(raw), "icon: 🧭") {
 		t.Errorf("the stored icon keeps its padding\n---\n%s", raw)
+	}
+}
+
+// An apostrophe inside a plain flow item is content, not an opening quote:
+// the span ends at the `]`, and the whole-document key-set gate stands
+// behind any span that still runs away (revi round).
+func TestWriteManifest_ApostropheInFlowItemKeepsEveryKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := "name: testbot\ntriggers: [don't, review]\nrequires:\n  iterion: \">= 3.0.0\"\nschema_version: 1\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{Triggers: ptr([]string{"triage"})})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Requires == nil || m.Requires.Iterion != ">= 3.0.0" {
+		t.Errorf("requires was wiped by a runaway flow span: %+v", m.Requires)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	for _, want := range []string{"requires:", "schema_version:", "triggers: [triage]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("patched file lost %q\n---\n%s", want, got)
+		}
+	}
+}
+
+// A comments-only document is an empty manifest with notes above it: the
+// scaffold path, with the notes kept (the pre-surgical writer dropped them).
+func TestWriteManifest_CommentOnlyManifestScaffolds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte("# just a note about this bot\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{Author: ptr("me")})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Author != "me" || m.SchemaVersion != CurrentManifestSchema {
+		t.Errorf("scaffold = %+v", m)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "# just a note about this bot") {
+		t.Errorf("the note was dropped\n---\n%s", raw)
+	}
+	// A document that is a LIST or a scalar is no manifest: still refused.
+	if err := os.WriteFile(path, []byte("- a\n- b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Author: ptr("me")}); err == nil {
+		t.Fatal("a list document must not be scaffolded over")
+	}
+}
+
+// An implicit null (`author:` with nothing after the colon) has no value
+// text on the line: the in-line fast path would write `author:someone`
+// with no space. The whole line is rendered instead.
+func TestWriteManifest_ImplicitNullValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte("name: testbot\nauthor:\nschema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := WriteManifest(path, ManifestPatch{Author: ptr("someone")})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Author != "someone" {
+		t.Errorf("Author=%q", m.Author)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "author: someone") {
+		t.Errorf("the null was patched without the space\n---\n%s", raw)
 	}
 }
 
