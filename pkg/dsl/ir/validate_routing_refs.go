@@ -130,8 +130,9 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 // scalar "claude_code", no override involved). So the json arm reads the
 // static default and stays SILENT on a scalar document — a string, a
 // number, a bool — warning only on a non-scalar document (a list, an
-// object, null) and on one compile time cannot read (no default, or a
-// default carrying an env reference the launch expands).
+// object, null) and on one compile time cannot read: no default, or a
+// default the run's BRACED-ONLY json reading expands (`${...}` in a leaf
+// — a bare `$NAME` there is data, and the run never touches it).
 func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string) {
 	v := w.Vars[varName]
 	if v == nil {
@@ -161,8 +162,8 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varN
 			}
 			return
 		}
-		if carriesLiveReference(d) {
-			warn() // the document depends on the launch environment
+		if carriesLiveReferenceBraced(d) {
+			warn() // the document depends on the launch (${...} in a leaf)
 			return
 		}
 		// Read the default EXACTLY as the run reads it — ResolveVarText,
