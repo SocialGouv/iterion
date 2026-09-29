@@ -35,6 +35,9 @@ func TestAComputeLiteralOutsideTheEnumIsAWarning(t *testing.T) {
 		"an if() the compiler cannot fold":         {"    s: \"if(true, 'a', 'zzz')\"\n    t: \"'anything'\"\n    n: \"1\"\n", false},
 		"a call the compiler cannot fold":          {"    s: \"join(xs, ',')\"\n    t: \"'anything'\"\n    n: \"1\"\n", false},
 		"a scalar literal into the string[] field": {"    s: \"'a'\"\n    xs: \"'zzz'\"\n    t: \"'anything'\"\n    n: \"1\"\n", false},
+		"a list literal with a non-member":         {"    s: \"'a'\"\n    xs: \"['a', 'zzz']\"\n    t: \"'anything'\"\n    n: \"1\"\n", true},
+		"a list literal of members":                {"    s: \"'a'\"\n    xs: \"['a', 'b']\"\n    t: \"'anything'\"\n    n: \"1\"\n", false},
+		"a list literal with a non-string element": {"    s: \"'a'\"\n    xs: \"['a', 1]\"\n    t: \"'anything'\"\n    n: \"1\"\n", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cr := compileText(t, enumHead+tc.exprs+tail)

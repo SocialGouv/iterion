@@ -154,13 +154,12 @@ func (c *compiler) checkEnumMembership(w *Workflow, cn *ComputeNode, ce *Compute
 }
 
 // staticStringLiterals returns the string values an expression statically
-// evaluates to when it is a string literal — or, once the expr language
-// grows a collection literal (#1525 / PR #1915), an all-string list
-// literal. list reports which shape was read, so the caller can hold a
-// scalar against a `string` field's enum and a list against a `string[]`
-// field's per-element enum, the two arms the runtime checkFieldType
-// enforces. ok is false for anything the compiler cannot fully evaluate
-// (a ref, a call, a mixed list) — no opinion, no warning.
+// evaluates to when it is a string literal or an all-string list literal.
+// list reports which shape was read, so the caller can hold a scalar
+// against a `string` field's enum and a list against a `string[]` field's
+// per-element enum, the two arms the runtime checkFieldType enforces. ok is
+// false for anything the compiler cannot fully evaluate (a ref, a call, a
+// mixed list) — no opinion, no warning.
 func staticStringLiterals(n *expr.Snapshot) (lits []string, list, ok bool) {
 	if n == nil {
 		return nil, false, false
@@ -168,9 +167,19 @@ func staticStringLiterals(n *expr.Snapshot) (lits []string, list, ok bool) {
 	switch n.Kind {
 	case expr.SnapString:
 		return []string{n.Str}, false, true
-		// Collection arm: add the list-literal kind here when it lands
-		// (#1525) — every element a SnapString, list=true — and the caller's
-		// per-element membership check activates unchanged.
+	case expr.SnapList:
+		// The collection arm (#1525): an all-string list literal activates
+		// the caller's per-element membership check against a string[]
+		// field's enum; a non-string element is a type failure, not an
+		// enum one, so it stays silent here (C307 owns it).
+		lits := make([]string, 0, len(n.Children))
+		for _, ch := range n.Children {
+			if ch.Kind != expr.SnapString {
+				return nil, false, false
+			}
+			lits = append(lits, ch.Str)
+		}
+		return lits, true, true
 	}
 	return nil, false, false
 }
