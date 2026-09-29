@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -524,6 +525,43 @@ func (s forfaitSpawn) renewed() bool {
 	}
 	now := readForfaitAccessToken(s.dir)
 	return now != "" && now != s.token
+}
+
+// defaultForfaitRenewalWait covers the runner's follow of the store's record
+// (once a minute, pkg/runner/oauth_refresh.go) with slack: the provider
+// refuses a rotated token at once — measured 16 s after the rotation — and
+// the new one reaches the forfait file on the runner's next pass.
+const defaultForfaitRenewalWait = 75 * time.Second
+
+// renewedWithin is renewed, watched for up to wait: a spawn that carried no
+// forfait token answers at once, and so does a cancelled ctx.
+func (s forfaitSpawn) renewedWithin(ctx context.Context, wait time.Duration) bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if s.renewed() {
+			return true
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(min(time.Second, left)):
+		}
+	}
+}
+
+// forfaitRenewalWait is the backend's bound for renewedWithin.
+func (b *ClaudeCodeBackend) forfaitRenewalWait() time.Duration {
+	if b.renewalWait > 0 {
+		return b.renewalWait
+	}
+	return defaultForfaitRenewalWait
 }
 
 // sandboxed reports that the CLI subprocess will execute inside a REAL

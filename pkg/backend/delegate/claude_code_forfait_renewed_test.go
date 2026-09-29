@@ -44,50 +44,118 @@ func authEvidenceRecorder(task *Task) *[]usagecap.Reading {
 	return got
 }
 
-// TestRenderedFailureAfter_renewedTokenIsTransient: an auth render on a
-// token the forfait file no longer carries is the store's rotation, not a
-// dead credential — transient, and no auth evidence to bench a healthy
-// forfait. The same render on the token the file still carries is a dead
-// credential, and so is one from a spawn that carried no forfait token.
-func TestRenderedFailureAfter_renewedTokenIsTransient(t *testing.T) {
+// TestRenderedFailure_renewedTokenIsTransient: an auth render on a token
+// the forfait file no longer carries is the store's rotation, not a dead
+// credential — transient, and no auth evidence to bench a healthy forfait.
+// The same render on the token the file still carries is a dead credential,
+// and so is one from a spawn that carried no forfait token.
+func TestRenderedFailure_renewedTokenIsTransient(t *testing.T) {
 	dir := t.TempDir()
 	writeForfait(t, dir, "at.after")
 	task := Task{}
 	got := authEvidenceRecorder(&task)
-	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop(), renewalWait: 50 * time.Millisecond}
 	render := revokedRender
 	rm := &claudesdk.ResultMessage{Result: &render}
+	ctx := context.Background()
 
 	var tr *ErrTransient
-	if err := b.renderedFailureAfter(forfaitSpawn{dir: dir, token: "at.before"}, rm, task, "pass 1"); !errors.As(err, &tr) {
+	if err := b.renderedFailure(ctx, rm, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &tr) {
 		t.Fatalf("a renewed token: err = %v, want ErrTransient", err)
 	}
 	if len(*got) != 0 {
 		t.Fatalf("auth evidence filed for a renewed token: %+v", *got)
 	}
 	var auth *ErrAuthFailed
-	if err := b.renderedFailureAfter(forfaitSpawn{dir: dir, token: "at.after"}, rm, task, "pass 1"); !errors.As(err, &auth) {
+	if err := b.renderedFailure(ctx, rm, task, "pass 1", forfaitSpawn{dir: dir, token: "at.after"}); !errors.As(err, &auth) {
 		t.Fatalf("the token the file still carries: err = %v, want ErrAuthFailed", err)
 	}
 	if len(*got) != 1 {
 		t.Fatalf("a dead credential left %d readings, want 1", len(*got))
 	}
-	if err := b.renderedFailureAfter(forfaitSpawn{}, rm, task, "pass 1"); !errors.As(err, &auth) {
+	if err := b.renderedFailure(ctx, rm, task, "pass 1", forfaitSpawn{}); !errors.As(err, &auth) {
 		t.Fatalf("a spawn without a forfait token: err = %v, want ErrAuthFailed", err)
 	}
 	// A rotation excuses an auth render only: a window notice on a renewed
 	// token is still the window.
 	limit := "You've hit your weekly limit · resets 9pm (Europe/Paris)"
 	var rl *ErrRateLimited
-	if err := b.renderedFailureAfter(forfaitSpawn{dir: dir, token: "at.before"}, &claudesdk.ResultMessage{Result: &limit}, task, "pass 1"); !errors.As(err, &rl) {
+	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &limit}, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &rl) {
 		t.Fatalf("a window notice on a renewed token: err = %v, want ErrRateLimited", err)
+	}
+	model := "There's an issue with the selected model (claude-x). It may not exist or you may not have access to it."
+	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &model}, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); err == nil || errors.As(err, &tr) {
+		t.Fatalf("a model-unavailable render on a renewed token: err = %v, want the model error", err)
+	}
+}
+
+// TestRenderedFailure_theWaitEndsWithTheNode: a cancelled node does not sit
+// out the renewal wait.
+func TestRenderedFailure_theWaitEndsWithTheNode(t *testing.T) {
+	dir := t.TempDir()
+	writeForfait(t, dir, "at.before")
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop(), renewalWait: 30 * time.Second}
+	render := revokedRender
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	var auth *ErrAuthFailed
+	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &render}, Task{}, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &auth) {
+		t.Fatalf("err = %v, want ErrAuthFailed", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("a cancelled node waited %s for a renewal", took)
+	}
+}
+
+// TestRenderedFailure_aRenewalShipsAnAnswer: a structured answer is the
+// answer whatever words it contains, on a renewed spawn too — the renewal
+// only re-types what would have been a dead credential.
+func TestRenderedFailure_aRenewalShipsAnAnswer(t *testing.T) {
+	dir := t.TempDir()
+	writeForfait(t, dir, "at.after")
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop(), renewalWait: 50 * time.Millisecond}
+	answer := `{"status":"failed","reason":"gh: not logged into any host"}`
+	if !isAuthErrorResult(answer) {
+		t.Fatal("the fixture must read as an auth render, or this proves nothing")
+	}
+	if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{Result: &answer}, Task{}, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); err != nil {
+		t.Fatalf("a structured answer on a renewed spawn was not shipped: %v", err)
+	}
+}
+
+// TestRenderedFailure_waitsForTheRunnerToWriteTheRotation: the provider
+// refuses a rotated token at once, and the runner writes the new one on its
+// next follow pass. A rotation that reaches the file shortly after the
+// render is still a rotation.
+func TestRenderedFailure_waitsForTheRunnerToWriteTheRotation(t *testing.T) {
+	dir := t.TempDir()
+	writeForfait(t, dir, "at.before")
+	task := Task{}
+	got := authEvidenceRecorder(&task)
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop(), renewalWait: 5 * time.Second}
+	render := revokedRender
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(300 * time.Millisecond)
+		writeForfait(t, dir, "at.after")
+	}()
+	defer func() { <-done }()
+	var tr *ErrTransient
+	if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{Result: &render}, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &tr) {
+		t.Fatalf("a rotation written after the render: err = %v, want ErrTransient", err)
+	}
+	if len(*got) != 0 {
+		t.Fatalf("auth evidence filed for a rotated token: %+v", *got)
 	}
 }
 
 // fakeClaudeRotating stands in for the claude CLI. Spawn N prints
 // $LINES/N, after replacing the forfait file with $LINES/rotate-N when that
-// file exists — the rotation the runner writes while a CLI runs. Every spawn
-// logs the forfait token its env carried.
+// file exists — the rotation the runner writes while a CLI runs — or with
+// $LINES/late-rotate-N shortly AFTER it answered. Every spawn logs the
+// forfait token its env carried.
 const fakeClaudeRotating = `#!/bin/sh
 case "$*" in *--input-format*)
 	while read -r line; do
@@ -99,6 +167,9 @@ echo "$n" > "$LINES/count"
 printf '%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" >> "$LINES/tokens"
 if [ -f "$LINES/rotate-$n" ]; then
 	cp "$LINES/rotate-$n" "$FORFAIT_FILE.tmp" && mv "$FORFAIT_FILE.tmp" "$FORFAIT_FILE"
+fi
+if [ -f "$LINES/late-rotate-$n" ]; then
+	( sleep 0.3; cp "$LINES/late-rotate-$n" "$FORFAIT_FILE.tmp" && mv "$FORFAIT_FILE.tmp" "$FORFAIT_FILE" ) >/dev/null 2>&1 &
 fi
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"s1","model":"fake","tools":[],"mcp_servers":[]}'
 cat "$LINES/$n"
@@ -113,6 +184,12 @@ func resultLine(t *testing.T, text string, isError bool) []byte {
 // holding at.before. spawns maps a spawn number to the line it prints;
 // rotateOn names the spawns that rotate the file to at.after first.
 func runRotating(t *testing.T, task Task, spawns map[int][]byte, rotateOn ...int) (Result, []string, *[]usagecap.Reading, error) {
+	return runRotatingLate(t, task, spawns, nil, rotateOn...)
+}
+
+// runRotatingLate is runRotating with spawns that rotate the file only after
+// they answered.
+func runRotatingLate(t *testing.T, task Task, spawns map[int][]byte, lateOn []int, rotateOn ...int) (Result, []string, *[]usagecap.Reading, error) {
 	t.Helper()
 	resetClaudeCredEnv(t)
 	forfait := t.TempDir()
@@ -125,6 +202,11 @@ func runRotating(t *testing.T, task Task, spawns map[int][]byte, rotateOn ...int
 	}
 	for _, n := range rotateOn {
 		if err := os.WriteFile(filepath.Join(lines, fmt.Sprintf("rotate-%d", n)), forfaitBlob("at.after"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, n := range lateOn {
+		if err := os.WriteFile(filepath.Join(lines, fmt.Sprintf("late-rotate-%d", n)), forfaitBlob("at.after"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -142,7 +224,7 @@ func runRotating(t *testing.T, task Task, spawns map[int][]byte, rotateOn ...int
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfait},
 	}), 30*time.Second)
 	defer cancel()
-	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop(), renewalWait: 3 * time.Second}
 	res, err := b.Execute(ctx, task)
 	raw, _ := os.ReadFile(filepath.Join(lines, "tokens"))
 	return res, strings.Fields(string(raw)), got, err
@@ -176,6 +258,20 @@ func TestExecute_forfaitRenewedUnderTheCLI(t *testing.T) {
 	}
 	if len(*got) != 1 {
 		t.Fatalf("a dead credential left %d readings, want 1", len(*got))
+	}
+}
+
+// TestExecute_rotationWrittenAfterTheRefusal: the measured order — the
+// provider refuses the token at once, the runner writes the rotation a
+// moment later. The node still fails transient, without evidence.
+func TestExecute_rotationWrittenAfterTheRefusal(t *testing.T) {
+	_, _, got, err := runRotatingLate(t, Task{}, map[int][]byte{1: resultLine(t, revokedRender, true)}, []int{1})
+	var tr *ErrTransient
+	if !errors.As(err, &tr) {
+		t.Fatalf("a rotation written after the refusal: err = %v, want ErrTransient", err)
+	}
+	if len(*got) != 0 {
+		t.Fatalf("auth evidence filed for a rotated token: %+v", *got)
 	}
 }
 

@@ -150,15 +150,15 @@ func TestFormattingPassVerdicts(t *testing.T) {
 		obj := map[string]any{"answer": "done", "count": 1}
 		rm := &claudesdk.ResultMessage{Result: str("API Error: [429][Usage limit reached for 5 hour. Your limit will reset at 3pm][abc]"), StructuredOutput: obj}
 		var rl *ErrRateLimited
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); !errors.As(err, &rl) {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); !errors.As(err, &rl) {
 			t.Fatalf("window verdict shipped as an answer beside an echoed object: %v", err)
 		}
 		rm = &claudesdk.ResultMessage{Result: str("Claude AI usage limit reached|1757200000"), StructuredOutput: obj}
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); !errors.As(err, &rl) {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); !errors.As(err, &rl) {
 			t.Fatalf("non-bracketed refusal shipped as an answer beside an object: %v", err)
 		}
 		rm = &claudesdk.ResultMessage{Result: str("Done: the report lists the quota policy and the two remaining lots."), StructuredOutput: obj}
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); err != nil {
 			t.Fatalf("an object beside plain prose re-typed: %v", err)
 		}
 	})
@@ -168,7 +168,7 @@ func TestFormattingPassVerdicts(t *testing.T) {
 			Result:           str(`{"reason":"usage limit reached","count":1}`),
 			StructuredOutput: map[string]any{"reason": "usage limit reached", "count": 1},
 		}
-		if err := b.renderedFailure(rm, task, "formatting pass 1/2"); err != nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "formatting pass 1/2", forfaitSpawn{}); err != nil {
 			t.Fatalf("a structured answer about quotas re-typed because the SDK object answered first: %v", err)
 		}
 	})
@@ -193,13 +193,13 @@ func TestFormattingPassVerdicts(t *testing.T) {
 			`{"type":"error","error":{"type":"rate_limit_error","message":"rate limit exceeded"},"request_id":"req_123"}`,
 		} {
 			rm := &claudesdk.ResultMessage{Result: str(text)}
-			if err := b.renderedFailure(rm, task, "pass 1"); err == nil {
+			if err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{}); err == nil {
 				t.Fatalf("%s: an error envelope shipped as an answer", text)
 			}
 		}
 		// An answer that carries an `error` field beside real data stays one.
 		rm := &claudesdk.ResultMessage{Result: str(`{"answer":"rate limit exceeded on the third call","error":null,"count":3}`)}
-		if err := b.renderedFailure(rm, task, "pass 1"); err != nil {
+		if err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{}); err != nil {
 			t.Fatalf("an answer with an error field re-typed: %v", err)
 		}
 	})
@@ -215,7 +215,7 @@ func TestFormattingPassVerdicts(t *testing.T) {
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
 		rm := &claudesdk.ResultMessage{Result: str("API Error: 503 ```json\n{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n```")}
 		var tr *ErrTransient
-		if err := b.renderedFailure(rm, task, "pass 1"); !errors.As(err, &tr) {
+		if err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{}); !errors.As(err, &tr) {
 			t.Fatalf("render with a fenced body exempted as an answer: %v", err)
 		}
 	})

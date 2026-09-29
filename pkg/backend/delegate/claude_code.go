@@ -352,6 +352,11 @@ type ClaudeCodeBackend struct {
 	Command string
 	// Logger is the leveled logger for diagnostic output.
 	Logger *iterlog.Logger
+	// renewalWait bounds how long an auth render from a forfait spawn waits
+	// for a rotation to reach the forfait file (forfaitRenewalWait); zero is
+	// the default.
+	renewalWait time.Duration
+
 	// formatOutputFn replaces the CLI-spawning formatting pass in tests: the
 	// loop around it — retry, terminal verdict, usage, cost — is where the
 	// accounting defects lived, and it had no seam to be exercised through.
@@ -802,7 +807,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// Every guard on the result TEXT lives in renderedFailure, shared with
 	// the formatting passes: a render is never an answer, on any pass. The
 	// session was billed all the same: its cost goes out with the verdict.
-	if err := b.renderedFailureAfter(spawn, rm, task, "pass 1"); err != nil {
+	if err := b.renderedFailure(ctx, rm, task, "pass 1", spawn); err != nil {
 		typed := typedFailure(&result, task, totalIn, totalOut, err, rm)
 		return result, typed
 	}
@@ -834,24 +839,6 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	return result, nil
 }
 
-// renderedFailureAfter is renderedFailure for the result of one spawn, whose
-// forfait token it knows. A CLI keeps the token it was spawned with, and the
-// store's refresh worker revokes that token when it rotates the record; the
-// runner then writes the rotation into the forfait file. An auth render on a
-// token the file no longer carries is that rotation, not a dead credential:
-// it is typed transient, so the executor retries on a spawn that reads the
-// new token (resuming the session the dead attempt opened), and it files no
-// auth evidence, which would bench a healthy forfait.
-func (b *ClaudeCodeBackend) renderedFailureAfter(spawn forfaitSpawn, rm *claudesdk.ResultMessage, task Task, pass string) error {
-	if rm != nil && rm.Result != nil && isAuthErrorResult(*rm.Result) && spawn.renewed() {
-		detail := redactAuthRender(strings.TrimSpace(*rm.Result))
-		b.Logger.Warn("[%s#%d/claude-code %s] the forfait token was renewed under the running CLI — retrying on the new token, no auth evidence filed: %.160s",
-			task.NodeID, task.Iteration, pass, detail)
-		return &ErrTransient{Provider: BackendClaudeCode, Reason: "forfait token renewed under the running CLI", Detail: detail}
-	}
-	return b.renderedFailure(rm, task, pass)
-}
-
 // renderedFailure re-types a result whose TEXT is the CLI's render of an
 // upstream failure — a quota window, a rejected credential, an unavailable
 // model, a transient API error — into the typed error the executor knows how
@@ -862,7 +849,14 @@ func (b *ClaudeCodeBackend) renderedFailureAfter(spawn forfaitSpawn, rm *claudes
 // spent 283 minutes on it). Order is the most specific verdict first: a
 // window notice carries evidence the generic retry would lose, and a dead
 // credential must not be retried at all.
-func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Task, pass string) error {
+//
+// spawn is the forfait token the spawn that produced rm was handed. A CLI
+// keeps that token for its whole life, and the store's refresh worker
+// revokes it when it rotates the record; the runner then writes the
+// rotation into the forfait file. An auth render on a token the file no
+// longer carries is that rotation, not a dead credential (see the auth
+// guard).
+func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.ResultMessage, task Task, pass string, spawn forfaitSpawn) error {
 	if rm == nil || rm.Result == nil {
 		return nil
 	}
@@ -920,6 +914,20 @@ func (b *ClaudeCodeBackend) renderedFailure(rm *claudesdk.ResultMessage, task Ta
 	// field" schema error — the exact masking that turns a dead credential into
 	// a wild goose chase through the structured-output machinery. Fail fast with
 	// a legible auth error. Non-transient (a retry can't revive a dead token).
+	//
+	// A render on a forfait token the store rotated under the running CLI is
+	// typed transient instead, and files no evidence, which would bench a
+	// healthy forfait: the executor retries on a spawn that reads the new
+	// token, resuming the session the dead attempt opened. The provider
+	// refuses the rotated token at once while the runner writes it within
+	// its follow interval, so the file is watched for a bounded while before
+	// the credential is called dead.
+	if rm.Result != nil && isAuthErrorResult(*rm.Result) && spawn.renewedWithin(ctx, b.forfaitRenewalWait()) {
+		detail := redactAuthRender(strings.TrimSpace(*rm.Result))
+		b.Logger.Warn("[%s#%d/claude-code %s] the forfait token was renewed under the running CLI — retrying on the new token, no auth evidence filed: %.160s",
+			task.NodeID, task.Iteration, pass, detail)
+		return &ErrTransient{Provider: BackendClaudeCode, Reason: "forfait token renewed under the running CLI", Detail: detail}
+	}
 	if authErr := authFailureFast(rm.Result, task); authErr != nil {
 		b.Logger.Error("[%s#%d/claude-code %s] authentication failed — failing fast: %.160s",
 			task.NodeID, task.Iteration, pass, redactAuthRender(strings.TrimSpace(*rm.Result)))
@@ -1249,7 +1257,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 			result.FormattingPassUsed = true
 			// The formatter's result is read through the same predicate as
 			// pass 1: a render here would otherwise be parsed as the output.
-			if rerr := b.renderedFailureAfter(fmtSpawn, fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts)); rerr != nil {
+			if rerr := b.renderedFailure(ctx, fmtRM, task, fmt.Sprintf("formatting pass %d/%d", attempt, maxFmtAttempts), fmtSpawn); rerr != nil {
 				if !renderRetryable(rerr) {
 					// A credential, model or window verdict is terminal: a
 					// second attempt re-spends the pass against a provider
@@ -1377,7 +1385,7 @@ func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task T
 	// A render on the recovery pass is typed and returned, never parsed as
 	// the output nor swallowed into an opaque schema failure — with its
 	// message, so the caller's cost annotation sees the billed pass.
-	if rerr := b.renderedFailureAfter(fmtSpawn, fmtRM, task, "recovery formatting pass"); rerr != nil {
+	if rerr := b.renderedFailure(ctx, fmtRM, task, "recovery formatting pass", fmtSpawn); rerr != nil {
 		return fmtRM, rerr
 	}
 	fmtOutput, fmtRawLen, fmtFallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
