@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.212.2](https://github.com/SocialGouv/iterion/compare/v3.212.1...v3.212.2) (2026-09-29)
+
+### Bug Fixes
+
+* **delegate:** ultracode nodes collect their background subagents ([#1953](https://github.com/SocialGouv/iterion/issues/1953)) ([34fe9e0](https://github.com/SocialGouv/iterion/commit/34fe9e04537a6d08aea3e0068710bc402c9c70b1))
+
+    <details><summary>why</summary>
+
+    The ultracode instruction grants standing consent to fan work out across parallel subagents, and says nothing of the one rule a non-interactive session imposes on it: a subagent launched in the background reports only when the model waits on it, and nothing reaches the model once it produces its final output. Measured on a documentation campaign node, five passes out of five: seven subagents spawned in the background, no TaskOutput call, the model's last words "Waiting for the auditors now……
+
+    </details>
+* **sandbox:** a workspace export survives a writer racing its archive ([#1952](https://github.com/SocialGouv/iterion/issues/1952)) ([b080b18](https://github.com/SocialGouv/iterion/commit/b080b18621d523be56e93ec0b528dcc3413e7f83))
+
+    <details><summary>why</summary>
+
+    ExportWorkspace dropped the whole export on any non-zero exit of the in-pod tar. GNU tar exits 1 with "file changed as we read it" when a file changes while it is archived — a git process still finishing in the pod at park time — even though the archive is complete. Measured in a run parked on a usage window: "tar: ./.git: file changed as we read it … exit status 1", the export abandoned, the run's in-pod commits left invisible on the host.
+
+    </details>
+* **server:** answer a probe refusal with the unit's relative paths ([#1918](https://github.com/SocialGouv/iterion/issues/1918)) ([#1933](https://github.com/SocialGouv/iterion/issues/1933)) ([29ec953](https://github.com/SocialGouv/iterion/commit/29ec9530f9c054b79ef4cd2727526830aab468f8))
+
+    <details><summary>why</summary>
+
+    The claim probe parses every file under its absolute path, and a claim it refuses is a 422 whose body is the diagnostic — disclosing the server's directory layout to any studio client. finishClaimed, the one place every probe-forwarded diagnostic crosses (save, cloud write-back and render alike), now cuts the unit's root off each diagnostic's position field and message text: every name a probe diagnostic can carry is Join(Root, Rel), so the cut answers both and no Name→Rel table maps a string…
+
+    </details>
+
 ## [3.212.1](https://github.com/SocialGouv/iterion/compare/v3.212.0...v3.212.1) (2026-09-29)
 
 ### Bug Fixes
