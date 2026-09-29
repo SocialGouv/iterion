@@ -121,6 +121,14 @@
 ## capped by `max_passes`; on exhaustion the run ships what is banked
 ## (every committed page is real, landed work). `iterion validate`
 ## reports NO undeclared cycle — this is the only declared loop.
+##
+## EVERY PYTHON NODE RUNS ISOLATED (`python3 -I -c`). A node runs with
+## the workspace as its working directory, and `python3 -c` puts that
+## directory FIRST on the import path: a `json.py` or `hashlib.py` the
+## judged campaign leaves there (git-ignored, so scope_check never sees
+## it) would replace the standard module inside the very gate that
+## judges it. `-I` keeps the working directory, the user site and the
+## PYTHON* variables out of the import path.
 ## ─────────────────────────────────────────────────────────────────
 
 dsl: 2
@@ -875,7 +883,9 @@ prompt campaign_user:
     as a phantom). Each route a block cites by its path needs prose of
     its own in that block: a list of routes is an index, not a
     description. A route no block describes is refused as
-    ROUTE_UNDOCUMENTED. The routes the net declares
+    ROUTE_UNDOCUMENTED. A catch-all route — every segment a placeholder,
+    or a trailing `**` — proves nothing: it is not demanded, and a page
+    never cites one. The routes the net declares
     ({{input.routes_source}}; an empty list means no route table, and
     this rule then has nothing to demand):
     {{input.routes}}
@@ -1482,7 +1492,7 @@ schema surface_site_link_input:
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks; values flow via shell env vars.
 tool catalog_ingest:
-  command: `WS={{vars.workspace_dir}} CATALOG={{vars.catalog_path}} PRODUCT={{vars.product_id}} SCRATCH={{vars.scratch_dir}} DEPTH={{vars.clone_depth}} SECRET_GLOBS={{vars.secret_globs}} ORACLE_DIR={{vars.oracle_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} CATALOG={{vars.catalog_path}} PRODUCT={{vars.product_id}} SCRATCH={{vars.scratch_dir}} DEPTH={{vars.clone_depth}} SECRET_GLOBS={{vars.secret_globs}} ORACLE_DIR={{vars.oracle_dir}} python3 -I -c "
 import os, json, re, subprocess, shutil, fnmatch
 ws = os.environ['WS']
 catalog = (os.environ.get('CATALOG') or '').strip()
@@ -1512,7 +1522,18 @@ if not scratch:
 ## docs workspace they would be a tree the scope gate can be blinded to
 ## (one ignore line) and a net the route table could mistake for the
 ## workspace's own.
-real_scratch = os.path.realpath(scratch if os.path.isabs(scratch) else os.path.join(ws, scratch))
+## NO LINK IN THE SCRATCH IS FOLLOWED. The scratch persists between runs
+## and the judged agent writes in it; every path this node creates or
+## rewrites there -- the scratch itself, the sources root, the askpass
+## helper, each clone and its .git -- is refused when it is a link: through
+## one, a clone reset, a redaction, a helper write or a removal would land on
+## whatever it points at.
+def refuse_link(path):
+    if os.path.islink(path):
+        raise SystemExit('product-docs: ' + path + ' is a symbolic link -- the source clones and their helper live in real files under scratch_dir; remove the link itself (never what it points to) and relaunch')
+scratch_abs = scratch if os.path.isabs(scratch) else os.path.join(ws, scratch)
+refuse_link(scratch_abs)
+real_scratch = os.path.realpath(scratch_abs)
 real_ws_root = os.path.realpath(ws)
 if real_scratch == real_ws_root or real_scratch.startswith(real_ws_root + os.sep):
     raise SystemExit('product-docs: scratch_dir resolves INSIDE the docs workspace (' + real_scratch + ') -- the source clones must live out of tree; point scratch_dir outside ' + real_ws_root)
@@ -1607,11 +1628,8 @@ if not isinstance(surfaces, list):
 ## stays in the helper process environment, never in a command line
 ## (visible in ps) and never in this node stdout.
 sources_root = os.path.join(scratch, 'sources')
+refuse_link(sources_root)
 os.makedirs(sources_root, exist_ok=True)
-## A LINK IN THE SCRATCH IS NEVER FOLLOWED. The clones are fetched, reset,
-## redacted and stripped of their history below; through a link planted in
-## a persistent scratch, those steps would land on whatever it points at --
-## another repository's uncommitted work, its secrets, its .git.
 real_sources = os.path.join(real_scratch, 'sources')
 if os.path.islink(sources_root) or os.path.realpath(sources_root) != real_sources:
     raise SystemExit('product-docs: ' + sources_root + ' is, or sits behind, a symbolic link -- the source clones live in real directories under scratch_dir; remove the link itself (never what it points to) and relaunch')
@@ -1648,7 +1666,9 @@ except (OSError, subprocess.SubprocessError):
 forge_host = re.sub(r'[^a-z0-9.-]', '', forge_host)
 if token and forge_host:
     helper = os.path.join(scratch, 'git-askpass.sh')
-    with open(helper, 'w', encoding='utf-8') as fh:
+    refuse_link(helper)
+    with os.fdopen(os.open(helper, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o700), 'w', encoding='utf-8') as fh:
+        os.fchmod(fh.fileno(), 0o700)
         ## chr(36) is the dollar sign: written literally, the SHELL
         ## expands it while parsing this double-quoted command, and the
         ## helper reaches disk with its two arguments erased -- a shell
@@ -1664,7 +1684,6 @@ if token and forge_host:
         DQ = chr(34)
         guard = 'printf %s ' + DQ + D + '1' + DQ + ' | grep -qF -e ' + DQ + '://' + forge_host + Q + DQ + ' -e ' + DQ + '@' + forge_host + Q + DQ + ' || exit 1'
         fh.write('#!/bin/sh' + chr(10) + guard + chr(10) + 'case ' + D + '1 in' + chr(10) + 'Username*) echo x-access-token ;;' + chr(10) + '*) printf %s ' + D + 'PRODUCT_DOCS_GIT_TOKEN ;;' + chr(10) + 'esac' + chr(10))
-    os.chmod(helper, 0o700)
     git_env['GIT_ASKPASS'] = helper
     git_env['PRODUCT_DOCS_GIT_TOKEN'] = token
 
@@ -1914,7 +1933,9 @@ for raw in repos:
         inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'catalog entry names no github_repo, gitlab_path or url'})
         continue
     dest = os.path.join(sources_root, rid)
-    if os.path.islink(dest) or os.path.islink(os.path.join(dest, '.git')) or (os.path.lexists(dest) and os.path.realpath(dest) != os.path.join(real_sources, rid)):
+    refuse_link(dest)
+    refuse_link(os.path.join(dest, '.git'))
+    if os.path.lexists(dest) and os.path.realpath(dest) != os.path.join(real_sources, rid):
         raise SystemExit('product-docs: the clone destination ' + dest + ' is, or holds, a symbolic link -- the source clones are real directories under scratch_dir; remove the link itself (never what it points to) and relaunch')
     ## A source already on disk is reached without a credential: the
     ## token belongs to the forge, and nothing local can ask for it.
@@ -2081,7 +2102,7 @@ print(json.dumps({'product_id': product, 'product_dir': product_dir, 'base_sha':
 ## sign in the python body.
 tool route_table:
   input: route_table_input
-  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} BASE_SHA={{input.base_sha}} ORACLE_DIR={{vars.oracle_dir}} ROUTES_FILE={{vars.coverage_routes_file}} PROBE_TIMEOUT={{vars.coverage_routes_probe_timeout}} python3 -c "import os, sys, json, stat, subprocess, signal, tempfile, select, time, shutil, hashlib
+  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} BASE_SHA={{input.base_sha}} ORACLE_DIR={{vars.oracle_dir}} ROUTES_FILE={{vars.coverage_routes_file}} PROBE_TIMEOUT={{vars.coverage_routes_probe_timeout}} python3 -I -c "import os, sys, re, json, stat, subprocess, signal, tempfile, select, time, shutil, hashlib
 ws = os.environ['WS']
 os.chdir(ws)
 oracle = (os.environ.get('ORACLE_PATH') or '').strip()
@@ -2113,15 +2134,19 @@ GIT_ENV['GIT_NO_REPLACE_OBJECTS'] = '1'
 GIT_ENV['GIT_GRAFT_FILE'] = os.devnull
 GIT_ENV['GIT_TERMINAL_PROMPT'] = '0'
 ## THE NET AS THE RUN FOUND IT. The gates read these files on every pass;
-## each is fingerprinted here, before any agent runs, and a gate refuses a
-## file that is no longer the one fingerprinted: what the judged pass could
-## change -- in the working tree or in a source clone -- is never what it
-## is judged by. The value is the sha256 of the file, or empty for a file
-## the net does not carry.
+## each is fingerprinted when this node starts, before any agent runs, and a
+## gate refuses a file that is no longer the one fingerprinted: what the
+## judged pass could change -- in the working tree or in a source clone -- is
+## never what it is judged by. The value is the sha256 of the file, or empty
+## for a file the net does not carry.
 NET_FILES = ('corpus.json', 'feature-coverage.json', 'verify-oracle.sh', 'REPORT.md')
 NET_DIGEST = {}
 def emit(routes, source, note, dropped, log):
-    size = len(json.dumps(routes))
+    ## Measured the way the engine renders the table for a gate: compact JSON,
+    ## with < > & escaped to six bytes each -- a route table of typed
+    ## placeholders (/x/<int:id>) is a third bigger on the wire than here.
+    compact = json.dumps(routes, separators=(',', ':'))
+    size = len(compact) + 5 * sum(compact.count(c) for c in '<>&')
     if size > ROUTES_JSON_MAX:
         why = 'the declared route table holds ' + str(len(routes)) + ' route(s), ' + str(size) + ' bytes -- past the ' + str(ROUTES_JSON_MAX) + '-byte bound a gate can receive'
         routes, source, dropped = [], '', 0
@@ -2141,6 +2166,23 @@ except ValueError:
     probe_timeout = 0
 if probe_timeout <= 0 or probe_timeout > PROBE_TIMEOUT_MAX:
     raise SystemExit('product-docs: coverage_routes_probe_timeout is a whole number of seconds in 1..' + str(PROBE_TIMEOUT_MAX) + '; got: ' + (probe_timeout_raw or 'nothing'))
+## The fingerprint is taken HERE, before any branch below can degrade the
+## table, and it reads each file exactly as the gates will -- the working
+## tree, through open(): route_table runs before any agent, so this IS the
+## net as the run found it. A commit is what fixes the route TABLE; the gates
+## read the working tree, and a fingerprint of anything else would refuse a
+## healthy net (an eol attribute, an LFS smudge, an untracked net).
+for name in NET_FILES:
+    try:
+        with open(os.path.join(oracle, name), 'rb') as fh:
+            h = hashlib.sha256()
+            for chunk in iter(lambda: fh.read(65536), b''):
+                h.update(chunk)
+        NET_DIGEST[name] = h.hexdigest()
+    except FileNotFoundError:
+        NET_DIGEST[name] = ''
+    except OSError as exc:
+        NET_DIGEST[name] = 'unreadable: ' + ' '.join(str(exc).split())[:120]
 def git(args, cwd):
     try:
         p = subprocess.run(['git'] + args, cwd=cwd, capture_output=True, timeout=GIT_TIMEOUT, env=GIT_ENV)
@@ -2161,7 +2203,7 @@ def parse_route_table(text):
         pat = tail.strip() if (tail.strip() and head.isalpha() and head.isupper()) else line
         if not pat.startswith('/'):
             continue
-        if len(pat) > ROUTE_MAX or len(pat.split()) != 1:
+        if len(pat) > ROUTE_MAX or len(re.sub('{[^}]*}', '{}', pat).split()) != 1:
             odd += 1
             continue
         routes.append(pat)
@@ -2208,25 +2250,6 @@ if given != own_path and os.path.realpath(given) != os.path.realpath(own_path):
             os.close(fd)
             raise OSError('it is not a regular file')
         return fd
-    for name in NET_FILES:
-        try:
-            fd = open_confined(name)
-        except FileNotFoundError:
-            NET_DIGEST[name] = ''
-            continue
-        except OSError as exc:
-            NET_DIGEST[name] = 'unreadable: ' + ' '.join(str(exc).split())[:120]
-            continue
-        h = hashlib.sha256()
-        try:
-            while True:
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    break
-                h.update(chunk)
-        finally:
-            os.close(fd)
-        NET_DIGEST[name] = h.hexdigest()
     if not routes_file:
         degrade('the net at ' + oracle + ' lives in a source clone and no route file is configured' + tail)
     try:
@@ -2267,8 +2290,7 @@ if oracle_dir != '.':
         degrade('the net at ' + oracle_dir + ' is committed as a symbolic link, so the run base does not carry its route table where oracle_dir names it')
 def committed_blob(name, limit):
     ## A REGULAR committed file at the run base -- its bytes, or why not.
-    ## limit bounds what is read as a route table or a config; a fingerprint
-    ## reads the whole file.
+    ## limit bounds what is read as a route table or a config.
     rel = name if oracle_dir == '.' else oracle_dir + '/' + name
     rc, out, err = git(['ls-tree', '-z', base_sha, '--', rel], real_ws)
     if rc != 0:
@@ -2283,7 +2305,7 @@ def committed_blob(name, limit):
     rc, size, err = git(['cat-file', '-s', base_sha + ':' + rel], real_ws)
     if rc != 0 or not size.strip().isdigit():
         return None, 'the committed ' + rel + ' cannot be read (' + ' '.join(err.split())[:200] + ')'
-    if limit is not None and int(size.strip()) > limit:
+    if int(size.strip()) > limit:
         return None, 'the committed ' + rel + ' is past the ' + str(limit) + '-byte bound -- a file that size is not a route table'
     rc, blob, err = git(['cat-file', 'blob', base_sha + ':' + rel], real_ws)
     if rc != 0:
@@ -2292,9 +2314,6 @@ def committed_blob(name, limit):
 def committed(name):
     blob, why = committed_blob(name, PROBE_OUTPUT_MAX)
     return (blob.decode('utf-8', 'replace') if blob is not None else None), why
-for name in NET_FILES:
-    blob, why = committed_blob(name, None)
-    NET_DIGEST[name] = hashlib.sha256(blob).hexdigest() if blob is not None else (('unreadable: ' + why) if why else '')
 stray = ''
 if routes_file and os.path.lexists(os.path.join(given, routes_file)):
     stray = '; the ' + routes_file + ' in the working tree is in no commit and is not read'
@@ -2341,13 +2360,15 @@ GUARD = chr(10).join([
     '        os.killpg(0, signal.SIGKILL)',
     'sys.exit(code if code >= 0 else 128 - code)',
 ])
+## The node's own variables are not the probe's: a target script may use a
+## WS or a BASE_SHA of its own, and ours would change what it prints.
 OWN_VARS = ('WS', 'ORACLE_PATH', 'BASE_SHA', 'ORACLE_DIR', 'ROUTES_FILE', 'PROBE_TIMEOUT')
 def run_probe(command, cwd, timeout):
     env = dict((k, v) for k, v in GIT_ENV.items() if k not in OWN_VARS)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     try:
-        p = subprocess.Popen([sys.executable or 'python3', '-c', GUARD, str(os.getpid()), '/bin/sh', '-c', command], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, env=env)
-    except OSError as exc:
+        p = subprocess.Popen([sys.executable or 'python3', '-I', '-c', GUARD, str(os.getpid()), '/bin/sh', '-c', command], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, env=env)
+    except (OSError, ValueError) as exc:
         return None, 'the net routes_probe could not start -- ' + ' '.join(str(exc).split())[:200]
     ## One deadline covers the reading and the wait; the output is read
     ## chunk by chunk and never past its bound.
@@ -2355,20 +2376,37 @@ def run_probe(command, cwd, timeout):
     late = 'the net routes_probe did not finish within ' + str(timeout) + ' s'
     chunks, size, why = [], 0, ''
     fd = p.stdout.fileno()
+    over = 'the net routes_probe printed past the ' + str(PROBE_OUTPUT_MAX) + '-byte bound -- an output that size is not a route table, and it was not read further'
     try:
         while True:
             left = deadline - time.monotonic()
-            if left <= 0 or not select.select([fd], [], [], left)[0]:
+            if left <= 0:
                 why = late
                 break
-            chunk = os.read(fd, 65536)
-            if not chunk:
+            if select.select([fd], [], [], min(left, 0.2))[0]:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > PROBE_OUTPUT_MAX:
+                    why = over
+                    break
+                chunks.append(chunk)
+                continue
+            ## The probe has returned: whatever still holds its output (a
+            ## daemon its build tool started in this fresh clone) is not the
+            ## probe. What it already wrote is read, then the group is killed.
+            if p.poll() is not None:
+                while not why and select.select([fd], [], [], 0)[0]:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > PROBE_OUTPUT_MAX:
+                        why = over
+                    else:
+                        chunks.append(chunk)
                 break
-            size += len(chunk)
-            if size > PROBE_OUTPUT_MAX:
-                why = 'the net routes_probe printed past the ' + str(PROBE_OUTPUT_MAX) + '-byte bound -- an output that size is not a route table, and it was not read further'
-                break
-            chunks.append(chunk)
         if not why:
             try:
                 p.wait(timeout=max(0.0, deadline - time.monotonic()))
@@ -2466,7 +2504,7 @@ agent diagram:
 
 tool scan_hints:
   input: hints_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} SURFACES={{input.surfaces}} EDITORIAL_DIR={{vars.editorial_dir}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} MODE={{vars.mode}} DIFF_SINCE={{vars.diff_since}} python3 -c "
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} SURFACES={{input.surfaces}} EDITORIAL_DIR={{vars.editorial_dir}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} MODE={{vars.mode}} DIFF_SINCE={{vars.diff_since}} python3 -I -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -2669,7 +2707,7 @@ agent campaign:
 ## this flags.
 tool scope_check:
   input: product_dir_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} EDITORIAL_DIR={{vars.editorial_dir}} BASE_SHA={{input.base_sha}} python3 -c "
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} EDITORIAL_DIR={{vars.editorial_dir}} BASE_SHA={{input.base_sha}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
 product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
@@ -2781,7 +2819,7 @@ except Exception as exc:
 ## campaign removes exactly the reported lines.
 tool page_lint:
   input: lint_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} LINT_RULES={{vars.lint_rules}} EXTRA_HEADINGS={{vars.extra_forbidden_headings}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ORACLE_PATH={{input.oracle_path}} python3 -c "
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} LINT_RULES={{vars.lint_rules}} EXTRA_HEADINGS={{vars.extra_forbidden_headings}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ORACLE_PATH={{input.oracle_path}} python3 -I -c "
 import os, json, glob, re
 ws = os.environ['WS']
 os.chdir(ws)
@@ -3065,7 +3103,7 @@ print(json.dumps({'lint_ok': not violations, 'violations': violations[:200], 'vi
 ## sign in the python body.
 tool diagram_lint:
   input: maplint_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} ORACLE_PATH={{input.oracle_path}} ROUTES={{input.routes}} ROUTES_SOURCE={{input.routes_source}} ROUTES_NOTE={{input.routes_note}} NET_DIGEST={{input.net_digest}} python3 -c "
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} ORACLE_PATH={{input.oracle_path}} ROUTES={{input.routes}} ROUTES_SOURCE={{input.routes_source}} ROUTES_NOTE={{input.routes_note}} NET_DIGEST={{input.net_digest}} python3 -I -c "
 import os, json, re, glob, hashlib
 ws = os.environ['WS']
 os.chdir(ws)
@@ -3094,7 +3132,11 @@ if not pages:
 FENCE = chr(96) * 3
 blocks_total = 0
 routes_on_map = set()
-ROUTE_RE = re.compile(r'(?<![A-Za-z0-9_:/-])/[A-Za-z0-9_{}:*-]+(?:/[A-Za-z0-9_{}:*-]+)*(?:[?]([A-Za-z0-9_%-]+=[^ ]+))?')
+## A path segment carries what a captured URL carries -- dots (a file),
+## percent-escapes, ~ + @ -- or the map lint truncates a screen the net
+## captured and refuses what it did not read. Trailing sentence punctuation
+## is not part of the path.
+ROUTE_RE = re.compile(r'(?<![A-Za-z0-9_:/-])/[A-Za-z0-9_{}:*.%~+@-]+(?:/[A-Za-z0-9_{}:*.%~+@-]+)*(?:[?]([A-Za-z0-9_%-]+=[^ ]+))?')
 for page in pages:
     with open(page, encoding='utf-8') as fh:
         lines = fh.read().split(chr(10))
@@ -3114,7 +3156,9 @@ for page in pages:
             if not joined.strip():
                 refuse('MAP_NOT_A_DIAGRAM', page, 'a mermaid block is EMPTY -- a diagram that diagrams nothing is dead weight; draw it or remove the block')
             for mm in ROUTE_RE.finditer(joined):
-                routes_on_map.add(mm.group(0))
+                tok = mm.group(0).rstrip('.,')
+                if tok:
+                    routes_on_map.add(tok)
             body = []
         elif in_fence:
             body.append(ln)
@@ -3207,7 +3251,7 @@ for tok in sorted(routes_on_map):
     if not declared:
         notes.append('DIAGRAM LINT: routes DEGRADED -- no declared route table was available, the mapped path ' + tok + ' could not be verified')
         continue
-    fits = sorted(r for r in declared if route_proves(r) and pattern_matches(r, path_only))
+    fits = sorted((r for r in declared if route_proves(r) and pattern_matches(r, path_only)), key=lambda r: (tuple(1 if is_placeholder(seg) else 0 for seg in segments(r)), r))
     if fits:
         refuse('PHANTOM_MAP', tok, 'the mapped path ' + tok + ' fits the declared route ' + fits[0] + ' only through a placeholder, with a value the net never observed -- draw the route itself (' + fits[0] + ') or a screen the net captured')
         continue
@@ -3232,7 +3276,7 @@ raise SystemExit(0)
 
 tool coverage_check:
   input: coverage_input
-  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES={{input.routes}} ROUTES_SOURCE={{input.routes_source}} ROUTES_NOTE={{input.routes_note}} NET_DIGEST={{input.net_digest}} CITE_OPEN={{vars.coverage_citation_open}} CITE_CLOSE={{vars.coverage_citation_close}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} MAX_ANCHORLESS={{vars.coverage_max_anchorless}} python3 -c "
+  command: `WS={{vars.workspace_dir}} ORACLE_PATH={{input.oracle_path}} PRODUCT_DIR={{input.product_dir}} EXCL_HEADING={{vars.coverage_exclusions_heading}} NO_ANCHOR={{vars.coverage_no_anchor_marker}} ROUTES={{input.routes}} ROUTES_SOURCE={{input.routes_source}} ROUTES_NOTE={{input.routes_note}} NET_DIGEST={{input.net_digest}} CITE_OPEN={{vars.coverage_citation_open}} CITE_CLOSE={{vars.coverage_citation_close}} PLACEHOLDERS={{vars.coverage_placeholders}} MIN_PROSE={{vars.coverage_min_prose}} MAX_ANCHORLESS={{vars.coverage_max_anchorless}} python3 -I -c "
 import os, json, glob, re, unicodedata, hashlib
 from urllib.parse import urlsplit, parse_qsl
 ws = os.environ['WS']
@@ -3311,7 +3355,14 @@ def load(path, what):
             why = 'it could not be fingerprinted when the run began (' + expected + ')'
         else:
             why = 'it is not the file the run began with (sha256 ' + expected[:12] + ' then, ' + got[:12] + ' now)'
-        refuse('NET_UNREADABLE', path, what + ': ' + why + ' -- the net is judged as the run found it, and a net that changes during the run cannot certify it', True)
+        ## The workspace's OWN net was changed by this run: the change lies
+        ## outside the writeable set and is reverted like any other (scope_check
+        ## names the commit to restore it from) -- a convergence term. A source
+        ## clone's net cannot be restored from inside the run: pre-flight.
+        if expected is not None and own_net:
+            moved.append({'cause': 'NET_UNREADABLE', 'where': path, 'detail': what + ': ' + why + ' -- the net is judged as the run found it. Restore the file as the run began: it lies outside the writeable set, and scope_check names the commit to restore it from.', 'outside': False})
+        else:
+            unfound.append(what + ': ' + why + ' -- the net is judged as the run found it, and a net that changes during the run cannot certify it')
         return None
     try:
         doc = json.loads(raw.decode('utf-8'))
@@ -3322,8 +3373,21 @@ def load(path, what):
         refuse('NET_UNREADABLE', path, what + ': the top-level JSON is a ' + type(doc).__name__ + ' and not an object -- this file is read for its keys, and a document that has none cannot be judged: a refusal, not a traceback', True)
         return None
     return doc
+own_net = os.path.realpath(oracle).startswith(os.path.realpath(ws) + os.sep)
+moved, unfound = [], []
 cov = load(os.path.join(oracle, 'feature-coverage.json'), 'the inventory feature-coverage.json')
 corpus = load(os.path.join(oracle, 'corpus.json'), 'the corpus corpus.json')
+## A net this run changed is judged on nothing else: every refusal that
+## would follow from it (an inventory read as absent, say) is noise, and one
+## of them would stop the run where a revert repairs it. A net the run cannot
+## restore -- a source clone's, or one never fingerprinted -- stops it here,
+## on that cause alone.
+if unfound:
+    raise SystemExit('product-docs: the non-regression net is not the one the run began with, and its repair lies OUTSIDE the writeable set of this run. That is a PRE-FLIGHT failure, never a convergence term:' + chr(10) + chr(10).join('- NET_UNREADABLE -- ' + u for u in unfound))
+if moved:
+    log = chr(10).join(['COVERAGE GATE: the net changed during the run -- nothing else is judged until it is restored'] + ['COVERAGE GATE: ' + c['cause'] + ' -- ' + c['where'] + ': ' + c['detail'] for c in moved] + ['COVERAGE GATE: RED -- ' + str(len(moved)) + ' named cause(s); restore the net, then re-check.'])
+    print(json.dumps({'coverage_ok': False, 'net_present': True, 'causes': moved, 'cause_count': len(moved), 'features_total': 0, 'features_documented': 0, 'exclusions_total': 0, 'exclusions_named': 0, 'entries_cited': 0, 'paths_cited': 0, 'chapters': 0, 'chapters_unanchored_declared': 0, 'chapters_anchorless_max': 0, 'routes_declared': 0, 'routes_degraded': False, 'net_unproven': False, 'oracle_dir_used': oracle, 'counts_line': '', 'log': log}, ensure_ascii=False))
+    raise SystemExit(0)
 features, exclusions, entries = None, None, None
 if cov is not None:
     features = cov.get('features')
@@ -3476,6 +3540,10 @@ def is_placeholder(seg):
     return seg == '*' or seg == '**' or seg.startswith(':') or (seg.startswith('{') and seg.endswith('}'))
 def has_literal(pattern):
     return any(not is_placeholder(s) for s in segments(pattern))
+def specificity(route):
+    return tuple(1 if is_placeholder(seg) else 0 for seg in segments(route))
+def shape(route):
+    return '/' + '/'.join('{}' if is_placeholder(seg) else seg for seg in segments(route))
 def route_proves(pattern):
     ## A framework catch-all (/{slug}, /**) declares every path and proves
     ## none, and so does a TAIL WILDCARD: ** swallows an unbounded tail, so
@@ -3996,7 +4064,7 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
         elif routes_degraded:
             refuse('PHANTOM_DOC', where + ':' + str(no), 'the path ' + path + ' matches NO corpus entry path, and no declared route table was available to widen the check (degraded) -- a documented screen the net never observed')
         elif any(route_proves(r) and pattern_matches(r, parts.path) for r in declared):
-            fits = sorted(r for r in declared if route_proves(r) and pattern_matches(r, parts.path))
+            fits = sorted((r for r in declared if route_proves(r) and pattern_matches(r, parts.path)), key=lambda r: (specificity(r), r))
             refuse('PHANTOM_DOC', where + ':' + str(no), 'the path ' + path + ' fits the declared route ' + fits[0] + ' only through a placeholder, with a value the net never observed -- an invented instance is an invented screen; cite the route itself, ' + cite_open + fits[0] + cite_close + ', or a path the net captured')
         else:
             refuse('PHANTOM_DOC', where + ':' + str(no), 'the path ' + path + ' is NEITHER a declared route NOR a corpus entry path -- a documented screen the application does not serve')
@@ -4031,17 +4099,27 @@ for (where, no), (ents, ids, paths, unknown, text) in sorted(anchors_by_line.ite
 ## it -- min_prose characters and min_words words of its own prose for
 ## each route the block credits. A row of route citations is an index.
 proving = [r for r in declared if route_proves(r)]
-def specificity(route):
-    return tuple(1 if is_placeholder(seg) else 0 for seg in segments(route))
 def credited_routes(target):
     hits = [r for r in proving if pattern_matches(r, target)]
     if not hits:
         return set()
     best = min(specificity(r) for r in hits)
     return set(r for r in hits if specificity(r) == best)
+## THE SHARES A BLOCK OWES: one per feature it pairs (the routes its
+## entries reach ride that prose), and HALF of one per route it credits
+## otherwise -- cited by its path, or reached through an entry cited without
+## its feature. One rule for both channels: the same prose documents the same
+## routes whichever citation it uses. Half a share refuses an index of routes
+## and stays within what a real page describing a screen and its actions
+## writes per route. Two routes of one shape (/x/{id} and /x/{itemId}) are one
+## screen. And ONE PROSE CREDITS ONCE: the same sentence copied under several
+## blocks -- digits aside -- describes none of them, the rule the exclusions
+## obey.
 documented_routes, mentioned_routes = set(), set()
+attempts = {}
+claimed_prose = {}
 for b in blocks:
-    by_entry, by_path = set(), set()
+    by_entry, by_path, paired = set(), set(), set()
     for no, _text, _content in b['lines']:
         ents, _ids, paths, _unknown, _t = anchors_by_line.get((b['where'], no), ([], [], [], [], ''))
         for path in paths:
@@ -4049,41 +4127,55 @@ for b in blocks:
             if grounded_path(target):
                 by_path |= credited_routes(target)
         for e in ents:
-            if e in entry_path_by_id:
-                by_entry |= credited_routes(entry_path_by_id[e])
+            if e not in entry_path_by_id:
+                continue
+            reached = credited_routes(entry_path_by_id[e])
+            by_entry |= reached
+            if any(e in entry_lists.get(name, set()) for name in b['pairs']):
+                paired |= reached
     by_path -= by_entry
-    mentioned_routes |= by_entry | by_path
+    cited = by_entry | by_path
+    mentioned_routes |= cited
+    if not cited:
+        continue
+    where = b['where'] + ':' + str(b['lines'][0][0])
     if b['kind'] == 'heading':
+        for r in cited:
+            attempts.setdefault(r, ('heading', where))
         continue
     prose = block_prose(b)
-    ## An ENTRY is observed evidence, and the block citing it already owes
-    ## prose to the features it documents: its routes ride that rule. A
-    ## PATH is a claim the page makes on its own: each route it adds needs
-    ## its own share of the prose.
-    share = len(b['pairs'])
-    if by_entry and written(prose, max(1, share))[0]:
-        documented_routes |= by_entry
-    if by_path and written(prose, max(1, share + len(by_path)))[0]:
-        documented_routes |= by_path
+    loose = set(shape(r) for r in (by_entry - paired) | by_path)
+    need = max(1, len(b['pairs']) + (len(loose) + 1) // 2)
+    key = re.sub('[0-9]+', '', fold(prose)).strip()
+    copy_of = claimed_prose.get(key) if key else None
+    if copy_of is None and written(prose, need)[0]:
+        if key:
+            claimed_prose[key] = where
+        documented_routes |= cited
+        continue
+    for r in cited:
+        if copy_of is not None:
+            attempts[r] = ('copy', where, copy_of)
+        elif attempts.get(r, ('',))[0] != 'short' or len(prose) / need > attempts[r][3] / attempts[r][5]:
+            attempts[r] = ('short', where, {'para': 'paragraph', 'item': 'list item', 'row': 'table row', 'html': 'HTML line'}.get(b['kind'], 'block'), len(prose), word_count(prose), need)
 for route in proving:
     if route in documented_routes:
         continue
-    if route in mentioned_routes:
-        refuse('ROUTE_UNDOCUMENTED', route, 'the declared route ' + route
-               + ' is cited, but only in a heading or in a block that does not'
-               ' write about it -- each route a paragraph, list item or table'
-               ' row cites by its path needs ' + str(min_prose) + ' characters'
-               ' and ' + str(min_words) + ' words of prose of its own; a list of'
-               ' routes is an index, not a screen described. Describe the'
-               ' screen or action it serves in the block that cites '
-               + cite_open + route + cite_close + '.')
+    tag = cite_open + route + cite_close
+    seen = attempts.get(route)
+    if seen and seen[0] == 'short':
+        refuse('ROUTE_UNDOCUMENTED', route, 'the declared route ' + route + ' is cited at ' + seen[1] + ', but that ' + seen[2] + ' owes ' + str(seen[5]) + ' share(s) of prose and writes ' + str(seen[3]) + ' characters and ' + str(seen[4]) + ' recognisable words -- each share is ' + str(min_prose) + ' characters and ' + str(min_words) + ' words: one per feature it pairs, and half of one per route it cites by path or reaches through an entry cited without its feature. A list of routes is an index, not a screen described: describe the screen or action it serves there, or in a block of its own that cites ' + tag + '.')
+    elif seen and seen[0] == 'copy':
+        refuse('ROUTE_UNDOCUMENTED', route, 'the declared route ' + route + ' is cited at ' + seen[1] + ' in a block whose prose is the same as ' + seen[2] + ' -- one prose describes one thing, and a sentence copied under several routes describes none of them. Describe the screen or action it serves in words of its own, in the block that cites ' + tag + '.')
+    elif seen:
+        refuse('ROUTE_UNDOCUMENTED', route, 'the declared route ' + route + ' is cited only in a heading (' + seen[1] + ') -- a title labels a chapter and documents nothing. Cite ' + tag + ' in the paragraph, list item or table row that describes the screen or action it serves.')
     else:
         refuse('ROUTE_UNDOCUMENTED', route, 'the declared route ' + route
                + ' is cited by NO page of the documentation, neither by its'
                ' path nor by a corpus entry that exercises it -- a route the'
                ' application serves that no screen describes. Describe the'
                ' screen or action it serves in a paragraph, list item or table'
-               ' row that cites ' + cite_open + route + cite_close + '.')
+               ' row that cites ' + tag + '.')
 ## GAP -- every covered feature is DOCUMENTED by one block: a paragraph, a
 ## list item or a table row with ONE line citing its id AND one of its own
 ## inventory entries -- the documented screen is anchored on the reference
@@ -4227,7 +4319,7 @@ compute mr_gate:
 ## mounted burns a whole turn just to rediscover, in shell, that it
 ## cannot push. Read-only, idempotent.
 tool forge_auth_probe:
-  command: `python3 -c "
+  command: `python3 -I -c "
 import os, subprocess, json
 tok = '/run/iterion/secrets/forge_token'
 try:
@@ -4266,7 +4358,7 @@ agent finalize_mr:
 ## stdout — never from agent prose. Read-only, idempotent.
 tool surface_pr_link:
   input: surface_pr_link_input
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
@@ -4287,7 +4379,7 @@ tool publish_gate:
   ## engine resolves for sandboxed AND host runs alike — a hardcoded
   ## mount path only exists under the sandbox bind-mount and silently
   ## disabled publishing everywhere else.
-  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} IMAGE={{vars.publish_image}} CRED={{secrets.deploy_credential.path}} REG={{secrets.registry_token.path}} WS={{vars.workspace_dir}} python3 -c "
+  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} IMAGE={{vars.publish_image}} CRED={{secrets.deploy_credential.path}} REG={{secrets.registry_token.path}} WS={{vars.workspace_dir}} python3 -I -c "
 import os, json
 pub = (os.environ.get('PUB') or '').strip().lower() in ('1', 'true', 'yes')
 base = (os.environ.get('BASE') or '').strip()
@@ -4354,7 +4446,7 @@ agent publish:
 ## propagation, not a cold deploy.
 tool verify_publish:
   input: verify_publish_input
-  command: `URL={{input.url}} BASE={{input.base_url}} DEPLOYED={{input.deployed}} SUMMARY={{input.summary}} python3 -c "
+  command: `URL={{input.url}} BASE={{input.base_url}} DEPLOYED={{input.deployed}} SUMMARY={{input.summary}} python3 -I -c "
 import json, os, time, urllib.request
 u = (os.environ.get('URL') or '').strip()
 base = (os.environ.get('BASE') or '').strip().rstrip('/')
@@ -4433,7 +4525,7 @@ print(json.dumps({'verified': True, 'url': u, 'detail': 'http 200, title present
 ## published site counterpart of surface_pr_link.
 tool surface_site_link:
   input: surface_site_link_input
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:

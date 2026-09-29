@@ -66,10 +66,15 @@ The gates no longer read a route file or run a command.
   reached without following a link. Its command is never executed.
   `catalog_ingest` refuses a `scratch_dir` inside the workspace, or a link
   anywhere in its clone tree.
-- **The net is fingerprinted as the run found it.** The node records a sha256
-  of each net file the gates read. The gates refuse, before the loop, a file
-  that no longer matches.
-- **The table is bounded to what a gate can receive**: 100 000 bytes of JSON.
+- **The net is fingerprinted as the run found it.** When the node starts,
+  before any agent runs and before anything can degrade the table, it records
+  a sha256 of each net file the gates read, read exactly as the gates read
+  it. The gates refuse, before the loop, a file that no longer matches.
+- **The table is bounded to what a gate can receive**: 100 000 bytes of JSON,
+  measured the way the engine renders it.
+- **Every node runs Python isolated (`python3 -I`)**: a node's working
+  directory is the workspace, and a module the judged campaign leaves there
+  must never replace a standard one inside a gate.
 - **Git reads ignore replace refs and grafts**, here and in the scope gate.
 - **With no table, the path checks degrade visibly** to the corpus and name
   the cause. The cause is an operator-side note, never a repair order to the
@@ -98,9 +103,10 @@ The gates no longer read a route file or run a command.
   - **A citation is credited to the most specific route it fits.**
     `/items/new` documents the create screen, never the detail `/items/{id}`.
   - **A route is credited only by a block that writes about it**, never by a
-    heading. A route cited by its path needs its own share of the block's
-    prose. A route reached through an entry rides the prose the block already
-    owes its features.
+    heading. A block owes one share of prose per feature it pairs, and half
+    a share per route it credits otherwise (by path, or through an entry
+    cited without its feature) — one rule for both channels. One prose
+    credits once.
   - **A concrete path that fits a route only through a placeholder is
     grounded only if the net captured it**; otherwise it is a phantom, on a
     page and on the map, and the page cites the route as declared. The map

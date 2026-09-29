@@ -81,7 +81,8 @@ gate ─────────────────▶ scan_hints          
   `docs.product_dir` fails the run **loudly**: documenting the wrong
   directory is worse than not running. The clones must live out of
   tree: a `scratch_dir` that resolves inside the docs workspace is
-  refused.
+  refused, and no link in the scratch — the scratch itself, `sources/`,
+  the askpass helper, a clone or its `.git` — is ever followed.
 - **`route_table`** (deterministic, once, outside the loop) — the routes
   the application declares, resolved from the golden-master net **at
   the run base** and handed as data to the map step, the campaign and
@@ -289,17 +290,23 @@ and its errors merged — and commits no artifact for them; its
 - **What reaches the gates is bounded.** A line that is not a route
   (whitespace, longer than 512 characters) is set aside and counted:
   the table reaches the agents' prompts. A table past 100 000 bytes of
-  JSON — what a gate can receive through its environment — degrades,
-  named, before the map and the first pass are paid. Git reads ignore
-  replace refs and grafts, here and in `scope_check`.
+  JSON as the engine renders it (compact, `<` `>` `&` escaped) — what a
+  gate can receive through its environment — degrades, named, before the
+  map and the first pass are paid. Git reads ignore replace refs and
+  grafts, here and in `scope_check`.
 
-**The net as the run found it.** `route_table` also fingerprints the
-net files the gates read (`corpus.json`, `feature-coverage.json`,
-`verify-oracle.sh`, `REPORT.md`) — the workspace's own net at the run
-base, a clone's net as cloned — and both gates refuse a file that is no
-longer the one fingerprinted, before the loop: a net that changes
-during the run cannot certify it, whether the change sits in the
-working tree or in a source clone outside the scope gate's view.
+**The net as the run found it.** When it starts — before any agent
+runs and before anything can degrade the table — `route_table` also
+fingerprints the net files the gates read (`corpus.json`,
+`feature-coverage.json`, `verify-oracle.sh`, `REPORT.md`), read exactly
+as the gates read them. Both gates refuse a file that is no longer the
+one fingerprinted: a net that changes during the run cannot certify it.
+A change to the workspace's own net is a restore to make — it lies
+outside the writeable set, like any file `scope_check` refuses — and
+nothing else is judged until it is made; a change to a source clone's
+net stops the run before the loop. (A commit fixes the route
+table; the fingerprint is of what the gates read, so an eol attribute,
+an LFS smudge or an untracked net is judged, not refused.)
 
 The frozen table is the run base as it is: a route a change adds is
 demanded from the next run on, and nothing the campaign writes during
@@ -315,10 +322,17 @@ it cites a corpus entry that exercises it (the entry carries the path it
 captured, query aside) or the route itself. Each citation is credited
 to the **most specific** declared route it fits: `/items/new` documents
 the create screen, never the detail `/items/{id}` its path also fits.
-**A heading documents nothing**, and a route cited by its path needs its
-own share of the block's prose (`coverage_min_prose` characters and
-words); a route reached through an entry rides the prose the block owes
-its features. A list of route citations is an index, not a description.
+**A heading documents nothing**, and a block owes prose in shares of
+`coverage_min_prose` characters and words: one per feature it pairs
+(their entries' routes ride that prose), and half of one per route it
+credits otherwise — cited by its path, or reached through an entry cited
+without its feature. One rule for both channels: the same prose
+documents the same routes whichever citation carries them, and two
+spellings of one route shape (`/x/{id}`, `/x/{itemId}`) are one screen.
+**One prose credits once**: a sentence copied under several routes —
+numbers aside — documents none of them. A refusal names the block it
+measured, what it wrote and what it owed. A catch-all route proves
+nothing and is never demanded.
 
 **A value is not a route.** A concrete path that fits a declared route
 only through a placeholder names a value the table cannot vouch for: it
