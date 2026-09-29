@@ -126,6 +126,28 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Generated artefacts are fresh (fail fast)
+        # Two pull requests that each regenerate the same committed artefact
+        # can merge clean and stale together — the queue's most frequent
+        # failure. The freshness tests that catch it take seconds, but the
+        # unit step reaches them fifteen minutes in; run them first, so such
+        # an entry leaves the queue in minutes. The unit step still runs them.
+        # A `-run` pattern that matches nothing passes, so the step also
+        # checks that every test it names ran.
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(TestGeneratedMapsAreFresh TestGeneratedDSLDocsAreFresh)
+          pattern="^($(IFS='|'; echo "${tests[*]}"))\$"
+          log="$RUNNER_TEMP/fresh.log"
+          status=0
+          go test -mod=vendor -count=1 -v -run "$pattern" ./pkg/repomap/ ./pkg/dsl/spec/ > "$log" 2>&1 || status=$?
+          cat "$log"
+          [ "$status" -eq 0 ] || exit "$status"
+          for t in "${tests[@]}"; do
+            grep -q -- "^--- PASS: ${t} " "$log" || { echo "::error::${t} did not PASS — skipped, renamed or moved? A freshness gate that does not run proves nothing."; exit 1; }
+          done
+
       - name: Watcher resource limits
         # Read-only evidence for #1198. inotify EMFILE can be a process FD
         # ceiling or a UID-wide instance ceiling shared by runner pods.
