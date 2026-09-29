@@ -75,7 +75,7 @@ func (c *compiler) checkConstrainedVarDefault(f *ast.VarField, v *Var, s string)
 		c.checkLiteralVarDefault(f, v, s)
 		return
 	}
-	expanded, err := resolveVarText(s, VarString, varExpander(VarString, compileTimeVarLookup, true))
+	expanded, err := compileTimeDefaultReading(s)
 	es, ok := expanded.(string)
 	if err == nil && ok && !strings.Contains(es, engineVarSentinel) && !carriesLiveReference(es) {
 		// Fully resolved by the compile-time reading — but only because
@@ -87,6 +87,15 @@ func (c *compiler) checkConstrainedVarDefault(f *ast.VarField, v *Var, s string)
 	c.warnfAtSpan(DiagVarDefaultUnverifiable, f.Span,
 		"var %q default %q carries a reference compile time cannot resolve — an environment variable, or an engine-supplied name (%s) the RUN answers itself — so its constraint (%s) is checked on NO path: the launch gate reads the operator's values, never a default; make the default literal, or know that the value it expands to at launch is unchecked",
 		f.Name, s, strings.Join(engineSuppliedVarNames, ", "), constraintSummary(v))
+}
+
+// compileTimeDefaultReading is the compile-time reading of a constrained
+// var's default: the run's own reading of a `string` var's text
+// (resolveVarText with the full expander) over compileTimeVarLookup,
+// keeping what it cannot resolve as written so a live reference stays
+// visible to the caller.
+func compileTimeDefaultReading(s string) (any, error) {
+	return resolveVarText(s, VarString, varExpander(VarString, compileTimeVarLookup, true))
 }
 
 // compileTimeVarLookup is the environment the compile-time reading of a
