@@ -200,9 +200,12 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 // spread into its argv, one word per element (the mechanism
 // DiagVarListDefaultRouting describes), and an object — or a list holding
 // a collection — arrives as ONE JSON token where a string was declared.
-// A warning, like C152: a tolerant consumer (an LLM prompt, a text
-// template) reads the rendered value without breaking, and a refusal
-// would reject a shape a run can survive.
+// Any other destination reads the collection itself: a prompt renders its
+// JSON text (formatValue), an `expr:` sees the list or the object — the
+// message names the reading of the destination at hand. A warning, like
+// C152: a tolerant consumer (an LLM prompt, a text template) reads the
+// rendered value without breaking, and a refusal would reject a shape a
+// run can survive.
 //
 // Only a `{{vars.<name>}}` reference carries a statically-known type
 // here. An `{{outputs.<node>…}}` whole reference earns no opinion: C031/
@@ -224,8 +227,15 @@ func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *S
 	if v == nil {
 		return // C033 owns the undeclared name
 	}
-	spread := fmt.Sprintf("a tool `command:` reading {{input.%[1]s}} gets the list spread into its argv, one word per element (in a `VAR={{input.%[1]s}}` assignment the first element is kept, the rest become a command of their own)", dm.Key)
-	token := fmt.Sprintf("a tool `command:` reading {{input.%s}} gets it as ONE JSON token, and every consumer reads a collection where the declaration promises a string", dm.Key)
+	spread := fmt.Sprintf("its `command:` reading {{input.%[1]s}} gets the list spread into its argv, one word per element (in a `VAR={{input.%[1]s}}` assignment the first element is kept, the rest become a command of their own)", dm.Key)
+	token := fmt.Sprintf("its `command:` reading {{input.%s}} gets it as ONE JSON token, and every consumer reads a collection where the declaration promises a string", dm.Key)
+	either := "if it is a list, " + spread + "; an object arrives as ONE JSON token"
+	if dst.NodeKind() != NodeTool {
+		// Only a tool's command renders the field through the shell; any
+		// other destination reads the collection itself.
+		spread = "the node reads the collection where its schema promises a string — a prompt renders its JSON text, an `expr:` sees the collection itself"
+		token, either = spread, spread
+	}
 	var arrives, breaks string
 	switch v.Type {
 	case VarStringArray:
@@ -234,7 +244,7 @@ func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *S
 		doc, known := jsonDefaultDocument(v)
 		if !known {
 			arrives = "the document the launch supplies (the var has no default)"
-			breaks = "if it is a list, " + spread + "; an object arrives as ONE JSON token"
+			breaks = either
 			break
 		}
 		switch d := doc.(type) {
