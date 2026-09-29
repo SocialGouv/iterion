@@ -433,9 +433,12 @@ prompt diagram_system:
   guess it ON.
 
   Write the diagrams in Mermaid (fenced ```mermaid blocks) inside small
-  markdown pages under `<product_dir>/diagrams/`: one `README.md` that
-  presents the map and links the diagrams, then one page per diagram.
-  Labels follow the editorial language of the published pages: read the
+  markdown pages under `<product_dir>/diagrams/`. The `README.md` CARRIES
+  the context map itself (a fenced mermaid block) with the prose around
+  it; every additional page carries its own diagram -- a page in this
+  directory that draws nothing is refused by the gate, whatever it
+  links to. Labels follow the editorial language of the published
+  pages: read the
   product's editorial overrides in the workspace (`.product-docs/`,
   or whatever editorial directory it ships) BEFORE drawing — when it
   ships none, the bundle defaults apply and the pages are French.
@@ -2670,16 +2673,32 @@ def pattern_matches(pattern, target):
 def is_map_shape(tok):
     ss = segments(tok.split('?', 1)[0])
     return bool(ss) and not all(s == '*' or s == '**' or s.startswith(':') or (s.startswith('{') and s.endswith('}')) for s in ss)
+def has_literal(pattern):
+    return any(not (s == '*' or s == '**' or s.startswith(':') or (s.startswith('{') and s.endswith('}'))) for s in segments(pattern))
+## THE SAME DOCTRINE AS THE SIBLING GATE: a catch-all route declares
+## every path and proves none, so a token grounded ONLY by one is not
+## grounded -- it is UNVERIFIABLE, and the gate says so out loud (a
+## visible note, never a silent bless). One predicate, two gates, or
+## they disagree about the same route table.
+def route_proves(pattern):
+    return has_literal(pattern) and '**' not in segments(pattern)
+unverified_tokens = []
 for tok in sorted(routes_on_map):
     if not is_map_shape(tok):
         continue
     path_only = tok.split('?', 1)[0].split('#', 1)[0]
-    if any(pattern_matches(r, path_only) for r in declared):
+    if any(route_proves(r) and pattern_matches(r, path_only) for r in declared):
         continue
-    if declared:
-        refuse('PHANTOM_MAP', tok, 'the mapped path ' + tok + ' matches NO declared route -- a box on the map the application does not serve; ground it on a route the sources declare or take it off the map')
-    else:
+    if not declared:
         notes.append('DIAGRAM LINT: routes DEGRADED -- no declared route table was available, the mapped path ' + tok + ' could not be verified')
+        continue
+    if any(pattern_matches(r, path_only) for r in declared):
+        unverified_tokens.append(tok)
+        notes.append('DIAGRAM LINT: UNVERIFIED -- the mapped path ' + tok + ' matches only catch-all route(s) (/{x}, /**), which declare every path and prove none; ground it on a route with a literal segment or leave it to the route-presence gate')
+        continue
+    refuse('PHANTOM_MAP', tok, 'the mapped path ' + tok + ' matches NO declared route -- a box on the map the application does not serve; ground it on a route the sources declare or take it off the map')
+if unverified_tokens:
+    notes.append('DIAGRAM LINT: ' + str(len(unverified_tokens)) + ' mapped path(s) unverified behind catch-all routes -- visible, never a silent pass')
 log_lines = ['DIAGRAM LINT: ' + str(len(pages)) + ' map page(s), ' + str(blocks_total) + ' mermaid block(s), ' + str(len(routes_on_map)) + ' mapped path token(s), route table ' + ('present (' + str(len(declared)) + ' routes)' if declared else 'ABSENT -- mapped paths unverified')]
 log_lines.extend(notes)
 for c in causes[:40]:

@@ -4617,6 +4617,34 @@ func TestProductDocsDiagramLintGroundsHyphenatedAndQueryTokens(t *testing.T) {
 	})
 }
 
+// TestProductDocsDiagramLintDegradesBehindCatchAlls: a token grounded
+// ONLY by a catch-all route (/{x}, /**) is not grounded — the catch-all
+// declares every path and proves none, the same doctrine as the sibling
+// gate. The gate must say so OUT LOUD (a visible note, the run still
+// blesses a well-formed map) and never silently green it.
+func TestProductDocsDiagramLintDegradesBehindCatchAlls(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt",
+		"GET /\nGET /**\n")
+	writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+		"\n"+
+		"```mermaid\n"+
+		"flowchart TD\n"+
+		"  ghost[\"/dashboard/unheard-of — un écran que rien ne déclare\"]\n"+
+		"```\n")
+	got := runDiagramLint(t, ws)
+	if !got.OK {
+		t.Fatalf("a map grounded only behind catch-alls was REFUSED — the doctrine is a visible degradation, not a refusal:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "matches only catch-all route(s)") {
+		t.Fatalf("the gate blessed a token only catch-alls could ground without saying so:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "1 mapped path(s) unverified behind catch-all routes") {
+		t.Fatalf("the summary does not count the unverified tokens:\n%s", got.Log)
+	}
+}
+
 // TestProductDocsDiagramLintNamesAnEscapedRoutesFile: the route table is
 // read from inside the net, never from an absolute path or a dot-dot
 // escape — same rule, same refusal shape as the coverage gate.
