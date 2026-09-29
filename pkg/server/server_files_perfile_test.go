@@ -884,6 +884,119 @@ func TestTheProbeStubKeepsTheRealWorkflowsName(t *testing.T) {
 	}
 }
 
+// TestAProbeRefusalNeverNamesTheWorkspaceRoot: the probe parses every file
+// under its ABSOLUTE path, and a claim it refuses is answered 422 with the
+// diagnostic — which before the rel-mapping disclosed the server's
+// directory layout to any studio client (#1918). The body cites the
+// fragment by its unit-relative path, in the position prefix as in the
+// message, and never names the workspace. The stored unit's diagnostics —
+// what the operator's logs hold — are untouched.
+func TestAProbeRefusalNeverNamesTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	full := "workflow w:\n  entry: done\n"
+	broken := "prompt p:\n  hi\n\nagent \n  model\n"
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":       unitFixtureMain,
+		"demo/lib/nodes.bot":  unitFixtureNodes,
+		"demo/lib/full.bot":   full,
+		"demo/lib/broken.bot": broken,
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	claimAdding := func(rel, source string) []unitFileInfo {
+		return []unitFileInfo{
+			{Rel: "main.bot", Imports: []string{rel}, Digest: opened.Unit.Files[0].Digest},
+			{Rel: rel, Digest: fileDigest([]byte(source))},
+		}
+	}
+	for _, tc := range []struct {
+		name, rel, source, want string
+	}{
+		// E010, the ticket's case: the loader's own diagnostic, positioned
+		// at the fragment's workflow — absolute in the position field.
+		{"a second workflow", "lib/full.bot", full, "lib/full.bot:1:1"},
+		// A parse error in a fragment the claim adds: the parser's own
+		// diagnostic, positioned under the fragment's absolute name.
+		{"a fragment that does not parse", "lib/broken.bot", broken, "lib/broken.bot:"},
+	} {
+		rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimAdding(tc.rel, tc.source))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: %d %s", tc.name, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, tc.want) {
+			t.Fatalf("%s: the refusal does not cite the fragment by its relative path (%q): %s", tc.name, tc.want, body)
+		}
+		if strings.Contains(body, workdir) {
+			t.Fatalf("%s: the refusal discloses the server's directory layout: %s", tc.name, body)
+		}
+	}
+
+	// A fragment reached through a SYMLINKED directory resolves outside the
+	// unit: the confinement refusal must name the import as written, never
+	// the resolved host path — the one absolute name the root-relative
+	// mapping cannot take away, since it lies outside the root.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "x.bot"), []byte("agent z:\n  description: \"z\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workdir, "demo", "lib", "ext")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimAdding("lib/ext/x.bot", "agent z:\n  description: \"z\"\n"))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a fragment resolving outside the unit: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "lib/ext/x.bot") {
+		t.Fatalf("the refusal does not name the import as written: %s", body)
+	}
+	if strings.Contains(body, outside) || strings.Contains(body, workdir) {
+		t.Fatalf("the refusal discloses a host path: %s", body)
+	}
+}
+
+// TestRelProbeDiagnosticsStripsTheUnitRoot: the rel-mapping itself. Every
+// name a probe diagnostic can carry is Join(Root, Rel), so the position
+// field and a message citing a name verbatim are both answered by cutting
+// the root — kind, line and column untouched. A files-map probe (Root "",
+// every name already the rel) is left alone.
+func TestRelProbeDiagnosticsStripsTheUnitRoot(t *testing.T) {
+	sep := string(os.PathSeparator)
+	root := sep + filepath.Join("home", "operator", "project", "demo")
+	abs := func(rel string) string { return root + sep + filepath.FromSlash(rel) }
+	probe := &unit.Unit{
+		Root: root,
+		Diagnostics: []parser.Diagnostic{
+			{Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError, File: abs("lib/full.bot"), Line: 1, Column: 1, Message: "a unit has one workflow: \"w\" here and \"w\" at main.bot:3"},
+			// An unreadable file's os error cites the absolute name
+			// verbatim in the message text.
+			{Code: parser.DiagImportUnreadable, Severity: parser.SeverityError, File: abs("main.bot"), Line: 1, Column: 1, Message: "cannot read main.bot: open " + abs("main.bot") + ": permission denied"},
+		},
+	}
+	relProbeDiagnostics(probe)
+	for _, d := range probe.Diagnostics {
+		if strings.Contains(d.File, root) || strings.Contains(d.Message, root) {
+			t.Fatalf("an absolute path survived the mapping: %v", d)
+		}
+	}
+	if d := probe.Diagnostics[0]; d.File != "lib/full.bot" || d.Line != 1 || d.Column != 1 || d.Code != parser.DiagDuplicateDecl || d.Severity != parser.SeverityError {
+		t.Fatalf("the position was not cut to the rel (kind, line and column untouched): %+v", d)
+	}
+	if d := probe.Diagnostics[1]; d.Message != "cannot read main.bot: open main.bot: permission denied" {
+		t.Fatalf("the message still cites the absolute name: %q", d.Message)
+	}
+
+	mapped := &unit.Unit{
+		Diagnostics: []parser.Diagnostic{{Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError, File: "main.bot", Line: 3, Column: 1, Message: "declared twice"}},
+	}
+	relProbeDiagnostics(mapped)
+	if d := mapped.Diagnostics[0]; d.File != "main.bot" || d.Message != "declared twice" {
+		t.Fatalf("a files-map probe was rewritten: %v", d)
+	}
+}
+
 // TestThePerFileEditorCarriesARemovedImport: an `import` line removed in
 // the per-file editor applies and saves: the main is written without it,
 // and the fragment it named is LEFT ALONE — the measured pre-#1680 failure

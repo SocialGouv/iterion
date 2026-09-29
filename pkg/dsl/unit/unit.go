@@ -185,7 +185,11 @@ func loadDir(mainPath, mainName string, staged map[string][]byte, mainAST *ast.F
 			return nil, err
 		}
 		if !within(real, realRoot) {
-			return nil, fmt.Errorf("%w: %s resolves to %s", ErrOutside, rel, real)
+			// The import is named as written, never by the resolved path:
+			// the refusal travels to clients (a studio 422 names it), and a
+			// host path outside the unit discloses the server's filesystem
+			// layout (#1918).
+			return nil, fmt.Errorf("%w: %s resolves outside the unit", ErrOutside, rel)
 		}
 		return os.ReadFile(real)
 	}

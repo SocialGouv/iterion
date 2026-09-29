@@ -1138,6 +1138,33 @@ func citeStoredMainWorkflow(stored, probe *unit.Unit) {
 	}
 }
 
+// relProbeDiagnostics rewrites the probe's diagnostics to the unit's
+// relative names, the way the loader's own messages already cite a file
+// (relOf). On disk the loader parses every file under its ABSOLUTE path —
+// an include resolves beside it — and a diagnostic forwarded as is
+// discloses the server's directory layout: a claim the probe refuses is a
+// 422 whose body IS the diagnostic (#1918). Every name a probe diagnostic
+// can carry is Join(Root, Rel) — LoadDirStaged, the only disk load the
+// probe runs, names no file otherwise, and a files map names by Rel
+// already (Root "") — so cutting the root answers the position field and
+// every message that cites a name verbatim, and no Name→Rel table maps a
+// string the cut does not. The one diagnostic text that ever carried an
+// absolute name from OUTSIDE the root — the confinement refusal's resolved
+// path — names the import as written since #1918, loader-side. The stored
+// unit's diagnostics are untouched: what an operator's logs hold of them
+// keeps its absolute names.
+func relProbeDiagnostics(probe *unit.Unit) {
+	if probe.Root == "" {
+		return // a files map names every file by its rel already
+	}
+	rootPrefix := probe.Root + string(os.PathSeparator)
+	for i, d := range probe.Diagnostics {
+		d.File = filepath.ToSlash(strings.TrimPrefix(d.File, rootPrefix))
+		d.Message = strings.ReplaceAll(d.Message, rootPrefix, "")
+		probe.Diagnostics[i] = d
+	}
+}
+
 // finishClaimed validates the probe of a claimed file list against the
 // claim and assembles the unit the save or the render works from: the
 // stored unit's own entries for the files it holds (their declarations are
@@ -1149,6 +1176,7 @@ func citeStoredMainWorkflow(stored, probe *unit.Unit) {
 // file's.
 func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bool) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
 	citeStoredMainWorkflow(stored, probe)
+	relProbeDiagnostics(probe)
 	if d := firstErrorDiagnostic(probe.Diagnostics); d != "" {
 		return nil, nil, nil, fmt.Errorf("the files the document claims do not load as one unit: %s", d)
 	}
