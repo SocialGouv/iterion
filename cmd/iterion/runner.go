@@ -343,6 +343,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		RunSecrets:          runSecretsStore,
 		Sealer:              sealer,
 		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
+		// The forfait records a run follows mid-run instead of refreshing
+		// its own copy (see runner.Config.OAuthForfaits).
+		OAuthForfaits: secrets.NewMongoOAuthStore(st.DB()),
 		// BYOK store shared with the publisher — the runner bumps
 		// `last_used_at` at metering time so the studio distinguishes an
 		// idle key from one currently serving (#659 pt 2).

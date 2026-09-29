@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -54,6 +55,29 @@ func TestOAuthChain_TwoCredentialsOfOneKindCoexist(t *testing.T) {
 	}
 	if got.Rank != 0 || string(got.SealedPayload) != "primary" {
 		t.Fatalf("Get returned rank %d (%q), want the primary", got.Rank, got.SealedPayload)
+	}
+}
+
+// GetByID reaches ONE link whatever its rank — the record a run was sealed
+// with, which a runner follows while the refresh worker rotates it. Get would
+// answer with the primary, which is another account for a rank-1 run.
+func TestOAuthChain_GetByIDReachesOneLink(t *testing.T) {
+	s := NewMemoryOAuthStore()
+	ctx := t.Context()
+	for _, rec := range []OAuthRecord{
+		{UserID: "org:acme", Kind: OAuthKindClaudeCode, Rank: 0, SealedPayload: []byte("primary")},
+		{UserID: "org:acme", Kind: OAuthKindClaudeCode, Rank: 1, SealedPayload: []byte("fallback")},
+	} {
+		if err := s.Upsert(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.GetByID(ctx, OAuthRecordID("org:acme", OAuthKindClaudeCode, 1))
+	if err != nil || got.Rank != 1 || string(got.SealedPayload) != "fallback" {
+		t.Fatalf("GetByID(rank 1) = rank %d %q, %v — want the fallback link itself", got.Rank, got.SealedPayload, err)
+	}
+	if _, err := s.GetByID(ctx, "org:acme|claude_code|9"); !errors.Is(err, ErrOAuthNotFound) {
+		t.Fatalf("a missing id answered %v, want ErrOAuthNotFound", err)
 	}
 }
 

@@ -224,13 +224,12 @@ func (p *Publisher) fillFromOrg(
 				runID, orgID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
 			skips.note(until)
 			if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-				skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, org: true}
+				skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, org: true}
 			}
 			continue
 		}
-		bundle.OAuthCredentials[string(rec.Kind)] = payload
 		bundle.OrgSourced[string(rec.Kind)] = true
-		setOAuthFingerprint(bundle, string(rec.Kind), rec.Fingerprint)
+		setOAuthCredential(bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID)
 		taken[secrets.WireFamily(string(rec.Kind))] = true
 		p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s", runID, orgID, rec.Kind, rec.Fingerprint)
 	}

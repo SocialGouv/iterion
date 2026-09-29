@@ -172,9 +172,15 @@ func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
 	if b.OAuthFingerprints["claude_code"] != second.Fingerprint || !b.PlatformSourced["claude_code"] {
 		t.Fatalf("platform did not try its healthy fallback: fingerprints=%v platform=%v", b.OAuthFingerprints, b.PlatformSourced)
 	}
+	if want := secrets.OAuthRecordID(second.UserID, second.Kind, 1); b.OAuthRecordRefs["claude_code"] != want {
+		t.Fatalf("the rank-1 fallback slot names %q, want its own record %q", b.OAuthRecordRefs["claude_code"], want)
+	}
 	closeAccount(second.Fingerprint)
 	b = resolveBundle(t, p, rs, sealer, "platform-all-closed", "team1", "webhook:config")
 	if b.OAuthFingerprints["claude_code"] != first.Fingerprint || !b.PlatformSourced["claude_code"] {
 		t.Fatalf("all-closed restore lost the primary/provenance: fingerprints=%v platform=%v", b.OAuthFingerprints, b.PlatformSourced)
+	}
+	if want := secrets.OAuthRecordID(first.UserID, first.Kind, 0); b.OAuthRecordRefs["claude_code"] != want {
+		t.Fatalf("the restored slot names %q, want the primary record %q", b.OAuthRecordRefs["claude_code"], want)
 	}
 }

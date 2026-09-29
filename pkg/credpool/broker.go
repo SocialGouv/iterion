@@ -219,6 +219,12 @@ type Grant struct {
 	// readings of the one it replaced. Empty only for donor records that
 	// predate stamping.
 	Fingerprint string
+	// RecordID is the id of the donor's OAuth record a lent subscription was
+	// read from — the record the server's refresh worker rotates. The
+	// borrower's runner follows it instead of exchanging the refresh token
+	// itself: that exchange would revoke the token the donor's record, and
+	// every run spending it, still holds. Empty for a lent API key.
+	RecordID string
 	// RemainingUSD is what was left of the donor's tightest spend cap.
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
@@ -581,7 +587,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		}
 	}
 
-	payload, fingerprint, gone, err := b.openCredential(ctx, p, now)
+	payload, fingerprint, recordID, gone, err := b.openCredential(ctx, p, now)
 	if err != nil {
 		release()
 		return nil, "", err
@@ -628,6 +634,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		Credential:   p.Credential,
 		Payload:      payload,
 		Fingerprint:  fingerprint,
+		RecordID:     recordID,
 		RemainingUSD: remaining,
 		releaseGuard: &ReleaseGuard{lease: lease},
 	}, "", nil
@@ -654,30 +661,34 @@ func meteredNote(src CredentialSource) string {
 // (the hash of the plaintext the runner would derive anyway — carried so
 // the grant NAMES the account instead of leaving every consumer to
 // re-derive it or report nothing).
-func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (payload []byte, fingerprint, gone string, err error) {
+//
+// recordID is the donor's OAuth record a subscription was read from, so the
+// borrower's runner can follow its rotations (Grant.RecordID); empty for a
+// key.
+func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (payload []byte, fingerprint, recordID, gone string, err error) {
 	switch p.Source {
 	case SourceOAuth:
 		rec, gerr := b.oauth.Get(ctx, p.UserID, secrets.OAuthKind(p.Ref))
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrOAuthNotFound) {
-				return nil, "", "the connected subscription was disconnected — reconnect it to resume sharing", nil
+				return nil, "", "", "the connected subscription was disconnected — reconnect it to resume sharing", nil
 			}
-			return nil, "", "", gerr
+			return nil, "", "", "", gerr
 		}
 		// An expired token with no way to renew is dead: the refresh worker
 		// skips it, so it will never come back on its own.
 		if gone := oauthCredentialGone(rec, now); gone != "" {
-			return nil, "", gone, nil
+			return nil, "", "", gone, nil
 		}
 		pt, oerr := secrets.OpenOAuthPayload(b.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 		if oerr != nil {
-			return nil, "", "", fmt.Errorf("credpool: unseal donated subscription: %w", oerr)
+			return nil, "", "", "", fmt.Errorf("credpool: unseal donated subscription: %w", oerr)
 		}
-		return pt, rec.Fingerprint, "", nil
+		return pt, rec.Fingerprint, rec.ID, "", nil
 
 	case SourceAPIKey:
 		if b.apiKeys == nil {
-			return nil, "", "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
+			return nil, "", "", "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
 		}
 		// GetOwned, not Get: this read runs on the BORROWER's context, in
 		// another tenant than the donor's, and the tenant-scoped Get would
@@ -687,19 +698,19 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		k, gerr := b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrApiKeyNotFound) {
-				return nil, "", "the lent API key was deleted — pledge another to resume sharing", nil
+				return nil, "", "", "the lent API key was deleted — pledge another to resume sharing", nil
 			}
-			return nil, "", "", gerr
+			return nil, "", "", "", gerr
 		}
 		// A donor lends THEIR OWN key. A team-wide key is the team's to
 		// spend, not one member's to hand to the pool, and a pledge must
 		// never become a way to re-scope somebody else's credential.
 		if gone := apiKeyCredentialGone(k, p, now); gone != "" {
-			return nil, "", gone, nil
+			return nil, "", "", gone, nil
 		}
 		pt, oerr := secrets.OpenApiKey(b.sealer, k)
 		if oerr != nil {
-			return nil, "", "", fmt.Errorf("credpool: unseal donated api key: %w", oerr)
+			return nil, "", "", "", fmt.Errorf("credpool: unseal donated api key: %w", oerr)
 		}
 		// The donor record's own stamp. A key IS its own identity, so a
 		// borrower could re-derive this from the plaintext — but only if
@@ -707,9 +718,9 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		// GRANTED line and the run-doc stamp naming a slot instead of the
 		// account paying for it. Empty on keys stored before stamping;
 		// the derivation from the plaintext stays the fallback.
-		return pt, k.Fingerprint, "", nil
+		return pt, k.Fingerprint, "", "", nil
 	}
-	return nil, "", "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
+	return nil, "", "", "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
 }
 
 // ErrRunHeldElsewhere reports an acquire on a run id another team's open

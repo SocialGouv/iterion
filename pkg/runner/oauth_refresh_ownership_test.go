@@ -94,10 +94,12 @@ func TestStartOAuthRefreshers_NeverRefreshesACodexForfait(t *testing.T) {
 	r := &Runner{}
 	stop := make(chan struct{})
 	defer close(stop)
+	// No record refs: the claude_code slot takes the self-refresh fallback,
+	// which is the positive control below.
 	r.startOAuthRefreshers(stop, "run-ownership", map[string]string{
 		string(secrets.OAuthKindClaudeCode): anthropicPath,
 		string(secrets.OAuthKindCodex):      codexPath,
-	})
+	}, nil, nil)
 
 	// Positive control: wait for the kind that IS owned by the runner.
 	deadline := time.Now().Add(10 * time.Second)
