@@ -363,14 +363,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// instance, like CapPolicy: the admin write invalidates the server's,
 	// this one converges within the resolver's TTL bound.
 	platformCredAudience := platformcfg.NewResolver[platformcfg.PlatformCredentials](stores.platformCreds, logger.Warn)
-	ir.SetEnvOverlay(func(name string) (string, bool) {
-		rec := botVarsResolver.Get(context.Background())
-		if rec == nil {
-			return "", false
-		}
-		v, ok := rec.Vars[name]
-		return v, ok
-	})
+	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
 	// One fetcher for both halves of the plugin-source contract: the
 	// publisher materialises a team's sources at launch, the server verifies
 	// a source the same way at registration.

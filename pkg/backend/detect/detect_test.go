@@ -348,8 +348,8 @@ func TestZAISuggestedModel(t *testing.T) {
 			continue
 		}
 		found = true
-		if p.SuggestedModel != "anthropic/glm-5.2" {
-			t.Fatalf("zai suggested model = %q, want anthropic/glm-5.2", p.SuggestedModel)
+		if p.SuggestedModel != "anthropic/glm-5.3" {
+			t.Fatalf("zai suggested model = %q, want anthropic/glm-5.3 — GLM is always 5.3", p.SuggestedModel)
 		}
 	}
 	if !found {
