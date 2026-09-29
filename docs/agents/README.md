@@ -28,6 +28,7 @@ carry: the failure that was measured, on this repo, on a given date.
 | [dogfood.md](dogfood.md) | You are about to launch a catalog bot against this repo for real. |
 | [security-selfaudit.md](security-selfaudit.md) | Running the security bots on iterion itself, or triaging a `source:sec-audit-self` finding. |
 | [runbooks.md](runbooks.md) | "How do I configure / operate / debug X on iterion" — the operational index, one entry per runbook with its read-me-when. |
+| [graphify.md](graphify.md) | A codebase/architecture question is worth asking the knowledge graph first, or `graphify-out/` is stale after your changes — queries, refresh paths, scope and the honesty limits. |
 
 ## Adding to the tree
 
