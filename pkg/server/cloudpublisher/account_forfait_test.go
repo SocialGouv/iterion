@@ -167,7 +167,7 @@ func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
 	}
 	closeAccount(first.Fingerprint)
 	rs := secrets.NewMemoryRunSecretsStore()
-	p := &Publisher{oauthForfait: oauth, runSecrets: rs, sealer: sealer, logger: testLogger(), usageCaps: meter}
+	p := &Publisher{oauthForfait: oauth, runSecrets: rs, sealer: sealer, logger: testLogger(), usageCaps: meter, rotatedOAuthKinds: rotatedClaude}
 	b := resolveBundle(t, p, rs, sealer, "platform-rank-1", "team1", "webhook:config")
 	if b.OAuthFingerprints["claude_code"] != second.Fingerprint || !b.PlatformSourced["claude_code"] {
 		t.Fatalf("platform did not try its healthy fallback: fingerprints=%v platform=%v", b.OAuthFingerprints, b.PlatformSourced)

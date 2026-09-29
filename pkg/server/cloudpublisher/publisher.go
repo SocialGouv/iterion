@@ -91,6 +91,12 @@ type Config struct {
 	// into the run bundle so the runner can materialise it for the
 	// CLI subprocess.
 	OAuthForfait secrets.OAuthStore
+	// RotatedOAuthKinds names the forfait kinds this server's refresh
+	// worker rotates (the kinds it has a client id for). A slot of such a
+	// kind names its record, which the runner follows; any other slot names
+	// none, and the runner keeps refreshing its own copy — a record nobody
+	// rotates would otherwise let a long run die at token expiry.
+	RotatedOAuthKinds []secrets.OAuthKind
 	// ForgeConnections, when non-nil, lets the publisher resolve the
 	// github_app connection a run's forge_token came from and thread its
 	// bot login to the runner, so an installation token's commits are
@@ -188,6 +194,7 @@ type Publisher struct {
 	runSecrets           secrets.RunSecretsStore
 	sealer               secrets.Sealer
 	oauthForfait         secrets.OAuthStore
+	rotatedOAuthKinds    map[string]bool
 	forgeConns           forge.ConnectionStore
 	pluginSources        *pluginsource.Resolver
 	sandboxImage         func(context.Context) string
@@ -313,6 +320,7 @@ func New(cfg Config) (*Publisher, error) {
 		runSecrets:           cfg.RunSecrets,
 		sealer:               cfg.Sealer,
 		oauthForfait:         cfg.OAuthForfait,
+		rotatedOAuthKinds:    rotatedOAuthKindSet(cfg.RotatedOAuthKinds),
 		forgeConns:           cfg.ForgeConnections,
 		pluginSources:        cfg.PluginSources,
 		sandboxImage:         cfg.SandboxImage,
@@ -969,6 +977,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// tier tags — bundle.PlatformSourced already tracks the platform
 	// vs tenant/tier split.
 	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.grant)
+	p.keepFollowableRecordRefs(&bundle)
 
 	sealed, err := secrets.SealRunBundle(p.sealer, runID, bundle)
 	if err != nil {
@@ -1237,6 +1246,26 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 		bundle.OAuthFingerprints = map[string]string{}
 	}
 	bundle.OAuthFingerprints[kind] = fp
+}
+
+func rotatedOAuthKindSet(kinds []secrets.OAuthKind) map[string]bool {
+	set := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		set[string(k)] = true
+	}
+	return set
+}
+
+// keepFollowableRecordRefs drops, from the bundle about to be sealed, the
+// record ref of every slot whose kind this server does not rotate: a run
+// following a record no refresher rotates would never renew its token, and
+// its self-refresh is the only one that record has.
+func (p *Publisher) keepFollowableRecordRefs(bundle *secrets.RunBundle) {
+	for kind := range bundle.OAuthRecordRefs {
+		if !p.rotatedOAuthKinds[kind] {
+			delete(bundle.OAuthRecordRefs, kind)
+		}
+	}
 }
 
 // setOAuthCredential fills one OAuth slot: the payload, the subscription's
