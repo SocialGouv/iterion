@@ -71,8 +71,15 @@ The agent writes the mutants too, so the harness constrains them mechanically:
 4. **A mechanically sealed held-out set** is moved outside the workspace at the first check.
    `--self-check` exercises visible mutants but withholds the held-out score; only the final gate
    scores it. Once the gate converges, `promote_audit` publishes the spent set under
-   `mutants/audit/<cycle>/` and commits it as replayable evidence. The next cycle must draw a fresh
-   set; fingerprints, not names, prevent laundering a published mutant through a rename.
+   `mutants/audit/<cycle>/` and commits it as replayable evidence. The same rite also leaves a
+   SUCCESSOR set committed under `mutants/holdout/`. The seal declines **per set, never per
+   directory** — it keeps what git tracks and relocates the rest — so the successor waits without
+   keeping the drawing run's own set readable, whichever order the two acts happen in. That leaves
+   the next gate a real set to score in place of a vacuous `0/0`, **once that gate opts in**
+   (`"seal_committed": true` in the config it judges, or `GM_SEAL_COMMITTED=1` for a hand-run one):
+   until someone does, the set waits as a declared debt (`holdout_awaiting_gate`). The next cycle
+   must draw a fresh set; fingerprints, not names, prevent laundering a published mutant through a
+   rename.
 5. **A width and replayability floor.** `min_corpus` applies to distinct reference hashes, not raw
    entry count, and the gate refuses a runner or harness that is absent or gitignored.
 
