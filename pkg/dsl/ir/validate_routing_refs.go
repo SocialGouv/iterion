@@ -22,9 +22,9 @@ import (
 // drill finds nothing and the text reaches the backend as written), the
 // `{{!…}}` raw form, an opening with no close. A flat `{{vars.x}}` span
 // that DOES resolve joins them when its var is declared `string[]`, or
-// `json` with no scalar default document (checkRoutingVarListType, #1605):
-// a list var resolves to its JSON spelling, a backend name nobody
-// registered. The scan
+// `json` with no scalar default document — a null one only when the span
+// is the whole field (checkRoutingVarListType, #1605): a list var resolves
+// to its JSON spelling, a backend name nobody registered. The scan
 // mirrors the executor's resolver, which treats any `{{…}}` as a reference
 // and keeps what it cannot resolve as written: left alone, that text reached
 // the backend (an invalid spec on claw, a model literally named `{{var.m}}`
@@ -62,7 +62,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 								loc, span, refs[0].Path[0], v.Type, v.Type)
 						}
 					} else {
-						c.checkRoutingVarListType(w, node.NodeID(), loc, rf.name, refs[0].Path[0])
+						c.checkRoutingVarListType(w, node.NodeID(), loc, rf.name, refs[0].Path[0], strings.TrimSpace(rf.value) == span)
 					}
 					continue
 				}
@@ -90,7 +90,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 						span, refs[0].Path[0], v.Type)
 				}
 			} else {
-				c.checkRoutingVarListType(w, "", "workflow default_backend", "default_backend", refs[0].Path[0])
+				c.checkRoutingVarListType(w, "", "workflow default_backend", "default_backend", refs[0].Path[0], strings.TrimSpace(w.DefaultBackend) == span)
 			}
 			continue
 		}
@@ -132,12 +132,18 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 // static default's shape (jsonDefaultDocument) and stays SILENT on a
 // scalar document — a string, a number, a bool — warning on a list, an
 // object, and on no default at all (the launch supplies the document). A
-// null document warns for what it does instead: it renders as the empty
-// string, so the field is UNSET at dispatch and silently falls back to
-// its default. A `${...}` in the default moves nothing: the run parses
-// the document before it expands a leaf, so `"${BACKEND}"` is the
+// null document warns for what it does instead when the reference is the
+// whole field (whole — the executor trims, so padding counts as whole):
+// it renders as the empty string, so the field is UNSET at dispatch and
+// silently falls back to its default. Inside other text
+// (`claw{{vars.b}}`) only the reference empties and the surrounding text
+// is the route, so the arm stays silent — as it does on two null spans
+// side by side, or one beside a `${X:-}` that expands empty: telling
+// those apart needs every span and the launch environment, and silence
+// beats a false claim. A `${...}` in the default moves nothing: the run
+// parses the document before it expands a leaf, so `"${BACKEND}"` is the
 // routable string it expands to.
-func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string) {
+func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string, whole bool) {
 	v := w.Vars[varName]
 	if v == nil {
 		return // C033 owns the undeclared name
@@ -150,6 +156,12 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varN
 			return // a scalar document resolves to a routable scalar
 		}
 		if known && doc == nil {
+			if !whole {
+				// Inside other text the reference renders empty and the
+				// surrounding text is the route, like a `string` var
+				// holding "": nothing this arm can claim.
+				return
+			}
 			// null renders as the empty string (formatValue), and an empty
 			// routing field is an UNSET one: nothing fails — the route
 			// silently falls back to the default the field was written to

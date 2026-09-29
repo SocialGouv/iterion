@@ -204,6 +204,18 @@ schema s:
 			body: agent("  backend: \"{{vars.ja}}\"\n"), want: 1},
 		{name: "a json var whose default document is null warns",
 			body: agent("  backend: \"{{vars.j0}}\"\n"), want: 1},
+		// Only a null reference that IS the field empties it: inside other
+		// text the reference renders "" and the text is the route
+		// (`claw{{vars.j0}}` dispatches to claw), and the executor trims
+		// before it reads, so padding still leaves the field empty.
+		{name: "a null json var inside other text stays silent (the text is the route)",
+			body: agent("  backend: \"claw{{vars.j0}}\"\n"), want: 0},
+		{name: "a null json var padded with spaces is still the whole field",
+			body: agent("  backend: \" {{vars.j0}} \"\n"), want: 1},
+		{name: "a null json var inside the workflow default_backend's text stays silent",
+			body: agent(""), wf: "  default_backend: \"claw{{vars.j0}}\"\n", want: 0},
+		{name: "a null json var padded with spaces is still the whole workflow default_backend",
+			body: agent(""), wf: "  default_backend: \" {{vars.j0}} \"\n", want: 1},
 		{name: "a json var with no default warns (the launch supplies the document)",
 			body: agent("  backend: \"{{vars.jx}}\"\n"), want: 1},
 		// A `${...}` never changes a document's shape: the run parses the
