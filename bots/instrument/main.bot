@@ -235,10 +235,10 @@ prompt campaign_system:
      parallel abstractions when an existing seam fits) → implement the
      SMALLEST coherent version, tests included where the behaviour
      warrants them (the tracker coupling and the JSON format DESERVE
-     unit tests — use the SDK's in-memory/mock transport, never a real or
-     remote sink in tests; the loopback collector of the `instrumentation`
-     skill's capture-endpoint E2E is the one exception) → build → run the
-     affected tests → COMMIT
+     unit tests — use the SDK's in-memory/mock transport, never a real
+     network call in tests; loopback fakes and the collector of the
+     `instrumentation` skill's capture-endpoint E2E are the exception) →
+     build → run the affected tests → COMMIT
      it with a semantic message (`feat(scope): <precise slice>`, or the
      `type(scope):` that fits). A few edits per commit, validation
      BEFORE the commit — never commit code you have not built and
@@ -492,14 +492,17 @@ prompt review_system:
     stack-trace frame-locals the SDK serializes, free-form message
     interpolation, breadcrumbs, process argv) and verify each is scrubbed.
     Then prove it against a local capture endpoint: first assert every
-    event you triggered arrived as its own item, then that no planted
-    value appears anywhere, searched raw AND decoded (JSON-unescaped,
-    percent-decoded until stable, numbers and non-JSON items included —
-    lang-python ships the helper; on other stacks port its decoding). Run
-    the campaign's own capture test when it exists; write a harness only
-    when none does, under `{{vars.scratch_dir}}/review`, never in the
-    workspace, and leave the working tree exactly as you found it — no
-    new, modified or deleted file.
+    event you triggered arrived as its own item — batched items included:
+    logs ship in batches, so wait for the triggered record itself, not for
+    any batch — then that no planted value appears anywhere, searched raw
+    AND decoded (JSON-unescaped, percent-decoded until stable, numbers and
+    non-JSON items included — lang-python ships the helper; on other
+    stacks port its decoding). The campaign's own capture test proves only
+    the paths it triggers, under the assertions it makes: run it, and give
+    every other path you listed your own harness, under
+    `{{vars.scratch_dir}}/review`, never in the workspace, leaving the
+    working tree exactly as you found it — no new, modified or deleted
+    file.
   - **Written invariants**: every guarantee in code or docs ("the sub
     never reaches a log store") must have a test that fails when it
     breaks — sweep the call sites by the SHAPE of the violation, not the

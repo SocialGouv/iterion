@@ -8,7 +8,8 @@ version: 0.2.2
 ## an OAuth code and a ProConnect sub crossed a campaign's own scrubber),
 ## proven against a capture endpoint: lang-python ships the collector (gzip
 ## AND br) with `items()` (arrival asserted on each event item) and
-## `leaks()` (planted values searched raw AND decoded, escapes peeled).
+## `leaks()` (planted values searched raw AND decoded, escapes peeled at any
+## depth, case-insensitive).
 ## Convergence changes on purpose: an unproven redaction or isolation claim
 ## now blocks the loop. verify-build: no `docker` command in verify.sh (the
 ## sandbox has no daemon), and the PR body names the images CI builds as not

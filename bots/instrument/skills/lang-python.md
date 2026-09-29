@@ -167,16 +167,19 @@ def _variants(s):
                     out.add(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)).decode("utf-8", "replace"))
                 except ValueError:
                     pass
-    for v in list(out):                    # escapes: "H\\u00e9" (JSON in a string), b'H\\xc3\\xa9' (bytes repr)
-        u = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m[1], 16)), v).encode("utf-8", "surrogatepass")
-        out.add(re.sub(rb"\\x([0-9a-fA-F]{2})", lambda m: bytes([int(m[1], 16)]), u).decode("utf-8", "replace"))
+    for v in list(out):                    # escapes at any depth: "H\\u00e9", its repr() "H\\\\u00e9", b'H\\xc3\\xa9', "4\\/0A"
+        u = re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m[1], 16)), v).encode("utf-8", "surrogatepass")
+        b = re.sub(rb"\\+x([0-9a-fA-F]{2})", lambda m: bytes([int(m[1], 16)]), u)
+        for d in (b.decode("utf-8", "replace"), b.decode("latin-1")):   # latin-1: legacy bytes, ascii()
+            out.update((d, d.replace("\\", "")))
     return out
 
 def leaks(captured, planted):
     """Planted values found anywhere in the capture, raw AND decoded: every line as raw
     text (numbers and non-JSON items included), every JSON key and string value unescaped,
     each percent-decoded until stable, JWT segments base64url-decoded, backslash escapes
-    peeled (a nested JSON's u-escapes, a bytes repr's x-escapes)."""
+    peeled at any depth (u- and x-escapes behind any run of backslashes, as repr() doubles
+    them; Latin-1 bytes; JSON's escaped slash), matched case-insensitively."""
     texts = []
     for line in captured:
         texts.append(line.decode("utf-8", "replace"))
@@ -184,7 +187,7 @@ def leaks(captured, planted):
             texts.extend(_strings(json.loads(line)))
         except ValueError:
             pass
-    return sorted({p for t in texts for v in _variants(t) for p in planted if p in v})
+    return sorted({p for t in texts for v in _variants(t) for p in planted if p.casefold() in v.casefold()})
 ```
 
 The SDK sends from a background thread: after triggering the paths, call
@@ -194,8 +197,11 @@ match its own `event_id`, `logentry.message` or exception value;
 `arrived` only says the first envelope landed. Batched items do not ride
 the event: with `enable_logs`, log records ship as `log` items every ~5 s
 and `before_send` never sees them (scrub them in `before_send_log`) —
-poll until a `("log", …)` item is among `items(captured)` too, or
-flush, before asserting absence. Then assert
+poll until the record you triggered is inside a `("log", p)` item —
+match its `r["attributes"]["sentry.message.template"]["value"]` among
+`p["items"]` (the template survives a scrubbed body) — or flush in process,
+before asserting absence: an earlier batch of startup or access lines
+satisfies a mere "a log item arrived". Then assert
 `leaks(captured, planted) == []`. Plant distinctive values and load them
 from a data file — a literal in a source file on the captured stack comes
 back through the SDK's source context and fakes a hit — and plant each
