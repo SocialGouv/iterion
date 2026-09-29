@@ -149,7 +149,10 @@ entry points. Never wire tracing "while you're at it".
   the test), THEN that **no secret or identity appears anywhere**,
   searched raw AND decoded (JSON-unescaped, percent-decoded until stable,
   numbers and non-JSON items included — `lang-python` ships the capture
-  helper; on other stacks port its decoding) — request fields including the query string and cookies,
+  helper; on other stacks port its decoding AND its matching: any
+  8-character run of a planted value, case-insensitive, a value under 8
+  characters whole — a truncated `sub[:8]` is the leak a whole-value
+  search misses) — request fields including the query string and cookies,
   stack-trace frame-locals the SDK serializes, free-form message
   interpolation, breadcrumbs, process argv included. Over an empty,
   partial or undecoded capture, "nothing leaked" is vacuously true. The

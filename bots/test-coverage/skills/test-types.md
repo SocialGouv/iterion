@@ -87,7 +87,8 @@ Detect the stack from its markers; honour any pinned toolchain
 - **Unit:** plain `def test_x():` + `assert`; `@pytest.mark.parametrize`
   for cases; `pytest.raises(Err)` for errors; `monkeypatch` /
   `unittest.mock` at boundaries; `tmp_path` fixture for files.
-- **Run:** `pytest path/` / `python -m pytest`.
+- **Run:** through the repo's environment manager — `uv run pytest path/`,
+  `poetry run pytest path/` (a bare `pytest` needs that environment active).
 - **Coverage:** `pytest --cov=<pkg>` (pytest-cov) or `coverage run -m pytest`.
 - **Property:** Hypothesis (`@given(...)`).
 

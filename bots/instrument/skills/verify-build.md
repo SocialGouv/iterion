@@ -68,7 +68,9 @@ and the correct toolchain:
     its `build` + `test` scripts if defined.
   - Rust (`Cargo.toml`): `cargo build && cargo test`.
   - Python (`pyproject.toml`/`setup.py`): the configured test runner, e.g.
-    `python3 -m pytest`, plus a type/lint check if the project defines one.
+    `uv run pytest` / `poetry run pytest` — through the repo's environment
+    manager (a bare `python3 -m pytest` needs its dependencies installed) —
+    plus a type/lint check if the project defines one.
   - Anything else: build + unit-test the way the repo's CI does — read
     `.github/workflows/*` (or other CI config) if present; CI is the source of
     truth for "how this repo is built".
@@ -135,16 +137,23 @@ Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
 docker-compose services). §1b tells you to mirror CI's gates; the image build is
 the one you must NOT mirror:
 
-- **Never put a `docker` command in verify.sh** (build, run, compose): the
-  iterion sandbox has no Docker CLI or daemon by design (no socket, no
-  `--privileged`), so the step fails on every pass and the gate never goes
-  green. Do not replay the image's dependency
+- **Never put a `docker` command in verify.sh** (build, run, compose) —
+  nor a wrapper target whose commands run one (`task test`, `make test`:
+  read its commands first; run its non-docker steps directly — the one
+  exception to calling a target rather than transcribing it — and name
+  what that leaves out). The iterion sandbox has no Docker CLI or daemon
+  by design (no socket, no `--privileged`), so the step fails on every
+  pass and the gate never goes green. Do not replay the image's dependency
   resolution either: it needs pip (absent from the default image), pips before
   25.3 download every wheel in full (a torch pin alone is 800 MB), and its
   verdict depends on the local interpreter and on which indexes the image
   reads.
-- Instead, **name each image CI builds in your summary as not covered** by the
-  green gate: the image build installs the dependency set from the index the
+- Instead, **name each image CI builds as not covered** by the green gate —
+  in your summary AND as the LAST line verify.sh prints (`echo "NOT
+  COVERED: image <Dockerfile path>, built by CI only"` after the checks,
+  under the template's `set -e`, so it prints only when they all passed):
+  the gate's log tail then carries it wherever the bot reports it. The image
+  build installs the dependency set from the index the
   CI actually uses, which may not carry a version your sandbox already has —
   only CI's own build can say. (Paid: a transitive pin, dragged in by a
   never-imported dependency, was no longer carried by the index the CI

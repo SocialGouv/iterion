@@ -179,7 +179,9 @@ def leaks(captured, planted):
     text (numbers and non-JSON items included), every JSON key and string value unescaped,
     each percent-decoded until stable, JWT segments base64url-decoded, backslash escapes
     peeled at any depth (u- and x-escapes behind any run of backslashes, as repr() doubles
-    them; Latin-1 bytes; JSON's escaped slash), matched case-insensitively."""
+    them; Latin-1 bytes; JSON's escaped slash), matched case-insensitively on ANY 8-character
+    run of a planted value (the whole value when shorter): a truncated copy (`sub[:8]`) or a
+    dash-stripped one (`uuid.hex`) counts."""
     texts = []
     for line in captured:
         texts.append(line.decode("utf-8", "replace"))
@@ -187,7 +189,9 @@ def leaks(captured, planted):
             texts.extend(_strings(json.loads(line)))
         except ValueError:
             pass
-    return sorted({p for t in texts for v in _variants(t) for p in planted if p.casefold() in v.casefold()})
+    runs = {p: {p[i:i + 8].casefold() for i in range(max(1, len(p) - 7))} for p in planted}
+    return sorted({p for t in texts for v in _variants(t) for c in (v.casefold(),) for p in planted
+                   if any(r in c for r in runs[p])})
 ```
 
 The SDK sends from a background thread: after triggering the paths, call
@@ -202,9 +206,21 @@ match its `r["attributes"]["sentry.message.template"]["value"]` among
 `p["items"]` (the template survives a scrubbed body) — or flush in process,
 before asserting absence: an earlier batch of startup or access lines
 satisfies a mere "a log item arrived". Then assert
-`leaks(captured, planted) == []`. Plant distinctive values and load them
-from a data file — a literal in a source file on the captured stack comes
-back through the SDK's source context and fakes a hit — and plant each
+`leaks(captured, planted) == []`. The helper reports ANY 8-character run of
+a planted value, so every run must be distinctive: generate the values
+(`secrets.token_hex`, `uuid.uuid4()`) into a data file — no word or field
+name inside a value (a planted `Password123!` matches the `password` key a
+working scrubber kept), no domain or IP prefix the app talks to (an email
+at `@beta.gouv.fr` matches `.gouv.fr` in any ProConnect URL), no
+time-ordered id minted at test time (ObjectIds or UUIDv7 of the same second
+share their first runs) — and trigger the same paths once more with a
+SECOND planted set: `leaks()` of that capture against the first set must
+be `[]`, or a hit proves nothing. A value under 8 characters is matched
+whole (make it rare, or longer); a copy is seen only when 8 contiguous
+characters survive unchanged — a separator every few characters, a
+re-encoding, accent folding or NFD defeat it. Load the values from that
+file — a literal in a source file on the captured stack comes back
+through the SDK's source context and fakes a hit — and plant each
 identity field on its own (given name and family name separately). Over an
 empty, partial or undecoded capture, "nothing leaked" is vacuously true,
 which is why arrival comes first. The leak paths to trigger: emails, `sub`

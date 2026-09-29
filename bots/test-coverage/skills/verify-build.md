@@ -52,10 +52,12 @@ and the correct toolchain:
     died with `mkdir: cannot create directory '/home/.../.cache/devbox':
     Permission denied` — observed 2026-06-23, run 019ef550. That root cause is
     fixed in the engine.) Last-resort only: if the wrapper still fails for a
-    genuine environment reason (not a code error), the sandbox image also ships
-    the real toolchain (`go`, `node`, `cargo`, `python`) directly on `PATH`, so
-    you may fall back ONCE to the bare tool — `command -v go && go build ./...
-    && go test ./...` — rather than retrying the wrapper.
+    genuine environment reason (not a code error), fall back ONCE to the bare
+    tool when it is on `PATH` — `command -v go && go build ./... && go test
+    ./...` — rather than retrying the wrapper. The default (slim) sandbox image
+    ships only `node` and `python3` on `PATH` (no `go`, `cargo`, `python` or
+    `pip`): when the tool is absent, report the environment failure instead of
+    looping.
 - **Go in a sandboxed git worktree: disable VCS stamping.** The run's
   workspace is a git *worktree* whose gitdir lives outside the sandbox
   mounts, so `go build`'s VCS probe can fail with `error obtaining VCS
@@ -71,7 +73,9 @@ and the correct toolchain:
     its `build` + `test` scripts if defined.
   - Rust (`Cargo.toml`): `cargo build && cargo test`.
   - Python (`pyproject.toml`/`setup.py`): the configured test runner, e.g.
-    `python -m pytest`, plus a type/lint check if the project defines one.
+    `uv run pytest` / `poetry run pytest` — through the repo's environment
+    manager (a bare `python3 -m pytest` needs its dependencies installed) —
+    plus a type/lint check if the project defines one.
   - Anything else: build + unit-test the way the repo's CI does — read
     `.github/workflows/*` (or other CI config) if present; CI is the source of
     truth for "how this repo is built".
@@ -131,6 +135,36 @@ CI enforces a drift gate and `verify.sh` carries none of these, the gate fails
 with DRIFT GATE MISSING (exit 3); a green verify that leaves new changes in the
 tree fails with UNCOMMITTED REGEN OUTPUT (exit 4). Writing the gate here is
 cheaper than being bounced by the enforcement.
+
+## 1c. The Docker images CI builds are NOT in verify.sh — say so
+
+Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
+docker-compose services). §1b tells you to mirror CI's gates; the image build is
+the one you must NOT mirror:
+
+- **Never put a `docker` command in verify.sh** (build, run, compose) —
+  nor a wrapper target whose commands run one (`task test`, `make test`:
+  read its commands first; run its non-docker steps directly — the one
+  exception to calling a target rather than transcribing it — and name
+  what that leaves out). The iterion sandbox has no Docker CLI or daemon
+  by design (no socket, no `--privileged`), so the step fails on every
+  pass and the gate never goes green. Do not replay the image's dependency
+  resolution either: it needs pip (absent from the default image), pips before
+  25.3 download every wheel in full (a torch pin alone is 800 MB), and its
+  verdict depends on the local interpreter and on which indexes the image
+  reads.
+- Instead, **name each image CI builds as not covered** by the green gate —
+  in your summary AND as the LAST line verify.sh prints (`echo "NOT
+  COVERED: image <Dockerfile path>, built by CI only"` after the checks,
+  under the template's `set -e`, so it prints only when they all passed):
+  the gate's log tail then carries it wherever the bot reports it. The image
+  build installs the dependency set from the index the
+  CI actually uses, which may not carry a version your sandbox already has —
+  only CI's own build can say. (Paid: a transitive pin, dragged in by a
+  never-imported dependency, was no longer carried by the index the CI
+  resolves against — every api image build failed while the sandbox suite
+  stayed green. The pipeline's result is the signal; a green sandbox gate says
+  nothing about it.)
 
 ## 2. Write the verify script to the scratch dir
 
