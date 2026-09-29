@@ -260,6 +260,12 @@ func (b *PiBackend) execute(ctx context.Context, task Task) (Result, error) {
 	for k, v := range codexEnv {
 		task.ExtraEnv = append(task.ExtraEnv, k+"="+v)
 	}
+	// The key a shared tier pinned for THIS node's route rides the same
+	// channel, for the same reason: both transports and the sandboxed path
+	// read task.ExtraEnv, and nothing narrower reaches all of them.
+	for k, v := range piRouteEnv(ctx, task) {
+		task.ExtraEnv = append(task.ExtraEnv, k+"="+v)
+	}
 	// Transport selection. RPC is the default because it is strictly higher
 	// fidelity — tool events reach the studio timeline, operator chat rides
 	// pi's native steering, accounting comes from get_session_stats, and a
@@ -669,6 +675,38 @@ func piSandboxEnv(ctx context.Context, task Task) map[string]string {
 		}
 	}
 	return env
+}
+
+// piRouteEnv hands pi the key a shared tier sealed for THIS node's route
+// (RunBundle.PinnedAPIKeys). pi names its provider on its argv, so the pin is
+// the node's own and the key crosses for it alone — the zai or moonshot key a
+// Claude forfait keeps out of the run's default channel. A default key of the
+// same provider is the run's own and already set by piResolveEnv.
+func piRouteEnv(ctx context.Context, task Task) map[string]string {
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	provider, _ := piResolveModel(task.Model, task.ProviderHint)
+	p := piSecretsProvider(provider)
+	envKey := piEnvKeys[p]
+	if envKey == "" || creds.APIKey(p) != "" {
+		return nil
+	}
+	if k := creds.PinnedAPIKey(p); k != "" {
+		return map[string]string{envKey: k}
+	}
+	return nil
+}
+
+// piSecretsProvider maps a pi provider id back to the iterion provider whose
+// credential funds it: pi names Moonshot "moonshotai" (piProviderPrefixes).
+func piSecretsProvider(provider string) secrets.Provider {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == piProviderPrefixes["moonshot"] {
+		return secrets.ProviderMoonshot
+	}
+	return secrets.Provider(p)
 }
 
 // piEnvKeys maps a pi provider id onto the API-key environment variable pi

@@ -538,7 +538,11 @@ The observation shows candidates in the resolver's order, grouped by provider
 wire. `selection` distinguishes selected slots, later candidates and tiers not
 consulted by the current launch. `state` separately reports observed quota,
 capacity, a required probe or restoration of a closed credential to wait for
-quota. A restored candidate is not available capacity. Pool donation is
+quota. A restored candidate is not available capacity. A selected key with
+`route_only: true` funds only the routes that name its provider — sealed
+beside the credential holding its wire family, it is not what an unpinned
+node spends — and a key the facade policy keeps off the wire's default says
+so in its `reason`. Pool donation is
 considered only when the whole credential bundle is empty; a pool grant then
 excludes the platform tier. The preview still shows those alternatives and
 why they are not consulted, without reserving them.
@@ -747,7 +751,18 @@ iterion remote admin platform-credentials                          # show
 iterion remote admin platform-credentials set --orgs <org-id>      # name who may draw
 iterion remote admin platform-credentials set --enforce true       # turn the gate on
 iterion remote admin platform-credentials set --enforce false      # back to open
+iterion remote admin platform-credentials set --keys-first true    # shared tiers: keys before forfaits
+iterion remote admin platform-credentials set --facade-default never  # z.ai/Moonshot never the anthropic wire's default
 ```
+
+`keys_first` and `facade_default` ride the same record but are not part of
+the audience: they order the credentials of the org and platform tiers — see
+"Forfaits before keys on a shared wire" below. Their defaults come from
+`ITERION_PLATFORM_KEYS_FIRST` and `ITERION_PLATFORM_FACADE_DEFAULT` (a value
+the server cannot read refuses boot); a stored value overrides them, `""`
+clears it back to the env's, and the GET shows both (`keys_first_effective`,
+`facade_default_effective`). `--keys-first ""` (`"keys_first": ""` or `null`)
+clears it the same way.
 
 - **Enforcement is OPT-IN.** An absent record — or one whose `enforce` is
   off — admits everyone, so the migration is a no-op AND naming a team does
@@ -826,6 +841,140 @@ Semantics worth knowing:
   unfillable and its node is refused by name. `iterion remote credentials
   preview` applies the same rule, so what it lists is what the launch will
   grant.
+- **Forfaits before keys on a shared wire** (platform AND org tiers): when a
+  shared tier holds both a forfait and an API key on one wire family — a
+  Claude forfait and a z.ai key, say — the **forfait takes the family** and
+  the key funds only the routes that name its provider. The first credential
+  to fill a family is what every unpinned node of the run spends, and a
+  subscription the deployment already pays for beats a key billed per token
+  (the pool's own order, [credential-pool.md](credential-pool.md)); filled
+  the other way round, a platform z.ai key would take the anthropic wire of
+  every team without a credential of its own and serve their claude nodes
+  GLM. What follows from it:
+  - **A facade key is not the wire's default beside a Claude credential**
+    (`facade_default`, `auto` by default). z.ai and Moonshot keys ride the
+    anthropic wire but answer a claude id with their own model. Under `auto`
+    such a key is the wire's DEFAULT only in a tier that holds no
+    Anthropic-native credential — a Claude forfait in any window state, or an
+    `anthropic` key the launch's bot may spend; beside one, it funds only the
+    routes that name its provider. A z.ai-only deployment keeps serving every
+    node; a deployment holding a Claude forfait never serves its claude nodes
+    GLM, not even while the forfait is closed — the run parks on the forfait.
+    `never` keeps a facade key off the default everywhere (the routes that
+    name it only); `always` lets it take any free family, so a closed forfait
+    falls through to it. A tier whose store cannot answer "do you hold a
+    Claude credential?" is read as holding none, said on the server log.
+    One tier holding a Claude forfait F and a z.ai key Z:
+
+    | `keys_first` | `facade_default` | F | anthropic wire's default | Z |
+    |---|---|---|---|---|
+    | false | auto | open | F | routes naming `zai` |
+    | false | auto | closed | F, restored — the run parks on it | routes naming `zai` |
+    | false | always | closed | Z | default |
+    | false | never | any | F (restored when closed) | routes naming `zai` |
+    | true | auto | open | F — Z is a facade | routes naming `zai` |
+    | true | always | open | Z — keys first | default |
+
+    A key of the wire's own vendor (an `anthropic` key) is not a facade:
+    `keys_first` alone orders it against the forfait, and a closed forfait
+    yields the wire to it.
+  - **A closed forfait yields the wire — to a key the policy lets take it.**
+    A forfait refused by its provider, or blocked by an operator cap — soft
+    or hard: a soft cap lets no NEW run start ([usage-caps.md](usage-caps.md))
+    and a launch is one — is skipped, and a key the rules above admit fills
+    the wire it leaves free. That is the capacity fall-through.
+  - **A run in flight waits for its forfait.** A run whose forfait closes
+    mid-run parks until that forfait reopens — its usage-window retry arms
+    on the forfait's reset — while the next launches skip the closed
+    forfait. Waking the parked run onto a key early would need a reopening
+    instant per wire family on the run; the run records one instant for all
+    of them, and stamping it "now" would make every park of the run retry at
+    the floor, on wires a re-resolution cannot move.
+  - **A pin on the forfait's own provider is funded beside it, pinned-only.**
+    claw bills a Claude forfait as extra usage (and refuses it under
+    `ITERION_FORBID_SUBSCRIPTION_OAUTH=1`) and pi has no bridge to it, so a
+    shared tier's `anthropic` key pinned for an `anthropic/…` node is what
+    that node spends. claude_code under a `provider: anthropic` hint spends
+    the run's own default key first, then the forfait, and only then such a
+    pinned key — the subscription's work stays on the subscription. claw on
+    an `openai/…` route spends the run's own openai key, then the ChatGPT
+    forfait (on plan) while the runner lets it serve one
+    (`ITERION_OPENAI_USE_OAUTH` not `0`, no `OPENAI_BASE_URL` — both cross
+    into the sandbox), then a key pinned for the route — in process and in
+    the sandbox alike; on `anthropic/…` its key stays before the Claude
+    forfait.
+  - **A pinned key no route spends holds nothing.** A key sealed for routes
+    only is stamped — and so takes a slot of its concurrency ceiling — when
+    some route may spend it. A route whose backend declares that it spends
+    the run's forfait of that provider first (`delegate.RegisterForfaitFirst`:
+    claude_code for `anthropic`, codex for `openai`), beside a sealed forfait
+    of that provider, never reaches the key; any route the walk cannot vouch
+    for counts as spending it — a backend resolved at dispatch or read from
+    the environment (the runner expands it with its own), a model it cannot
+    read, a supervisor (it calls its model in process, key before forfait),
+    and claw, whose openai order depends on runner settings the server
+    cannot see.
+  - **The pool lends to what the run cannot fund.** It is asked only for
+    providers no key sealed for the run's routes already funds: a donation
+    beside such a key would take its routes over, a stranger's credential
+    spent where the run's own tier held one.
+  - **A GLM model on the anthropic wire is a z.ai route** — bare `glm-*` on
+    claude_code or pi, `anthropic/glm-*` on claw. It pins `zai`, spends the
+    z.ai key (the default one, or the one pinned beside a forfait), and its
+    spend is booked there; it never reaches the Claude forfait, which
+    api.anthropic.com cannot serve it on — in process and in the sandbox
+    alike, and claw's subscription guard does not apply to it. A GLM node
+    with no hint gets the `zai` one only when a z.ai key is reachable (the
+    run's, or `ZAI_API_KEY`), so an ambient z.ai setup (`ANTHROPIC_BASE_URL`
+    on api.z.ai) keeps working. The z.ai key goes to the operator's
+    `ANTHROPIC_BASE_URL` when one is set — a z.ai-compatible endpoint, a
+    proxy — on claw as on claude_code, and to z.ai's endpoint otherwise. A
+    GLM spec naming another provider (`openrouter/z-ai/glm-4.6`) stays that
+    provider's route.
+  - **Tier order comes before instrument order.** The rules order the
+    credentials of ONE tier; the org tier still fills before the platform
+    one, so an org's credential holds the wire over the platform's for that
+    org's teams. The restore step keeps the same order: when every tier
+    refused its credentials, the one handed back per wire family is the
+    earliest tier's — the tenant's own before the org's, the org's before
+    the platform's — in that tier's fill order. A refused shared key comes
+    back in the channel its fill would have sealed it in: beside the
+    credential holding its family, only for the routes that name its
+    provider — they park on their own refusal instead of reaching a
+    credential that cannot serve them — and never over a key another tier
+    already sealed for those routes. The tenant's own refused key coming
+    back as the wire's default replaces a shared key sealed for its
+    provider's routes, which would never be spent beside it.
+  - **What the run spends is what the ledger books.** The per-credential
+    spend ledger books a claude_code route on the credential its session
+    named (the `fingerprint` on `delegate_finished`), so a node pinned
+    `provider: zai` is charged to the z.ai key, not to the forfait holding
+    the wire, and a claw `openai/…` route to what claw spent under the
+    runner's settings; the usage-cap pre-flight reads each route's credential
+    the same way ([usage-caps.md](usage-caps.md)), and meters the run on its
+    DEFAULT credential's ledger — a pinned key keeps its owner's.
+  - **The escape hatches**, deployment-wide and on both shared tiers:
+    `iterion remote admin platform-credentials set --keys-first true` puts
+    keys back in front, and `--facade-default always` lets a facade key take
+    a free family again (`keys_first` / `facade_default` on `PUT
+    /api/admin/settings/platform-credentials`; the env defaults above).
+  - **Known limits.** A claw or pi route whose model the walk cannot read
+    (`{{vars.model}}`, a model from the env) names no provider, so no shared
+    key is sealed for it — give it a readable model, or put keys first. A
+    `${…}` in a model or a provider is expanded with the SERVER's env to
+    decide what to fund; a runner whose env says otherwise may route
+    elsewhere. The accounting errs toward counting: a route it cannot vouch
+    for (an env-read backend, claw on openai) stamps a pinned key it may
+    never spend, which then holds a slot of that key's concurrency ceiling.
+    A supervisor with a model of its own is funded like a claw node: a
+    shared tier's key pinned for its provider serves it before the team's
+    forfait (a Claude forfait on claw is billed as extra usage). A
+    pool-granted run skips the platform tier, pinned-only fills included,
+    and the pool's own order does not read the facade policy. Direct
+    generations (`interaction_model`, recoveries, the review companion) read
+    the process env, not the run's credentials. pi's `openai-codex`
+    provider is not an iterion provider id: its routes widen the
+    resolution.
 - **Rotation reach**: new launches and resumes re-resolve, so a
   `failed_resumable` run picks the fresh value on resume. In-flight runs
   keep the sealed snapshot they launched with.

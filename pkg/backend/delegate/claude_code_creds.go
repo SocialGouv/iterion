@@ -827,6 +827,25 @@ func facadeHintRefusal(providerHint string, env map[string]string) error {
 	return &ErrNoFacadeCredential{Provider: providerHint, EnvVar: envVar}
 }
 
+// AnthropicRouteSource names the usage-meter source a claude_code session on a
+// route with this provider hint stamps its readings with (stampUsageSource) —
+// the label the runner keys a reading by. It runs the composition
+// setupCredsAndSession runs, host-side and with no task additions, so a
+// pre-flight asking it before the session exists reads the ledger the session
+// will write. refused is true when the delegate refuses the route before
+// spawning — a facade hint with no key reachable: no session, no spend, no
+// reading. A node's own env additions (Task.ExtraEnv) are not composed: they
+// can only move a route that holds no bundle credential, whose readings land
+// on the run's credential-less meter either way.
+func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
+	task := Task{ProviderHint: providerHint}
+	env := anthropicCredEnvForTask(ctx, task)
+	if facadeHintRefusal(providerHint, env) != nil {
+		return "", true
+	}
+	return providerFingerprint(anthropicFingerprintEnvForTask(task, env)), false
+}
+
 // AnthropicWireFacadeSlot maps a usage Reading.Source label back onto the
 // credential slot that paid for it, or "" when the label names no facade.
 //
@@ -1026,6 +1045,14 @@ func anthropicFingerprintEnvForTask(task Task, env map[string]string) map[string
 	return out
 }
 
+// claude_code spends the run's Claude forfait before a key a shared tier
+// pinned for an `anthropic` route: the `anthropic` branch below reads the
+// run's own default key, then the forfait, then the pinned key — and the
+// default precedence never reads a pinned key at all.
+func init() {
+	RegisterForfaitFirst(BackendClaudeCode, string(secrets.ProviderAnthropic))
+}
+
 // selectedAnthropicCredEnvForCLI returns authoritative route/credential
 // overrides and whether auth is ambient. An explicit direct hint can clear
 // stale routing fields while still inheriting credentials; those credentials
@@ -1041,13 +1068,20 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 			if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
 				return map[string]string{"ANTHROPIC_API_KEY": k}, false
 			}
+			// The forfait before a key a shared tier pinned for the route: a
+			// pin names the PROVIDER, and this CLI spends the subscription on
+			// its plan. The pinned key exists for the consumers that cannot
+			// (claw bills a Claude forfait as extra usage, pi has no bridge to
+			// it); spending it here would move a subscription's work onto a
+			// key billed per token — the org's or the platform's, beside the
+			// tenant's own forfait.
+			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
+				return claudeForfaitEnv(d, sandboxed), false
+			}
 			// Same licence as the facade branch below: an explicit pin may
 			// spend a key a shared tier funded for it.
 			if k := creds.PinnedAPIKey(secrets.ProviderAnthropic); k != "" {
 				return map[string]string{"ANTHROPIC_API_KEY": k}, false
-			}
-			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-				return claudeForfaitEnv(d, sandboxed), false
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the

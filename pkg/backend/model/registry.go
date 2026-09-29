@@ -93,6 +93,14 @@ func (r *Registry) registerDefaults() {
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		baseURL := os.Getenv("ANTHROPIC_BASE_URL")
 		authToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+		// A GLM id is served by z.ai, never by api.anthropic.com: with
+		// ZAI_API_KEY at hand it goes there whatever Anthropic credential the
+		// env also carries — a sandboxed node receives the run's default keys
+		// beside the one its route is funded with — through glmBaseURL, the
+		// endpoint the in-process path (ResolveWithContext) picks too.
+		if zai := os.Getenv("ZAI_API_KEY"); zai != "" && modelServedByZAI(modelID) {
+			apiKey, authToken, baseURL = zai, "", glmBaseURL(baseURL)
+		}
 		if apiKey == "" && authToken == "" {
 			if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
 				apiKey = zai
@@ -213,10 +221,8 @@ func (r *Registry) registerDefaults() {
 		//     Credentials.OAuthDir("codex")), so a runner with no ~/.codex
 		//     still uses the connected ChatGPT-forfait.
 		apiKey := os.Getenv("OPENAI_API_KEY")
-		oauthPref := os.Getenv("ITERION_OPENAI_USE_OAUTH")
-		oauthDisabled := oauthPref == "0" || cfg.BaseURL != ""
-		oauthForced := oauthPref == "1"
-		shouldTryOAuth := !oauthDisabled && (apiKey == "" || oauthForced)
+		oauthForced := os.Getenv("ITERION_OPENAI_USE_OAUTH") == "1"
+		shouldTryOAuth := openAIOAuthAllowed() && (apiKey == "" || oauthForced)
 		if shouldTryOAuth {
 			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
 				applyCodexOAuth(&cfg, view)
@@ -559,6 +565,17 @@ func ParseModelSpec(spec string) (providerName, modelID string, err error) {
 	return spec[:idx], spec[idx+1:], nil
 }
 
+// glmBaseURL is where a GLM call is sent with a z.ai key: the operator's
+// ANTHROPIC_BASE_URL when one is set — a self-hosted z.ai-compatible endpoint,
+// a regional facade, a proxy: the operator means it, exactly as the
+// claude_code delegate's zaiEnv reads it — z.ai's default endpoint otherwise.
+func glmBaseURL(operatorBase string) string {
+	if strings.TrimSpace(operatorBase) != "" {
+		return operatorBase
+	}
+	return secrets.ZAIDefaultBaseURL
+}
+
 // ResolveWithContext is the BYOK-aware variant of Resolve.
 //
 // When ctx carries per-run secrets.Credentials with a non-empty key
@@ -579,6 +596,32 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	creds, hasCreds := credentialsLookup(ctx)
 	if !hasCreds {
 		return r.Resolve(spec)
+	}
+	// `anthropic/glm-*` is served by z.ai, not by the anthropic credential
+	// its prefix names: spend the run's z.ai key against z.ai's endpoint —
+	// the in-process twin of the sandbox, where ZAI_API_KEY makes the env
+	// factory do the same. Without it the Claude forfait answered the call
+	// and api.anthropic.com refused a model it does not serve.
+	if providerName == "anthropic" && modelServedByZAI(modelID) {
+		if zai := creds(string(secrets.ProviderZAI)); zai != "" {
+			return anthropicprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+				APIKey:  zai,
+				Model:   modelID,
+				BaseURL: glmBaseURL(os.Getenv("ANTHROPIC_BASE_URL")),
+			}))
+		}
+	}
+	// openai: the run's ChatGPT forfait, spent on its plan, comes before a key
+	// a shared tier sealed only for this route — the run's own default key
+	// still comes first. anthropic keeps the key before the forfait: a Claude
+	// forfait on claw is billed as extra usage.
+	if providerName == "openai" {
+		if c, ok := secrets.CredentialsFromContext(ctx); ok &&
+			c.APIKey(secrets.ProviderOpenAI) == "" && c.PinnedAPIKey(secrets.ProviderOpenAI) != "" {
+			if client, ok, err := r.openAIFromCtxForfait(ctx, modelID); ok {
+				return client, err
+			}
+		}
 	}
 	overrideKey := creds(providerName)
 	if overrideKey == "" {
@@ -644,6 +687,35 @@ func credentialsLookup(ctx context.Context) (credentialsResolver, bool) {
 	return credentialsLookupFn(ctx)
 }
 
+// RunCredentialsLookup is the credentials lookup a cloud runner installs with
+// SetCredentialsLookup: it reads the run's secrets.Credentials from ctx.
+//
+// APIKeyForRoute, not APIKey: ResolveWithContext calls it with the provider its
+// MODEL SPEC names, which is the pin itself, so a key a shared tier funded for
+// that pin must be spendable here — the sandbox path already hands it over as
+// an env var.
+func RunCredentialsLookup(ctx context.Context) (func(provider string) string, bool) {
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil, false
+	}
+	return func(provider string) string {
+		return creds.APIKeyForRoute(secrets.Provider(provider))
+	}, true
+}
+
+// RunOAuthDirLookup is the OAuth-dir lookup a cloud runner installs with
+// SetOAuthDirLookup: the per-run forfait dirs (codex / claude_code) the runner
+// materialised at claim time, so the in-process factory spends a tenant's
+// subscription on a pod that has neither ~/.codex nor ~/.claude.
+func RunOAuthDirLookup(ctx context.Context) (func(kind string) string, bool) {
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil, false
+	}
+	return creds.OAuthDir, true
+}
+
 // applyCodexOAuth stamps a Codex ChatGPT-forfait view onto a provider config
 // (Bearer OAuth token + account id + client version header). Shared by the
 // disk-based factory and the ctx-resolved (cloud) path so both build an
@@ -654,21 +726,45 @@ func applyCodexOAuth(cfg *api.ProviderConfig, view secrets.CodexCredentialsView)
 	cfg.OpenAIClientVersion = codexCLIVersion()
 }
 
+// openAIOAuthAllowed reports whether this process lets a ChatGPT forfait be
+// spent: no ITERION_OPENAI_USE_OAUTH=0 refusal, and no OPENAI_BASE_URL — a
+// forfait's Codex headers never go to a third-party endpoint. The disk
+// factory, the per-run forfait and the sandbox crossing all read it.
+func openAIOAuthAllowed() bool {
+	return os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" && os.Getenv("OPENAI_BASE_URL") == ""
+}
+
+// codexForfaitView loads the ChatGPT-mode forfait materialised in dir, when
+// this process may spend one there.
+func codexForfaitView(dir string) (secrets.CodexCredentialsView, bool) {
+	if dir == "" || !openAIOAuthAllowed() {
+		return secrets.CodexCredentialsView{}, false
+	}
+	view, err := secrets.LoadCodexCredentialsFrom(dir)
+	if err != nil || !view.IsChatGPTMode() {
+		return secrets.CodexCredentialsView{}, false
+	}
+	return view, true
+}
+
+// OpenAIForfaitServes reports whether claw, on an `openai/…` route holding no
+// default openai key of its own, spends the run's ChatGPT forfait rather than
+// a key pinned for the route — the choice ResolveWithContext makes in process
+// and the sandbox's env factory makes from what forwardableProviderEnv hands
+// it. The runner's spend ledger asks it to book the route where it went.
+func OpenAIForfaitServes(creds secrets.Credentials) bool {
+	_, ok := codexForfaitView(creds.OAuthDir(string(secrets.OAuthKindCodex)))
+	return ok
+}
+
 // openAIFromCtxForfait builds an OpenAI ChatGPT-forfait client from the
 // tenant's per-run-materialised codex credentials (Credentials.OAuthDir),
 // honouring the same disable knobs as the disk factory. Returns ok=false when
 // OAuth is disabled, no codex dir is resolved, or the dir has no ChatGPT-mode
 // auth.json — the caller then falls back to the shared resolver.
 func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
-	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" || os.Getenv("OPENAI_BASE_URL") != "" {
-		return nil, false, nil
-	}
-	dir := oauthDirLookup(ctx, "codex")
-	if dir == "" {
-		return nil, false, nil
-	}
-	view, err := secrets.LoadCodexCredentialsFrom(dir)
-	if err != nil || !view.IsChatGPTMode() {
+	view, ok := codexForfaitView(oauthDirLookup(ctx, "codex"))
+	if !ok {
 		return nil, false, nil
 	}
 	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL")}

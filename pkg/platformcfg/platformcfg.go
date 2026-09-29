@@ -25,6 +25,8 @@ package platformcfg
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -355,9 +357,86 @@ type PlatformCredentials struct {
 	// governs at, since a team is created inside an org without asking the
 	// platform.
 	Orgs []string `bson:"orgs,omitempty" json:"orgs"`
+	// KeysFirst is the shared-tier fill order on one wire family. nil or
+	// false = a forfait takes the family before an API key, which then
+	// funds only the routes that name its provider (or the wire a closed
+	// forfait leaves free); true = the key fills first and the forfait is
+	// the backstop. It governs the platform AND org tiers — the deployment's
+	// posture on spending a subscription it already pays for before a key
+	// billed per token.
+	KeysFirst *bool `bson:"keys_first,omitempty" json:"keys_first"`
+	// FacadeDefault says whether a facade key (z.ai, Moonshot — another
+	// vendor behind the anthropic wire, answering a claude id with its own
+	// model) may become that wire's DEFAULT credential in a shared tier:
+	// "auto" (only in a tier holding no Anthropic-native credential — a
+	// Claude forfait, open or closed, or an anthropic key), "never"
+	// (pinned-only: it funds the routes that name its provider and nothing
+	// else), "always" (whenever the family is free, a closed forfait
+	// falling through to it). nil = the env default, else "auto".
+	FacadeDefault *string `bson:"facade_default,omitempty" json:"facade_default"`
 
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
+}
+
+// The deployment defaults of the two shared-tier ordering knobs (ADR-090:
+// env = default, the record's field = runtime override). ValidateEnv refuses
+// a boot on a value these do not read.
+const (
+	EnvKeysFirst     = "ITERION_PLATFORM_KEYS_FIRST"
+	EnvFacadeDefault = "ITERION_PLATFORM_FACADE_DEFAULT"
+)
+
+// FacadePolicy is FacadeDefault's value space.
+type FacadePolicy string
+
+const (
+	FacadeAuto   FacadePolicy = "auto"
+	FacadeNever  FacadePolicy = "never"
+	FacadeAlways FacadePolicy = "always"
+)
+
+func (f FacadePolicy) valid() bool {
+	return f == FacadeAuto || f == FacadeNever || f == FacadeAlways
+}
+
+// PrefersKeys reports whether the shared tiers fill API keys before forfaits
+// on a wire family: the record's value, else the env default, else false.
+func (p *PlatformCredentials) PrefersKeys() bool {
+	if p != nil && p.KeysFirst != nil {
+		return *p.KeysFirst
+	}
+	v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(EnvKeysFirst)))
+	return err == nil && v
+}
+
+// Facade is the effective facade policy: the record's value, else the env
+// default, else auto.
+func (p *PlatformCredentials) Facade() FacadePolicy {
+	if p != nil && p.FacadeDefault != nil {
+		if f := FacadePolicy(*p.FacadeDefault); f.valid() {
+			return f
+		}
+	}
+	if f := FacadePolicy(strings.ToLower(strings.TrimSpace(os.Getenv(EnvFacadeDefault)))); f.valid() {
+		return f
+	}
+	return FacadeAuto
+}
+
+// ValidateEnv reports an env default neither knob can read — a deployment
+// that set one meant something, and reading it as the built-in default in
+// silence would decide the opposite of what the operator wrote.
+func ValidateEnv() error {
+	if v := strings.TrimSpace(os.Getenv(EnvKeysFirst)); v != "" {
+		if _, err := strconv.ParseBool(v); err != nil {
+			return fmt.Errorf("platformcfg: %s=%q is not a boolean", EnvKeysFirst, v)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv(EnvFacadeDefault)); v != "" && !FacadePolicy(strings.ToLower(v)).valid() {
+		return fmt.Errorf("platformcfg: %s=%q — want auto, never or always", EnvFacadeDefault, v)
+	}
+	return nil
 }
 
 // Enforced reports whether the audience gates anything at all.
@@ -389,6 +468,9 @@ func (p *PlatformCredentials) Allows(orgID, teamID string) bool {
 // the lists) and its symptom is every tenant-less run failing at its first
 // LLM call — a fleet-wide outage expressed as a config typo.
 func (p PlatformCredentials) Validate() error {
+	if p.FacadeDefault != nil && !FacadePolicy(*p.FacadeDefault).valid() {
+		return fmt.Errorf("platformcfg: facade_default %q — want auto, never or always", *p.FacadeDefault)
+	}
 	if p.Enforce == nil || !*p.Enforce {
 		return nil
 	}

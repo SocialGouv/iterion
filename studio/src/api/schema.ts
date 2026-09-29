@@ -6378,6 +6378,7 @@ export interface components {
             reason?: string;
             /** Format: date-time */
             reopens_at?: string;
+            route_only?: boolean;
             selected: boolean;
             selection: string;
             source: string;
@@ -6833,6 +6834,8 @@ export interface components {
         };
         PlatformCredentials: {
             enforce?: boolean;
+            facade_default?: string;
+            keys_first?: boolean;
             orgs: string[];
             teams: string[];
             /** Format: date-time */
@@ -7564,6 +7567,8 @@ export interface components {
         };
         platformCredentialsSettingsView: {
             enforced: boolean;
+            facade_default_effective: string;
+            keys_first_effective: boolean;
             origin: string;
             stored?: components["schemas"]["PlatformCredentials"];
         };

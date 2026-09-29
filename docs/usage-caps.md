@@ -119,8 +119,8 @@ Semantics that stay put:
   the `usage cap:` substring, NOT `rate_limited`: a workflow whose every
   path reaches a model is refused before its first node by the runner
   pre-flight and carries the bare reason (no `rate_limited` prefix, no node
-  id), while a workflow with a model-free path is let through and stops
-  mid-run with `rate_limited (<backend>): usage cap: …`. Measured on the
+  id), while a workflow with a model-free path is let through and — under
+  a hard cap — stops mid-run with `rate_limited (<backend>): usage cap: …`. Measured on the
   2026-08-31 Vigie outage, where a 70% DB record was the whole story — and
   where the morning's first signal, the 04:00 docs-refresh run, was the
   pre-flight shape.
@@ -346,9 +346,10 @@ only if EVERY path from the workflow's entry to a terminal passes through
 something that can call a model — an agent, a judge, an `llm` router, a
 model-answered human node, an agent recovery rung, a subbot, a supervisor.
 
-If any model-free path exists, the run starts and the **mid-run** guard stops
-it at the actual call. That costs a pod and a clone in the worst case, and it
-is the price of not refusing work that would never have been billed.
+If any model-free path exists, the run starts; under a HARD cap the
+**mid-run** guard stops it at the actual call, while a soft cap lets it finish
+(see below). That costs a pod and a clone in the worst case, and it is the
+price of not refusing work that would never have been billed.
 
 The distinction is not cosmetic. A zero-LLM run is often the half of a bot
 that *gathers* — and gathered material is not recoverable by retrying later.
@@ -368,9 +369,9 @@ is exactly the defect that silenced the production veille, and shipping the
 weaker predicate first did not fix it.
 
 The predicate is [`ir.Workflow.AlwaysReachesLLM`](../pkg/dsl/ir/uses_llm.go),
-walking forward from the entry and treating a model-calling node as a wall:
-reaching a terminal without hitting one proves a model-free path exists. It
-stays conservative in the direction that matters — an unwalkable graph, a
+treating a model-calling node as a wall: an execution that reaches a terminal
+around every wall proves a model-free path exists — a fan-out's branches all
+run, so one model branch walls the fan-out. It stays conservative in the direction that matters — an unwalkable graph, a
 missing entry, a dangling edge or a supervisor all answer "true", keeping
 today's refusal rather than opening the gate. (`UsesLLM` still exists for the
 plain "does this graph contain one?" question; the two deliberately disagree
@@ -380,12 +381,17 @@ Both pre-flights apply it: the cloud runner's (which has the compiled
 workflow in hand) and the local launch path's (which compiles only when the
 cap is blocking, so the common case pays nothing). The mid-run guard stays
 armed in both cases, so a workflow that turns out to spend anyway is still
-stopped at the call.
+stopped at the call — under a HARD cap. A soft cap stops nothing in flight:
+a two-mode run admitted for its model-free path that takes its model path
+spends the soft-capped credential to the end of the run. That is the price of
+never refusing the collect half, accepted on purpose; the per-route rule
+below (a reachable soft-capped route parks the run) applies only to runs with
+no model-free path.
 
 **And only when it could spend the wire the cap meters.** The readings come
-from the claude_code delegate's session telemetry and nowhere else, and the
-pre-flight key is built from the run's Anthropic-wire credentials (or the
-platform's). A run whose every route is pinned off that wire — both LLM nodes
+from the claude_code delegate's session telemetry and nowhere else, keyed by
+the credential each session spent. A run whose every route is pinned off that
+wire — both LLM nodes
 on `claw` + `openai/…`, a `codex` bot — cannot spend the capped subscription,
 and parking it for the anthropic weekly reset strands it for nothing: a fully
 pinned two-node rite froze for five days that way while its single-node
@@ -406,6 +412,41 @@ would park work that could not possibly spend the capped subscription — the
 one thing the pre-flight promises not to do. The credential the rescue route
 needs is still sealed into the run: the wants derivation widens on the chain,
 it is only this guard that ignores it.
+
+**Per route, and per path** (cloud runner). Each primary anthropic-wire route
+is judged on the credential IT spends, not on the run's default — a run can
+hold a Claude forfait on the wire beside a z.ai key a shared tier sealed for
+its GLM routes, and a closed forfait says nothing about those routes. The
+route is read the way the executor will run it
+([`model.AnthropicWireRoutes`](../pkg/backend/model/wire_reach.go): the node's
+backend under the launch's overrides, the FIRST element of its provider
+chain), and its credential is asked of the delegate itself: a claude_code
+route through `delegate.AnthropicRouteSource` — the composition the session
+will run, under the hint `model.RouteProviderHint` hands it (a GLM id goes to
+z.ai) — so the pre-flight reads the ledger the session will write; claw and
+pi routes as the spend ledger books them. A route the walk cannot read (a
+`{{vars.…}}` backend, hint or model) keeps the run's default credential; a
+route the delegate refuses before spawning (a facade hint with no key) spends
+nothing and is not the cap's to park; a store read that fails is headroom for
+that credential alone.
+
+The run then parks on the **paths** it can take
+([`ir.Workflow.AlwaysReaches`](../pkg/dsl/ir/uses_llm.go), the walk
+`AlwaysReachesLLM` runs, over those walls — a fan-out's branches all run, so a
+capped branch is on every execution):
+
+- a **hard**-capped route parks the run only when every execution from the
+  entry to a terminal crosses a capped route; one some path avoids does not —
+  a hard cap stops a call in flight, so the mid-run guard stops the run there
+  if it goes that way;
+- a **soft**-capped route parks the run as soon as the run may reach it at
+  all (`ir.Workflow.CanReach`): a soft cap refuses new work and stops nothing
+  in flight, so a run let through to find out would spend it uninterrupted.
+
+The retry is armed for the **earliest reopening after which the run could
+start**: on alternative branches the first hard-capped route to reopen is
+enough, in sequence the run needs the last. The decision does not depend on
+the order the routes were read in.
 
 ## Cloud
 

@@ -181,36 +181,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err := runSecretsStore.EnsureSchema(rootCtx); err != nil {
 		return fmt.Errorf("runner: ensure run_secrets schema: %w", err)
 	}
-	// Tell pkg/backend/model how to read per-run credentials from
-	// ctx. We translate provider names (string) ↔ secrets.Provider
-	// enum here so the model package stays free of pkg/secrets imports.
-	model.SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
-		creds, ok := secrets.CredentialsFromContext(ctx)
-		if !ok {
-			return nil, false
-		}
-		return func(provider string) string {
-			// APIKeyForRoute, not APIKey: ResolveWithContext calls this with
-			// the provider its MODEL SPEC names, which is the pin itself, so
-			// a key a shared tier funded for that pin must be spendable
-			// here. Without it a pinned claw node worked sandboxed (where
-			// the key crosses as an env var) and not in process.
-			return creds.APIKeyForRoute(secrets.Provider(provider))
-		}, true
-	})
-	// Per-run OAuth-forfait dirs (codex / claude_code) the runner materialised
-	// at claim time. Lets the in-process claw model factory consume a tenant's
-	// resolved subscription in cloud mode, where the pod has neither ~/.codex
-	// nor ~/.claude: codex → openai, claude_code → anthropic.
-	model.SetOAuthDirLookup(func(ctx context.Context) (func(string) string, bool) {
-		creds, ok := secrets.CredentialsFromContext(ctx)
-		if !ok {
-			return nil, false
-		}
-		return func(kind string) string {
-			return creds.OAuthDir(kind)
-		}, true
-	})
+	// Tell pkg/backend/model how to read the run's credentials — keys and
+	// materialised forfait dirs — from ctx.
+	model.SetCredentialsLookup(model.RunCredentialsLookup)
+	model.SetOAuthDirLookup(model.RunOAuthDirLookup)
 
 	// Shared knowledge memory persists in the tenant's document store
 	// (not the pod's ephemeral disk) so it survives across runs/pods.

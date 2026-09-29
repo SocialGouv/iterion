@@ -2,9 +2,14 @@ package runner
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -58,7 +63,8 @@ func TestUsageCapCredKeys_TellsTheTwoFacadesApart(t *testing.T) {
 		{"anthropic-oauth", "fp-oauth"},
 		// Default precedence is secrets.AnthropicWireSlotOrder, head first.
 		{"", "fp-zai"},
-		{"anthropic-env", "fp-zai"},
+		// The pod's inherited env is no bundle credential.
+		{"anthropic-env", ""},
 		// An unrecognised facade label names no slot; a guess there is the
 		// mis-charge itself, so it falls to the default instead.
 		{"facade:https://some.operator.proxy/anthropic", "fp-zai"},
@@ -109,7 +115,7 @@ func TestUsageCapCredKeys_NamedButUnheldSlotChargesNobody(t *testing.T) {
 	if got, want := keys.forSource(zai), usagecap.Key(delegate.BackendClaudeCode, scope, "fp-zai"); got != want {
 		t.Errorf("forSource(%q) = %q, want %q", zai, got, want)
 	}
-	for _, source := range []string{"facade:https://some.operator.proxy/anthropic", "", "anthropic-env"} {
+	for _, source := range []string{"facade:https://some.operator.proxy/anthropic", ""} {
 		if got, want := keys.forSource(source), usagecap.Key(delegate.BackendClaudeCode, scope, "fp-zai"); got != want {
 			t.Errorf("forSource(%q) = %q, want the bundle default %q", source, got, want)
 		}
@@ -189,7 +195,7 @@ func TestUsageCapCredKeys_APinnedSlotIsNotTheBundleDefault(t *testing.T) {
 	}
 	// The bundle default: never the pinned slot, even though the wire order
 	// puts moonshot first.
-	for _, source := range []string{"", "anthropic-env", "facade:https://some.operator.proxy/anthropic"} {
+	for _, source := range []string{"", "facade:https://some.operator.proxy/anthropic"} {
 		if got, want := keys.forSource(source), usagecap.Key(delegate.BackendClaudeCode, scope, "fp-anthropic"); got != want {
 			t.Errorf("forSource(%q) = %q, want the run's own credential %q — an unattributable reading cannot have been spent on a pinned key", source, got, want)
 		}
@@ -249,5 +255,212 @@ func TestUsageCapCredKeys_AnOrgPinnedSlotMetersOnTheOrgLedger(t *testing.T) {
 	moonshot := facadeSource(secrets.ProviderMoonshot, secrets.MoonshotDefaultBaseURL)
 	if got, want := keys.forSource(moonshot), usagecap.Key(delegate.BackendClaudeCode, usagecap.OrgScope("org-1"), "fp-moonshot"); got != want {
 		t.Errorf("forSource(%q) = %q, want %q", moonshot, got, want)
+	}
+}
+
+// The incident shape: the run's anthropic wire is held by a platform z.ai
+// key, an `anthropic`-pinned node finds no Anthropic credential in the bundle
+// and inherits the pod's env, and the pod has no ambient auth — its "Not
+// logged in" is recorded as an auth refusal. That refusal belongs to no
+// bundle credential; charged to the head of the precedence, it would bench
+// the z.ai key the whole platform shares.
+func TestUsageCapCredKeys_AmbientEnvChargesNoBundleCredential(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:         map[secrets.Provider]string{secrets.ProviderZAI: "zai-platform"},
+		PlatformSourced: map[string]bool{string(secrets.ProviderZAI): true},
+		Fingerprints:    map[string]string{string(secrets.ProviderZAI): "fp-zai"},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	if got, bench := keys.forSource("anthropic-env"), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "fp-zai"); got == bench {
+		t.Errorf("forSource(anthropic-env) = %q — an ambient-env refusal was charged to the z.ai key the session never used", got)
+	}
+	if got, want := keys.forSource("anthropic-env"), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""); got != want {
+		t.Errorf("forSource(anthropic-env) = %q, want the credential-less meter %q", got, want)
+	}
+	// The run's default still meters on the key: the pre-flight reads it.
+	if got, want := keys.forSource(""), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "fp-zai"); got != want {
+		t.Errorf("forSource(\"\") = %q, want the bundle default %q", got, want)
+	}
+}
+
+// A GLM route spends the z.ai key — the default one or, beside a forfait
+// holding the wire, the key a shared tier pinned for it — and its spend is
+// booked there. The head of the wire's precedence is the forfait, which never
+// served it.
+func TestCredentialSlotForRoute_GLMIsBookedOnTheZAIKey(t *testing.T) {
+	beside := secrets.Credentials{
+		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "zai-pinned"},
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/forfait"},
+	}
+	for _, r := range []struct{ backend, model string }{
+		{delegate.BackendClaudeCode, "glm-5.3"},
+		{"claw", "anthropic/glm-5.3"},
+		{delegate.BackendPi, "glm-5.3"},
+	} {
+		if got := credentialSlotForRoute(beside, r.backend, r.model); got != string(secrets.ProviderZAI) {
+			t.Errorf("credentialSlotForRoute(%s, %s) = %q, want zai — a metered key's spend was booked elsewhere", r.backend, r.model, got)
+		}
+	}
+	// The forfait's own route is still the forfait's.
+	if got := credentialSlotForRoute(beside, delegate.BackendClaudeCode, "claude-opus-5-5"); got != string(secrets.OAuthKindClaudeCode) {
+		t.Errorf("credentialSlotForRoute(claude-opus-5-5) = %q, want the forfait", got)
+	}
+	// No z.ai key at all: charge nobody, never the forfait.
+	forfaitOnly := secrets.Credentials{OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/forfait"}}
+	if got := credentialSlotForRoute(forfaitOnly, delegate.BackendClaudeCode, "glm-5.3"); got != "" {
+		t.Errorf("credentialSlotForRoute(glm-5.3) with no z.ai key = %q, want \"\"", got)
+	}
+	// A GLM another provider serves is that provider's.
+	router := secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderOpenRouter: "or-key", secrets.ProviderZAI: "zai-key"}}
+	if got := credentialSlotForRoute(router, "claw", "openrouter/z-ai/glm-4.6"); got != string(secrets.ProviderOpenRouter) {
+		t.Errorf("credentialSlotForRoute(openrouter/z-ai/glm-4.6) = %q, want openrouter", got)
+	}
+}
+
+// A spec that names its provider spends the key a shared tier pinned for it
+// (claw forwards exactly that key for exactly that node), so its spend is
+// booked on it rather than on nobody.
+func TestCredentialSlotForRoute_APrefixPinIsBookedOnItsPinnedKey(t *testing.T) {
+	creds := secrets.Credentials{
+		APIKeys:       map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-tenant"},
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-platform"},
+	}
+	if got := credentialSlotForRoute(creds, "claw", "moonshot/kimi-k2"); got != string(secrets.ProviderMoonshot) {
+		t.Errorf("credentialSlotForRoute(moonshot/kimi-k2) = %q, want moonshot — the pinned key it spent", got)
+	}
+}
+
+// A claw `anthropic/…` node spends the Anthropic key the run holds for its
+// route — here one a shared tier pinned beside the tenant's own z.ai key — and
+// its spend is booked there, not on the head of the wire's precedence.
+func TestCredentialSlotForRoute_AClawAnthropicSpecIsBookedOnItsKey(t *testing.T) {
+	creds := secrets.Credentials{
+		APIKeys:       map[secrets.Provider]string{secrets.ProviderZAI: "zai-tenant"},
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "anthropic-platform"},
+	}
+	if got := credentialSlotForRoute(creds, "claw", "anthropic/claude-opus-5-5"); got != string(secrets.ProviderAnthropic) {
+		t.Errorf("credentialSlotForRoute(claw, anthropic/claude-opus-5-5) = %q, want anthropic — the key it spent", got)
+	}
+	// claude_code carries its pin as a hint the route key does not hold: the
+	// wire's default precedence answers there.
+	if got := credentialSlotForRoute(creds, delegate.BackendClaudeCode, "claude-opus-5-5"); got != string(secrets.ProviderZAI) {
+		t.Errorf("credentialSlotForRoute(claude_code, claude-opus-5-5) = %q, want the default precedence (zai)", got)
+	}
+}
+
+// A claw `openai/…` node spends the run's default openai key, then its ChatGPT
+// forfait, then a key a shared tier pinned for the route — the order
+// model.ResolveWithContext applies — and its spend is booked on what it spent.
+// codex never reads a pinned key.
+func TestCredentialSlotForRoute_AClawOpenAISpecFollowsClawsOrder(t *testing.T) {
+	codex := map[string]string{string(secrets.OAuthKindCodex): chatGPTForfaitDir(t)}
+	pinned := map[secrets.Provider]string{secrets.ProviderOpenAI: "openai-platform"}
+	for _, tc := range []struct {
+		name    string
+		creds   secrets.Credentials
+		backend string
+		want    string
+	}{
+		{"the forfait before the pinned key", secrets.Credentials{PinnedAPIKeys: pinned, OAuthCredentialFiles: codex}, "claw", string(secrets.OAuthKindCodex)},
+		{"the run's own key first", secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderOpenAI: "sk-tenant"}, PinnedAPIKeys: pinned, OAuthCredentialFiles: codex}, "claw", string(secrets.ProviderOpenAI)},
+		{"the pinned key when nothing else", secrets.Credentials{PinnedAPIKeys: pinned}, "claw", string(secrets.ProviderOpenAI)},
+		{"codex never spends a pinned key", secrets.Credentials{PinnedAPIKeys: pinned}, delegate.BackendCodex, ""},
+	} {
+		if got := credentialSlotForRoute(tc.creds, tc.backend, "openai/gpt-6"); got != tc.want {
+			t.Errorf("%s: credentialSlotForRoute(%s, openai/gpt-6) = %q, want %q", tc.name, tc.backend, got, tc.want)
+		}
+	}
+}
+
+// The ledger books a claw `openai/…` route on the credential claw actually
+// spent — the in-process registry's own choice, asked through the lookups a
+// runner installs — for every combination of the run's key, a pinned key, a
+// ChatGPT forfait and this runner's OAuth settings.
+func TestCredentialSlotForRoute_AClawOpenAIRouteIsBookedWhereClawSpent(t *testing.T) {
+	model.SetCredentialsLookup(model.RunCredentialsLookup)
+	model.SetOAuthDirLookup(model.RunOAuthDirLookup)
+	t.Cleanup(func() {
+		model.SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
+		model.SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
+	})
+	blob := t.TempDir()
+	if err := os.WriteFile(filepath.Join(blob, "auth.json"), []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"tok-abc","account_id":"acct-xyz"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, defKey := range []bool{false, true} {
+		for _, pinned := range []bool{false, true} {
+			for _, refuse := range []bool{false, true} {
+				for _, gateway := range []bool{false, true} {
+					t.Run(fmt.Sprintf("default=%v pinned=%v refuse=%v gateway=%v", defKey, pinned, refuse, gateway), func(t *testing.T) {
+						t.Setenv("OPENAI_API_KEY", "")
+						t.Setenv("CODEX_HOME", t.TempDir())
+						t.Setenv("ITERION_OPENAI_USE_OAUTH", map[bool]string{true: "0", false: ""}[refuse])
+						t.Setenv("OPENAI_BASE_URL", map[bool]string{true: "http://gateway.ledger.example/v1", false: ""}[gateway])
+						creds := secrets.Credentials{
+							APIKeys:              map[secrets.Provider]string{},
+							PinnedAPIKeys:        map[secrets.Provider]string{},
+							OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindCodex): blob},
+						}
+						if defKey {
+							creds.APIKeys[secrets.ProviderOpenAI] = "sk-default"
+						}
+						if pinned {
+							creds.PinnedAPIKeys[secrets.ProviderOpenAI] = "sk-pinned"
+						}
+						client, err := model.NewRegistry().ResolveWithContext(secrets.WithCredentials(context.Background(), creds), "openai/gpt-6")
+						spent := ""
+						if err == nil {
+							v := reflect.ValueOf(client).Elem()
+							switch {
+							case v.FieldByName("OAuthToken").String() != "":
+								spent = string(secrets.OAuthKindCodex)
+							case v.FieldByName("APIKey").String() != "":
+								spent = string(secrets.ProviderOpenAI)
+							}
+						}
+						if got := credentialSlotForRoute(creds, delegate.BackendClaw, "openai/gpt-6"); got != spent {
+							t.Errorf("booked on %q, claw spent %q", got, spent)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// The run's scope is its DEFAULT credentials': beside an org's pinned z.ai
+// key, the platform's forfait holding the wire is metered on the platform's
+// ledger — the one the publisher's window check and every other team's
+// pre-flight read — and the pinned key keeps its owner's. A run holding pinned
+// keys alone takes its scope from them.
+func TestUsageCapCredKeys_APinnedKeyDoesNotScopeTheDefaultCredential(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7", OrgID: "org-1"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "org-zai"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/forfait"},
+		OrgSourced:           map[string]bool{string(secrets.ProviderZAI): true},
+		PlatformSourced:      map[string]bool{string(secrets.OAuthKindClaudeCode): true},
+		Fingerprints: map[string]string{
+			string(secrets.OAuthKindClaudeCode): "fp-platform-forfait",
+			string(secrets.ProviderZAI):         "fp-org-zai",
+		},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	if got, want := keys.forSource("anthropic-oauth"), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "fp-platform-forfait"); got != want {
+		t.Errorf("forSource(anthropic-oauth) = %q, want %q — the platform's forfait metered on the org's ledger", got, want)
+	}
+	zai := facadeSource(secrets.ProviderZAI, secrets.ZAIDefaultBaseURL)
+	if got, want := keys.forSource(zai), usagecap.Key(delegate.BackendClaudeCode, usagecap.OrgScope("org-1"), "fp-org-zai"); got != want {
+		t.Errorf("forSource(%q) = %q, want %q", zai, got, want)
+	}
+
+	pinnedOnly := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "org-zai"},
+		OrgSourced:    map[string]bool{string(secrets.ProviderZAI): true},
+		Fingerprints:  map[string]string{string(secrets.ProviderZAI): "fp-org-zai"},
+	})
+	if got, want := usageCapKey(pinnedOnly, msg), usagecap.Key(delegate.BackendClaudeCode, usagecap.OrgScope("org-1"), ""); got != want {
+		t.Errorf("a run holding only an org's pinned key scoped %q, want %q", got, want)
 	}
 }

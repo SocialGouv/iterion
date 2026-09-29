@@ -363,3 +363,125 @@ func TestAdminBotVars_TheKeyBoundNeverRefusesARemoval(t *testing.T) {
 		t.Fatalf("growing an over-bound record = %d, want 400", w.Code)
 	}
 }
+
+// keys_first rides the platform-credentials record: a PUT merges it without
+// touching the audience lists, the GET reads it back as a stored override,
+// and false restores the default order.
+func TestAdminPlatformCredentials_KeysFirstMergesAndReadsBack(t *testing.T) {
+	st := platformcfg.NewMemoryStore[platformcfg.PlatformCredentials]()
+	s := New(Config{SkipProjectRegistration: true, PlatformCredentialsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/platform-credentials", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutPlatformCredentials(w, r)
+		return w
+	}
+	get := func() (keysFirst *bool, origin string) {
+		r := httptest.NewRequest("GET", "/api/admin/settings/platform-credentials", nil).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminGetPlatformCredentials(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("get = %d: %s", w.Code, w.Body.String())
+		}
+		var view struct {
+			Stored *struct {
+				KeysFirst *bool `json:"keys_first"`
+			} `json:"stored"`
+			Origin string `json:"origin"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if view.Stored == nil {
+			return nil, view.Origin
+		}
+		return view.Stored.KeysFirst, view.Origin
+	}
+
+	if w := put(`{"orgs":["org-1"]}`); w.Code != http.StatusOK {
+		t.Fatalf("seed orgs = %d: %s", w.Code, w.Body.String())
+	}
+	if w := put(`{"keys_first":true}`); w.Code != http.StatusOK {
+		t.Fatalf("keys_first = %d: %s", w.Code, w.Body.String())
+	}
+	rec, _ := st.Get(context.Background())
+	if rec == nil || !rec.PrefersKeys() || len(rec.Orgs) != 1 || rec.Orgs[0] != "org-1" {
+		t.Fatalf("stored = %+v, want keys_first set and the orgs kept", rec)
+	}
+	if kf, origin := get(); kf == nil || !*kf || origin != "db" {
+		t.Fatalf("GET keys_first = %v origin %q, want true from db", kf, origin)
+	}
+	if w := put(`{"keys_first":false}`); w.Code != http.StatusOK {
+		t.Fatalf("keys_first false = %d: %s", w.Code, w.Body.String())
+	}
+	if rec, _ := st.Get(context.Background()); rec == nil || rec.PrefersKeys() {
+		t.Fatalf("stored = %+v, want the default order back", rec)
+	}
+	// "" and null clear the override: the env default decides again.
+	for _, clear := range []string{`{"keys_first":""}`, `{"keys_first":null}`} {
+		if w := put(`{"keys_first":true}`); w.Code != http.StatusOK {
+			t.Fatalf("keys_first true = %d: %s", w.Code, w.Body.String())
+		}
+		t.Setenv(platformcfg.EnvKeysFirst, "")
+		if w := put(clear); w.Code != http.StatusOK {
+			t.Fatalf("%s = %d: %s", clear, w.Code, w.Body.String())
+		}
+		if rec, _ := st.Get(context.Background()); rec == nil || rec.KeysFirst != nil {
+			t.Fatalf("%s: keys_first still stored, want it cleared back to the env default", clear)
+		}
+	}
+	if w := put(`{"keys_first":"yes"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf(`keys_first "yes" = %d, want 400`, w.Code)
+	}
+}
+
+// facade_default rides the same record: validated on write, "" clears the
+// override back to the env default, and the GET says which value the next
+// launch applies.
+func TestAdminPlatformCredentials_FacadeDefaultIsValidatedAndClearsToTheEnv(t *testing.T) {
+	t.Setenv(platformcfg.EnvFacadeDefault, "always")
+	st := platformcfg.NewMemoryStore[platformcfg.PlatformCredentials]()
+	s := New(Config{SkipProjectRegistration: true, PlatformCredentialsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/platform-credentials", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutPlatformCredentials(w, r)
+		return w
+	}
+	effective := func() string {
+		r := httptest.NewRequest("GET", "/api/admin/settings/platform-credentials", nil).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminGetPlatformCredentials(w, r)
+		var view struct {
+			FacadeDefaultEffective string `json:"facade_default_effective"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return view.FacadeDefaultEffective
+	}
+
+	if got := effective(); got != "always" {
+		t.Fatalf("effective with no record = %q, want the env default", got)
+	}
+	if w := put(`{"facade_default":"never"}`); w.Code != http.StatusOK {
+		t.Fatalf("set never = %d: %s", w.Code, w.Body.String())
+	}
+	if got := effective(); got != "never" {
+		t.Fatalf("effective = %q, want the stored never", got)
+	}
+	if w := put(`{"facade_default":"sometimes"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("set sometimes = %d, want 400", w.Code)
+	}
+	if w := put(`{"facade_default":""}`); w.Code != http.StatusOK {
+		t.Fatalf("clear = %d: %s", w.Code, w.Body.String())
+	}
+	if rec, _ := st.Get(context.Background()); rec == nil || rec.FacadeDefault != nil {
+		t.Fatalf("stored = %+v, want the override cleared", rec)
+	}
+	if got := effective(); got != "always" {
+		t.Fatalf("effective after clear = %q, want the env default back", got)
+	}
+}

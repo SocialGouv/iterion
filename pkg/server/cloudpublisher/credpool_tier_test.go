@@ -366,7 +366,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		// forever. The signal is the terminal "no credential" Warn.
 		buf := bufFor(t)
 		p := &Publisher{logger: iterlog.New(iterlog.LevelDebug, buf)}
-		if g := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil); g != nil {
+		if g := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil, nil); g != nil {
 			t.Fatalf("nil broker must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -390,7 +390,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		if err := f.pools.Upsert(context.Background(), pool); err != nil {
 			t.Fatalf("disable pool: %v", err)
 		}
-		if g := f.pub.acquireFromPool(context.Background(), "run-np", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil); g != nil {
+		if g := f.pub.acquireFromPool(context.Background(), "run-np", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil, nil); g != nil {
 			t.Fatalf("disabled pool must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -417,7 +417,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 				LLMFields: ir.LLMFields{Model: "fake-provider/some-model"},
 			},
 		}}
-		g := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", wf, model.ModelOverrides{}, nil)
+		g := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", wf, model.ModelOverrides{}, nil, nil)
 		if g == nil {
 			t.Fatalf("unknown pin must fail open and take the donor; got no grant. log:\n%s", buf.String())
 		}
@@ -437,7 +437,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		pledge.Enabled = false
 		_ = f.pledges.Upsert(context.Background(), pledge)
 
-		if g := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil); g != nil {
+		if g := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", &ir.Workflow{}, model.ModelOverrides{}, nil, nil); g != nil {
 			t.Fatalf("no eligible pledge must not grant, got %+v", g)
 		}
 		log := buf.String()

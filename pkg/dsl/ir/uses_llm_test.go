@@ -1,6 +1,9 @@
 package ir
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func wfWith(nodes ...Node) *Workflow {
 	w := &Workflow{Name: "w", Nodes: map[string]Node{}}
@@ -199,5 +202,134 @@ func TestAlwaysReachesLLM(t *testing.T) {
 	}
 	if !loop.AlwaysReachesLLM() {
 		t.Error("a cycle reaching no terminal proves no free path")
+	}
+}
+
+// AlwaysReaches is AlwaysReachesLLM's walk over any wall: true only when no
+// path from the entry to a terminal goes around every wall. A pre-flight
+// refuses a run on it, so every shape it cannot walk answers true — and a
+// supervisor, not a graph node, is never a wall it invents.
+func TestAlwaysReachesWalls(t *testing.T) {
+	agent := func(id string) Node { return &AgentNode{BaseNode: BaseNode{ID: id}} }
+	graph := func(entry string, edges [][2]string, nodes ...Node) *Workflow {
+		w := &Workflow{Entry: entry, Nodes: map[string]Node{"done": &DoneNode{BaseNode: BaseNode{ID: "done"}}}}
+		for _, n := range nodes {
+			w.Nodes[n.NodeID()] = n
+		}
+		for _, e := range edges {
+			w.Edges = append(w.Edges, &Edge{From: e[0], To: e[1]})
+		}
+		return w
+	}
+	wallOn := func(ids ...string) func(Node) bool {
+		return func(n Node) bool {
+			for _, id := range ids {
+				if n.NodeID() == id {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	chain := graph("a", [][2]string{{"a", "b"}, {"b", "done"}}, agent("a"), agent("b"))
+	branch := graph("pick", [][2]string{{"pick", "a"}, {"pick", "b"}, {"a", "done"}, {"b", "done"}},
+		&RouterNode{BaseNode: BaseNode{ID: "pick"}, RouterMode: RouterCondition}, agent("a"), agent("b"))
+
+	for _, tc := range []struct {
+		name string
+		wf   *Workflow
+		wall func(Node) bool
+		want bool
+	}{
+		{"a wall on the only path", chain, wallOn("b"), true},
+		{"no wall", chain, wallOn(), false},
+		{"a wall one branch avoids", branch, wallOn("a"), false},
+		{"a wall on every branch", branch, wallOn("a", "b"), true},
+		{"nil workflow", nil, wallOn(), true},
+		{"missing entry", graph("ghost", nil, agent("a")), wallOn(), true},
+		{"a supervisor is not a wall", func() *Workflow {
+			w := graph("a", [][2]string{{"a", "done"}}, agent("a"))
+			w.Supervisors = []*Supervisor{{Name: "coach"}}
+			return w
+		}(), wallOn(), false},
+	} {
+		if got := tc.wf.AlwaysReaches(tc.wall); got != tc.want {
+			t.Errorf("%s: AlwaysReaches = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A fan-out runs every branch: a wall on ONE of them is on every execution,
+// so the router is free only when all its branches are. A condition router
+// still chooses. The answer does not depend on the order edges were written
+// in, and a dangling edge anywhere the entry reaches keeps the walk
+// conservative even beside a free path.
+func TestAlwaysReachesTakesEveryFanOutBranch(t *testing.T) {
+	agent := func(id string) Node { return &AgentNode{BaseNode: BaseNode{ID: id}} }
+	wallOnA := func(n Node) bool { return n.NodeID() == "a" }
+	shape := func(mode RouterMode, reversed bool) *Workflow {
+		edges := []*Edge{
+			{From: "split", To: "a"}, {From: "split", To: "b"},
+			{From: "a", To: "join"}, {From: "b", To: "join"},
+			{From: "join", To: "done"},
+		}
+		if reversed {
+			slices.Reverse(edges)
+		}
+		return &Workflow{Entry: "split", Edges: edges, Nodes: map[string]Node{
+			"split": &RouterNode{BaseNode: BaseNode{ID: "split"}, RouterMode: mode},
+			"a":     agent("a"), "b": agent("b"),
+			"join": &ToolNode{BaseNode: BaseNode{ID: "join"}, Command: "true"},
+			"done": &DoneNode{BaseNode: BaseNode{ID: "done"}},
+		}}
+	}
+	for _, reversed := range []bool{false, true} {
+		for _, tc := range []struct {
+			mode RouterMode
+			want bool
+		}{
+			{RouterFanOutAll, true},
+			{RouterFanOutEach, true},
+			{RouterCondition, false},
+			{RouterRoundRobin, false},
+		} {
+			if got := shape(tc.mode, reversed).AlwaysReaches(wallOnA); got != tc.want {
+				t.Errorf("%s (edges reversed=%v): AlwaysReaches = %v, want %v", tc.mode, reversed, got, tc.want)
+			}
+		}
+	}
+	// The fan-out makes every branch's model call unavoidable for the cap too.
+	fanOut := shape(RouterFanOutAll, false)
+	fanOut.Nodes["b"] = &ToolNode{BaseNode: BaseNode{ID: "b"}, Command: "true"}
+	if !fanOut.AlwaysReachesLLM() {
+		t.Error("AlwaysReachesLLM: a fan-out with one model branch spends on every run")
+	}
+
+	dangling := &Workflow{Entry: "pick", Edges: []*Edge{{From: "pick", To: "done"}, {From: "pick", To: "ghost"}}, Nodes: map[string]Node{
+		"pick": &RouterNode{BaseNode: BaseNode{ID: "pick"}, RouterMode: RouterCondition},
+		"done": &DoneNode{BaseNode: BaseNode{ID: "done"}},
+	}}
+	if !dangling.AlwaysReaches(func(Node) bool { return false }) {
+		t.Error("an edge into an undefined node the entry reaches must keep the walk conservative")
+	}
+}
+
+// CanReach: some execution from the entry reaches the target — conservative
+// on a graph the walk refuses.
+func TestCanReach(t *testing.T) {
+	w := &Workflow{Entry: "a", Edges: []*Edge{{From: "a", To: "b"}, {From: "b", To: "done"}}, Nodes: map[string]Node{
+		"a": &ToolNode{BaseNode: BaseNode{ID: "a"}}, "b": &AgentNode{BaseNode: BaseNode{ID: "b"}},
+		"c":    &AgentNode{BaseNode: BaseNode{ID: "c"}},
+		"done": &DoneNode{BaseNode: BaseNode{ID: "done"}},
+	}}
+	is := func(id string) func(Node) bool { return func(n Node) bool { return n.NodeID() == id } }
+	if !w.CanReach(is("b")) {
+		t.Error("b is on the path")
+	}
+	if w.CanReach(is("c")) {
+		t.Error("c is unreachable from the entry")
+	}
+	if !(&Workflow{Entry: "ghost"}).CanReach(is("b")) {
+		t.Error("a graph the walk refuses must answer true")
 	}
 }

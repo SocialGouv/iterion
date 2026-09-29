@@ -963,6 +963,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "route_only": {
+            "type": "boolean"
+          },
           "selected": {
             "type": "boolean"
           },
@@ -2491,6 +2494,12 @@
       "PlatformCredentials": {
         "properties": {
           "enforce": {
+            "type": "boolean"
+          },
+          "facade_default": {
+            "type": "string"
+          },
+          "keys_first": {
             "type": "boolean"
           },
           "orgs": {
@@ -4961,6 +4970,12 @@
           "enforced": {
             "type": "boolean"
           },
+          "facade_default_effective": {
+            "type": "string"
+          },
+          "keys_first_effective": {
+            "type": "boolean"
+          },
           "origin": {
             "type": "string"
           },
@@ -4970,7 +4985,9 @@
         },
         "required": [
           "enforced",
-          "origin"
+          "origin",
+          "keys_first_effective",
+          "facade_default_effective"
         ],
         "type": "object"
       },

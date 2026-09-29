@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -67,7 +68,7 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 	defer cancel()
 	repoID := r.repoForSpend(bg, msg)
 	for route, totals := range routes {
-		slot := credentialSlotForRoute(creds, route.backend, route.model)
+		slot := routeSlot(creds, route)
 		if slot == "" {
 			// Declined for good: the attempt is over and nothing will name
 			// this route's credential later, so the decline is a warning —
@@ -187,14 +188,46 @@ func credentialTier(creds secrets.Credentials, slot string) credusage.Tier {
 // Within a wire the slot follows the delegates' own precedence: on the
 // anthropic wire secrets.AnthropicWireSlotOrder, the list
 // anthropicCredEnvForCLI is itself written against; on the openai wire, the
-// API key then the codex forfait. Reading it differently here would credit a
-// credential the delegate did not use.
+// API key then the codex forfait — for a claw `openai/…` route, the forfait
+// only while the runner lets it serve, then a key pinned for the route.
+// Reading it differently here would credit a credential the delegate did not
+// use.
 func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string) string {
+	// A GLM id on the anthropic wire is z.ai's (model.GLMOnAnthropicWire):
+	// each of these backends routes it to the z.ai key — the run's default
+	// one, or the key a shared tier pinned for it beside a forfait holding
+	// the wire. The head of the wire's precedence would be that forfait.
+	if routesGLMToZAI(backend) && model.GLMOnAnthropicWire(modelName) {
+		return heldForRoute(creds, string(secrets.ProviderZAI))
+	}
 	wire := wireForRoute(backend, modelName)
 	switch wire {
 	case anthropicWire:
+		// A claw spec NAMES its provider: `anthropic/…` spends an Anthropic
+		// key the run holds for that route — its default one, or one a shared
+		// tier pinned for it — in process (APIKeyForRoute) and sandboxed
+		// (the pinned key crosses for the node that names it) alike.
+		if backend == delegate.BackendClaw && providerFromModel(modelName) == anthropicWire {
+			if slot := heldForRoute(creds, string(secrets.ProviderAnthropic)); slot != "" {
+				return slot
+			}
+		}
 		return firstHeldSlot(creds, secrets.AnthropicWireSlotOrder...)
 	case openaiWire:
+		// A claw `openai/…` spec is the pin, in claw's own order: the run's
+		// key, then its ChatGPT forfait while this runner lets it serve
+		// (model.OpenAIForfaitServes — the check ResolveWithContext and the
+		// sandbox make), then a key a shared tier pinned for the route.
+		if backend == delegate.BackendClaw && providerFromModel(modelName) == openaiWire {
+			switch {
+			case creds.APIKey(secrets.ProviderOpenAI) != "":
+				return string(secrets.ProviderOpenAI)
+			case model.OpenAIForfaitServes(creds):
+				return string(secrets.OAuthKindCodex)
+			}
+			return heldForRoute(creds, string(secrets.ProviderOpenAI))
+		}
+		// codex never reads a pinned key.
 		return firstHeldSlot(creds,
 			string(secrets.ProviderOpenAI),
 			string(secrets.OAuthKindCodex),
@@ -202,10 +235,68 @@ func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string
 	case "":
 		return ""
 	default:
-		// A single-shape provider (xai, openrouter, …): the slot IS the
-		// provider, held or not.
-		return firstHeldSlot(creds, wire)
+		// A single-shape provider (xai, openrouter, moonshot, …) named by
+		// the spec: the slot IS that provider, held for the route — a key
+		// a shared tier pinned for it included, since the spec is the pin
+		// that spends it — or nobody.
+		return heldForRoute(creds, wire)
 	}
+}
+
+// routeSlot names the credential slot one route spent. A claude_code session
+// names it itself: the source label it stamped (delegate_finished's
+// `fingerprint`) carries what its provider hint decided — a node pinned
+// `provider: zai` spends the z.ai key whatever holds the wire's default. Every
+// other route, and a session whose label names no slot, is read from its
+// (backend, model) pair.
+func routeSlot(creds secrets.Credentials, route routeKey) string {
+	if route.backend == delegate.BackendClaudeCode {
+		if slot, named := slotOfSource(route.source); named {
+			return slot
+		}
+	}
+	return credentialSlotForRoute(creds, route.backend, route.model)
+}
+
+// slotOfSource maps a claude_code session's source label onto the slot it
+// spent, and says whether the label names one at all. Unlike the usage meter's
+// reading (runCredKeys.slotForSource) an unstamped label is never answered
+// with the bundle's precedence: the ledger charges what it can name.
+// "anthropic-env" names the pod's ambient env — no bundle credential, "" .
+func slotOfSource(source string) (slot string, named bool) {
+	switch {
+	case strings.HasPrefix(source, "facade:"):
+		if s := delegate.AnthropicWireFacadeSlot(source); s != "" {
+			return s, true
+		}
+	case source == "anthropic-direct":
+		return string(secrets.ProviderAnthropic), true
+	case source == "anthropic-oauth":
+		return string(secrets.OAuthKindClaudeCode), true
+	case source == "anthropic-env":
+		return "", true
+	}
+	return "", false
+}
+
+// routesGLMToZAI names the backends whose executors send a GLM id on the
+// anthropic wire to z.ai: claude_code and pi through the routing hint, claw
+// through its anthropic provider's z.ai endpoint.
+func routesGLMToZAI(backend string) bool {
+	switch backend {
+	case delegate.BackendClaudeCode, delegate.BackendPi, delegate.BackendClaw:
+		return true
+	}
+	return false
+}
+
+// heldForRoute returns slot when the run holds a key a route NAMING it may
+// spend (secrets.Credentials.APIKeyForRoute), "" otherwise.
+func heldForRoute(creds secrets.Credentials, slot string) string {
+	if creds.APIKeyForRoute(secrets.Provider(slot)) != "" {
+		return slot
+	}
+	return ""
 }
 
 const (

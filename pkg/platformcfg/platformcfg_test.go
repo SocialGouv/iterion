@@ -326,3 +326,32 @@ func TestBotVarsValidate(t *testing.T) {
 		}
 	}
 }
+
+// An env default the knobs cannot read refuses the boot rather than being
+// read as the built-in default — the operator wrote something and meant it.
+func TestValidateEnv_RefusesWhatTheKnobsCannotRead(t *testing.T) {
+	t.Setenv(EnvKeysFirst, "")
+	t.Setenv(EnvFacadeDefault, "")
+	if err := ValidateEnv(); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+	t.Setenv(EnvFacadeDefault, "Never")
+	t.Setenv(EnvKeysFirst, "true")
+	if err := ValidateEnv(); err != nil {
+		t.Fatalf("valid values: %v", err)
+	}
+	if got := (*PlatformCredentials)(nil).Facade(); got != FacadeNever {
+		t.Errorf("Facade() with the env at Never = %q, want never", got)
+	}
+	if !(*PlatformCredentials)(nil).PrefersKeys() {
+		t.Errorf("PrefersKeys() with the env at true = false")
+	}
+	for name, val := range map[string]string{EnvKeysFirst: "maybe", EnvFacadeDefault: "sometimes"} {
+		t.Setenv(EnvKeysFirst, "")
+		t.Setenv(EnvFacadeDefault, "")
+		t.Setenv(name, val)
+		if err := ValidateEnv(); err == nil {
+			t.Errorf("%s=%q accepted", name, val)
+		}
+	}
+}
