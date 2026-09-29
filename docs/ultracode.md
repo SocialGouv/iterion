@@ -28,7 +28,10 @@ When a node declares `reasoning_effort: ultracode`, iterion:
 2. **Grants the orchestration prerogative.** A `## Workflow Orchestration`
    section is appended to the system prompt giving standing consent to
    decompose substantial work across parallel subagents (via the `agent`
-   tool) and to verify findings adversarially — without asking first.
+   tool) and to verify findings adversarially — without asking first. It
+   also states the rule a non-interactive session imposes: a subagent run in
+   the background is collected (`TaskOutput` in Claude Code) before the
+   final output, since nothing reaches the model after it.
 3. **Makes the subagent tool available.** On the `claw` backend, the `agent`
    subagent tool is added to the node's allowlist when the node restricts its
    tools (an unrestricted set already exposes the claw builtins). The
