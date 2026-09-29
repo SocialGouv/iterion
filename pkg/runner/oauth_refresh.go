@@ -89,7 +89,7 @@ func (r *Runner) followOAuthRecordLoop(stop <-chan struct{}, runID string, kind 
 // followOAuthRecord runs one follow pass and reports it: a refusal or a store
 // error is logged, a change is written through into the run's sandbox.
 func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp, path string) {
-	changed, err := r.followOAuthRecordOnce(kind, ref, fp, path)
+	changed, fpNow, err := r.followOAuthRecordOnce(kind, ref, path)
 	if err != nil {
 		if r.cfg.Logger != nil {
 			r.cfg.Logger.Warn("runner: oauth-forfait follow run=%s kind=%s record=%s: %v", runID, kind, ref, err)
@@ -101,50 +101,53 @@ func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp
 	}
 	if r.cfg.Logger != nil {
 		r.cfg.Logger.Info("runner: oauth-forfait run=%s picked up the store's rotation of %s", runID, kind)
+		if fpNow != fp {
+			r.cfg.Logger.Info("runner: oauth-forfait run=%s kind=%s record=%s now carries fingerprint %q (sealed %q): a refresh re-stamp or a reconnect of the slot — following it; this run's usage readings stay filed under the sealed one",
+				runID, kind, ref, fpNow, fp)
+		}
 	}
 	r.propagateForfaitToSandbox(runID, path)
 }
 
 // followOAuthRecordOnce re-reads the record once and, when its payload moved,
-// atomically rewrites the file. A record that is no longer the same kind, or
-// that now names another subscription than the one the run was sealed with,
-// is refused: following it would switch the account a run spends on. A record
-// sealed without a fingerprint (one that predates stamping) is followed only
-// while it still has none — a stamp appears when a human reconnects it.
-func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref, fp, path string) (bool, error) {
+// atomically rewrites the file; it returns the record's fingerprint. A record
+// that is no longer the same kind is refused. Its fingerprint is not held to
+// the sealed one: it is a meter key the refresh worker re-stamps on its own
+// rotations (an unstamped record stamped, a subscription identified as an
+// account, an account demoted to a local meter), and a reconnect of the slot
+// is its owner's choice of credential for it. The id pins the owner and the
+// rank, so the run follows that one slot.
+func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref, path string) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	rec, err := r.cfg.OAuthForfaits.GetByID(ctx, ref)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if rec.Kind != kind {
-		return false, fmt.Errorf("record is a %s forfait, the run was sealed with a %s one", rec.Kind, kind)
-	}
-	if rec.Fingerprint != fp {
-		return false, fmt.Errorf("record now names another subscription (fingerprint %q, sealed %q) — not followed", rec.Fingerprint, fp)
+		return false, "", fmt.Errorf("record is a %s forfait, the run was sealed with a %s one", rec.Kind, kind)
 	}
 	payload, err := secrets.OpenOAuthPayload(r.cfg.Sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 	if err != nil {
-		return false, fmt.Errorf("unseal: %w", err)
+		return false, "", fmt.Errorf("unseal: %w", err)
 	}
 	current, err := os.ReadFile(path)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if bytes.Equal(current, payload) {
-		return false, nil
+		return false, rec.Fingerprint, nil
 	}
 	// Atomic replace: a CLI spawning now never reads a torn file.
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
-		return false, err
+		return false, "", err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return false, err
+		return false, "", err
 	}
-	return true, nil
+	return true, rec.Fingerprint, nil
 }
 
 // refreshAnthropicLoop sleeps until oauthRefreshLead before the materialised

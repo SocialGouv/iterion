@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -74,12 +75,12 @@ func TestFollowOAuthRecordOnce_PicksUpTheWorkersRotation(t *testing.T) {
 	r, st, id, _ := followFixture(t, before, "fp-team")
 	path := materialise(t, before)
 
-	if changed, err := r.followOAuthRecordOnce(secrets.OAuthKindClaudeCode, id, "fp-team", path); err != nil || changed {
+	if changed, _, err := r.followOAuthRecordOnce(secrets.OAuthKindClaudeCode, id, path); err != nil || changed {
 		t.Fatalf("an unrotated record changed the file: changed=%v err=%v", changed, err)
 	}
 	after := claudeBlob("at.after", time.Now().Add(8*time.Hour))
 	rotate(t, r, st, id, after, "fp-team")
-	changed, err := r.followOAuthRecordOnce(secrets.OAuthKindClaudeCode, id, "fp-team", path)
+	changed, _, err := r.followOAuthRecordOnce(secrets.OAuthKindClaudeCode, id, path)
 	if err != nil || !changed {
 		t.Fatalf("the worker's rotation was not picked up: changed=%v err=%v", changed, err)
 	}
@@ -114,39 +115,86 @@ func TestFollowOAuthRecordLoop_FollowsARotationMidRun(t *testing.T) {
 	t.Fatal("the loop never picked up a rotation made while the run was live")
 }
 
-// TestFollowOAuthRecordOnce_RefusesAnotherSubscription: a record that now
-// names another subscription is not followed — that would switch the account
-// the run spends on mid-run.
-func TestFollowOAuthRecordOnce_RefusesAnotherSubscription(t *testing.T) {
-	before := claudeBlob("at.before", time.Now().Add(time.Hour))
-	r, st, id, _ := followFixture(t, before, "fp-team")
-	path := materialise(t, before)
-	rotate(t, r, st, id, claudeBlob("at.other-account", time.Now().Add(8*time.Hour)), "fp-another-account")
-	changed, err := r.followOAuthRecordOnce(secrets.OAuthKindClaudeCode, id, "fp-team", path)
-	if err == nil || changed || !strings.Contains(err.Error(), "another subscription") {
-		t.Fatalf("a record naming another subscription was followed: changed=%v err=%v", changed, err)
-	}
-	if got, _ := os.ReadFile(path); string(got) != string(before) {
-		t.Fatalf("the file changed: %s", got)
+// rotatedToken is long enough for RefreshRecord's plausibility check.
+var rotatedToken = "sk-ant-oat01-rotated-" + strings.Repeat("x", 48)
+
+// TestFollowOAuthRecordOnce_FollowsTheWorkersReStamps: the refresh worker
+// re-stamps a record's fingerprint on its own rotations. A run sealed before
+// the re-stamp follows the rotation all the same — it runs the REAL sweep
+// (claim, RefreshRecord, UpdateTokens) against a token and a profile
+// endpoint.
+func TestFollowOAuthRecordOnce_FollowsTheWorkersReStamps(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(req.URL.Path, "/profile") {
+			fmt.Fprint(w, `{"account":{"uuid":"c7f30bce-7e8b-4bb7-8199-afc172f3d580","email":"team@example.org"},"organization":{"uuid":"0d05ce64-6b67-4368-909c-0d26f5a5870a"}}`)
+			return
+		}
+		fmt.Fprintf(w, `{"access_token":%q,"refresh_token":"rt.rotated","expires_in":28800}`, rotatedToken)
+	}))
+	defer srv.Close()
+	t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", srv.URL+"/token")
+	t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_PROFILE_URL", srv.URL+"/profile")
+
+	for _, tc := range []struct {
+		name   string
+		sealed string
+		scopes []string
+	}{
+		{"an unstamped record is stamped", "", nil},
+		{"a subscription is identified as an account", "fp-subscription", []string{"user:profile"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := claudeBlob("at.before", time.Now().Add(time.Hour))
+			r, st, id, _ := followFixture(t, before, tc.sealed)
+			rec, err := st.GetByID(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec.Scopes = tc.scopes
+			if err := st.Upsert(t.Context(), rec); err != nil {
+				t.Fatal(err)
+			}
+			path := materialise(t, before)
+
+			w := &secrets.OAuthRefreshWorker{Store: st, Sealer: r.cfg.Sealer, HTTP: srv.Client(), AnthropicClientID: "client-test"}
+			if n, err := w.RunOnce(t.Context()); err != nil || n != 1 {
+				t.Fatalf("the worker's sweep: refreshed %d, err %v", n, err)
+			}
+			if rec, _ = st.GetByID(t.Context(), id); rec.Fingerprint == tc.sealed {
+				t.Fatalf("the worker kept fingerprint %q — the fixture no longer re-stamps, so this proves nothing", rec.Fingerprint)
+			}
+			// The pass the loop and the catch-up run, sealed fingerprint in hand.
+			r.followOAuthRecord("run-restamp", secrets.OAuthKindClaudeCode, id, tc.sealed, path)
+			if got, _ := os.ReadFile(path); !strings.Contains(string(got), rotatedToken) {
+				t.Fatalf("the worker's re-stamped rotation (fingerprint %q, sealed %q) was not followed: %s", rec.Fingerprint, tc.sealed, got)
+			}
+		})
 	}
 }
 
-// TestFollowOAuthRecordOnce_RefusesAReconnectedLegacyRecord: a record sealed
-// before fingerprints were stamped is followed while it has none; a stamp
-// appears when a human reconnects it, which may be another account.
-func TestFollowOAuthRecordOnce_RefusesAReconnectedLegacyRecord(t *testing.T) {
+// TestFollowOAuthRecord_FollowsAReconnectAndSaysSo: a reconnect of the slot
+// is its owner's choice of credential; the run follows the slot, and the
+// move of its fingerprint is logged, not silent.
+func TestFollowOAuthRecord_FollowsAReconnectAndSaysSo(t *testing.T) {
 	before := claudeBlob("at.before", time.Now().Add(time.Hour))
-	r, st, id, _ := followFixture(t, before, "")
+	r, st, id, _ := followFixture(t, before, "fp-team")
+	var out bytes.Buffer
+	r.cfg.Logger = iterlog.New(iterlog.LevelInfo, &out)
 	path := materialise(t, before)
-	rotate(t, r, st, id, claudeBlob("at.rotated", time.Now().Add(8*time.Hour)), "")
-	if changed, err := r.followOAuthRecordOnce(secrets.OAuthKindClaudeCode, id, "", path); err != nil || !changed {
-		t.Fatalf("an unstamped record's rotation was not followed: changed=%v err=%v", changed, err)
+	reconnected := claudeBlob("at.reconnected", time.Now().Add(8*time.Hour))
+	rotate(t, r, st, id, reconnected, "fp-another-account")
+
+	r.followOAuthRecord("run-reconnect", secrets.OAuthKindClaudeCode, id, "fp-team", path)
+	if got, _ := os.ReadFile(path); string(got) != string(reconnected) {
+		t.Fatalf("the reconnected slot was not followed: %s", got)
 	}
-	rotate(t, r, st, id, claudeBlob("at.reconnected", time.Now().Add(8*time.Hour)), "fp-reconnected")
-	changed, err := r.followOAuthRecordOnce(secrets.OAuthKindClaudeCode, id, "", path)
-	if err == nil || changed || !strings.Contains(err.Error(), "another subscription") {
-		t.Fatalf("a reconnected record was followed by a run sealed before stamping: changed=%v err=%v", changed, err)
+	for _, l := range strings.Split(out.String(), "\n") {
+		if strings.Contains(l, "fp-another-account") && strings.Contains(l, "fp-team") {
+			return
+		}
 	}
+	t.Fatalf("the fingerprint move was not logged:\n%s", out.String())
 }
 
 // TestFollowOAuthRecordOnce_RefusesAnotherKind: a ref that resolves to
@@ -155,7 +203,7 @@ func TestFollowOAuthRecordOnce_RefusesAnotherKind(t *testing.T) {
 	before := claudeBlob("at.before", time.Now().Add(time.Hour))
 	r, _, id, _ := followFixture(t, before, "fp-team")
 	path := materialise(t, before)
-	changed, err := r.followOAuthRecordOnce(secrets.OAuthKindCodex, id, "fp-team", path)
+	changed, _, err := r.followOAuthRecordOnce(secrets.OAuthKindCodex, id, path)
 	if err == nil || changed {
 		t.Fatalf("a claude_code record was followed as a codex one: changed=%v err=%v", changed, err)
 	}
