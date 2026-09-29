@@ -9,8 +9,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 const (
@@ -33,7 +35,12 @@ const (
 // ExpandUntrustedEnvEnabled reports whether the operator opted back into
 // expanding workflow-controlled configs against the launcher's environment.
 func ExpandUntrustedEnvEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(EnvExpandUntrustedEnv)), "true")
+	// Read as INHERITED, not live: this is the operator's decision to hand a
+	// workflow-controlled config the launcher's environment, and a `.env` in
+	// the repository that config comes from must not be able to make it. The
+	// warning this knob silences even prints its own name to the author who
+	// would set it.
+	return strings.EqualFold(strings.TrimSpace(envtrust.Inherited(EnvExpandUntrustedEnv)), "true")
 }
 
 // HealthCheckEnabled returns true unless ITERION_MCP_HEALTHCHECK is "false" or "0".
@@ -117,7 +124,11 @@ func FromIRAuth(auth *ir.MCPAuth) *AuthConfig {
 // PrepareWorkflow resolves the final MCP catalog and active server sets for a
 // compiled workflow. It merges project .mcp.json, top-level `mcp_server`
 // declarations, and built-in presets, then applies workflow/node filters.
-func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
+// The optional logger carries the one failure this function otherwise
+// swallows: a plugin registry that cannot load takes EVERY plugin MCP server
+// off every node of the run, and that must not look like "no plugins are
+// enabled". Callers that have a run-scoped logger should pass it.
+func PrepareWorkflow(wf *ir.Workflow, projectDir string, logger ...*iterlog.Logger) error {
 	if wf == nil {
 		return nil
 	}
@@ -132,7 +143,11 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 	// servers — exactly like project .mcp.json entries — so every agent/judge
 	// node gets their tools unless it filters MCP explicitly. This is the
 	// runtime half of the plugin "mcp" contribution kind.
-	for name, cfg := range loadPluginServers(projectDir) {
+	var log *iterlog.Logger
+	if len(logger) > 0 {
+		log = logger[0]
+	}
+	for name, cfg := range loadPluginServers(projectDir, log) {
 		if _, clash := projectServers[name]; clash {
 			continue // a project .mcp.json entry of the same name wins
 		}

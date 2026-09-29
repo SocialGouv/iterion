@@ -58,6 +58,12 @@ func TestARefusedMCPServerReachesExecuteRatherThanFailingTheBuild(t *testing.T) 
 	}{
 		{"wildcard", []string{"bash", "mcp.repo.*"}},
 		{"exact name", []string{"bash", "mcp.repo.search"}},
+		// The claude_code FQN spelling, which Registry.Resolve accepts and
+		// which a bot author may legitimately write. A reader bound to the
+		// dotted form skipped it: the server was never recorded as refused,
+		// resolution went ahead, and the node died at build with "unknown
+		// tool" — the one outcome this whole path exists to avoid.
+		{"claude_code FQN spelling", []string{"bash", "mcp__repo__search"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := refusingExecutor(t)
@@ -143,8 +149,14 @@ func TestAnAmbientRefusedServerDegradesTheNode(t *testing.T) {
 	if len(degraded) != 1 || degraded[0].Server != "repo" || degraded[0].Err == nil {
 		t.Fatalf("the drop must be observable via OnMCPServerDegraded: %+v", degraded)
 	}
-	if !strings.Contains(degraded[0].Err.Error(), "project") {
-		t.Errorf("the degrade reason must name the origin: %v", degraded[0].Err)
+	// As FIELDS. A consumer filtering the timeline can otherwise not tell a
+	// repository's `.mcp.json` from the bot's own declaration, nor a refusal
+	// — where nothing is broken — from a server that genuinely cannot boot.
+	if degraded[0].Origin != "project" {
+		t.Errorf("the event must name the origin: %+v", degraded[0])
+	}
+	if !degraded[0].Refused {
+		t.Error("a server the launcher may not start did not fail to boot; the event must say which it was")
 	}
 	// An ambient server is not a declared dependency, so it does not refuse
 	// the node at execution either.

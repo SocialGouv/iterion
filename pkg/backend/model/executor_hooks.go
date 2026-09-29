@@ -188,9 +188,21 @@ type SessionDegradedInfo struct {
 // node's tool set because it failed to boot, passed to the
 // OnMCPServerDegraded hook.
 type MCPServerDegradedInfo struct {
-	Server string // MCP server name that failed to boot
+	Server string // MCP server name whose tools were dropped
 	Source string // where the server came from — "ambient" (repo .mcp.json / plugin catalog)
-	Err    error  // the boot failure the dropped tools are blamed for
+	// Origin is who controls the server's definition — "project", "workflow",
+	// "plugin", or empty when unknown. It is a FIELD rather than a phrase
+	// inside Err because that is the difference between a consumer being able
+	// to tell a repository's `.mcp.json` from the bot's own declaration and
+	// having to parse an error message to guess.
+	Origin string
+	// Refused distinguishes the two reasons the tools are gone: the server
+	// could not boot (Refused false — go and look at the server), or this
+	// launcher may not start it for a sandboxed run (Refused true — nothing
+	// is broken). Reporting the second as the first sends the operator after
+	// a bug that is not there.
+	Refused bool
+	Err     error // why the tools were dropped
 }
 
 // EventHooks allows the executor to emit observability events back to the caller.

@@ -147,14 +147,24 @@ func (m *Manager) checkStart(cfg *ServerConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("mcp: start check on a nil server config")
 	}
+	// The POLICY first. A server that may not run here is refused with the
+	// typed error whether or not it is also broken: the callers branch on
+	// that type to choose between degrading (or falling back to a backend
+	// that starts the server in the container) and failing the node. Reading
+	// StartErr first turned a recoverable refusal into an untyped boot
+	// failure and killed the node before its fallbacks — for a server whose
+	// definition, and whose malformed auth block, came from the repository
+	// under review.
+	policy := m.StartPolicy()
+	if !policy.Allows(cfg.Origin) {
+		return &ServerNotStartableError{
+			Server: cfg.Name, Origin: cfg.Origin, Policy: policy, Cause: cfg.StartErr,
+		}
+	}
 	if cfg.StartErr != nil {
 		return fmt.Errorf("mcp: server %q cannot start: %w", cfg.Name, cfg.StartErr)
 	}
-	policy := m.StartPolicy()
-	if policy.Allows(cfg.Origin) {
-		return nil
-	}
-	return &ServerNotStartableError{Server: cfg.Name, Origin: cfg.Origin, Policy: policy}
+	return nil
 }
 
 // Manager lazily connects to MCP servers, caches clients and tool discovery,
@@ -333,6 +343,15 @@ func (m *Manager) startableForHealthCheck(servers []string) []string {
 			continue
 		}
 		if err := m.checkStart(cfg); err != nil {
+			// A server this launcher may not start is skipped, not failed: a
+			// CLI backend starts it in the container later. Any OTHER reason
+			// it cannot start is exactly what a pre-run health check exists
+			// to report — skipping that would hand back a clean bill of
+			// health for a server already known to be unusable.
+			if !ServerNotStartable(err) {
+				out = append(out, server)
+				continue
+			}
 			m.logger.Info("mcp: health check skips %q (origin: %s) — %v", server, cfg.Origin, err)
 			continue
 		}

@@ -810,7 +810,15 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 		}
 	}
 
-	mcpOpts := []mcp.ManagerOption{mcp.WithLogger(logger)}
+	// The start policy goes in FIRST, so a reader of this slice sees the
+	// launcher-start decision before the incidental wiring. Go will not let
+	// it be passed positionally alongside the spread below, so the
+	// repo-wide sweep that checks every manager declares a policy cannot
+	// cover this call — its allowlist says so, and
+	// TestBuildMCPManagerArmsTheManagerWithItsPolicyArgument is what proves
+	// the value actually arrives. That test exists because this assignment
+	// was MISSING and everything upstream of it still passed.
+	mcpOpts := []mcp.ManagerOption{mcp.WithStartPolicy(policy), mcp.WithLogger(logger)}
 	if cacheTTL := mcp.ResolveCacheTTL(); cacheTTL > 0 {
 		mcpOpts = append(mcpOpts, mcp.WithToolCache(mcp.NewToolCache(storeDir, cacheTTL)))
 	}

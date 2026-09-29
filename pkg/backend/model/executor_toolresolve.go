@@ -260,9 +260,13 @@ var mcpServerNamingTools = map[string]bool{
 // checkNodeToolAccess cannot serve here: it reads an EMPTY active set as
 // "unrestricted" (correct for a tool node, which has no MCP scope at all),
 // which for an LLM node that declares `inherit: false` says the opposite of
-// what the author wrote. The three states are distinguished explicitly: no
-// scope at all leaves the tool alone, an empty allowlist denies every server,
-// and a populated one allows exactly its members.
+// what the author wrote.
+//
+// So the distinction is drawn on the NODE, not on the set: a non-LLM node is
+// left alone, and an LLM node is held to its active set — empty included,
+// where it denies every server. A workflow that declares no MCP server at all
+// therefore denies these three to its LLM nodes, which costs nothing: there is
+// no server for them to reach.
 func (e *ClawExecutor) scopeMCPServerNamingTool(t delegate.ToolDef, node ir.Node) delegate.ToolDef {
 	if !mcpServerNamingTools[t.Name] || node == nil {
 		return t
@@ -275,19 +279,26 @@ func (e *ClawExecutor) scopeMCPServerNamingTool(t delegate.ToolDef, node ir.Node
 	toolName := t.Name
 	nodeID := node.NodeID()
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
-		var args struct {
-			Server string `json:"server"`
-		}
+		// Decoded EXACTLY as the tool underneath decodes it: into a map, read
+		// by the literal key, with the same default. A struct field here
+		// instead read `{"server":"forbidden","Server":"allowed"}` as
+		// "allowed" — encoding/json matches field names case-insensitively
+		// and the last matching key wins — while the callee, reading
+		// input["server"], saw "forbidden". A guard and the call it guards
+		// must read the same bytes the same way, or the guard judges a value
+		// nobody uses.
+		var args map[string]any
 		if len(input) > 0 && string(input) != "null" {
 			if err := json.Unmarshal(input, &args); err != nil {
 				return "", fmt.Errorf("model: node %q: %s: decode input: %w", nodeID, toolName, err)
 			}
 		}
-		// claw defaults a missing server to "default"; mirror it so the
-		// check judges the name the provider would actually receive.
-		server := args.Server
-		if server == "" {
-			server = "default"
+		// claw defaults a missing (or non-string) server to "default"; mirror
+		// that too, so a body it would resolve to "default" is judged as
+		// "default" rather than refused for a reason the model cannot act on.
+		server := "default"
+		if s, ok := args["server"].(string); ok && s != "" {
+			server = s
 		}
 		for _, name := range allowed {
 			if name == server {
@@ -327,17 +338,18 @@ func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Nod
 }
 
 // refusedMCPServerFor reports whether a tool name belongs to a server the
-// launcher refused to start. Non-MCP names never match.
+// launcher refused to start, in either spelling the registry resolves.
+// Non-MCP names never match.
 func refusedMCPServerFor(name string, refused map[string]string) bool {
 	if len(refused) == 0 {
 		return false
 	}
-	server, _, err := tool.ParseMCPName(name)
-	if err != nil {
+	server, ok := tool.MCPServerOf(name)
+	if !ok {
 		return false
 	}
-	_, ok := refused[server]
-	return ok
+	_, refusedHere := refused[server]
+	return refusedHere
 }
 
 // mcpServerActiveForNode reports whether `server` is in the node's active MCP
@@ -390,8 +402,14 @@ func activeMCPServersForNames(node ir.Node, names []string) []string {
 			}
 			server = s
 		} else {
-			s, _, err := tool.ParseMCPName(name)
-			if err != nil {
+			// Both spellings the registry resolves: a node that names
+			// `mcp__srv__tool` asks for the same server as one that names
+			// `mcp.srv.tool`, and skipping it here left the server unensured
+			// — and, once a refusal existed to carry, unrecorded, so the
+			// node died at build with "unknown tool" instead of refusing at
+			// execution where its fallbacks could serve it.
+			s, ok := tool.MCPServerOf(name)
+			if !ok {
 				continue
 			}
 			server = s

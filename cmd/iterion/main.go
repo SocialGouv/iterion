@@ -212,14 +212,6 @@ func rejectUnknownSubcommands(cmd *cobra.Command) {
 // value. We deliberately don't pull in godotenv to avoid a
 // dependency for ~30 lines of code.
 func loadDotEnvFromCwd() {
-	// Before the first line of any `.env` is applied: record the variables
-	// that select iterion's control plane as INHERITED. A `.env` sits in a
-	// repository — including one under review — and fills in every key the
-	// operator left unset, ITERION_HOME among them. Trust decisions read the
-	// snapshot, so a repository can still point the iterion home wherever it
-	// likes without inheriting the operator's authority.
-	envtrust.SnapshotControlPlane()
-
 	dir, err := os.Getwd()
 	if err != nil {
 		return
@@ -270,6 +262,12 @@ func applyDotEnv(path string) bool {
 		}
 		if _, exists := os.LookupEnv(key); !exists {
 			_ = os.Setenv(key, val)
+			// A `.env` sits in a repository — including one under review — so
+			// what it plants must not later speak for the operator. The value
+			// is used exactly as before; only questions of AUTHORITY consult
+			// this (see internal/envtrust), and the record travels to child
+			// processes so a fork cannot launder it.
+			envtrust.MarkPlanted(key)
 		}
 	}
 	return true

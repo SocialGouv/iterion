@@ -1036,7 +1036,7 @@ definition, not who benefits from it:
 
 | Origin | Where the definition comes from | Started by the launcher of a SANDBOXED run |
 |---|---|---|
-| `plugin` | an enabled plugin, installed under the iterion home the operator's own environment names | yes, as before |
+| `plugin` | an enabled plugin that is the operator's in three respects: its CODE (a builtin, or a manifest under the iterion home the *inherited* environment names), the decision that ENABLED it, and the CONFIGURATION it runs with | yes, as before |
 | `project` | `.mcp.json` next to the `.bot`, or at the root of the repository the cloud runner cloned | no |
 | `workflow` | the DSL `mcp_server:` block | no |
 | unknown (the zero value) | — | no |
@@ -1061,6 +1061,22 @@ Two related rules travel with this one. A workflow-controlled server's
 environment (`ITERION_MCP_EXPAND_UNTRUSTED_ENV=true` restores it); and
 `list_mcp_resources`, `read_mcp_resource` and `mcp_auth`, which take a server
 NAME the model writes, are restricted to the node's own active MCP servers.
+
+Why the qualifier on `plugin`: iterion fills unset variables from the nearest
+`.env` walking up from the working directory, before any subcommand runs. That
+file sits in a repository — including one under review — and `ITERION_HOME`
+selects where plugins are installed, `ITERION_PLUGINS_ENABLE` turns one on,
+and `<home>/plugins.yaml` and `ITERION_PLUGIN_<NAME>_<KEY>` decide what an
+enabled plugin is configured with (firecrawl's API endpoint and key among
+them). A planted value keeps working — it simply does not speak for the
+operator, and the record travels to child processes so a fork cannot launder
+it. See `internal/envtrust`.
+
+One limitation to know: under `host_state: auto` the operator's iterion home
+is bind-mounted read-write into the sandbox, so a sandboxed agent can write a
+manifest at the operator's own path. The trust root above answers "did the
+operator put this here", not "could a previous run have". Narrowing that mount
+is tracked separately.
 
 Running claw's own MCP servers inside the container — parity with
 `claude_code` and pi — is the end state, and a follow-up.

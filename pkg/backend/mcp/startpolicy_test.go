@@ -5,8 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
@@ -218,5 +223,218 @@ func TestTighteningClosesAnAlreadyStartedRefusedServer(t *testing.T) {
 	}
 	if discovered {
 		t.Error("a refused server must not stay marked as discovered")
+	}
+}
+
+// slowHelperMode reports whether this process was re-executed as the slow MCP
+// server below. The delay is what lets a test tighten the policy while a start
+// is genuinely IN FLIGHT — the window the gate on the way in cannot see.
+func slowHelperMode() bool {
+	for i, arg := range os.Args {
+		if arg == "--" && i+1 < len(os.Args) && os.Args[i+1] == "mcp-slow-helper" {
+			return true
+		}
+	}
+	return false
+}
+
+// runSlowStdioHelper writes its PID where the test can watch it, waits, then
+// speaks real MCP. A peer that never answers would fail the start outright and
+// exercise nothing: the case under test is a start that SUCCEEDS after the
+// launcher has been told it may not run this server.
+func runSlowStdioHelper() {
+	if path := os.Getenv("ITERION_TEST_MCP_PIDFILE"); path != "" {
+		_ = os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	}
+	time.Sleep(700 * time.Millisecond)
+	server := gomcp.NewServer(&gomcp.Implementation{Name: "slow-server", Version: "v0.0.1"}, nil)
+	gomcp.AddTool(server, &gomcp.Tool{Name: "noop", Description: "does nothing"},
+		func(ctx context.Context, req *gomcp.CallToolRequest, _ struct{}) (*gomcp.CallToolResult, any, error) {
+			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: "ok"}}}, nil, nil
+		})
+	if err := server.Run(context.Background(), &gomcp.StdioTransport{}); err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// A start is slow — a process spawn, a dial, a handshake — and the run's
+// sandbox settles while it is in flight. Checking the policy only on the way
+// IN therefore protects nothing at the one moment that matters: the launcher
+// learns it may not run this server, and the server is already coming up.
+//
+// What used to happen: the manager closed a session that did not exist yet
+// (nil), dropped its only reference to the client, and the start then
+// published a live session into it. The refused server's process ran beside
+// the launcher for the rest of the run and past it, reachable by nobody —
+// Manager.Close could not see it either.
+func TestTighteningWhileAStartIsInFlightLeavesNoProcessBehind(t *testing.T) {
+	if slowHelperMode() {
+		runSlowStdioHelper()
+		return
+	}
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	cfg := &ServerConfig{
+		Name: "slow", Origin: OriginProject, Transport: TransportStdio,
+		Command: os.Args[0],
+		Args: []string{"-test.run=TestTighteningWhileAStartIsInFlightLeavesNoProcessBehind",
+			"--", "mcp-slow-helper"},
+		Env: map[string]string{"ITERION_TEST_MCP_PIDFILE": pidfile},
+	}
+	m := NewManager(map[string]*ServerConfig{"slow": cfg}, WithStartPolicy(StartAllServers))
+	t.Cleanup(func() { _ = m.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.ListResources(context.Background(), "slow")
+		done <- err
+	}()
+
+	// Wait until the child is actually up, so the tightening lands INSIDE the
+	// handshake rather than before the spawn (which the entry gate already
+	// covers, and which would make this test pass for the wrong reason).
+	pid := waitForPID(t, pidfile)
+	m.SetStartPolicy(StartOperatorServersOnly)
+
+	err := <-done
+	if !ServerNotStartable(err) {
+		t.Fatalf("the call must be refused once the policy tightened, got %v", err)
+	}
+	if alive := processAliveWithin(pid, 5*time.Second); alive {
+		t.Errorf("pid %d (origin %s) is still running beside the launcher after the refusal", pid, cfg.Origin)
+	}
+
+	state, stateErr := m.state("slow")
+	if stateErr != nil {
+		t.Fatalf("state: %v", stateErr)
+	}
+	state.mu.Lock()
+	client := state.client
+	state.mu.Unlock()
+	if client != nil {
+		t.Error("a refused server must not be left with a usable client")
+	}
+}
+
+func waitForPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if data, err := os.ReadFile(path); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the helper server never reported its pid — the premise of this test is gone")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// processAliveWithin polls for the process to disappear, so a slow exit does
+// not read as a leak.
+func processAliveWithin(pid int, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return false // gone (ESRCH) or not ours (EPERM — reparented, then reaped)
+		}
+		if time.Now().After(deadline) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A reason the server could not have started anyway — a malformed auth block
+// recorded when the catalog was built — must not swallow the placement
+// answer. The callers branch on the TYPE to choose between refusing the node
+// (and walking its fallbacks) and failing it outright; an untyped error there
+// kills a node that a `claude_code` route could still have served, for a
+// server whose definition came from the repository under review.
+func TestARecordedReasonTravelsInsideTheRefusalNotInsteadOfIt(t *testing.T) {
+	broken := errors.New("oauth: server \"repo\" AuthURL: must be https")
+
+	t.Run("under a sandbox the refusal wins and carries the reason", func(t *testing.T) {
+		cfg, spawned := spawnProbe(t, "repo", OriginProject)
+		cfg.StartErr = broken
+		m := NewManager(map[string]*ServerConfig{"repo": cfg}, WithStartPolicy(StartOperatorServersOnly))
+
+		err := m.EnsureServers(context.Background(), tool.NewRegistry(), []string{"repo"})
+		if !ServerNotStartable(err) {
+			t.Fatalf("expected the typed refusal, got %v", err)
+		}
+		if !errors.Is(err, broken) {
+			t.Errorf("the recorded reason must still be reachable: %v", err)
+		}
+		if spawned(250 * time.Millisecond) {
+			t.Error("nothing should have been spawned")
+		}
+	})
+
+	t.Run("with nothing to refuse it is a plain failure", func(t *testing.T) {
+		cfg, _ := spawnProbe(t, "firecrawl", OriginPlugin)
+		cfg.StartErr = broken
+		m := NewManager(map[string]*ServerConfig{"firecrawl": cfg}, WithStartPolicy(StartAllServers))
+
+		err := m.EnsureServers(context.Background(), tool.NewRegistry(), []string{"firecrawl"})
+		if ServerNotStartable(err) {
+			t.Fatalf("no policy refused this server; it is simply broken: %v", err)
+		}
+		if !errors.Is(err, broken) {
+			t.Errorf("the reason must reach the caller: %v", err)
+		}
+	})
+}
+
+// The health check exists to fail fast on a misconfigured catalog. It skips
+// what the launcher may not start — the probe IS a connection — but a server
+// known to be broken for any OTHER reason is precisely what it must report.
+func TestHealthCheckStillReportsAServerItMayStart(t *testing.T) {
+	cfg, _ := spawnProbe(t, "firecrawl", OriginPlugin)
+	cfg.StartErr = errors.New("malformed auth block")
+	m := NewManager(map[string]*ServerConfig{"firecrawl": cfg}, WithStartPolicy(StartAllServers))
+
+	if err := m.HealthCheck(context.Background(), []string{"firecrawl"}); err == nil {
+		t.Error("a health check that hides a server it knows cannot start reads as a clean bill of health")
+	}
+}
+
+// claw's mcp_auth and the resource pair ask the provider about a server by
+// name, and the provider answered for a refused one exactly as for a live
+// one: "connected", with the resolved command — the operator's own filesystem
+// layout — handed to a conversation that was just refused that server.
+func TestTheProviderDoesNotVouchForAServerItMayNotStart(t *testing.T) {
+	cfg := &ServerConfig{
+		Name: "repo", Origin: OriginProject, Transport: TransportStdio,
+		Command: "/opt/operator/private-path/mcp-server",
+	}
+	m := NewManager(map[string]*ServerConfig{"repo": cfg}, WithStartPolicy(StartOperatorServersOnly))
+	p := m.ClawProvider(nil)
+
+	status, ok := p.ServerStatus("repo")
+	if !ok {
+		t.Fatal("the server is in the catalog; the model should get an answer, not a lookup miss")
+	}
+	if status.Status == "connected" {
+		t.Error("a server the launcher may not start is not connected")
+	}
+	if strings.Contains(status.ServerInfo, cfg.Command) {
+		t.Error("the refusal must not disclose the resolved command")
+	}
+	if _, got := p.GetResourceClient("repo"); got {
+		t.Error("no client for a server that may not start — the refusal belongs before the dial")
+	}
+
+	// The same provider still serves what the operator installed.
+	allowed := &ServerConfig{Name: "firecrawl", Origin: OriginPlugin, Transport: TransportStdio, Command: "npx"}
+	m2 := NewManager(map[string]*ServerConfig{"firecrawl": allowed}, WithStartPolicy(StartOperatorServersOnly))
+	p2 := m2.ClawProvider(nil)
+	if status, ok := p2.ServerStatus("firecrawl"); !ok || status.Status != "connected" {
+		t.Errorf("an operator server must still report connected: ok=%v status=%+v", ok, status)
+	}
+	if _, ok := p2.GetResourceClient("firecrawl"); !ok {
+		t.Error("an operator server must still yield a client")
 	}
 }

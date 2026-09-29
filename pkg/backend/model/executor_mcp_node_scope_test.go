@@ -113,3 +113,95 @@ func scopingExecutor(t *testing.T, toolName string, onCall func(json.RawMessage)
 	}
 	return &ClawExecutor{logger: iterlog.Nop(), toolRegistry: tr}
 }
+
+// The guard decodes the model's argument; so does the tool underneath. If
+// they decode it differently, the guard judges a value nobody uses.
+//
+// encoding/json matches struct fields case-INSENSITIVELY and lets the last
+// matching key win, while the claw builtin reads input["server"] out of a
+// map, case-sensitively. So `{"server":"forbidden","Server":"allowed"}` was
+// read as "allowed" by a struct-based guard and as "forbidden" by the call it
+// was guarding — one extra capital letter and the node's MCP scope was gone.
+func TestTheNodeScopeReadsTheSameServerNameTheToolWillRead(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		reaches string // "" = the call must be refused
+	}{
+		{"a plain name the node declared", `{"server":"allowed"}`, "allowed"},
+		{"a plain name it did not", `{"server":"forbidden"}`, ""},
+		{"the same key in two cases", `{"server":"forbidden","Server":"allowed"}`, ""},
+		{"only the capitalised key", `{"Server":"allowed"}`, ""},
+		{"a non-string server", `{"server":123}`, ""},
+		{"no server at all", `{}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reached string
+			e := scopingExecutor(t, "list_mcp_resources", func(in json.RawMessage) {
+				// What the CALLEE would read, decoded the callee's way.
+				var args map[string]any
+				_ = json.Unmarshal(in, &args)
+				if s, ok := args["server"].(string); ok && s != "" {
+					reached = s
+					return
+				}
+				reached = "default"
+			})
+			node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"allowed"}}
+			defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{"list_mcp_resources"})
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+
+			_, execErr := defs[0].Execute(context.Background(), json.RawMessage(tc.body))
+
+			if tc.reaches == "" {
+				if execErr == nil {
+					t.Fatalf("this body must be refused; it reached %q", reached)
+				}
+				if reached != "" {
+					t.Errorf("the call reached %q before being refused", reached)
+				}
+				return
+			}
+			if execErr != nil {
+				t.Fatalf("a server the node declared must be reachable: %v", execErr)
+			}
+			if reached != tc.reaches {
+				t.Errorf("the tool was asked for %q, want %q", reached, tc.reaches)
+			}
+		})
+	}
+}
+
+// A subagent selects its tools from the process registry, with no node — so
+// whatever MCP the run can reach anywhere, a child conversation could reach
+// too, past the `mcp:` block of the node that spawned it. claw's per-type
+// allowlist is no help: nil means "every tool".
+func TestASubagentGetsNoNodeScopedMCPTool(t *testing.T) {
+	reg := tool.NewRegistry()
+	exec := func(context.Context, json.RawMessage) (string, error) { return "ok", nil }
+	for _, name := range []string{"bash", "list_mcp_resources", "read_mcp_resource", "mcp_auth"} {
+		if err := reg.RegisterBuiltin(name, name, nil, exec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := reg.RegisterMCP("forbidden", "search", "", nil, exec); err != nil {
+		t.Fatal(err)
+	}
+
+	// nil = claw's general-purpose subagent: every tool allowed.
+	got := map[string]bool{}
+	for _, gt := range buildSubagentTools(reg, nil) {
+		got[gt.Name] = true
+	}
+
+	if !got["bash"] {
+		t.Error("a subagent still gets the tools whose reach does not depend on a node")
+	}
+	for _, withheld := range []string{"list_mcp_resources", "read_mcp_resource", "mcp_auth", "mcp.forbidden.search"} {
+		if got[withheld] {
+			t.Errorf("%q reaches an MCP server, and this runner has no node to scope it by", withheld)
+		}
+	}
+}

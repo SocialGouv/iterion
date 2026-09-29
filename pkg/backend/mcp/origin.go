@@ -25,10 +25,12 @@ const (
 	// (`mcp_server:`).
 	OriginWorkflow Origin = "workflow"
 
-	// OriginPlugin is a server contributed by an enabled plugin whose
-	// manifest was read from the operator's own plugin root — see
-	// plugin.TrustedRoot: the root is captured from the inherited
-	// environment before a project `.env` can point it elsewhere.
+	// OriginPlugin is a server contributed by an enabled plugin that is the
+	// operator's in all three respects plugin.Registry.OperatorControlled
+	// checks: its code (a builtin, or a manifest under the home
+	// store.InheritedIterionDataDir names), the decision that enabled it, and
+	// the configuration it runs with. A project `.env` can still select the
+	// plugin root — it simply does not confer this origin.
 	OriginPlugin Origin = "plugin"
 )
 

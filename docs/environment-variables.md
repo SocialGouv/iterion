@@ -81,6 +81,11 @@ documented in [sandbox.md](sandbox.md).
 
 Which servers the launcher starts at all is decided by their ORIGIN — see
 [sandbox.md § MCP servers under a sandbox](sandbox.md#mcp-servers-under-a-sandbox).
+Note that `ITERION_PLUGINS_ENABLE`, `ITERION_PLUGINS_DISABLE`, `ITERION_HOME`,
+`ITERION_PLUGIN_<NAME>_<KEY>` and `ITERION_MCP_EXPAND_UNTRUSTED_ENV` are all
+honoured wherever they come from, but only speak for the OPERATOR when the
+process inherited them: a value a project `.env` filled in still applies and
+still does not confer the operator's authority.
 Note that an operator-installed plugin's stdio server inherits the whole
 environment of the launcher process: that is the operator's own binary and
 the operator's choice, but it is worth knowing before enabling one in a pod

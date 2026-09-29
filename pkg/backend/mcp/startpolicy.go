@@ -63,9 +63,24 @@ type ServerNotStartableError struct {
 	Server string
 	Origin Origin
 	Policy StartPolicy
+	// Cause is a reason this server could not have started anyway, known
+	// before the policy was consulted — a malformed auth block, say. It is
+	// carried INSIDE the refusal rather than returned instead of it, so a
+	// caller asking "may this run here" gets the same typed answer whether or
+	// not the server is also broken: the placement question does not depend
+	// on the server's health.
+	Cause error
 }
 
+func (e *ServerNotStartableError) Unwrap() error { return e.Cause }
+
 func (e *ServerNotStartableError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf(
+			"mcp: server %q (origin: %s) is not started by the launcher — %s "+
+				"(it could not have started here in any case: %v)",
+			e.Server, e.Origin, e.Policy, e.Cause)
+	}
 	return fmt.Sprintf(
 		"mcp: server %q (origin: %s) is not started by the launcher — %s. "+
 			"Its process would run beside the launcher, outside the run's sandbox. "+

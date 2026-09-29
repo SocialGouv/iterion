@@ -223,12 +223,29 @@ func (c *sdkClient) ensureStarted(ctx context.Context) error {
 	c.startInFlight = ch
 	c.startMu.Unlock()
 
-	err := c.start(ctx)
+	session, err := c.start(ctx)
 
 	c.startMu.Lock()
+	// The gate again, on the far side of the start. A start is slow — a
+	// process spawn, a TLS dial — and the run's sandbox settles while it is
+	// in flight: checking only on the way in means a server the launcher has
+	// just been told it may not run is already running by the time anyone
+	// asks. Re-consulted here, the session is closed before it is ever
+	// published, so the refusal costs the peer a connection rather than
+	// leaving a process alive beside the launcher.
+	if err == nil && c.gate != nil {
+		if gateErr := c.gate(); gateErr != nil {
+			err = gateErr
+			if session != nil {
+				_ = session.Close()
+				session = nil
+			}
+		}
+	}
 	c.startErr = err
 	if err == nil {
 		c.started = true
+		c.session = session
 	}
 	c.startInFlight = nil
 	c.startMu.Unlock()
@@ -240,7 +257,7 @@ func isContextErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func (c *sdkClient) start(ctx context.Context) error {
+func (c *sdkClient) start(ctx context.Context) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    c.info.Name,
 		Version: c.info.Version,
@@ -252,7 +269,7 @@ func (c *sdkClient) start(ctx context.Context) error {
 
 	transport, err := c.buildTransport()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	session, err := client.Connect(ctx, transport, nil)
@@ -266,10 +283,15 @@ func (c *sdkClient) start(ctx context.Context) error {
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("mcp: connect to %q: %w", c.cfg.Name, err)
+		return nil, fmt.Errorf("mcp: connect to %q: %w", c.cfg.Name, err)
 	}
-	c.session = session
-	return nil
+	// RETURNED, not assigned: the caller publishes it under startMu. Assigning
+	// it here wrote c.session outside every lock, so a concurrent Close() —
+	// the one the manager performs when the start policy tightens mid-run —
+	// read nil, closed nothing, and dropped its only reference to a session
+	// that then came up: a server process left running beside the launcher,
+	// reachable by no one, past the end of the run.
+	return session, nil
 }
 
 func (c *sdkClient) buildTransport() (mcp.Transport, error) {

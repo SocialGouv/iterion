@@ -23,12 +23,25 @@ import (
 // parses every Go file in the repository, build tags included, so the live
 // tags are covered by the free layer.
 //
+// What this guard cannot do: prove that a declared policy is the one the
+// manager ends up holding. It reads shapes. A call that passes the option
+// through a variable, a spread or a helper satisfies it while carrying
+// nothing — which is what happened to the production site. Every site this
+// guard exempts therefore owes a behavioural test instead.
+//
 // An entry in the allowlist is a decision on the record, not an exemption.
 func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 	exempt := map[string]string{
-		// The one production constructor: it computes the policy from the
-		// run's predicted sandbox and passes it positionally.
-		"pkg/runview/executor.go": "buildMCPManager passes the predicted policy as an argument",
+		// The one production constructor. Its options are assembled into a
+		// slice and spread, which this guard cannot read — and Go forbids
+		// mixing a positional option with a spread, so the shape cannot be
+		// changed to suit it. What covers that site is a BEHAVIOURAL test,
+		// runview.TestBuildMCPManagerArmsTheManagerWithItsPolicyArgument:
+		// the policy it was given must be the policy the manager holds. Do
+		// not replace that with a claim about this file's source — the
+		// defect it caught was exactly a correct-looking shape whose value
+		// went nowhere.
+		"pkg/runview/executor.go": "options are spread; covered by runview's behavioural arming test instead",
 		// Exercises the zero value on purpose: that an UNARMED manager is
 		// what SetSandbox(nil) has to open is the property under test.
 		"pkg/backend/model/executor_mcp_start_policy_test.go": "asserts the zero value, then that the engine opens it",

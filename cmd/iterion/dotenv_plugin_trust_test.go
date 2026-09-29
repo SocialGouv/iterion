@@ -36,39 +36,30 @@ func TestAProjectDotenvCannotManufactureAnOperatorPlugin(t *testing.T) {
 		t.Fatalf("write .env: %v", err)
 	}
 
-	// The operator's own environment, as the process inherited it.
-	t.Setenv("ITERION_HOME", "")
+	// The operator set nothing, so the repository's `.env` is what decides
+	// where plugins are read from.
 	envtrust.ResetForTest()
 	t.Cleanup(envtrust.ResetForTest)
-	t.Setenv("ITERION_HOME", operatorHome)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	t.Setenv("HOME", operatorHome)
+	if err := os.Unsetenv("ITERION_HOME"); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
 
 	t.Chdir(repo)
 	loadDotEnvFromCwd()
 
-	// Unchanged behaviour: a dotenv fills in what is unset, and here the
-	// operator HAD set it, so the operator's value stands.
-	if got := os.Getenv("ITERION_HOME"); got != operatorHome {
-		t.Fatalf("a set variable must win over .env: ITERION_HOME = %q", got)
-	}
-	if got := store.InheritedIterionDataDir(); got != operatorHome {
-		t.Fatalf("inherited home = %q, want %q", got, operatorHome)
-	}
-
-	// Now the case that matters: the operator set nothing, so the repo's
-	// `.env` decides where plugins are read from.
-	envtrust.ResetForTest()
-	t.Setenv("ITERION_HOME", "")
-	if err := os.Unsetenv("ITERION_HOME"); err != nil {
-		t.Fatalf("unset: %v", err)
-	}
-	t.Setenv("HOME", operatorHome)
-	loadDotEnvFromCwd()
-
+	// Unchanged behaviour: the `.env` still selects the home, and everything
+	// that READS it follows.
 	if got := os.Getenv("ITERION_HOME"); got != repoHome {
-		t.Fatalf("the .env should still select the home (behaviour unchanged): %q", got)
+		t.Fatalf("the .env must still select the home: %q", got)
 	}
+	if got := store.GlobalIterionDataDir(); got != repoHome {
+		t.Fatalf("the data dir follows the live value: %q", got)
+	}
+	// What changed: the same value no longer speaks for the operator.
 	if got := store.InheritedIterionDataDir(); got != filepath.Join(operatorHome, store.StoreDirName) {
-		t.Fatalf("the inherited home must ignore the .env value: %q", got)
+		t.Fatalf("the inherited home must ignore the planted value: %q", got)
 	}
 
 	reg, err := plugin.Load()
@@ -83,9 +74,14 @@ func TestAProjectDotenvCannotManufactureAnOperatorPlugin(t *testing.T) {
 		t.Error("a plugin read from a home a project .env selected must not carry the operator's authority: " +
 			"its MCP servers would then start beside the launcher of a sandboxed run")
 	}
+	// And the subtler half: a BUILTIN is the operator's code, but the file
+	// deciding whether it runs and what it is configured with now belongs to
+	// the repository too — `<repoHome>/plugins.yaml`. The operator's own
+	// binary, told by a repository where to send the run's data, is not the
+	// operator's.
 	for _, p := range reg.Enabled() {
-		if p.Builtin && !reg.OperatorControlled(p) {
-			t.Errorf("a builtin is embedded in this binary and always the operator's: %s", p.Name())
+		if p.Builtin && reg.OperatorControlled(p) && len(reg.EffectiveConfig(p.Name())) > 0 {
+			t.Errorf("builtin %s is configured from a home the .env chose, yet counts as the operator's", p.Name())
 		}
 	}
 }

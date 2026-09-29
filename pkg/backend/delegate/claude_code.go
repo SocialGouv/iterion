@@ -1605,8 +1605,8 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		run := task.Sandbox
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
-			preview := append([]string{path}, args...)
-			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)", preview, cwd, len(env), openStdin)
+			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
+				redactedArgvPreview(path, args), cwd, len(env), openStdin)
 			cmd := run.Command(ctx, append([]string{path}, args...), sandbox.ExecOpts{
 				WorkDir:       cwd,
 				Env:           env,

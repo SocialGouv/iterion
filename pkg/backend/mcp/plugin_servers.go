@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
@@ -18,9 +19,14 @@ import (
 // its servers are OriginUnknown, so the launcher will not start them while a
 // sandbox is active. Without the distinction, a repository carrying `.env` and
 // a `default_enabled` manifest would classify its own code as the operator's.
-func loadPluginServers(workspace string) map[string]*ServerConfig {
+func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*ServerConfig {
 	reg, err := plugin.Load()
 	if err != nil {
+		// Every plugin's MCP servers disappear from every node of the run.
+		// Silence made that indistinguishable from "no plugins are enabled" —
+		// and the file that most often breaks the load, <home>/plugins.yaml,
+		// is the repository's own whenever a project `.env` selected the home.
+		logger.Warn("mcp: plugin registry failed to load — NO plugin MCP server is available to this run: %v", err)
 		return map[string]*ServerConfig{}
 	}
 	out := map[string]*ServerConfig{}

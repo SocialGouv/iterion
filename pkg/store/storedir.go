@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
@@ -139,10 +140,36 @@ func InheritedIterionDataDir() string {
 	if dir := strings.TrimRight(envtrust.Inherited("ITERION_HOME"), string(filepath.Separator)); dir != "" {
 		return dir
 	}
-	if home := strings.TrimRight(envtrust.Inherited("HOME"), string(filepath.Separator)); home != "" {
+	// The SAME tiers as GlobalIterionDataDir, read from the inherited
+	// environment. A tier missing here that is present there does not fail
+	// safe — it makes the operator's own home unrecognisable, so their own
+	// installed plugins quietly lose their authority. That is how the
+	// Windows case was wrong: os.UserHomeDir reads %USERPROFILE%, HOME is
+	// normally unset there, and every installed plugin became untrusted.
+	if home := strings.TrimRight(envtrust.Inherited(homeEnvName()), string(filepath.Separator)); home != "" {
 		return filepath.Join(home, StoreDirName)
 	}
+	if tmp := strings.TrimRight(envtrust.Inherited("TMPDIR"), string(filepath.Separator)); tmp != "" {
+		return filepath.Join(tmp, "iterion-data")
+	}
+	if os.Getenv("TMPDIR") == "" {
+		// No TMPDIR at all: os.TempDir's answer is a compiled-in path no
+		// environment can move, so it is the operator's by construction.
+		return filepath.Join(os.TempDir(), "iterion-data")
+	}
 	return ""
+}
+
+// homeEnvName is the variable os.UserHomeDir consults on this platform.
+func homeEnvName() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "USERPROFILE"
+	case "plan9":
+		return "home"
+	default:
+		return "HOME"
+	}
 }
 
 // EncodeWorkDirKey produces a deterministic, filesystem-safe key

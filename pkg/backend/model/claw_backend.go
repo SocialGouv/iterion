@@ -284,7 +284,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if len(task.MCPServersRefusedOnLauncher) > 0 {
 			return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
 				NodeID: task.NodeID, Backend: delegate.BackendClaw,
-				Capability: "MCP " + refusedMCPServerSummary(task.MCPServersRefusedOnLauncher) + " in a sandboxed run"}
+				Capability: "MCP " + refusedMCPServerSummary(task.MCPServersRefusedOnLauncher) + " in a sandboxed run",
+				Remedy: "claw connects MCP servers in the launcher process, which is outside this run's sandbox; " +
+					"route the node to a backend that starts them inside the container (claude_code, pi), " +
+					"or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)",
+			}
 		}
 		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
 		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
@@ -1588,13 +1592,6 @@ func withoutUnplaceableToolsThePolicyDenies(task delegate.Task) []delegate.ToolD
 	return kept
 }
 
-// refuseToolsWithNoSandboxPlacement refuses a sandboxed task carrying a tool
-// neither side of the sandbox may serve: the container has no form of it and
-// the launcher would run it on the host (tool.PlacementRefused, which every
-// unclassified name falls into). It runs in Execute, beside the Ask refusal,
-// so the node's `fallbacks:` still get their turn; the build-time effects
-// (llm_prompt, board token) have fired, but no runner starts and no token is
-// spent.
 // refusedMCPServerSummary names the refused servers in a stable order, so
 // the capability string a fallback decision is logged under does not change
 // from run to run over one map's iteration order.
@@ -1614,6 +1611,13 @@ func refusedMCPServerSummary(refused map[string]string) string {
 	return "servers " + strings.Join(quoted, ", ")
 }
 
+// refuseToolsWithNoSandboxPlacement refuses a sandboxed task carrying a tool
+// neither side of the sandbox may serve: the container has no form of it and
+// the launcher would run it on the host (tool.PlacementRefused, which every
+// unclassified name falls into). It runs in Execute, beside the Ask refusal,
+// so the node's `fallbacks:` still get their turn; the build-time effects
+// (llm_prompt, board token) have fired, but no runner starts and no token is
+// spent.
 func refuseToolsWithNoSandboxPlacement(task delegate.Task) error {
 	for _, td := range task.ToolDefs {
 		if placement, reason := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused {

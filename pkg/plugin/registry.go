@@ -13,6 +13,7 @@ import (
 
 	yaml "go.yaml.in/yaml/v2"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -37,6 +38,13 @@ type Plugin struct {
 	// Dir is the absolute install directory for an installed plugin; "" for a
 	// builtin (its files live in the embedded FS).
 	Dir string
+	// enabledByOperator records whether the decision that turned this plugin
+	// on was the OPERATOR's — as opposed to a project `.env` naming it in
+	// ITERION_PLUGINS_ENABLE, or a plugins.yaml under a home that same `.env`
+	// selected. It is not about the code, which is `Builtin`'s question; it
+	// is about who asked for the code to run.
+	enabledByOperator bool
+
 	// Enabled is the resolved enable state (operator state || default_enabled).
 	Enabled bool
 
@@ -300,24 +308,41 @@ func (r *Registry) loadInstalled() {
 }
 
 func (r *Registry) resolveEnabled() {
-	enableEnv := envNameSet("ITERION_PLUGINS_ENABLE")
-	disableEnv := envNameSet("ITERION_PLUGINS_DISABLE")
+	// Read as the process INHERITED them. A `.env` in the repository under
+	// review can set either — enabling a plugin the operator left off, or
+	// silencing one they turned on — and the value is honoured either way;
+	// what it cannot do is make the result speak for the operator.
+	enableEnv := envNameSet(envtrust.Inherited("ITERION_PLUGINS_ENABLE"))
+	disableEnv := envNameSet(envtrust.Inherited("ITERION_PLUGINS_DISABLE"))
+	plantedEnable := envNameSet(os.Getenv("ITERION_PLUGINS_ENABLE"))
+	plantedDisable := envNameSet(os.Getenv("ITERION_PLUGINS_DISABLE"))
 	for _, p := range r.plugins {
 		if v, ok := r.state[p.Name()]; ok {
 			p.Enabled = v
+			// The stored state lives in <home>/plugins.yaml, so it is the
+			// operator's exactly when the home is.
+			p.enabledByOperator = r.homeOperatorChosen
 		} else {
 			p.Enabled = p.Manifest.DefaultEnabled
+			// `default_enabled` is the manifest's own word, so it is the
+			// operator's exactly when the manifest is.
+			p.enabledByOperator = p.Builtin || r.homeOperatorChosen
 		}
 		// Env overrides win over both stored state and default_enabled — the
 		// cloud/headless path where the operator (or Helm chart) toggles a
 		// builtin via immutable env instead of the per-pod-ephemeral
 		// plugins.yaml. Disable wins over enable when a name is in both.
-		if enableEnv[p.Name()] {
+		if plantedEnable[p.Name()] {
 			p.Enabled = true
+			p.enabledByOperator = enableEnv[p.Name()]
 		}
-		if disableEnv[p.Name()] {
+		// Disabling only ever removes a capability, so its provenance does
+		// not matter: a `.env` that silences a plugin costs the operator a
+		// tool, never the other way round.
+		if plantedDisable[p.Name()] {
 			p.Enabled = false
 		}
+		_ = disableEnv
 	}
 	sort.SliceStable(r.plugins, func(i, j int) bool {
 		return r.plugins[i].Name() < r.plugins[j].Name()
@@ -326,9 +351,12 @@ func (r *Registry) resolveEnabled() {
 
 // envNameSet parses a comma/space-separated env var into a set of plugin
 // names (trimmed, empties dropped). Used by ITERION_PLUGINS_ENABLE/DISABLE.
-func envNameSet(env string) map[string]bool {
+// envNameSet splits a comma/space separated plugin-name list. It takes the
+// VALUE, not the variable name, so each caller says which environment it is
+// reading — the live one, or the one the process inherited.
+func envNameSet(value string) map[string]bool {
 	out := map[string]bool{}
-	for _, tok := range strings.FieldsFunc(os.Getenv(env), func(r rune) bool { return r == ',' || r == ' ' }) {
+	for _, tok := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' }) {
 		if t := strings.TrimSpace(tok); t != "" {
 			out[t] = true
 		}
@@ -365,7 +393,24 @@ func (r *Registry) OperatorControlled(p *Plugin) bool {
 	if p == nil {
 		return false
 	}
-	return p.Builtin || r.homeOperatorChosen
+	// The CODE: embedded in this binary, or installed under the home the
+	// operator's own environment names.
+	if !p.Builtin && !r.homeOperatorChosen {
+		return false
+	}
+	// WHO ASKED FOR IT: a builtin turned on by a repository's `.env` is the
+	// operator's code running at a repository's request.
+	if !p.enabledByOperator {
+		return false
+	}
+	// WHAT IT WAS TOLD: a builtin's manifest is fixed, but its behaviour is
+	// not — every builtin interpolates `{{config.*}}` into its server's env
+	// (firecrawl's API endpoint and key, codeindex's embedding endpoint), and
+	// that config comes from <home>/plugins.yaml and from
+	// ITERION_PLUGIN_<NAME>_<KEY>. A repository that supplies either is
+	// choosing where the operator's own binary sends the run's data, so the
+	// result is not the operator's either.
+	return r.configIsOperators(p.Name())
 }
 
 // sameDir reports whether two paths name the same directory, comparing them

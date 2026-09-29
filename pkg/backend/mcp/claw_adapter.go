@@ -35,7 +35,14 @@ func (p *ClawProvider) GetResourceClient(name string) (clawmcp.ResourceClient, b
 	if p.m == nil {
 		return nil, false
 	}
-	if _, ok := p.m.ServerConfig(name); !ok {
+	cfg, ok := p.m.ServerConfig(name)
+	if !ok {
+		return nil, false
+	}
+	// A server this launcher may not start has no client to offer. Handing
+	// one back means the refusal arrives as a failed dial instead — after the
+	// model was told the server was there.
+	if err := p.m.checkStart(cfg); err != nil {
 		return nil, false
 	}
 	return &clawResourceClient{m: p.m, server: name}, true
@@ -48,6 +55,18 @@ func (p *ClawProvider) ServerStatus(name string) (clawmcp.ServerStatus, bool) {
 	cfg, ok := p.m.ServerConfig(name)
 	if !ok {
 		return clawmcp.ServerStatus{Name: name, Status: "disconnected"}, false
+	}
+	// Answer for the server as it actually stands. Reporting "connected" for
+	// one the launcher may not start tells the model the opposite of the
+	// truth, and it does so while naming the resolved command — the
+	// operator's own filesystem layout — to a conversation that was just
+	// refused the server.
+	if err := p.m.checkStart(cfg); err != nil {
+		return clawmcp.ServerStatus{
+			Name:       name,
+			Status:     "disconnected",
+			ServerInfo: "not started by this launcher for this run",
+		}, true
 	}
 	switch cfg.Transport {
 	case TransportStdio:

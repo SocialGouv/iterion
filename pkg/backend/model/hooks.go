@@ -1250,6 +1250,16 @@ func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedIn
 		"server": info.Server,
 		"source": info.Source,
 	}
+	// Who controls the server's definition, and whether anything is actually
+	// broken — as fields, so a reader of the timeline can tell a repository's
+	// `.mcp.json` from the bot's own declaration, and a refusal from a boot
+	// failure, without parsing the error text.
+	if info.Origin != "" {
+		data["origin"] = info.Origin
+	}
+	if info.Refused {
+		data["refused"] = true
+	}
 	if info.Err != nil {
 		data["error"] = info.Err.Error()
 	}

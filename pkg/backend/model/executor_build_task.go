@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -1260,11 +1261,29 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		if e.mcpManager != nil && e.toolRegistry != nil {
 			for _, srv := range f.activeMCPServers {
 				if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{srv}); err != nil {
+					// Two different facts, reported as two different facts: a
+					// server that cannot boot is something to go and fix, a
+					// server this launcher may not start for a sandboxed run
+					// is working as intended. One message for both sent the
+					// operator after a boot bug that was not there.
+					refused := mcp.ServerNotStartable(err)
+					origin := ""
+					if cfg, ok := e.mcpManager.ServerConfig(srv); ok && cfg != nil {
+						origin = string(cfg.Origin)
+					}
 					if e.logger != nil {
-						e.logger.Warn("[%s] ambient MCP server %q failed to boot — the node runs WITHOUT its tools: %v", f.id, srv, err)
+						if refused {
+							e.logger.Warn("[%s] ambient MCP server %q (origin: %s) is not started by this launcher — "+
+								"the node runs WITHOUT its tools: %v", f.id, srv, origin, err)
+						} else {
+							e.logger.Warn("[%s] ambient MCP server %q failed to boot — the node runs WITHOUT its tools: %v",
+								f.id, srv, err)
+						}
 					}
 					if e.hooks.OnMCPServerDegraded != nil {
-						e.hooks.OnMCPServerDegraded(f.id, MCPServerDegradedInfo{Server: srv, Source: "ambient", Err: err})
+						e.hooks.OnMCPServerDegraded(f.id, MCPServerDegradedInfo{
+							Server: srv, Source: "ambient", Origin: origin, Refused: refused, Err: err,
+						})
 					}
 					continue
 				}

@@ -171,3 +171,46 @@ func TestAMalformedAuthBlockFailsTheRunOnlyWhenItIsTheOperatorsOwn(t *testing.T)
 		}
 	})
 }
+
+// The prediction, the nine spec literals and their sweep guard are all
+// upstream of ONE assignment: the policy has to reach the manager. It did
+// not. buildMCPManager took the argument and built the manager without it,
+// so every run's manager sat at the zero value — the whole arming layer was
+// inert, and nothing was red: the prediction was unit-tested in isolation,
+// the gate was tested on managers built by hand, and an unused PARAMETER is
+// legal Go that no linter in this repo flags.
+//
+// This is the witness for the normal path. It asserts the value, not the
+// shape, because the shape was right.
+func TestBuildMCPManagerArmsTheManagerWithItsPolicyArgument(t *testing.T) {
+	for _, want := range []mcp.StartPolicy{
+		mcp.StartAllServers,
+		mcp.StartOperatorServersOnly,
+		mcp.StartPolicyUnknown,
+	} {
+		t.Run(want.String(), func(t *testing.T) {
+			wf := &ir.Workflow{ResolvedMCPServers: map[string]*ir.MCPServer{
+				"s": {Name: "s", Origin: string(mcp.OriginProject), Transport: ir.MCPTransportStdio, Command: "/bin/echo"},
+			}}
+			manager, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), want)
+			if err != nil {
+				t.Fatalf("buildMCPManager: %v", err)
+			}
+			if got := manager.StartPolicy(); got != want {
+				t.Errorf("the manager holds %v, want %v — the policy never reached it", got, want)
+			}
+		})
+	}
+}
+
+// And the other half of the same wiring: a run with no MCP server at all
+// builds no manager, so there is nothing to arm and nothing to refuse.
+func TestAWorkflowWithoutMCPServersBuildsNoManager(t *testing.T) {
+	manager, broker, err := buildMCPManager(&ir.Workflow{}, t.TempDir(), iterlog.Nop(), mcp.StartOperatorServersOnly)
+	if err != nil {
+		t.Fatalf("buildMCPManager: %v", err)
+	}
+	if manager != nil || broker != nil {
+		t.Errorf("expected no manager and no broker, got %v / %v", manager, broker)
+	}
+}

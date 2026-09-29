@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // EffectiveConfig returns the named plugin's config as it is actually used:
@@ -45,8 +47,13 @@ func (r *Registry) EffectiveConfig(name string) map[string]string {
 // blank a defaulted URL). E.g. plugin "firecrawl" key "api_url" →
 // ITERION_PLUGIN_FIRECRAWL_API_URL.
 func pluginConfigEnv(name, key string) (string, bool) {
-	env := "ITERION_PLUGIN_" + envToken(name) + "_" + envToken(key)
-	return os.LookupEnv(env)
+	return os.LookupEnv(pluginConfigEnvName(name, key))
+}
+
+// pluginConfigEnvName is the per-key override variable. One place, because
+// the provenance check has to ask about exactly the names the reader reads.
+func pluginConfigEnvName(name, key string) string {
+	return "ITERION_PLUGIN_" + envToken(name) + "_" + envToken(key)
 }
 
 // envToken upper-cases and replaces '-' with '_' so kebab plugin/config names
@@ -185,4 +192,30 @@ func (r *Registry) fillConfigView(v View, p *Plugin) View {
 	v.ConfigValues = values
 	v.ConfigSecretSet = secretSet
 	return v
+}
+
+// configIsOperators reports whether every configuration value this plugin
+// will actually run with came from a source the operator controls.
+//
+// Two sources can carry a repository's answer: <home>/plugins.yaml, when a
+// project `.env` selected that home, and the per-key override
+// ITERION_PLUGIN_<NAME>_<KEY>, when a project `.env` planted it. Manifest
+// defaults are the plugin's own and always count as the operator's.
+//
+// A plugin with no configuration at all is unaffected — there is nothing for
+// a repository to have said.
+func (r *Registry) configIsOperators(name string) bool {
+	if len(r.config[name]) > 0 && !r.homeOperatorChosen {
+		return false
+	}
+	p, ok := r.Get(name)
+	if !ok {
+		return true
+	}
+	for _, f := range p.Manifest.Config {
+		if envtrust.Planted(pluginConfigEnvName(name, f.Key)) {
+			return false
+		}
+	}
+	return true
 }
