@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -623,5 +624,121 @@ func TestResume_aHostWithoutItsTemporaryDirectoryIsRetried(t *testing.T) {
 	}
 	if !read {
 		t.Fatal("report did not find the scratch the park banked")
+	}
+}
+
+// scriptedRun answers the teardown's listing (find) and archive (tar -czf)
+// execs from their scripts, in order; the last step repeats, and a nil step
+// runs the command for real.
+type scriptedRun struct {
+	*podRun
+	list, tar   []func(opts sandbox.ExecOpts) (sandbox.ExecResult, error)
+	lists, tars int
+}
+
+func (r *scriptedRun) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	var steps []func(opts sandbox.ExecOpts) (sandbox.ExecResult, error)
+	var n *int
+	switch cmd := strings.Join(argv, " "); {
+	case strings.Contains(cmd, "find "):
+		steps, n = r.list, &r.lists
+	case strings.Contains(cmd, "-czf"):
+		steps, n = r.tar, &r.tars
+	}
+	if len(steps) > 0 {
+		step := steps[min(*n, len(steps)-1)]
+		*n++
+		if step != nil {
+			return step(opts)
+		}
+	}
+	return r.podRun.Exec(ctx, argv, opts)
+}
+
+func podGone(sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	return sandbox.ExecResult{ExitCode: 1, Stderr: []byte(`Error from server (NotFound): pods "iterion-sbx-1" not found`)}, nil
+}
+
+func listedEmpty(sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	return sandbox.ExecResult{}, nil
+}
+
+func tarKilled(opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	fmt.Fprintln(opts.Stderr, "command terminated with exit code 137")
+	return sandbox.ExecResult{ExitCode: 137}, nil
+}
+
+// dropFailsOnce refuses the first drop of a previous bank.
+type dropFailsOnce struct {
+	store.RunStore
+	failed bool
+}
+
+func (s *dropFailsOnce) PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error {
+	return store.AsScratchBankStore(s.RunStore).PutScratchBank(ctx, runID, body, size)
+}
+
+func (s *dropFailsOnce) OpenScratchBank(ctx context.Context, runID string) (io.ReadCloser, error) {
+	return store.AsScratchBankStore(s.RunStore).OpenScratchBank(ctx, runID)
+}
+
+func (s *dropFailsOnce) DeleteScratchBank(ctx context.Context, runID string) error {
+	if !s.failed {
+		s.failed = true
+		return errors.New("blob: DELETE sessions/run/scratch.tgz: 503 Slow Down")
+	}
+	return store.AsScratchBankStore(s.RunStore).DeleteScratchBank(ctx, runID)
+}
+
+// TestBankScratchOnCleanup_aLaterTryDoesNotForgetWhatAnEarlierOneSaw: a try
+// that saw the scratch is not replaced by one that saw less of it. The pod
+// killed while tar read its files cannot be listed by the next try, nor is
+// the scratch it held empty: the record keeps the failure that refuses the
+// resume. A scratch seen empty is not replaced by a pod that is gone.
+func TestBankScratchOnCleanup_aLaterTryDoesNotForgetWhatAnEarlierOneSaw(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		run       func(dir string) *scriptedRun
+		dropFails bool
+		check     func(t *testing.T, rec map[string]any)
+	}{
+		{"tar killed, then the pod gone", func(dir string) *scriptedRun {
+			return &scriptedRun{podRun: &podRun{scratch: dir}, list: []func(sandbox.ExecOpts) (sandbox.ExecResult, error){nil, podGone}, tar: []func(sandbox.ExecOpts) (sandbox.ExecResult, error){tarKilled}}
+		}, false, func(t *testing.T, rec map[string]any) {
+			if rec["banked"] != false || rec["unknown"] == true || !strings.Contains(fmt.Sprint(rec["reason"]), "137") {
+				t.Fatalf("want the killed tar recorded, got %v", rec)
+			}
+		}},
+		{"tar killed, then an empty listing", func(dir string) *scriptedRun {
+			return &scriptedRun{podRun: &podRun{scratch: dir}, list: []func(sandbox.ExecOpts) (sandbox.ExecResult, error){nil, listedEmpty}, tar: []func(sandbox.ExecOpts) (sandbox.ExecResult, error){tarKilled}}
+		}, false, func(t *testing.T, rec map[string]any) {
+			if rec["banked"] != false || rec["empty"] != false || !strings.Contains(fmt.Sprint(rec["reason"]), "137") {
+				t.Fatalf("want the killed tar recorded, got %v", rec)
+			}
+		}},
+		{"empty, then the pod gone", func(dir string) *scriptedRun {
+			return &scriptedRun{podRun: &podRun{scratch: dir}, list: []func(sandbox.ExecOpts) (sandbox.ExecResult, error){listedEmpty, podGone}}
+		}, true, func(t *testing.T, rec map[string]any) {
+			if rec["empty"] != true || rec["unknown"] == true {
+				t.Fatalf("want the scratch recorded empty, got %v", rec)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "floor.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s := tmpStore(t)
+			if tc.dropFails {
+				s = &dropFailsOnce{RunStore: s}
+			}
+			run := tc.run(dir)
+			rec := bankedAtTeardown(t, s, "run-scratch-later-try", run)
+			if run.lists < 2 {
+				t.Fatalf("precondition: the teardown listed the scratch %d time(s), want a second try — this proves nothing", run.lists)
+			}
+			tc.check(t, rec)
+		})
 	}
 }

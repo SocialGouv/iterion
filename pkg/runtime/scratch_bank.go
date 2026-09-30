@@ -55,6 +55,18 @@ type scratchBanked struct {
 	retry bool
 }
 
+// knows ranks what a try saw of the scratch: nothing (unknown), an empty
+// scratch, or files.
+func (b scratchBanked) knows() int {
+	switch {
+	case b.unknown:
+		return 0
+	case b.empty:
+		return 1
+	}
+	return 2
+}
+
 func (b scratchBanked) event() map[string]any {
 	data := map[string]any{"banked": b.banked, "empty": b.empty}
 	if b.banked {
@@ -103,7 +115,7 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 		pause = scratchBankRetryPauseDefault
 	}
 	got := bankScratch(bctx, active.run, sandboxScratchContainerPath, bs, runID, scratchBankMaxBytes)
-	for attempt := 1; got.retry && attempt < scratchBankAttempts && bctx.Err() == nil; attempt++ {
+	for attempt := 1; got.retry && attempt < scratchBankAttempts; attempt++ {
 		if e.logger != nil {
 			e.logger.Warn("runtime: banking the scratch of run %s failed (%s) — trying again in %s", runID, got.reason, pause)
 		}
@@ -111,8 +123,18 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 		case <-bctx.Done():
 		case <-time.After(pause):
 		}
+		if bctx.Err() != nil {
+			break
+		}
 		pause *= 2
-		got = bankScratch(bctx, active.run, sandboxScratchContainerPath, bs, runID, scratchBankMaxBytes)
+		next := bankScratch(bctx, active.run, sandboxScratchContainerPath, bs, runID, scratchBankMaxBytes)
+		if next.knows() < got.knows() {
+			// What an earlier try saw stands: a sandbox killed between two
+			// tries cannot be listed any more, but the files it held were
+			// not banked.
+			break
+		}
+		got = next
 	}
 	if e.logger != nil {
 		switch {
