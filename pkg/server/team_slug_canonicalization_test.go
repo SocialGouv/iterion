@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -226,5 +227,53 @@ func TestTeamSlugCanonicalizationKeepsTheAccessSemantics(t *testing.T) {
 	sre := bearer(t, srv, auth.Identity{UserID: "sre", IsSuperAdmin: true})
 	if code, raw := teamCall(t, ts, "GET", "/api/teams/ghost/secrets", sre, ""); code != http.StatusOK {
 		t.Fatalf("an unknown spelling changed semantics: %d %s", code, raw)
+	}
+}
+
+// The precedence witness: team D's slug IS team C's UUID. The id is the
+// authority, so the colliding string resolves team C — a write through it
+// keys C's rows, never D's — and D is reached only by its own UUID: a
+// member of D is 403 through the string (they hold no standing on C) and
+// 200 through D's UUID. Inverting the precedence (slug first) turns this
+// red: the string would then resolve D, and C's rows would be written to D.
+func TestTeamSlugCollisionResolvesTheUUIDFirst(t *testing.T) {
+	srv, ts := newTeamSlugServer(t)
+	ctx := context.Background()
+	// Team C is the fixture's tenant-A (slug team-a). Team D's slug is C's
+	// UUID verbatim.
+	if _, err := srv.authStore().CreateTeam(ctx, identity.Team{ID: "tenant-D", Slug: "tenant-A", Name: "Team D", OrgID: "org-1"}); err != nil {
+		t.Fatalf("seed team D: %v", err)
+	}
+	if err := srv.authStore().UpsertMembership(ctx, identity.Membership{UserID: "u-member-d", TeamID: "tenant-D", Role: identity.RoleAdmin}); err != nil {
+		t.Fatalf("seed D membership: %v", err)
+	}
+	sre := bearer(t, srv, auth.Identity{UserID: "sre", IsSuperAdmin: true})
+
+	// A write through the colliding string lands on team C.
+	code, raw := teamCall(t, ts, "POST", "/api/teams/tenant-A/secrets", sre, `{"name":"collision_probe","secret":"s3cr3t-value"}`)
+	if code != http.StatusOK && code != http.StatusCreated {
+		t.Fatalf("create through the colliding string: %d %s", code, raw)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil || created.ID == "" {
+		t.Fatalf("bad create body %s (%v)", raw, err)
+	}
+	if _, err := srv.genericSecrets.Get(store.WithTenant(ctx, "tenant-A"), created.ID); err != nil {
+		t.Fatalf("the write through the colliding string did not key team C: %v", err)
+	}
+	if _, err := srv.genericSecrets.Get(store.WithTenant(ctx, "tenant-D"), created.ID); err == nil {
+		t.Fatal("the write through the colliding string keyed team D — the slug outranked the UUID")
+	}
+
+	// A member of D alone: 403 through the string (it resolves C), 200
+	// through D's own UUID.
+	memberD := bearer(t, srv, caller("u-member-d", "tenant-D"))
+	if code, raw := teamCall(t, ts, "GET", "/api/teams/tenant-A/secrets", memberD, ""); code != http.StatusForbidden {
+		t.Fatalf("a member of D through the colliding string: %d, want 403 (%s)", code, raw)
+	}
+	if code, raw := teamCall(t, ts, "GET", "/api/teams/tenant-D/secrets", memberD, ""); code != http.StatusOK {
+		t.Fatalf("a member of D through D's UUID: %d, want 200 (%s)", code, raw)
 	}
 }
