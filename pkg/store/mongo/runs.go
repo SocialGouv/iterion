@@ -1451,6 +1451,28 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 	if publishedAt.IsZero() {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s without published_at", id)
 	}
+	return s.transitionQueuedAttempt(ctx, id, store.RunStatusFailedResumable, runErr, publishedAt, meta)
+}
+
+var _ store.QueuedResumeReleaser = (*Store)(nil)
+
+// ReleaseQueuedRunIfAttempt puts a queued attempt nobody claimed back in the
+// status its resume came from — see store.QueuedResumeReleaser.
+func (s *Store) ReleaseQueuedRunIfAttempt(ctx context.Context, id string, to store.RunStatus, runErr string, publishedAt time.Time, meta store.RunOutcomeMeta) (bool, error) {
+	if publishedAt.IsZero() {
+		return false, fmt.Errorf("store/mongo: release queued attempt %s without published_at", id)
+	}
+	if !to.CanOperatorResume() {
+		return false, fmt.Errorf("store/mongo: release queued attempt %s to %q: not a status a resume comes from", id, to)
+	}
+	return s.transitionQueuedAttempt(ctx, id, to, runErr, publishedAt, meta)
+}
+
+// transitionQueuedAttempt moves the queue attempt publishedAt names, and
+// only that one, out of queued: queued_at and status are matched in the SAME
+// update, so a concurrent resume cannot slip a newer attempt between a read
+// and the write.
+func (s *Store) transitionQueuedAttempt(ctx context.Context, id string, to store.RunStatus, runErr string, publishedAt time.Time, meta store.RunOutcomeMeta) (bool, error) {
 	now := time.Now().UTC()
 	filter := notDeleted(withTenantFilter(ctx, bson.M{
 		"_id":    id,
@@ -1464,11 +1486,12 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 		},
 	}))
 	// The filter pins status=queued, so the transition-gated episode
-	// increment always fires; meta rides the same write as the flip.
-	pipeline := statusTransitionPipeline(statusTransitionSet(store.RunStatusFailedResumable, runErr, meta, now))
+	// increment fires on a terminal target; meta rides the same write as
+	// the flip.
+	pipeline := statusTransitionPipeline(statusTransitionSet(to, runErr, meta, now))
 	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(pipeline))
 	if err != nil {
-		return false, fmt.Errorf("store/mongo: fail queued attempt %s: %w", id, err)
+		return false, fmt.Errorf("store/mongo: move queued attempt %s to %s: %w", id, to, err)
 	}
 	return res.MatchedCount > 0, nil
 }

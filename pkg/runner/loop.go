@@ -1712,7 +1712,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
 		if pre.skippedRetry != "" {
-			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause)
+			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause, "")
 		}
 		dispatchPrecondition(logger, delivery, pre, msg.RunID)
 		return
@@ -1846,7 +1846,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	redeliverable := r.cfg.NATS != nil && delivery.NumDelivered() < r.cfg.NATS.MaxDeliver()
 	r.recordPoolSpend(msg, usage, err, isNakAction(outcome.action) && redeliverable)
 
-	if outcomeSideEffectsFire(err, outcome.action) {
+	// A resume the engine refused before its claim goes back to the status
+	// it came from (releaseRefusedResume). A paused run is waiting again,
+	// as it was: no outcome happened to announce.
+	var released store.RunStatus
+	if !isNakAction(outcome.action) {
+		released = r.releaseRefusedResume(msg, err, logger)
+	}
+	if outcomeSideEffectsFire(err, outcome.action) && released != store.RunStatusCancelled && !released.IsPaused() {
 		fireOutcome()
 	}
 	// The continuation promote: only the RUNNER knows whether a Nak
@@ -1874,7 +1881,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}
 	if outcome.finalStatus == "deterministic_failure" {
-		r.recordRetrySkipped(msg, runtimeCodeOf(err), err.Error())
+		r.recordRetrySkipped(msg, runtimeCodeOf(err), err.Error(), released)
 	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
@@ -1947,24 +1954,107 @@ func (r *Runner) recordRunnerBuild(ctx context.Context, msg *queue.RunMessage, l
 // — so the operator either waits for a pod that never comes or reads the
 // two deployments' logs to find out. Best-effort and bounded like every
 // teardown-path timeline write.
-func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string) {
+//
+// released is the status a resume refused before its claim went back to
+// (releaseRefusedResume), empty when the run was not released: the event
+// then says where the run waits.
+func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string, released store.RunStatus) {
 	if r.cfg.Store == nil {
 		return
 	}
 	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
 	defer cancel()
 	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	data := map[string]any{
+		"reason": "deterministic",
+		"code":   string(code),
+		"error":  cause,
+		"hint":   "re-executing would run the same step against the same inputs; fix the cause, then `iterion resume --force`",
+	}
+	if released != "" {
+		data["status"] = string(released)
+		data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + "; fix the cause, or resume with --force"
+	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunRetrySkipped,
-		Data: map[string]any{
-			"reason": "deterministic",
-			"code":   string(code),
-			"error":  cause,
-			"hint":   "re-executing would run the same step against the same inputs; fix the cause, then `iterion resume --force`",
-		},
+		Data: data,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit run_retry_skipped: %v", msg.RunID, err)
 	}
+}
+
+// releaseRefusedResume puts back where it came from a resume the engine
+// refused before claiming it, and returns that status (empty when the run
+// was not released). The publisher flipped the run to queued before
+// publishing, and a refusal the runner acks is never redelivered: without
+// this the run sat queued until the orphan sweeper — past the redelivery
+// window, never while the consumer has a backlog — flipped it
+// failed_resumable, losing both the status it was resumed from (a paused
+// run's pending question with it) and the refusal's code. The doc decides,
+// never the error: only this attempt, and only while nobody claimed it — a
+// run the engine claimed is no longer queued, and a newer resume carries a
+// newer QueuedAt.
+func (r *Runner) releaseRefusedResume(msg *queue.RunMessage, execErr error, logger *iterlog.Logger) store.RunStatus {
+	if msg == nil || msg.Resume == nil || execErr == nil || r.cfg.Store == nil {
+		return ""
+	}
+	rel := store.AsQueuedResumeReleaser(r.cfg.Store)
+	if rel == nil {
+		return ""
+	}
+	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	if perr != nil {
+		logger.Warn("runner: run %s: the resume ended before any claim, but its published_at %q does not parse — the run stays queued: %v", msg.RunID, msg.PublishedAtRFC, perr)
+		return ""
+	}
+	to := msg.Resume.PriorStatus
+	if !to.CanOperatorResume() {
+		to = store.RunStatusFailedResumable
+	}
+	meta := store.RunOutcomeMeta{Code: refusalCode(execErr)}
+	switch {
+	case to == store.RunStatusCancelled:
+		// Nobody cancelled anything anew: the run keeps the cancel's code.
+		meta = store.RunOutcomeMeta{Code: store.FailureCancelled, Continuation: store.ContinuationFinal}
+	case !to.IsPaused():
+		meta.Continuation = store.ContinuationFinal
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	sctx := store.WithIdentity(ctx, msg.TenantID, msg.OwnerID)
+	changed, err := rel.ReleaseQueuedRunIfAttempt(sctx, msg.RunID, to, execErr.Error(), publishedAt, meta)
+	switch {
+	case err != nil:
+		logger.Warn("runner: run %s: could not put the refused resume back to %s — the run stays queued: %v", msg.RunID, to, err)
+		return ""
+	case !changed:
+		return ""
+	}
+	logger.Info("runner: run %s: resume refused before its claim — the run is back to %s", msg.RunID, to)
+	return to
+}
+
+// refusalCode is the typed code of a refusal: the engine's, or the runner's
+// own verdict on a bundle it will not run.
+func refusalCode(err error) store.FailureCode {
+	switch {
+	case errors.Is(err, ErrIRUnloadable):
+		return store.FailureIRUnloadable
+	case errors.Is(err, ErrBotRequiresNewerEngine):
+		return store.FailureBotRequiresNewerEngine
+	}
+	return runtimeCodeOf(err)
+}
+
+// releasesRefusedResumes reports that a refusal of msg, before any claim,
+// will be put back where the resume came from (releaseRefusedResume) — so a
+// writer of its own verdict leaves the run to it.
+func (r *Runner) releasesRefusedResumes(msg *queue.RunMessage) bool {
+	if msg == nil || msg.Resume == nil || r.cfg.Store == nil || store.AsQueuedResumeReleaser(r.cfg.Store) == nil {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	return err == nil
 }
 
 // outcomeSideEffectsFire reports whether a delivery ending on the plain
@@ -2721,7 +2811,11 @@ func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, ca
 	// there would erase the anchor the aligned fleet resumes from. The
 	// expected set keeps the cancelled-wins guard: a run the operator
 	// cancelled meanwhile is not flipped back.
-	if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
+	// A resume goes back where it came from instead (releaseRefusedResume):
+	// a paused run keeps its pending question.
+	if r.releasesRefusedResumes(msg) {
+		// Left to the release.
+	} else if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
 		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
 		store.RunnerVerdictFromStatuses()); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)

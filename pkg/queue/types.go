@@ -464,6 +464,13 @@ type ResumeSpec struct {
 	Force          bool            `json:"force"`
 	ExpectedStatus store.RunStatus `json:"expected_status,omitempty"`
 	ReceiptID      string          `json:"receipt_id,omitempty"`
+	// PriorStatus is the status the publisher's claim moved the run from
+	// to queued. When the engine refuses the resume before claiming it —
+	// nothing ran, and the refusal is acked, never redelivered — the runner
+	// puts the run back there. Empty from an older publisher: the run goes
+	// back to failed_resumable. A runner that predates it leaves the run
+	// queued, as it always did, so the field changes no operator intent.
+	PriorStatus store.RunStatus `json:"prior_status,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so
