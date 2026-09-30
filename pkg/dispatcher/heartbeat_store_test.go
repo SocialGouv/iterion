@@ -173,7 +173,7 @@ func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
 		"AsBackendSessionStore":   func(s store.RunStore) bool { return store.AsBackendSessionStore(s) != nil },
 		"AsOutputCorrectionStore": func(s store.RunStore) bool { return store.AsOutputCorrectionStore(s) != nil },
 		"AsParentedRunCreator":    func(s store.RunStore) bool { return store.AsParentedRunCreator(s) != nil },
-		"AsQueuedAttemptClaimer":  func(s store.RunStore) bool { return store.AsQueuedAttemptClaimer(s) != nil },
+		"AsQueuedAttemptMover":    func(s store.RunStore) bool { return store.AsQueuedAttemptMover(s) != nil },
 		"AsRunFilesStore":         func(s store.RunStore) bool { return store.AsRunFilesStore(s) != nil },
 		"AsScratchBankStore":      func(s store.RunStore) bool { return store.AsScratchBankStore(s) != nil },
 		"AsSpendStore":            func(s store.RunStore) bool { return store.AsSpendStore(s) != nil },

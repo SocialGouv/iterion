@@ -136,9 +136,11 @@ pods the same way.
   none may still be banking — the run already reads paused or failed while
   its teardown runs — so the surface leaves it to the engine, which checks
   under the run's lock, before its claim. An in-process resume waits for
-  that verdict — the claim, or the refusal — so the operator hears the
-  refusal as the surface's own; a detached runner, whose output goes
-  nowhere, writes it to the run's log. A resume accepting the scratch's
+  that verdict — past the engine's refusals, or refused — so the operator
+  hears the refusal as the surface's own; it does not wait for the claim,
+  which follows the workspace's resources and so every node another run
+  executes in the same directory. A detached runner, whose output goes
+  nowhere, writes the refusal to the run's log. A resume accepting the scratch's
   loss resumes as it stands, and says so — past a scratch its teardown could
   not bank, on the record too (`sandbox_scratch_restored {accepted, reason}`). An `unknown` record is not refused; after a bank, the bank
   still decides. A timeline that cannot be read refuses the resume: it never
@@ -179,7 +181,15 @@ pods the same way.
   that carried it — a redelivery after that claim, an adoption, a stale
   attempt does not — and the engine claims a queued run only for the
   attempt its delivery was published for, so no delivery lends its consent,
-  nor its `--force`, to a resume queued after it. Over HTTP the refusal answers `error_code:
+  nor its `--force`, to a resume queued after it. A delivery published
+  before the run was last queued is superseded — only a publication queues
+  a run: the runner drops it on admission, whatever the run's status, and
+  again once it holds the lock; the engine refuses it before anything of its
+  resume (`ErrResumeSuperseded`), and again if it loses a move out of
+  queued (the claim, an answered gate's replay) to a newer attempt; the
+  runner acks that refusal and writes nothing on the run. Not covered: a
+  newer attempt queued during a delivery's preparation, which the runner's
+  own writes of that delivery (a DLQ park, a usage-cap park) still reach. Over HTTP the refusal answers `error_code:
   scratch_not_portable` with its hint, and `also_needs_force` when it names
   a change `--force` accepts. Every other record of it — the run's error,
   `run_failed`, `run_retry_skipped` — reads the same hint from the refusal
@@ -214,7 +224,10 @@ pods the same way.
   ceilings bound that hold: the sandbox's teardown budget (the bank's
   archive, record and resume included) plus a margin, from a cancellation
   to the engine's return; the post-engine steps' budgets plus a margin, from
-  that return, which a park reaches without any cancellation. Together they
+  that return, which a park reaches without any cancellation — armed only
+  when a resume can wait on the run (its engine returned an error): a run
+  that finished is waited on by nobody, and its bank, which makes it
+  landable, runs to its own budget. Together they
   make the runner's `LeaseUnwindCeiling`, 56 minutes — the storage bank's
   default budget, 31 minutes, is most of it. A resume delivered meanwhile
   finds the lease held: its retries back off by halves, from one lease

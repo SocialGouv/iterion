@@ -289,6 +289,9 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 // attempt (QueuedAt) and from its history (the checkpoint) before
 // letting a launch through.
 func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
+	if stale, ok := supersededAttempt(msg, run); ok {
+		return stale
+	}
 	// A successful rewind deliberately parks at paused_operator, but an old
 	// launch delivery must not turn that visible pause into a silent replay of
 	// an edited workflow. The marker survives the explicit resume's queued
@@ -404,22 +407,6 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 		if msg.Resume != nil {
 			break
 		}
-		// Identity: every transition into `queued` refreshes QueuedAt, so
-		// a delivery published BEFORE the marker belongs to an attempt
-		// that is over. The attempt now queued has its own message in
-		// flight (a publish failure rolls the status back), so this one is
-		// dropped rather than converted.
-		if publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC); perr == nil &&
-			run.QueuedAt != nil && run.QueuedAt.After(publishedAt) {
-			return preconditionOutcome{
-				finalStatus: "stale_attempt",
-				op:          "ack-stale-attempt",
-				action:      actionAck,
-				level:       logWarn,
-				logFmt:      "runner: run %s was re-queued at %s, after this launch message was published (%s) — dropping the stale delivery (the current attempt carries its own; re-running this one would restart the run from its entry node)",
-				logArgs:     []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC},
-			}
-		}
 		// Evidence, when identity is unavailable (a publication with no
 		// usable published_at) or the message is the current attempt's:
 		// a queued doc carrying a checkpoint has already executed, so
@@ -440,6 +427,51 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 	// queued first attempt, and any status this switch does not know:
 	// proceed.
 	return preconditionOutcome{proceed: true, preRun: run}
+}
+
+// supersededAttempt is the identity rule of a delivery: every transition
+// into `queued` refreshes QueuedAt, and only a publication makes one — so a
+// run queued after this delivery was published belongs to a newer attempt,
+// whatever its status now (queued, running, parked, terminal). That attempt
+// carries its own delivery; this one would act on it with its own answers,
+// consents and inputs, so it is dropped. A doc without the marker, or a
+// publication time that cannot be read, has no identity to tell.
+func supersededAttempt(msg *queue.RunMessage, run *store.Run) (preconditionOutcome, bool) {
+	if run == nil || run.QueuedAt == nil {
+		return preconditionOutcome{}, false
+	}
+	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	if perr != nil || !run.QueuedAt.After(publishedAt) {
+		return preconditionOutcome{}, false
+	}
+	kind := "launch"
+	if msg.Resume != nil {
+		kind = "resume"
+	}
+	return preconditionOutcome{
+		finalStatus: "stale_attempt",
+		op:          "ack-stale-attempt",
+		action:      actionAck,
+		level:       logWarn,
+		logFmt:      "runner: run %s was queued again at %s, after this %s message was published (%s) — dropping the stale delivery (the newer attempt carries its own)",
+		logArgs:     []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), kind, msg.PublishedAtRFC},
+	}, true
+}
+
+// supersededUnderLock re-reads the run once its lock is held and applies
+// the identity rule (supersededAttempt) to what the doc says now: a newer
+// attempt queued between the admission read and the lock is its own
+// delivery's. A doc it cannot read is left to the steps that follow, which
+// read it again and fail by name.
+func (r *Runner) supersededUnderLock(msg *queue.RunMessage, logger *iterlog.Logger) (preconditionOutcome, bool) {
+	loadCtx, cancel := context.WithTimeout(store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID), 5*time.Second)
+	defer cancel()
+	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
+	if err != nil || run == nil {
+		logger.Warn("runner: run %s: re-reading the run under its lock to tell a newer attempt failed (%v) — the steps that follow read it again", msg.RunID, err)
+		return preconditionOutcome{}, false
+	}
+	return supersededAttempt(msg, run)
 }
 
 // spendScratchConsent drops the consent to the scratch's loss a resume
@@ -841,6 +873,20 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			level:       logError,
 			logFmt:      "runner: run %s: the bot declares an engine this runner (%s) is below — failed, NOT redelivered: bump the runner image or relax the bot's requires.iterion, then re-launch (%v)",
 			logArgs:     []any{runID, appinfo.Version, execErr},
+		}
+	}
+	// A resume the engine found superseded — its run queued again after
+	// this delivery was published: the newer attempt's own delivery runs it.
+	// Nothing of this one happened, and nothing is retried, released,
+	// banked or announced.
+	if errors.Is(execErr, runtime.ErrResumeSuperseded) {
+		return execOutcome{
+			finalStatus: "superseded",
+			op:          "ack-superseded",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s: this resume was superseded by a newer one — dropping it (%v)",
+			logArgs:     []any{runID, execErr},
 		}
 	}
 	// Operator cancel: terminal cancelled, acked (redelivery drops it).
@@ -1792,6 +1838,13 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}()
 
+	if stale, ok := r.supersededUnderLock(msg, logger); ok {
+		logAt(logger, stale.level, stale.logFmt, stale.logArgs...)
+		finalStatus = stale.finalStatus
+		dispatchPrecondition(logger, delivery, stale, msg.RunID)
+		return
+	}
+
 	// A doc still `running` now that we hold its lock has no live lease
 	// holder: an orphan to adopt, or a lapsed-but-alive pod still
 	// unwinding — decided under the lock, never before it. A deferred
@@ -2159,7 +2212,7 @@ func (r *Runner) verdictFromStatuses(msg *queue.RunMessage) (from []store.RunSta
 // so the err → fires mapping is pinned by a table test next to
 // TestClassifyExecResult.
 func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
-	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !isNakAction(action)
+	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !errors.Is(execErr, runtime.ErrResumeSuperseded) && !isNakAction(action)
 }
 
 // startProcessSpan builds the runner-side OTel root span for this
@@ -2240,11 +2293,12 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // whether an attempt is the last one — parked on the DLQ rather than
 // redelivered — is decided above, after this returns.
 //
-// engineReturned, when non-nil, is called the moment the engine returns: what
-// follows — the git snapshot, the bank, the upload, the deferred records — is
-// the runner's post-engine work, which the lease covers within
-// postEngineCeiling (leaseHold).
-func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter, engineReturned func()) (execErr error) {
+// engineReturned, when non-nil, is called the moment the engine returns,
+// with what it returned: what follows — the git snapshot, the bank, the
+// upload, the deferred records — is the runner's post-engine work, which the
+// lease covers within postEngineCeiling when a resume can wait on the run
+// (leaseHold).
+func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter, engineReturned func(error)) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -2753,7 +2807,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		}
 	}
 	if engineReturned != nil {
-		engineReturned()
+		engineReturned(runErr)
 	}
 	if runErr == nil {
 		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)
@@ -2764,6 +2818,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// The server pod has no worktree, so this snapshot is the only source
 	// the Commits/Files panels have for a finished cloud run. Best-effort:
 	// a recording failure must never change the run's outcome.
+	if errors.Is(runErr, runtime.ErrResumeSuperseded) {
+		// The run belongs to a newer attempt: this delivery produced nothing,
+		// and records nothing on it.
+		return runErr
+	}
 	if workDir != r.cfg.WorkDir {
 		// On an export-based sandbox (kubernetes) the clone at workDir is a
 		// COPY streamed back from the pod — hold it against the pod-side

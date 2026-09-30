@@ -845,7 +845,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// the dock drives one resume per message.
 		launchExtras{
 			acceptScratchLoss: spec.AcceptScratchLoss,
-			onResumeClaimed:   claim.claim,
+			onResumeAdmitted:  claim.admit,
 			onOutcome:         claim.end,
 			loopBudgetGuard:   spec.LoopBudgetGuard, supervisors: spec.Supervisors,
 			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
@@ -882,44 +882,48 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	return claim.await(parent, res)
 }
 
-// resumeClaim holds an in-process resume's caller until its engine claims
-// the run or ends before any claim. A refusal the engine makes before its
-// claim — the scratch's, which the surface leaves to it while the run's
-// latest execution may still be banking; a status that moved under the lock
-// — is then the caller's error, as the surface's own refusals are, instead
-// of a resume reported started while the run did not move.
+// resumeClaim holds an in-process resume's caller until its engine is past
+// its refusals, or ends before. A refusal the engine makes then — the
+// scratch's, which the surface leaves to it while the run's latest
+// execution may still be banking; a lineage; a status that moved under the
+// lock — is the caller's error, as the surface's own refusals are, instead
+// of a resume reported started while the run did not move. What follows the
+// refusals (the workspace's resources, the claim) is waited for by nobody:
+// another run's node in the same directory can hold it for as long as it
+// runs.
 type resumeClaim struct {
-	once    sync.Once
-	claimed chan struct{}
-	ended   chan struct{}
-	outcome error // written by end, before ended closes
+	once     sync.Once
+	admitted chan struct{}
+	ended    chan struct{}
+	outcome  error // written by end, before ended closes
 }
 
 func newResumeClaim() *resumeClaim {
-	return &resumeClaim{claimed: make(chan struct{}), ended: make(chan struct{})}
+	return &resumeClaim{admitted: make(chan struct{}), ended: make(chan struct{})}
 }
 
-func (c *resumeClaim) claim() { c.once.Do(func() { close(c.claimed) }) }
+func (c *resumeClaim) admit() { c.once.Do(func() { close(c.admitted) }) }
 
 func (c *resumeClaim) end(err error) {
 	c.outcome = err
 	close(c.ended)
 }
 
-// await returns res once the engine claimed the run, and the run's error
-// when it ended before any claim. A claim wins over an end seen with it: a
-// resume that started, then failed, is the run's outcome, not a refusal. A
-// caller that goes away first gets the resume as started: it goes on.
+// await returns res once the engine is past its refusals, and the run's
+// error when it ended before. An admission wins over an end seen with it: a
+// resume past its refusals that then failed is the run's outcome, not a
+// refusal. A caller that goes away first gets the resume as started: it
+// goes on.
 func (c *resumeClaim) await(ctx context.Context, res *LaunchResult) (*LaunchResult, error) {
 	select {
-	case <-c.claimed:
+	case <-c.admitted:
 		return res, nil
 	case <-ctx.Done():
 		return res, nil
 	case <-c.ended:
 	}
 	select {
-	case <-c.claimed:
+	case <-c.admitted:
 		return res, nil
 	default:
 	}
@@ -1171,8 +1175,8 @@ func (s *Service) spawnRun(
 	if ex.acceptScratchLoss {
 		opts = append(opts, runtime.WithAcceptScratchLoss(true))
 	}
-	if ex.onResumeClaimed != nil {
-		opts = append(opts, runtime.WithOnResumeClaimed(ex.onResumeClaimed))
+	if ex.onResumeAdmitted != nil {
+		opts = append(opts, runtime.WithOnResumeAdmitted(ex.onResumeAdmitted))
 	}
 	if promote != nil {
 		opts = append(opts, runtime.WithAttachmentPromote(promote))
@@ -1372,9 +1376,9 @@ type launchExtras struct {
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.
 	onOutcome func(error)
-	// onResumeClaimed is called once, the moment a resume's engine claims
-	// the run (runtime.WithOnResumeClaimed).
-	onResumeClaimed func()
+	// onResumeAdmitted is called once, when a resume's engine is past its
+	// refusals (runtime.WithOnResumeAdmitted).
+	onResumeAdmitted func()
 	// observers mirrors LaunchSpec.ExtraObservers: fired on every
 	// engine-level event via runtime.WithEventObserver (the backend-hook
 	// half rides ExecutorSpec.EventObservers). Together they feed the

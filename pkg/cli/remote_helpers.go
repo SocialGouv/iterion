@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/server"
@@ -63,8 +64,15 @@ func describeErrorBody(body []byte) string {
 			words = append(words, clipField(w))
 		}
 	}
-	if b.ErrorCode != "" {
-		facts = append(facts, "error_code: "+b.ErrorCode)
+	if len(words) == 0 {
+		// Only blanks where the words should be: the body says more than that.
+		if msg := firstLine(body); msg != "" {
+			return msg
+		}
+		return "(empty body)"
+	}
+	if code := strings.TrimSpace(b.ErrorCode); code != "" {
+		facts = append(facts, "error_code: "+clipField(code))
 	}
 	if b.AlsoNeedsForce {
 		facts = append(facts, "also needs --force")
@@ -72,8 +80,8 @@ func describeErrorBody(body []byte) string {
 	if b.Retryable {
 		facts = append(facts, "retryable")
 	}
-	if b.ResetAt != "" {
-		facts = append(facts, "resets at "+b.ResetAt)
+	if at := strings.TrimSpace(b.ResetAt); at != "" {
+		facts = append(facts, "resets at "+clipField(at))
 	}
 	s := strings.Join(words, " — ")
 	if len(facts) > 0 {
@@ -85,14 +93,40 @@ func describeErrorBody(body []byte) string {
 	return s
 }
 
-// clipField bounds one decoded field of an error body, on a rune boundary:
-// a terminal is not a sink for a body of any size.
+// clipField is one decoded field of a server's answer made fit for a
+// terminal (terminalText), bounded on a rune boundary: a terminal is not a
+// sink for a body of any size.
 func clipField(s string) string {
-	const limit = 2000
-	if utf8.RuneCountInString(s) <= limit {
-		return s
+	return terminalText(s, 2000)
+}
+
+// terminalText is text a server relayed — a node's error carries the output
+// of processes the run executed — made inert for a terminal, then bounded to
+// limit runes: every control character (C0, DEL, C1: an escape sequence, a
+// bell, a carriage return or newline that forges a line) and every bidi
+// override (which reorders what is shown) is written as its escape, never
+// sent raw.
+func terminalText(s string, limit int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n == limit {
+			b.WriteString("…")
+			break
+		}
+		n++
+		switch {
+		case r == utf8.RuneError:
+			b.WriteString(`\ufffd`)
+		case unicode.IsControl(r):
+			fmt.Fprintf(&b, `\x%02x`, r)
+		case (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteRune(r)
+		}
 	}
-	return string([]rune(s)[:limit]) + "…"
+	return b.String()
 }
 
 // Call performs an authenticated JSON request. A non-nil `in` is

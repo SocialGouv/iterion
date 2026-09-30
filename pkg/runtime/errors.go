@@ -132,6 +132,12 @@ type Remedy struct {
 	AlsoNeedsForce bool
 }
 
+// ErrResumeSuperseded is a resume whose run was queued again after its
+// delivery was published: the newer resume's own delivery runs it, with its
+// own answers and consents. Nothing of this resume happened — no answer
+// recorded, no claim — and there is nothing to retry.
+var ErrResumeSuperseded = errors.New("runtime: resume superseded — the run was queued again after this delivery was published")
+
 // RemedyOf is the remedy err carries: its RuntimeError's hint, else the one
 // that error's code names (CodeRemedy). Zero when err carries no RuntimeError.
 func RemedyOf(err error) Remedy {

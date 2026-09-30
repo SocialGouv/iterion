@@ -90,6 +90,12 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
+	// A delivery whose run was queued again since it was published is not
+	// this engine's to resume: refused before anything of the resume —
+	// admission, recorded answers, a replay's flip — touches the run.
+	if err := e.supersededBy(r); err != nil {
+		return err
+	}
 	// Re-run the same context admission before any resume claim, workspace
 	// restoration or answer side effect. A denial leaves the resumable status
 	// untouched so the operator can repair the declaration and retry.
@@ -181,6 +187,13 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// reach the same verdict at the first node.
 	if rerr := e.refuseBundleRequiringNewerEngine(); rerr != nil {
 		return rerr
+	}
+	// Past the refusals: what follows — the workspace's resources, which
+	// wait out every node another run is executing in the same directory,
+	// then the claim — may take as long as those nodes.
+	if admitted := e.onResumeAdmitted; admitted != nil {
+		e.onResumeAdmitted = nil
+		admitted()
 	}
 	e.restoreRunEnv(r)
 	e.parentRunID = r.ParentRunID
@@ -1527,7 +1540,7 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
 	if !claimed {
-		return fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", r.ID)
+		return e.lostQueuedMove(ctx, r.ID, fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", r.ID))
 	}
 	e.consumePausePointer(ctx, r, cp)
 	return e.markResumed(ctx, r.ID, data)
@@ -1542,11 +1555,11 @@ func (e *Engine) casResumeClaim(ctx context.Context, runID string, allowed []sto
 	if e.queuedAttempt.IsZero() || !slices.Contains(allowed, store.RunStatusQueued) {
 		return e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", allowed)
 	}
-	claimer := store.AsQueuedAttemptClaimer(e.store)
-	if claimer == nil {
-		return false, errors.New("this store cannot claim a queued run for one attempt")
+	mover := store.AsQueuedAttemptMover(e.store)
+	if mover == nil {
+		return false, errors.New("this store cannot move a queued run for one attempt")
 	}
-	if claimed, err := claimer.ClaimQueuedRunIfAttempt(ctx, runID, e.queuedAttempt); err != nil || claimed {
+	if claimed, err := mover.MoveQueuedRunIfAttempt(ctx, runID, store.RunStatusRunning, e.queuedAttempt); err != nil || claimed {
 		return claimed, err
 	}
 	others := slices.DeleteFunc(slices.Clone(allowed), func(s store.RunStatus) bool { return s == store.RunStatusQueued })
@@ -1554,6 +1567,34 @@ func (e *Engine) casResumeClaim(ctx context.Context, runID string, allowed []sto
 		return false, nil
 	}
 	return e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", others)
+}
+
+// supersededBy is ErrResumeSuperseded for a queued run whose attempt is
+// newer than the one this engine's delivery was published for
+// (WithQueuedAttempt), nil otherwise.
+func (e *Engine) supersededBy(r *store.Run) error {
+	if e.queuedAttempt.IsZero() || r == nil || r.Status != store.RunStatusQueued || r.QueuedAt == nil || !r.QueuedAt.After(e.queuedAttempt) {
+		return nil
+	}
+	return fmt.Errorf("%w: run %q was queued at %s, this delivery was published at %s", ErrResumeSuperseded,
+		r.ID, r.QueuedAt.UTC().Format(time.RFC3339Nano), e.queuedAttempt.UTC().Format(time.RFC3339Nano))
+}
+
+// lostQueuedMove is the error of a move out of queued that did not land:
+// ErrResumeSuperseded when the run was queued again since the delivery was
+// published, the caller's own error otherwise.
+func (e *Engine) lostQueuedMove(ctx context.Context, runID string, otherwise error) error {
+	if e.queuedAttempt.IsZero() {
+		return otherwise
+	}
+	r, err := e.store.LoadRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("%w (re-reading the run to tell a newer attempt: %v)", otherwise, err)
+	}
+	if serr := e.supersededBy(r); serr != nil {
+		return serr
+	}
+	return otherwise
 }
 
 // markResumed is the tail every resume claim shares once the CAS names
@@ -2071,7 +2112,7 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
 	if !claimed {
-		return fmt.Errorf("runtime: run %q is already being executed (status no longer resumable); refusing duplicate resume", runID)
+		return e.lostQueuedMove(ctx, runID, fmt.Errorf("runtime: run %q is already being executed (status no longer resumable); refusing duplicate resume", runID))
 	}
 	resumeData := map[string]any{
 		"resumed_from": "failed",
@@ -3545,16 +3586,31 @@ func (e *Engine) replayAnsweredGate(ctx context.Context, r *store.Run, replayAns
 		e.logger.Info("runtime: run %q: answered human gate replay — reusing the recorded answer through the pause path (%s)", runID, r.Status)
 	}
 	flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
-	changed, ferr := e.store.UpdateRunStatusIf(flipCtx, runID, store.RunStatusPausedWaitingHuman, "", []store.RunStatus{r.Status})
+	changed, ferr := e.flipToReplayedPause(flipCtx, r)
 	flipCancel()
 	if ferr != nil {
 		return fmt.Errorf("runtime: flip %s to paused for gate replay: %w", runID, ferr)
 	}
 	if !changed {
-		return fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID)
+		return e.lostQueuedMove(ctx, runID, fmt.Errorf("runtime: run %q changed status during gate replay; refusing duplicate resume", runID))
 	}
 	r.Status = store.RunStatusPausedWaitingHuman
 	return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+}
+
+// flipToReplayedPause puts the run back on its gate's pause for the replay:
+// from queued, only for this delivery's attempt (WithQueuedAttempt), in the
+// same atomic write — a run queued again since is the newer delivery's; from
+// any other status, a compare-and-set on it.
+func (e *Engine) flipToReplayedPause(ctx context.Context, r *store.Run) (bool, error) {
+	if r.Status != store.RunStatusQueued || e.queuedAttempt.IsZero() {
+		return e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusPausedWaitingHuman, "", []store.RunStatus{r.Status})
+	}
+	mover := store.AsQueuedAttemptMover(e.store)
+	if mover == nil {
+		return false, errors.New("this store cannot move a queued run for one attempt")
+	}
+	return mover.MoveQueuedRunIfAttempt(ctx, r.ID, store.RunStatusPausedWaitingHuman, e.queuedAttempt)
 }
 
 // rewoundAfterAnswer reports whether the run's timeline carries a

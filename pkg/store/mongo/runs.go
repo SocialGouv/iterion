@@ -1468,15 +1468,18 @@ func (s *Store) ReleaseQueuedRunIfAttempt(ctx context.Context, id string, to sto
 	return s.transitionQueuedAttempt(ctx, id, to, runErr, publishedAt, meta)
 }
 
-var _ store.QueuedAttemptClaimer = (*Store)(nil)
+var _ store.QueuedAttemptMover = (*Store)(nil)
 
-// ClaimQueuedRunIfAttempt claims the queued attempt publishedAt names — see
-// store.QueuedAttemptClaimer.
-func (s *Store) ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishedAt time.Time) (bool, error) {
+// MoveQueuedRunIfAttempt moves the queued attempt publishedAt names — see
+// store.QueuedAttemptMover.
+func (s *Store) MoveQueuedRunIfAttempt(ctx context.Context, id string, to store.RunStatus, publishedAt time.Time) (bool, error) {
 	if publishedAt.IsZero() {
-		return false, fmt.Errorf("store/mongo: claim queued attempt %s without published_at", id)
+		return false, fmt.Errorf("store/mongo: move queued attempt %s without published_at", id)
 	}
-	return s.transitionQueuedAttempt(ctx, id, store.RunStatusRunning, "", publishedAt, store.RunOutcomeMeta{})
+	if !to.IsQueuedAttemptMoveTarget() {
+		return false, fmt.Errorf("store/mongo: move queued attempt %s to %q: not a claim nor a replayed pause", id, to)
+	}
+	return s.transitionQueuedAttempt(ctx, id, to, "", publishedAt, store.RunOutcomeMeta{})
 }
 
 // transitionQueuedAttempt moves the queue attempt publishedAt names, and

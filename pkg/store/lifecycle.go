@@ -350,6 +350,13 @@ func (s RunStatus) IsTerminalResumable() bool {
 // IsQueued: submitted to the cloud queue, not yet claimed by a runner.
 func (s RunStatus) IsQueued() bool { return s == RunStatusQueued }
 
+// IsQueuedAttemptMoveTarget: a status a delivery may move its own queued
+// attempt to (QueuedAttemptMover) — running, its resume's claim, or
+// paused_waiting_human, the pause an answered gate is replayed through.
+func (s RunStatus) IsQueuedAttemptMoveTarget() bool {
+	return s == RunStatusRunning || s == RunStatusPausedWaitingHuman
+}
+
 // CanOperatorResume answers the EXTERNAL eligibility question: may an
 // operator ask this run to continue (studio Resume, `iterion resume`,
 // SubmitResume, MCP local_resume)? It deliberately says nothing about

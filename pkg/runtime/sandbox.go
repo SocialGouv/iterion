@@ -2232,14 +2232,23 @@ func (l sharedLineage) refusalFor(r *store.Run, force, accept bool) error {
 		if needForce {
 			return withForceableChange(refusal, "and its parent's sandbox was copy-based: resumed on its own it would also start a fresh copy of the workspace, whose later commits do not reach the parent's tree", "that divergence needs --force too")
 		}
+		if l.copyBased {
+			// --force was given for the divergence, and still needs giving.
+			refusal.Hint += "; keep --force: the copy-based lineage's divergence still needs it"
+		}
 		return refusal
 	}
 	if needForce {
-		return &RuntimeError{
+		refusal := &RuntimeError{
 			Code:    ErrCodeResumeInvalid,
 			Message: fmt.Sprintf("run %s executed in its parent run %s's copy-based sandbox; resumed on its own it would start a fresh copy of the workspace and its work would diverge from the parent's tree", r.ID, r.ParentRunID),
 			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it in a sandbox of its own, where its later commits do not reach the parent's tree",
 		}
+		if l.scratchContainerLocal {
+			// The scratch's loss was accepted, and still needs accepting.
+			refusal.Hint += "; keep --accept-scratch-loss: the parent's container-local scratch still does not travel"
+		}
+		return refusal
 	}
 	return nil
 }

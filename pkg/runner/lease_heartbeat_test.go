@@ -129,7 +129,7 @@ func TestLeaseHeartbeat_anEngineReturnWithoutCancellationStartsTheCeiling(t *tes
 		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
 		defer hold.stop()
 		time.Sleep(30 * time.Second)
-		hold.engineReturned()
+		hold.engineReturned(runtime.ErrRunPaused)
 		time.Sleep(postEngineCeiling - time.Minute)
 		synctest.Wait()
 		beforeCeiling := lease.count()
@@ -167,7 +167,7 @@ func TestLeaseHeartbeat_theEngineReturnHandsTheHoldToThePostEngineCeiling(t *tes
 		defer hold.stop()
 		runCancel(runtime.ErrRunInterrupted)
 		time.Sleep(engineUnwindCeiling - time.Minute)
-		hold.engineReturned()
+		hold.engineReturned(runtime.ErrRunInterrupted)
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
 		pastUnwind := lease.count()
@@ -183,6 +183,35 @@ func TestLeaseHeartbeat_theEngineReturnHandsTheHoldToThePostEngineCeiling(t *tes
 		synctest.Wait()
 		if after := lease.count(); after != atCeiling {
 			t.Fatalf("%d refresh(es) past the post-engine ceiling, want none", after-atCeiling)
+		}
+	})
+}
+
+// TestLeaseHeartbeat_aFinishedRunKeepsItsLeaseThroughItsPostEngineSteps: a run
+// whose engine returned without error is waited on by no resume. Its
+// post-engine steps — the bank that makes it landable first — are not cut at
+// postEngineCeiling: the lease is still refreshed past it, and the run's
+// context is not interrupted.
+func TestLeaseHeartbeat_aFinishedRunKeepsItsLeaseThroughItsPostEngineSteps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lease := &countingLease{}
+		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
+		runCtx, runCancel := context.WithCancelCause(context.Background())
+		defer runCancel(nil)
+		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		defer hold.stop()
+		time.Sleep(30 * time.Second)
+		hold.engineReturned(nil)
+		time.Sleep(postEngineCeiling + time.Minute)
+		synctest.Wait()
+		pastCeiling := lease.count()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if lease.count() == pastCeiling {
+			t.Fatalf("no refresh past the post-engine ceiling (%s) of a finished run: its bank would be cut", postEngineCeiling)
+		}
+		if cause := context.Cause(runCtx); cause != nil {
+			t.Fatalf("a finished run's context was cancelled (%v) past the post-engine ceiling: its bank would stop", cause)
 		}
 	})
 }

@@ -213,6 +213,7 @@ type Engine struct {
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
 	onResumeClaimed          func()                               // called once when a resume claims the run (WithOnResumeClaimed)
+	onResumeAdmitted         func()                               // called once when a resume is past its refusals (WithOnResumeAdmitted)
 	queuedAttempt            time.Time                            // the publication of the delivery a queued resume claims for (WithQueuedAttempt)
 	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision
 	artifactContractsChecked bool                                 // caller already ran the synchronous contract gate for this in-process resume

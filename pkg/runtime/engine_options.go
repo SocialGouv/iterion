@@ -546,6 +546,15 @@ func WithOnResumeClaimed(fn func()) EngineOption {
 	return func(e *Engine) { e.onResumeClaimed = fn }
 }
 
+// WithOnResumeAdmitted calls fn once, when a resume is past every refusal
+// the engine makes before its claim — before it waits for the workspace's
+// resources, which another run's node in the same directory can hold for as
+// long as that node runs. A caller that must hear those refusals, and must
+// not wait on another run, reads this rather than the claim.
+func WithOnResumeAdmitted(fn func()) EngineOption {
+	return func(e *Engine) { e.onResumeAdmitted = fn }
+}
+
 // WithQueuedAttempt makes the resume claim of a queued run the claim of one
 // attempt: the one queued no later than publishedAt, the publication of the
 // delivery this engine executes. A run queued again after it — a cancel, then

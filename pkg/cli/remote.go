@@ -307,13 +307,12 @@ func (c *RemoteClient) LoginWithPassword(ctx context.Context, email, password, p
 	return pr.Token, nil
 }
 
+// firstLine is a body's first line, made fit for a terminal and bounded
+// (terminalText).
 func firstLine(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > 300 {
-		s = s[:300] + "…"
-	}
-	return s
+	return terminalText(strings.TrimSpace(s), 300)
 }

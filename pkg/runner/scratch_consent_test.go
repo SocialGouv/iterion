@@ -165,8 +165,8 @@ func TestExecuteRun_aDeliveryClaimsItsOwnAttemptOnly(t *testing.T) {
 				t.Fatalf("cancel: %v %v", ok, err)
 			}
 			m2 := publish(store.RunStatusCancelled, false)
-			if err := r.executeRun(ctx, m1, nil, nil); err == nil {
-				t.Fatal("the first delivery claimed the attempt queued after it, and lent it its consent")
+			if err := r.executeRun(ctx, m1, nil, nil); !errors.Is(err, runtime.ErrResumeSuperseded) {
+				t.Fatalf("the first delivery on the attempt queued after it: %v, want ErrResumeSuperseded (no claim, no consent lent)", err)
 			}
 			doc, err := st.LoadRun(ctx, runID)
 			if err != nil || doc.Status != store.RunStatusQueued {
