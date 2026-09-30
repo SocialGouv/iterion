@@ -65,10 +65,10 @@ const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
 // multi-agent workflows): the model is told it may decompose substantial work
 // across parallel subagents and lean toward adversarial verification, without
 // asking first. The orchestration capability is the `agent` subagent tool,
-// which the runtime makes available on the node when ultracode is active. It
-// also carries the one rule a non-interactive session imposes on that
-// orchestration: background subagents are collected before the final output,
-// because nothing reaches the model after it.
+// which the runtime makes available on the node when ultracode is active.
+// The section is backend-neutral: HOW a subagent returns its report is the
+// backend's to state (claude_code appends headlessSubagentRule to every spawn
+// that keeps the tool, ultracode or not).
 // See platform.claude.com/docs/en/build-with-claude/mid-conversation-effort-example.
 const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"Ultracode mode is on: optimize for the most exhaustive, correct result, " +
@@ -80,18 +80,15 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"steps. This consent stands for the whole task; you need not ask before " +
 	"spawning a subagent.\n\n" +
 	"Orchestration mechanics:\n" +
-	"- Prefer pipelines to barriers: let each item flow through its stages " +
-	"independently; synchronize all branches only when a stage genuinely needs " +
-	"every prior result at once (dedup/merge across the set, early-exit on zero " +
-	"findings, cross-item comparison).\n" +
+	"- Batch by stage: subagents launched together in ONE message run " +
+	"concurrently, and your next message waits for all of them. Put every " +
+	"independent subagent of a stage in the same message, and move on to a new " +
+	"message only when the next stage genuinely needs the previous results " +
+	"(dedup/merge across the set, early-exit on zero findings, cross-item " +
+	"comparison).\n" +
 	"- Subagents are stateless context-compressors: give each ONE self-contained " +
 	"brief (goal, exact scope and paths, expected report shape) and work from its " +
-	"summary instead of pulling raw exploration into your own context.\n" +
-	"- Collect before you finish: this session is not interactive, and nothing " +
-	"reaches you once you produce your final output. A subagent launched in the " +
-	"background reports only when you wait on it (in Claude Code: TaskOutput), so " +
-	"collect every one before that output, or run it in the foreground. A " +
-	"subagent still running when you finish is lost, with everything it found.\n\n" +
+	"summary instead of pulling raw exploration into your own context.\n\n" +
 	"Quality patterns (pick per task, compose freely):\n" +
 	"- Adversarial verify: for each finding, spawn independent skeptics prompted " +
 	"to REFUTE it; keep only what survives a majority.\n" +

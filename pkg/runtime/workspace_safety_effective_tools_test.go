@@ -207,15 +207,14 @@ func TestParallelAdmissionReadsTheToolsANodeWillHoldNotTheOnesItDeclared(t *test
 		// knob SET. This row asserts the verdict, not the mechanism: the knob
 		// being answered per NODE rather than per process is witnessed where
 		// it can be falsified, in delegate's
-		// TestTheOrchestrationKnobIsAnsweredPerNodeNotPerProcess — here
-		// `Workflow` alone would keep the verdict red, so the row cannot see
-		// the difference.
+		// TestBuildTransportOptions_OrchestrationToolsKnob — this row cannot
+		// see that difference.
 		{
 			name:    "an ultracode claude_code node is mutating even under the orchestration knob",
 			node:    agentNode("n", readOnlyList, "claude_code", func(n *ir.AgentNode) { n.ReasoningEffort = "ultracode" }),
 			env:     map[string]string{"ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS": "1"},
 			mutates: true,
-			why:     "claudeSpawnBounds withholds nothing from an ultracode node, knob or not",
+			why:     "claudeSpawnBounds leaves an ultracode node its subagent surface, knob or not",
 		},
 	}
 

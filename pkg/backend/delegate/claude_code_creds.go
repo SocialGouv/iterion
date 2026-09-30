@@ -145,16 +145,58 @@ func strictMCPFromEnv() bool {
 	}
 }
 
-// orchestrationTools is the claude_code tool surface that spawns background
-// work (Agent, and Task on older CLIs) or waits on it (TaskOutput, Monitor).
-// Withheld as one unit by ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS:
-// a waiter without a spawner is only a way to deadlock, and a spawner
-// without a waiter leaves background results unreadable.
+// orchestrationTools is the claude_code tool surface that spawns subagents
+// (Agent, and Task on older CLIs) or waits on background work (TaskOutput, on
+// CLIs that still have it, and Monitor). The opt-in
+// ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS withholds it as one unit,
+// because a waiter without a spawner is only a way to deadlock.
 var orchestrationTools = []string{"Agent", "Task", "TaskOutput", "Monitor"}
 
-// workflowOrchestrationTools is the multi-agent surface ultracode grants:
-// withheld from every node that is not in ultracode mode, knob or not.
-var workflowOrchestrationTools = []string{"Workflow"}
+// headlessWithheldTools are withheld from every claude_code spawn, whatever the
+// node declares and whatever its effort grants, ultracode included. Each one
+// hands work to a later turn, and a headless session has none: it ends with
+// its final output.
+//
+//   - Workflow always runs in the background and reports through a completion
+//     notification. It has no foreground mode, and the pinned CLI has no tool
+//     that waits on a task. The background-task switch (backgroundTasksOffEnv)
+//     does not reach it either. Its result could only arrive while the turn was
+//     still running, which is what a model ending its turn to wait never gets.
+//     The CLI also arms it on the word "ultracode" anywhere in the prompt,
+//     content included.
+//   - ScheduleWakeup and CronCreate/CronDelete/CronList schedule a prompt for a
+//     later turn of this session, so here they can never fire. A durable cron
+//     is written into the workspace's .claude/scheduled_tasks.json instead.
+//   - RemoteTrigger schedules remote agents under the account the CLI runs on.
+//
+// Withholding a name the running CLI does not register costs nothing: a deny
+// rule for an absent tool matches nothing.
+var headlessWithheldTools = []string{
+	"Workflow",
+	"ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
+	"RemoteTrigger",
+}
+
+// backgroundTasksOffEnv is the CLI's own switch for background work. With it
+// set, subagents run in the foreground and `run_in_background` disappears
+// from the Agent and Bash schemas. The CLI's Agent prompt then says the report
+// comes back as the tool result, instead of "the turn ends here, the report
+// arrives in a separate turn". In a one-shot session a background result can
+// only arrive while the turn is still running, and a model that ends its turn
+// to wait for one ends the session with it.
+//
+// The flag is the only lever that holds for every launch. The CLI decides
+// `async = remote || (wanted && !backgroundTasksDisabled)`, where `wanted` is
+// also true for an agent definition with `background: true`, for the fork
+// gate, and for coordinator mode. Forcing `run_in_background: false` on the
+// call would leave all three in the background. Only `isolation: "remote"`
+// (a cloud agent, gated behind claude.ai) stays asynchronous.
+//
+// It is one of the variables every spawn pins in two layers, the process
+// environment and the flag settings layer (claudeEnvPins): the CLI rewrites
+// its environment at startup from the settings files it loads, and this key
+// is one a project's settings may set.
+const backgroundTasksOffEnv = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
 
 // disallowOrchestrationToolsFromEnv reads
 // ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;
@@ -980,10 +1022,9 @@ func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
 			env[key] = value
 		}
 	}
-	for _, kv := range task.ExtraEnv {
-		if key, value, ok := strings.Cut(kv, "="); ok && key != "" {
-			env[key] = value
-		}
+	entries, _ := claudeExtraEnvEntries(task)
+	for _, kv := range entries {
+		env[kv[0]] = kv[1]
 	}
 	// These labels belong to the resolver, never to process provisioning.
 	// Otherwise an extra env entry can forge a usage-meter slot or turn a

@@ -30,8 +30,14 @@ import (
 // exits while the user message is still on its way, that write fails with
 // EPIPE, and Execute reports a transient failure before the formatting pass
 // (#1694).
+//
+// When $ENV_LOG is set it also records, one line per spawn, the values that
+// spawn saw for the variables every spawn pins, each bracketed so an empty
+// value still shows: "bg=[1] mem=[1] bdef=[405000] bmax=[810000]", with
+// "<unset>" for an absent one.
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
+if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" >> "$ENV_LOG"; fi
 case "$*" in *--input-format*)
 	while read -r line; do
 		case "$line" in *'"type":"user"'*) break ;; esac
@@ -45,6 +51,14 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":""
 // and returns one string per spawn.
 func spawnArgv(t *testing.T, task Task) []string {
 	t.Helper()
+	argv, _ := spawnArgvEnv(t, task)
+	return argv
+}
+
+// spawnArgvEnv is spawnArgv plus, per spawn and in the same order, the pinned
+// variables the spawned process saw, keyed bg/mem/bdef/bmax.
+func spawnArgvEnv(t *testing.T, task Task) (argv []string, pinned []map[string]string) {
+	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "claude")
 	if err := os.WriteFile(script, []byte(fakeClaudeArgv), 0o755); err != nil {
@@ -52,6 +66,8 @@ func spawnArgv(t *testing.T, task Task) []string {
 	}
 	log := filepath.Join(dir, "argv.log")
 	t.Setenv("ARGV_LOG", log)
+	envLog := filepath.Join(dir, "env.log")
+	t.Setenv("ENV_LOG", envLog)
 
 	task.Command = script
 	task.WorkDir = dir
@@ -77,7 +93,25 @@ func spawnArgv(t *testing.T, task Task) []string {
 		execErr, res.FormattingPassUsed, strings.Join(lines, "\n"))
 	mu.Unlock()
 
-	raw, err := os.ReadFile(log)
+	argv = readSpawnLog(t, log)
+	for _, line := range readSpawnLog(t, envLog) {
+		vars := map[string]string{}
+		for _, field := range strings.Fields(line) {
+			if name, value, ok := strings.Cut(field, "="); ok {
+				vars[name] = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+			}
+		}
+		pinned = append(pinned, vars)
+	}
+	if len(pinned) != len(argv) {
+		t.Fatalf("the stand-in recorded %d argv line(s) and %d env line(s)", len(argv), len(pinned))
+	}
+	return argv, pinned
+}
+
+func readSpawnLog(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("the stand-in CLI was never spawned: %v", err)
 	}
@@ -161,14 +195,14 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 		}
 	}
 
-	// An UNDECLARED list keeps the legacy unrestricted surface: only
-	// `Workflow` is withheld, and by a different rule (ultracode), not by
-	// the declaration — on EVERY spawn. This is the row that carries a
+	// An UNDECLARED list keeps the legacy unrestricted surface: only the
+	// tools no headless session can use are withheld, by their own rule and
+	// not by the declaration — on EVERY spawn. This is the row that carries a
 	// schema on purpose: `Workflow` is the one tool the CLI arms on the word
 	// "ultracode" appearing anywhere in the prompt, and the formatting pass
 	// resumes the transcript the node's own content is in, so a spawn that
-	// drops the withholding lets the DATA grant an orchestration the
-	// operator's effort never did.
+	// drops the withholding lets the DATA grant an orchestration no session
+	// here can collect.
 	undeclared := spawnArgv(t, Task{
 		NodeID:       "n",
 		OutputSchema: []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
@@ -177,8 +211,8 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 		t.Fatalf("expected two spawns for the undeclared row, got %d", len(undeclared))
 	}
 	for i, argv := range undeclared {
-		if got := disallowed(argv); !slices.Equal(got, []string{"Workflow"}) {
-			t.Errorf("spawn #%d of an undeclared list disallowed %v, want only the ultracode-withheld Workflow", i+1, got)
+		if got := disallowed(argv); !slices.Equal(got, headlessWithheldNames) {
+			t.Errorf("spawn #%d of an undeclared list disallowed %v, want only the headless-withheld %v", i+1, got, headlessWithheldNames)
 		}
 	}
 
@@ -323,13 +357,13 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 	}
 
 	// A GATED **ULTRACODE** node: the row that separates "who may orchestrate"
-	// from "when a call may run". Ultracode grants the Workflow surface, and
-	// claudeSpawnBounds therefore keeps it on every spawn of such a node —
-	// keyed on ultracode, which has nothing to say about the gate. On THIS
+	// from "when a call may run". Ultracode keys what the spawn that carries
+	// the hook keeps, and has nothing to say about the gate. On the formatting
 	// spawn there is no hook, so the policy the author wrote cannot refuse a
 	// single call; and `Workflow` is the tool the CLI arms on the word
 	// "ultracode" appearing anywhere in the prompt — which is the transcript
-	// this pass resumes, content included.
+	// this pass resumes, content included. (The first spawn withholds
+	// `Workflow` too, like every spawn: it only runs in the background.)
 	gatedUltra := spawnArgv(t, Task{
 		NodeID:        "n",
 		Permission:    mustPolicy(t, permission.ModeDeny),
@@ -341,8 +375,8 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 	if len(gatedUltra) < 2 {
 		t.Fatalf("expected two spawns for the gated ultracode row, got %d", len(gatedUltra))
 	}
-	if got := disallowed(gatedUltra[0]); slices.Contains(got, "Workflow") {
-		t.Errorf("the gated ultracode spawn that CARRIES the hook lost Workflow — ultracode granted it and the gate is what bounds it (disallowed=%v)", got)
+	if got := disallowed(gatedUltra[0]); slices.Contains(got, "Read") || !slices.Contains(got, "Workflow") {
+		t.Errorf("the gated ultracode spawn that CARRIES the hook must keep what it declared and withhold Workflow (disallowed=%v)", got)
 	}
 	// The last group is what the LIVE CLI was measured still registering once
 	// the three lists above are withheld. Two names an earlier pass guessed —

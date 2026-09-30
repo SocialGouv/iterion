@@ -178,14 +178,18 @@ scheduler in particular still reads such a node exactly as it reads an
 undeclared one. Two measured reasons. `claudeNativeTools` is a hardcoded
 enumeration of a roster iterion does not own, and the same package names tools
 outside it — `orchestrationTools`' `Agent`, `TaskOutput` and `Monitor` — which
-therefore survive `--disallowedTools` on an ordinary spawn; MCP tools are not
-on that roster either, so a node's `mcp_servers:` stay reachable. (MCP tools do
+the roster therefore does not name. Whether one survives is the CLI's call:
+the pinned CLI resolves the roster's legacy `Task` to `Agent`, so a declared
+list withholds the subagent tool there, while `Monitor` survives. MCP tools
+are not on that roster either, so a node's `mcp_servers:` stay reachable. (MCP tools do
 not reach the structured-output spawn either, but by a different mechanism: it
 passes no `--mcp-config`, and `--strict-mcp-config` stops the CLI falling back
 to the host scopes — set `ITERION_CLAUDE_CODE_STRICT_MCP=0` and they come
 back.) (`Workflow`
 is the exception that proves the shape: it is *not* on the roster and is
-withheld separately, from every non-ultracode node, whatever the list says.)
+withheld separately, from every spawn, ultracode included, whatever the list
+says — with the schedulers `ScheduleWakeup`, `CronCreate`/`CronDelete`/
+`CronList` and `RemoteTrigger`, which no one-shot session can use.)
 The one spawn where none of them survives is the **structured-output pass of a
 GATED node**: it cannot carry the permission hook, so it withholds the roster,
 the whole orchestration surface this package enumerates (`Agent`, `Task`,
@@ -209,9 +213,9 @@ warns about at compile time. A bound that must hold is a `deny:` rule,
 evaluated by the gate — and there too the spelling has to be one the gate
 knows (a rule naming `Bash` does not bound claw's `repl`).
 
-(A non-ultracode node also carries `Workflow` on that flag whatever its
-`tools:` says — the orchestration surface, unrelated to the list. And a tool
-*outside* the roster is never removed by a `tools:` list.)
+(Every node also carries `Workflow` and the schedulers on that flag whatever
+its `tools:` says — unrelated to the list. And a tool *outside* the roster is
+never removed by a `tools:` list.)
 
 The bound is subtractive **only by enumeration**: naming four tools costs
 ten, `Skill` included. "Everything except Write and Edit" is nearly
