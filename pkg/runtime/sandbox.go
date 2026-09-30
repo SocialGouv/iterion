@@ -52,6 +52,7 @@ type activeSandbox struct {
 	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
 	attachmentsDir  string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
 	sharedStateDir  string       // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
+	scratchHostDir  string       // host dir bind-mounted onto ${PROJECT_SCRATCH_DIR}; empty when the scratch is container-local and dies with the sandbox — then banked at teardown (ADR-106)
 	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
 	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
 	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
@@ -490,7 +491,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// work to each other through it. AFTER applyHostStateMounts because it
 	// is the call that resolves spec.HostState, and `host_state: none` must
 	// suppress this bind like every other ~/.iterion one.
-	applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, caps.SupportsHostBindMounts, emitEvent, logger)
+	scratchHostDir := applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, caps.SupportsHostBindMounts, emitEvent, logger)
 	if !caps.SupportsHostBindMounts {
 		// Same rule as attachmentsDir below: a path that was never bind-mounted
 		// names a host location the container cannot read, and a backend that
@@ -643,6 +644,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		workspaceFolder: spec.WorkspaceFolder,
 		attachmentsDir:  attachmentsDir,
 		sharedStateDir:  sharedStateDir,
+		scratchHostDir:  scratchHostDir,
 	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
@@ -1858,6 +1860,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active.run != nil {
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
+			e.bankScratchOnCleanup(runID, active, emitForSandbox)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

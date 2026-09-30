@@ -173,33 +173,37 @@ type Engine struct {
 	// workDirTemp is the throw-away directory defaultWorkDir created under
 	// `go test` when the process cwd was the package directory (#1803); its
 	// owner removes it when the run is done.
-	workDirTemp              string
-	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
-	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
-	workflowHash             string                               // SHA-256 of the .bot source, set via WithWorkflowHash
-	workflowSource           string                               // .bot text at launch, set via WithWorkflowSource (else read from filePath)
-	compiledMain             string                               // the main's key in compiledFiles, set via WithCompiledSources
-	compiledFiles            map[string]string                    // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
-	executionContext         *store.ExecutionContext              // resolved launch/resume context contract, set via WithExecutionContext
-	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
-	filePath                 string                               // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
-	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions
-	trust                    store.RunTrust                       // who wrote the code in this run's workspace, set via WithTrust
-	repoSHAExpected          string                               // the commit the admission pinned, set via WithTrust
-	parentNodeID             string                               // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
-	preset                   string                               // in-source preset name selected at launch, set via WithPreset
-	runName                  string                               // deterministic human-friendly run label, set via WithRunName
-	source                   *store.RunSource                     // originating action metadata (dispatcher → issue ref), set via WithSource
-	mergeInto                string                               // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName               string                               // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
-	mergeStrategy            string                               // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
-	autoMerge                bool                                 // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
-	modelOverrides           []store.RunModelOverride             // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
-	routingPolicy            *store.RoutingPolicy                 // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
-	budgetAsk                *ir.BudgetOverrides                  // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
-	validateOutputs          bool                                 // when true, validate node outputs against declared schemas
-	outputCorrectionBudget   int                                  // bounded invalid-output correction calls per node episode
-	forceResume              bool                                 // when true, skip workflow hash check on resume
+	workDirTemp            string
+	onEvent                func(evt store.Event)    // optional observer fired after every successful append
+	recoveryDispatch       RecoveryDispatch         // optional; consulted on node execution failure
+	workflowHash           string                   // SHA-256 of the .bot source, set via WithWorkflowHash
+	workflowSource         string                   // .bot text at launch, set via WithWorkflowSource (else read from filePath)
+	compiledMain           string                   // the main's key in compiledFiles, set via WithCompiledSources
+	compiledFiles          map[string]string        // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
+	executionContext       *store.ExecutionContext  // resolved launch/resume context contract, set via WithExecutionContext
+	workspaceTracker       workspacetrack.Tracker   // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
+	filePath               string                   // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
+	parentRunID            string                   // immediate parent run, set via WithParentRunID for nested executions
+	trust                  store.RunTrust           // who wrote the code in this run's workspace, set via WithTrust
+	repoSHAExpected        string                   // the commit the admission pinned, set via WithTrust
+	parentNodeID           string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
+	preset                 string                   // in-source preset name selected at launch, set via WithPreset
+	runName                string                   // deterministic human-friendly run label, set via WithRunName
+	source                 *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
+	mergeInto              string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
+	branchName             string                   // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
+	mergeStrategy          string                   // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
+	autoMerge              bool                     // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
+	modelOverrides         []store.RunModelOverride // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
+	routingPolicy          *store.RoutingPolicy     // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
+	budgetAsk              *ir.BudgetOverrides      // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
+	validateOutputs        bool                     // when true, validate node outputs against declared schemas
+	outputCorrectionBudget int                      // bounded invalid-output correction calls per node episode
+	forceResume            bool                     // when true, skip workflow hash check on resume
+	// scratchBankHeld stops this run's sandbox teardown from banking its
+	// scratch: set when restoring the bank failed, so a partial scratch
+	// never replaces the bank a later resume will retry (ADR-106).
+	scratchBankHeld          bool
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
 	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision

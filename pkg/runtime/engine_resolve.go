@@ -1162,8 +1162,9 @@ func (e *Engine) projectScratchDirVarValue() string {
 	// later as "not enough results" (observed on app-concept: four
 	// topic syntheses written to
 	// /tmp/iterion-scratch/<parent>/topics, none visible at fan-in).
-	// It also makes scratch survive the container, so a crashed run
-	// resumes from its own working state.
+	// It also makes scratch survive the container when the driver can
+	// bind it; where it cannot (kubernetes), the teardown banks it and the
+	// resume restores it instead (ADR-106).
 	if e.containerWorkspace != "" {
 		return sandboxScratchContainerPath
 	}

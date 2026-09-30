@@ -160,6 +160,9 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// A child that executed in its parent's copy-based sandbox is resumed
 	// through the parent, never on its own: refused before the claim, so
 	// the run keeps the resumable status the parent's resume relies on.
+	if rerr := e.refuseResumeLosingScratch(ctx, r); rerr != nil {
+		return rerr
+	}
 	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
 		return rerr
 	}
@@ -1647,6 +1650,10 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if sbErr != nil {
 		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
 	}
+	if rsErr := e.restoreBankedScratch(ctx, runID); rsErr != nil {
+		sandboxCleanup()
+		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, rsErr)
+	}
 
 	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
@@ -1901,6 +1908,9 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 		return e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, sbErr)
 	}
 	defer sandboxCleanup()
+	if rsErr := e.restoreBankedScratch(ctx, runID); rsErr != nil {
+		return e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, rsErr)
+	}
 
 	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)

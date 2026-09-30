@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +99,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
 	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
+	t.Run("ScratchBankStore", func(t *testing.T) { testScratchBankStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
 	t.Run("RunListingProjection", func(t *testing.T) { testRunListingProjection(t, factory(t)) })
@@ -857,6 +859,67 @@ func testBackendSessionStore(t *testing.T, s store.RunStore) {
 	}
 	if _, err := bss.GetBackendSession(ctx, runID, "ref2"); err == nil {
 		t.Errorf("Get after DeleteRun: expected error")
+	}
+}
+
+// testScratchBankStore exercises the optional ScratchBankStore surface (a
+// parked run's scratch, ADR-106): a streamed round-trip, os.ErrNotExist for a
+// run without a bank, a body shorter than its announced size refused without
+// replacing the bank in place, Delete, and DeleteRun cleanup.
+func testScratchBankStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	sbs := store.AsScratchBankStore(s)
+	if sbs == nil {
+		t.Skip("backend does not implement ScratchBankStore")
+	}
+	ctx := testCtx()
+	const runID = "run_scratchbank"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := sbs.OpenScratchBank(ctx, runID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenScratchBank(no bank) = %v, want os.ErrNotExist", err)
+	}
+	read := func() string {
+		t.Helper()
+		rc, err := sbs.OpenScratchBank(ctx, runID)
+		if err != nil {
+			t.Fatalf("OpenScratchBank: %v", err)
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatalf("read scratch bank: %v", err)
+		}
+		return string(b)
+	}
+	body := "gzip'd tar of the scratch"
+	if err := sbs.PutScratchBank(ctx, runID, strings.NewReader(body), int64(len(body))); err != nil {
+		t.Fatalf("PutScratchBank: %v", err)
+	}
+	if got := read(); got != body {
+		t.Fatalf("OpenScratchBank = %q, want %q", got, body)
+	}
+	if err := sbs.PutScratchBank(ctx, runID, strings.NewReader("short"), 1<<20); err == nil {
+		t.Error("PutScratchBank accepted a body shorter than its announced size")
+	}
+	if got := read(); got != body {
+		t.Fatalf("a short Put replaced the bank: %q", got)
+	}
+	if err := sbs.DeleteScratchBank(ctx, runID); err != nil {
+		t.Fatalf("DeleteScratchBank: %v", err)
+	}
+	if _, err := sbs.OpenScratchBank(ctx, runID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Open after Delete = %v, want os.ErrNotExist", err)
+	}
+	if err := sbs.PutScratchBank(ctx, runID, strings.NewReader(body), int64(len(body))); err != nil {
+		t.Fatalf("PutScratchBank again: %v", err)
+	}
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, err := sbs.OpenScratchBank(ctx, runID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Open after DeleteRun = %v, want os.ErrNotExist", err)
 	}
 }
 

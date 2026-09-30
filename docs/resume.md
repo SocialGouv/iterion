@@ -273,6 +273,29 @@ against the upstream node's claim (`dep-update-guard`'s `commit_check` is the
 worked example — it compares `align.applied` with the branch head and blocks on
 a contradiction). Git is the durable state; an uncommitted working tree is not.
 
+### The scratch travels in its own bank
+
+`${PROJECT_SCRATCH_DIR}` is not the workspace and no commit carries it. In a
+sandbox whose scratch is container-local (kubernetes always; docker without the
+host bind) it dies with the sandbox, and a resume starts a new one. So the
+teardown of a run that may still resume streams the scratch, as a gzip'd tar
+capped at 256 MiB, into the run's **scratch bank**, and every resume path
+extracts it into the new sandbox before its first node
+([ADR-106](adr/106-resume-restores-the-scratch-banked-at-teardown.md)). The
+timeline shows both halves: `sandbox_scratch_banked` (`banked`, `empty`,
+`bytes`, or the `reason` it could not be banked) and `sandbox_scratch_restored`.
+
+A run whose last teardown left a scratch it could **not** bank (past the cap, a
+tar or upload failure) is refused `SCRATCH_NOT_PORTABLE` before the resume
+claims it: its next nodes would otherwise find the scratch empty and fail far
+from the cause. Relaunch it fresh, or resume with `--force` to continue without
+the scratch. A bank that cannot be read or extracted at resume parks the run
+under the same code and is kept for the next attempt.
+
+Not banked: the host scratch of an unsandboxed run. It survives a resume on the
+same host, and is lost on another one, which happens in the cloud runner's
+in-pod mode.
+
 ### When the final bank push fails
 
 The workflow outcome and delivery of its commits are separate. Run detail

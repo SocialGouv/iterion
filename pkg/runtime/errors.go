@@ -34,6 +34,7 @@ const (
 	ErrCodeCancelled             = store.FailureCancelled
 	ErrCodeJoinFailed            = store.FailureJoinFailed
 	ErrCodeResumeInvalid         = store.FailureResumeInvalid
+	ErrCodeScratchNotPortable    = store.FailureScratchNotPortable
 	ErrCodeSchemaValidation      = store.FailureSchemaValidation
 	ErrCodeExpressionFailed      = store.FailureExpressionFailed
 	ErrCodeRateLimited           = store.FailureRateLimited

@@ -596,6 +596,27 @@ func AsBackendSessionStore(s RunStore) BackendSessionStore {
 	return t
 }
 
+// ScratchBankStore keeps a parked run's scratch directory (ADR-106): one
+// gzip'd tar per run, streamed both ways so a large scratch never sits in
+// the runner's memory. Filesystem: runs/<id>/scratch-bank.tgz. Cloud: S3
+// under sessions/<runID>/scratch.tgz, swept with the run's sessions.
+// OpenScratchBank answers an error wrapping os.ErrNotExist when the run
+// has no bank.
+type ScratchBankStore interface {
+	PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error
+	OpenScratchBank(ctx context.Context, runID string) (io.ReadCloser, error)
+	DeleteScratchBank(ctx context.Context, runID string) error
+}
+
+// AsScratchBankStore returns s as ScratchBankStore, or nil.
+func AsScratchBankStore(s RunStore) ScratchBankStore {
+	if s == nil {
+		return nil
+	}
+	t, _ := s.(ScratchBankStore)
+	return t
+}
+
 // RunLogStore is an optional interface implemented by stores that
 // persist the run's raw log byte stream (ADR-053). The filesystem
 // store backs it with runs/<id>/run.log (the same file the local

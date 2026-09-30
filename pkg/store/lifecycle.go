@@ -42,12 +42,17 @@ const (
 	FailureExecutionFailed FailureCode = "EXECUTION_FAILED"
 	FailureWorkspaceSafety FailureCode = "WORKSPACE_SAFETY"
 	// The run cannot hand its borrowed resources back safely; inspect the retained backup.
-	FailureResourceRestore  FailureCode = "RESOURCE_RESTORE_FAILED"
-	FailureTimeout          FailureCode = "TIMEOUT"
-	FailureCancelled        FailureCode = "CANCELLED"
-	FailureJoinFailed       FailureCode = "JOIN_FAILED"
-	FailureResumeInvalid    FailureCode = "RESUME_INVALID"
-	FailureSchemaValidation FailureCode = "SCHEMA_VALIDATION"
+	FailureResourceRestore FailureCode = "RESOURCE_RESTORE_FAILED"
+	FailureTimeout         FailureCode = "TIMEOUT"
+	FailureCancelled       FailureCode = "CANCELLED"
+	FailureJoinFailed      FailureCode = "JOIN_FAILED"
+	FailureResumeInvalid   FailureCode = "RESUME_INVALID"
+	// FailureScratchNotPortable: a resume that would lose the scratch its
+	// run left under ${PROJECT_SCRATCH_DIR} — the sandbox that held it is
+	// gone and the teardown could not bank it (ADR-106). Refused before the
+	// resume claims the run; a fresh launch is the remedy.
+	FailureScratchNotPortable FailureCode = "SCRATCH_NOT_PORTABLE"
+	FailureSchemaValidation   FailureCode = "SCHEMA_VALIDATION"
 	// FailureExpressionFailed: a `compute` node's expression could not be
 	// evaluated (an unknown reference, a type the operator cannot
 	// multiply, an overflow). Distinct from FailureExecutionFailed, which
@@ -238,6 +243,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureCancelled,
 	FailureJoinFailed,
 	FailureResumeInvalid,
+	FailureScratchNotPortable,
 	FailureSchemaValidation,
 	FailureExpressionFailed,
 	FailureRateLimited,
