@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.217.0](https://github.com/SocialGouv/iterion/compare/v3.216.0...v3.217.0) (2026-09-30)
+
+### Features
+
+* **review-pr:** opus 5.5 on the Claude forfait, GLM 5.3 rescue, labels from the serving wire ([#1946](https://github.com/SocialGouv/iterion/issues/1946)) ([85747ae](https://github.com/SocialGouv/iterion/commit/85747aec0ee972fc586532f211877e0ec9d639cb)), references [#1924](https://github.com/SocialGouv/iterion/issues/1924) [#1939](https://github.com/SocialGouv/iterion/issues/1939)
+
+    <details><summary>why</summary>
+
+    review-pr 0.9.12 / revi-converse 0.1.5. The claude slot (both tiers), converge and converse_agent run claude_code + claude-opus-5-5 pinned to `provider: anthropic` through dials (ITERION_VIBE_PROVIDER_CLAUDE / _EMIT), with a metered GLM route (provider zai, ITERION_VIBE_MODEL_CLAUDE_FALLBACK, default glm-5.3) on usage_window/auth/unavailable. Unpinned, a claude id reached the z.ai facade whenever a z.ai key held the wire and was served GLM in silence (#1924). The GPT slot runs claw…
+
+    </details>
+
 ## [3.216.0](https://github.com/SocialGouv/iterion/compare/v3.215.0...v3.216.0) (2026-09-29)
 
 ### Features
