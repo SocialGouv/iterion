@@ -612,11 +612,11 @@ func TestDeepsecCoverageTravelsWithoutTheLogTail(t *testing.T) {
 	// errors[] carries up to 3 KB of log tail, and the scanner echoes
 	// target-controlled text into its logs — so the node that files findings
 	// receives the scalars, never the envelope.
-	if strings.Contains(bot, `deepsec_coverage:   "{{outputs.scan_join.deepsec_scan}}"`) {
+	if strings.Contains(bot, `deepsec_coverage: "{{outputs.scan_join.deepsec_scan}}"`) {
 		t.Error("report_card is fed the whole deepsec envelope: its errors[] carries a log tail " +
 			"the audited repository can write into, and report_card holds bash and board.create")
 	}
-	if !strings.Contains(bot, `deepsec_coverage:   "{{outputs.scan_join.deepsec_coverage}}"`) {
+	if !strings.Contains(bot, `deepsec_coverage: "{{outputs.scan_join.deepsec_coverage}}"`) {
 		t.Error("report_card is not fed the projected coverage scalars")
 	}
 
@@ -677,7 +677,7 @@ func TestDeepsecCoverageTravelsWithoutTheLogTail(t *testing.T) {
 func deepsecCoverageReader(t *testing.T) string {
 	t.Helper()
 	body := deepsecCommand(t)
-	const marker = `python3 -c "`
+	const marker = `python3 -I -c "`
 	i := strings.Index(body, `COVERAGE=$(`)
 	if i < 0 {
 		t.Fatal("no COVERAGE assignment in the deepsec command: the node no longer establishes how " +
@@ -685,7 +685,7 @@ func deepsecCoverageReader(t *testing.T) string {
 	}
 	j := strings.Index(body[i:], marker)
 	if j < 0 {
-		t.Fatal("the COVERAGE assignment embeds no python3 -c body")
+		t.Fatal("the COVERAGE assignment embeds no python3 -I -c body")
 	}
 	start := i + j + len(marker)
 	end := strings.Index(body[start:], "\n\" 2>>")

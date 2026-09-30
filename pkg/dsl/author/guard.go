@@ -81,7 +81,12 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 		return nil, errs
 	}
 	// The document reads: the guard's warnings ride back beside the
-	// converter's and the parser's (a warning never refuses).
+	// converter's and the parser's (a warning never refuses), and the
+	// invisible line separators it holds get their one document-level
+	// notice (#1663).
+	if n := separatorNotice(name, src); n != nil {
+		warns = append(warns, *n)
+	}
 	return root, warns
 }
 

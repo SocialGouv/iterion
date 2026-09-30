@@ -242,9 +242,18 @@ func (w *scanner) codeLine(toks []Token) {
 
 	switch {
 	case col == 1 && isTopLevelKeyword(first.Type):
-		if first.Type != TokenDSL && first.Type != TokenImport {
-			w.seenDecl = true
+		if first.Type == TokenDSL || first.Type == TokenImport {
+			// The `dsl:` header and the `import` lines are code but carry
+			// no comment: a comment written above one is the head's (the
+			// writer puts the head above them, and only the head), and the
+			// declaration the lines AFTER them belong to is not opened by
+			// them. The line stays keyed at the current address — the
+			// file's before the first declaration — so a comment glued to
+			// it leads it, at that address.
+			line.Decl, line.Keyed = w.decl, true
+			break
 		}
+		w.seenDecl = true
 		w.decl = DeclRef{Kind: first.Value, Name: declName(toks), Line: first.Line}
 		w.edges = 0
 		w.stack = w.stack[:0]

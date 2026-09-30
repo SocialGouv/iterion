@@ -40,11 +40,13 @@ rebuilds each on `main` + earlier-queued PRs and merges only if that combined
 tree is green — closing the semantic inter-PR conflict class (two PRs green
 apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
 push / `--squash` without `--auto`). Required checks: `test`, `race`,
-`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`.
+`vendor-check`, `mongo-conformance`, `golangci`, `brand`, `revi/review`.
 `nats-conformance` remains advisory until an admin adds it to ruleset
-18857412; `brand` and `fmt-check` report on the PR and in the queue but are
-not required yet (staged — `internal/ciguard`'s `requiredChecks`). Full details + revert command:
-[../merge-policy.md](../merge-policy.md).
+18857412; `fmt-check` reports on the PR and in the queue but is not required
+yet (staged — `internal/ciguard`'s `requiredChecks`). Full details + revert command:
+[../merge-policy.md](../merge-policy.md). How long merges take, what they cost
+and what fails the queue: `task ci:queue-stats`
+([measuring the queue](../merge-policy.md#measuring-the-queue)).
 
 ## The Revi merge gate
 
@@ -219,6 +221,11 @@ appearing (or not) in `iterion remote runs list`.
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
 - **version.yml** — conventional changelog via release-it, version from `package.json`.
+  A merged PR releases only while no merge group is in flight — the release
+  commit is a direct push to `main`, which rebuilds every group the queue is
+  building — so the merge that drains the queue releases the whole burst; the
+  nightly and a `workflow_dispatch` release regardless
+  ([releases and the queue](../merge-policy.md#releases-and-the-queue)).
   release-it writes the new section into [CHANGELOG.md](../../CHANGELOG.md) as part of the
   release commit itself (`infile` + `git add . --update`), so the file cannot drift
   from the tags — never hand-edit it. It holds the **current major only**; earlier

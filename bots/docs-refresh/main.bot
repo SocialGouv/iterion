@@ -105,7 +105,6 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## Doc footprint scope (comma-separated globs). scan_hints
   ## enumerates files matching these globs each pass. Hidden /
   ## vendored / runtime dirs are excluded unconditionally via
@@ -117,16 +116,13 @@ vars:
   ## doc locations are added per-run via --var, never baked into the
   ## catalog default.
   doc_globs: string = "README.md,docs/**/*.md,**/README.md,CLAUDE.md,**/CLAUDE.md"
-
   ## Optional free-text notes pinning the campaign's attention.
   scope_notes: string = ""
-
   ## Auto-exclusion. When non-empty, scan_hints excludes any file
   ## whose path starts with this prefix from the doc footprint. Set
   ## to the bot's own bundle dir when running docs-refresh on a repo
   ## that contains its source; otherwise leave empty.
   bundle_self_path: string = ""
-
   ## Incremental base (explicit pin). When non-empty, scan_hints computes
   ## `git diff <diff_since>...HEAD --name-only` → `recently_changed_code_files`.
   ## Usually left EMPTY: in `mode: incremental` scan_hints AUTO-DETECTS the
@@ -134,7 +130,6 @@ vars:
   ## only re-aligns what changed since it last ran. Pin it to force a base —
   ## e.g. the PR base for an amend-PR run (`--var diff_since=main`).
   diff_since: string = ""
-
   ## Alignment scope. `full` (default): the campaign sweeps the WHOLE
   ## corpus semantically — the monthly reconciliation that catches
   ## cross-cutting drift no per-file diff sees. `incremental`: the
@@ -146,24 +141,20 @@ vars:
   ## a broken link anywhere is still caught. A first run with no prior
   ## alignment commit degrades cleanly to a full sweep.
   mode: string = "full"
-
   ## Hard-excluded directories. Comma-separated list of directory
   ## names whose presence anywhere in a path disqualifies it from the
   ## doc footprint (regardless of `doc_globs`). Defaults exclude
   ## runtime / scratch / vendor / artifact dirs that should never be
   ## audited.
   excluded_dirs: string = ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out"
-
   ## Cap on the advisory hints list handed to the campaign (context
   ## bound — telemetry counts are computed BEFORE truncation, so the
   ## report stays honest about what was cut).
   max_hints: int = 120
-
   ## The docs directory scan_hints skips when scanning code areas for
   ## `unmentioned_area` hints, so `docs/` is not itself flagged as an
   ## undocumented code area. Repo-relative; DEFAULT "docs".
   docs_dir: string = "docs"
-
   ## Out-of-tree, sandbox-writable scratch for the promises ledger
   ## (and any cross-pass state). The engine
   ## resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/
@@ -171,7 +162,6 @@ vars:
   ## /tmp/iterion-scratch under a sandbox. Keeping it OUT of the
   ## target worktree is the repo-agnostic rule.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/docs-refresh"
-
   ## DISMISSALS LEDGER — the campaign's cross-pass MEMORY. JSON array
   ## of {doc, kind, value, reason} entries the campaign adjudicated
   ## as not-worth-acting-on (false positives, internal-only areas,
@@ -180,7 +170,6 @@ vars:
   ## persistence of the agent's own judgment, never a cage. Out of
   ## tree like scratch_dir; empty disables the exclusion.
   dismissed_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json"
-
   ## Hard cap on continuation PASSES — the convergence backstop. Each
   ## pass is one hints→campaign→scope_check cycle; the run stops
   ## (shipping what is banked) when the docs are reported aligned +
@@ -194,7 +183,6 @@ vars:
   ## (see the budget block). 4 = one comprehensive sweep + refinement to
   ## the floor; exhaustion here finalizes+ships gracefully.
   max_passes: int = 4
-
   ## ─── PR finalization (opt-in) ─────────────────────────────────
   ## Same contract as feature-dev/app-dev: when open_mr=true, after
   ## the run finishes (converged OR max_passes exhausted with banked
@@ -208,7 +196,6 @@ vars:
   mr_branch: string = ""
   mr_base: string = ""
   source_issue_ref: string = ""
-
   ## PR-CONTEXT inputs — the GENERIC vars iterion's forge webhook and the
   ## `/doki` command already set for ANY bot launched ON a pull request
   ## (no docs-refresh-specific engine code; iterion stays bot-agnostic).
@@ -229,7 +216,6 @@ vars:
   ## `mr_branch` overrides it; empty on both → finalize_mr falls back to the
   ## current branch, else reports it could not determine the head.
   source_branch: string = ""
-
   ## ─── Product context sources (opt-in) ────────────────────────────
   ## Reference material the campaign reads as GROUNDING (product
   ## background a repo's code alone cannot tell it: functional specs,
@@ -256,7 +242,6 @@ vars:
   context_jira_project: string = ""
   context_jira_board: string = ""
   context_jira_user: string = ""
-
   ## Backend running the campaign node. Resolved at launch from vars
   ## (`--var llm_backend=claw`), per the routing-field rule: only
   ## `{{vars.*}}` resolves in `backend:`. Default stays claude_code
@@ -274,7 +259,6 @@ secrets:
   forge_token:
     as: file
     optional: true
-
   ## Tracker API token for the context Jira snapshot (context_ingest).
   ## Same secret name and shape review-pr binds (tracker_token) so one
   ## team secret serves both bots; mounted as a file, consumed only by
@@ -285,7 +269,6 @@ secrets:
     optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
-
 prompt campaign_system:
   You are a senior technical writer-engineer running a DOC-ALIGNMENT
   campaign — working EXACTLY as you would in a productive, human-driven
@@ -584,7 +567,6 @@ prompt campaign_user:
   already aligned.
 
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
-
 prompt finalize_mr_system:
   You finalize a finished docs-refresh run by getting its SERIES of
   per-doc alignment commits into a pull request (PR; merge request on
@@ -787,6 +769,55 @@ schema finalize_mr_output:
   skipped_reason: string
   summary: string
 
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+## campaign — the one adaptive agent. Backend is per-run selectable via
+## `llm_backend` (default claude_code: the full native toolset so it
+## works exactly like a native session — survey docs + code (the
+## advisory report is a starting point, never the scope), verify in the
+## code, fix or write the doc, commit each aligned doc in stride).
+## session: fresh — a fresh pass re-derives its todo from a fresh
+## advisory report + `git log` (git is the durable state). Board
+## capabilities power the findings handoff (code bugs found while
+## verifying claims → inbox).
+agent campaign:
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "{{vars.llm_backend}}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  capabilities: [board.read, board.create]
+  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
+  ## tool + the orchestration prerogative — so it can fan out its own
+  ## sub-auditors across the corpus, EXACTLY as a native Claude Code
+  ## session does. A single agent (any prompt) self-scopes to the
+  ## obvious docs and misses the long tail; a 3-way live benchmark
+  ## (2026-07-23) showed the only run that reached the full corpus —
+  ## bot READMEs + cloud + studio — was the one that DECOMPOSED. This
+  ## is coverage via the agent's own judgment, not engine fan-out.
+  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
+  interaction: human
+
+agent finalize_mr:
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -833,7 +864,7 @@ schema finalize_mr_output:
 ## explicitly: a half-materialized context must never look like a
 ## complete one. No LLM.
 tool context_ingest:
-  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
+  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -I -c "
 import os, json, re, subprocess, shutil, urllib.request, urllib.error, base64
 
 scratch = os.environ.get('SCRATCH', '')
@@ -990,17 +1021,8 @@ print(json.dumps({'context_note': note, 'sources': sources, 'errors': ''}))
 "`
   output: context_ingest_output
 
-## context_gate — the entry gate that keeps context_ingest a true opt-in
-## (mr_gate verbatim shape): at least one source configured →
-## materialize; none → skip straight to scan_hints and existing runs
-## never execute the node. No LLM, no shell.
-compute context_gate:
-  output: context_gate_state
-  expr:
-    has_context: "!!(vars.context_git || vars.context_jira_base)"
-
 tool scan_hints:
-  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -I -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1271,35 +1293,6 @@ print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, '
 "`
   output: hints_output
 
-## campaign — the one adaptive agent. Backend is per-run selectable via
-## `llm_backend` (default claude_code: the full native toolset so it
-## works exactly like a native session — survey docs + code (the
-## advisory report is a starting point, never the scope), verify in the
-## code, fix or write the doc, commit each aligned doc in stride).
-## session: fresh — a fresh pass re-derives its todo from a fresh
-## advisory report + `git log` (git is the durable state). Board
-## capabilities power the findings handoff (code bugs found while
-## verifying claims → inbox).
-agent campaign:
-  backend: "{{vars.llm_backend}}"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
-  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
-  ## tool + the orchestration prerogative — so it can fan out its own
-  ## sub-auditors across the corpus, EXACTLY as a native Claude Code
-  ## session does. A single agent (any prompt) self-scopes to the
-  ## obvious docs and misses the long tail; a 3-way live benchmark
-  ## (2026-07-23) showed the only run that reached the full corpus —
-  ## bot READMEs + cloud + studio — was the one that DECOMPOSED. This
-  ## is coverage via the agent's own judgment, not engine fan-out.
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
-  input: campaign_input
-  output: campaign_output
-  system: campaign_system
-  user: campaign_user
-  session: fresh
-  interaction: human
-  capabilities: [board.read, board.create]
-
 ## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
 ## BASE (oldest reflog entry of the fresh per-run worktree — exact
 ## under worktree: auto) against the working tree and flags any changed
@@ -1307,7 +1300,7 @@ agent campaign:
 ## Untracked files are held to the same rule. No LLM; the campaign
 ## must revert whatever this flags.
 tool scope_check:
-  command: `WS={{vars.workspace_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
 
@@ -1381,6 +1374,52 @@ print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:10
 "`
   output: scope_check_output
 
+## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
+## LLM agent; entering it with NO push credential mounted burns a whole turn
+## just to rediscover, in shell, that it can't push. This tool answers "is
+## there a push credential?" in ~100ms of subprocess so the graph only pays
+## finalize_mr when a push can actually happen. python3 for safe JSON;
+## read-only, idempotent.
+tool forge_auth_probe:
+  command: `python3 -I -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
+tool surface_pr_link:
+  command: `URL={{input.url}} python3 -I -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
+"`
+  input: surface_pr_link_input
+
+## context_gate — the entry gate that keeps context_ingest a true opt-in
+## (mr_gate verbatim shape): at least one source configured →
+## materialize; none → skip straight to scan_hints and existing runs
+## never execute the node. No LLM, no shell.
+compute context_gate:
+  output: context_gate_state
+  expr:
+    has_context: "!!(vars.context_git || vars.context_jira_base)"
+
 ## gate — the deterministic continuation decision. converged = scope
 ## clean AND the campaign reports the docs aligned — NOTHING ELSE. The
 ## advisory hint counts are telemetry in the run events/report, never
@@ -1406,75 +1445,15 @@ compute mr_gate:
   expr:
     open_mr: "vars.open_mr || vars.pr_url"
 
-## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
-## LLM agent; entering it with NO push credential mounted burns a whole turn
-## just to rediscover, in shell, that it can't push. This tool answers "is
-## there a push credential?" in ~100ms of subprocess so the graph only pays
-## finalize_mr when a push can actually happen. python3 for safe JSON;
-## read-only, idempotent.
-tool forge_auth_probe:
-  command: `python3 -c "
-import os, subprocess, json
-tok = '/run/iterion/secrets/forge_token'
-try:
-    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
-        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
-except OSError:
-    pass
-for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
-    if os.environ.get(v):
-        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
-try:
-    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-    if r.returncode == 0:
-        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
-except Exception:
-    pass
-print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
-"`
-  output: forge_auth_state
-
-agent finalize_mr:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
-  input: finalize_mr_input
-  output: finalize_mr_output
-  system: finalize_mr_system
-  user: finalize_mr_user
-  tools: [bash, read_file, glob, grep]
-  capabilities: [board.read, board.comment]
-  tool_max_steps: 20
-
-## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
-## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
-## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
-## directive a tool node prints on stdout — never from agent prose. Reached
-## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
-## python guard drops an empty url so the scanner never sees a malformed
-## directive. read-only, idempotent.
-schema surface_pr_link_input:
-  url: string
-
-tool surface_pr_link:
-  input: surface_pr_link_input
-  command: `URL={{input.url}} python3 -c "
-import os
-u = (os.environ.get('URL') or '').strip()
-if u:
-    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
-"`
-
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow docs_refresh:
-  entry: context_gate
-
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/ —
   ## the campaign commits doc alignments in stride; the worktree +
   ## finalize FF keeps the operator's checkout untouched during the run
   ## and lands the series on a persistent branch on convergence.
   worktree: auto
+
+  entry: context_gate
 
   budget:
     max_parallel_branches: 1
@@ -1506,7 +1485,9 @@ workflow docs_refresh:
   ## context_ingest); with no source configured the gate branches
   ## straight to scan_hints and the run is unchanged.
   context_gate -> context_ingest when has_context
+
   context_gate -> scan_hints when not has_context
+
   context_ingest -> scan_hints
 
   ## Each pass: the fresh advisory report is handed to the campaign as
@@ -1524,7 +1505,7 @@ workflow docs_refresh:
     pr_url: "{{vars.pr_url}}",
     recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}",
     fail_log: "{{outputs.gate.fail_log}}",
-    context_note: "{{outputs.context_ingest.context_note}}"
+    context_note: "{{outputs.context_ingest.context_note}}",
   }
 
   ## Deterministic TRUTH gate after every campaign pass: writeable-set
@@ -1532,6 +1513,7 @@ workflow docs_refresh:
   ## affect the repo's build, so there is no build/test gate), then the
   ## continuation decision.
   campaign -> scope_check
+
   scope_check -> gate
 
   ## Converged → straight to the PR tail. The dispatcher owns the
@@ -1539,11 +1521,13 @@ workflow docs_refresh:
   ## finish→completed_state "review", studio-merge→done) — the bot does
   ## not transition the issue itself, so there is no mark-issue node.
   gate -> mr_gate when converged
+
   ## Not converged → another pass through the loop head: a fresh
   ## advisory report (resolved hints + ledger entries retire) →
   ## campaign. A scope violation rides outputs.gate.fail_log on the
   ## scan_hints→campaign edge; green-but-more-work rides an empty log.
   gate -> scan_hints as continuation_loop("{{vars.max_passes}}")
+
   ## continuation_loop exhausted (max_passes hit while work remains) →
   ## finish anyway, shipping what is banked (every committed alignment
   ## is real, landed work; the last campaign_output's drift_remaining
@@ -1556,23 +1540,30 @@ workflow docs_refresh:
   ## finalize_mr refuses an empty PR + reports drift_remaining honestly
   ## in the body.
   mr_gate -> forge_auth_probe when open_mr
+
   mr_gate -> done when not open_mr
 
   forge_auth_probe -> finalize_mr when available with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    pr_url:           "{{vars.pr_url}}",
-    source_branch:    "{{vars.source_branch}}",
-    mr_branch:        "{{vars.mr_branch}}",
-    mr_base:          "{{vars.mr_base}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    pr_url: "{{vars.pr_url}}",
+    source_branch: "{{vars.source_branch}}",
+    mr_branch: "{{vars.mr_branch}}",
+    mr_base: "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",
-    scope_notes:      "{{vars.scope_notes}}",
+    scope_notes: "{{vars.scope_notes}}",
     campaign_summary: "{{outputs.campaign.summary}}",
-    drift_remaining:  "{{outputs.campaign.drift_remaining}}"
+    drift_remaining: "{{outputs.campaign.drift_remaining}}",
   }
+
   forge_auth_probe -> done when not available
+
   ## PR opened → surface its URL as a headline result-link in the run summary
   ## (deterministic stdout directive → preview_url_available kind=pr), then
   ## finish. Nothing opened (empty diff / refused PR) → straight to done.
-  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> surface_pr_link when opened with {
+    url: "{{outputs.finalize_mr.url}}"
+  }
+
   finalize_mr -> done when not opened
+
   surface_pr_link -> done

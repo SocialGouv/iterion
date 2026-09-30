@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -75,6 +76,7 @@ func (c *compiler) validateExprTypes(w *Workflow) {
 			c.walkExprTypes(expr.ToSnapshot(ce.AST), env, cn.ID, "", loc)
 			c.checkIntDivision(w, cn, ce, env)
 			c.checkCollectionLiteralConform(w, cn, ce, env)
+			c.checkEnumMembership(w, cn, ce)
 		}
 	}
 }
@@ -106,6 +108,80 @@ func (c *compiler) checkIntDivision(w *Workflow, cn *ComputeNode, ce *ComputeExp
 			"compute %q field %q is an int and its expression %q divides a float without floor() or round(): the fractional result fails at run time — wrap the division in floor(...) or round(...), or type the field float",
 			cn.ID, ce.Key, ce.Raw)
 	}
+}
+
+// checkEnumMembership warns when a compute field whose output-schema
+// declaration carries an enum constraint is fed by a statically-known
+// string literal that is not a member (C183): the enum arm of the runtime
+// schema check (checkFieldType, pkg/backend/model/validate.go) refuses the
+// value at the node — SCHEMA_VALIDATION — so the typo is cheaper to name
+// here. A scalar literal is held against a `string` field's enum, an
+// all-string list literal against a `string[]` field's (the runtime applies
+// the same enum per element); an expression the compiler cannot fully
+// evaluate is not held against the author.
+func (c *compiler) checkEnumMembership(w *Workflow, cn *ComputeNode, ce *ComputeExpr) {
+	schema := w.Schemas[cn.OutputSchema]
+	if schema == nil {
+		return
+	}
+	field := findField(schema, ce.Key)
+	if field == nil || len(field.EnumValues) == 0 {
+		return
+	}
+	lits, list, ok := staticStringLiterals(expr.ToSnapshot(ce.AST))
+	if !ok {
+		return
+	}
+	// Hold the literal against the runtime arm that will actually judge it:
+	// a string field's value, or each element of a string[] field. A shape
+	// that feeds the other type fails on the type, not the enum — another
+	// check's story.
+	want := FieldTypeString
+	if list {
+		want = FieldTypeStringArray
+	}
+	if field.Type != want {
+		return
+	}
+	for _, lit := range lits {
+		if slices.Contains(field.EnumValues, lit) {
+			continue
+		}
+		c.warnfAt(DiagComputeEnumLiteral, cn.ID, "",
+			"compute %q field %q is the literal %q, not a member of its enum %v — the value fails schema validation at run time (SCHEMA_VALIDATION); fix the literal or widen the enum",
+			cn.ID, ce.Key, lit, field.EnumValues)
+	}
+}
+
+// staticStringLiterals returns the string values an expression statically
+// evaluates to when it is a string literal or an all-string list literal.
+// list reports which shape was read, so the caller can hold a scalar
+// against a `string` field's enum and a list against a `string[]` field's
+// per-element enum, the two arms the runtime checkFieldType enforces. ok is
+// false for anything the compiler cannot fully evaluate (a ref, a call, a
+// mixed list) — no opinion, no warning.
+func staticStringLiterals(n *expr.Snapshot) (lits []string, list, ok bool) {
+	if n == nil {
+		return nil, false, false
+	}
+	switch n.Kind {
+	case expr.SnapString:
+		return []string{n.Str}, false, true
+	case expr.SnapList:
+		// The collection arm (#1525): an all-string list literal activates
+		// the caller's per-element membership check against a string[]
+		// field's enum; a non-string element is a type failure, not an
+		// enum one, so it stays silent here (C307 owns it).
+		lits := make([]string, 0, len(n.Children))
+		for _, ch := range n.Children {
+			if ch.Kind != expr.SnapString {
+				return nil, false, false
+			}
+			lits = append(lits, ch.Str)
+		}
+		return lits, true, true
+	}
+	return nil, false, false
 }
 
 // isFloat says the compiler knows the operand to be a float.

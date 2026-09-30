@@ -45,7 +45,7 @@
 dsl: 2
 
 vars:
-  workspace_dir:       string = "${PROJECT_DIR}"
+  workspace_dir: string = "${PROJECT_DIR}"
   ## Where a tool node reads a machine-readable `iterion:` block out of a
   ## skill. The engine resets this directory and refills it from the bundle
   ## on every mirror pass, so it carries the bundle's bytes under only the
@@ -60,9 +60,9 @@ vars:
   ## literal a studio form re-sends unmodified. The second branch is what the
   ## compile-time default check (C161) reads — it compares the LITERAL text,
   ## never the expansion, so a bare "^/" would refuse this very default.
-  bundle_skills_dir:   string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
-  severity_threshold:  string = "medium"
-  scope_notes:         string = ""
+  bundle_skills_dir: string [matching: "^(/.*|[$][{]BUNDLE_SKILLS_DIR[}])$"] = "${BUNDLE_SKILLS_DIR}"
+  severity_threshold: string = "medium"
+  scope_notes: string = ""
   ## Out-of-tree, sandbox-writable scratch (engine resolves
   ## ${PROJECT_SCRATCH_DIR} to a container-writable path when sandboxed —
   ## was ${HOME}/.iterion/security-cache + ${PROJECT_DIR}/.iterion/..., which
@@ -71,80 +71,13 @@ vars:
   ## NOTE: under a sandbox this scratch is per-run (ephemeral), so the package
   ## cache no longer dedups across runs — acceptable for the SCA scaffold; the
   ## LLM-review pass is the value, not the cache.
-  scan_dir:            string = "${PROJECT_SCRATCH_DIR}/sec-audit-deps/scan"
-  cache_dir:           string = "${PROJECT_SCRATCH_DIR}/sec-audit-deps/cache"
-  cache_path:          string = "${PROJECT_SCRATCH_DIR}/sec-audit-deps/cache/packages.jsonl"
-  scanner_version:     string = "sec-audit-deps@0.1.0"
-  cache_ttl_days:      int    = 30
-
-## ─── Schemas ──────────────────────────────────────────────────────
-
-schema enumerate_output:
-  deps:           json
-  ecosystems:     json
-  summary:        string
-
-schema normalize_input:
-  deps:        json
-  ecosystems:  json
-
-schema normalize_output:
-  deps:        json
-  ecosystems:  json
-  summary:     string
-
-schema heuristic_output:
-  packages:    json
-  errors:      json
-
-schema eco_input:
-  ecosystems:  json
-
-schema heuristic_join_output:
-  eco:       json
-  generic:   json
-
-schema cache_load_output:
-  cache_path:  string
-  raw_jsonl:   string
-  line_count:  int
-
-schema filter_input:
-  deps:             json
-  cache_raw_jsonl:  string
-  scanner_version:  string
-  ttl_days:         int
-
-schema filter_output:
-  pending:           json
-  already_scanned:   json
-  stats:             json
-
-schema review_input:
-  workspace_dir:       string
-  severity_threshold:  string
-  scope_notes:         string
-  pending:             json
-  heuristics:          json
-
-schema review_output:
-  verdicts:        json
-  created_issues:  json
-  failed_issues:   json
-  report_path:     string
-  summary:         string
-
-schema update_input:
-  cache_path:       string
-  verdicts:         json
-  scanner_version:  string
-
-schema update_output:
-  appended_count:  int
-  summary:         string
+  scan_dir: string = "${PROJECT_SCRATCH_DIR}/sec-audit-deps/scan"
+  cache_dir: string = "${PROJECT_SCRATCH_DIR}/sec-audit-deps/cache"
+  cache_path: string = "${PROJECT_SCRATCH_DIR}/sec-audit-deps/cache/packages.jsonl"
+  scanner_version: string = "sec-audit-deps@0.1.0"
+  cache_ttl_days: int = 30
 
 ## ─── Prompts ──────────────────────────────────────────────────────
-
 prompt enumerate_system:
   You are enumerating installed dependencies across all ecosystems
   present in the workspace at {{vars.workspace_dir}}. The output
@@ -342,17 +275,96 @@ prompt review_user:
   MEDIUM+ findings, write the markdown report. Return
   review_output.
 
-## ─── Nodes ────────────────────────────────────────────────────────
+## ─── Schemas ──────────────────────────────────────────────────────
+schema enumerate_output:
+  deps: json
+  ecosystems: json
+  summary: string
 
+schema normalize_input:
+  deps: json
+  ecosystems: json
+
+schema normalize_output:
+  deps: json
+  ecosystems: json
+  summary: string
+
+schema heuristic_output:
+  packages: json
+  errors: json
+
+schema eco_input:
+  ecosystems: json
+
+schema heuristic_join_output:
+  eco: json
+  generic: json
+
+schema cache_load_output:
+  cache_path: string
+  raw_jsonl: string
+  line_count: int
+
+schema filter_input:
+  deps: json
+  cache_raw_jsonl: string
+  scanner_version: string
+  ttl_days: int
+
+schema filter_output:
+  pending: json
+  already_scanned: json
+  stats: json
+
+schema review_input:
+  workspace_dir: string
+  severity_threshold: string
+  scope_notes: string
+  pending: json
+  heuristics: json
+
+schema review_output:
+  verdicts: json
+  created_issues: json
+  failed_issues: json
+  report_path: string
+  summary: string
+
+schema update_input:
+  cache_path: string
+  verdicts: json
+  scanner_version: string
+
+schema update_output:
+  appended_count: int
+  summary: string
+
+## ─── Nodes ────────────────────────────────────────────────────────
 agent enumerate_deps:
-  backend: "claw"
   model: "${ITERION_SEC_AUDIT_MODEL:-openai/gpt-6-sol}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_ENUMERATE:-medium}"
+  backend: "claw"
   output: enumerate_output
   system: enumerate_system
   user: enumerate_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 25
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_ENUMERATE:-medium}"
+  readonly: true
+
+agent llm_review:
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
+  ## claude_code is REQUIRED: needs the board MCP server registered
+  ## and the bundled skills mirrored to .claude/skills/.
+  backend: "claude_code"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  tools: [bash, read_file, write_file, glob, grep]
+  capabilities: [board.read, board.create, board.label]
+  tool_max_steps: 80
+  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REVIEW:-high}"
   readonly: true
 
 ## normalize_deps — DETERMINISTIC. Coerces enumerate_deps' (LLM) output
@@ -366,7 +378,7 @@ agent enumerate_deps:
 ## ecosystem:name:version (see filter_cached); the checksum is metadata
 ## compared on a hit to catch republish attacks.
 tool normalize_deps:
-  command: `DEPS={{input.deps}} ECOS={{input.ecosystems}} python3 -c "
+  command: `DEPS={{input.deps}} ECOS={{input.ecosystems}} python3 -I -c "
 import os, json, re
 try:    deps_in = json.loads(os.environ.get('DEPS','') or '[]')
 except Exception: deps_in = []
@@ -462,7 +474,7 @@ print(json.dumps({'deps': uniq, 'ecosystems': ecos,
 ## signals. Adding an ecosystem = drop a lang-<id>.md skill with a
 ## heuristics block (+ a parser here only if its output format is new).
 tool run_eco_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -I -c "
 import os, sys, json, re, subprocess
 raw = os.environ.get('ECOS', '[]') or '[]'
 try:
@@ -640,7 +652,7 @@ print(json.dumps({'packages': packages, 'errors': errors}))
 ## (eval-on-startup / base64-blob / network-on-import) and a typosquat corpus.
 ## The reviewer validates each signal against the cited evidence file.
 tool run_generic_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && (trivy fs --scanners vuln --quiet --format json --output {{vars.scan_dir}}/trivy.json {{vars.workspace_dir}} 2>/dev/null || true) && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && (trivy fs --scanners vuln --quiet --format json --output {{vars.scan_dir}}/trivy.json {{vars.workspace_dir}} 2>/dev/null || true) && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} python3 -I -c "
 import os, json
 ws = os.environ.get('WS', '.')
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -751,13 +763,6 @@ print(json.dumps({'packages': packages, 'errors': errors}))
 " > {{vars.scan_dir}}/generic.json; cat {{vars.scan_dir}}/generic.json`
   output: heuristic_output
 
-compute heuristic_join:
-  await: best_effort
-  output: heuristic_join_output
-  expr:
-    eco:      "outputs.run_eco_heuristics"
-    generic:  "outputs.run_generic_heuristics"
-
 ## load_cache reads the host-wide JSONL cache. We pass the raw text
 ## to filter_cached which parses it inline (the iterion expr
 ## evaluator can't parse JSONL natively). On first run the file
@@ -767,7 +772,7 @@ tool load_cache:
   ## All in python (reads the path from env, not inline printf) so an empty
   ## cache yields clean JSON — the old shell form emitted a malformed
   ## line_count ("0 0") and a quoted cache_path on a cold cache.
-  command: `mkdir -p {{vars.cache_dir}} && CACHE_PATH={{vars.cache_path}} python3 -c "
+  command: `mkdir -p {{vars.cache_dir}} && CACHE_PATH={{vars.cache_path}} python3 -I -c "
 import os, json
 p = os.environ.get('CACHE_PATH','').strip()
 try:
@@ -786,7 +791,7 @@ print(json.dumps({'cache_path': p, 'raw_jsonl': raw, 'line_count': n}))
 ## pending (cache-miss or stale) and already_scanned (cache-hit
 ## within ttl and at acceptable scanner_version).
 tool filter_cached:
-  command: `DEPS={{input.deps}} RAW={{input.cache_raw_jsonl}} TTL={{input.ttl_days}} SVER={{input.scanner_version}} python3 -c "
+  command: `DEPS={{input.deps}} RAW={{input.cache_raw_jsonl}} TTL={{input.ttl_days}} SVER={{input.scanner_version}} python3 -I -c "
 import os, sys, json, datetime
 deps_json = os.environ.get('DEPS','')
 raw       = os.environ.get('RAW','')
@@ -842,26 +847,11 @@ print(json.dumps({'pending': pending, 'already_scanned': already, 'stats': stats
   input: filter_input
   output: filter_output
 
-agent llm_review:
-  ## claude_code is REQUIRED: needs the board MCP server registered
-  ## and the bundled skills mirrored to .claude/skills/.
-  backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REVIEW:-high}"
-  input: review_input
-  output: review_output
-  system: review_system
-  user: review_user
-  tools: [bash, read_file, write_file, glob, grep]
-  capabilities: [board.read, board.create, board.label]
-  tool_max_steps: 80
-  readonly: true
-
 tool update_cache:
   ## Appends one JSONL line per analysed package to the package
   ## cache at vars.cache_path. Atomic via
   ## printf >> (POSIX guarantees atomicity up to PIPE_BUF).
-  command: `VERDICTS={{input.verdicts}} CACHE_PATH={{input.cache_path}} SVER={{input.scanner_version}} python3 -c "
+  command: `VERDICTS={{input.verdicts}} CACHE_PATH={{input.cache_path}} SVER={{input.scanner_version}} python3 -I -c "
 import os, sys, json, datetime
 verdicts_raw = os.environ.get('VERDICTS','')
 verdicts = json.loads(verdicts_raw) if verdicts_raw else []
@@ -898,11 +888,20 @@ print(json.dumps({'appended_count': count, 'summary': 'Appended %d verdicts to %
   input: update_input
   output: update_output
 
+compute heuristic_join:
+  output: heuristic_join_output
+  await: best_effort
+  expr:
+    eco: "outputs.run_eco_heuristics"
+    generic: "outputs.run_generic_heuristics"
+
 ## ─── Workflow ─────────────────────────────────────────────────────
-
 workflow sec_audit_deps:
-  entry: enumerate_deps
-
+  ## A dependency audit reads lockfiles and writes a report; it commits
+  ## nothing for the repository it reads. The mid-run workspace checkpoint
+  ## would preserve none of this run's work and would force-push a branch
+  ## carrying its findings onto that repository — public ones included.
+  workspace_checkpoint: off
   ## Dependency scanners (npm audit, pip-audit, govulncheck, …) need a
   ## host that ships those binaries — slim/full sandbox images and a
   ## bare host do NOT, so without a scanner image every scan silently
@@ -919,11 +918,7 @@ workflow sec_audit_deps:
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
 
-  ## A dependency audit reads lockfiles and writes a report; it commits
-  ## nothing for the repository it reads. The mid-run workspace checkpoint
-  ## would preserve none of this run's work and would force-push a branch
-  ## carrying its findings onto that repository — public ones included.
-  workspace_checkpoint: off
+  entry: enumerate_deps
 
   budget:
     max_parallel_branches: 4
@@ -932,30 +927,33 @@ workflow sec_audit_deps:
     max_iterations: 200
 
   enumerate_deps -> normalize_deps with {
-    deps:        "{{outputs.enumerate_deps.deps}}",
-    ecosystems:  "{{outputs.enumerate_deps.ecosystems}}"
+    deps: "{{outputs.enumerate_deps.deps}}",
+    ecosystems: "{{outputs.enumerate_deps.ecosystems}}",
   }
 
-  normalize_deps -> run_eco_heuristics with {ecosystems: "{{outputs.normalize_deps.ecosystems}}"}
+  normalize_deps -> run_eco_heuristics with {
+    ecosystems: "{{outputs.normalize_deps.ecosystems}}"
+  }
 
-  run_eco_heuristics      -> run_generic_heuristics
-  run_generic_heuristics  -> heuristic_join
+  run_eco_heuristics -> run_generic_heuristics
+
+  run_generic_heuristics -> heuristic_join
 
   heuristic_join -> load_cache
 
   load_cache -> filter_cached with {
-    deps:             "{{outputs.normalize_deps.deps}}",
-    cache_raw_jsonl:  "{{outputs.load_cache.raw_jsonl}}",
-    scanner_version:  "{{vars.scanner_version}}",
-    ttl_days:         "{{vars.cache_ttl_days}}"
+    deps: "{{outputs.normalize_deps.deps}}",
+    cache_raw_jsonl: "{{outputs.load_cache.raw_jsonl}}",
+    scanner_version: "{{vars.scanner_version}}",
+    ttl_days: "{{vars.cache_ttl_days}}",
   }
 
   filter_cached -> llm_review with {
-    workspace_dir:       "{{vars.workspace_dir}}",
-    severity_threshold:  "{{vars.severity_threshold}}",
-    scope_notes:         "{{vars.scope_notes}}",
-    pending:             "{{outputs.filter_cached.pending}}",
-    heuristics:          "{{outputs.heuristic_join}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    severity_threshold: "{{vars.severity_threshold}}",
+    scope_notes: "{{vars.scope_notes}}",
+    pending: "{{outputs.filter_cached.pending}}",
+    heuristics: "{{outputs.heuristic_join}}",
   }
 
   ## cache_path comes straight from vars (the single source of truth that
@@ -966,9 +964,9 @@ workflow sec_audit_deps:
   ## the real cache — a silent dead-cache façade. {{vars.cache_path}} resolves
   ## identically on the normal and resume paths.
   llm_review -> update_cache with {
-    cache_path:       "{{vars.cache_path}}",
-    verdicts:         "{{outputs.llm_review.verdicts}}",
-    scanner_version:  "{{vars.scanner_version}}"
+    cache_path: "{{vars.cache_path}}",
+    verdicts: "{{outputs.llm_review.verdicts}}",
+    scanner_version: "{{vars.scanner_version}}",
   }
 
   update_cache -> done

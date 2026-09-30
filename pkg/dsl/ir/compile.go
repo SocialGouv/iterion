@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -870,11 +868,16 @@ func cloneBool(v *bool) *bool {
 	return &out
 }
 
+// resolveSupervisorModel is the model of an agent, a judge or an llm router
+// that names none: ITERION_DEFAULT_SUPERVISOR_MODEL through LookupEnv — the
+// reading the executor's router fallback and the supervisor apply at run
+// time — so a stored bot var repins those nodes in the compiled program too
+// (ADR-093), not only at run time.
 func resolveSupervisorModel(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	return os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+	return LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 }
 
 // defaultWorktreeMode resolves the workflow's `worktree:` field into the
@@ -1917,36 +1920,20 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 					}
 				}
 			}
-			// A default on an enum-constrained var must be one of the
-			// declared values. A non-string default is C109 territory
+			// A default on a constrained var is checked HERE and nowhere
+			// else: the launch gate reads the operator's values, never a
+			// default, so a default excused at compile time is checked on
+			// no path at all while its declaration reads as constrained.
+			// checkConstrainedVarDefault compares a LITERAL default as
+			// written (C126/C161, errors) and gives a default carrying an
+			// env reference the honest semantics of #1610 — expand what has
+			// an answer with no environment, then name what stays
+			// unverifiable (C181) or violates the compile-time reading
+			// (C182), both warnings. A non-string default is C109 territory
 			// (type mismatch) and deliberately not double-flagged here.
-			if len(v.EnumValues) > 0 && v.HasDefault {
-				if s, ok := v.Default.(string); ok && !slices.Contains(v.EnumValues, s) {
-					c.errorfAtSpan(DiagVarDefaultNotInEnum, f.Span,
-						"var %q default %q is not one of the enum values (%s)", f.Name, s, quoteList(v.EnumValues))
-				}
-			}
-			// Same rule for the pattern form, and checked on the literal
-			// text exactly as C126 checks it: a default NEVER reaches the
-			// launch gate (the gate reads the operator's values), so a
-			// default excused here would be checked on no path at all
-			// while its declaration reads as constrained.
-			if v.Matching != "" && v.HasDefault {
+			if v.HasDefault && (len(v.EnumValues) > 0 || v.Matching != "") {
 				if s, ok := v.Default.(string); ok {
-					matched, err := ValueMatchesPattern(v.Matching, s)
-					switch {
-					case err != nil:
-						// Unreachable while C162 and this check agree on
-						// what compiles, and reported rather than skipped
-						// for the reason the launch gate states: a pattern
-						// that does not compile must never read as "the
-						// default passed".
-						c.errorfAtSpan(DiagVarMatchingUncompilable, f.Span,
-							"var %q: declared pattern %q does not compile: %v", f.Name, v.Matching, err)
-					case !matched:
-						c.errorfAtSpan(DiagVarDefaultNotMatching, f.Span,
-							"var %q default %q does not match its own pattern %q", f.Name, s, v.Matching)
-					}
+					c.checkConstrainedVarDefault(f, v, s)
 				}
 			}
 			// A workflow-level `vars:` entry REPLACES the top-level one of

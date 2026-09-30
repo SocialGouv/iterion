@@ -449,6 +449,31 @@ func TestLoadExampleSeparatesAUnitThatDoesNotLoadFromAMainThatDoesNotParse(t *te
 	}
 }
 
+// A unit that does not load is served with its diagnostics, and those were
+// read from DISK — citing the fragment under its absolute path before the
+// root cut (#1934). The fragment is named by its unit-relative path, the
+// position kept.
+func TestLoadExampleAnswersDiagnosticsWithoutTheHostRoot(t *testing.T) {
+	workDir := t.TempDir()
+	examples := filepath.Join(workDir, "catalog")
+	writeExampleUnitFixture(t, examples)
+	if err := os.WriteFile(filepath.Join(examples, "x", unit.FragmentDir, "nodes.bot"), []byte("prompt p:\n  hi\n\nagent \n  model\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hs := exampleServer(t, workDir, examples)
+	var got oneProgram
+	if code, body := getExampleJSON(t, hs.URL+"/api/examples/x/main.bot", &got); code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	joined := strings.Join(got.Diagnostics, "\n")
+	if !strings.Contains(joined, unit.FragmentDir+"/nodes.bot:") {
+		t.Fatalf("the diagnostics do not cite the fragment by its relative path: %s", joined)
+	}
+	if strings.Contains(joined, workDir) {
+		t.Fatalf("the diagnostics disclose the server's directory layout: %s", joined)
+	}
+}
+
 // A catalog file that is a symlink to another file of the working
 // directory is never bound to that other file's path: the studio would
 // open and save it under the example's name.

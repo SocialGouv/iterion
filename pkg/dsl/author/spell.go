@@ -1309,7 +1309,7 @@ func (s *speller) blockBreaks(what string, v *yaml.Node, body string) (string, b
 		return body, false
 	}
 	n := &yaml.Node{Line: v.Line + 1 + first, Column: v.Column}
-	s.warn(n, parser.DiagAuthorPromptBody, what+"'s text holds "+sep+" (U+2028/U+2029), the first on line "+strconv.Itoa(n.Line)+": the document reads it as a line break, and so does the .bot written from it — write a newline, or remove the invisible character")
+	s.warn(n, parser.DiagAuthorPromptBody, what+"'s text holds "+sep+" (U+2028/U+2029): the document reads it as a line break, and so does the .bot written from it — write a newline, or remove the invisible character (E055 lists every line that holds one)")
 	return blockSeparators.Replace(body), true
 }
 

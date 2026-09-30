@@ -26,7 +26,7 @@
 ##     └─ dual (review_mode=dual, or audit tier which forces it)
 ##                       -> fan (fan_out_all)
 ##                            ├─ reviewer_claude  (claude_code, read-only)
-##                            └─ reviewer_gpt     (claude_code + zai/glm-5.3)
+##                            └─ reviewer_gpt     (claw + openai/gpt-6-astra)
 ##   reviewer_* -> merge_reviews -> converge   (await: wait_all)
 ##                 board + markdown report
 ##   converge -> pr_gate   (deterministic: was a pr_url given?)
@@ -579,19 +579,28 @@ workflow review_pr:
     ## The gate reads it instead of inferring degradation from whichever
     ## model name it happens to see.
     ai_reviewer_claude_fallback: "{{outputs.reviewer_claude._fallback_used}}",
+    ## The session's routing label: a facade serves whatever model id it
+    ## is sent (z.ai answers a claude id with GLM), so `_model` alone
+    ## cannot tell the published table which family actually served.
+    ai_reviewer_claude_wire: "{{outputs.reviewer_claude._session_fingerprint}}",
     ai_reviewer_gpt_model: "{{outputs.reviewer_gpt._model}}",
     ai_reviewer_gpt_backend: "{{outputs.reviewer_gpt._backend}}",
     ai_reviewer_gpt_tokens: "{{outputs.reviewer_gpt._tokens}}",
+    ai_reviewer_gpt_wire: "{{outputs.reviewer_gpt._session_fingerprint}}",
     ai_reviewer_claude_glance_model: "{{outputs.reviewer_claude_glance._model}}",
     ai_reviewer_claude_glance_backend: "{{outputs.reviewer_claude_glance._backend}}",
     ai_reviewer_claude_glance_tokens: "{{outputs.reviewer_claude_glance._tokens}}",
     ai_reviewer_claude_glance_fallback: "{{outputs.reviewer_claude_glance._fallback_used}}",
+    ai_reviewer_claude_glance_wire: "{{outputs.reviewer_claude_glance._session_fingerprint}}",
     ai_reviewer_gpt_glance_model: "{{outputs.reviewer_gpt_glance._model}}",
     ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
     ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",
+    ai_reviewer_gpt_glance_wire: "{{outputs.reviewer_gpt_glance._session_fingerprint}}",
     ai_converge_model: "{{outputs.converge._model}}",
     ai_converge_backend: "{{outputs.converge._backend}}",
     ai_converge_tokens: "{{outputs.converge._tokens}}",
+    ai_converge_fallback: "{{outputs.converge._fallback_used}}",
+    ai_converge_wire: "{{outputs.converge._session_fingerprint}}",
     pr_url: "{{outputs.pr_gate.pr_url}}",
     reviewed_sha: "{{outputs.diff_precheck.reviewed_sha}}",
     effective_review_mode: "{{outputs.tier_expand.effective_review_mode}}",

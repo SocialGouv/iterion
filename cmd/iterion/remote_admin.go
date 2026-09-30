@@ -532,9 +532,12 @@ setting > pod env var > the .bot's own default.
   iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
   iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE   # back to env/default
 
-Infra namespaces (Mongo/NATS/JWT/secrets/…) and credential-shaped names
-are refused at write time. Changes reach every replica within the
-resolver TTL (no restart); runs claimed after that expand the new value.
+Infra namespaces (Mongo/NATS/JWT/secrets/…), credential-shaped names and
+values outside letters, digits and ._:/@+=,%-[] are refused at write time.
+A stored entry the current rule refuses (written by an older server) is
+not applied and is listed under "refused": rm it, or set a valid value.
+Changes reach every replica within the resolver TTL (no restart); runs
+claimed after that expand the new value.
 
 Two honesty notes. Values are stored, echoed and audit-logged IN CLEAR —
 never put a secret in a bot var, even under an innocent name. And a var

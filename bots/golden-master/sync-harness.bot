@@ -35,7 +35,7 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-  oracle_dir:    string = ".golden-master"
+  oracle_dir: string = ".golden-master"
   ## The target's full gate, replayed on the synced tree. Empty = the runner
   ## the net materialised (`<oracle_dir>/verify-oracle.sh`).
   gate_cmd: string = ""
@@ -85,8 +85,6 @@ schema seal_state:
 ## `bots/golden_master_harness_sync_test.go`). The driver reads its OWN
 ## source to compose the canonical copy and exits before the body would run.
 tool sync_harness:
-  output: sync_state
-  language: py
   script: |
     import json, os, subprocess, sys
     from hashlib import sha256
@@ -8351,14 +8349,14 @@ tool sync_harness:
     if __name__ == "__main__":
         main()
 
+  language: py
+  output: sync_state
+
 ## The half that compares: the target's full gate, replayed on the COMMITTED
 ## sync. A red gate drops that commit — ours, just made, and only ever that one
 ## — and ends the run at `fail`: a judge that decides well and compares wrongly
 ## must not land. When the drop is declined the reason rides in `log_tail`.
 tool gate_replay:
-  input: gate_input
-  output: gate_report
-  language: py
   script: |
     import json, os, signal, subprocess, time
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -8453,14 +8451,15 @@ tool gate_replay:
             out["log_tail"] = (out["log_tail"] + "\n\n" + undropped)[-4000:]
     print(json.dumps(out))
 
+  language: py
+  input: gate_input
+  output: gate_report
+
 ## One commit, the harness alone, with the selftest — the gate's verdict is
 ## sealed into it afterwards. Hooks are bypassed: a pre-commit that reformats
 ## would commit a harness other than the one just proven, one that rejects
 ## would throw away the sync.
 tool commit_harness:
-  input: commit_input
-  output: commit_state
-  language: py
   script: |
     import json, shutil, subprocess, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -8516,12 +8515,13 @@ tool commit_harness:
     out["notice"] = "%s (%s)" % (subject, sha[:12])
     print(json.dumps(out))
 
+  language: py
+  input: commit_input
+  output: commit_state
+
 ## The gate's verdict, written into the commit it judged. Amend by sha: the
 ## commit must still be HEAD and ours.
 tool seal_commit:
-  input: seal_input
-  output: seal_state
-  language: py
   script: |
     import json, subprocess, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -8571,24 +8571,36 @@ tool seal_commit:
     out["notice"] = "%s sealed into %s" % (line, out["commit"][:12])
     print(json.dumps(out))
 
+  language: py
+  input: seal_input
+  output: seal_state
+
 workflow sync_harness:
+
   entry: sync_harness
+
   budget:
     max_parallel_branches: 1
     max_duration: "6h"
+
   sync_harness -> done when not changed
+
   sync_harness -> commit_harness when changed with {
-    selftest:       "{{outputs.sync_harness.selftest}}",
-    harness_sha256: "{{outputs.sync_harness.harness_sha256}}"
+    selftest: "{{outputs.sync_harness.selftest}}",
+    harness_sha256: "{{outputs.sync_harness.harness_sha256}}",
   }
+
   commit_harness -> gate_replay with {
     harness_sha256: "{{outputs.sync_harness.harness_sha256}}",
-    sync_commit:    "{{outputs.commit_harness.commit}}"
+    sync_commit: "{{outputs.commit_harness.commit}}",
   }
+
   gate_replay -> seal_commit when passed with {
-    sync_commit:  "{{outputs.commit_harness.commit}}",
+    sync_commit: "{{outputs.commit_harness.commit}}",
     gate_command: "{{outputs.gate_replay.command}}",
-    gate_minutes: "{{outputs.gate_replay.minutes}}"
+    gate_minutes: "{{outputs.gate_replay.minutes}}",
   }
+
   gate_replay -> fail
+
   seal_commit -> done

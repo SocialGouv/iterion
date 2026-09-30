@@ -29,10 +29,11 @@ and the correct toolchain:
   reason that has nothing to do with the change under test.
 - **A gate CI runs inline is still a gate.** When CI invokes something the task
   runner does not expose — a coverage threshold script, a schema check, a
-  shell assertion — copy that invocation into verify.sh verbatim. `task test`
-  passing while CI's `go test … && bash hack/coverage.sh cover.out 85` fails is
-  a green local verify on a red change, which is the exact failure the
-  deterministic gate exists to prevent.
+  shell assertion — copy that invocation into verify.sh, one command per
+  line (a chain loses every failure but its last's, §2): `task test`
+  passing while CI's `go test …` then `bash hack/coverage.sh cover.out 85`
+  fails is a green local verify on a red change, which is the exact
+  failure the deterministic gate exists to prevent.
 - **Pinned toolchain — honour it or the build fails on a version mismatch.**
   `devbox.json` → prefix with `devbox run -- …`. `.tool-versions` (asdf/mise),
   `.nvmrc`, `flake.nix`, `mise.toml` → activate accordingly. For Go: if
@@ -47,10 +48,14 @@ and the correct toolchain:
     died with `mkdir: cannot create directory '/home/.../.cache/devbox':
     Permission denied` — observed 2026-06-23, run 019ef550. That root cause is
     fixed in the engine.) Last-resort only: if the wrapper still fails for a
-    genuine environment reason (not a code error), the sandbox image also ships
-    the real toolchain (`go`, `node`, `cargo`, `python`) directly on `PATH`, so
-    you may fall back ONCE to the bare tool — `command -v go && go build ./...
-    && go test ./...` — rather than retrying the wrapper.
+    genuine environment reason (not a code error), fall back ONCE to the bare
+    tool when it is on `PATH` — `command -v go || exit 1`, then `go build
+    ./...` and `go test ./...`, each on its own line (§2: a failure before
+    the last `&&` of a chain does not stop the script) — rather than
+    retrying the wrapper. The default (slim) sandbox image
+    ships only `node` and `python3` on `PATH` (no `go`, `cargo`, `python` or
+    `pip`): when the tool is absent, report the environment failure instead of
+    looping.
 - **Go in a sandboxed git worktree: disable VCS stamping.** The run's
   workspace is a git *worktree* whose gitdir lives outside the sandbox
   mounts, so `go build`'s VCS probe can fail with `error obtaining VCS
@@ -60,13 +65,15 @@ and the correct toolchain:
   binary's stamped identity is irrelevant to a build+test gate.
   (Observed live 2026-08-19, run 01a01a51: the gate burned a pass on it.)
 - **Language defaults (only when there is no wrapper):**
-  - Go (`go.mod`): `go build ./... && go test ./...`
+  - Go (`go.mod`): `go build ./...`, then `go test ./...`
   - Node (`package.json`): pick the package manager from the lockfile
     (`pnpm-lock.yaml`→pnpm, `yarn.lock`→yarn, `package-lock.json`→npm) and run
     its `build` + `test` scripts if defined.
-  - Rust (`Cargo.toml`): `cargo build && cargo test`.
+  - Rust (`Cargo.toml`): `cargo build`, then `cargo test`.
   - Python (`pyproject.toml`/`setup.py`): the configured test runner, e.g.
-    `python -m pytest`, plus a type/lint check if the project defines one.
+    `uv run pytest` / `poetry run pytest` — through the repo's environment
+    manager (a bare `python3 -m pytest` needs its dependencies installed) —
+    plus a type/lint check if the project defines one.
   - Anything else: build + unit-test the way the repo's CI does — read
     `.github/workflows/*` (or other CI config) if present; CI is the source of
     truth for "how this repo is built".
@@ -81,7 +88,8 @@ Build + test green does NOT mean CI is green. Many repos commit **generated
 artifacts** — an OpenAPI/Swagger spec + generated client types, protobuf/gRPC
 stubs, generated mocks, a Helm chart version pinned to a package file — and
 enforce in CI that the committed copy matches a fresh regeneration
-(`regenerate && git diff --exit-code`). A change that adds an API route, a
+(`regenerate && git diff --exit-code`; in verify.sh, the regen on its own
+line, §2). A change that adds an API route, a
 proto message, or a schema field but forgets to regenerate ships **green
 build + red CI** — exactly the drift the deterministic gate or CI catches that
 you should catch here instead.
@@ -98,9 +106,11 @@ red-in-CI. This is not optional whenever the repo commits generated artifacts:
   `proto:check`. When a `check`/`verify` umbrella target exists that bundles
   lint + test + drift, prefer it — it is the repo's own definition of "CI
   green".
-- The pattern to add for each committed-generated artifact:
-  `<the repo's regen command> && git diff --exit-code -- <the generated
-  paths>` — a non-empty diff means stale, which is a real red.
+- The pattern to add for each committed-generated artifact: `<the repo's
+  regen command>` on its own line, then `git diff --exit-code -- <the
+  generated paths>` — a non-empty diff means stale, which is a real red,
+  and so is a regen that fails (joined by `&&`, its failure would not stop
+  the script: §2).
 
 ## 1c. Mirror CI's exact strictness — never stricter, never looser
 
@@ -117,7 +127,8 @@ verdict in production:
   debt it did not create (observed live: a vite bump held `hold_unstable`
   because verify.sh failed eslint on 534 pre-existing warnings / **0
   errors**, while the repo's CI on the same tree was fully green). Copy the
-  exact invocation — flags included — from the CI step or the task-runner
+  exact invocation — flags included, one command per line (§2) — from the
+  CI step or the task-runner
   target CI calls; when in doubt, run the repo's own umbrella target
   (`task check`, `make ci`) INSTEAD of hand-assembling steps.
 - **Timeouts are a strictness axis — your sandbox is SLOWER than CI.** A
@@ -165,7 +176,7 @@ describe a gate; only a command can be one) and accepts any shape that really
 fails the build on drift —
 
 ```sh
-<regen> && git diff --exit-code                     # the probe's own status
+<regen> && git diff --exit-code || exit 1           # the probe's own status
 if ! git diff --quiet -- <paths>; then exit 1; fi   # negated conditional,
                                                     # on one line or many
 set -e; <regen>; git diff --quiet                   # fail-fast: it aborts
@@ -177,6 +188,44 @@ CI enforces a drift gate and `verify.sh` carries none of these, the gate fails
 with DRIFT GATE MISSING (exit 3); a green verify that leaves new changes in the
 tree fails with UNCOMMITTED REGEN OUTPUT (exit 4). Writing the gate here is
 cheaper than being bounced by the enforcement.
+
+## 1d. The Docker images CI builds are NOT in verify.sh — say so
+
+Many repos build **Docker images in CI** (`Dockerfile`, `frontend/Dockerfile`,
+docker-compose services). §1b and §1c tell you to mirror CI's gates; the image build is
+the one you must NOT mirror:
+
+- **Never build CI's images in verify.sh** (`docker build`, `docker compose
+  build`), nor replay an image's dependency resolution: it needs pip (absent
+  from the default image), pips before 25.3 download every wheel in full (a
+  torch pin alone is 800 MB), and its verdict depends on the local
+  interpreter and on which indexes the image reads — only CI's own build
+  can say (below).
+- **A docker command a test suite needs** (`docker compose up -d db`, or a
+  wrapper target that runs one — `task test`, `make test`: read its
+  commands first) stays out too, whether or not Docker answers: run the
+  target's non-docker steps directly — the one exception to calling a
+  target rather than transcribing it — and name the suite that leaves out
+  as not covered, like an image. The iterion sandbox has no Docker CLI or
+  daemon by design (no socket, no `--privileged`), so there the step would
+  fail on every pass; on an unsandboxed host a compose service is the
+  operator's shared state — `-p` isolates neither a published port nor a
+  `container_name`, a killed run skips its teardown, and a teardown that
+  names no project removes the operator's own. CI runs that suite.
+- Instead, **name each image CI builds — and each suite you left out — as
+  not covered** by the green gate, in your summary AND as the FIRST line
+  verify.sh prints (`echo "NOT COVERED: image <Dockerfile path>, built by
+  CI only"` before the checks — never after them: a command after the
+  last check becomes the script's exit status and hides that check's
+  failure). The deterministic gate lifts every `NOT COVERED:` line into
+  the log tail of a green run. The image
+  build installs the dependency set from the index the
+  CI actually uses, which may not carry a version your sandbox already has —
+  only CI's own build can say. (Paid: a transitive pin, dragged in by a
+  never-imported dependency, was no longer carried by the index the CI
+  resolves against — every api image build failed while the sandbox suite
+  stayed green. The pipeline's result is the signal; a green sandbox gate says
+  nothing about it.)
 
 ## 2. Write the verify script to the scratch dir
 
@@ -200,6 +249,23 @@ devbox run -- task test
 devbox run -- task openapi:gen      # ← the repo's own regen target(s)
 git diff --exit-code || { echo "codegen drift — regenerate + commit the output" >&2; exit 1; }
 ```
+
+**A check gates only as a plain top-level command, or ended by `|| exit
+1`** — and in a pipeline only its last stage gates, `|| exit 1` or not
+(below). `set -e` ignores a failure in every command of an AND-OR list but
+the last (`a && b`, `a || echo …`), in an `if`/`while` condition, anywhere
+inside a `{ }`, `( )` or function placed there (even with `set -e`
+re-armed inside), in a child shell (`sh -c 'a; b'`), and in a command
+substitution used as an argument (`echo "$(…)"`, `export V=$(…)`,
+`test -z "$(…)"` — assign first: `s=$(…)` alone carries the status), and
+in a pipeline negated with `!` (`! grep -q it.only tests/` never stops the
+script: write `if grep -q it.only tests/; then exit 1; fi`). So
+`command -v go && go build ./... && go test ./...` followed by any other
+command exits 0 with nothing built. Put each check on its own line, or
+end its chain with `|| exit 1`; give the capture convention below ONE
+command, never a group. A step that must run in a directory stays one
+subshell line — `(cd web && npm ci && npm test)`: its status is the
+chain's, it gates, and the `cd` does not leak into the lines after it.
 
 The deterministic gate re-runs **this** script and gates the commit on its real
 exit code — so it must genuinely pass, not merely look plausible. A `verify.sh`

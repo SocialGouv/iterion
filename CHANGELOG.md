@@ -3,6 +3,123 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.217.1](https://github.com/SocialGouv/iterion/compare/v3.217.0...v3.217.1) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** one refresher per OAuth forfait record, the runner follows it ([#1958](https://github.com/SocialGouv/iterion/issues/1958)) ([c1cfa10](https://github.com/SocialGouv/iterion/commit/c1cfa108d8675f8f371277a2ec2a40ea5f98a805))
+
+    <details><summary>why</summary>
+
+    A claude_code forfait is a store record the server's OAuthRefreshWorker rotates, and the runner also exchanged the refresh token of its run-local copy (refreshAnthropicLoop). An exchange revokes the access token every other holder of the grant still uses. Measured on a team record: a live delegate refused "OAuth access token has been revoked" 16 s after the worker rotated the record.
+
+    </details>
+* **server:** cut the unit root off every diagnostic a client is answered ([#1934](https://github.com/SocialGouv/iterion/issues/1934)) ([#1971](https://github.com/SocialGouv/iterion/issues/1971)) ([5e4c9c1](https://github.com/SocialGouv/iterion/commit/5e4c9c13c510d8822f0163ecab8026b29a0a2259)), references [#1933](https://github.com/SocialGouv/iterion/issues/1933)
+
+    <details><summary>why</summary>
+
+    #1933 cut the root off the claim probe's diagnostics, the one place a probe-forwarded diagnostic crosses. The same under-root leak sat at four sibling sites, each forwarding a DISK load's diagnostics — positioned under absolute workspace paths — to the client:
+
+    </details>
+
+## [3.217.0](https://github.com/SocialGouv/iterion/compare/v3.216.0...v3.217.0) (2026-09-30)
+
+### Features
+
+* **review-pr:** opus 5.5 on the Claude forfait, GLM 5.3 rescue, labels from the serving wire ([#1946](https://github.com/SocialGouv/iterion/issues/1946)) ([85747ae](https://github.com/SocialGouv/iterion/commit/85747aec0ee972fc586532f211877e0ec9d639cb)), references [#1924](https://github.com/SocialGouv/iterion/issues/1924) [#1939](https://github.com/SocialGouv/iterion/issues/1939)
+
+    <details><summary>why</summary>
+
+    review-pr 0.9.12 / revi-converse 0.1.5. The claude slot (both tiers), converge and converse_agent run claude_code + claude-opus-5-5 pinned to `provider: anthropic` through dials (ITERION_VIBE_PROVIDER_CLAUDE / _EMIT), with a metered GLM route (provider zai, ITERION_VIBE_MODEL_CLAUDE_FALLBACK, default glm-5.3) on usage_window/auth/unavailable. Unpinned, a claude id reached the z.ai facade whenever a z.ai key held the wire and was served GLM in silence (#1924). The GPT slot runs claw…
+
+    </details>
+
+## [3.216.0](https://github.com/SocialGouv/iterion/compare/v3.215.0...v3.216.0) (2026-09-29)
+
+### Features
+
+* **product-docs:** the route checks judge by the net route table, resolved once at the run base ([#1951](https://github.com/SocialGouv/iterion/issues/1951)) ([9b25ef5](https://github.com/SocialGouv/iterion/commit/9b25ef5612ebfd3f4e39d844c918e6f2d0240137))
+
+    <details><summary>why</summary>
+
+    golden-master states its routes through config.json `routes_probe`, a command it replays at every gate, and commits no artifact for them. The docs gates read only a committed <net>/routes.txt, so on a net built the usual way the route checks ran DEGRADED with zero declared routes: the "every declared route is cited" rule and the map's grounding had nothing to hold the documentation to. Committing the table instead would go stale the moment a change adds a route, and the gates would stop…
+
+    </details>
+
+## [3.215.0](https://github.com/SocialGouv/iterion/compare/v3.214.1...v3.215.0) (2026-09-29)
+
+### Features
+
+* **dsl:** type-consistency for whole-ref with: mappings, routing fields, and constrained env defaults ([#1604](https://github.com/SocialGouv/iterion/issues/1604) [#1605](https://github.com/SocialGouv/iterion/issues/1605) [#1610](https://github.com/SocialGouv/iterion/issues/1610)) ([#1926](https://github.com/SocialGouv/iterion/issues/1926)) ([4fd951a](https://github.com/SocialGouv/iterion/commit/4fd951ad4ccde1eee65c8f3f6bc9918cb86cd040)), references [#1285](https://github.com/SocialGouv/iterion/issues/1285) [#1320](https://github.com/SocialGouv/iterion/issues/1320) [#1389](https://github.com/SocialGouv/iterion/issues/1389) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [pre-#1915](https://github.com/pre-/issues/1915) [#1915](https://github.com/SocialGouv/iterion/issues/1915) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1921](https://github.com/SocialGouv/iterion/issues/1921) [#1919](https://github.com/SocialGouv/iterion/issues/1919)
+
+    <details><summary>why</summary>
+
+    An edge with: mapping that is exactly one {{vars.<name>}} reference passes the value through with its type, and since #1285 a string[]/json var IS a list on the default path as much as on the override one — so the list (or object) arrives WHOLE on a field declared string, compiles clean, and nothing checks a with: value's type at run time: the arity simply moves (a tool whose command reads the field executes once per element).
+
+    </details>
+
+## [3.214.1](https://github.com/SocialGouv/iterion/compare/v3.214.0...v3.214.1) (2026-09-29)
+
+### Bug Fixes
+
+* **delegate:** retry a forfait token renewed under a running CLI, do not bench it ([#1960](https://github.com/SocialGouv/iterion/issues/1960)) ([6f7fb16](https://github.com/SocialGouv/iterion/commit/6f7fb167e083af805edd68fbc225a246bdbfb792))
+
+    <details><summary>why</summary>
+
+    A claude_code CLI holds the forfait access token it was spawned with for its whole life. When the store's refresh worker rotates the record, the provider revokes that token, and the runner writes the rotation into the forfait file. Measured: a live delegate refused "OAuth access token has been revoked" 16 s after the worker rotated its team record. The delegate read that render as a dead credential: ErrAuthFailed paused the run for a human re-auth, and the auth evidence it filed benched a…
+
+    </details>
+
+## [3.214.0](https://github.com/SocialGouv/iterion/compare/v3.213.0...v3.214.0) (2026-09-29)
+
+### Features
+
+* **dsl:** the writer's multi-line forms, E055 separator notice, surgical WriteManifest ([#1612](https://github.com/SocialGouv/iterion/issues/1612) [#1663](https://github.com/SocialGouv/iterion/issues/1663) [#1349](https://github.com/SocialGouv/iterion/issues/1349)) ([#1919](https://github.com/SocialGouv/iterion/issues/1919)) ([928271d](https://github.com/SocialGouv/iterion/commit/928271d3c9339465530323c042bdcb654d6142b8))
+
+    <details><summary>why</summary>
+
+    A strict render folded every value holding a newline onto one escaped "…\n…" line — 470 504 characters on bots/golden-master/main.bot — which pkg/dsl/canon then refused by name, leaving 40 shipped files unformattable (.fmt-refused). The writer now gives a value holding a newline the `key: |` block scalar form when the reader gives it back exactly (ends with a newline, no leading blank line, no whitespace-only line, no later line de-denting below the first, no carriage return), and the backtick…
+
+    </details>
+
+## [3.213.0](https://github.com/SocialGouv/iterion/compare/v3.212.2...v3.213.0) (2026-09-29)
+
+### Features
+
+* **dsl:** C183 — enum membership is compile-checked for literal values ([#1916](https://github.com/SocialGouv/iterion/issues/1916)) ([#1928](https://github.com/SocialGouv/iterion/issues/1928)) ([b680e37](https://github.com/SocialGouv/iterion/commit/b680e37780ba0b4876c59de2801ca4a7d6212cd0)), references [#1525](https://github.com/SocialGouv/iterion/issues/1525) [#1915](https://github.com/SocialGouv/iterion/issues/1915)
+
+    <details><summary>why</summary>
+
+    A compute field declared `string [enum: ...]` fed by a static string literal outside the enum (`s: "'zzz'"`) used to compile clean and fail SCHEMA_VALIDATION at the node — the enum arm of checkFieldType (pkg/backend/model/validate.go). C183 names it at compile time, as a warning per the prefer-warn stance: a scalar literal is held against a `string` field's enum, an all-string list literal against a `string[]` field's per-element enum; anything the compiler cannot fully evaluate stays silent,…
+
+    </details>
+
+## [3.212.2](https://github.com/SocialGouv/iterion/compare/v3.212.1...v3.212.2) (2026-09-29)
+
+### Bug Fixes
+
+* **delegate:** ultracode nodes collect their background subagents ([#1953](https://github.com/SocialGouv/iterion/issues/1953)) ([34fe9e0](https://github.com/SocialGouv/iterion/commit/34fe9e04537a6d08aea3e0068710bc402c9c70b1))
+
+    <details><summary>why</summary>
+
+    The ultracode instruction grants standing consent to fan work out across parallel subagents, and says nothing of the one rule a non-interactive session imposes on it: a subagent launched in the background reports only when the model waits on it, and nothing reaches the model once it produces its final output. Measured on a documentation campaign node, five passes out of five: seven subagents spawned in the background, no TaskOutput call, the model's last words "Waiting for the auditors now……
+
+    </details>
+* **sandbox:** a workspace export survives a writer racing its archive ([#1952](https://github.com/SocialGouv/iterion/issues/1952)) ([b080b18](https://github.com/SocialGouv/iterion/commit/b080b18621d523be56e93ec0b528dcc3413e7f83))
+
+    <details><summary>why</summary>
+
+    ExportWorkspace dropped the whole export on any non-zero exit of the in-pod tar. GNU tar exits 1 with "file changed as we read it" when a file changes while it is archived — a git process still finishing in the pod at park time — even though the archive is complete. Measured in a run parked on a usage window: "tar: ./.git: file changed as we read it … exit status 1", the export abandoned, the run's in-pod commits left invisible on the host.
+
+    </details>
+* **server:** answer a probe refusal with the unit's relative paths ([#1918](https://github.com/SocialGouv/iterion/issues/1918)) ([#1933](https://github.com/SocialGouv/iterion/issues/1933)) ([29ec953](https://github.com/SocialGouv/iterion/commit/29ec9530f9c054b79ef4cd2727526830aab468f8))
+
+    <details><summary>why</summary>
+
+    The claim probe parses every file under its absolute path, and a claim it refuses is a 422 whose body is the diagnostic — disclosing the server's directory layout to any studio client. finishClaimed, the one place every probe-forwarded diagnostic crosses (save, cloud write-back and render alike), now cuts the unit's root off each diagnostic's position field and message text: every name a probe diagnostic can carry is Join(Root, Rel), so the cut answers both and no Name→Rel table maps a string…
+
+    </details>
+
 ## [3.212.1](https://github.com/SocialGouv/iterion/compare/v3.212.0...v3.212.1) (2026-09-29)
 
 ### Bug Fixes

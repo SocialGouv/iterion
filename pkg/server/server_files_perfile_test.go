@@ -23,7 +23,12 @@ import (
 // `lib/nodes.bot` of BOTH multi-file bots in the catalogue.
 const foldMain = "import \"lib/nodes.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
 
-const foldNodes = "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two`\n"
+// foldNodes is a fragment the writer cannot reproduce: its `command:` is
+// written over several lines and holds a carriage return — a character no
+// multi-line form carries (the lexer folds CRLF before reading, so a lone
+// CR only survives an escape), so the render folds it onto one line — and
+// one folded value folds the whole file, all or nothing (#1612).
+const foldNodes = "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
 
 // A fragment of the same unit the writer CAN reproduce: the control that
 // keeps the refusal from reading as "a unit cannot be saved".
@@ -427,7 +432,7 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	s, editor, _ := newBotSourceTestServer(t)
 	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
 	edCtx := auth.WithIdentity(context.Background(), editor)
-	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two`\n"
+	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
 	files := map[string]string{
 		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: t\n  t -> done\n",
 		"lib/nodes.bot": stored,
@@ -455,7 +460,7 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	// The same program, written with the two lines folded onto one: what
 	// the studio's own renderer produces for this file, and what the
 	// compile check happily accepts.
-	folded := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline two\"\n"
+	folded := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline\\r two\\n\"\n"
 	if w := putFile("lib/nodes.bot", folded); w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a write that folds a stored value: %d %s", w.Code, w.Body.String())
 	}
@@ -522,7 +527,7 @@ func TestPuttingAWholeBundleRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	s, editor, _ := newBotSourceTestServer(t)
 	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
 	edCtx := auth.WithIdentity(context.Background(), editor)
-	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two`\n"
+	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
 	files := map[string]string{
 		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: t\n  t -> done\n",
 		"lib/nodes.bot": stored,
@@ -547,7 +552,7 @@ func TestPuttingAWholeBundleRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	for k, v := range files {
 		folded[k] = v
 	}
-	folded["lib/nodes.bot"] = "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline two\"\n"
+	folded["lib/nodes.bot"] = "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline\\r two\\n\"\n"
 	if w := put(folded); w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a whole-bundle write that folds a stored value: %d %s", w.Code, w.Body.String())
 	}
@@ -585,7 +590,7 @@ func TestEditingTheValueTheWriterFoldsDoesNotUnlockTheSave(t *testing.T) {
 	// The author edits the multi-line command itself.
 	edited := editDocument(t, opened.Document, func(m map[string]any) {
 		tools, _ := m["tools"].([]any)
-		tools[0].(map[string]any)["command"] = "line one\nline two\nline three"
+		tools[0].(map[string]any)["command"] = "line one\nline\r two\nline three"
 	})
 	rec, _ := savePath(t, s, "solo.bot", edited, "")
 	if rec.Code != http.StatusUnprocessableEntity {
@@ -957,12 +962,12 @@ func TestAProbeRefusalNeverNamesTheWorkspaceRoot(t *testing.T) {
 	}
 }
 
-// TestRelProbeDiagnosticsStripsTheUnitRoot: the rel-mapping itself. Every
-// name a probe diagnostic can carry is Join(Root, Rel), so the position
-// field and a message citing a name verbatim are both answered by cutting
-// the root — kind, line and column untouched. A files-map probe (Root "",
-// every name already the rel) is left alone.
-func TestRelProbeDiagnosticsStripsTheUnitRoot(t *testing.T) {
+// TestRelUnitDiagnosticsStripsTheUnitRoot: the rel-mapping itself. Every
+// name a disk-loaded unit's diagnostic can carry is Join(Root, Rel), so
+// the position field and a message citing a name verbatim are both
+// answered by cutting the root — kind, line and column untouched. A
+// files-map unit (Root "", every name already the rel) is left alone.
+func TestRelUnitDiagnosticsStripsTheUnitRoot(t *testing.T) {
 	sep := string(os.PathSeparator)
 	root := sep + filepath.Join("home", "operator", "project", "demo")
 	abs := func(rel string) string { return root + sep + filepath.FromSlash(rel) }
@@ -975,7 +980,7 @@ func TestRelProbeDiagnosticsStripsTheUnitRoot(t *testing.T) {
 			{Code: parser.DiagImportUnreadable, Severity: parser.SeverityError, File: abs("main.bot"), Line: 1, Column: 1, Message: "cannot read main.bot: open " + abs("main.bot") + ": permission denied"},
 		},
 	}
-	relProbeDiagnostics(probe)
+	relUnitDiagnostics(probe)
 	for _, d := range probe.Diagnostics {
 		if strings.Contains(d.File, root) || strings.Contains(d.Message, root) {
 			t.Fatalf("an absolute path survived the mapping: %v", d)
@@ -991,9 +996,48 @@ func TestRelProbeDiagnosticsStripsTheUnitRoot(t *testing.T) {
 	mapped := &unit.Unit{
 		Diagnostics: []parser.Diagnostic{{Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError, File: "main.bot", Line: 3, Column: 1, Message: "declared twice"}},
 	}
-	relProbeDiagnostics(mapped)
+	relUnitDiagnostics(mapped)
 	if d := mapped.Diagnostics[0]; d.File != "main.bot" || d.Message != "declared twice" {
 		t.Fatalf("a files-map probe was rewritten: %v", d)
+	}
+}
+
+// TestAnApplyNeverNamesTheWorkspaceRoot: the apply re-loads the unit from
+// DISK with the edited file staged, and its diagnostics are positioned
+// under absolute paths — the loader's. Both ways they cross to the client
+// are cut to the unit's relative names (#1934): an `import` the loader
+// cannot follow is a 422 whose body quotes the diagnostic, and an error
+// the edit introduces in a file the bot already holds rides the 200's
+// diagnostics.
+func TestAnApplyNeverNamesTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+
+	missing := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"", "import \"lib/nodes.bot\"\nimport \"lib/missing.bot\"", 1)
+	rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": missing})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an apply whose import does not resolve: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "lib/missing.bot") {
+		t.Fatalf("the refusal does not name the import as written: %s", body)
+	}
+	if strings.Contains(body, workdir) {
+		t.Fatalf("the refusal discloses the server's directory layout: %s", body)
+	}
+
+	dup := unitFixtureMain + "\nagent worker:\n  description: \"again\"\n"
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": dup})
+	if rec.Code != http.StatusOK || len(applied.Diagnostics) == 0 {
+		t.Fatalf("the duplicate is not the case under test: %d %s", rec.Code, rec.Body.String())
+	}
+	joined := strings.Join(applied.Diagnostics, "\n")
+	if !strings.Contains(joined, "main.bot:") {
+		t.Fatalf("the diagnostics do not cite the main by its relative path: %s", joined)
+	}
+	if strings.Contains(joined, workdir) {
+		t.Fatalf("the diagnostics disclose the server's directory layout: %s", joined)
 	}
 }
 
@@ -1185,23 +1229,25 @@ func TestThePerFileEditorCarriesAnImportAddedToAFragment(t *testing.T) {
 }
 
 // TestTheMergedViewSpeaksAboutTheTextItHandsOver: a fold in the MERGED
-// program is a different question from a fold in any one file. The merged
-// text is rendered at the merged profile, so a unit may hold a file
-// `iterion fmt` refuses and still flatten faithfully — and a unit of files
-// it accepts may flatten folded. Asked per file it answered both the wrong
-// way round: it blocked a download that was byte-faithful, and stayed
-// silent on one that was not.
+// program is a different question from a fold in any one file. Asked per
+// file it answered both the wrong way round: it blocked a download that was
+// byte-faithful, and stayed silent on one that was not. Since #1612 both
+// profiles keep a carriable value over its lines, so the split is no
+// longer the profile: it is whether the value has a multi-line form at all
+// — a carriage return has none.
 func TestTheMergedViewSpeaksAboutTheTextItHandsOver(t *testing.T) {
 	workdir := t.TempDir()
-	// The main carries profile 2, so the merged program is written with
-	// the strict escape and the fragment's spread value comes back on one
-	// line.
+	// The fragment's spread value holds a carriage return: no form carries
+	// it, the merged render folds the whole program, and the download says
+	// so, naming the file.
 	strictMain := "dsl: 2\n\nimport \"lib/nodes.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
 	writeUnitFixture(t, workdir, map[string]string{"folds/main.bot": strictMain, "folds/lib/nodes.bot": foldNodes})
-	// And a unit whose main keeps profile 1: its fragment is the very file
-	// `fmt` refuses, yet the merged program carries the value over its
-	// lines — the download is faithful and must not be blocked.
-	writeUnitFixture(t, workdir, map[string]string{"faithful/main.bot": foldMain, "faithful/lib/nodes.bot": foldNodes})
+	// And a unit whose fragment's spread value the writer carries: the
+	// merged program keeps it over its lines — the download is faithful
+	// and must not be blocked.
+	faithfulMain := "dsl: 2\n\nimport \"lib/nodes.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
+	faithfulFrag := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line two\n"
+	writeUnitFixture(t, workdir, map[string]string{"faithful/main.bot": faithfulMain, "faithful/lib/nodes.bot": faithfulFrag})
 	s := &Server{cfg: Config{WorkDir: workdir}}
 
 	_, folding := openPath(t, s, "folds/main.bot")
@@ -1230,7 +1276,7 @@ func TestTheMergedViewSpeaksAboutTheTextItHandsOver(t *testing.T) {
 	if clean.Refused != "" {
 		t.Fatalf("a faithful merged program was flagged: %q\n%s", clean.Refused, clean.Source)
 	}
-	if !strings.Contains(clean.Source, "line one\nline two") {
+	if !strings.Contains(clean.Source, "command: |\n") {
 		t.Fatalf("the fixture does not separate the two cases — its merged text folds too:\n%s", clean.Source)
 	}
 }
@@ -1395,7 +1441,7 @@ func TestTheCloudUnitWriteBackRefusesAFileTheWriterWouldFold(t *testing.T) {
 	// The forbidden alternative, named — read off the REFUSAL's own body,
 	// which is the only place it could appear: unparseCall decodes on 200
 	// alone, so asserting on `out` here would be asserting on a zero value.
-	if strings.Contains(rec.Body.String(), "\\nline two") {
+	if strings.Contains(rec.Body.String(), "\\nline\\r two") {
 		t.Fatalf("the folded fragment came back to be written:\n%s", rec.Body.String())
 	}
 	_ = out

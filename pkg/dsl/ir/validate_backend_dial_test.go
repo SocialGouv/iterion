@@ -745,11 +745,11 @@ func TestApplyRunFallback_WhatTheLaunchCannotAnswerStaysUndecided(t *testing.T) 
 	}
 }
 
-// The view reads a var's text the way resolveVars does at dispatch — through
-// the PROCESS ENVIRONMENT (varExpandFn ends in os.Getenv), never through the
-// ITERION_ settings overlay, which is LookupEnv's alone. A view built on the
-// overlay's reading screens a backend the run will never use.
-func TestLaunchVarsView_ReadsVarTextThroughTheProcessEnv(t *testing.T) {
+// The view reads a var's text the way resolveVars does at dispatch: through
+// LookupEnv, the bot-vars overlay then the process environment (ADR-093). A
+// view on another reading screens a backend the run never uses, or misses
+// one it does.
+func TestLaunchVarsView_ReadsVarTextThroughTheOverlayThenTheProcessEnv(t *testing.T) {
 	SetEnvOverlay(func(name string) (string, bool) {
 		if name == "ITERION_ZZPROBE_BACKEND" {
 			return "claw", true
@@ -761,13 +761,13 @@ func TestLaunchVarsView_ReadsVarTextThroughTheProcessEnv(t *testing.T) {
 		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${ITERION_ZZPROBE_BACKEND}"},
 		"o": {Name: "o", Type: VarString},
 	}}
-	// The overlay says claw; the process environment says nothing. Dispatch
-	// stores "" — the view must too.
-	if got := launchVarsView(w, nil)["b"]; got != "" {
-		t.Errorf("view[b] = %q, want \"\" — the overlay is not the run's reading of a var's text", got)
+	// The overlay says claw and the process environment nothing: dispatch
+	// stores claw — the view must too.
+	if got := launchVarsView(w, nil)["b"]; got != "claw" {
+		t.Errorf("view[b] = %q, want claw — dispatch reads a stored bot var", got)
 	}
 	// Overrides take the same reading (resolveVars expands both), here with
-	// the process env answering.
+	// the process env answering a name the overlay does not hold.
 	t.Setenv("C1606_OVERRIDE", "kimi")
 	if got := launchVarsView(w, map[string]string{"o": "${C1606_OVERRIDE}"})["o"]; got != "kimi" {
 		t.Errorf("view[o] = %q, want kimi — an override's ${…} is expanded as the run expands it", got)
@@ -790,19 +790,11 @@ func TestLaunchVarsView_ExpandsAsManyTimesAsDispatch(t *testing.T) {
 	}
 }
 
-// The screen-level consequence, on the reviewer's fixture: a var default
-// written against an ITERION_ name the overlay answers but the process
-// environment does not. Dispatch reads "" — the node backend is undecided
-// and the crossing screens take no opinion — while a view on the overlay's
-// reading screened it as claw and refused a route the run would have taken.
-func TestApplyRunFallback_VarsBackendReadThroughTheProcessEnvNotTheOverlay(t *testing.T) {
-	SetEnvOverlay(func(name string) (string, bool) {
-		if name == "ITERION_ZZPROBE_BACKEND" {
-			return "claw", true
-		}
-		return "", false
-	})
-	defer SetEnvOverlay(nil)
+// The screen-level consequence: a var default written against an ITERION_
+// name a stored bot var answers. Dispatch runs the node on claw, so the
+// claude_code run-fallback route is the refusal it is on any claw node; with
+// the name answered nowhere the node is undecided and nothing is refused.
+func TestApplyRunFallback_VarsBackendReadThroughTheOverlay(t *testing.T) {
 	src := "vars:\n  b: string = \"${ITERION_ZZPROBE_BACKEND}\"\n\n" +
 		"agent x:\n  backend: \"{{vars.b}}\"\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: p\n" +
 		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
@@ -814,17 +806,23 @@ func TestApplyRunFallback_VarsBackendReadThroughTheProcessEnvNotTheOverlay(t *te
 		return w
 	}
 	route := []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}
-	// Process env unset: dispatch resolves the var to "" and the node is
+	t.Setenv("ITERION_ZZPROBE_BACKEND", "")
+	// Answered nowhere: dispatch resolves the var to "" and the node is
 	// undecided — no refusal.
 	if refusals := ApplyRunFallback(fresh(), route, false, nil); len(refusals) != 0 {
-		t.Errorf("refused on the overlay's reading, which the run never makes: %v", refusals)
+		t.Errorf("refused an undecided node: %v", refusals)
 	}
-	// Control: the process env answering IS the run's reading — the same
-	// route on the tools-less claw node is the refusal.
-	t.Setenv("ITERION_ZZPROBE_BACKEND", "claw")
+	// A stored bot var answering it IS the run's reading.
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_ZZPROBE_BACKEND" {
+			return "claw", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
 	refusals := ApplyRunFallback(fresh(), route, false, nil)
 	if len(refusals) != 1 {
-		t.Fatalf("%d refusals with the process env set, want 1: %v", len(refusals), refusals)
+		t.Fatalf("%d refusals with the bot var set, want 1: %v", len(refusals), refusals)
 	}
 	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
 		t.Errorf("refused for the wrong reason: %s", refusals[0])
@@ -1016,8 +1014,8 @@ func TestLaunchVarsView_ConsultedButDiscardedStaysUndecided(t *testing.T) {
 // dispatch's varExpandFn. A probe lookup answering "" for everything
 // resolved the inner segment to nothing and never saw it — the screen then
 // read the var as decided-empty where dispatch reads a path. The probe
-// answers non-listed names from the process environment (the one the screen
-// itself expands with); a listed name's consult is still recorded.
+// answers non-listed names through LookupEnv (the reading the screen itself
+// expands with); a listed name's consult is still recorded.
 func TestLaunchVarsView_IndirectEngineNameStaysUndecided(t *testing.T) {
 	t.Setenv("C1606_INDIRECT", "PROJECT_DIR")
 	w := &Workflow{Vars: map[string]*Var{
@@ -1025,5 +1023,66 @@ func TestLaunchVarsView_IndirectEngineNameStaysUndecided(t *testing.T) {
 	}}
 	if _, ok := launchVarsView(w, nil)["b"]; ok {
 		t.Errorf("view[b] present — dispatch resolves ${${C1606_INDIRECT}} to the PROJECT_DIR path; the var must stay undecided")
+	}
+}
+
+// An agent, a judge or an llm router with no `model:` compiles with
+// ITERION_DEFAULT_SUPERVISOR_MODEL read through LookupEnv — the reading the
+// executor's router fallback and the supervisor apply at run time — so a
+// stored bot var reaches the compiled program, not only the run.
+func TestResolveSupervisorModel_ReadsTheBotVarOverlay(t *testing.T) {
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_DEFAULT_SUPERVISOR_MODEL" {
+			return "anthropic/claude-haiku-4-5", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+	if got := resolveSupervisorModel(""); got != "anthropic/claude-haiku-4-5" {
+		t.Errorf("resolveSupervisorModel(\"\") = %q, want the bot var's model", got)
+	}
+	if got := resolveSupervisorModel("openai/gpt-6"); got != "openai/gpt-6" {
+		t.Errorf("an explicit model lost to the default: %q", got)
+	}
+}
+
+// The probe reads names as dispatch does: an indirection whose inner name
+// only a stored bot var answers still consults PROJECT_DIR — dispatch expands
+// it to the workDir path, which the screen cannot know — so the view leaves
+// the var undecided.
+func TestLaunchVarsView_ProbeSeesAnIndirectionThroughTheOverlay(t *testing.T) {
+	t.Setenv("ITERION_ZZ_WHICH", "")
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_ZZ_WHICH" {
+			return "PROJECT_DIR", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${${ITERION_ZZ_WHICH}}"},
+	}}
+	if v, ok := launchVarsView(w, nil)["b"]; ok {
+		t.Errorf("view[b] = %q, want the var left undecided — dispatch reads a path the screen cannot", v)
+	}
+}
+
+// A coercion failure runs the RAW text expanded as dispatch expands it —
+// through the overlay — so the view reads the same backend.
+func TestLaunchVarsView_CoercionFallbackReadsTheOverlay(t *testing.T) {
+	t.Setenv("ITERION_ZZ_FLAG", "")
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_ZZ_FLAG" {
+			return "claw", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+	w := &Workflow{Vars: map[string]*Var{
+		"b": {Name: "b", Type: VarBool, HasDefault: true, Default: "${ITERION_ZZ_FLAG}"},
+	}}
+	if got := launchVarsView(w, nil)["b"]; got != "claw" {
+		t.Errorf("view[b] = %#v, want \"claw\" — dispatch's coercion fallback expands through the overlay", got)
 	}
 }

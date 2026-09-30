@@ -1,5 +1,16 @@
 name: 🏷️ Version
 
+# The release commit lands on main by a direct push (the App bypasses the
+# ruleset), and a direct push to main invalidates every merge group the queue
+# is building: each one is rebuilt from scratch on the new base. Releasing
+# after every merge discards the build of whatever is queued behind it — the
+# entries built in parallel with it, almost always (measured in
+# docs/merge-policy.md#releases-and-the-queue). So a merged pull request
+# releases only while no merge group is in flight: the last merge of a burst
+# releases everything the burst landed. The nightly and a workflow_dispatch
+# release regardless — the nightly is the backstop for a queue that drains
+# without a merge (its last entry ejected) or never drains, and a dispatch is
+# an operator's explicit request.
 on:
   workflow_dispatch:
     inputs:
@@ -19,13 +30,27 @@ on:
     # Tune the time to taste; this is the only nightly trigger in the chain.
     - cron: "27 22 * * *"
 
+# One release at a time, whatever the trigger, and none of them cancelled. Two
+# release-its must never run concurrently: when a push is rejected, release-it
+# rolls back by deleting the remote tag of the version it computed
+# (`git push origin --delete vX`) — and if the other run just pushed that same
+# version, that is the other run's tag, leaving a release commit on main with
+# no tag. A group also keeps only ONE pending run by default and cancels it
+# when a newer one queues, which would let a merged pull request's run (held
+# while the queue builds) silently replace a pending nightly or dispatch.
+# `queue: max` keeps up to 100 pending runs, in order; each releases main's tip
+# as it finds it, so a run behind a release finds nothing new or the next one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: write
   id-token: write
+  # The release hold reads whether a merge-queue branch's pull request is
+  # still open.
+  pull-requests: read
 
 jobs:
   version:
@@ -34,6 +59,10 @@ jobs:
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
+    # Runs queue behind one another and none is ever cancelled, so a hung run
+    # would hold every release behind it for the 6-hour default. A release
+    # takes minutes.
+    timeout-minutes: 30
     steps:
       - name: Get GitHub App Token
         id: token
@@ -44,6 +73,9 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # main's tip as this run finds it, whatever the trigger: the event's
+          # own commit can be behind the release a queued run ahead of it cut.
+          ref: main
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
 
@@ -63,25 +95,119 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Skip nightly release when nothing changed
+      - name: Hold the release while the merge queue is building
+        # Only a merged pull request's release is held: the nightly and a
+        # dispatch release regardless and do not read the queue at all.
+        #
+        # Read after the dependency install and BEFORE the move to main's tip:
+        # a group in flight at this read is the only queue merge that could
+        # land before release-it pushes, and it holds the release; whatever
+        # lands before the move is in the tree release-it commits onto. A merge
+        # group under construction exists as a gh-readonly-queue/main/*
+        # branch, and those branches are exactly what a push to main
+        # invalidates — contents: read is all it takes. Best effort, not a
+        # lock: release-it still builds for a few minutes before it pushes,
+        # and a group that starts in that window rebuilds once. A failed read
+        # fails the job: releasing blind is what this replaces.
+        #
+        # GitHub sometimes leaves such a branch behind after its group merged
+        # (seen on mastodon, cilium, zed, flutter): counted as a live group,
+        # one orphan would hold every merged pull request's release until the
+        # nightly. A branch is named after the pull request at the tail of its
+        # group (gh-readonly-queue/main/pr-<n>-<base>), and a group only exists
+        # while that pull request waits in the queue — so a branch counts as
+        # live while its pull request is OPEN. Its head commit is dated when
+        # the entry was queued (a rebuild keeps the date); entries here wait
+        # minutes, a few hours on a bad day, so one queued more than
+        # MAX_ENTRY_AGE ago counts as left behind even if its pull request is
+        # open (dequeued, kept open). Branches left behind are ignored and
+        # named, with their pull request's state, so that someone deletes them.
+        id: queue
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAX_ENTRY_AGE: "86400"
+        run: |
+          set -euo pipefail
+          refs="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/gh-readonly-queue/main/" --jq '.[] | [.ref, .object.sha] | @tsv')"
+          now="$(date -u +%s)"
+          live=""
+          orphans=""
+          while IFS=$'\t' read -r ref sha; do
+            [ -n "$ref" ] || continue
+            pr="${ref##*/pr-}"
+            pr="${pr%%-*}"
+            case "$pr" in
+              ''|*[!0-9]*) echo "::error::cannot read a pull request number out of ${ref}"; exit 1 ;;
+            esac
+            state="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.state')"
+            queued="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${sha}" --jq '.committer.date')"
+            queued_s="$(date -u -d "$queued" +%s)"
+            if [ "$state" = "open" ] && [ $(( now - queued_s )) -le "$MAX_ENTRY_AGE" ]; then
+              live+="${ref}"$'\n'
+            else
+              orphans+="${ref} — pull request #${pr} ${state}, queued ${queued}"$'\n'
+            fi
+          done <<< "$refs"
+          if [ -n "$orphans" ]; then
+            printf 'merge-queue branches left behind by their group, ignored:\n%s' "$orphans"
+            echo "::warning::$(printf '%s' "$orphans" | grep -c .) gh-readonly-queue branch(es) outlived their group (pull request closed, or queued over ${MAX_ENTRY_AGE}s ago) — ignored by this guard; the log names them, check and delete."
+          fi
+          if [ -z "$live" ]; then
+            echo "no merge group in flight — releasing"
+            echo "busy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          count="$(printf '%s' "$live" | grep -c .)"
+          printf 'merge groups in flight:\n%s' "$live"
+          echo "::notice::Release held: ${count} merge group(s) in flight. The merge that drains the queue releases everything merged since the last tag; the nightly releases regardless; so does a workflow_dispatch."
+          echo "busy=true" >> "$GITHUB_OUTPUT"
+
+      - name: Release main's tip as it is now
+        # The checkout above ran minutes ago, and runs wait in line behind one
+        # another: a merge landing in between — typically the one that drains
+        # the queue — would make release-it commit onto a stale tree and its
+        # push fail. Move to main's current tip first; reinstall the
+        # dependencies only when the lockfile moved with it. A held release
+        # has nothing to move for.
+        if: steps.queue.outputs.busy != 'true'
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse HEAD)"
+          git fetch --quiet origin main
+          git checkout --quiet -B main origin/main
+          if [ "$(git rev-parse HEAD)" != "$before" ]; then
+            echo "main moved from ${before:0:9} to $(git rev-parse --short HEAD) since the checkout"
+            if ! git diff --quiet "$before" HEAD -- package.json pnpm-lock.yaml pnpm-workspace.yaml; then
+              pnpm install --frozen-lockfile
+            fi
+          fi
+
+      - name: Skip the release when nothing changed since the last tag
+        # A queued run can find main's tip already released by the run ahead
+        # of it. For a merged pull request, release-it's conventional-changelog
+        # plugin then declines on its own ("No new version to release"); a
+        # dispatch passes an explicit increment (`minor` by default), which
+        # would cut an empty release — so the nightly and a dispatch check
+        # first.
         id: changes
-        if: github.event_name == 'schedule'
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
           if [ -z "$LAST_TAG" ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "no previous tag — releasing"
-          elif git log "${LAST_TAG}..HEAD" --oneline | grep -q .; then
+          elif [ "$(git rev-list --count "${LAST_TAG}..HEAD")" -gt 0 ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "commits since ${LAST_TAG} — releasing"
           else
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "no commits since ${LAST_TAG} — skipping nightly release"
+            echo "::notice::no commit since ${LAST_TAG} — nothing to release"
           fi
 
       - name: Run release-it
-        if: steps.changes.outputs.has_changes != 'false'
+        if: steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false')
         env:
           # Use the token-bureau App token so the GitHub Release that
           # release-it creates carries an App identity. Releases created

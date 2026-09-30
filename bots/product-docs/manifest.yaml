@@ -1,7 +1,7 @@
 name: product-docs
 display_name: Prody
 icon: 🧭
-version: 1.4.0
+version: 1.5.0
 ## 1.3.0 — EXHAUSTIVENESS IS A GATE, not the agent's word. A new
 ## deterministic node, `coverage_check`, reads the product's
 ## golden-master net — `<oracle_dir>/feature-coverage.json` (covered

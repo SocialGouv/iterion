@@ -589,18 +589,18 @@ hint and the wire model:
 ```iter fragment
 agent reviewer:
   backend: "claude_code"
-  provider: "zai:glm-5.2,anthropic:claude-opus-4-8"   # glm-5.2 on z.ai, claude-opus-4-8 on Anthropic
+  provider: "zai:glm-5.3,anthropic:claude-opus-5-5"   # glm-5.3 on z.ai, claude-opus-5-5 on Anthropic
 ```
 
 This is the case where the chain's two providers serve **different model
-ids over the same Anthropic-wire API** — `glm-5.2` is a z.ai model that
+ids over the same Anthropic-wire API** — `glm-5.3` is a z.ai model that
 Anthropic would reject, so a hint-only swap would break on fall-through.
 The token is split on the **first** colon (a model id that itself
 contains a colon survives intact). An element **without** a model
-(`anthropic` in `zai:glm-5.2,anthropic`) inherits the node's `model:`
+(`anthropic` in `zai:glm-5.3,anthropic`) inherits the node's `model:`
 baseline; an inheriting element after a model-bearing one restores the
 baseline rather than carrying the previous override. A malformed element
-— a colon with an empty provider (`:glm-5.2`) or empty model (`zai:`) —
+— a colon with an empty provider (`:glm-5.3`) or empty model (`zai:`) —
 warns **C172** at compile time. Env expansion still runs on the whole
 field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 `provider:model` separator.
@@ -943,7 +943,8 @@ The screen reads a node's backend the way the run itself will: a
 `{{vars.<name>}}` reference by the launch's vars (the declared defaults
 under that launch's `--var` overrides) — the same template-then-env
 reading `resolveRoutingField` makes at dispatch, var values expanded
-through the process environment exactly as `resolveVars` expands them.
+through the bot-vars overlay then the process environment exactly as
+`resolveVars` expands them.
 A reference neither answers stays undecided and is screened as before:
 no opinion, no guess.
 
@@ -1246,10 +1247,13 @@ When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider (the detector's
 `SuggestedModel` for the first available provider, in this priority
 order) — currently
-`anthropic/claude-opus-5` for Anthropic,
-`anthropic/glm-5.2` for z.ai,
-`openai/gpt-5.4-mini` for OpenAI, and
-`xai/grok-3` for xAI.
+`anthropic/claude-opus-5-5` for Anthropic,
+`anthropic/glm-5.3` for z.ai,
+`moonshot/kimi-k2` for Moonshot,
+`openai/gpt-6-sol` for OpenAI, and
+`xai/grok-3` for xAI (the `SuggestedModel` fields of
+[`pkg/backend/detect`](../pkg/backend/detect/detect.go), in the order the
+detector lists them).
 
 #### Stream-silence watchdog
 

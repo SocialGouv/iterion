@@ -38,6 +38,42 @@
 
 dsl: 2
 
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## Branch comparison base — same semantics as review-pr's base_ref.
+  ## The agent diffs `git merge-base base_ref HEAD` to ground its
+  ## answer in the actual change set. Defaults to the common
+  ## integration-branch name; the webhook handler overrides it from
+  ## the PR's target_branch.
+  base_ref: string = "main"
+  ## The pull-request (merge-request on GitLab) URL the conversation lives on. Used to
+  ## derive forge host + project + iid for the reply POST. Webhook
+  ## handler injects this; manual runs MUST pass it via --var.
+  pr_url: string = ""
+  ## The discussion thread id to reply IN. Webhook handler injects
+  ## this from the parsed note (GitLab: oa.discussion_id; GitHub: the
+  ## review-comment id). Empty disables posting (the agent still
+  ## composes an answer for inspection in the report).
+  discussion_id: string = ""
+  ## The operator's original note body (raw — includes the leading
+  ## `/revi <question>` slash-command). The agent strips the
+  ## command prefix when echoing the question back in the answer.
+  trigger_note: string = ""
+  ## The question itself — the args after `/revi`. The webhook
+  ## handler passes this (`cmdArgs`); the agent uses it as the
+  ## primary question to answer. Empty falls back to trigger_note.
+  converse_question: string = ""
+  ## The discussion-thread transcript (chronological, the bot's own
+  ## notes labelled), fetched + injected by the webhook handler from
+  ## the forge API. This is the conversational context the operator's
+  ## reply refers to — typically Revi's earlier review comment. Empty
+  ## on manual runs or when the fetch failed; the system prompt then
+  ## tells the agent when to fetch it itself (forge-reply.md GET).
+  thread_context: string = ""
+  ## The forge username of the operator who asked the question.
+  ## Used to address them in the answer ("Re: <replier> — …").
+  replier: string = ""
+
 secrets:
   ## Forge API token used to POST the answer note. Mounted as a FILE
   ## the agent passes to curl by path — never read into a prompt or
@@ -49,51 +85,7 @@ secrets:
     as: file
     optional: true
 
-vars:
-  workspace_dir: string = "${PROJECT_DIR}"
-
-  ## Branch comparison base — same semantics as review-pr's base_ref.
-  ## The agent diffs `git merge-base base_ref HEAD` to ground its
-  ## answer in the actual change set. Defaults to the common
-  ## integration-branch name; the webhook handler overrides it from
-  ## the PR's target_branch.
-  base_ref: string = "main"
-
-  ## The pull-request (merge-request on GitLab) URL the conversation lives on. Used to
-  ## derive forge host + project + iid for the reply POST. Webhook
-  ## handler injects this; manual runs MUST pass it via --var.
-  pr_url: string = ""
-
-  ## The discussion thread id to reply IN. Webhook handler injects
-  ## this from the parsed note (GitLab: oa.discussion_id; GitHub: the
-  ## review-comment id). Empty disables posting (the agent still
-  ## composes an answer for inspection in the report).
-  discussion_id: string = ""
-
-  ## The operator's original note body (raw — includes the leading
-  ## `/revi <question>` slash-command). The agent strips the
-  ## command prefix when echoing the question back in the answer.
-  trigger_note: string = ""
-
-  ## The question itself — the args after `/revi`. The webhook
-  ## handler passes this (`cmdArgs`); the agent uses it as the
-  ## primary question to answer. Empty falls back to trigger_note.
-  converse_question: string = ""
-
-  ## The discussion-thread transcript (chronological, the bot's own
-  ## notes labelled), fetched + injected by the webhook handler from
-  ## the forge API. This is the conversational context the operator's
-  ## reply refers to — typically Revi's earlier review comment. Empty
-  ## on manual runs or when the fetch failed; the system prompt then
-  ## tells the agent when to fetch it itself (forge-reply.md GET).
-  thread_context: string = ""
-
-  ## The forge username of the operator who asked the question.
-  ## Used to address them in the answer ("Re: <replier> — …").
-  replier: string = ""
-
 ## ─── Prompts ────────────────────────────────────────────────────
-
 prompt converse_system:
   You are Revi (converse) — a senior, READ-ONLY code reviewer
   answering an operator's follow-up question on an open PR. You
@@ -211,7 +203,6 @@ prompt converse_health_system:
   converse_agent's output and emits a banner the report surfaces.
 
 ## ─── Schemas ────────────────────────────────────────────────────
-
 schema converse_output:
   ## posted: a reply note was successfully created in the thread.
   posted: bool
@@ -245,15 +236,25 @@ schema converse_health_output:
   banner: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
-
 agent converse_agent:
-  backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CONVERSE:-medium}"
+  backend: "claude_code"
+  ## Review-pr's claude slot, dials included (see its reviewer_claude for
+  ## the full account): the `anthropic` hint keeps a z.ai key holding the
+  ## wire from answering this claude id with GLM in silence; with no
+  ## Anthropic credential sealed and none ambient on the runner, the
+  ## primary fails "Not logged in" and the route below is the GLM lane.
+  provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"
   output: converse_output
   system: converse_system
   user: converse_user
-  session: fresh
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CONVERSE:-medium}"
+  fallbacks:
+    glm:
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
+      provider: "zai"
+      on: [usage_window, auth, unavailable]
+      metered: true
   ## No `interaction: human` here: an unattended webhook launch has
   ## nothing to ask a human about, and a leftover interactive turn
   ## let the agent finish with prose instead of the structured
@@ -264,7 +265,7 @@ agent converse_agent:
 ## run still succeeds — this informs (degraded=true) rather than
 ## hard-failing. Forge-agnostic: pure invariant assertion.
 tool converse_health:
-  command: `POSTED={{input.posted}} REPLY_URL={{input.reply_url}} SKIPPED={{input.skipped_reason}} python3 -c "
+  command: `POSTED={{input.posted}} REPLY_URL={{input.reply_url}} SKIPPED={{input.skipped_reason}} python3 -I -c "
 import os, json, sys
 posted = os.environ.get('POSTED', 'false') == 'true'
 reply = os.environ.get('REPLY_URL', '')
@@ -283,18 +284,16 @@ print(json.dumps({'degraded': degraded, 'banner': banner}))
   output: converse_health_output
 
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow revi_converse:
-  entry: converse_agent
-
   ## Answering a question about a diff reads the repo; it never builds
   ## it. Same reasoning as review-pr: the target's own toolchain is a
   ## cold Nix realise this run has no use for.
   repo_devbox: off
-
   ## Nor does it commit: the mid-run workspace checkpoint would preserve
   ## nothing of this run's and would push a branch to the repo it reads.
   workspace_checkpoint: off
+
+  entry: converse_agent
 
   budget:
     ## One short LLM step + a deterministic gate. Conversations
@@ -306,6 +305,7 @@ workflow revi_converse:
   converse_agent -> converse_health with {
     posted: "{{outputs.converse_agent.posted}}",
     reply_url: "{{outputs.converse_agent.reply_url}}",
-    skipped_reason: "{{outputs.converse_agent.skipped_reason}}"
+    skipped_reason: "{{outputs.converse_agent.skipped_reason}}",
   }
+
   converse_health -> done

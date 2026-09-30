@@ -20,7 +20,11 @@ import (
 // one (`{{var.m}}`, `{{Vars.m}}`, `{{env.HOME}}`), a span with no path, a
 // dotted path under a scalar or list var (a string holds no members — the
 // drill finds nothing and the text reaches the backend as written), the
-// `{{!…}}` raw form, an opening with no close. The scan
+// `{{!…}}` raw form, an opening with no close. A WHOLE-ref span that
+// resolves joins them when the var it names is declared `string[]`, or
+// `json` with no scalar default document (checkRoutingVarListType, #1605):
+// a list var resolves to its JSON spelling, a backend name nobody
+// registered. The scan
 // mirrors the executor's resolver, which treats any `{{…}}` as a reference
 // and keeps what it cannot resolve as written: left alone, that text reached
 // the backend (an invalid spec on claw, a model literally named `{{var.m}}`
@@ -57,6 +61,10 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 								"%s: %s drills into %q, a %s var — the executor resolves a dotted vars path by drilling a json var's document, and a %s holds no members, so the text reaches the backend as written and the node fails at its first delegation (declare the var `json` and move the member into it, write the id, a ${VAR:-default}, or a flat declared var)",
 								loc, span, refs[0].Path[0], v.Type, v.Type)
 						}
+					} else {
+						// A whole ref: the name resolves, but the
+						// declared TYPE can still be unroutable (#1605).
+						c.checkRoutingVarListType(w, node.NodeID(), loc, rf.name, refs[0].Path[0])
 					}
 					continue
 				}
@@ -83,6 +91,8 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 						"workflow default_backend: %s drills into %q, a %s var — only a json var's document has members to drill; the text becomes the backend name at dispatch and every node that names no backend fails at its first delegation",
 						span, refs[0].Path[0], v.Type)
 				}
+			} else {
+				c.checkRoutingVarListType(w, "", "workflow default_backend", "default_backend", refs[0].Path[0])
 			}
 			continue
 		}
@@ -104,6 +114,85 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 				sup.Name, sup.Model)
 		}
 	}
+}
+
+// checkRoutingVarListType completes the arm that accepts a declared vars
+// reference (#1605): the var's NAME resolves, but its declared TYPE can
+// still be unroutable. A routing field is a scalar by nature — its text
+// becomes a name at dispatch — and a `string[]` var resolves to the
+// list's JSON spelling (`["claw","claude_code"]`), which the backend
+// registry rejects only after the workspace and the sandbox have been
+// paid for. That is exactly the failure C148 exists to describe for the
+// other unresolvable shapes, so it is C148 too, and a warning for the
+// same reason the whole family is: the launch may still override the var
+// with a scalar — the compiler cannot know the VALUE, only the declared
+// type.
+//
+// A `json` var is not a list by declaration: its default document decides
+// (executed: `b: json = "\"claude_code\""` resolves to the ROUTABLE
+// scalar "claude_code", no override involved). So the json arm reads the
+// static default's shape (jsonDefaultDocument) and stays SILENT on a
+// scalar document — a string, a number, a bool — warning on a list, an
+// object, and on no default at all (the launch supplies the document). A
+// null document warns for what it does instead: it renders as the empty
+// string, so the field is UNSET at dispatch and silently falls back to
+// its default. A `${...}` in the default moves nothing: the run parses
+// the document before it expands a leaf, so `"${BACKEND}"` is the
+// routable string it expands to.
+func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string) {
+	v := w.Vars[varName]
+	if v == nil {
+		return // C033 owns the undeclared name
+	}
+	switch v.Type {
+	case VarStringArray:
+	case VarJSON:
+		doc, known := jsonDefaultDocument(v)
+		if known && isScalarDocument(doc) {
+			return // a scalar document resolves to a routable scalar
+		}
+		if known && doc == nil {
+			// null renders as the empty string (formatValue), and an empty
+			// routing field is an UNSET one: nothing fails — the route
+			// silently falls back to the default the field was written to
+			// override.
+			c.warnfAt(DiagRoutingFieldRef, nodeID, "",
+				"%s: {{vars.%s}} resolves, but the `json` var's default document is null, which renders as the empty string — %s is then UNSET at dispatch and silently falls back to its default instead of the route the field names (give the var a scalar default, or declare it `string` if the fallback is meant)",
+				loc, varName, field)
+			return
+		}
+	default:
+		return
+	}
+	c.warnfAt(DiagRoutingFieldRef, nodeID, "",
+		"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list or object value resolves to its JSON spelling ([\"a\",\"b\"]), a name no backend, model or provider answers to; the node fails at its first delegation (declare the var `string`, or override it at launch with a scalar)",
+		loc, varName, v.Type, field)
+}
+
+// jsonDefaultDocument is the document a `json` var's static default
+// starts the run with, read for its SHAPE. The run parses the text first
+// (ResolveVarText → CoerceVarValue: text that is not JSON stays a
+// string) and only then expands the string LEAVES, so no reference ever
+// changes a document's shape — `"${DOC}"` is a string whatever DOC holds,
+// `["${X}"]` a list — and the parse alone answers the question without
+// an environment. known is false when the var has no default: the launch
+// supplies the document, and nothing about its shape is known.
+func jsonDefaultDocument(v *Var) (doc any, known bool) {
+	if !v.HasDefault {
+		return nil, false
+	}
+	doc, err := CoerceVarValue(v.Default, VarJSON)
+	return doc, err == nil
+}
+
+// isScalarDocument reports whether a decoded document is a string, a
+// number or a bool — null, a list and an object are not.
+func isScalarDocument(doc any) bool {
+	switch doc.(type) {
+	case string, bool, float64, int64:
+		return true
+	}
+	return false
 }
 
 // templateSpans returns every `{{…}}` span of s as written, the way the

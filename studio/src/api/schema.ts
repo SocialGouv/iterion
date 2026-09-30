@@ -7293,6 +7293,9 @@ export interface components {
         botVarsSettingsView: {
             origin: string;
             propagation_bound_seconds: number;
+            refused?: {
+                [key: string]: string;
+            };
             stored?: components["schemas"]["BotVars"];
         };
         createApiKeyReq: {

@@ -652,7 +652,7 @@ your own literal quotes:
 
 ```
 # BROKEN — raw prose JSON in single quotes:
-DECISIONS='{{!input.decisions}}' python3 -c "..."
+DECISIONS='{{!input.decisions}}' python3 -I -c "..."
 ```
 
 LLM prose is full of apostrophes ("iterion's") and parens ("(CLI/studio)").
@@ -666,7 +666,7 @@ surrounding quotes** — let `shellEscapeValue` quote it:
 
 ```
 # CORRECT — shellEscapeValue wraps + escapes; json.loads gets exact JSON:
-DECISIONS={{input.decisions}} python3 -c "import os,json; d=json.loads(os.environ['DECISIONS'])"
+DECISIONS={{input.decisions}} python3 -I -c "import os,json; d=json.loads(os.environ['DECISIONS'])"
 ```
 
 Reserve `{{!ref}}` for values you control that are *meant* to be
@@ -674,6 +674,20 @@ re-interpreted as shell. A tool node that only ever saw path tokens (e.g.
 adr-cartograph's `build_manifest`) can carry the `'{{!input.x}}'` pattern
 latently for a long time — it breaks the day an apostrophe-bearing value
 flows through, so fix the pattern, not just the one value that tripped it.
+
+### Python in a tool node runs isolated
+
+A tool node runs with the workspace as its working directory, and
+`python3 -c` (like `-m`, or a program read from stdin: a heredoc, a `<`
+redirect, a pipe) puts that directory first on `sys.path`. A `json.py`,
+`hashlib.py` or `subprocess.py` at the root of the judged tree,
+git-ignored or not, then replaces the standard module inside the node,
+and a gate's verdict is written by the tree it judges. Write
+`python3 -I -c`, `python3 -I <<'PY'`, `… | python3 -I` (the catalog
+guard `TestCatalogPythonRunsIsolated` refuses the bare forms, by name or
+by path); a `language: py` script already runs `python3 -I`. A body that
+needs a third-party module gets it from the image's system
+site-packages, never from the workspace.
 
 ### Diagnostics
 
