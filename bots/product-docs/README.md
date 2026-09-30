@@ -427,7 +427,9 @@ content, so that containment is:
   since `upload-pack` serves the alternates too.
 
 A `.json` catalog needs no dependency at all. A YAML catalog is parsed
-with PyYAML when the interpreter has it, otherwise with `yq` (declared
+with PyYAML when the interpreter's system site-packages have it (tool
+nodes run `python3 -I`, which sees neither the user site nor
+`PYTHONPATH`), otherwise with `yq` (declared
 in this bundle's `devbox.json`); with neither, the run fails with a
 precise message rather than guessing.
 

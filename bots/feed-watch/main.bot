@@ -519,7 +519,7 @@ if cfg_path.endswith('.yaml') or cfg_path.endswith('.yml'):
     try:
         import yaml
     except ImportError:
-        raise SystemExit('feed-watch: YAML config needs PyYAML, which is not installed -- use a .json config instead')
+        raise SystemExit('feed-watch: YAML config needs PyYAML in the system site-packages of this python3 -- the node runs python3 -I, which sees neither the user site (pip install --user) nor PYTHONPATH; install it system-wide or in a venv, or use a .json config')
     cfg = yaml.safe_load(open(cfg_path, encoding='utf-8'))
 else:
     cfg = json.load(open(cfg_path, encoding='utf-8'))
