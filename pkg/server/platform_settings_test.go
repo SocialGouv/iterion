@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -268,5 +269,97 @@ func TestAdminBotVars_ConcurrentPutIsA409NotALostKey(t *testing.T) {
 	after, _ := st.Get(context.Background())
 	if after.Vars["ITERION_B_VAR"] != "2" {
 		t.Fatalf("the concurrent writer's key was lost: %+v", after.Vars)
+	}
+}
+
+// A record written under an older rule — no value charset, a server that
+// predates it, or a hand edit — may hold entries the current rule refuses.
+// BotVarsOverlay never applies them; the admin surface must say so and must
+// stay usable: re-judging the whole stored record on every write froze it,
+// and `vars rm` of one refused key failed naming the other.
+func TestAdminBotVars_ARecordFromAnOlderRuleStaysEditable(t *testing.T) {
+	st := platformcfg.NewMemoryStore[platformcfg.BotVars]()
+	if err := st.Put(context.Background(), platformcfg.BotVars{Vars: map[string]string{
+		"ITERION_VIBE_MODEL_CLAUDE":  "claude-opus-5-5 ",
+		"ITERION_VIBE_EFFORT_CLAUDE": "max high",
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := New(Config{SkipProjectRegistration: true, BotVarsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/bot-vars", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutBotVars(w, r)
+		return w
+	}
+	refused := func() map[string]string {
+		r := httptest.NewRequest("GET", "/api/admin/settings/bot-vars", nil).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminGetBotVars(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("get = %d: %s", w.Code, w.Body.String())
+		}
+		var view struct {
+			Refused map[string]string `json:"refused"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return view.Refused
+	}
+
+	if got := refused(); len(got) != 2 || got["ITERION_VIBE_MODEL_CLAUDE"] == "" || got["ITERION_VIBE_EFFORT_CLAUDE"] == "" {
+		t.Fatalf("refused = %v, want both stored entries named — the view showed them as live overrides", got)
+	}
+	if w := put(`{"ITERION_OTHER_KNOB":"x"}`); w.Code != http.StatusOK {
+		t.Fatalf("an unrelated set = %d: %s — the stored record froze every write", w.Code, w.Body.String())
+	}
+	if w := put(`{"ITERION_VIBE_MODEL_CLAUDE":null}`); w.Code != http.StatusOK {
+		t.Fatalf("rm of a refused entry = %d: %s", w.Code, w.Body.String())
+	}
+	if w := put(`{"ITERION_VIBE_EFFORT_CLAUDE":"max high"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("setting a value the rule refuses = %d, want 400", w.Code)
+	}
+	if w := put(`{"ITERION_VIBE_EFFORT_CLAUDE":"high"}`); w.Code != http.StatusOK {
+		t.Fatalf("replacing a refused entry with a valid value = %d: %s", w.Code, w.Body.String())
+	}
+	if got := refused(); len(got) != 0 {
+		t.Fatalf("refused = %v after both entries were fixed, want none", got)
+	}
+	rec, _ := st.Get(context.Background())
+	if rec.Vars["ITERION_VIBE_EFFORT_CLAUDE"] != "high" || rec.Vars["ITERION_OTHER_KNOB"] != "x" || len(rec.Vars) != 2 {
+		t.Fatalf("stored = %v", rec.Vars)
+	}
+}
+
+// The key bound refuses a write that GROWS the record past it, never one that
+// shrinks or rewrites it: a record already over the bound (a hand edit) must
+// still be clearable, key by key.
+func TestAdminBotVars_TheKeyBoundNeverRefusesARemoval(t *testing.T) {
+	st := platformcfg.NewMemoryStore[platformcfg.BotVars]()
+	over := map[string]string{}
+	for i := 0; i < 205; i++ {
+		over[fmt.Sprintf("ITERION_KNOB_%03d", i)] = "1"
+	}
+	if err := st.Put(context.Background(), platformcfg.BotVars{Vars: over}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := New(Config{SkipProjectRegistration: true, BotVarsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/bot-vars", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutBotVars(w, r)
+		return w
+	}
+	if w := put(`{"ITERION_KNOB_000":null}`); w.Code != http.StatusOK {
+		t.Fatalf("removal from an over-bound record = %d: %s", w.Code, w.Body.String())
+	}
+	if w := put(`{"ITERION_KNOB_001":"2"}`); w.Code != http.StatusOK {
+		t.Fatalf("rewriting an existing key = %d: %s", w.Code, w.Body.String())
+	}
+	if w := put(`{"ITERION_KNOB_NEW":"1"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("growing an over-bound record = %d, want 400", w.Code)
 	}
 }

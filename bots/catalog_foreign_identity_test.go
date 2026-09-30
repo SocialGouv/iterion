@@ -141,6 +141,8 @@ var catalogHostAllowlist = map[string]string{
 	"www.jetify.com":             "the public site of the devbox toolchain",
 	"registry.npmjs.org":         "the public npm registry",
 	"deb.nodesource.com":         "a public Debian package repository named in a setup script",
+	"dl.google.com":              "the Go project's public download host; the CI runner image (ci/arc-runner) fetches the toolchain it bakes from it",
+	"nodejs.org":                 "the Node.js project's public distribution host; the CI runner image fetches the Node it bakes from it",
 	"s3.amazonaws.com":           "a public object-store endpoint form in a configuration example",
 	"docs.github.com":            "GitHub's public documentation",
 	"docs.gitlab.com":            "GitLab's public documentation",

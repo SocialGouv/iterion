@@ -2,7 +2,6 @@ package ir
 
 import (
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 )
@@ -156,20 +155,19 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 // one reading of a var's text, shared here — so a `json` var is its
 // parsed document and a dotted `{{vars.cfg.backend}}` drills into it,
 // the executor's own semantics. The expansion pass is resolveVars' too:
-// the PROCESS environment (varExpandFn ends in os.Getenv), never the
-// ITERION_ settings overlay, which is LookupEnv's alone. The reader's
-// own `${…}` pass then runs on the substituted field, resolveRoutingField's
-// second. Storing the raw text instead read every var-held `${…}` once
-// too few and through the wrong environment — an overlay-only `ITERION_X`
-// answered the screen "claw" where dispatch stored "", and the screen
-// refused a route on a backend the run never resolves.
+// LookupEnv, the bot-vars overlay then the process environment
+// (varExpandFn ends in it, ADR-093). The reader's own `${…}` pass then
+// runs on the substituted field, resolveRoutingField's second. Storing the
+// raw text instead read every var-held `${…}` once too few, and a reading
+// through another environment than dispatch's screens a backend the run
+// never resolves — or misses one it does.
 //
 // One resolveVars reading the screen cannot reproduce stays UNDECIDED
 // instead: a var whose expansion would CONSULT one of the five names
 // varExpandFn answers from engine state — PROJECT_DIR, BUNDLE_DIR,
 // BUNDLE_SKILLS_DIR, PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR — is omitted
-// (the screen has no workDir, worktree or container workspace; os.Getenv
-// reads them "", decided-empty where dispatch reads a path). The probe
+// (the screen has no workDir, worktree or container workspace; the
+// environment reads them "", decided-empty where dispatch reads a path). The probe
 // reads the text the way dispatch expands THAT TYPE — a json var's string
 // leaves braced-only, keys never — and it counts a name consulted but
 // discarded (`${SET:-${PROJECT_DIR}}` with SET in the environment: the
@@ -194,7 +192,7 @@ func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
 		if referencesEngineSuppliedName(raw, vt) {
 			return
 		}
-		v, err := ResolveVarText(raw, vt, os.Getenv)
+		v, err := ResolveVarText(raw, vt, LookupEnv)
 		if err != nil {
 			// resolveVars' own fallback: a coercion failure logs and runs
 			// the RAW value, env-expanded (engine_resolve.go) — a flat
@@ -204,7 +202,7 @@ func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
 			// failed override — both screening a backend the run never
 			// resolves.
 			if s, isText := raw.(string); isText {
-				put(name, ExpandWithDefault(s, os.Getenv))
+				put(name, ExpandWithDefault(s, LookupEnv))
 			}
 			return
 		}
@@ -250,8 +248,8 @@ var EngineSuppliedVarNames = []string{
 // reads instead of guessing at the spelling with a substring match
 // (`${PROJECT_DIR2}` is not PROJECT_DIR) — including an INDIRECTED name:
 // resolveBracedSegment parses the outer name from the resolved inner
-// text, so the lookup answers non-listed names from the process
-// environment (the one the screen itself expands with) and `${${A}}`
+// text, so the lookup answers non-listed names through LookupEnv (the
+// reading the screen itself expands with, dispatch's) and `${${A}}`
 // with A=PROJECT_DIR set still consults — and records — PROJECT_DIR.
 // The price is stated on launchVarsView: a name consulted but discarded
 // still counts.
@@ -278,8 +276,8 @@ func referencesEngineSuppliedName(raw any, vt VarType) bool {
 }
 
 // probesEngineSuppliedName reports whether expanding s under policy would
-// consult an engine-supplied name. Non-listed names answer from the
-// process environment, so a name reached through an inner expansion is
+// consult an engine-supplied name. Non-listed names answer through
+// LookupEnv, as at dispatch, so a name reached through an inner expansion is
 // still consulted; a listed name's own value is irrelevant to the probe.
 func probesEngineSuppliedName(s string, policy expandPolicy) bool {
 	found := false
@@ -288,7 +286,7 @@ func probesEngineSuppliedName(s string, policy expandPolicy) bool {
 			found = true
 			return ""
 		}
-		return os.Getenv(name)
+		return LookupEnv(name)
 	}, policy)
 	return found
 }

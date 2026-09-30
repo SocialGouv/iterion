@@ -363,14 +363,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// instance, like CapPolicy: the admin write invalidates the server's,
 	// this one converges within the resolver's TTL bound.
 	platformCredAudience := platformcfg.NewResolver[platformcfg.PlatformCredentials](stores.platformCreds, logger.Warn)
-	ir.SetEnvOverlay(func(name string) (string, bool) {
-		rec := botVarsResolver.Get(context.Background())
-		if rec == nil {
-			return "", false
-		}
-		v, ok := rec.Vars[name]
-		return v, ok
-	})
+	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
 	// One fetcher for both halves of the plugin-source contract: the
 	// publisher materialises a team's sources at launch, the server verifies
 	// a source the same way at registration.
@@ -404,6 +397,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		RunSecrets:                 stores.runSecrets,
 		Sealer:                     sealer,
 		OAuthForfait:               stores.oauth,
+		RotatedOAuthKinds:          rotatedOAuthKinds(cfg),
 		ForgeConnections:           stores.forgeConn,
 		Identity:                   authStack.identityStore,
 		PlatformCredentialAudience: platformCredAudience,
@@ -1249,4 +1243,21 @@ func envBoolStrict(name string) (bool, error) {
 		return false, fmt.Errorf("%s=%q: want a boolean (1/0, true/false)", name, v)
 	}
 	return b, nil
+}
+
+// rotatedOAuthKinds names the forfait kinds this server's refresh worker
+// rotates, mirroring its gate (pkg/server's oauthRefreshWorker): no worker
+// at all without a client id for either kind; claude_code only with its
+// own; codex whenever the worker runs, its credential naming its client.
+func rotatedOAuthKinds(cfg iterconfig.Config) []secrets.OAuthKind {
+	anthropic := cfg.Auth.OAuthForfait.AnthropicClientID
+	codex := cfg.Auth.OAuthForfait.CodexClientID
+	if anthropic == "" && codex == "" {
+		return nil
+	}
+	kinds := []secrets.OAuthKind{secrets.OAuthKindCodex}
+	if anthropic != "" {
+		kinds = append(kinds, secrets.OAuthKindClaudeCode)
+	}
+	return kinds
 }

@@ -70,6 +70,14 @@ type RunBundle struct {
 	// token refreshes, re-stamped when a human posts new credentials.
 	// Metering keys on it; empty for records that predate stamping.
 	OAuthFingerprints map[string]string `json:"oauth_fingerprints,omitempty"`
+	// OAuthRecordRefs maps the same kinds to the ID of the OAuthStore record
+	// the payload was read from. The server's refresh worker is the ONE
+	// refresher of a record: a runner follows the record by this id to pick
+	// up each rotation, instead of exchanging the refresh token itself and
+	// revoking the token every other holder still uses. A lent subscription
+	// names the DONOR's record. Absent from bundles sealed by an older
+	// server.
+	OAuthRecordRefs map[string]string `json:"oauth_record_refs,omitempty"`
 	// ForgeAppBotLogin is the GitHub-App bot login (e.g.
 	// "iterion-forge-1234[bot]") when the run's forge_token was resolved
 	// from a github_app connection. An installation token can't `GET /user`

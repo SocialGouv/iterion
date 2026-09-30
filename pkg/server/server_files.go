@@ -638,6 +638,10 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// beside the main, merged into one document whose every declaration
 		// names its file, with the unit's revision for the save to present.
 		u := unit.LoadDirWithMain(absPath, absPath, data)
+		// The unit was read from disk and its diagnostics are answered to
+		// the client: they name the files by their unit-relative
+		// paths (#1934).
+		relUnitDiagnostics(u)
 		diags = diags[:0]
 		for _, d := range u.Diagnostics {
 			diags = append(diags, d.Error())

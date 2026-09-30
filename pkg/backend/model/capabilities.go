@@ -27,9 +27,9 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 
 // curatedCapabilities is the static heuristic table — the authoritative
 // fallback when the dynamic aggregator lacks a model or is unreachable. It
-// keeps the hardcoded values (glm-5.2=1M, glm-5.1/4.6=200K, claude/openai
-// reasoning heuristics) so brand-new models not yet in aggregators resolve
-// correctly.
+// keeps the hardcoded values (GLM-5.x from 5.2 on = 1M, earlier GLM = 200K,
+// claude/openai reasoning heuristics) so brand-new models not yet in
+// aggregators resolve correctly.
 func curatedCapabilities(provider, modelID string) ModelCapabilities {
 	switch provider {
 	case "anthropic":
@@ -101,12 +101,35 @@ func claudeGeneration(lower string) (major, minor int, ok bool) {
 	return major, minor, true
 }
 
+// glmGenerationRe pulls the generation out of a GLM model id: "glm-5.3",
+// "glm-5.3-flash", "anthropic/glm-5.2", "glm-4.6", "glm-5". Only a dot
+// separates the minor: "glm-5-0520" is a dated snapshot and "glm-5-9b" a
+// size, neither a 5.x minor.
+var glmGenerationRe = regexp.MustCompile(`glm-(\d+)(?:\.(\d+))?`)
+
 // glmContextWindow returns the context window for a GLM model served via
-// z.ai's Anthropic-compatible endpoint. GLM-5.2 ships a 1M-token window
-// (released 2026-06-13, ~5x its GLM-5.1 predecessor); GLM-5.1 / GLM-4.6 and
-// earlier are 200K-class. modelID arrives lowercased.
+// z.ai's Anthropic-compatible endpoint. Within the GLM-5 generation the window
+// is 1M tokens from 5.2 on (GLM-5.3 kept it: same base model, newer
+// post-training); GLM-5.1 / GLM-4.6 and earlier are 200K-class. It reads the
+// minor version rather than matching known ids — an exact "glm-5.2" match
+// sized glm-5.3 at a fifth of its window. A major no one has measured yet, or
+// an unparseable id, stays at the conservative 200K: under-sizing costs an
+// early compaction, over-sizing a request the provider refuses. modelID
+// arrives lowercased.
 func glmContextWindow(modelID string) int {
-	if strings.Contains(modelID, "glm-5.2") {
+	m := glmGenerationRe.FindStringSubmatch(modelID)
+	if m == nil {
+		return 200_000
+	}
+	major, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 200_000
+	}
+	minor := 0
+	if m[2] != "" {
+		minor, _ = strconv.Atoi(m[2])
+	}
+	if major == 5 && minor >= 2 {
 		return 1_000_000
 	}
 	return 200_000

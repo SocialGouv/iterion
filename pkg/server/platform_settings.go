@@ -315,12 +315,15 @@ func (s *Server) handleAdminGetBotVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin := "default"
+	var refused map[string]string
 	if rec != nil && len(rec.Vars) > 0 {
 		origin = "db"
+		refused = rec.RefusedEntries()
 	}
 	s.writeJSONFor(w, r, botVarsSettingsView{
-		Stored: rec,
-		Origin: origin,
+		Stored:  rec,
+		Origin:  origin,
+		Refused: refused,
 		// The bound every replica converges within after a write — the
 		// operator-facing answer to "when does my var take effect".
 		PropagationBoundSeconds: int(platformcfg.DefaultTTL.Seconds()),
@@ -362,6 +365,7 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 	for k, v := range rec.Vars {
 		vars[k] = v
 	}
+	prevKeys := len(vars)
 	rec.Vars = vars
 	// Audit meta carries old→new per touched key. Validate refuses
 	// credential-SHAPED NAMES, but nothing can vouch for the VALUE an
@@ -369,6 +373,7 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 	// clear in the settings doc, this audit trail and every GET — the
 	// CLI help says so, and the surface is super-admin-only.
 	changes := map[string]any{}
+	var set []string
 	for name, v := range patch {
 		old := rec.Vars[name]
 		if v == nil {
@@ -384,8 +389,9 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 		}
 		rec.Vars[name] = *v
 		changes[name] = map[string]string{"old": old, "new": *v}
+		set = append(set, name)
 	}
-	if err := rec.Validate(); err != nil {
+	if err := rec.ValidateWrite(prevKeys, set); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
@@ -439,6 +445,11 @@ type sandboxSettingsView struct {
 type botVarsSettingsView struct {
 	Stored *platformcfg.BotVars `json:"stored"`
 	Origin string               `json:"origin"`
+	// Refused names each stored entry the current rule refuses (written by
+	// an older server or by hand), with the reason: it is NOT applied — the
+	// pod env and the .bot default answer instead — until it is removed or
+	// replaced by a valid value.
+	Refused map[string]string `json:"refused,omitempty"`
 	// PropagationBoundSeconds is the worst-case delay before every replica
 	// enforces a write (the resolver TTL).
 	PropagationBoundSeconds int `json:"propagation_bound_seconds"`

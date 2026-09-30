@@ -26,7 +26,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 )
@@ -141,7 +143,7 @@ var botVarsInfraPrefixes = []string{
 	"ITERION_ACCESS_", "ITERION_PAT_", "ITERION_COOKIE_",
 	"ITERION_SMTP_", "ITERION_OTLP_", "ITERION_SANDBOX_",
 	"ITERION_USAGE_CAP", "ITERION_BOOTSTRAP_",
-	"ITERION_MODEL_SPECS_", "ITERION_UPDATE_",
+	"ITERION_MODEL_SPECS_", "ITERION_UPDATE_", "ITERION_DISPATCHER_",
 }
 
 // botVarsInfraExact are single infra names outside those namespaces —
@@ -178,20 +180,113 @@ func (b BotVars) Validate() error {
 		return fmt.Errorf("platformcfg: bot_vars: %d keys exceeds the %d-key bound", len(b.Vars), botVarsMaxKeys)
 	}
 	for name, val := range b.Vars {
-		if !botVarNameOK(name) {
-			return fmt.Errorf("platformcfg: bot_vars: %q is not an overridable bot var (want ITERION_A_Z0_9 outside the infra/credential namespaces)", name)
-		}
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("platformcfg: bot_vars: %s: value must not be blank (remove the key to clear the override)", name)
-		}
-		if strings.ContainsAny(val, "\n\r") {
-			return fmt.Errorf("platformcfg: bot_vars: %s: value must be a single line", name)
-		}
-		if len(val) > botVarsMaxValueLen {
-			return fmt.Errorf("platformcfg: bot_vars: %s: value exceeds %d bytes", name, botVarsMaxValueLen)
+		if err := botVarEntryError(name, val); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// ValidateWrite is the admin write's rule for a record that held prevKeys
+// entries before the write: the key bound for a write that grows it, and the
+// entry rule for the keys the write SETS. Entries already stored are not
+// re-judged: a record written under an older rule stays editable and
+// clearable — BotVarsOverlay keeps refusing its non-conforming entries at
+// read time, and RefusedEntries names them — instead of every write failing
+// on an entry the operator never touched.
+func (b BotVars) ValidateWrite(prevKeys int, set []string) error {
+	if len(b.Vars) > botVarsMaxKeys && len(b.Vars) > prevKeys {
+		return fmt.Errorf("platformcfg: bot_vars: %d keys exceeds the %d-key bound", len(b.Vars), botVarsMaxKeys)
+	}
+	for _, name := range set {
+		if err := botVarEntryError(name, b.Vars[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RefusedEntries maps each stored entry the entry rule refuses to the
+// reason — the overrides BotVarsOverlay does not hand out. Nil when every
+// entry conforms.
+func (b BotVars) RefusedEntries() map[string]string {
+	var out map[string]string
+	for name, val := range b.Vars {
+		if err := botVarEntryError(name, val); err != nil {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[name] = err.Error()
+		}
+	}
+	return out
+}
+
+// botVarEntryError is the rule one override must satisfy, shared by the
+// writes (Validate, ValidateWrite) and the read (BotVarsOverlay) so they
+// cannot drift.
+func botVarEntryError(name, val string) error {
+	if !botVarNameOK(name) {
+		return fmt.Errorf("platformcfg: bot_vars: %q is not an overridable bot var (want ITERION_A_Z0_9 outside the infra/credential namespaces)", name)
+	}
+	if strings.TrimSpace(val) == "" {
+		return fmt.Errorf("platformcfg: bot_vars: %s: value must not be blank (remove the key to clear the override)", name)
+	}
+	if strings.ContainsAny(val, "\n\r") {
+		return fmt.Errorf("platformcfg: bot_vars: %s: value must be a single line", name)
+	}
+	if len(val) > botVarsMaxValueLen {
+		return fmt.Errorf("platformcfg: bot_vars: %s: value exceeds %d bytes", name, botVarsMaxValueLen)
+	}
+	if bad := strings.IndexFunc(val, func(r rune) bool { return !botVarValueRune(r) }); bad >= 0 {
+		r, _ := utf8.DecodeRuneInString(val[bad:])
+		return fmt.Errorf("platformcfg: bot_vars: %s: value carries %q — allowed: letters, digits and ._:/@+=,%%-[]", name, r)
+	}
+	return nil
+}
+
+// BotVarsOverlay is the lookup cmd wiring installs with ir.SetEnvOverlay.
+// Each stored value is checked against the write-time rule before it is
+// handed out: Validate guards only the admin write, while a record can also
+// be written by a binary carrying an older rule (server and runner roll out
+// independently) or by hand — and a value that bypassed the charset reaches
+// tool bodies, where a `{{…}}` inside it would be resolved by the reference
+// pass that runs after the env expansion. A refused entry reads as unset, so
+// the pod env and then the .bot default answer instead, and it is logged
+// once per stored value.
+func BotVarsOverlay(res *Resolver[BotVars], warn func(string, ...any)) func(name string) (string, bool) {
+	var warned sync.Map
+	return func(name string) (string, bool) {
+		rec := res.Get(context.Background())
+		if rec == nil {
+			return "", false
+		}
+		v, ok := rec.Vars[name]
+		if !ok {
+			return "", false
+		}
+		if err := botVarEntryError(name, v); err != nil {
+			if _, seen := warned.LoadOrStore(name+"\x00"+v, true); !seen && warn != nil {
+				warn("platformcfg: bot_vars: stored override IGNORED, the pod env and the .bot default apply — %v", err)
+			}
+			return "", false
+		}
+		return v, true
+	}
+}
+
+// botVarValueRune is the value charset. A stored value is substituted RAW
+// into tool and script bodies — `${ITERION_*:-default}` there reads the
+// overlay like every other expansion — so a shell metacharacter would run as
+// code in every tenant's runs. Model ids (brackets included:
+// claude-opus-5-5[1m]), provider chains, efforts, durations, numbers and
+// paths all fit.
+func botVarValueRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	}
+	return strings.ContainsRune("._:/@+=,%-[]", r)
 }
 
 // botVarNameOK is the name gate: ITERION_-prefixed upper snake case, no

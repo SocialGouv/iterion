@@ -695,6 +695,9 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		return
 	}
 	var diags []string
+	// The unit was read from disk and its diagnostics are answered to the
+	// client: they name the files by their unit-relative paths (#1934).
+	relUnitDiagnostics(u)
 	for _, d := range u.Diagnostics {
 		diags = append(diags, d.Error())
 	}

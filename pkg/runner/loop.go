@@ -1156,6 +1156,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
+	// OAuthForfaits, when non-nil, is the OAuth-forfait store (same Mongo DB,
+	// same Sealer). The server's refresh worker is the one refresher of a
+	// record; the runner FOLLOWS the record a run was sealed with
+	// (RunBundle.OAuthRecordRefs) and rewrites the materialised credentials
+	// file with each rotation. nil, or a slot without a ref → the runner
+	// refreshes the claude_code file itself.
+	OAuthForfaits secrets.OAuthStore
+
 	// ApiKeys, when non-nil, is the BYOK store shared with the publisher.
 	// The runner bumps `last_used_at` on every credential the run actually
 	// spent tokens on at metering time (recordOrgSpend), so the studio
