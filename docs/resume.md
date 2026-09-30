@@ -311,9 +311,9 @@ tool or subbot node finished after the last teardown banked, in a sandbox lost
 without a teardown (an OOM kill, a lost node): restored, the bank would revert
 what that node wrote. So is a subbot child that executed in its parent's
 sandbox while that sandbox's scratch lived in the container, resumed on its
-own. These refusals come before the check of the workflow source, and name it
-when the source changed: the one `--force` then given accepts both, knowing
-both.
+own. These refusals come before the check of the workflow source — its digest
+and a shared dependency's identity alike — and name it when the source
+changed: the one `--force` then given accepts both, knowing both.
 The resume surface refuses from a record the run's
 latest execution wrote, before anything moves the run (the studio and the API
 answer at once; a cloud resume is never flipped to `queued`). A run reads

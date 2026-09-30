@@ -292,13 +292,10 @@ func TestResume_theScratchRefusalComesBeforeTheSourceCheck(t *testing.T) {
 	if err := os.WriteFile(botPath, []byte("\n## edited\nworkflow operator_resume:\n  entry: done\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	namesSource := func(err error) bool {
-		return err != nil && strings.Contains(err.Error(), "the workflow source has also changed")
-	}
-	if err := svc.PreflightResume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) || runtime.IsWorkflowSourceChanged(err) || !namesSource(err) {
+	if err := svc.PreflightResume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) || runtime.IsWorkflowSourceChanged(err) || !namesSourceChange(err) {
 		t.Fatalf("PreflightResume over an edited source and a lost scratch: %v, want SCRATCH_NOT_PORTABLE first, naming the source change", err)
 	}
-	if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) || runtime.IsWorkflowSourceChanged(err) || !namesSource(err) || publisher.resumeCalls != 0 {
+	if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) || runtime.IsWorkflowSourceChanged(err) || !namesSourceChange(err) || publisher.resumeCalls != 0 {
 		t.Fatalf("Resume over an edited source and a lost scratch: %v, published %d, want SCRATCH_NOT_PORTABLE first, naming the source change, and nothing published", err, publisher.resumeCalls)
 	}
 }

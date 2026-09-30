@@ -10,15 +10,19 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// ResolveResumeBundleWorkflow verifies a persisted shared-workflow identity
-// against the currently materialized bundle and returns the exact workflow
-// path to compile. Legacy/non-export bundle runs retain their prior entrypoint
-// or persisted-path behaviour.
-func ResolveResumeBundleWorkflow(r *store.Run, b *bundle.Bundle, persistedPath string, force bool) (string, error) {
+// ResumeBundleWorkflow is the exact workflow path a resume compiles and,
+// aside, the refusal of a shared dependency whose identity changed since the
+// run started (nil when it did not): the persisted shared-workflow identity is
+// verified against the currently materialized bundle. The path is resolved
+// either way, as --force resolves it — the scratch and the lineage are judged
+// before the source, so a surface compiles through it and refuses the
+// identity after them. Legacy/non-export bundle runs retain their prior
+// entrypoint or persisted-path behaviour.
+func ResumeBundleWorkflow(r *store.Run, b *bundle.Bundle, persistedPath string) (path string, identityErr, err error) {
 	if b == nil {
-		return persistedPath, nil
+		return persistedPath, nil, nil
 	}
-	path := b.IterPath
+	path = b.IterPath
 	if r == nil || r.BundleWorkflow == "" {
 		if rel, err := filepath.Rel(b.Dir, persistedPath); err == nil && rel != "." && !filepath.IsAbs(rel) && rel != ".." && !strings.HasPrefix(filepath.ToSlash(rel), "../") {
 			candidate := filepath.Join(b.Dir, rel)
@@ -26,7 +30,7 @@ func ResolveResumeBundleWorkflow(r *store.Run, b *bundle.Bundle, persistedPath s
 				path = candidate
 			}
 		}
-		return path, nil
+		return path, nil, nil
 	}
 
 	var selected *bundle.WorkflowExport
@@ -38,37 +42,37 @@ func ResolveResumeBundleWorkflow(r *store.Run, b *bundle.Bundle, persistedPath s
 			}
 		}
 	}
-	identityErr := ""
+	changed := ""
 	switch {
 	case b.Manifest == nil:
-		identityErr = "manifest is missing"
+		changed = "manifest is missing"
 	case r.BundleName != "" && b.Manifest.Name != r.BundleName:
-		identityErr = fmt.Sprintf("bundle name changed from %q to %q", r.BundleName, b.Manifest.Name)
+		changed = fmt.Sprintf("bundle name changed from %q to %q", r.BundleName, b.Manifest.Name)
 	case r.BundleVersion != "" && b.Manifest.Version != r.BundleVersion:
-		identityErr = fmt.Sprintf("bundle version changed from %q to %q", r.BundleVersion, b.Manifest.Version)
+		changed = fmt.Sprintf("bundle version changed from %q to %q", r.BundleVersion, b.Manifest.Version)
 	case selected == nil:
-		identityErr = fmt.Sprintf("workflow export %q is missing", r.BundleWorkflow)
+		changed = fmt.Sprintf("workflow export %q is missing", r.BundleWorkflow)
 	}
-	if identityErr == "" && r.BundleHash != "" {
+	if changed == "" && r.BundleHash != "" {
 		currentHash := b.Hash
 		if currentHash == "" {
 			var hashErr error
 			currentHash, hashErr = bundle.ContentHashDir(b.Dir)
 			if hashErr != nil {
-				return "", fmt.Errorf("resume bundle: hash current bundle: %w", hashErr)
+				return "", nil, fmt.Errorf("resume bundle: hash current bundle: %w", hashErr)
 			}
 		}
 		if currentHash != r.BundleHash {
-			identityErr = fmt.Sprintf("bundle sha256 changed from %s to %s", shortWorkflowHash(r.BundleHash), shortWorkflowHash(currentHash))
+			changed = fmt.Sprintf("bundle sha256 changed from %s to %s", shortWorkflowHash(r.BundleHash), shortWorkflowHash(currentHash))
 		}
 	}
-	if identityErr != "" && !force {
-		return "", fmt.Errorf("%w: run %q shared dependency %s", ErrWorkflowSourceChanged, r.ID, identityErr)
+	if changed != "" {
+		identityErr = fmt.Errorf("%w: run %q shared dependency %s", ErrWorkflowSourceChanged, r.ID, changed)
 	}
 	if selected == nil {
-		return path, nil
+		return path, identityErr, nil
 	}
-	return filepath.Join(b.Dir, filepath.FromSlash(selected.Path)), nil
+	return filepath.Join(b.Dir, filepath.FromSlash(selected.Path)), identityErr, nil
 }
 
 func osStatRegular(path string) (bool, error) {

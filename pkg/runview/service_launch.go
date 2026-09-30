@@ -467,15 +467,30 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		})
 }
 
-// alsoNamingSourceChange is a scratch or lineage refusal that also names
-// the source check's refusal when the source changed, as the engine's does:
-// the one --force the operator then gives accepts both. A legacy bare digest
-// the source check accepts is no change.
-func alsoNamingSourceChange(r *store.Run, hash string, b *bundle.Bundle, refusal error) error {
-	if runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, false) == nil {
-		return refusal
+// resumeSourceRefusal is what the source check refuses without --force, nil
+// when the source is unchanged: a shared dependency whose identity changed,
+// else a workflow digest that changed. The bare digest of a run launched
+// before the promotion is accepted (legacy) only while the dependency's
+// identity matches, as the engine accepts it under its claim.
+func resumeSourceRefusal(r *store.Run, hash string, b *bundle.Bundle, identityErr error) (refusal error, legacy bool) {
+	if identityErr != nil {
+		return identityErr, false
+	}
+	err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, false)
+	if err == nil {
+		return nil, false
 	}
 	if b != nil && runtime.LegacyBareDigestMatches(r, b.IterPath) {
+		return nil, true
+	}
+	return err, false
+}
+
+// alsoNamingSourceChange is a scratch or lineage refusal that also names
+// the source check's refusal when there is one, as the engine's does: the
+// one --force the operator then gives accepts both.
+func alsoNamingSourceChange(refusal, sourceRefusal error) error {
+	if sourceRefusal == nil {
 		return refusal
 	}
 	return runtime.WithSourceChange(refusal)
@@ -511,7 +526,8 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
-	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+	identityErr, err := resolveSharedResumeSpec(r, &spec)
+	if err != nil {
 		return err
 	}
 	spec.BundleDir = resumeBundleDir(r, spec)
@@ -520,24 +536,19 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 		return err
 	}
 	// A scratch or a lineage that does not travel is refused before the
-	// source check, as the engine does: a force offered for an edited source
-	// would otherwise waive a loss the operator was never shown.
+	// source check — the workflow's digest and a shared dependency's
+	// identity alike — as the engine does: a force offered for an edited
+	// source would otherwise waive a loss the operator was never shown.
 	hash := pfSources.Hash
+	sourceErr, legacy := resumeSourceRefusal(r, hash, pfBundle, identityErr)
 	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
-		return alsoNamingSourceChange(r, hash, pfBundle, err)
+		return alsoNamingSourceChange(err, sourceErr)
 	}
 	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
-		return alsoNamingSourceChange(r, hash, pfBundle, err)
+		return alsoNamingSourceChange(err, sourceErr)
 	}
-	legacy := false
-	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		// The bare digest of a run launched before the promotion is accepted
-		// here, as the engine accepts it under its claim; anything else
-		// stays a refusal.
-		if pfBundle == nil || !runtime.LegacyBareDigestMatches(r, pfBundle.IterPath) {
-			return err
-		}
-		legacy = true
+	if sourceErr != nil && !spec.Force {
+		return sourceErr
 	}
 	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
 	return err
@@ -623,7 +634,8 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			defer cleanup()
 		}
 	}
-	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+	identityErr, err := resolveSharedResumeSpec(r, &spec)
+	if err != nil {
 		return nil, err
 	}
 	if s.resumePolicyFiller != nil {
@@ -649,27 +661,24 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 	// A scratch or a lineage that does not travel is refused here, before
-	// anything moves the run and before the source check — a force offered
-	// for an edited source would otherwise waive a loss the operator was
-	// never shown. The engine repeats both under its own boundary.
+	// anything moves the run and before the source check — the workflow's
+	// digest and a shared dependency's identity alike: a force offered for
+	// an edited source would otherwise waive a loss the operator was never
+	// shown. The engine repeats both under its own boundary. A run launched
+	// before its bundle's prompts entered the digest recorded the bare
+	// main.bot's: accepted here and by the engine under its claim (which
+	// never rewrites the run — a whole-document save outside the claim
+	// would race every other writer).
 	hash := cs.Hash
+	sourceErr, legacy := resumeSourceRefusal(r, hash, resumeBundle, identityErr)
 	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
-		return nil, alsoNamingSourceChange(r, hash, resumeBundle, err)
+		return nil, alsoNamingSourceChange(err, sourceErr)
 	}
 	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
-		return nil, alsoNamingSourceChange(r, hash, resumeBundle, err)
+		return nil, alsoNamingSourceChange(err, sourceErr)
 	}
-	legacy := false
-	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		// A run launched before its bundle's prompts entered the digest
-		// recorded the bare main.bot's: accepted here and by the engine
-		// under its claim (which never rewrites the run — a whole-document
-		// save outside the claim would race every other writer); any other
-		// mismatch stays a refusal.
-		if resumeBundle == nil || !runtime.LegacyBareDigestMatches(r, resumeBundle.IterPath) {
-			return nil, err
-		}
-		legacy = true
+	if sourceErr != nil && !spec.Force {
+		return nil, sourceErr
 	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
 	validateArtifacts := runtime.ValidateResumeArtifactsPreflight

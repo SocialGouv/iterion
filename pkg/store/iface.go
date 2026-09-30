@@ -383,11 +383,7 @@ type QueuedResumeReleaser interface {
 // AsQueuedResumeReleaser returns the release capability, or nil for a store
 // that has none: the run then stays queued, as it did before the capability.
 func AsQueuedResumeReleaser(s RunStore) QueuedResumeReleaser {
-	if s == nil {
-		return nil
-	}
-	q, _ := s.(QueuedResumeReleaser)
-	return q
+	return capability[QueuedResumeReleaser](s)
 }
 
 // PIDStore is an optional interface implemented only by

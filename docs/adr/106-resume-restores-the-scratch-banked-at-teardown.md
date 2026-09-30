@@ -121,9 +121,9 @@ pods the same way.
   (`--force` past a bank that is gone) forsakes it: nothing is restored or
   refused over it later; one that restored a stale bank with `--force` makes
   it the run's scratch again. These refusals, and a lone child's, come
-  before the check of the workflow source, and name it when the source
-  changed: the one `--force` the operator then gives accepts both, knowing
-  both. The
+  before the check of the workflow source — its digest and a shared
+  dependency's identity alike — and name it when the source changed: the
+  one `--force` the operator then gives accepts both, knowing both. The
   resume surface refuses from a record the run's latest execution wrote,
   before a cloud resume is flipped to `queued`. A latest execution that wrote
   none may still be banking — the run already reads paused or failed while

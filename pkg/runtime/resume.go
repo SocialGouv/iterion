@@ -319,7 +319,10 @@ func (e *Engine) checkWorkflowHash(ctx context.Context, r *store.Run) error {
 // explicit force gate.
 func (e *Engine) sourceChange(r *store.Run) (workflowErr, bundleErr error, legacy bool) {
 	workflowErr = ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, false)
-	_, bundleErr = ResolveResumeBundleWorkflow(r, e.bundle, e.filePath, false)
+	_, bundleErr, err := ResumeBundleWorkflow(r, e.bundle, e.filePath)
+	if err != nil {
+		bundleErr = err
+	}
 	legacyPath := e.filePath
 	if legacyPath == "" && e.bundle != nil {
 		legacyPath = e.bundle.IterPath
