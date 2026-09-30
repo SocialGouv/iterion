@@ -19,6 +19,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -1400,5 +1401,95 @@ func TestScratchQuiesceScripts_refuseTheHostsInitialNamespace(t *testing.T) {
 		if !errors.As(err, &exit) || exit.ExitCode() != 3 || strings.Contains(string(out), "WOULD_") {
 			t.Fatalf("%s: in the host's initial namespace: err=%v out=%q, want exit 3 before any signal", name, err, out)
 		}
+	}
+}
+
+// TestSharedChildParked_isRefusedAloneUnderAContainerLocalScratch: a child
+// that declares no pause is adopted into a parent whose ${PROJECT_SCRATCH_DIR}
+// lives in the container, and parks all the same — on a recovery pause, on a
+// permission ask it does not declare. The external resume, an engine with no
+// parent handle, refuses it SCRATCH_NOT_PORTABLE before any node runs without
+// that scratch.
+func TestSharedChildParked_isRefusedAloneUnderAContainerLocalScratch(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	ctx := context.Background()
+	child := func() *ir.Workflow {
+		return &ir.Workflow{
+			Name:  "child",
+			Entry: "write",
+			Nodes: map[string]ir.Node{
+				"write": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "write"}},
+				"read":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "read"}},
+				"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			},
+			Edges: []*ir.Edge{{From: "write", To: "read"}, {From: "read", To: "done"}},
+		}
+	}
+	pauseOnAuth := func(_ context.Context, err error, _ func(ErrorCode) int) (RecoveryAction, ErrorCode) {
+		var rt *RuntimeError
+		if errors.As(err, &rt) && rt.Code == ErrCodeAuthFailed {
+			return RecoveryAction{Kind: RecoveryPauseForHuman, Reason: "model provider rejected credentials"}, ErrCodeAuthFailed
+		}
+		return RecoveryAction{Kind: RecoveryFailTerminal}, ErrCodeExecutionFailed
+	}
+	for _, tc := range []struct {
+		name   string
+		opts   []EngineOption
+		read   func(map[string]any) (map[string]any, error)
+		answer map[string]any
+	}{
+		{
+			name: "a recovery pause",
+			opts: []EngineOption{WithRecoveryDispatch(pauseOnAuth)},
+			read: func(map[string]any) (map[string]any, error) {
+				return nil, &RuntimeError{Code: ErrCodeAuthFailed, NodeID: "read", Message: "401 invalid token"}
+			},
+			answer: map[string]any{"acknowledge_recovery": "continue"},
+		},
+		{
+			name: "a permission ask the child does not declare",
+			read: func(map[string]any) (map[string]any, error) {
+				return nil, &model.ErrNeedsInteraction{NodeID: "read", Backend: "claw", Questions: map[string]any{
+					delegate.AskUserQuestionKey:     "Allow Bash(cat floor.json)?",
+					permission.InteractionMarkerKey: permission.Marker("Bash", map[string]any{"command": "cat floor.json"}, "Bash(cat floor.json)"),
+				}}
+			},
+			answer: map[string]any{delegate.AskUserQuestionKey: "allow"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := &podRun{scratch: t.TempDir()}
+			wf := child()
+			if workflowHasPausingNode(wf) {
+				t.Fatal("precondition: the child declares no pause")
+			}
+			const id = "run-child"
+			e, x, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: parent, ScratchContainerLocal: true}, tc.opts...)
+			x.on("write", func(map[string]any) (map[string]any, error) {
+				res, err := x.sandbox.Exec(ctx, []string{"sh", "-c", "mkdir -p " + sandboxScratchContainerPath + " && printf 31 > " + sandboxScratchContainerPath + "/floor.json"}, sandbox.ExecOpts{})
+				if err != nil || res.ExitCode != 0 {
+					return nil, errors.New("write: the scratch could not be written")
+				}
+				return map[string]any{}, nil
+			})
+			x.on("read", tc.read)
+			if err := e.Run(ctx, id, nil); !errors.Is(err, ErrRunPaused) {
+				t.Fatalf("the child: want it parked, got %v", err)
+			}
+			if x.sandbox != sandbox.Run(parent) {
+				t.Fatalf("precondition: the child was not adopted into the parent's sandbox (%v)", x.sandbox)
+			}
+			alone := newStubExecutor()
+			ran := false
+			alone.on("read", func(map[string]any) (map[string]any, error) { ran = true; return map[string]any{}, nil })
+			err := New(wf, st, alone, WithWorkDir(t.TempDir()), WithSandboxOverride("none")).Resume(ctx, id, tc.answer)
+			var rt *RuntimeError
+			if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
+				t.Fatalf("the child resumed on its own: want SCRATCH_NOT_PORTABLE, got %v", err)
+			}
+			if ran {
+				t.Fatal("read ran outside the parent's sandbox, without its scratch")
+			}
+		})
 	}
 }
