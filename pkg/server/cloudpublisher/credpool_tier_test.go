@@ -74,10 +74,11 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 			// Deliberately NO oauthForfait / apiKeys: this fixture is a
 			// tenant with no credential of its own, which is the only
 			// condition under which the pool is meant to step in.
-			runSecrets: rs,
-			sealer:     sealer,
-			credPool:   broker,
-			logger:     iterlog.New(iterlog.LevelError, nil),
+			runSecrets:        rs,
+			sealer:            sealer,
+			credPool:          broker,
+			logger:            iterlog.New(iterlog.LevelError, nil),
+			rotatedOAuthKinds: rotatedClaude,
 		},
 		rs: rs, sealer: sealer, pools: pools, pledges: pledges, ledger: ledger, leases: leases,
 	}

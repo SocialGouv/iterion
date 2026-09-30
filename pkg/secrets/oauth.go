@@ -210,6 +210,10 @@ type OAuthStore interface {
 	// reader means by "this owner's Claude forfait". The fallbacks behind it
 	// are reached through ListByUser, which is what the publisher walks.
 	Get(ctx context.Context, userID string, kind OAuthKind) (OAuthRecord, error)
+	// GetByID returns the ONE record with that id, whatever its rank — the
+	// record a run was sealed with, which a runner follows while the
+	// refresh worker rotates its tokens. Missing → ErrOAuthNotFound.
+	GetByID(ctx context.Context, id string) (OAuthRecord, error)
 	// ListByUser returns every record the owner holds, ordered by kind then
 	// RANK — so a caller that iterates gets the chain in the order it is
 	// meant to be tried, without knowing ranks exist.
@@ -893,6 +897,17 @@ func (s *MemoryOAuthStore) Get(_ context.Context, userID string, kind OAuthKind)
 	return OAuthRecord{}, ErrOAuthNotFound
 }
 
+func (s *MemoryOAuthStore) GetByID(_ context.Context, id string) (OAuthRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.m {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	return OAuthRecord{}, ErrOAuthNotFound
+}
+
 func (s *MemoryOAuthStore) ListByUser(_ context.Context, userID string) ([]OAuthRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1128,6 +1143,10 @@ func (s *MongoOAuthStore) Upsert(ctx context.Context, rec OAuthRecord) error {
 
 func (s *MongoOAuthStore) Get(ctx context.Context, userID string, kind OAuthKind) (OAuthRecord, error) {
 	return mongoutil.FindOne[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID, "kind": kind, "rank": 0}, ErrOAuthNotFound, "secrets: get oauth")
+}
+
+func (s *MongoOAuthStore) GetByID(ctx context.Context, id string) (OAuthRecord, error) {
+	return mongoutil.FindOne[OAuthRecord](ctx, s.coll, bson.M{"_id": id}, ErrOAuthNotFound, "secrets: get oauth by id")
 }
 
 func (s *MongoOAuthStore) ListByUser(ctx context.Context, userID string) ([]OAuthRecord, error) {
