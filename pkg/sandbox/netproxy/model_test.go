@@ -1,6 +1,7 @@
 package netproxy
 
 import (
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -127,5 +128,46 @@ func TestABodyOverTheInspectionBoundIsRefused(t *testing.T) {
 	req, _ = http.NewRequest(http.MethodPost, "https://api.github.com/x", strings.NewReader("0123456789abcdef"))
 	if body, refusal := p.inspectRequest(req, "api.github.com", true); refusal != nil || string(body) != "0123456789abcdef" {
 		t.Errorf("a body at the bound: body %q, refusal %+v", body, refusal)
+	}
+}
+
+// The bound is the operator's when set (ITERION_SANDBOX_INSPECT_MAX_BODY): a
+// large upload over plain HTTP — a git push to an on-prem forge — goes
+// through with a bound raised, and one over it is still refused, never cut.
+// A negative bound fails New.
+func TestTheInspectionBoundIsTheOperatorsWhenSet(t *testing.T) {
+	p := &Proxy{inspect: &inspectConfig{}, maxBody: 32}
+	big := strings.Repeat("x", 100)
+	req, _ := http.NewRequest(http.MethodPost, "http://git.corp/repo.git/git-receive-pack", strings.NewReader(big[:32]))
+	if body, refusal := p.inspectRequest(req, "git.corp", false); refusal != nil || len(body) != 32 {
+		t.Errorf("a body at the operator's bound: %d bytes, refusal %+v", len(body), refusal)
+	}
+	req, _ = http.NewRequest(http.MethodPost, "http://git.corp/repo.git/git-receive-pack", strings.NewReader(big[:33]))
+	if _, refusal := p.inspectRequest(req, "git.corp", false); refusal == nil || refusal.status != http.StatusRequestEntityTooLarge {
+		t.Errorf("a body over the operator's bound: refusal = %+v, want 413", refusal)
+	}
+	defer func(n int) { maxInspectedBody = n }(maxInspectedBody)
+	maxInspectedBody = 16
+	p.maxBody = 64
+	req, _ = http.NewRequest(http.MethodPost, "http://git.corp/x", strings.NewReader(big[:64]))
+	if body, refusal := p.inspectRequest(req, "git.corp", false); refusal != nil || len(body) != 64 {
+		t.Errorf("a raised bound over the default: %d bytes, refusal %+v", len(body), refusal)
+	}
+	// The largest bound is no bound: the body comes through whole, never read
+	// as empty.
+	p.maxBody = math.MaxInt64
+	req, _ = http.NewRequest(http.MethodPost, "http://git.corp/x", strings.NewReader(big))
+	if body, refusal := p.inspectRequest(req, "git.corp", false); refusal != nil || string(body) != big {
+		t.Errorf("the largest bound: %d bytes, refusal %+v; want the %d-byte body whole", len(body), refusal, len(big))
+	}
+	pol, err := Compile(ModeOpen, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Options{Policy: pol, MaxInspectedBody: -1}); err == nil {
+		t.Error("a negative bound was accepted")
+	}
+	if px, err := New(Options{Policy: pol, MaxInspectedBody: 1 << 30}); err != nil || px.maxBody != 1<<30 {
+		t.Errorf("New with a bound: %v, maxBody %d", err, px.maxBody)
 	}
 }

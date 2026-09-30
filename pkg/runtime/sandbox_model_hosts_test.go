@@ -32,11 +32,11 @@ type recordingRewriter struct {
 	seen []string
 }
 
-func (r *recordingRewriter) MaterializeForHost(s, _ string) string {
+func (r *recordingRewriter) MaterializeForHostWithin(s, _ string, limit int) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seen = append(r.seen, s)
-	return s
+	return s, len(s) <= limit
 }
 
 func (r *recordingRewriter) ExfiltratesTo(string, string) bool { return false }
@@ -141,5 +141,80 @@ func TestAnInvalidModelGatewayFailsTheProxyWithoutInspection(t *testing.T) {
 			_ = prx.Shutdown(context.Background())
 		}
 		t.Fatalf("startNetworkProxy without inspection: err = %v, want the model host refused", err)
+	}
+}
+
+// ITERION_SANDBOX_INSPECT_MAX_BODY: a byte count or a KiB/MiB/GiB size; unset
+// keeps the proxy's default; anything else fails the run's start.
+func TestTheInspectionBoundIsReadFromTheEnvironment(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		want int64
+		ok   bool
+	}{
+		{"", 0, true},
+		{"268435456", 268435456, true},
+		{"256MiB", 256 << 20, true},
+		{"1gib", 1 << 30, true},
+		{" 512 KiB ", 512 << 10, true},
+		{"100B", 100, true},
+		{"0", 0, false},
+		{"-5", 0, false},
+		{"12XB", 0, false},
+		{"MiB", 0, false},
+		{"99999999999GiB", 0, false},
+	} {
+		t.Setenv("ITERION_SANDBOX_INSPECT_MAX_BODY", c.raw)
+		got, err := sandboxInspectMaxBody()
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("%q: %d, %v; want %d (ok %v)", c.raw, got, err, c.want, c.ok)
+		}
+	}
+}
+
+// ITERION_SANDBOX_INSPECT_MAX_BODY reaches the run's proxy: a body over the
+// operator's bound is refused (413) there, one under it is not; a value that
+// is no size fails the proxy's start, naming the variable.
+func TestTheInspectionBoundReachesTheRunsProxy(t *testing.T) {
+	drv, err := noop.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := compileSandboxSpec(t, netPolicySource(`    network:
+      mode: open`))
+	t.Setenv("ITERION_SANDBOX_INSPECT_MAX_BODY", "nope")
+	if prx, _, _, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bad-bound", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil); err == nil || !strings.Contains(err.Error(), "ITERION_SANDBOX_INSPECT_MAX_BODY") {
+		if prx != nil {
+			_ = prx.Shutdown(context.Background())
+		}
+		t.Fatalf("an invalid bound: err = %v, want a refusal naming the variable", err)
+	}
+	t.Setenv("ITERION_SANDBOX_INSPECT_MAX_BODY", "32")
+	prx, endpoint, caPEM, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bound", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil)
+	if err != nil || prx == nil || caPEM == nil {
+		t.Fatalf("startNetworkProxy: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = prx.Shutdown(ctx)
+	})
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caPEM)
+	proxyURL, _ := url.Parse("http://iterion:" + tokenFromEndpoint(t, endpoint) + "@" + prx.Addr().String())
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	status := func(n int) int {
+		resp, err := client.Post("https://tool-api.invalid/upload", "text/plain", strings.NewReader(strings.Repeat("x", n)))
+		if err != nil {
+			return 0
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := status(33); got != http.StatusRequestEntityTooLarge {
+		t.Errorf("a body over the operator's bound: status %d, want 413", got)
+	}
+	if got := status(32); got == http.StatusRequestEntityTooLarge {
+		t.Errorf("a body at the operator's bound was refused as too large")
 	}
 }

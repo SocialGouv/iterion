@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -745,7 +746,7 @@ func workflowHasInteractiveNode(wf *ir.Workflow) bool {
 // ClawExecutor implements it; defining it here keeps the runtime
 // decoupled from pkg/backend/secretguard.
 type secretEgressRewriter interface {
-	MaterializeForHost(s, host string) string
+	MaterializeForHostWithin(s, host string, limit int) (string, bool)
 	ExfiltratesTo(s, host string) bool
 	SecretsInspectActive() bool
 }
@@ -776,6 +777,32 @@ func sandboxModelHosts() []string {
 	return strings.FieldsFunc(os.Getenv("ITERION_SANDBOX_MODEL_HOSTS"), func(r rune) bool {
 		return r == ',' || unicode.IsSpace(r)
 	})
+}
+
+// sandboxInspectMaxBody reads ITERION_SANDBOX_INSPECT_MAX_BODY: the bound of
+// the request body the egress proxy holds to inspect — a byte count, or one
+// with a KiB/MiB/GiB suffix (e.g. 256MiB). Unset is 0, the proxy's default
+// (64 MiB); a value that is no positive size fails the run's start.
+func sandboxInspectMaxBody() (int64, error) {
+	raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_INSPECT_MAX_BODY"))
+	if raw == "" {
+		return 0, nil
+	}
+	num, mult := raw, int64(1)
+	for _, u := range []struct {
+		suffix string
+		mult   int64
+	}{{"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"B", 1}} {
+		if len(raw) > len(u.suffix) && strings.EqualFold(raw[len(raw)-len(u.suffix):], u.suffix) {
+			num, mult = strings.TrimSpace(raw[:len(raw)-len(u.suffix)]), u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("ITERION_SANDBOX_INSPECT_MAX_BODY=%q: want a positive byte count (e.g. 268435456 or 256MiB)", raw)
+	}
+	return n * mult, nil
 }
 
 // sandboxTLSInspectEnabled reports the ITERION_SANDBOX_TLS_INSPECT
@@ -843,10 +870,15 @@ func startNetworkProxy(
 		return nil, "", nil, fmt.Errorf("driver proxy config: %w", err)
 	}
 
+	maxBody, err := sandboxInspectMaxBody()
+	if err != nil {
+		return nil, "", nil, err
+	}
 	opts := netproxy.Options{
-		Policy:     policy,
-		Token:      token,
-		ModelHosts: sandboxModelHosts(),
+		Policy:           policy,
+		Token:            token,
+		ModelHosts:       sandboxModelHosts(),
+		MaxInspectedBody: maxBody,
 		OnBlocked: func(host, reason string) {
 			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
 				"host":   host,

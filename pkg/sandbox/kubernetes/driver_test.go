@@ -297,9 +297,44 @@ func TestPodManifestStructure(t *testing.T) {
 			t.Errorf("%s = %q", k, gotEnv[k])
 		}
 	}
+	// The sandbox's own loopback goes direct — a server bound to 0.0.0.0
+	// inside the pod — and nothing else: an in-cluster suffix, or an entry a
+	// client misreads as a pattern, would bypass the proxy.
 	for _, k := range []string{"NO_PROXY", "no_proxy"} {
-		if gotEnv[k] == "" {
-			t.Errorf("%s must be set when proxy endpoint is provided", k)
+		if gotEnv[k] != "localhost,127.0.0.1,0.0.0.0" {
+			t.Errorf("%s = %q, want the sandbox's own loopback only", k, gotEnv[k])
+		}
+	}
+}
+
+// A pod REPLACES the spec's own NO_PROXY, unlike docker: its egress is
+// locked by the synthesized NetworkPolicy, and an entry kept from the spec
+// would send that host around the proxy — out of the allowlist's sight on a
+// CNI that ignores the policy, and dropped outright on one that enforces it.
+func TestPodManifestReplacesTheSpecsNoProxyEntries(t *testing.T) {
+	manifest, err := BuildPodManifest(PodManifestInput{
+		Namespace: "iterion", Name: "iterion-run-test", RunID: "test-1",
+		Spec: sandbox.Spec{Mode: sandbox.ModeInline, Image: "alpine:3",
+			Env: map[string]string{"NO_PROXY": "corp.internal, 10.0.0.0/8", "no_proxy": "git.corp"}},
+		ProxyEndpoint: "http://t:tok@host:8080",
+	})
+	if err != nil {
+		t.Fatalf("BuildPodManifest: %v", err)
+	}
+	var pod map[string]any
+	if err := json.Unmarshal(manifest, &pod); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	gotEnv := map[string]string{}
+	spec := pod["spec"].(map[string]any)
+	container := spec["containers"].([]any)[0].(map[string]any)
+	for _, e := range container["env"].([]any) {
+		m := e.(map[string]any)
+		gotEnv[m["name"].(string)], _ = m["value"].(string)
+	}
+	for _, k := range []string{"NO_PROXY", "no_proxy"} {
+		if gotEnv[k] != sandbox.LoopbackNoProxy {
+			t.Errorf("%s = %q, want the sandbox's own loopback alone (%q): a spec entry would bypass the pod's NetworkPolicy", k, gotEnv[k], sandbox.LoopbackNoProxy)
 		}
 	}
 }

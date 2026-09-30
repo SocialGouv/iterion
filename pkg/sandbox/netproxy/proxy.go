@@ -64,6 +64,9 @@ type Proxy struct {
 	// substitution). Nil keeps the proxy a transparent CONNECT tunnel.
 	inspect *inspectConfig
 
+	// maxBody is Options.MaxInspectedBody (0: maxInspectedBody).
+	maxBody int64
+
 	mu      sync.Mutex
 	running bool
 }
@@ -104,6 +107,13 @@ type Options struct {
 	// to such a host keeps its placeholders, like a request to a provider.
 	// An entry that is not a valid pattern fails New.
 	ModelHosts []string
+
+	// MaxInspectedBody bounds the request body the proxy holds to inspect
+	// (content DLP, substitution) — plain HTTP and inspected tunnels alike;
+	// a larger one is refused (413), never cut. 0 keeps the default, 64 MiB;
+	// a negative bound fails New. The runtime sets it from
+	// ITERION_SANDBOX_INSPECT_MAX_BODY.
+	MaxInspectedBody int64
 
 	// InspectUpstreamTLS overrides the TLS config used for the proxy's
 	// connection to the REAL upstream in inspection mode (tests inject a
@@ -162,6 +172,10 @@ func New(opts Options) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	if opts.MaxInspectedBody < 0 {
+		return nil, fmt.Errorf("netproxy: New: MaxInspectedBody %d: want a positive bound, or 0 for the default", opts.MaxInspectedBody)
+	}
+	p.maxBody = opts.MaxInspectedBody
 	if opts.InspectCA != nil {
 		upstreamTLS := opts.InspectUpstreamTLS
 		if upstreamTLS == nil {
