@@ -26,6 +26,8 @@ type modernizeLotVerifyOut struct {
 	OracleInvalid   []any          `json:"oracle_invalid"`
 	OracleReport    map[string]any `json:"oracle_report"`
 	ExtensionForged bool           `json:"extension_forged"`
+	ContractHead    string         `json:"contract_head"`
+	ContractTree    string         `json:"contract_tree"`
 }
 
 // modernizeNet drops the smallest net lot_verify accepts into ws: a runner
@@ -79,6 +81,15 @@ func modernizeLotVerify(t *testing.T, script, ws, lotID, base, exitGate string) 
 // be exported as if it were a path.
 func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate string, env []string, credPath ...string) (modernizeLotVerifyOut, int) {
 	t.Helper()
+	res, _, exit := modernizeLotVerifyRaw(t, script, ws, lotID, base, exitGate, env, credPath...)
+	return res, exit
+}
+
+// modernizeLotVerifyRaw is modernizeLotVerifyEnv returning the report twice:
+// typed, and as the graph reads it — every field, decoded as JSON — for a
+// test that evaluates lot_gate's own expressions over it.
+func modernizeLotVerifyRaw(t *testing.T, script, ws, lotID, base, exitGate string, env []string, credPath ...string) (modernizeLotVerifyOut, map[string]any, int) {
+	t.Helper()
 	cred := "iterion-secret-placeholder-deploy_credential"
 	if len(credPath) > 0 {
 		cred = credPath[0]
@@ -118,7 +129,11 @@ func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate strin
 	if uerr := json.Unmarshal(out, &res); uerr != nil {
 		t.Fatalf("lot_verify output is not JSON: %v (out %q)", uerr, out)
 	}
-	return res, exit
+	var raw map[string]any
+	if uerr := json.Unmarshal(out, &raw); uerr != nil {
+		t.Fatalf("lot_verify output is not a JSON object: %v (out %q)", uerr, out)
+	}
+	return res, raw, exit
 }
 
 // TestModernizeLotVerifyRefusesWorkerWrittenDone pins the asymmetry in how

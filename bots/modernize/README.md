@@ -91,6 +91,14 @@ Anything else is refused with one named cause per file —
 `.modernize/outcomes.json: outcomes[engine-target].check changed` — and goes
 back to the worker like a self-written `done`.
 
+The contract is judged on what lands, not only on the tree the gate starts
+from: before the exit gate runs and again after its last command (the gate's
+commands are the lot's own code), on the working tree as git would store it and
+on what is committed. `mark_done` then writes `done` only on the HEAD and the
+working tree that verdict judged — a commit or an edit that arrived since is
+refused, never committed under the gate's subject
+([ADR-107](../../docs/adr/107-a-lots-contract-is-a-directory-judged-on-what-lands.md)).
+
 ## Running
 
 ```sh

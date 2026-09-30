@@ -14,6 +14,12 @@ version: 0.6.0
 ## Each file is judged as git would store it (a CRLF checkout is not a
 ## rewrite, a clean filter's laundering is), and lot_verify and mark_done
 ## read history as committed — a replace ref no longer answers for the base.
+## The contract is judged on what LANDS: before the gate commands and again
+## after the last one, on the working tree and on HEAD's committed tree; a
+## refusal after the gates goes back to the worker (lot_gate's converged and
+## stop carry the contract as a term). mark_done commits only on the HEAD and
+## the working tree the verdict judged, and recognises its own work on a
+## re-execution. ADR-107.
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,

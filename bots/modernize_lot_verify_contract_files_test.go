@@ -233,7 +233,7 @@ func TestModernizeLotVerifyRefusesEveryContractFileRewrite(t *testing.T) {
 			rewrite: func(t *testing.T, ws string, _ func(...string) string) {
 				editContract(t, ws, ".modernize/outcomes.json", `"check": "sh ci/runtime-gate.sh"`, `"check": "true", "check": "sh ci/runtime-gate.sh"`)
 			}},
-		{name: "the outcomes swapped for a symlink to an identical copy", file: ".modernize/outcomes.json", cause: "a symlink in the working tree",
+		{name: "the outcomes swapped for a symlink to an identical copy", file: ".modernize/outcomes.json", cause: "a file at the run's base, a symlink now",
 			rewrite: func(t *testing.T, ws string, _ func(...string) string) {
 				writeContract(t, ws, "docs/outcomes.json", contractOutcomes)
 				if err := os.Remove(filepath.Join(ws, ".modernize", "outcomes.json")); err != nil {
@@ -280,6 +280,36 @@ func TestModernizeLotVerifyRefusesEveryContractFileRewrite(t *testing.T) {
 					strings.Contains(readContract(t, ws, ".modernize/outcomes.json"), `"check": "true"`) ||
 					git("status", "--porcelain") != "" {
 					t.Fatal("the fixture must store the rewrite, show the base, and read clean")
+				}
+			}},
+		{name: "the outcomes swapped for a symlink, left uncommitted", file: ".modernize/outcomes.json", cause: "a file at the run's base, a symlink now",
+			ownCommit: true,
+			rewrite: func(t *testing.T, ws string, _ func(...string) string) {
+				// Uncommitted: HEAD still carries the base's file, so only the
+				// working tree's own reading can see the swap the finalize banks.
+				writeContract(t, ws, "docs/outcomes.json", contractOutcomes)
+				if err := os.Remove(filepath.Join(ws, ".modernize", "outcomes.json")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("../docs/outcomes.json", filepath.Join(ws, ".modernize", "outcomes.json")); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "an outcome laundered by a clean filter, left uncommitted: git would store the rewrite", file: ".modernize/outcomes.json", cause: "outcomes[runtime-target].check changed",
+			ownCommit: true,
+			rewrite: func(t *testing.T, ws string, git func(...string) string) {
+				// The file still shows the base's bytes and HEAD still holds
+				// them: only what `git add` would store — what the finalize
+				// banks — carries the rewrite.
+				filter := filepath.Join(t.TempDir(), "launder.sh")
+				if err := os.WriteFile(filter, []byte("#!/bin/sh\nsed 's#\"check\": \"sh ci/runtime-gate.sh\"#\"check\": \"true\"#'\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				git("config", "filter.launder.clean", "sh "+filter)
+				git("config", "filter.launder.smudge", "cat")
+				writeContract(t, ws, ".gitattributes", ".modernize/outcomes.json filter=launder\n")
+				if readContract(t, ws, ".modernize/outcomes.json") != contractOutcomes {
+					t.Fatal("the fixture must leave the file showing the base's bytes")
 				}
 			}},
 		{name: "the outcomes created by the lot", file: ".modernize/outcomes.json", cause: "created during the lot",

@@ -44,12 +44,66 @@ func modernizeRepo(t *testing.T, planYAML string) (string, string, func(args ...
 	return ws, git("rev-parse", "HEAD"), git
 }
 
+// modernizeMarkDone runs mark_done as if lot_verify had just judged the tree
+// as it stands: the verdict it answers for is this HEAD and these files.
 func modernizeMarkDone(t *testing.T, script, ws, lotID, base string, wantExit int) modernizeMarkDoneOut {
+	t.Helper()
+	head, tree := judgedNow(t, ws)
+	return modernizeMarkDoneJudged(t, script, ws, lotID, base, head, tree, wantExit)
+}
+
+// contractPaths are the contract's files beside the default plan, in the
+// order lot_verify's table lists them.
+var contractPaths = []string{
+	".modernize/plan.yaml",
+	".modernize/outcomes.json",
+	".modernize/brief.yaml",
+	".modernize/ARBITRAGE.md",
+	".modernize/defects-ledger.json",
+}
+
+// judgedNow is the verdict lot_verify would hand mark_done for this tree:
+// HEAD, and one fingerprint per contract file — the blob `git add` would
+// store, a symlink's target, or its absence.
+func judgedNow(t *testing.T, ws string) (string, string) {
+	t.Helper()
+	fp := map[string]string{}
+	for _, rel := range contractPaths {
+		full := filepath.Join(ws, rel)
+		fi, err := os.Lstat(full)
+		switch {
+		case err != nil:
+			fp[rel] = "absent"
+		case fi.Mode()&os.ModeSymlink != 0:
+			target, rerr := os.Readlink(full)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			fp[rel] = "symlink:" + target
+		case !fi.Mode().IsRegular():
+			fp[rel] = "other"
+		default:
+			fp[rel] = "file:" + gittest.Run(t, ws, "hash-object", "--path="+rel, "--", full)
+		}
+	}
+	tree, err := json.Marshal(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gittest.Run(t, ws, "rev-parse", "HEAD"), string(tree)
+}
+
+// modernizeMarkDoneJudged runs mark_done fed the verdict the lot_gate edge
+// maps: the HEAD lot_verify judged and the fingerprints of the files it
+// judged in the working tree.
+func modernizeMarkDoneJudged(t *testing.T, script, ws, lotID, base, judgedHead, judgedTree string, wantExit int) modernizeMarkDoneOut {
 	t.Helper()
 	body := strings.ReplaceAll(script, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{input.plan_path}}", strconv.Quote(".modernize/plan.yaml"))
 	body = strings.ReplaceAll(body, "{{input.lot_id}}", strconv.Quote(lotID))
 	body = strings.ReplaceAll(body, "{{input.base_sha}}", strconv.Quote(base))
+	body = strings.ReplaceAll(body, "{{input.judged_head}}", strconv.Quote(judgedHead))
+	body = strings.ReplaceAll(body, "{{input.judged_tree}}", strconv.Quote(judgedTree))
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in mark_done near %q", body[i:min(i+40, len(body))])
 	}
