@@ -2819,6 +2819,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			Force:          spec.Force,
 			ExpectedStatus: spec.ExpectedStatus,
 			ReceiptID:      spec.ReceiptID,
+			PriorStatus:    priorStatus,
 		},
 		SecretsRef: creds.secretsRef,
 		// Re-resolved by the resume surface like credentials are re-sealed:

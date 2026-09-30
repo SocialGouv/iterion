@@ -132,7 +132,7 @@ func TestRecordRetrySkipped_PutsTheDeterministicVerdictOnTheTimeline(t *testing.
 	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
 
 	r.recordRetrySkipped(msg, store.FailureExpressionFailed,
-		`compute "delivery_reserve": expr: max() takes 2 arguments, got 3`)
+		`compute "delivery_reserve": expr: max() takes 2 arguments, got 3`, "")
 
 	events, err := st.LoadEvents(ctx, id)
 	if err != nil {

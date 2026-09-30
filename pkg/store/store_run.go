@@ -639,6 +639,28 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 	if publishedAt.IsZero() {
 		return false, fmt.Errorf("store: fail queued attempt %s without published_at", id)
 	}
+	return s.transitionQueuedAttempt(id, RunStatusFailedResumable, runErr, publishedAt, meta)
+}
+
+var _ QueuedResumeReleaser = (*FilesystemRunStore)(nil)
+
+// ReleaseQueuedRunIfAttempt puts a queued attempt nobody claimed back in the
+// status its resume came from — see QueuedResumeReleaser.
+func (s *FilesystemRunStore) ReleaseQueuedRunIfAttempt(_ context.Context, id string, to RunStatus, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (bool, error) {
+	if publishedAt.IsZero() {
+		return false, fmt.Errorf("store: release queued attempt %s without published_at", id)
+	}
+	if !to.CanOperatorResume() {
+		return false, fmt.Errorf("store: release queued attempt %s to %q: not a status a resume comes from", id, to)
+	}
+	return s.transitionQueuedAttempt(id, to, runErr, publishedAt, meta)
+}
+
+// transitionQueuedAttempt moves the queue attempt publishedAt names, and
+// only that one, out of queued: a later resume refreshes QueuedAt before
+// publishing, so an older delivery cannot touch that new attempt during its
+// queued→running hand-off window.
+func (s *FilesystemRunStore) transitionQueuedAttempt(id string, to RunStatus, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -649,7 +671,7 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 	if r.Status != RunStatusQueued || (r.QueuedAt != nil && r.QueuedAt.After(publishedAt)) {
 		return false, nil
 	}
-	if err := s.applyStatusTransitionOutcome(r, RunStatusFailedResumable, runErr, meta); err != nil {
+	if err := s.applyStatusTransitionOutcome(r, to, runErr, meta); err != nil {
 		return false, err
 	}
 	return true, nil

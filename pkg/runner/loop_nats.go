@@ -280,6 +280,21 @@ func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind admissio
 	}
 }
 
+// parksOnDLQ reports whether a failure is one the final delivery parks on the
+// DLQ: a failure the queue would have redelivered. A pause, a cancel and an
+// interruption are not failures; every verdict the runner acks — an IR this
+// runner cannot load (IR_UNLOADABLE) included — reaches the same verdict on
+// a replay, and a park would overwrite its diagnosis with DLQ_PARKED (and
+// keep a resume refused before its claim from going back where it came from).
+func parksOnDLQ(err error, runID string) bool {
+	return err != nil &&
+		!errors.Is(err, runtime.ErrRunPaused) &&
+		!errors.Is(err, runtime.ErrRunPausedOperator) &&
+		!errors.Is(err, runtime.ErrRunCancelled) &&
+		!errors.Is(err, runtime.ErrRunInterrupted) &&
+		isNakAction(classifyExecResult(err, runID).action)
+}
+
 // parkOnDLQOnFinalDelivery handles the DLQ branch: a generic engine
 // error on the LAST permitted JetStream attempt must park a copy on the
 // DLQ and Term instead of Nak — without the bridge, JetStream silently
@@ -290,16 +305,7 @@ func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind admissio
 // stop processing the delivery (DLQ dispatch already issued);
 // (false, "") otherwise to fall through to classifyExecResult.
 func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, msg *queue.RunMessage, logger *iterlog.Logger) (bool, string) {
-	if err == nil ||
-		errors.Is(err, runtime.ErrRunPaused) ||
-		errors.Is(err, runtime.ErrRunPausedOperator) ||
-		errors.Is(err, runtime.ErrRunCancelled) ||
-		errors.Is(err, runtime.ErrRunInterrupted) ||
-		// An IR this runner cannot load is acked with its own verdict on the
-		// run (IR_UNLOADABLE); a park here on the last delivery would
-		// overwrite that diagnosis with DLQ_PARKED.
-		errors.Is(err, ErrIRUnloadable) ||
-		r.cfg.NATS == nil || delivery.NumDelivered() < r.cfg.NATS.MaxDeliver() {
+	if !parksOnDLQ(err, msg.RunID) || r.cfg.NATS == nil || delivery.NumDelivered() < r.cfg.NATS.MaxDeliver() {
 		return false, ""
 	}
 	logger.Error("runner: run %s failed on final delivery %d/%d — parking on DLQ: %v",
