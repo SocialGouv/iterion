@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -767,6 +768,16 @@ func (e *Engine) resolveSecretRewriter() netproxy.SecretRewriter {
 	return rw
 }
 
+// sandboxModelHosts reads ITERION_SANDBOX_MODEL_HOSTS: the operator's own
+// model gateways (comma- or space-separated, in the network rules' syntax),
+// whose request bodies the inspecting proxy leaves in placeholder form like
+// a provider's. netproxy.New refuses an entry that is not a host pattern.
+func sandboxModelHosts() []string {
+	return strings.FieldsFunc(os.Getenv("ITERION_SANDBOX_MODEL_HOSTS"), func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+}
+
 // sandboxTLSInspectEnabled reports the ITERION_SANDBOX_TLS_INSPECT
 // kill-switch state (default on).
 func sandboxTLSInspectEnabled() bool {
@@ -800,8 +811,8 @@ func startNetworkProxy(
 
 	// TLS inspection needs the driver to inject the per-run CA into the
 	// container trust store; drivers advertise that via
-	// Capabilities.SupportsTLSInspection. Where it's unsupported (k8s,
-	// noop), enabling inspection would mint leaves the container can't
+	// Capabilities.SupportsTLSInspection. Where it's unsupported (noop),
+	// enabling inspection would mint leaves the container can't
 	// trust and break every TLS call — degrade to a transparent proxy
 	// (Layer 1 + redaction + allowlist still apply). See docs/secrets.md.
 	if rewriter != nil && !driver.Capabilities().SupportsTLSInspection {
@@ -833,8 +844,9 @@ func startNetworkProxy(
 	}
 
 	opts := netproxy.Options{
-		Policy: policy,
-		Token:  token,
+		Policy:     policy,
+		Token:      token,
+		ModelHosts: sandboxModelHosts(),
 		OnBlocked: func(host, reason string) {
 			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
 				"host":   host,

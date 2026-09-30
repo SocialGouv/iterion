@@ -16,8 +16,9 @@ import (
 // session start (both are AlwaysLoad servers).
 func TestHostNetworkArgs(t *testing.T) {
 	const (
-		noProxyEnv = "NO_PROXY=localhost,127.0.0.1,host.docker.internal"
-		aliasArg   = "host.docker.internal:host-gateway"
+		noProxyEnv   = "NO_PROXY=localhost,127.0.0.1,host.docker.internal"
+		noProxyLower = "no_proxy=localhost,127.0.0.1,host.docker.internal"
+		aliasArg     = "host.docker.internal:host-gateway"
 	)
 	cases := []struct {
 		name string
@@ -34,6 +35,7 @@ func TestHostNetworkArgs(t *testing.T) {
 			info: sandbox.RunInfo{HostGatewayAlias: true},
 			want: []string{
 				"--env", noProxyEnv,
+				"--env", noProxyLower,
 				"--add-host", aliasArg,
 			},
 		},
@@ -43,7 +45,10 @@ func TestHostNetworkArgs(t *testing.T) {
 			want: []string{
 				"--env", "HTTPS_PROXY=http://host.docker.internal:9000",
 				"--env", "HTTP_PROXY=http://host.docker.internal:9000",
+				"--env", "https_proxy=http://host.docker.internal:9000",
+				"--env", "http_proxy=http://host.docker.internal:9000",
 				"--env", noProxyEnv,
+				"--env", noProxyLower,
 				"--add-host", aliasArg,
 			},
 		},
@@ -53,7 +58,10 @@ func TestHostNetworkArgs(t *testing.T) {
 			want: []string{
 				"--env", "HTTPS_PROXY=http://host.docker.internal:9000",
 				"--env", "HTTP_PROXY=http://host.docker.internal:9000",
+				"--env", "https_proxy=http://host.docker.internal:9000",
+				"--env", "http_proxy=http://host.docker.internal:9000",
 				"--env", noProxyEnv,
+				"--env", noProxyLower,
 				"--add-host", aliasArg,
 			},
 		},

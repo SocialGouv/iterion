@@ -290,11 +290,17 @@ func TestPodManifestStructure(t *testing.T) {
 	if gotEnv["FOO"] != "bar" {
 		t.Errorf("env FOO = %q", gotEnv["FOO"])
 	}
-	if gotEnv["HTTPS_PROXY"] != "http://t:tok@host:8080" {
-		t.Errorf("HTTPS_PROXY = %q", gotEnv["HTTPS_PROXY"])
+	// Both spellings: curl, wget and git read only the lower-case
+	// http_proxy for an http:// URL.
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+		if gotEnv[k] != "http://t:tok@host:8080" {
+			t.Errorf("%s = %q", k, gotEnv[k])
+		}
 	}
-	if gotEnv["NO_PROXY"] == "" {
-		t.Error("NO_PROXY must be set when proxy endpoint is provided")
+	for _, k := range []string{"NO_PROXY", "no_proxy"} {
+		if gotEnv[k] == "" {
+			t.Errorf("%s must be set when proxy endpoint is provided", k)
+		}
 	}
 }
 

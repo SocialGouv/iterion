@@ -98,6 +98,13 @@ type Options struct {
 	// pure decrypt/re-encrypt passthrough.
 	Rewriter SecretRewriter
 
+	// ModelHosts names hosts serving a model API beside the built-in ones
+	// (a gateway at a path of its own), in the network rules' syntax; a base
+	// URL or host:port names its host. In inspection mode a request's body
+	// to such a host keeps its placeholders, like a request to a provider.
+	// An entry that is not a valid pattern fails New.
+	ModelHosts []string
+
 	// InspectUpstreamTLS overrides the TLS config used for the proxy's
 	// connection to the REAL upstream in inspection mode (tests inject a
 	// RootCAs trusting a local httptest server). Nil uses the system
@@ -149,14 +156,21 @@ func New(opts Options) (*Proxy, error) {
 		// the proxy is byte-transparent for non-CONNECT traffic.
 		DisableCompression: true,
 	}
+	// The operator's model hosts are validated whether or not inspection
+	// runs: an invalid entry fails the run's start either way.
+	modelHosts, err := modelHostPolicy(opts.ModelHosts)
+	if err != nil {
+		return nil, err
+	}
 	if opts.InspectCA != nil {
 		upstreamTLS := opts.InspectUpstreamTLS
 		if upstreamTLS == nil {
 			upstreamTLS = &tls.Config{MinVersion: tls.VersionTLS12}
 		}
 		p.inspect = &inspectConfig{
-			ca:       opts.InspectCA,
-			rewriter: opts.Rewriter,
+			ca:         opts.InspectCA,
+			rewriter:   opts.Rewriter,
+			modelHosts: modelHosts,
 			upstream: &http.Transport{
 				DialContext:         dial,
 				TLSClientConfig:     upstreamTLS,
@@ -400,9 +414,15 @@ func (p *Proxy) notifyBlocked(host string) {
 	if isSilentDenyHost(host) {
 		return
 	}
+	p.reportBlocked(host, "policy denial")
+}
+
+// reportBlocked hands a refusal to the OnBlocked hook, a panicking hook
+// never taking the proxy down.
+func (p *Proxy) reportBlocked(host, reason string) {
 	if p.onBlocked != nil {
 		defer func() { _ = recover() }()
-		p.onBlocked(host, "policy denial")
+		p.onBlocked(host, reason)
 	}
 }
 
@@ -503,6 +523,22 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	outReq.Host = target.Host
 	outReq.RequestURI = ""
 	stripHopByHop(outReq.Header)
+
+	// Content DLP applies to a plain-HTTP request like to an inspected one:
+	// the two schemes share this proxy, and a gate on one only is a gate the
+	// caller walks around. Its placeholders are never substituted: a value
+	// never goes out over clear text.
+	if p.inspect != nil {
+		host := canonicalHost(target.Host)
+		body, refusal := p.inspectRequest(outReq, host, false)
+		if refusal != nil {
+			p.reportBlocked(host, refusal.reason)
+			w.Header().Set("X-Iterion-Reason", "sandbox secret policy")
+			http.Error(w, refusal.message, refusal.status)
+			return
+		}
+		setBody(outReq, body)
+	}
 
 	resp, err := p.forwardTransport.RoundTrip(outReq)
 	if err != nil {

@@ -30,6 +30,9 @@ type inspectConfig struct {
 	ca       *EphemeralCA
 	rewriter SecretRewriter
 	upstream http.RoundTripper
+	// modelHosts matches the operator's own model hosts, beside the built-in
+	// ones (see modelRequest); nil when there are none.
+	modelHosts *Policy
 }
 
 // handleConnectInspect terminates TLS on the hijacked client connection,
@@ -41,10 +44,9 @@ type inspectConfig struct {
 func (p *Proxy) handleConnectInspect(hostPort string, clientConn net.Conn, bufrw *bufio.ReadWriter) {
 	defer clientConn.Close()
 
-	hostname := hostPort
-	if h, _, err := net.SplitHostPort(hostPort); err == nil {
-		hostname = h
-	}
+	// The policy's form of the target (lowercase, no trailing dot, IDN
+	// folded): content DLP, substitution and the model match key on it too.
+	hostname := canonicalHost(hostPort)
 
 	// Read through the buffered reader (it already wraps clientConn and
 	// may hold the ClientHello); write raw to clientConn.
@@ -78,45 +80,29 @@ func (p *Proxy) handleConnectInspect(hostPort string, clientConn net.Conn, bufrw
 // upstream response back to the client. Returns whether the connection
 // may be reused for another request.
 func (p *Proxy) serveInspectedRequest(client net.Conn, req *http.Request, hostname, hostPort string) bool {
-	body, _ := io.ReadAll(io.LimitReader(req.Body, 64<<20))
-	_ = req.Body.Close()
-
-	rw := p.inspect.rewriter
-	if rw != nil {
-		// DLP: a real secret value leaving toward an unapproved host is
-		// blocked outright (defeats domain-fronting the allowlist can't
-		// see).
-		scan := inspectScanText(req, body)
-		if rw.ExfiltratesTo(scan, hostname) {
-			writeSimpleResponse(client, http.StatusForbidden, "blocked by sandbox secret policy")
-			if p.onBlocked != nil {
-				p.onBlocked(hostname, "secret exfiltration blocked")
-			}
-			return false
-		}
-		// Substitute placeholders for real values, scoped to this host.
-		body = []byte(rw.MaterializeForHost(string(body), hostname))
-		for k, vals := range req.Header {
-			for i, v := range vals {
-				req.Header[k][i] = rw.MaterializeForHost(v, hostname)
-			}
-		}
+	// The request goes where its tunnel was opened: the policy, content DLP
+	// and the substitution's scope all key on the CONNECT target. One naming
+	// another host inside the tunnel is refused.
+	if !requestTargetsTunnel(req, hostPort) {
+		writeSimpleResponse(client, http.StatusMisdirectedRequest, "request host differs from the tunnel's")
+		p.reportBlocked(hostname, "request host differs from the CONNECT target")
+		return false
+	}
+	body, refusal := p.inspectRequest(req, hostname, true)
+	if refusal != nil {
+		writeSimpleResponse(client, refusal.status, refusal.message)
+		p.reportBlocked(hostname, refusal.reason)
+		return false
 	}
 
-	// Rebuild the request for the upstream RoundTrip.
+	// Rebuild the request for the upstream RoundTrip, bound for the tunnel's
+	// target.
 	outURL := *req.URL
 	outURL.Scheme = "https"
-	if outURL.Host == "" {
-		outURL.Host = req.Host
-	}
-	if outURL.Host == "" {
-		outURL.Host = hostPort
-	}
+	outURL.Host = hostPort
 	req.URL = &outURL
 	req.RequestURI = ""
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.ContentLength = int64(len(body))
-	req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	setBody(req, body)
 
 	resp, err := p.inspect.upstream.RoundTrip(req)
 	if err != nil {
@@ -145,16 +131,108 @@ func (p *Proxy) serveInspectedRequest(client net.Conn, req *http.Request, hostna
 	return false
 }
 
+// maxInspectedBody bounds the request body the proxy holds to scan and
+// substitute; a larger one is refused, never cut. ITERION_SANDBOX_TLS_INSPECT=off
+// lifts it, with inspection. A variable for the tests.
+var maxInspectedBody = 64 << 20
+
+// refusal is why the proxy answers a request itself.
+type refusal struct {
+	status          int
+	message, reason string
+}
+
+// inspectRequest applies Layer 2 to a request bound for host (in the
+// policy's form): content DLP, then — when substitute, on the TLS path only: a
+// value is never put on a clear-text link — placeholder substitution, in the
+// headers always and in the body unless it goes to a model API. It returns
+// the body to forward, or the refusal.
+func (p *Proxy) inspectRequest(req *http.Request, host string, substitute bool) ([]byte, *refusal) {
+	var body []byte
+	if req.Body != nil {
+		b, err := io.ReadAll(io.LimitReader(req.Body, int64(maxInspectedBody)+1))
+		_ = req.Body.Close()
+		if err != nil {
+			return nil, &refusal{http.StatusBadRequest, "request body unreadable", "request body unreadable: " + err.Error()}
+		}
+		if len(b) > maxInspectedBody {
+			return nil, &refusal{http.StatusRequestEntityTooLarge, "request body too large for secret inspection", "request body over the inspection bound"}
+		}
+		body = b
+	}
+	rw := p.inspect.rewriter
+	if rw == nil {
+		return body, nil
+	}
+	// DLP: a real secret value leaving toward an unapproved host is blocked
+	// outright (defeats domain-fronting the allowlist can't see).
+	if rw.ExfiltratesTo(inspectScanText(req, body), host) {
+		return nil, &refusal{http.StatusForbidden, "blocked by sandbox secret policy", "secret exfiltration blocked"}
+	}
+	if !substitute {
+		return body, nil
+	}
+	if !modelRequest(host, req.URL.Path, p.inspect.modelHosts) {
+		body = []byte(rw.MaterializeForHost(string(body), host))
+	}
+	for k, vals := range req.Header {
+		for i, v := range vals {
+			req.Header[k][i] = rw.MaterializeForHost(v, host)
+		}
+	}
+	return body, nil
+}
+
+// setBody makes body the request's, without the trailers it arrived with —
+// header fields content DLP never scanned.
+func setBody(req *http.Request, body []byte) {
+	req.Trailer = nil
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	if len(body) == 0 {
+		req.Body = http.NoBody
+		return
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+}
+
+// requestTargetsTunnel reports whether req names the tunnel's target: its
+// host (http.ReadRequest takes an absolute URL's over the Host header; none:
+// HTTP/1.0, the target), and its port when it names one.
+func requestTargetsTunnel(req *http.Request, hostPort string) bool {
+	authority := req.Host
+	if authority == "" {
+		return true
+	}
+	if canonicalHost(authority) != canonicalHost(hostPort) {
+		return false
+	}
+	_, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		return true
+	}
+	_, tunnelPort, _ := net.SplitHostPort(hostPort)
+	return port == tunnelPort
+}
+
 // inspectScanText assembles the request surface a secret could leak
-// through: the URL, every header value, and the body.
+// through: the method, the URL, every header value, and the body.
 func inspectScanText(req *http.Request, body []byte) string {
 	var b strings.Builder
 	b.Grow(len(body) + 256)
+	b.WriteString(req.Method)
+	b.WriteByte(' ')
 	b.WriteString(req.URL.String())
 	b.WriteByte('\n')
 	for k, vals := range req.Header {
+		// A field name reaches us canonicalised (each letter after a dash
+		// upper-cased): its lower-case form too, so a lower-case value in a
+		// name is seen as sent.
+		lk := strings.ToLower(k)
 		for _, v := range vals {
 			b.WriteString(k)
+			b.WriteString(" ")
+			b.WriteString(lk)
 			b.WriteString(": ")
 			b.WriteString(v)
 			b.WriteByte('\n')

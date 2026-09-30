@@ -288,8 +288,12 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	// the security boundary and shouldn't be silently overridden.
 	envSlice := envMapToSlice(in.Spec.Env)
 	if in.ProxyEndpoint != "" {
-		envSlice = upsertEnv(envSlice, "HTTPS_PROXY", in.ProxyEndpoint)
-		envSlice = upsertEnv(envSlice, "HTTP_PROXY", in.ProxyEndpoint)
+		// Both spellings: curl, wget and git (libcurl) read only the
+		// lower-case http_proxy for an http:// URL and prefer the lower-case
+		// forms — a spec's own lower-case value would win otherwise.
+		for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+			envSlice = upsertEnv(envSlice, k, in.ProxyEndpoint)
+		}
 		// NO_PROXY=localhost,127.0.0.1 only. The previous default
 		// added .svc and .cluster.local — those let the sandboxed
 		// workload bypass the iterion proxy and reach in-cluster
@@ -304,6 +308,7 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 		// them so the network posture matches the documented
 		// "allowlist via iterion proxy" promise.
 		envSlice = upsertEnv(envSlice, "NO_PROXY", "localhost,127.0.0.1")
+		envSlice = upsertEnv(envSlice, "no_proxy", "localhost,127.0.0.1")
 	}
 
 	// Git safe.directory for the workspace. The emptyDir mountpoint is

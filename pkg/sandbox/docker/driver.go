@@ -245,12 +245,18 @@ func validateEnvVar(k, v string) error {
 // services (e.g. an inner devbox cache) bypass the proxy.
 func hostNetworkArgs(info sandbox.RunInfo) []string {
 	var args []string
+	// Both spellings, as the clone-guard proxy sets them: curl, wget and git
+	// (libcurl) read only the lower-case http_proxy for an http:// URL, and
+	// prefer the lower-case forms.
 	if info.ProxyEndpoint != "" {
-		args = append(args, "--env", "HTTPS_PROXY="+info.ProxyEndpoint)
-		args = append(args, "--env", "HTTP_PROXY="+info.ProxyEndpoint)
+		for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+			args = append(args, "--env", k+"="+info.ProxyEndpoint)
+		}
 	}
 	if info.ProxyEndpoint != "" || info.HostGatewayAlias {
-		args = append(args, "--env", "NO_PROXY=localhost,127.0.0.1,host.docker.internal")
+		for _, k := range []string{"NO_PROXY", "no_proxy"} {
+			args = append(args, "--env", k+"=localhost,127.0.0.1,host.docker.internal")
+		}
 		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 	return args
