@@ -151,6 +151,7 @@ func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
 	}
 	second := first
 	second.ID, second.Rank, second.Fingerprint = "", 1, "platform-fallback"
+	second.CreatedAt = first.CreatedAt.Add(time.Hour)
 	second.SealedPayload, err = secrets.SealOAuthPayload(sealer, second.UserID, second.Kind, []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-platform-fallback"}}`))
 	if err != nil {
 		t.Fatal(err)
@@ -175,6 +176,9 @@ func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
 	if want := secrets.OAuthRecordID(second.UserID, second.Kind, 1); b.OAuthRecordRefs["claude_code"] != want {
 		t.Fatalf("the rank-1 fallback slot names %q, want its own record %q", b.OAuthRecordRefs["claude_code"], want)
 	}
+	if got := b.OAuthRecordConnectedAt["claude_code"]; !got.Equal(second.CreatedAt) {
+		t.Fatalf("the rank-1 fallback slot carries connect time %s, want its own record's %s", got, second.CreatedAt)
+	}
 	closeAccount(second.Fingerprint)
 	b = resolveBundle(t, p, rs, sealer, "platform-all-closed", "team1", "webhook:config")
 	if b.OAuthFingerprints["claude_code"] != first.Fingerprint || !b.PlatformSourced["claude_code"] {
@@ -182,5 +186,8 @@ func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
 	}
 	if want := secrets.OAuthRecordID(first.UserID, first.Kind, 0); b.OAuthRecordRefs["claude_code"] != want {
 		t.Fatalf("the restored slot names %q, want the primary record %q", b.OAuthRecordRefs["claude_code"], want)
+	}
+	if got := b.OAuthRecordConnectedAt["claude_code"]; !got.Equal(first.CreatedAt) {
+		t.Fatalf("the restored slot carries connect time %s, want the primary record's %s", got, first.CreatedAt)
 	}
 }

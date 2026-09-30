@@ -716,11 +716,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								// wire still empty, this forfait is restored — a
 								// parked run with a durable retry beats a stuck one.
 								if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-									skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID}
+									skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt}
 								}
 								continue
 							}
-							setOAuthCredential(&bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID)
+							setOAuthCredential(&bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID, rec.CreatedAt)
 							p.logger.Info("cloudpublisher: oauth-forfait(%s) used run=%s owner=%s kind=%s fp=%s", label, runID, ownerKey, rec.Kind, rec.Fingerprint)
 						}
 					}
@@ -762,7 +762,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							// parked by the readings of the account it replaced. The
 							// donor's record rides along: the borrower's runner
 							// follows it instead of exchanging the donor's token.
-							setOAuthCredential(&bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID)
+							setOAuthCredential(&bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
 							bundle.PoolSourced[grant.Ref] = true
 						case credpool.SourceAPIKey:
 							prov := secrets.Provider(grant.Ref)
@@ -837,7 +837,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						if taken[secrets.WireFamily(kind)] {
 							continue
 						}
-						setOAuthCredential(&bundle, kind, sf.payload, sf.fp, sf.id)
+						setOAuthCredential(&bundle, kind, sf.payload, sf.fp, sf.id, sf.connectedAt)
 						if sf.org {
 							bundle.OrgSourced[kind] = true
 						}
@@ -1264,20 +1264,22 @@ func (p *Publisher) keepFollowableRecordRefs(bundle *secrets.RunBundle) {
 	for kind := range bundle.OAuthRecordRefs {
 		if !p.rotatedOAuthKinds[kind] {
 			delete(bundle.OAuthRecordRefs, kind)
+			delete(bundle.OAuthRecordConnectedAt, kind)
 		}
 	}
 }
 
 // setOAuthCredential fills one OAuth slot: the payload, the subscription's
-// fingerprint and the id of the store record it was read from. Every tier
-// fills its slot through here, so no slot can carry a payload whose record
-// the runner cannot follow — the ref is what lets a run pick up the
-// refresh worker's rotations instead of exchanging the token itself. A slot
-// filled without a record id keeps no stale ref: the runner then refreshes
-// its own copy, and logs that it does.
-func setOAuthCredential(bundle *secrets.RunBundle, kind string, payload []byte, fp, recordID string) {
+// fingerprint, and the id and connect time of the store record it was read
+// from. Every tier fills its slot through here, so no slot can carry a
+// payload whose record the runner cannot follow — the ref is what lets a run
+// pick up the refresh worker's rotations instead of exchanging the token
+// itself. A slot filled without a record id keeps no stale ref: the runner
+// then refreshes its own copy, and logs that it does.
+func setOAuthCredential(bundle *secrets.RunBundle, kind string, payload []byte, fp, recordID string, connectedAt time.Time) {
 	bundle.OAuthCredentials[kind] = payload
 	setOAuthFingerprint(bundle, kind, fp)
+	delete(bundle.OAuthRecordConnectedAt, kind)
 	if recordID == "" {
 		delete(bundle.OAuthRecordRefs, kind)
 		return
@@ -1286,6 +1288,13 @@ func setOAuthCredential(bundle *secrets.RunBundle, kind string, payload []byte, 
 		bundle.OAuthRecordRefs = map[string]string{}
 	}
 	bundle.OAuthRecordRefs[kind] = recordID
+	if connectedAt.IsZero() {
+		return
+	}
+	if bundle.OAuthRecordConnectedAt == nil {
+		bundle.OAuthRecordConnectedAt = map[string]time.Time{}
+	}
+	bundle.OAuthRecordConnectedAt[kind] = connectedAt
 }
 
 // fillFromPlatform fills the API-key and OAuth slots still empty after the
@@ -1428,7 +1437,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 			if until, why := p.forfaitWindowClosed(ctx, usagecap.ScopePlatform, rec.UserID, rec, payload); !until.IsZero() {
 				skips.note(until)
 				if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-					skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, platform: true}
+					skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, platform: true}
 				}
 				p.logger.Info("cloudpublisher: platform forfait SKIPPED run=%s kind=%s rank=%d fp=%s — %s", runID, rec.Kind, rec.Rank, rec.Fingerprint, why)
 				continue
@@ -1439,7 +1448,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 			// failure one tier up: without the identity, a super-admin who
 			// swaps in a fresh subscription inherits the exhausted
 			// readings of the one it replaced, fleet-wide.
-			setOAuthCredential(bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID)
+			setOAuthCredential(bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID, rec.CreatedAt)
 			taken[secrets.WireFamily(string(rec.Kind))] = true
 			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s fp=%s", runID, rec.Kind, rec.Fingerprint)
 		}
@@ -1470,9 +1479,10 @@ var poolWantOrder = func() []credpool.Credential {
 type skippedForfait struct {
 	payload []byte
 	fp      string
-	// id is the store record the forfait was read from, so a restored slot
-	// stays followable by the runner like any other.
-	id string
+	// id and connectedAt name the store record the forfait was read from,
+	// so a restored slot stays followable by the runner like any other.
+	id          string
+	connectedAt time.Time
 	// org marks a forfait the ORG tier passed over, so a restore re-stamps
 	// the provenance the metering scope depends on.
 	org      bool

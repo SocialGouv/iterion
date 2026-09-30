@@ -34,6 +34,13 @@ func TestResolveOAuth_UserAndTeamSlotsNameTheirRecord(t *testing.T) {
 		if got := b.OAuthRecordRefs["claude_code"]; got != want {
 			t.Errorf("owner %s: OAuthRecordRefs[claude_code] = %q, want %q", owner, got, want)
 		}
+		recordOwner := owner
+		if owner != "alice" {
+			recordOwner = secrets.OrgOwnerKey("team1")
+		}
+		if got := b.OAuthRecordConnectedAt["claude_code"]; !got.Equal(seededConnectedAt(recordOwner)) {
+			t.Errorf("owner %s: OAuthRecordConnectedAt[claude_code] = %s, want its record's connect time %s", owner, got, seededConnectedAt(recordOwner))
+		}
 	}
 }
 
@@ -48,6 +55,9 @@ func TestPlatformTier_oauthSlotNamesItsRecord(t *testing.T) {
 	want := secrets.OAuthRecordID(secrets.PlatformOwnerKey, secrets.OAuthKindClaudeCode, 0)
 	if got := b.OAuthRecordRefs["claude_code"]; got != want {
 		t.Errorf("OAuthRecordRefs[claude_code] = %q, want the platform record %q", got, want)
+	}
+	if got := b.OAuthRecordConnectedAt["claude_code"]; !got.Equal(seededConnectedAt(secrets.PlatformOwnerKey)) {
+		t.Errorf("OAuthRecordConnectedAt[claude_code] = %s, want the platform record's connect time", got)
 	}
 }
 
@@ -75,6 +85,9 @@ func TestOrgTier_oauthSlotNamesItsRecord(t *testing.T) {
 	if got := b.OAuthRecordRefs["claude_code"]; got != want {
 		t.Errorf("OAuthRecordRefs[claude_code] = %q, want the org record %q", got, want)
 	}
+	if got := b.OAuthRecordConnectedAt["claude_code"]; !got.Equal(seededConnectedAt(secrets.OrgTierOwnerKey(orgID))) {
+		t.Errorf("OAuthRecordConnectedAt[claude_code] = %s, want the org record's connect time", got)
+	}
 }
 
 // A lent subscription is the donor's record: a borrower that exchanged its
@@ -90,6 +103,11 @@ func TestPoolTier_grantNamesTheDonorsRecord(t *testing.T) {
 	want := secrets.OAuthRecordID("donor", secrets.OAuthKindClaudeCode, 0)
 	if got := bundle.OAuthRecordRefs["claude_code"]; got != want {
 		t.Errorf("OAuthRecordRefs[claude_code] = %q for a pool grant, want the donor's record %q", got, want)
+	}
+	// The borrower's runner holds the lent slot to it: the worker's
+	// rotations keep it, a donor's re-connect moves it.
+	if got := bundle.OAuthRecordConnectedAt["claude_code"]; !got.Equal(seededConnectedAt("donor")) {
+		t.Errorf("OAuthRecordConnectedAt[claude_code] = %s for a pool grant, want the donor's record's connect time", got)
 	}
 }
 
@@ -108,5 +126,8 @@ func TestResolveOAuth_aKindNoWorkerRotatesNamesNoRecord(t *testing.T) {
 	}
 	if got, ok := b.OAuthRecordRefs["claude_code"]; ok {
 		t.Fatalf("OAuthRecordRefs[claude_code] = %q on a server that does not rotate claude_code records, want none", got)
+	}
+	if got, ok := b.OAuthRecordConnectedAt["claude_code"]; ok {
+		t.Fatalf("OAuthRecordConnectedAt[claude_code] = %s without a record to follow, want none", got)
 	}
 }
