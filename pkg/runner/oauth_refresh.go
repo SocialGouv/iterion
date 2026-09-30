@@ -47,28 +47,28 @@ const oauthFollowInterval = time.Minute
 // (refreshAnthropicLoop), and says so. Codex is not refreshed at all: its CLI
 // rotates its own refresh token, and admitting it needs a write-through of the
 // followed record into the sandbox's codex home, which does not exist yet.
-func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files, refs, fingerprints map[string]string, lent map[string]bool) {
+func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files, refs, fingerprints map[string]string, connectedAt map[string]time.Time, lent map[string]bool) {
 	hc := &http.Client{Timeout: oauthRefreshHTTPTimeout}
 	for kind, path := range files {
 		if secrets.OAuthKind(kind) != secrets.OAuthKindClaudeCode {
 			continue
 		}
 		fp := fingerprints[kind]
-		// A lent slot is held to the subscription that was lent, which it can
-		// only recognise by its fingerprint: without one it keeps the
-		// self-refresh it always had.
-		if ref := refs[kind]; ref != "" && r.cfg.OAuthForfaits != nil && r.cfg.Sealer != nil && (!lent[kind] || fp != "") {
-			heldTo := ""
+		// A lent slot is held to the subscription that was lent, which it
+		// recognises by its fingerprint or its record's connect time: with
+		// neither it keeps the self-refresh it always had.
+		if ref := refs[kind]; ref != "" && r.cfg.OAuthForfaits != nil && r.cfg.Sealer != nil && (!lent[kind] || fp != "" || !connectedAt[kind].IsZero()) {
+			var held *lentHold
 			if lent[kind] {
-				heldTo = fp
+				held = &lentHold{fingerprint: fp, connectedAt: connectedAt[kind]}
 			}
 			// A bundle can wait in the queue past a rotation: catch up
 			// before the run's first spawn reads the file.
-			if !r.followOAuthRecord(runID, secrets.OAuthKind(kind), ref, fp, heldTo, path) {
+			if !r.followOAuthRecord(runID, secrets.OAuthKind(kind), ref, fp, held, path) {
 				continue
 			}
 			errtrack.Go("runner.followOAuthRecord", func() {
-				r.followOAuthRecordLoop(stop, runID, secrets.OAuthKind(kind), ref, fp, heldTo, path, oauthFollowInterval)
+				r.followOAuthRecordLoop(stop, runID, secrets.OAuthKind(kind), ref, fp, held, path, oauthFollowInterval)
 			})
 			continue
 		}
@@ -82,9 +82,9 @@ func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files,
 // followOAuthRecordLoop keeps the materialised credentials file equal to the
 // store record the run was sealed from, re-reading it every `every`, and
 // writes each change through into the run's sandbox. It never exchanges a
-// token, and it ends when a lent slot's record no longer names the lent
-// subscription.
-func (r *Runner) followOAuthRecordLoop(stop <-chan struct{}, runID string, kind secrets.OAuthKind, ref, fp, heldTo, path string, every time.Duration) {
+// token, and it ends when the donor of a lent slot re-connects it with
+// another subscription.
+func (r *Runner) followOAuthRecordLoop(stop <-chan struct{}, runID string, kind secrets.OAuthKind, ref, fp string, held *lentHold, path string, every time.Duration) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -93,24 +93,44 @@ func (r *Runner) followOAuthRecordLoop(stop <-chan struct{}, runID string, kind 
 			return
 		case <-tick.C:
 		}
-		if !r.followOAuthRecord(runID, kind, ref, fp, heldTo, path) {
+		if !r.followOAuthRecord(runID, kind, ref, fp, held, path) {
 			return
 		}
 	}
 }
 
-// errNotTheLentCredential ends the follow of a lent slot whose donor record
-// no longer names the subscription that was lent.
-var errNotTheLentCredential = errors.New("the donor's record no longer names the subscription that was lent")
+// errNotTheLentCredential ends the follow of a lent slot whose donor
+// re-connected it with another subscription.
+var errNotTheLentCredential = errors.New("the donor re-connected the lent slot with another subscription")
+
+// lentHold is what a pool-lent slot is held to: the subscription that was
+// lent, as the fingerprint the run was sealed with and the connect time of
+// the donor's record.
+type lentHold struct {
+	fingerprint string
+	connectedAt time.Time
+}
+
+// reconnectedElsewhere reports that the donor re-connected the slot with
+// another subscription. Only a connect rewrites a record's CreatedAt; the
+// refresh worker's rotations keep it, those that re-stamp the fingerprint
+// included (an account identified, an account demoted to a local meter),
+// and the slot keeps following that token chain. A re-connect that keeps
+// the fingerprint is the same account, and is followed too. Without a
+// connect time — a bundle sealed by an older server — the fingerprint
+// alone decides.
+func (h *lentHold) reconnectedElsewhere(rec secrets.OAuthRecord) bool {
+	return !rec.CreatedAt.Equal(h.connectedAt) && rec.Fingerprint != h.fingerprint
+}
 
 // followOAuthRecord runs one follow pass and reports it: a refusal or a store
 // error is logged, a change is written through into the run's sandbox. It
-// returns false when the follow must end: a lent slot whose donor record now
-// names another subscription keeps the token it holds — in-flight runs
-// finish on the credential they were granted, never on one the donor
-// connects after.
-func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp, heldTo, path string) bool {
-	changed, fpNow, err := r.followOAuthRecordOnce(kind, ref, heldTo, path)
+// returns false when the follow must end: the donor of a lent slot
+// re-connected it with another subscription, and the run keeps the token it
+// holds — in-flight runs finish on the credential they were granted, never
+// on one the donor connects after.
+func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp string, held *lentHold, path string) bool {
+	changed, fpNow, err := r.followOAuthRecordOnce(kind, ref, held, path)
 	if err != nil {
 		if r.cfg.Logger != nil {
 			r.cfg.Logger.Warn("runner: oauth-forfait follow run=%s kind=%s record=%s: %v", runID, kind, ref, err)
@@ -138,10 +158,10 @@ func (r *Runner) followOAuthRecord(runID string, kind secrets.OAuthKind, ref, fp
 // rotations (an unstamped record stamped, a subscription identified as an
 // account, an account demoted to a local meter), and a reconnect of the slot
 // is its owner's choice of credential for it. The id pins the owner and the
-// rank, so the run follows that one slot — except a lent one: heldTo, when
-// set, is the fingerprint of the subscription that was lent, and a record
-// that names another is refused (errNotTheLentCredential).
-func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref, heldTo, path string) (bool, string, error) {
+// rank, so the run follows that one slot — except a lent one, held to the
+// subscription that was lent: a donor's re-connect with another one is
+// refused (errNotTheLentCredential).
+func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref string, held *lentHold, path string) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	rec, err := r.cfg.OAuthForfaits.GetByID(ctx, ref)
@@ -151,8 +171,9 @@ func (r *Runner) followOAuthRecordOnce(kind secrets.OAuthKind, ref, heldTo, path
 	if rec.Kind != kind {
 		return false, "", fmt.Errorf("record is a %s forfait, the run was sealed with a %s one", rec.Kind, kind)
 	}
-	if heldTo != "" && rec.Fingerprint != heldTo {
-		return false, rec.Fingerprint, fmt.Errorf("%w (fingerprint %q, lent %q): the run keeps the token it holds", errNotTheLentCredential, rec.Fingerprint, heldTo)
+	if held != nil && held.reconnectedElsewhere(rec) {
+		return false, rec.Fingerprint, fmt.Errorf("%w (fingerprint %q, lent %q; connected %s, lent at %s): the run keeps the token it holds",
+			errNotTheLentCredential, rec.Fingerprint, held.fingerprint, rec.CreatedAt.UTC().Format(time.RFC3339), held.connectedAt.UTC().Format(time.RFC3339))
 	}
 	payload, err := secrets.OpenOAuthPayload(r.cfg.Sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 	if err != nil {

@@ -3,8 +3,10 @@ package cloudpublisher
 import (
 	"context"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"hash/fnv"
 	"io"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -30,9 +32,18 @@ func seedOAuth(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, owner
 		// what a tier owes the bundle is THIS record's identity, whatever
 		// it was derived from.
 		Fingerprint: seededFP(ownerKey),
+		CreatedAt:   seededConnectedAt(ownerKey),
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
+}
+
+// seededConnectedAt is when seedOAuth's record for ownerKey was connected:
+// distinct per owner, so a slot that carries another record's time is seen.
+func seededConnectedAt(ownerKey string) time.Time {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(ownerKey))
+	return time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(h.Sum32()%100000) * time.Second)
 }
 
 // seededFP is the fingerprint seedOAuth stamps on the record it creates.
