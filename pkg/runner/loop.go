@@ -1880,8 +1880,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			r.recordRedeliveryDeferred(msg, outcome, err, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
 		}
 	}
-	if outcome.finalStatus == "deterministic_failure" {
-		r.recordRetrySkipped(msg, runtimeCodeOf(err), err.Error(), released)
+	if recordsRetrySkipped(outcome.finalStatus, released) {
+		r.recordRetrySkipped(msg, refusalCode(err), err.Error(), released)
 	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
@@ -1973,7 +1973,14 @@ func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCod
 	}
 	if released != "" {
 		data["status"] = string(released)
-		data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + "; fix the cause, or resume with --force"
+		switch code {
+		case store.FailureIRUnloadable:
+			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + ": this runner cannot load the IR the server compiled; align the runner with the server, then resume"
+		case store.FailureBotRequiresNewerEngine:
+			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + ": the bot requires a newer engine than this runner; bump the runner image, then resume"
+		default:
+			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + "; fix the cause, or resume with --force"
+		}
 	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunRetrySkipped,
@@ -1981,6 +1988,14 @@ func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCod
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit run_retry_skipped: %v", msg.RunID, err)
 	}
+}
+
+// recordsRetrySkipped reports that a delivery's end is put on the run's
+// timeline as run_retry_skipped: a deterministic failure, which is not
+// redelivered, and any resume the runner put back where it came from — its
+// own verdicts (an IR it cannot load, a bot above its engine) included.
+func recordsRetrySkipped(finalStatus string, released store.RunStatus) bool {
+	return finalStatus == "deterministic_failure" || released != ""
 }
 
 // releaseRefusedResume puts back where it came from a resume the engine
@@ -2834,12 +2849,19 @@ func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, ca
 	// cancelled meanwhile is not flipped back. A resume still queued goes
 	// back where it came from instead (verdictFromStatuses).
 	from, leftToRelease := r.verdictFromStatuses(msg)
-	if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
+	changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
 		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
-		from); err != nil {
+		from)
+	switch {
+	case err != nil:
 		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
-	} else if !changed && !leftToRelease {
+	case !changed && !leftToRelease:
 		r.cfg.Logger.Warn("runner: run %s: the unloadable-IR verdict was declined (status drifted) — the document does not carry IR_UNLOADABLE", msg.RunID)
+	}
+	if leftToRelease && !changed {
+		// The run goes back where it came from: no failure to announce, and
+		// processOne records the refusal there (run_retry_skipped).
+		return
 	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunFailed,

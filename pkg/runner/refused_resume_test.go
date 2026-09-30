@@ -150,6 +150,9 @@ func TestRunnerVerdicts_leaveAResumeToTheRelease(t *testing.T) {
 			if run, _ := st.LoadRun(ctx, msg.RunID); run.Status != store.RunStatusQueued {
 				t.Fatalf("the verdict writer moved a resume to %s before the release", run.Status)
 			}
+			if n := runFailedEvents(t, st, msg.RunID); n != 0 {
+				t.Fatalf("the verdict writer announced %d failure(s) for a resume left to the release", n)
+			}
 			if got := r.releaseRefusedResume(msg, tc.err, iterlog.Nop()); got != store.RunStatusPausedWaitingHuman {
 				t.Fatalf("released to %q, want paused_waiting_human", got)
 			}
@@ -174,6 +177,9 @@ func TestRunnerVerdicts_leaveAResumeToTheRelease(t *testing.T) {
 			if run, _ := st.LoadRun(ctx, msg.RunID); run.Status == store.RunStatusQueued || run.FailureCode != tc.code {
 				t.Fatalf("a launch lost the runner's verdict: %s %q", run.Status, run.FailureCode)
 			}
+			if n := runFailedEvents(t, st, msg.RunID); n != 1 {
+				t.Fatalf("a launch's verdict announced %d failure(s), want 1", n)
+			}
 
 			// A resume whose run is no longer queued — an orphan adopted and
 			// promoted, a redelivery after a nak — takes the verdict: the
@@ -191,6 +197,9 @@ func TestRunnerVerdicts_leaveAResumeToTheRelease(t *testing.T) {
 			}
 			if run, _ := st.LoadRun(ctx, msg.RunID); run.FailureCode != tc.code || run.ContinuationState != store.ContinuationFinal {
 				t.Fatalf("a resume of an adopted orphan lost the runner's verdict: %s %q %q", run.Status, run.FailureCode, run.ContinuationState)
+			}
+			if n := runFailedEvents(t, st, msg.RunID); n != 1 {
+				t.Fatalf("an adopted orphan's verdict announced %d failure(s), want 1", n)
 			}
 		})
 	}
@@ -211,6 +220,73 @@ func TestParksOnDLQ_onlyWhatTheQueueWouldRedeliver(t *testing.T) {
 	} {
 		if parksOnDLQ(err, "run-1") {
 			t.Errorf("%v is parked on the DLQ, want it left to its own verdict", err)
+		}
+	}
+}
+
+func runFailedEvents(t *testing.T, st store.RunStore, runID string) int {
+	t.Helper()
+	evs, err := st.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range evs {
+		if ev.Type == store.EventRunFailed {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRecordsRetrySkipped: a released resume is put on the timeline, the
+// runner's own verdicts included; a launch's verdict announces itself.
+func TestRecordsRetrySkipped(t *testing.T) {
+	for _, tc := range []struct {
+		final    string
+		released store.RunStatus
+		want     bool
+	}{
+		{"deterministic_failure", "", true},
+		{"deterministic_failure", store.RunStatusPausedWaitingHuman, true},
+		{"ir_unloadable", store.RunStatusPausedWaitingHuman, true},
+		{"bot_requires_newer_engine", store.RunStatusFailedResumable, true},
+		{"ir_unloadable", "", false},
+		{"ok", "", false},
+	} {
+		if got := recordsRetrySkipped(tc.final, tc.released); got != tc.want {
+			t.Errorf("recordsRetrySkipped(%q, %q) = %v, want %v", tc.final, tc.released, got, tc.want)
+		}
+	}
+}
+
+// TestRecordRetrySkipped_aReleasedRunnerVerdictSaysWhatCuresIt: --force does
+// not cure a runner that cannot load the IR or runs below the bot's engine:
+// the hint says what does.
+func TestRecordRetrySkipped_aReleasedRunnerVerdictSaysWhatCuresIt(t *testing.T) {
+	for _, tc := range []struct {
+		code store.FailureCode
+		cure string
+	}{
+		{store.FailureIRUnloadable, "align the runner"},
+		{store.FailureBotRequiresNewerEngine, "bump the runner image"},
+		{"RESUME_INVALID", "--force"},
+	} {
+		st, msg := queuedResume(t, store.RunStatusPausedWaitingHuman, store.RunStatusPausedWaitingHuman)
+		r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+		r.recordRetrySkipped(msg, tc.code, "refused", store.RunStatusPausedWaitingHuman)
+		evs, err := st.LoadEvents(context.Background(), msg.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var hint string
+		for _, ev := range evs {
+			if ev.Type == store.EventRunRetrySkipped {
+				hint, _ = ev.Data["hint"].(string)
+			}
+		}
+		if !strings.Contains(hint, tc.cure) || !strings.Contains(hint, string(store.RunStatusPausedWaitingHuman)) {
+			t.Errorf("%s: hint %q, want it to say %q and the status the run is back to", tc.code, hint, tc.cure)
 		}
 	}
 }
