@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1073,7 +1072,10 @@ func (e *Engine) varExpandFn() func(string) string {
 		if fn, ok := engineSuppliedVarFns[key]; ok {
 			return fn(e)
 		}
-		return os.Getenv(key)
+		// The overlay-then-process chain every other ${ITERION_*:-default}
+		// of the DSL reads (ADR-093): a `vars:` default is an expansion like
+		// the node fields beside it, and must see a stored bot var too.
+		return ir.LookupEnv(key)
 	}
 }
 

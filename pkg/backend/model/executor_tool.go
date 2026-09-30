@@ -1225,8 +1225,26 @@ func bracedEnvWouldExpand(body string) bool {
 	if idx := strings.Index(body, ":-"); idx != -1 {
 		name = body[:idx]
 	}
-	_, ok := os.LookupEnv(name)
+	_, ok := lookupToolEnv(name)
 	return ok
+}
+
+// lookupToolEnv resolves a tool command's `${NAME}` through the same
+// overlay-then-process chain as every other `${ITERION_*:-default}` of the
+// DSL (ir.LookupEnv, ADR-093): a bot-var setting must reach the command that
+// reads it, not only the node fields beside it — a review table reading
+// ${ITERION_VIBE_EFFORT_CLAUDE:-high} published "high" while the reviewer ran
+// at the stored "max". Presence keeps the process semantics (a set-but-empty
+// variable is present), because it decides whether `${body}` is an env ref or
+// a script template left verbatim; an empty overlay value counts as unset,
+// as it does everywhere else.
+func lookupToolEnv(name string) (string, bool) {
+	if strings.HasPrefix(name, "ITERION_") {
+		if v := ir.LookupEnv(name); v != "" {
+			return v, true
+		}
+	}
+	return os.LookupEnv(name)
 }
 
 // looksLikeEnvRef reports whether body matches the shell convention
@@ -1271,7 +1289,7 @@ func resolveBracedEnvBody(body string) string {
 		defaultVal = body[idx+2:]
 		hasDefault = true
 	}
-	if v, ok := os.LookupEnv(name); ok {
+	if v, ok := lookupToolEnv(name); ok {
 		return v
 	}
 	if hasDefault {

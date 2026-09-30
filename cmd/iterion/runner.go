@@ -274,14 +274,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// no restart. Precedence: setting > pod env > .bot default.
 	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](
 		platformcfg.NewMongoBotVars(st.DB()), logger.Warn)
-	ir.SetEnvOverlay(func(name string) (string, bool) {
-		rec := botVarsResolver.Get(context.Background())
-		if rec == nil {
-			return "", false
-		}
-		v, ok := rec.Vars[name]
-		return v, ok
-	})
+	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
 	// The schema is ensured unconditionally: a cap disabled in env can be
 	// armed at runtime through the settings record, and the readings
 	// ledger must exist by then.
@@ -343,6 +336,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		RunSecrets:          runSecretsStore,
 		Sealer:              sealer,
 		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
+		// The forfait records a run follows mid-run instead of refreshing
+		// its own copy (see runner.Config.OAuthForfaits).
+		OAuthForfaits: secrets.NewMongoOAuthStore(st.DB()),
 		// BYOK store shared with the publisher — the runner bumps
 		// `last_used_at` at metering time so the studio distinguishes an
 		// idle key from one currently serving (#659 pt 2).

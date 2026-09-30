@@ -20,12 +20,15 @@ green.
   is what decides how long a merge takes, far more than how long any test runs.
   Measured 2026-09-08: nine jobs totalling ~31 min of compute took 44 min of
   wall clock, 19 of them waiting for a first slot, while five entries built in
-  parallel. The queue is tuned against that cap — `max_entries_to_build: 2`
-  (at most two entries under CI at once, instead of five) and
-  `min_entries_to_merge: 3` (merges land in batches of 3-5, so the workflows
-  that fire on every push to `main` — Runner Image, Trivy, Sandbox, Brew Tap —
-  run once per batch). A lone PR still merges after
-  `min_entries_to_merge_wait_minutes` (5).
+  parallel — so the queue was set to `max_entries_to_build: 2`. Since
+  2026-09-29 every required check from `tests.yml` runs on the organisation's
+  `arc-runners` scale set (below), which the cap does not bound, and the queue
+  builds **three** entries at once (`max_entries_to_build: 3`); four once a
+  week at three shows the scale set keeps up — runner pods not left pending,
+  the queue's latency in `task ci:queue-stats`. `min_entries_to_merge: 3`
+  (merges land in batches of 3-5, so the workflows that fire on every push to
+  `main` — Runner Image, Trivy, Sandbox, Brew Tap — run once per batch). A
+  lone PR still merges after `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
   `nats-conformance` once an admin adds it to ruleset 18857412. `fmt-check` is
