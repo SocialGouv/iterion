@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.217.3](https://github.com/SocialGouv/iterion/compare/v3.217.2...v3.217.3) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** a lent slot follows the worker's re-stamp, and stops only at the donor's re-connect ([#1976](https://github.com/SocialGouv/iterion/issues/1976)) ([bac754f](https://github.com/SocialGouv/iterion/commit/bac754ff310c64f6dcab77dbcde6ef1a00491d19)), references [#1958](https://github.com/SocialGouv/iterion/issues/1958)
+
+    <details><summary>why</summary>
+
+    A pool-lent slot was held to the fingerprint it was sealed with. The refresh worker re-stamps a record's fingerprint on its own rotations — an unstamped record stamped, a subscription identified as an account, an account demoted to a local meter — so on such a rotation the lent follow refused the record and ended, at the moment the worker's exchange revoked the token the borrower held: its next spawn failed "OAuth access token has been revoked". Reachable for any pledged record connected…
+
+    </details>
+
 ## [3.217.2](https://github.com/SocialGouv/iterion/compare/v3.217.1...v3.217.2) (2026-09-30)
 
 ### Bug Fixes
