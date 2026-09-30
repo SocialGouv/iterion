@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.1](https://github.com/SocialGouv/iterion/compare/v3.218.0...v3.218.1) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** the run's lease outlives its engine's teardown ([#1991](https://github.com/SocialGouv/iterion/issues/1991)) ([b133e76](https://github.com/SocialGouv/iterion/commit/b133e7675633c5101ab3faf63559a7317bc12941))
+
+    <details><summary>why</summary>
+
+    The heartbeat that refreshes a run's NATS lease ran on the run's context and stopped at its cancellation. A cancelled run — a drain, an operator's cancel, an interruption — still unwinds after that: the engine exports the workspace (up to 5 minutes) and banks the scratch (up to 5 more), past the 60-second lease. A sibling that received the redelivery then took the lock and resumed from a timeline that teardown had not finished writing: a resume that ran without the scratch its predecessor was…
+
+    </details>
+
 ## [3.218.0](https://github.com/SocialGouv/iterion/compare/v3.217.5...v3.218.0) (2026-09-30)
 
 ### Features
