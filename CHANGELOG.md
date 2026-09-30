@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.5](https://github.com/SocialGouv/iterion/compare/v3.218.4...v3.218.5) (2026-09-30)
+
+### Bug Fixes
+
+* **platformcfg:** a stored bot var never sets a name the platform keeps for itself ([#1655](https://github.com/SocialGouv/iterion/issues/1655)) ([#2032](https://github.com/SocialGouv/iterion/issues/2032)) ([9c7787c](https://github.com/SocialGouv/iterion/commit/9c7787c9c0e6b65cb2a5af074466447c6037e8b4)), references [#2024](https://github.com/SocialGouv/iterion/issues/2024) [#2025](https://github.com/SocialGouv/iterion/issues/2025) [#2019](https://github.com/SocialGouv/iterion/issues/2019)
+
+    <details><summary>why</summary>
+
+    The bot-var deny list named a few enforcement switches and missed the class. Every ITERION_ name the engine reads is now classified from what it does, under one rule written above botVarsInfraExact: a bot var tunes how a bot's runs behave, never a name that lifts or weakens a guard (security, spend and quota ceilings, bounds on untrusted input, workspace safety), configures the process or the fleet, names an outside endpoint or identity, or is written by the engine for a child process.
+
+    </details>
+
 ## [3.218.4](https://github.com/SocialGouv/iterion/compare/v3.218.3...v3.218.4) (2026-09-30)
 
 ### Bug Fixes
