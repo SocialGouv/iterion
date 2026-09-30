@@ -1047,7 +1047,7 @@ Consequences for a claw node under an active sandbox:
 - a server whose tools it does not name is dropped with an
   `mcp_server_degraded` event naming the origin and whether the node had
   declared the server (`source: declared`) or inherited it (`source:
-  ambient`) — the node runs without those tools, loudly;
+  ambient`) — the task is built without those tools, loudly;
 - a server whose TOOLS it names (`tools: [mcp.srv.*]`, or an exact
   `mcp.srv.tool`) refuses the node at execution time, as a typed capability
   refusal — so the node's `fallbacks:` are walked and a `claude_code` or pi

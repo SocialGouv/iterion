@@ -1273,9 +1273,9 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 			// The servers the node named a tool on. Those do NOT degrade:
 			// resolveToolsForNode either carries a typed refusal to Execute,
 			// where the node's `fallbacks:` get their turn, or fails the
-			// build on a genuine boot failure. Announcing "the node runs
-			// WITHOUT its tools" for one of them puts a sentence in the run
-			// record that the next second contradicts.
+			// build on a genuine boot failure. Announcing a missing tool set
+			// for one of them puts a sentence in the run record that the
+			// next second contradicts.
 			namedByNode := make(map[string]struct{})
 			for _, srv := range activeMCPServersForNames(node, f.tools) {
 				namedByNode[srv] = struct{}{}
@@ -1333,13 +1333,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 					if ir.DeclaresMCPServer(node, e.wfMCP, srv) {
 						source = "declared"
 					}
-					// Held, not emitted. Both the log line and the event
-					// say "the node runs WITHOUT its tools", and resolution
-					// below can still fail the node — a tool named by the
-					// bare MCP shorthand on this very server does exactly
-					// that. A run record whose only trace of the drop is a
-					// sentence the next line contradicts is worse than no
-					// trace: a downstream gate reads it as "ran degraded".
+					// Held, not emitted. Resolution below can still fail the
+					// node — a tool named by the bare MCP shorthand on this
+					// very server does exactly that — and then no task was
+					// built and nothing lacked anything. A run record whose
+					// only trace of the drop is a sentence the next line
+					// contradicts is worse than no trace: a downstream gate
+					// reads it as "ran degraded".
 					degraded = append(degraded, mcpDegradeReport{
 						info: MCPServerDegradedInfo{
 							Server: srv, Source: source, Origin: origin,
@@ -1882,25 +1882,33 @@ func withClawOrchestrationTools(tools []string) []string {
 	return ensureToolPresent(tools, "agent")
 }
 
-// mcpDegradeReport is one held "this node runs without that server's tools"
-// report, waiting for the node to actually be about to run.
+// mcpDegradeReport is one held "this task's tool set lacks that server"
+// report, waiting for the task to actually be built.
 type mcpDegradeReport struct {
 	info    MCPServerDegradedInfo
 	refused bool
 }
 
 // reportMCPDegrades emits the held reports, once the node's tools have
-// resolved and it is genuinely going to run without them.
+// resolved and the task is genuinely built without them.
+//
+// The subject is the TASK's tool set, not the node's execution — the same
+// correction the degrade event carries. What this function knows is that the
+// task was built lacking those tools; whether the NODE ends up running
+// without them it cannot know, because claw declines a task at five points
+// in Execute and the node's `fallbacks:` then get a route that may well
+// start the server. A log line claiming the node ran degraded is read as a
+// fact about the run, and the next second can contradict it.
 func (e *ClawExecutor) reportMCPDegrades(nodeID string, reports []mcpDegradeReport) {
 	for _, r := range reports {
 		if e.logger != nil {
 			if r.refused {
 				e.logger.Warn("[%s] %s MCP server %q (origin: %s) is not started by this launcher — "+
-					"the node runs WITHOUT its tools: %v", nodeID, r.info.Source, r.info.Server,
-					r.info.Origin, r.info.Err)
+					"this task's tool set is built WITHOUT its tools: %v", nodeID, r.info.Source,
+					r.info.Server, r.info.Origin, r.info.Err)
 			} else {
-				e.logger.Warn("[%s] %s MCP server %q failed to boot — the node runs WITHOUT its tools: %v",
-					nodeID, r.info.Source, r.info.Server, r.info.Err)
+				e.logger.Warn("[%s] %s MCP server %q failed to boot — this task's tool set is built "+
+					"WITHOUT its tools: %v", nodeID, r.info.Source, r.info.Server, r.info.Err)
 			}
 		}
 		if e.hooks.OnMCPServerDegraded != nil {

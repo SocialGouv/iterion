@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"maps"
 	"os"
 	"os/exec"
@@ -158,7 +159,13 @@ func (r *Rewriter) Available() bool { return r.binPath != "" }
 // conventional locate.paths (with ~ expansion). Returns "" when not found.
 func locate(loc plugin.LocateSpec) string {
 	if loc.Env != "" {
-		if v := strings.TrimSpace(os.Getenv(loc.Env)); v != "" && isExecutableFile(v) {
+		// INHERITED, not live: which executable the launcher runs is an
+		// authority decision, and iterion fills unset variables from the
+		// nearest `.env` walking up from the working directory — a file
+		// that sits in the repository under review. A planted value keeps
+		// working for everything that is not an authority question; this
+		// is one.
+		if v := strings.TrimSpace(envtrust.Inherited(loc.Env)); v != "" && isExecutableFile(v) {
 			return v
 		}
 	}

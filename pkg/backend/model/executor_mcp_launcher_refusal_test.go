@@ -84,8 +84,12 @@ func TestARefusedMCPServerReachesExecuteRatherThanFailingTheBuild(t *testing.T) 
 			if !ok {
 				t.Fatalf("the refusal must name the server: %v", task.MCPServersRefusedOnLauncher)
 			}
-			if !strings.Contains(reason, "project") {
-				t.Errorf("the reason must name the origin, so the operator can see WHY: %q", reason)
+			if !strings.Contains(reason.Reason, "project") {
+				t.Errorf("the reason must name the origin, so the operator can see WHY: %q", reason.Reason)
+			}
+			if !reason.CarriesRouteAdvice {
+				t.Errorf("a refusal with no health cause carries the route advice in its own text: %q",
+					reason.Reason)
 			}
 			for _, td := range task.ToolDefs {
 				if strings.HasPrefix(td.Name, "mcp_repo") || strings.HasPrefix(td.Name, "mcp.repo") {
@@ -103,9 +107,9 @@ func TestSandboxedClawRefusesARefusedMCPServerByCapability(t *testing.T) {
 	task := delegate.Task{
 		NodeID:  "n",
 		Sandbox: unmetSandboxRun{},
-		MCPServersRefusedOnLauncher: map[string]string{
-			"repo":  "mcp: server \"repo\" (origin: project) is not started by the launcher",
-			"other": "mcp: server \"other\" (origin: workflow) is not started by the launcher",
+		MCPServersRefusedOnLauncher: map[string]delegate.MCPLauncherRefusal{
+			"repo":  {Reason: "mcp: server \"repo\" (origin: project) is not started by the launcher"},
+			"other": {Reason: "mcp: server \"other\" (origin: workflow) is not started by the launcher"},
 		},
 	}
 
@@ -264,7 +268,7 @@ func TestTheDegradeEventSaysWhetherTheNodeAskedForTheServer(t *testing.T) {
 // And the event must not fire at all for a server whose TOOLS the node
 // names: that server does not degrade. Its refusal travels on the task to
 // Execute, where the node's `fallbacks:` get a route that starts the server
-// in the container — so "the node runs WITHOUT its tools" is a sentence the
+// in the container — so a sentence claiming its tools are missing is one the
 // next second contradicts, written into the run record where a gate reads it.
 func TestAServerWhoseToolsTheNodeNamesDoesNotDegrade(t *testing.T) {
 	for _, tools := range [][]string{
@@ -529,8 +533,8 @@ func TestAWorkflowLevelDeclarationIsNotAmbient(t *testing.T) {
 
 // A drop is only a fact once the node is going to run. The bare MCP
 // shorthand makes the two collide: `tools: [search]` names no server, so the
-// splice degrades `repo` and announces "the node runs WITHOUT its tools" —
-// and resolution then fails the node one line later. A run record whose only
+// splice degrades `repo` and announces a tool set built without it — and
+// resolution then fails the node one line later, so no task was built at all. A run record whose only
 // trace of the drop is a sentence the next line contradicts is worse than no
 // trace: a downstream gate reads it as "ran degraded".
 func TestNoDegradeEventWhenTheBuildFailsAnyway(t *testing.T) {
@@ -758,31 +762,36 @@ func TestTheDegradeEventTakesItsOriginFromTheRefusal(t *testing.T) {
 func TestTheRemedyCarriesEveryReasonExactlyOnce(t *testing.T) {
 	// The fixtures are built by the REAL producer, not hand-written: the
 	// typed refusal appends the route-it-elsewhere advice only when it has
-	// no cause to report instead, and a hand-written string would not know
-	// that. One refused-and-broken server, one merely refused.
-	broken := (&mcp.ServerNotStartableError{
+	// no cause to report instead, and it is the refusal that answers whether
+	// it did. A hand-written fixture would decide that for itself and the
+	// branch below would be tested against a fiction.
+	broken := launcherRefusal(&mcp.ServerNotStartableError{
 		Server: "aaa", Origin: mcp.OriginProject, Policy: mcp.StartOperatorServersOnly,
 		Cause: errors.New("auth: TOKEN is unset"),
-	}).Error()
-	healthy := (&mcp.ServerNotStartableError{
+	})
+	healthy := launcherRefusal(&mcp.ServerNotStartableError{
 		Server: "zzz", Origin: mcp.OriginWorkflow, Policy: mcp.StartOperatorServersOnly,
-	}).Error()
+	})
+	if broken.CarriesRouteAdvice || !healthy.CarriesRouteAdvice {
+		t.Fatalf("premise broken: only the causeless refusal carries the advice (broken=%v healthy=%v)",
+			broken.CarriesRouteAdvice, healthy.CarriesRouteAdvice)
+	}
 
 	for _, tc := range []struct {
 		name    string
-		refused map[string]string
+		refused map[string]delegate.MCPLauncherRefusal
 		wants   []string
 	}{
 		{
 			name:    "both, one of them broken",
-			refused: map[string]string{"aaa": broken, "zzz": healthy},
+			refused: map[string]delegate.MCPLauncherRefusal{"aaa": broken, "zzz": healthy},
 			wants:   []string{"aaa", "zzz", "TOKEN is unset"},
 		},
 		{
 			// Only a broken one: its message carries no advice of its own,
 			// so the remedy must supply it or the operator has none.
 			name:    "only a refused-and-broken server",
-			refused: map[string]string{"aaa": broken},
+			refused: map[string]delegate.MCPLauncherRefusal{"aaa": broken},
 			wants:   []string{"aaa", "TOKEN is unset", "inside the container"},
 		},
 	} {
@@ -809,8 +818,10 @@ func TestTheRemedyCarriesEveryReasonExactlyOnce(t *testing.T) {
 
 // The bare-name advice is for a name the REGISTRY could not resolve. It used
 // to wrap every error out of resolution, so a node-scope refusal of an
-// unrelated server, and a one-character typo of a builtin, both got told to
-// go and read the target repository's `.mcp.json`.
+// unrelated server was told to go and read the target repository's
+// `.mcp.json`. A typo of a builtin is NOT covered by that scoping and never
+// was: it resolves to `unknown tool`, so the advice still fires — the
+// sanitized spelling below is the one shape ruled out.
 func TestTheBareNameAdviceOnlyAnswersAnUnknownTool(t *testing.T) {
 	e := refusingExecutor(t)
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}

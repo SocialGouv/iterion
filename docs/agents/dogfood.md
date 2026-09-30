@@ -128,7 +128,7 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 `sentry`. They are `project`-origin, so the launcher of a **sandboxed** run
 does not start them — and every dogfood run here is sandboxed by default: the
 devcontainer plus `--sandbox auto` is the normal shape. A claw node therefore
-runs WITHOUT their tools and the run record carries one
+builds its task WITHOUT their tools and the run record carries one
 `mcp_server_degraded` event per server (`source: ambient`, `origin: project`,
 `refused: true`) — nothing is broken, and a bot whose judgement depends on
 those tools is quietly weaker than the same bot on the operator's host.

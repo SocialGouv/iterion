@@ -3,6 +3,7 @@ package plugin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
@@ -388,6 +389,106 @@ func TestABuiltinIsOnlyAsOperatorsAsTheFileThatDrivesIt(t *testing.T) {
 		}
 		if reg.OperatorControlled(p) {
 			t.Error("only the configuration's provenance refuses here, and it must be enough")
+		}
+	})
+}
+
+// A rewriter is a binary the LAUNCHER execs — host-side, on a sandboxed
+// node's every shell command, with the launcher's whole environment — and
+// its `sandbox_mount` also picks a bind mount into the container. So it is
+// at least as much an authority question as an MCP server, which the same
+// three-legged check already governs.
+//
+// A plugin read from an iterion home a project `.env` selected is not the
+// operator's. Its MCP servers were already refused; its rewriters were not
+// even asked about.
+func TestARewriterFromAPluginThatIsNotTheOperatorsIsNotInTheChain(t *testing.T) {
+	writeRewriterPlugin := func(t *testing.T, home, name string) {
+		t.Helper()
+		dir := filepath.Join(home, "plugins", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		manifest := "name: " + name + `
+version: 1.0.0
+description: test plugin
+schema_version: 1
+default_enabled: true
+contributes:
+  rewriters:
+    - id: ` + name + `
+      locate:
+        bin: ` + name + `-bin
+      invoke:
+        argv: ["rewrite", "{{command}}"]
+        timeout_ms: 5000
+        apply_exit_codes: [0]
+`
+		if err := os.WriteFile(filepath.Join(dir, ManifestFile), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("a home the operator did not choose", func(t *testing.T) {
+		home := t.TempDir()
+		writeRewriterPlugin(t, home, "planted-rewriter")
+
+		// The second argument is the home the INHERITED environment named:
+		// empty means the operator said nothing, which is the fail-closed
+		// case a project `.env` produces.
+		reg, err := LoadFromForTest(home, "")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		p, ok := reg.Get("planted-rewriter")
+		if !ok {
+			t.Fatal("the plugin must still LOAD — only its authority is in question")
+		}
+		if reg.OperatorControlled(p) {
+			t.Fatal("premise broken: a plugin under a home nobody vouched for is not the operator's")
+		}
+		// Named, not counted: builtins the operator ships contribute
+		// rewriters of their own, and they belong in the chain.
+		for _, c := range reg.EnabledRewriters() {
+			if c.Plugin == "planted-rewriter" {
+				t.Errorf("its rewriter is in the chain the launcher execs: %+v", c)
+			}
+		}
+		for _, spec := range reg.EnabledRewriterSpecs() {
+			if spec.ID == "planted-rewriter" {
+				t.Errorf("…and in the specs both the chain and the sandbox mounts read: %+v", spec)
+			}
+		}
+		// The drop is said, not silent: the same channel a skipped plugin
+		// uses, so `iterion validate` and the run log both carry it.
+		var said bool
+		for _, skip := range reg.LoadSkips() {
+			if strings.Contains(skip, "planted-rewriter") && strings.Contains(skip, "rewriters") {
+				said = true
+			}
+		}
+		if !said {
+			t.Errorf("a dropped rewriter must be reported, not vanish: %v", reg.LoadSkips())
+		}
+	})
+
+	t.Run("the operator's own home keeps its rewriter", func(t *testing.T) {
+		home := t.TempDir()
+		writeRewriterPlugin(t, home, "installed-rewriter")
+
+		reg, err := LoadFromForTest(home, home)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		got := reg.EnabledRewriters()
+		var kept bool
+		for _, c := range got {
+			if c.Plugin == "installed-rewriter" {
+				kept = true
+			}
+		}
+		if !kept {
+			t.Fatalf("the operator's own installed plugin keeps its rewriter, got %+v", got)
 		}
 	})
 }

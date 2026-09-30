@@ -799,7 +799,7 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 		// raw diagnostics withheld)", which names neither the variable nor
 		// the rule that dropped it.
 		if len(dropped) > 0 {
-			if err := unusableAfterDroppedRefs(catalog[name], dropped); err != nil {
+			if err := unusableAfterDroppedRefs(catalog[name], dropped, suppressed); err != nil {
 				catalog[name].StartErr = err
 			}
 		}
@@ -839,7 +839,7 @@ func prepareMCPCatalogAuth(catalog map[string]*mcp.ServerConfig, broker *mcp.OAu
 // unusableAfterDroppedRefs reports why a config cannot be used now that some
 // of its references went unexpanded, naming the variables by NAME — never by
 // value, which is the whole point of not expanding them.
-func unusableAfterDroppedRefs(cfg *mcp.ServerConfig, dropped map[string]bool) error {
+func unusableAfterDroppedRefs(cfg *mcp.ServerConfig, dropped map[string]bool, suppressed bool) error {
 	names := make([]string, 0, len(dropped))
 	for name := range dropped {
 		names = append(names, name)
@@ -857,12 +857,17 @@ func unusableAfterDroppedRefs(cfg *mcp.ServerConfig, dropped map[string]bool) er
 		return nil
 	}
 	// Two reasons a reference resolved to nothing, and the remedy differs.
-	// An untrusted server's config is not read from this process at all; an
-	// operator's is, and the variable simply is not there.
-	if cfg.Origin.OperatorControlled() {
-		return fmt.Errorf("%s after %v resolved to nothing in this process's environment: %s is an "+
-			"installed plugin's server, so its config IS expanded here — set the variable, or give the "+
-			"reference a `${VAR:-default}`", missing, names, cfg.Name)
+	// Which one applies is NOT a property of the origin: a run with no
+	// sandbox, and the escape hatch, expand every origin against the
+	// launcher (expandsAgainstLauncherEnv). The suppression decision itself
+	// is the only thing that answers it — reading the origin here told an
+	// operator whose run has no sandbox that their `.mcp.json` server "is
+	// not expanded against this process's environment", and offered a hatch
+	// that was already in force.
+	if !suppressed {
+		return fmt.Errorf("%s after %v resolved to nothing in this process's environment: the definition in "+
+			"%s IS expanded here, so set the variable, or give the reference a `${VAR:-default}`",
+			missing, names, whoseDefinition(cfg.Origin))
 	}
 	return fmt.Errorf("%s after %v went unexpanded: the config of a server whose definition comes from %s is "+
 		"not expanded against this process's environment (%s, or give the reference a `${VAR:-default}`)",
@@ -888,6 +893,24 @@ func whoseDefinition(o mcp.Origin) string {
 	}
 }
 
+// hasDefault reports whether this string writes the reference in its
+// defaulted form, `${VAR:-…}`.
+//
+// resolveBracedSegment looks the name up BEFORE it falls back, so a
+// reference whose default answers arrives here indistinguishable from one
+// that resolved to nothing — and `${PORT:-8080}` is not a dropped
+// reference, it is an author who supplied the answer. Recording it made the
+// diagnostic name variables that were never needed and told the operator to
+// set them.
+//
+// A string writing the same name both bare and defaulted resolves to
+// "defaulted" and says nothing. That is the deliberate direction: this
+// value feeds a message that REFUSES a server, where a false accusation
+// costs more than a missed one.
+func hasDefault(s, name string) bool {
+	return strings.Contains(s, "${"+name+":-")
+}
+
 // recordingExpander returns an expander that records every reference which
 // resolved to nothing, by NAME and never by value.
 //
@@ -906,7 +929,7 @@ func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger
 			// comes back empty.
 			return ir.ExpandWithDefault(s, func(v string) string {
 				value := ir.LookupEnv(v)
-				if value == "" {
+				if value == "" && !hasDefault(s, v) {
 					dropped[v] = true
 				}
 				return value
@@ -915,6 +938,9 @@ func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger
 	}
 	return func(s string) string {
 		return ir.ExpandWithDefault(s, func(v string) string {
+			if hasDefault(s, v) {
+				return ""
+			}
 			if !dropped[v] {
 				dropped[v] = true
 				// ir.MCPServer.Origin is a plain string, so it has no

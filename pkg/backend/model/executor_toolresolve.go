@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -26,7 +27,7 @@ var nodeActiveMCPServers = ir.NodeActiveMCPServers
 // instances for a specific node, ensuring that only tools from the node's
 // active MCP servers are exposed. Wildcard entries like "mcp.<server>.*"
 // are expanded to all tools discovered from that server.
-func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]delegate.ToolDef, map[string]string, error) {
+func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]delegate.ToolDef, map[string]delegate.MCPLauncherRefusal, error) {
 	// Expand wildcards (e.g. mcp.claude_code.*) into concrete tool names.
 	expanded, refused, err := e.expandWildcards(ctx, node, names)
 	if err != nil {
@@ -145,9 +146,9 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the
 // concrete tool names discovered from that MCP server.
-func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, map[string]string, error) {
+func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, map[string]delegate.MCPLauncherRefusal, error) {
 	var expanded []string
-	refused := map[string]string{}
+	refused := map[string]delegate.MCPLauncherRefusal{}
 	for _, name := range names {
 		if !tool.IsMCPWildcard(name) {
 			expanded = append(expanded, name)
@@ -185,7 +186,7 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 				// record it and carry on, so the refusal reaches Execute and
 				// the node's fallbacks get their turn.
 				if mcp.ServerNotStartable(err) {
-					refused[server] = err.Error()
+					refused[server] = launcherRefusal(err)
 					continue
 				}
 				// State the RULE, not the instance: at this point the code
@@ -356,7 +357,7 @@ func (e *ClawExecutor) scopeMCPServerNamingTool(t delegate.ToolDef, node ir.Node
 // (server → reason). Any other failure is returned as before: a server this
 // launcher may start and cannot boot is a broken dependency, and the node
 // must fail on it.
-func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Node, names []string, refused map[string]string) error {
+func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Node, names []string, refused map[string]delegate.MCPLauncherRefusal) error {
 	if e.mcpManager == nil || e.toolRegistry == nil {
 		return nil
 	}
@@ -369,12 +370,27 @@ func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Nod
 			continue
 		}
 		if mcp.ServerNotStartable(err) {
-			refused[server] = err.Error()
+			refused[server] = launcherRefusal(err)
 			continue
 		}
 		return err
 	}
 	return nil
+}
+
+// launcherRefusal turns the launcher's typed refusal into the value that
+// travels on the task, asking the error itself whether its text already ends
+// with the route-it-elsewhere advice.
+//
+// One constructor for both write sites: the second one drifting is how the
+// two ends of this value disagree.
+func launcherRefusal(err error) delegate.MCPLauncherRefusal {
+	r := delegate.MCPLauncherRefusal{Reason: err.Error()}
+	var notStartable *mcp.ServerNotStartableError
+	if errors.As(err, &notStartable) {
+		r.CarriesRouteAdvice = notStartable.CarriesRouteAdvice()
+	}
+	return r
 }
 
 // refusedMCPServerFor reports whether a tool name belongs to a server the
@@ -386,7 +402,7 @@ func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Nod
 // ambiguity to widen over here: `mcp__repo__list__all` is served only as
 // `mcp.repo__list.all`, never as `mcp.repo.list__all`. Asking about more than
 // that reading withholds a tool because an unrelated server was refused.
-func refusedMCPServerFor(name string, refused map[string]string) bool {
+func refusedMCPServerFor(name string, refused map[string]delegate.MCPLauncherRefusal) bool {
 	if len(refused) == 0 {
 		return false
 	}

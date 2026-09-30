@@ -74,6 +74,17 @@ type ServerNotStartableError struct {
 
 func (e *ServerNotStartableError) Unwrap() error { return e.Cause }
 
+// CarriesRouteAdvice reports whether Error() ends with the
+// route-it-elsewhere remedy.
+//
+// Only the branch with no Cause does: a server that could not have started
+// anyway gets its cause reported instead, because "route the node elsewhere"
+// is not a remedy for a malformed auth block. A caller that composes a
+// larger remedy needs to know which, and the WRITER is the one who does —
+// asking it here rather than searching Error() for a phrase keeps the two
+// from drifting apart on a reword.
+func (e *ServerNotStartableError) CarriesRouteAdvice() bool { return e.Cause == nil }
+
 func (e *ServerNotStartableError) Error() string {
 	if e.Cause != nil {
 		return fmt.Sprintf(

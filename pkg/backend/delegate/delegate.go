@@ -493,7 +493,7 @@ type Task struct {
 	// node, and only a refusal raised at execution time lets it try.
 	//
 	// In-process only: it never crosses the sandbox IPC.
-	MCPServersRefusedOnLauncher map[string]string `json:"-"`
+	MCPServersRefusedOnLauncher map[string]MCPLauncherRefusal `json:"-"`
 
 	// MCPServers are the user/plugin-declared MCP servers active for this
 	// node (from the workflow `mcp_server` decls, project .mcp.json, and
@@ -862,6 +862,23 @@ type Task struct {
 	// node into a single human-readable block (the await_answers tool
 	// result when nothing is pending).
 	CollectAsyncAnswers func() (string, error)
+}
+
+// MCPLauncherRefusal is why the launcher declined one MCP server, carrying
+// the one thing its reader cannot re-derive from the text.
+//
+// A remedy built from several of these has to know which reasons already end
+// with the route-it-elsewhere advice — appending it twice reads as two
+// remedies, never appending it leaves a refused-and-broken server with no way
+// forward. That answer belongs to whoever wrote the reason
+// (mcp.ServerNotStartableError.CarriesRouteAdvice); searching the sentence
+// for a phrase makes a reword change behaviour in another package.
+type MCPLauncherRefusal struct {
+	// Reason is the launcher's own message for declining this server.
+	Reason string
+	// CarriesRouteAdvice is the writer's answer to whether Reason already
+	// ends with the route-it-elsewhere remedy.
+	CarriesRouteAdvice bool
 }
 
 // Hostless reports whether this task's commands execute directly on the host —

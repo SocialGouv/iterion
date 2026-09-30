@@ -1603,7 +1603,7 @@ func withoutUnplaceableToolsThePolicyDenies(task delegate.Task) []delegate.ToolD
 // refusedMCPServerSummary names the refused servers in a stable order, so
 // the capability string a fallback decision is logged under does not change
 // from run to run over one map's iteration order.
-func refusedMCPServerSummary(refused map[string]string) string {
+func refusedMCPServerSummary(refused map[string]delegate.MCPLauncherRefusal) string {
 	names := make([]string, 0, len(refused))
 	for name := range refused {
 		names = append(names, name)
@@ -1629,7 +1629,7 @@ func refusedMCPServerSummary(refused map[string]string) string {
 // refusedMCPRemedy opens the remedy with the launcher's OWN reason for
 // declining, in a stable order. Asserting "outside this run's sandbox"
 // instead was wrong wherever the policy refuses without one.
-func refusedMCPRemedy(refused map[string]string) string {
+func refusedMCPRemedy(refused map[string]delegate.MCPLauncherRefusal) string {
 	names := make([]string, 0, len(refused))
 	for name := range refused {
 		names = append(names, name)
@@ -1645,8 +1645,8 @@ func refusedMCPRemedy(refused map[string]string) string {
 	reasons := make([]string, 0, len(names))
 	carriesAdvice := false
 	for _, name := range names {
-		reasons = append(reasons, refused[name])
-		if strings.Contains(refused[name], "inside the container") {
+		reasons = append(reasons, refused[name].Reason)
+		if refused[name].CarriesRouteAdvice {
 			carriesAdvice = true
 		}
 	}
@@ -1656,6 +1656,10 @@ func refusedMCPRemedy(refused map[string]string) string {
 	// carried it, and never when one did: saying it twice reads as two
 	// remedies, and saying it never leaves a refused-AND-broken server with
 	// no way forward at all.
+	//
+	// The flag comes from the refusal's writer. Searching the reason for
+	// "inside the container" put this branch at the mercy of a reword in
+	// another package, with nothing to fail if it happened.
 	if !carriesAdvice {
 		remedy += "; route the node to a backend that starts them inside the container (claude_code, pi), " +
 			"or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)"

@@ -631,11 +631,32 @@ type RewriterContribution struct {
 	Spec   RewriterSpec
 }
 
-// EnabledRewriters returns the rewriter contributions of all enabled plugins,
-// in stable plugin-name order — this is the rewrite chain applied to commands.
+// EnabledRewriters returns the rewriter contributions of the enabled plugins
+// that are the OPERATOR's, in stable plugin-name order — this is the rewrite
+// chain applied to commands.
+//
+// The trust check is the same three-legged one an MCP server contribution
+// gets (loadPluginServers), and for a stronger reason: a rewriter is a
+// binary the LAUNCHER execs, host-side, on a sandboxed node's every shell
+// command — and its `sandbox_mount` picks a bind mount into the container.
+// A plugin installed under an iterion home a project `.env` selected is not
+// the operator's, so its rewriter does not get to choose either.
+//
+// Both consumers are behind this one function — the chain
+// (EnabledRewriterSpecs) and the mount composer — so the filter belongs
+// here rather than at each.
 func (r *Registry) EnabledRewriters() []RewriterContribution {
 	var out []RewriterContribution
 	for _, p := range r.Enabled() {
+		if len(p.Manifest.Contributes.Rewriters) == 0 {
+			continue
+		}
+		if !r.OperatorControlled(p) {
+			r.loadSkips = append(r.loadSkips,
+				p.Name()+": rewriters ignored — the plugin is not the operator's, and a rewriter is run by "+
+					"the launcher")
+			continue
+		}
 		for _, rw := range p.Manifest.Contributes.Rewriters {
 			out = append(out, RewriterContribution{Plugin: p.Name(), Spec: rw})
 		}

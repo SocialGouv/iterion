@@ -604,6 +604,120 @@ func TestAnOperatorServerEmptiedByAnUnsetVariableSaysSo(t *testing.T) {
 	}
 }
 
+// Whether a config was expanded here is decided by the SUPPRESSION — origin
+// AND policy AND hatch — not by the origin alone. A run with no sandbox
+// expands every origin, so a repository's `.mcp.json` server emptied there
+// was being told its config "is not expanded against this process's
+// environment", and handed an escape hatch that was already in force: a
+// false diagnosis whose remedy does nothing.
+func TestTheEmptiedReasonFollowsTheSuppressionNotTheOrigin(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"repo": {
+				Name: "repo", Origin: string(mcp.OriginProject), Transport: ir.MCPTransportStdio,
+				Command: "${ITERION_TEST_MCP_DEFINITELY_UNSET}",
+			},
+		},
+	}
+	// StartAllServers is the launch surface saying this run is NOT sandboxed,
+	// which is exactly when an untrusted origin does expand.
+	m, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), mcp.StartAllServers)
+	if err != nil || m == nil {
+		t.Fatalf("build: %v", err)
+	}
+	cfg, ok := m.ServerConfig("repo")
+	if !ok {
+		t.Fatal("the server left the catalog")
+	}
+	if cfg.StartErr == nil {
+		t.Fatal("premise broken: an unset variable must empty the command and carry its reason")
+	}
+	got := cfg.StartErr.Error()
+	for _, want := range []string{"ITERION_TEST_MCP_DEFINITELY_UNSET", "IS expanded here", "${VAR:-default}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the reason must name %q: %v", want, got)
+		}
+	}
+	// The two marks of the wrong arm: the claim, and the useless remedy.
+	if strings.Contains(got, "not expanded") {
+		t.Errorf("this run DOES expand the reference; the reason must not claim otherwise: %v", got)
+	}
+	if strings.Contains(got, mcp.EnvExpandUntrustedEnv) {
+		t.Errorf("the hatch is already in force here — advising it is a remedy that changes nothing: %v", got)
+	}
+}
+
+// `${PORT:-8080}` is not a dropped reference: the author supplied the answer.
+// resolveBracedSegment looks the name up BEFORE it falls back, so a defaulted
+// reference reaches the recorder indistinguishable from one that resolved to
+// nothing — and it was recorded, which made the refusal name variables that
+// were never needed and told the operator to set them.
+func TestADefaultedReferenceIsNotADroppedReference(t *testing.T) {
+	// `command` is emptied by a genuinely unset variable, so the refusal
+	// fires and we get to read the names it lists; `args` carries the
+	// defaulted one, which must not appear among them.
+	newWorkflow := func(origin mcp.Origin) *ir.Workflow {
+		return &ir.Workflow{
+			Name: "w",
+			ResolvedMCPServers: map[string]*ir.MCPServer{
+				"s": {
+					Name: "s", Origin: string(origin), Transport: ir.MCPTransportStdio,
+					Command: "${ITERION_TEST_MCP_DEFINITELY_UNSET}",
+					Args:    []string{"--port=${ITERION_TEST_MCP_ALSO_UNSET:-8080}"},
+				},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		origin mcp.Origin
+		policy mcp.StartPolicy
+		// Only the suppression path names each variable in the log; the
+		// expanded path reports through StartErr alone.
+		warns bool
+	}{
+		{"suppressed", mcp.OriginProject, mcp.StartOperatorServersOnly, true},
+		{"expanded", mcp.OriginPlugin, mcp.StartOperatorServersOnly, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			m, _, err := buildMCPManager(newWorkflow(tc.origin), t.TempDir(),
+				iterlog.New(iterlog.LevelDebug, &buf), tc.policy)
+			if err != nil || m == nil {
+				t.Fatalf("build: %v", err)
+			}
+			cfg, ok := m.ServerConfig("s")
+			if !ok {
+				t.Fatal("the server left the catalog")
+			}
+			if cfg.Args[0] != "--port=8080" {
+				t.Fatalf("premise broken: the default must answer, got %q", cfg.Args[0])
+			}
+			if cfg.StartErr == nil {
+				t.Fatal("premise broken: the unset variable must still empty the command")
+			}
+			if strings.Contains(cfg.StartErr.Error(), "ALSO_UNSET") {
+				t.Errorf("a reference its author defaulted must not be listed as dropped: %v", cfg.StartErr)
+			}
+			if !tc.warns {
+				return
+			}
+			// The build pass is deliberately silent — the settled verdict is
+			// what speaks. Settle it, or this assertion cannot redden.
+			m.SetStartPolicy(tc.policy)
+			if !strings.Contains(buf.String(), "DEFINITELY_UNSET") {
+				t.Fatalf("premise broken: the settled pass is what names a dropped variable, got:\n%s",
+					buf.String())
+			}
+			if strings.Contains(buf.String(), "ALSO_UNSET") {
+				t.Errorf("…nor warned about: %s", buf.String())
+			}
+		})
+	}
+}
+
 // expandMCPCatalog is documented as a pure function of (workflow, policy) so
 // it can run again when the sandbox settles. Two catalogs sharing one map
 // with the IR was the one thing about it that was not.

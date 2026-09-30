@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -203,6 +204,13 @@ func managerBuiltWithoutAStartPolicy(file *ast.File, mcpPkg string) (missing, ga
 	// distinguishes `m` in one function from `m` in another only when they
 	// are, and it spells `h.mgr` the same way both sites do.
 	armed := map[string]bool{}
+	// A package-level target is armed from somewhere else BY CONSTRUCTION —
+	// `init()`, or a setup function — so its arming can never share its
+	// scope, and a scoped key alone accused `var m = mcp.NewManager(…)`
+	// armed on the next line of `init()`. Scope-free keys are consulted for
+	// package-level targets only, so a function's local `m` keeps needing
+	// its own arming.
+	armedAnyScope := map[string]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -213,6 +221,7 @@ func managerBuiltWithoutAStartPolicy(file *ast.File, mcpPkg string) (missing, ga
 			return true
 		}
 		armed[scopedExprKey(file, sel.X)] = true
+		armedAnyScope[types.ExprString(sel.X)] = true
 		return true
 	})
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -243,12 +252,122 @@ func managerBuiltWithoutAStartPolicy(file *ast.File, mcpPkg string) (missing, ga
 				return true
 			}
 		}
-		if !armed[managerTargetKey(file, call)] {
-			missing++
+		key := managerTargetKey(file, call)
+		if armed[key] {
+			return true
 		}
+		if expr, isPkgLevel := strings.CutPrefix(key, packageScope+"\x00"); isPkgLevel && armedAnyScope[expr] {
+			return true
+		}
+		missing++
 		return true
 	})
 	return missing, gaveUp
+}
+
+// The predicate above is a BLOCKING gate, and until this table it was only
+// ever run over the repository's own tree — where a false accusation shows up
+// as a red build on correct code, and a miss shows up as nothing at all.
+// Three of its shapes were wrong in exactly that invisible way: the arming
+// restricted to function bodies, the arming keyed on a bare identifier, and
+// the two below.
+//
+// Each case is source the guard must read a specific way, so a change to the
+// keying reddens here instead of in someone's PR.
+func TestTheSweepPredicateReadsTheShapesItClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		src             string
+		missing, gaveUp int
+	}{
+		{
+			name: "armed inline by the option",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+func f() { m := mcp.NewManager(nil, mcp.WithStartPolicy(mcp.StartAllServers)); _ = m }`,
+		},
+		{
+			name: "armed by the engine's own call",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+func f() { m := mcp.NewManager(nil); m.SetStartPolicy(mcp.StartAllServers) }`,
+		},
+		{
+			name: "a struct field armed through the same spelling",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+type h struct{ mgr *mcp.Manager }
+func (x *h) f() { x.mgr = mcp.NewManager(nil); x.mgr.SetStartPolicy(mcp.StartAllServers) }`,
+		},
+		{
+			// F3: the arming cannot share the scope of a package-level var.
+			name: "a package-level var armed in init",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+var m = mcp.NewManager(nil)
+func init() { m.SetStartPolicy(mcp.StartAllServers) }`,
+		},
+		{
+			name: "not armed at all",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+func f() { m := mcp.NewManager(nil); _ = m }`,
+			missing: 1,
+		},
+		{
+			// F5: two same-named methods on different receivers must not
+			// share a scope, or one's arming exempts the other.
+			name: "same method name, different receivers",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+type a struct{}
+type b struct{}
+func (a) setup() { m := mcp.NewManager(nil); m.SetStartPolicy(mcp.StartAllServers) }
+func (b) setup() { m := mcp.NewManager(nil); _ = m }`,
+			missing: 1,
+		},
+		{
+			name: "SetStartPolicy on an unrelated receiver arms nothing",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+func f(other thing) { m := mcp.NewManager(nil); _ = m; other.SetStartPolicy(1) }`,
+			missing: 1,
+		},
+		{
+			name: "a pre-built option is given up, not accused",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/mcp"
+func f(opts []mcp.Option) { m := mcp.NewManager(nil, opts...); _ = m }`,
+			gaveUp: 1,
+		},
+		{
+			name: "another package's NewManager is not ours",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/dispatcher"
+func f() { m := dispatcher.NewManager(nil); _ = m }`,
+		},
+		{
+			name: "an aliased import is still ours",
+			src: `package p
+import xmcp "github.com/SocialGouv/iterion/pkg/backend/mcp"
+func f() { m := xmcp.NewManager(nil); _ = m }`,
+			missing: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "x.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			missing, gaveUp := managerBuiltWithoutAStartPolicy(file, mcpImportName(file))
+			if missing != tc.missing {
+				t.Errorf("missing = %d, want %d", missing, tc.missing)
+			}
+			if gaveUp != tc.gaveUp {
+				t.Errorf("gaveUp = %d, want %d", gaveUp, tc.gaveUp)
+			}
+		})
+	}
 }
 
 // isMCPNewManagerCall matches `<mcpPkg>.NewManager(…)`, where mcpPkg is the
@@ -323,19 +442,26 @@ func managerTargetKey(file *ast.File, target *ast.CallExpr) string {
 	return key
 }
 
+// packageScope is the scope of a construction with no enclosing function.
+const packageScope = "<file>"
+
 // scopedExprKey renders an expression as its source text, prefixed by the
 // enclosing function so two functions that both call their manager `m` do
 // not share an arming. A package-level construction has no enclosing
 // function and gets the file's own scope.
+//
+// The function's POSITION identifies it, not its name: a file may hold two
+// methods both called `setup` on different receivers, and a name let one's
+// armed manager exempt the other's unarmed one.
 func scopedExprKey(file *ast.File, expr ast.Expr) string {
-	scope := "<file>"
+	scope := packageScope
 	ast.Inspect(file, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return true
 		}
 		if expr.Pos() >= fn.Body.Lbrace && expr.End() <= fn.Body.Rbrace {
-			scope = fn.Name.Name
+			scope = strconv.Itoa(int(fn.Pos()))
 		}
 		return true
 	})
