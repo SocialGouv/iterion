@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.0](https://github.com/SocialGouv/iterion/compare/v3.217.5...v3.218.0) (2026-09-30)
+
+### Features
+
+* **credentials:** shared tiers spend forfaits first, route- and path-aware ([#1956](https://github.com/SocialGouv/iterion/issues/1956)) ([298f1e9](https://github.com/SocialGouv/iterion/commit/298f1e96e47dd690da7134a86161270c3fe2b379))
+
+    <details><summary>why</summary>
+
+    A shared tier (org, platform) holding a forfait and an API key on one wire family now gives the family to the forfait; the key funds only the routes that name its provider. One policy snapshot per resolution orders it:
+
+    </details>
+
 ## [3.217.5](https://github.com/SocialGouv/iterion/compare/v3.217.4...v3.217.5) (2026-09-30)
 
 ### Bug Fixes
