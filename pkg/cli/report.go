@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -302,7 +303,7 @@ func (rb *reportBuilder) sumLLMStepFinished(evt *store.Event, step *reportStep) 
 }
 
 func (rb *reportBuilder) sumNodeFinished(evt *store.Event, step *reportStep) bool {
-	if evt.Data == nil {
+	if runtime.OnlyFinishStamps(evt.Data) {
 		return false
 	}
 	tokens := extractTokens(evt.Data)

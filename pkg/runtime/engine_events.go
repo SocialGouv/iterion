@@ -24,7 +24,7 @@ func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, no
 // branch-free error message.
 func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]any) error {
 	if typ == store.EventNodeFinished && nodeID != "" {
-		data = withInSandbox(data, nodeMayWriteScratch(e.workflow, nodeID))
+		data = withFinishStamps(data, nodeMayWriteScratch(e.workflow, nodeID), onCycle(e.workflow, nodeID))
 	}
 	evt := store.Event{
 		Type:     typ,
@@ -46,15 +46,30 @@ func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ sto
 	return nil
 }
 
-// withInSandbox returns data with nodeFinishedInSandbox set, leaving the
-// caller's map untouched.
-func withInSandbox(data map[string]any, in bool) map[string]any {
-	out := make(map[string]any, len(data)+1)
+// withFinishStamps returns data with the facts a resume reads from a finish
+// — whether the executing workflow runs the node in the sandbox
+// (nodeFinishedInSandbox), whether the node lies on a cycle there
+// (nodeFinishedOnCycle) — leaving the caller's map untouched.
+func withFinishStamps(data map[string]any, inSandbox, cyclic bool) map[string]any {
+	out := make(map[string]any, len(data)+2)
 	for k, v := range data {
 		out[k] = v
 	}
-	out[nodeFinishedInSandbox] = in
+	out[nodeFinishedInSandbox] = inSandbox
+	out[nodeFinishedOnCycle] = cyclic
 	return out
+}
+
+// OnlyFinishStamps reports whether a node_finished event's data holds
+// nothing but the facts the engine stamps on every finish: the finish of a
+// node that produced nothing — a terminal node, a router, a gate.
+func OnlyFinishStamps(data map[string]any) bool {
+	for k := range data {
+		if k != nodeFinishedInSandbox && k != nodeFinishedOnCycle {
+			return false
+		}
+	}
+	return true
 }
 
 // logEvent writes a human-friendly console log for a given event type.

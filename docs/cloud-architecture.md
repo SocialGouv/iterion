@@ -175,10 +175,14 @@ The same sweeper also polls `DLQDepth()` so
 A delivery that cannot take the run lock is retried after one lease interval
 — the configured `ITERION_LOCK_TTL` / `runner.lock_ttl`, 60 seconds by
 default — which is how long a lease nobody refreshes takes to evaporate, so
-the retry either finds the run free or meets a live owner. Raising it above
-`AckWait` stretches the queue's worst-case redelivery window to
-`MaxDeliver × lock_ttl`, which the orphan sweeper's queued-staleness cutoff
-tracks. On its last allowed attempt the original message is archived on
+the retry either finds the run free or meets a live owner. One that finds the
+lease held by another runner spreads its retries over the longest a lease is
+held — a cancelled run's teardown, up to the engine's unwind ceiling, then
+the lease's lapse (about two minutes apart with the defaults) — so a resume
+delivered while the previous execution still tears down outlives it. Raising
+either above `AckWait` stretches the queue's worst-case redelivery window
+(`MaxDeliver ×` the largest), which the orphan sweeper's queued-staleness
+cutoff tracks. On its last allowed attempt the original message is archived on
 the DLQ and `run_delivery_exhausted` lands on the run's timeline. Either way
 the run itself is untouched — without the lock no writer may change its
 outcome or its continuation — so this records a *delivery* failure, never an

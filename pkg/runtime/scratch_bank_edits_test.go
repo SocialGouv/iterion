@@ -343,3 +343,252 @@ func TestResume_aForcedChildResumeRefusedLaterKeepsItsLineage(t *testing.T) {
 		t.Fatalf("the forced lone resume that ran recorded no forsake: %v", dataOf(eventsOf(t, base, id, store.EventSandboxShared)))
 	}
 }
+
+// TestResume_aRewindReadsTheLoopFromTheExecutingSource: whether a node lies
+// on a cycle travels with its finish, as where it ran does. A node that
+// finished passes of a loop after the bank keeps it stale once a rewind drops
+// it, under an edit that removes the loop — even when it finished again under
+// that edit; a node that ran off any cycle gives its pass back to the rewind,
+// under an edit that adds one.
+func TestResume_aRewindReadsTheLoopFromTheExecutingSource(t *testing.T) {
+	loopWF := func(loop bool) *ir.Workflow {
+		wf := &ir.Workflow{
+			Name:  "scratch_loop",
+			Entry: "a",
+			Nodes: map[string]ir.Node{
+				"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+				"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+				"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			},
+			Edges: []*ir.Edge{{From: "a", To: "b"}, {From: "b", To: "done"}},
+		}
+		if loop {
+			wf.Edges = append(wf.Edges, &ir.Edge{From: "b", To: "a"})
+		}
+		return wf
+	}
+	for _, tc := range []struct {
+		name         string
+		ranInLoop    bool
+		thenOffIt    bool
+		staleRefused bool
+	}{
+		{"ran in a loop, resumed without it", true, false, true},
+		{"ran in a loop, then off it, resumed without it", true, true, true},
+		{"ran off any cycle, resumed with a loop", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-rewound-loop"
+			if _, err := s.CreateRun(ctx, runID, "scratch_loop", nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{"banked": true, "empty": false, "bytes": 10}}); err != nil {
+				t.Fatal(err)
+			}
+			executing := New(loopWF(tc.ranInLoop), s, newStubExecutor(), WithLogger(iterlog.Nop()))
+			for range 2 {
+				if err := executing.emit(ctx, runID, store.EventNodeFinished, "b", map[string]any{"output": map[string]any{}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.thenOffIt {
+				edited := New(loopWF(false), s, newStubExecutor(), WithLogger(iterlog.Nop()))
+				if err := edited.emit(ctx, runID, store.EventNodeFinished, "b", map[string]any{"output": map[string]any{}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventRunRewound, Data: map[string]any{"dropped_nodes": []string{"b"}}}); err != nil {
+				t.Fatal(err)
+			}
+			err := ValidateResumeScratch(ctx, s, mustLoadRun(t, s, runID), loopWF(!tc.ranInLoop), false)
+			if refused := isScratchRefusal(err); refused != tc.staleRefused || (!refused && err != nil) {
+				t.Fatalf("resumed under the edited source: %v, want the stale bank refused = %v", err, tc.staleRefused)
+			}
+		})
+	}
+}
+
+// TestResume_aForceGivenBeforeALossWasShownDoesNotWaiveIt: a loss only a
+// restore finds — no sandbox to restore into, a bank that is gone — is not
+// waived by a --force given before the operator was shown it, as one given
+// for an edited source is: that resume is refused and the loss recorded, and
+// the next --force, given knowing it, goes on without the scratch. A bank
+// that is gone is refused before the claim from then on.
+func TestResume_aForceGivenBeforeALossWasShownDoesNotWaiveIt(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	for _, loss := range []string{lossNoSandbox, lossBankGone} {
+		t.Run(loss, func(t *testing.T) {
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-unseen-loss"
+			d := &podDriver{root: t.TempDir()}
+			x := newStubExecutor()
+			x.on("measure", func(map[string]any) (map[string]any, error) {
+				if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+					return nil, err
+				}
+				return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v1"), 0o644)
+			})
+			reportRan := false
+			x.on("report", func(map[string]any) (map[string]any, error) {
+				reportRan = true
+				return map[string]any{}, nil
+			})
+			launch := scratchEngine(s, x, d)
+			launch.workflowHash = "sha256:launch"
+			if err := launch.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+				t.Fatalf("Run: want ErrRunPaused, got %v", err)
+			}
+			if b := eventsOf(t, s, runID, store.EventSandboxScratchBanked); len(b) != 1 || b[0].Data["banked"] != true {
+				t.Fatalf("precondition: want the scratch banked, got %v", dataOf(b))
+			}
+			if loss == lossBankGone {
+				if err := store.AsScratchBankStore(s).DeleteScratchBank(ctx, runID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			resume := func(force bool) error {
+				e := scratchEngine(s, x, d)
+				if loss == lossNoSandbox {
+					e = New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
+				}
+				e.forceResume = force
+				e.workflowHash = "sha256:edited"
+				return e.Resume(ctx, runID, map[string]any{"ok": true})
+			}
+			if err := resume(false); !IsWorkflowSourceChanged(err) || isScratchRefusal(err) {
+				t.Fatalf("precondition: the unforced resume: %v, want only the source change shown", err)
+			}
+			if err := resume(true); !isScratchRefusal(err) || reportRan {
+				t.Fatalf("the --force given for the source: %v, ran=%v, want the unseen loss refused and nothing run", err, reportRan)
+			}
+			if loss == lossBankGone {
+				if err := ValidateResumeScratch(ctx, s, mustLoadRun(t, s, runID), scratchWorkflow(), false); !isScratchRefusal(err) {
+					t.Fatalf("the surface, after the refusal: %v, want the gone bank refused", err)
+				}
+				claims := len(eventsOf(t, s, runID, store.EventRunResumed))
+				if err := resume(false); !isScratchRefusal(err) || reportRan {
+					t.Fatalf("the next unforced resume: %v, ran=%v, want the gone bank refused", err, reportRan)
+				}
+				if n := len(eventsOf(t, s, runID, store.EventRunResumed)); n != claims {
+					t.Fatalf("the gone bank was refused after the claim (%d run_resumed, was %d), want before it", n, claims)
+				}
+			}
+			if err := resume(true); err != nil || !reportRan {
+				t.Fatalf("the --force given knowing the loss: %v, ran=%v, want the run through without its scratch", err, reportRan)
+			}
+		})
+	}
+}
+
+// TestResume_aPlainRestoreRecordDoesNotHoldTheResume: the record of a bank
+// restored into a container-local scratch decides nothing a later resume
+// reads: tried once, best-effort — a store that refuses it neither holds the
+// resume on a record's budget nor fails it.
+func TestResume_aPlainRestoreRecordDoesNotHoldTheResume(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	base := tmpStore(t)
+	s := &refuseEventsStore{RunStore: base, typ: store.EventSandboxScratchRestored, times: -1}
+	ctx := context.Background()
+	const runID = "run-scratch-plain-record"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v1"), 0o644)
+	})
+	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	if err := scratchEngine(base, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	e := scratchEngine(s, x, d)
+	e.recordRetryPause = time.Millisecond
+	e.recordWriteLimit = 100 * time.Millisecond
+	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("the resume whose plain restore record the store refused: %v, want it through", err)
+	}
+	if s.refused != 1 {
+		t.Fatalf("the plain restore record was tried %d times, want once", s.refused)
+	}
+}
+
+// TestResume_aStaleRestoreRecordSurvivesAStoreBlip: a stale bank --force
+// restored is the run's scratch again, and a later resume reads that from
+// the restore's record: a store blip on it is tried again, not lost.
+func TestResume_aStaleRestoreRecordSurvivesAStoreBlip(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	ctx := context.Background()
+	base := tmpStore(t)
+	s := &refuseEventsStore{RunStore: base, typ: store.EventSandboxScratchRestored}
+	const runID = "run-scratch-stale-record"
+	launch := editableWorkflow(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "report"}})
+	eng, _ := lostSecondExecution(t, s, runID, launch, "report", true)
+	s.mu.Lock()
+	s.times = s.refused + 1
+	s.mu.Unlock()
+	e := eng(launch, "sha256:launch", true)
+	e.recordRetryPause = time.Millisecond
+	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("the forced resume of a stale bank: %v", err)
+	}
+	var stale int
+	for _, ev := range eventsOf(t, base, runID, store.EventSandboxScratchRestored) {
+		if ev.Data["stale"] == true {
+			stale++
+		}
+	}
+	if stale != 1 || s.refused == 0 {
+		t.Fatalf("the stale restore's record: %d written after %d refusals, want it written past the blip", stale, s.refused)
+	}
+}
+
+// TestResume_aLossShownDoesNotWaiveAnother: the --force a shown loss allows
+// is for that loss. A run refused for resuming without a sandbox, resumed with
+// one while its bank is gone, is refused over that loss too before a --force
+// goes on without the scratch.
+func TestResume_aLossShownDoesNotWaiveAnother(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-another-loss"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v1"), 0o644)
+	})
+	reportRan := false
+	x.on("report", func(map[string]any) (map[string]any, error) {
+		reportRan = true
+		return map[string]any{}, nil
+	})
+	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	forced := func(sandboxed bool) error {
+		e := scratchEngine(s, x, d)
+		if !sandboxed {
+			e = New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
+		}
+		e.forceResume = true
+		return e.Resume(ctx, runID, map[string]any{"ok": true})
+	}
+	if err := forced(false); !errors.Is(err, errResumedWithoutSandbox) || reportRan {
+		t.Fatalf("a first --force without a sandbox: %v, ran=%v, want the missing sandbox refused", err, reportRan)
+	}
+	if err := store.AsScratchBankStore(s).DeleteScratchBank(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := forced(true); !isScratchRefusal(err) || errors.Is(err, errResumedWithoutSandbox) || reportRan {
+		t.Fatalf("a --force with a sandbox, the bank gone: %v, ran=%v, want the gone bank refused — the operator was shown another loss", err, reportRan)
+	}
+	if err := forced(true); err != nil || !reportRan {
+		t.Fatalf("the --force given knowing the gone bank: %v, ran=%v, want the run through without its scratch", err, reportRan)
+	}
+}

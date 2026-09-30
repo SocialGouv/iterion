@@ -191,6 +191,28 @@ func TestRedeliveryWindowAccountsForAdmissionDelays(t *testing.T) {
 	}
 }
 
+// TestRedeliveryWindowAccountsForAHeldLease: a delivery that meets a held
+// lock spreads its retries over the longest a lease is held — the holder's
+// teardown, LeaseUnwindCeiling, then the lease's lapse — so the window the
+// sweeper's cutoff derives from covers those retries: MaxDeliver of them,
+// MaxDeliver-1 intervals spanning the hold.
+func TestRedeliveryWindowAccountsForAHeldLease(t *testing.T) {
+	ceiling, lock := 14*time.Minute, time.Minute
+	c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: time.Minute, SchemaMismatchDelay: 30 * time.Second, EpochMismatchDelay: 2 * time.Minute, LockTTL: lock, LeaseUnwindCeiling: ceiling}}
+	if got, hold := c.RedeliveryWindow(), ceiling+lock; got*7 < hold*8 {
+		t.Fatalf("RedeliveryWindow() = %v, under 8 retries spread over a %v hold", got, hold)
+	}
+	if d := HeldLockRetryDelay(lock, ceiling, 8); d < lock || 7*d < ceiling+lock {
+		t.Fatalf("HeldLockRetryDelay = %v: 7 of them must span the %v hold, each no sooner than the lease's %v", d, ceiling+lock, lock)
+	}
+	if d := HeldLockRetryDelay(lock, ceiling, 0); d != lock {
+		t.Fatalf("uncapped deliveries: HeldLockRetryDelay = %v, want the lease's TTL %v", d, lock)
+	}
+	if d := HeldLockRetryDelay(lock, 0, 8); d != lock {
+		t.Fatalf("no ceiling: HeldLockRetryDelay = %v, want no sooner than the lease's TTL %v", d, lock)
+	}
+}
+
 func TestRunMessageIDSeparatesLaunchAndResume(t *testing.T) {
 	launch := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:00:00Z"}
 	resume := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:01:00Z", Resume: &queue.ResumeSpec{}}

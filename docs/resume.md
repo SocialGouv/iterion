@@ -353,8 +353,11 @@ makes it the run's scratch again.
 
 At resume, the bank is read onto the host and checked to extract before
 anything reaches the sandbox. A bank that is gone or does not extract — or a
-resume that runs without a sandbox — parks the run under the same code;
-`--force` continues without it. A read that fails on the way (the timeline,
+resume that runs without a sandbox — parks the run under the same code, and
+the refusal is recorded (`sandbox_scratch_restored {refused, loss}`): a
+`--force` given once that loss was shown continues without it, and one given
+before it was — for an edited source — is refused the same way. A bank that is
+gone or does not extract is refused before the claim from then on. A read that fails on the way (the timeline,
 the bank's store, the stream into the sandbox) parks it with no code, so the
 resume is retried, `--force` or not, and the bank is kept for that attempt.
 

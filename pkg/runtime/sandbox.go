@@ -1896,6 +1896,13 @@ const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExport
 	scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget +
 	sandboxShutdownTimeout
 
+// LeaseUnwindCeiling bounds how long a run's lease is held after its
+// cancellation: the engine's sandbox teardown, and a margin for the rest of
+// its unwind. An engine that has not returned by then no longer holds the
+// run: the lease lapses, and the queue redelivers once the delivery's ack
+// deadline passes.
+const LeaseUnwindCeiling = SandboxTeardownBudget + 2*time.Minute
+
 // WorkspaceIntegrity is the sandbox-side git truth captured at teardown
 // for export-based drivers (kubernetes), BEFORE ExportWorkspace streams
 // the tree back to the host. Post-run consumers that read the HOST

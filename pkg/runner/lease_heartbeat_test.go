@@ -100,7 +100,7 @@ func TestLeaseHeartbeat_aStuckUnwindReleasesTheLeaseAtItsCeiling(t *testing.T) {
 		stop := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
 		defer stop()
 		runCancel(runtime.ErrRunInterrupted)
-		time.Sleep(unwindLeaseCeiling + time.Minute)
+		time.Sleep(runtime.LeaseUnwindCeiling + time.Minute)
 		synctest.Wait()
 		atCeiling := lease.count()
 		time.Sleep(10 * time.Minute)

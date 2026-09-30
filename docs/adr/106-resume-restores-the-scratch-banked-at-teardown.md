@@ -141,15 +141,20 @@ pods the same way.
   sandbox's teardown banks nothing over it (the hold ends with that
   sandbox). A bank that is gone or does not
   extract, or a resume that runs without a sandbox, parks the run
-  `SCRATCH_NOT_PORTABLE`, and `--force` goes on without it. A read that fails
+  `SCRATCH_NOT_PORTABLE`, recorded (`{refused, loss}`): a `--force` given
+  once that loss was shown goes on without it; one given before it was —
+  for an edited source, the only refusal the operator saw — is refused the
+  same way, and the next `--force` accepts it knowing it. A bank that is
+  gone or does not extract is refused before the claim from then on. A read that fails
   on the way — the timeline, the store, the stream into the sandbox — parks
   it without a code: the runner redelivers, and `--force` does not skip it.
   A bank restored into a host directory — the run resumed with its host
   state on — hands the scratch over to that directory (`host_backed` on the
   record): from then on no bank decides what a resume on that host finds,
-  and none is restored over it. That record is written within its budget,
-  or the resume fails without a code and the next one restores the bank
-  again.
+  and none is restored over it. That record, and a stale bank's, is written
+  within its budget, or the resume fails without a code and the next one
+  restores the bank again; any other restore's record decides nothing, and
+  is written once, best-effort.
 
 ## Consequences
 
@@ -174,7 +179,10 @@ pods the same way.
 - **The engine's check holds under the run's lock** only if the lock is held
   through a cancelled run's teardown: the runner keeps refreshing the lease
   until the engine returns (#1991), at most the sandbox's teardown budget —
-  the bank's archive, record and resume included — plus a margin. A pod whose lease lapsed while it was
+  the bank's archive, record and resume included — plus a margin. A resume
+  delivered meanwhile finds the lease held: its retries are spread over
+  that ceiling and the lease's lapse, so it outlives the teardown instead of
+  landing on the DLQ, and the orphan sweeper's cutoff counts them. A pod whose lease lapsed while it was
   alive still unwinds, and banks, as a split-brain writer.
 - **Staleness is read from the timeline's `node_finished` events.** A branch
   writes its node's finish best-effort: one lost to a store outage leaves a

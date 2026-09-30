@@ -14,6 +14,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -369,5 +370,36 @@ func TestHeldLockFinalDeliveryArchivesOnNATS(t *testing.T) {
 	after := loadStatus(t, st, before.ID)
 	if after.Status != before.Status || after.CASVersion != before.CASVersion {
 		t.Fatalf("owner changed: %+v", after)
+	}
+}
+
+// TestAcquireRunLock_aHeldLockOutlastsTheLongestTeardown: a resume that finds
+// the lease held — the previous execution still tearing down, which may hold
+// it up to runtime.LeaseUnwindCeiling past its cancellation, then the lease's lapse —
+// is not archived before that hold can be over: its deliveries are spread
+// over it, none sooner than the lease's TTL.
+func TestAcquireRunLock_aHeldLockOutlastsTheLongestTeardown(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "resume-during-teardown"
+	seedRunningRun(t, st, id)
+	deliveries := natsq.DefaultStreamMaxRetry
+	r := &Runner{cfg: Config{Store: lockHeldStore{st}, Logger: iterlog.Nop()}, maxDeliverOverride: deliveries}
+	r.lockFailureDLQ = func(context.Context, jsDelivery, string) error { return nil }
+	var before time.Duration
+	for n := 1; n < deliveries; n++ {
+		d := &fakeDelivery{delivered: n}
+		if _, ok, _ := r.acquireRunLock(context.Background(), &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1", Resume: &queue.ResumeSpec{}}, d, iterlog.Nop()); ok {
+			t.Fatalf("delivery %d took a held lock", n)
+		}
+		if len(d.nakDelays) != 1 || d.nakDelays[0] < natsq.DefaultLockTTL || d.terms != 0 {
+			t.Fatalf("delivery %d: %+v, want one delayed Nak no sooner than the lease's TTL", n, d)
+		}
+		before += d.nakDelays[0]
+	}
+	if hold := runtime.LeaseUnwindCeiling + natsq.DefaultLockTTL; before < hold {
+		t.Fatalf("the last delivery comes %s after the first, before a lease held %s can have lapsed", before, hold)
 	}
 }
