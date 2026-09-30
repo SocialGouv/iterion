@@ -346,10 +346,11 @@ func TestProdWatch_TheStateCommitRetriesWithinItsWindow(t *testing.T) {
 	}
 }
 
-// TestProdWatch_TheRunBudgetMatchesTheBot: plan's budget is the workflow's
-// budget.max_duration; what it keeps after the delivery holds the state
-// commit's window, and what it keeps between the fetches and the delivery's
-// deadline holds the delivery's floor.
+// TestProdWatch_TheRunBudgetMatchesTheBot: plan's budget is the run's
+// effective max_duration (never a literal: `--max-duration` must reach it), and
+// the bot's own leaves the fetches room; what it keeps after the delivery holds
+// the state commit's window, and what it keeps between the fetches and the
+// delivery's deadline holds the delivery's floor.
 func TestProdWatch_TheRunBudgetMatchesTheBot(t *testing.T) {
 	t.Parallel()
 	src, err := os.ReadFile(filepath.Join("..", "bots", "prod-watch", "main.bot"))
@@ -366,13 +367,16 @@ func TestProdWatch_TheRunBudgetMatchesTheBot(t *testing.T) {
 		return n
 	}
 	minutes := num(`max_duration: "(\d+)m"`)
-	budget := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = (\d+), \d+, \d+`)
-	afterFetch := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = \d+, (\d+), \d+`)
-	afterDelivery := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = \d+, \d+, (\d+)`)
+	afterFetch := num(`AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = (\d+), \d+`)
+	afterDelivery := num(`AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = \d+, (\d+)`)
 	floor := num(`deliver_until = time.monotonic\(\) \+ max\((\d+), `)
 	commit := num(`COMMIT_SECS = (\d+)`)
-	if budget != minutes*60 {
-		t.Fatalf("plan's RUN_BUDGET_SECS %d is not the workflow's max_duration (%d min)", budget, minutes)
+	if !regexp.MustCompile(`run_cap = float\(\{\{run\.max_duration_seconds\}\}`).Match(src) ||
+		!regexp.MustCompile(`RUN_BUDGET_SECS = .*\{\{run\.elapsed_seconds\}\}`).Match(src) {
+		t.Fatalf("plan's RUN_BUDGET_SECS is not the run's effective max_duration less what it spent")
+	}
+	if minutes*60-afterFetch < 300 {
+		t.Fatalf("the bot's max_duration (%d min) leaves the fetches %d s", minutes, minutes*60-afterFetch)
 	}
 	if afterDelivery < commit+30 {
 		t.Fatalf("what the budget keeps after the delivery (%d s) does not hold the commit window (%d s) and a margin", afterDelivery, commit)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,6 +83,10 @@ func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map
 		script = strings.ReplaceAll(script, "{{secrets."+name+".path}}", string(b))
 	}
 	script = strings.ReplaceAll(script, "{{run.id}}", `"harness"`)
+	// The run's effective budget: the bot's own max_duration (12m) — a test
+	// giving the run more replaces the reference before calling pwSub.
+	script = strings.ReplaceAll(script, "{{run.max_duration_seconds}}", "720")
+	script = strings.ReplaceAll(script, "{{run.elapsed_seconds}}", "0")
 	if i := strings.Index(script, "{{"); i >= 0 {
 		end := i + 60
 		if end > len(script) {
@@ -352,7 +357,7 @@ func newPWHarness(t *testing.T) *pwHarness {
 		}
 		h.sinkHits.Add(1)
 		h.sinkMu.Lock()
-		h.sinkBodies = append(h.sinkBodies, body.Text)
+		h.sinkBodies = append(h.sinkBodies, pwMattermostStores(body.Text))
 		h.sinkMu.Unlock()
 	})
 	mux.HandleFunc("/hook-down", func(w http.ResponseWriter, r *http.Request) {
@@ -404,6 +409,17 @@ func (h *pwHarness) writeConfig(t *testing.T, mod func(cfg map[string]any)) {
 	if err := os.WriteFile(filepath.Join(h.ws, "prod-watch.json"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// pwMattermostLinkWithText is what Mattermost's server applies to an incoming
+// webhook's text before it stores the post (server/channels/app/webhook.go,
+// linkWithTextRegex in CreateWebhookPost): a Slack link `<url|text>` becomes
+// the markdown link `[text](url)` — on the raw text, code spans included.
+var pwMattermostLinkWithText = regexp.MustCompile(`<([^\n<\|>]+)\|([^\|\n>]+)>`)
+
+// pwMattermostStores: the text a Mattermost post holds for this webhook text.
+func pwMattermostStores(text string) string {
+	return pwMattermostLinkWithText.ReplaceAllString(text, "[${2}](${1})")
 }
 
 func (h *pwHarness) bodies() []string {

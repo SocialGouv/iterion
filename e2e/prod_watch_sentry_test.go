@@ -73,6 +73,7 @@ type pwSentry struct {
 	calls          []pwSentryCall
 	fail           map[string][]int // endpoint kind → statuses answered first, in order
 	shortFirstPage bool             // page 1 of every list drops its last issue while results="true"
+	extraTracked   []string         // ids a by-id answer also holds, asked or not (a hostile server)
 	badCursor      bool
 	pageSize       int
 	delay          time.Duration // added to every list call (the deadline test)
@@ -302,7 +303,7 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 		}
 		var sel []*pwSentryIssue
 		if ids := q["group"]; len(ids) > 0 {
-			for _, id := range ids {
+			for _, id := range append(append([]string(nil), ids...), s.extraTracked...) {
 				if i, ok := s.issues[id]; ok {
 					sel = append(sel, i)
 				}

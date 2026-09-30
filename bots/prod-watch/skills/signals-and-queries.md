@@ -321,7 +321,8 @@ OR MERGED IN SENTRY` — after any pending alert of it went out) and, while
 it stays closed, its events are no news (Sentry keeps ingesting an
 archived issue's: no reminder, no escalation, the note is not owed
 again); one idle for `quiet_after_hours` (read by id this tick) one
-`NOT OBSERVED ANY MORE`. Any posted alert restarts the idle clock. An
+`NOT OBSERVED ANY MORE` — that note is the episode's last word: a closing
+note or a reopening by hand after it is not announced. Any posted alert restarts the idle clock. An
 alert the per-run cap cuts stays PENDING and is re-emitted every tick
 until posted (a new issue, a dated transition or an escalation does not
 recur by itself — an escalation stays pending at the severity it

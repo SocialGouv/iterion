@@ -86,16 +86,20 @@ overrides).
   end, a Grafana call — its one retry included — within six of them (a
   large page arriving slowly is legitimate; a stall trips the socket
   timeout first) and never past its lane's `grafana.deadline_secs`.
-  **The run's budget** (12 minutes) must hold every wait before the
-  delivery at its worst: the release endpoint and its host's lookup (2 ×
+  **The run's budget** (12 minutes, or what `iterion run --max-duration`
+  gives it) must hold every wait before the delivery at its worst: the release endpoint and its host's lookup (2 ×
   `fetch_timeout_secs`), each probe tried twice two seconds apart plus
   one lookup per probed host, each lane's deadline (a name lookup is
   bounded like the answer after it). `plan` refuses a config whose sum
-  passes 480 s (a tick the budget kills posts nothing, the health probes
-  included), naming each wait. The delivery has until the time the
+  passes the budget less 240 s (480 s at 12 minutes: a tick the budget
+  kills posts nothing, the health probes included), naming each wait —
+  a `deadline_secs` above that needs a longer run. The delivery has until the time the
   budget keeps for it — at least a minute —, the required sinks first, a
   sink that timed out once not asked again that tick (20 s a post); the
-  state commit has its own window (90 s, 60 s a git call).
+  state commit has its own window (90 s) for the push and the pull, 60 s
+  a call; `git add` and `git commit` run as long as they take (a hook or
+  a signing agent waiting on a passphrase holds the tick until the run's
+  budget ends it).
 - `sentry` — absent or `null`: the lane is off. `base_url` (https, no
   query, fragment or credentials; the prefix of the ONE clickable link
   the bot renders), `org` and `project` (slugs), `environment` (strongly
@@ -141,7 +145,9 @@ overrides).
   a link can come out of it), truncated to 200 characters; the label's
   own words render as written — its markdown, links and LaTeX are shown,
   never live (a label cannot format, link or tag): it is one line, every
-  dot is escaped, an `@` before a word mentions nobody, an emoji code is
+  dot is escaped, `&`, `<`, `>` and `|` are entities (Mattermost rewrites
+  `<url|text>` into a link before rendering: a label's `>` or `|` could
+  carry a value out of its code span), an `@` before a word mentions nobody, an emoji code is
   text unless a space follows it (its colons could open a scheme),
   parentheses and plain colons stay as they are. `sentry_reopened` says a
   closed issue is open again; `folded_detail` words the note naming, per
@@ -335,9 +341,10 @@ managed secret under the name `forge_token` (see vuln-watch's
 - **The run FAILS with "the fetches can wait N s at worst (…)"** — the
   release endpoint, the probes (their retry and lookup counted) and the
   lanes' deadlines add up
-  past what the 12-minute budget keeps before the delivery: lower
+  past what the run's budget keeps before the delivery: lower
   `grafana.deadline_secs`, `sentry.deadline_secs`, a probe's
-  `timeout_secs` or `fetch_timeout_secs` as the message names them.
+  `timeout_secs` or `fetch_timeout_secs` as the message names them, or
+  give the run more time (`iterion run --max-duration`).
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.

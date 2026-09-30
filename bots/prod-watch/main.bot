@@ -642,9 +642,13 @@ tool plan:
     ## scan's, the delivery's, the state commit's and the engine's own.
     ## The delivery's deadline counts from here, the entry node: the
     ## engine's start before it (seconds) and the state commit's window
-    ## (90 s) come out of AFTER_DELIVERY_SECS.
-    RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = 720, 240, 150
-    deliver_by = int(time.time()) + RUN_BUDGET_SECS - AFTER_DELIVERY_SECS
+    ## (90 s) come out of AFTER_DELIVERY_SECS. The budget is the run's
+    ## effective one — `iterion run --max-duration` raises or lowers it —,
+    ## less what the run already spent; none (0): nothing kills the tick.
+    run_cap = float({{run.max_duration_seconds}} or 0)
+    RUN_BUDGET_SECS = max(1, int(run_cap - float({{run.elapsed_seconds}} or 0))) if run_cap > 0 else 0
+    AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = 240, 150
+    deliver_by = int(time.time()) + (RUN_BUDGET_SECS - AFTER_DELIVERY_SECS if RUN_BUDGET_SECS > 0 else 10 ** 8)
     ## A name lookup is bounded like the answer after it (one per host and
     ## node); a probe is tried twice, two seconds apart.
     probe_hosts = {}
@@ -657,12 +661,13 @@ tool plan:
              ('prometheus', grafana['deadline_secs'] if norm_probes else 0),
              ('sentry', sentry['deadline_secs'] if sentry['enabled'] else 0)]
     worst = sum(w for _, w in waits)
-    if worst > RUN_BUDGET_SECS - AFTER_FETCH_SECS:
+    if RUN_BUDGET_SECS > 0 and worst > RUN_BUDGET_SECS - AFTER_FETCH_SECS:
         raise SystemExit('prod-watch: the fetches can wait ' + str(worst) + ' s at worst (' +
                          ', '.join(n + ' ' + str(w) + ' s' for n, w in waits if w) + '), over the ' +
-                         str(RUN_BUDGET_SECS - AFTER_FETCH_SECS) + ' s the 12-minute run budget keeps for them: a tick the '
-                         'budget kills posts nothing, the health probes included -- lower grafana.deadline_secs, '
-                         'sentry.deadline_secs, a probe timeout_secs or fetch_timeout_secs')
+                         str(RUN_BUDGET_SECS - AFTER_FETCH_SECS) + ' s the run budget (' + str(RUN_BUDGET_SECS) +
+                         ' s) keeps for them: a tick the budget kills posts nothing, the health probes included -- lower '
+                         'grafana.deadline_secs, sentry.deadline_secs, a probe timeout_secs or fetch_timeout_secs, or give '
+                         'the run more time (iterion run --max-duration)')
 
     ## English defaults; the config's `labels` map overrides any subset —
     ## this bot bakes in no language (deterministic messages included).
@@ -1293,6 +1298,8 @@ tool poll_loki:
             ## Refused before the host resolves: a public-name http:// Grafana
             ## fails by NAME, not by a DNS miss that reads like an outage.
             raise LaneError('grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
+        ## The name resolves within the lane's deadline, like the answers after it.
+        _gai_timeout[0] = max(1, min(timeout, int(lane_deadline - time.monotonic())))
         try:
             _validate_host(origin.hostname or '')
         except (OSError, ValueError) as e:
@@ -1708,6 +1715,8 @@ tool poll_prom:
             ## Refused before the host resolves: a public-name http:// Grafana
             ## fails by NAME, not by a DNS miss that reads like an outage.
             raise LaneError('grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
+        ## The name resolves within the lane's deadline, like the answers after it.
+        _gai_timeout[0] = max(1, min(timeout, int(lane_deadline - time.monotonic())))
         try:
             _validate_host(origin.hostname or '')
         except (OSError, ValueError) as e:
@@ -1971,6 +1980,8 @@ tool poll_sentry:
                                     'inside) -- bind the token alone')
         if origin.scheme != 'https' and not allow_private:
             raise LaneError('sentry.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
+        ## The name resolves within the lane's deadline, like the answers after it.
+        _gai_timeout[0] = max(1, min(timeout, int(deadline - time.monotonic())))
         try:
             _validate_host(origin.hostname or '')
         except (OSError, ValueError) as e:
@@ -2147,6 +2158,9 @@ tool poll_sentry:
     ## events — a new issue whose first event came late (an SDK's offline
     ## cache) is still in the new list.
     LIST_PERIOD = '90d'
+    ## Sentry's page: what the lists and the by-id read ask for, and the most
+    ## an answer may hold.
+    PAGE = 100
     def seen_stats(body, what):
         ## An answer carrying no seen stats at all was stripped of them (a
         ## collapse, a server that no longer sends them): never read as "no
@@ -2156,7 +2170,7 @@ tool poll_sentry:
     def walk(query, sort, max_pages, what, name):
         ## Each page is taken as it arrives: a walk cut by an error, a cap
         ## or the deadline keeps what it read.
-        params = dict(COLLAPSE, project=project_id, query=query, sort=sort, statsPeriod=LIST_PERIOD, limit=100)
+        params = dict(COLLAPSE, project=project_id, query=query, sort=sort, statsPeriod=LIST_PERIOD, limit=PAGE)
         if env:
             params['environment'] = env
         cursor, pages = None, 0
@@ -2170,6 +2184,11 @@ tool poll_sentry:
             if not isinstance(body, list):
                 raise LaneError('the answer to ' + what + ' is not a list (its text is withheld)')
             seen_stats(body, what)
+            if len(body) > PAGE:
+                ## Every issue taken becomes an incident the state keeps: a server
+                ## ignoring the limit (anything answering at base_url) is not read.
+                raise LaneError('the answer to ' + what + ' holds ' + str(len(body)) + ' issues for a limit of ' + str(PAGE) +
+                                ' -- a server ignoring the limit is not read')
             flags['answered'] = True
             for i in body:
                 take(i, name)
@@ -2235,9 +2254,8 @@ tool poll_sentry:
         ## Transition dates, from the issue's own activity. UNDATED ones first
         ## (an untracked issue, or one never checked) —
         ## one the cap leaves undated is a loss this tick, and the walk says
-        ## partial. Then the RE-CHECKS of dated ones an event arrived after
-        ## (a new regression needs a new event), least recently checked
-        ## first: a re-check the cap defers keeps its known date and waits its
+        ## partial. Then the RE-CHECKS of every dated one (substatus and
+        ## activities are project-wide), least recently checked first: a re-check the cap defers keeps its known date and waits its
         ## turn — busy regressed issues can never starve a new one. The dates
         ## are Sentry's processing times.
         undated, rechecks = [], []
@@ -2296,8 +2314,9 @@ tool poll_sentry:
                 complete['transition'] = False
         ids = [x for x in (cfg.get('tracked_ids') or []) if isinstance(x, str) and re.fullmatch(r'[0-9]{1,20}', x)]
         try:
-            for n in range(0, len(ids), 100):
-                p = dict(COLLAPSE, project=project_id, group=ids[n:n + 100], statsPeriod='14d', limit=100)
+            for n in range(0, len(ids), PAGE):
+                asked = ids[n:n + PAGE]
+                p = dict(COLLAPSE, project=project_id, group=asked, statsPeriod='14d', limit=PAGE)
                 if env:
                     p['environment'] = env
                 body, _ = get('/api/0/organizations/' + org + '/issues/', p, 'the tracked issues')
@@ -2305,12 +2324,17 @@ tool poll_sentry:
                 if not isinstance(body, list):
                     raise LaneError('the answer to the tracked issues is not a list (its text is withheld)')
                 seen_stats(body, 'the tracked issues')
+                if len(body) > len(asked) or any(isinstance(i, dict) and str(i.get('id')) not in asked for i in body):
+                    ## Only the issues asked are read: one not asked would become an
+                    ## incident nothing tracked.
+                    raise LaneError('the answer to the tracked issues holds ' + str(len(body)) + ' issue(s) for ' +
+                                    str(len(asked)) + ' asked, or an issue not asked -- it is not read')
                 flags['answered'] = True
                 for i in body:
                     take(i, 'tracked')
                 ## Asked and answered, whole: an id missing from the answer is
                 ## gone (deleted, merged) — a fact about that incident.
-                requested.extend(ids[n:n + 100])
+                requested.extend(asked)
             complete['tracked'] = True
         except DeadlineReached:
             deadline_hit = True
@@ -2443,10 +2467,11 @@ tool probe_http:
     _opener = urllib.request.build_opener(_SafeRedirect())
     ## A wall clock over each HTTP exchange: an answer trickling in a byte
     ## at a time resets the socket timeout on every byte — the status line,
-    ## the headers, the body — so an alarm bounds it (fetch_timeout_secs is
-    ## the escape hatch). Not an OSError: the connect loop would swallow it
-    ## and try the next address unbounded; and never retried — the answer
-    ## was too slow, not lost.
+    ## the headers, the body — so an alarm bounds it (the probe's own
+    ## timeout_secs is the escape hatch). Not an OSError: the connect loop
+    ## would swallow it and try the next address unbounded. A probe retries
+    ## it once, like a lost answer: a cold start or a pause must not post a
+    ## critical about a healthy app (plan counts both tries).
     class ExchangeTimeout(Exception):
         pass
     def _exchange_alarm(signum, frame):
@@ -2466,8 +2491,9 @@ tool probe_http:
                 raise ValueError('unsupported URL scheme ' + repr(parts.scheme))
             _validate_host(parts.hostname or '')
             req = urllib.request.Request(url, headers={'User-Agent': 'prod-watch/0.1 (iterion health probe)'})
-            ## One retry on a transport error or a 5xx: a dropped SYN on a
-            ## scheduled tick must not post a critical about a healthy app.
+            ## One retry on a transport error, an answer slower than the
+            ## timeout, or a 5xx: a dropped SYN or a pause on a scheduled tick
+            ## must not post a critical about a healthy app.
             for attempt in (0, 1):
                 if attempt:
                     time.sleep(2)
@@ -2483,7 +2509,7 @@ tool probe_http:
                     res['status'] = e.code
                     if e.code < 500:
                         break
-                except (TimeoutError, socket.timeout, urllib.error.URLError):
+                except (TimeoutError, socket.timeout, urllib.error.URLError, ExchangeTimeout):
                     if attempt:
                         raise
                 finally:
@@ -3060,6 +3086,8 @@ tool decide:
     forget_d = int({{input.forget_after_days}})
     stale_h = int({{input.source_stale_hours}})
     max_alerts = int({{input.max_alerts}})
+    if max_alerts < 0:
+        raise SystemExit('prod-watch: max_alerts_per_run must be 0 or more, got ' + str(max_alerts))
     max_per_lane = int({{input.max_alerts_per_lane}})
     if max_per_lane < 0:
         raise SystemExit('prod-watch: max_alerts_per_lane must be 0 or more, got ' + str(max_per_lane))
@@ -4118,8 +4146,10 @@ tool notify:
         ## (a blank line would open a block — a table splits a value's span
         ## at `|`); emphasis, code, link characters are escaped, and every dot
         ## (the autolinker reads a host after any letter, `-` or `.`, `www.`
-        ## through a zero-width space); `&` and `<` are entities (the server
-        ## rewrites `<url|text>` before any markdown); `$` is its full-width
+        ## through a zero-width space); `&`, `<`, `>` and `|` are entities
+        ## (the server rewrites `<url|text>` into a link on the raw text, code
+        ## spans included: a value's `<` or `|` never pairs with a label's
+        ## `>` or `|` to carry the value out of its span); `$` is its full-width
         ## form (inline LaTeX ignores a backslash before it); a zero-width
         ## space precedes a colon after a letter or digit unless a space
         ## follows — every scheme, the server's custom ones included, and an
@@ -4133,7 +4163,7 @@ tool notify:
         if cap is not None:
             t = re.sub(r'[\s\u2424]+', ' ', t).strip()[:cap]
         t = re.sub(r'([\\`*_~\[\]])', lambda m: '\\' + m.group(1), t)
-        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', chr(0xFF04))
+        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('|', '&#124;').replace('$', chr(0xFF04))
         t = t.replace('.', '\\.')
         t = re.sub(r'@(?=\w)', '@' + chr(8203), t)
         return re.sub(r'(?<=[A-Za-z0-9+.-]):(?!\s)', chr(8203) + ':', t)
