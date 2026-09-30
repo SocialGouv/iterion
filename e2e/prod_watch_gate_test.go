@@ -398,7 +398,7 @@ func TestProdWatch_AProbeURLThatDoesNotParseLeavesThePlanRunning(t *testing.T) {
 
 // pwSaysAhead: the walk of this tick names Sentry stamps it did not take.
 func pwSaysAhead(o map[string]map[string]any) bool {
-	return strings.Contains(fmt.Sprint(o["poll_sentry"]["walk"].(map[string]any)["partial"]), "ahead of this runner's clock not taken")
+	return strings.Contains(fmt.Sprint(o["poll_sentry"]["walk"].(map[string]any)["partial"]), "ahead of this runner's clock")
 }
 
 // TestProdWatch_SentryAFutureDateAtArmingMutesNothing: the arming time is the
@@ -532,6 +532,9 @@ func TestProdWatch_SentryAFutureActivityDateMutesNoRegression(t *testing.T) {
 	if o := sentryTick(t, h, wf); !pwSaysAhead(o) {
 		t.Fatalf("an activity dated a year ahead was taken in silence: %v", o["poll_sentry"]["walk"])
 	}
+	if sentryIncident(t, h, "4701")["transition_seen_at"] == nil {
+		t.Fatalf("a check whose date was not taken cleared the watch: the transition's date is still owed")
+	}
 	if at := sentryIncident(t, h, "4701")["transition_at"]; at != nil && fmt.Sprint(at) > time.Now().Add(time.Hour).UTC().Format(time.RFC3339) {
 		t.Fatalf("the future activity date became the issue's transition: %v", at)
 	}
@@ -547,5 +550,113 @@ func TestProdWatch_SentryAFutureActivityDateMutesNoRegression(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got, " "), "regressed:PROJ-4701") {
 		t.Fatalf("a regression dated now, after an activity dated a year ahead, was never posted: %v", got)
+	}
+}
+
+// TestProdWatch_SentryAnActivityDateNotTakenLeavesTheIssueUndated: a check whose
+// only date was not taken leaves the transition undated — still owed: when
+// max_transition_checks leaves it out the next tick, the walk says so, as for
+// any undated transition, never as a silent re-check of a date it holds.
+func TestProdWatch_SentryAnActivityDateNotTakenLeavesTheIssueUndated(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_transition_checks"] = 1 }))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "4801", ShortID: strp("PROJ-4801"), Title: "r", Substatus: strp("regressed"),
+		FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now,
+		Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(365 * 24 * time.Hour)}}})
+	if o := sentryTick(t, h, wf); !pwSaysAhead(o) {
+		t.Fatalf("setup: the activity dated a year ahead went unsaid: %v", o["poll_sentry"]["walk"])
+	}
+	h.sentry.put(&pwSentryIssue{ID: "4802", ShortID: strp("PROJ-4802"), Title: "r2", Substatus: strp("regressed"),
+		FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: time.Now(),
+		Acts: []pwSentryAct{{Type: "set_regression", At: time.Now()}}})
+	walk := sentryTick(t, h, wf)["poll_sentry"]["walk"].(map[string]any)
+	if walk["checks_cut"] != true || !strings.Contains(fmt.Sprint(walk["partial"]), "transition checks capped") {
+		t.Fatalf("an issue whose transition date is still unknown, left out by the cap, went unsaid: %v", walk)
+	}
+}
+
+// TestProdWatch_ARunnerBehindCallsNoFiringIssueIdle: the runner's clock runs
+// behind Sentry's by more than the tolerance (overlap_minutes, a minute at
+// least) — every lastSeen of an issue still firing is past the bound, read as
+// the runner's now: the issue is never said idle while it fires.
+func TestProdWatch_ARunnerBehindCallsNoFiringIssueIdle(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name    string
+		overlap int
+		behind  time.Duration
+	}{
+		{"control in sync", 60, 0},
+		{"runner 2 h behind, overlap 60", 60, 2 * time.Hour},
+		{"runner 3 min behind, overlap 0", 0, 3 * time.Minute},
+	} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixture(t, "prod-watch/main.bot")
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, func(s map[string]any) {
+				s["overlap_minutes"] = c.overlap
+				s["max_catchup_hours"] = 24
+			}))
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "9101", ShortID: strp("PROJ-9101"), Title: "busy", FirstProcessed: now, LastSeen: now, Count: 1})
+			if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:PROJ-9101:medium" {
+				t.Fatalf("setup: %v", got)
+			}
+			ageIncidents(t, h, 49*time.Hour, "9101") // the last sighting the lane took is 49 h old
+			time.Sleep(1100 * time.Millisecond)
+			h.sentry.mu.Lock()
+			h.sentry.dateOffset = c.behind
+			h.sentry.mu.Unlock()
+			h.sentry.edit("9101", func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(c.behind); i.Count = 500 })
+			o := sentryTick(t, h, wf)
+			if got := sentryAlerts(o); strings.Contains(strings.Join(got, " "), "quiet:PROJ-9101") {
+				t.Fatalf("%s: an issue firing now (its lastSeen past the runner's clock) was said idle: %v", c.name, got)
+			}
+			if c.behind > 0 && !pwSaysAhead(o) {
+				t.Fatalf("%s: the stamps past the runner's clock went unsaid: %v", c.name, o["poll_sentry"]["walk"])
+			}
+		})
+	}
+}
+
+// TestProdWatch_ARunnerBehindForgetsNoFiringIssue: the same clock setting, the
+// last sighting the lane took 15 days old (forget_after_days 14): an alerted
+// issue firing now, read by id this tick, is kept — retention forgets what
+// fell silent, never what the runner's clock cannot place.
+func TestProdWatch_ARunnerBehindForgetsNoFiringIssue(t *testing.T) {
+	t.Parallel()
+	for name, behind := range map[string]time.Duration{"control in sync": 0, "runner 2 h behind, overlap 60": 2 * time.Hour} {
+		name, behind := name, behind
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixture(t, "prod-watch/main.bot")
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, nil))
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "9201", ShortID: strp("PROJ-9201"), Title: "busy", FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now, Count: 1})
+			st := h.state(t)
+			old := time.Now().Add(-15 * 24 * time.Hour).UTC().Format(time.RFC3339)
+			st["incidents"].(map[string]any)["sentry:9201"] = map[string]any{"fp": "sentry:9201", "kind": "sentry", "sources": []any{"sentry"},
+				"first_seen": old, "last_seen": old, "count": 1, "alerted": true, "last_notified": old, "quiet_noted": true,
+				"severity": "medium", "announced_severity": "medium", "status": "unresolved", "short_id": "PROJ-9201",
+				"sentry_last_seen": old, "title_key": "sentry_issue", "detail_key": "sentry_detail_short", "fields": map[string]any{}}
+			h.setState(t, st)
+			h.sentry.mu.Lock()
+			h.sentry.dateOffset = behind
+			h.sentry.mu.Unlock()
+			h.sentry.edit("9201", func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(behind); i.Count = 900 })
+			sentryTick(t, h, wf)
+			if sentryIncident(t, h, "9201") == nil {
+				t.Fatalf("%s: an alerted issue firing now, read by id this tick, was forgotten by retention", name)
+			}
+		})
 	}
 }

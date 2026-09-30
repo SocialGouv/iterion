@@ -278,11 +278,14 @@ proxy stripping it) is an error, never the end: the list is not read
 whole and the cursor stays. The cursor's `since` is Sentry's own
 `Date` (the runner's clock, read before the first request, when the
 header is missing or runs ahead of it by more than `overlap_minutes` —
-the walk says `clock: local`). Every stamp Sentry writes is bounded so:
-an issue's `lastSeen` or an activity's date later than the runner's
-clock plus `overlap_minutes` is not taken, and the walk counts it among
-its partial reasons — a server or a front whose clock runs ahead never
-mutes a path in silence. `deadline_secs`
+the walk says `clock: local`). Every stamp Sentry writes is bounded so,
+the tolerance being `overlap_minutes` (a minute at least): an issue's
+`lastSeen` past it is read as the runner's now — an event happened, as
+recent as the runner can tell: never saved ahead of it, never read as no
+event (the issue would be said idle while it fires) —, an activity's
+date past it is not taken and the issue stays re-checked; the walk
+counts them among its partial reasons. A server, a front whose clock
+runs ahead or a runner behind never mutes a path in silence. `deadline_secs`
 is a wall clock over each exchange: a server or proxy trickling bytes
 into the headers, a chunk-size line or the body cannot outlast it — nor
 can a name lookup (every node resolves a host once, in a worker thread

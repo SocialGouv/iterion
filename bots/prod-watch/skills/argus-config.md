@@ -114,7 +114,9 @@ overrides).
   error→medium, warning and below→low), `max_severity` (default `high`:
   a level is event content anyone with the public DSN writes, so
   `critical` from Sentry is an opt-in; lowering it caps the incidents the
-  lane already knows too), `overlap_minutes` (60),
+  lane already knows too), `overlap_minutes` (60; also the tolerance, a
+  minute at least, for the stamps Sentry writes against the runner's
+  clock),
   `max_issues` (per list, pages of 100; default 200),
   `max_transition_checks` (activity lookups per tick; 20),
   `max_tracked` (issues re-read by id each tick; 200 — the open ones
@@ -338,6 +340,16 @@ managed secret under the name `forge_token` (see vuln-watch's
   losses: the note's budget can defer it to a later tick). **`sentry: N
   more transition(s) recorded as history …`** — past 100 names waiting,
   the oldest are counted instead.
+- **`N stamp(s) from Sentry ahead of this runner's clock`** among the
+  partial reasons — the runner's clock and Sentry's (its front, its
+  backend) disagree by more than `overlap_minutes` (a minute at least):
+  fix NTP on the late side, or raise `overlap_minutes` past the skew.
+  Nothing goes silent meanwhile: a last event past the bound is read as
+  the runner's now (the issue counts as firing — its "not observed any
+  more" can come late by up to the skew, never early), an activity date
+  past it is not taken (the regression posts once its date falls under
+  the bound), and a `Date` past it leaves the cursor on the runner's
+  clock.
 - **The run FAILS with "the fetches can wait N s at worst (…)"** — the
   release endpoint, the probes (their retry and lookup counted) and the
   lanes' deadlines add up

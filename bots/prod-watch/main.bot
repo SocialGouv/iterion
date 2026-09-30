@@ -2126,7 +2126,7 @@ tool poll_sentry:
     ## A stamp the server writes is saved and gates the next one (the cursor,
     ## the arming, a sighting, a regression): one later than this runner's
     ## clock plus the overlap — a hostile server, a front whose clock runs
-    ## ahead — is not taken, and the walk says so.
+    ## ahead, a runner behind — is never saved as it came, and the walk says so.
     SKEW = datetime.timedelta(minutes=max(1, int(cfg.get('overlap_minutes') or 0)))
     def horizon():
         return (datetime.datetime.now(datetime.timezone.utc) + SKEW).isoformat(timespec='seconds')
@@ -2144,8 +2144,11 @@ tool poll_sentry:
         rec = records.get(i['id'])
         seen = iso(i.get('lastSeen'))
         if seen and seen > horizon():
+            ## Read as this runner's now: an event happened, as recent as it can
+            ## tell — never saved ahead of it, never read as no event (the issue
+            ## would be said idle, then forgotten, while it fires).
             stats['future'] += 1
-            seen = None
+            seen = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
         if rec is None:
             short = i.get('shortId')
             md = i.get('metadata') if isinstance(i.get('metadata'), dict) else {}
@@ -2328,11 +2331,14 @@ tool poll_sentry:
                     raise LaneError('the activities of issue ' + r['id'] + ' are not a list (their text is withheld)')
                 dates = [iso(a.get('dateCreated')) for a in acts if isinstance(a, dict) and a.get('type') == want[r['substatus']]]
                 dates = [d for d in dates if d]
-                stats['future'] += sum(1 for d in dates if d > horizon())
+                ahead = sum(1 for d in dates if d > horizon())
+                stats['future'] += ahead
                 dates = [d for d in dates if d <= horizon()]
                 if dates:
                     r['transition_at'] = max(dates)
-                r['transition_checked'] = True
+                ## A date not taken leaves the check owed: the issue stays watched
+                ## (read as now, it would make a new regression every tick).
+                r['transition_checked'] = not ahead
             except NotFound:
                 pass   # deleted or merged between the list and this call: nothing to date
             except DeadlineReached:
@@ -2399,7 +2405,8 @@ tool poll_sentry:
         ('the cursor was older than max_catchup_hours: issues first processed between ' + str(cfg.get('gap_since') or '?') +
          ' and ' + str(cfg.get('new_since') or '?') + ' were never read as new', bool(cfg.get('gap_since'))),
         (str(stats['malformed']) + ' malformed issue(s) skipped', stats['malformed'] > 0),
-        (str(stats['future']) + " stamp(s) from Sentry ahead of this runner's clock not taken", stats['future'] > 0))
+        (str(stats['future']) + " stamp(s) from Sentry ahead of this runner's clock (a Date or a last event read as its now, "
+         "an activity date not taken)", stats['future'] > 0))
         if on and not ('setup' in ' '.join(failed))]
     truncated = (not all(complete.values()) or checks_cut or deadline_hit or stats['malformed'] > 0 or stats['future'] > 0
                  or bool(cfg.get('gap_since')) or bool(cfg.get('tracked_cut')))
