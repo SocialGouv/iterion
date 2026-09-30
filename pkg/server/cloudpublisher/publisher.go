@@ -3468,14 +3468,18 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 			return nil, fmt.Errorf("cloudpublisher: %w — launch the bot as a bundle", runview.ErrInlineImport)
 		}
 	}
+	// The refusal below crosses to the client as the 400 body `launch: %v`:
+	// a disk-loaded unit's diagnostics are cut to the unit's relative names
+	// (#1934's rule, on the publish path: #1970) — a no-op for a files map.
+	u.RelDiagnostics()
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
-			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", parserPath, d.Error())
+			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", u.RelName(parserPath), d.Error())
 		}
 	}
 	file := u.Merged
 	if file == nil {
-		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", parserPath)
+		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", u.RelName(parserPath))
 	}
 	if source != "" && bundleDir == "" {
 		for _, p := range file.Prompts {
@@ -3495,9 +3499,11 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	}
 	// The AST that travels must compile on a pod that has none of the files
 	// beside the source: every include is resolved into its prompt body here,
-	// on the server that has them.
+	// on the server that has them. A refusal names the include as the prompt
+	// wrote it — the resolved path it stats is the server's, and rides the
+	// error rather than any diagnostic, so the root cut is the error's (#1970).
 	if err := ir.InlinePromptIncludes(file); err != nil {
-		return nil, fmt.Errorf("cloudpublisher: %w", err)
+		return nil, fmt.Errorf("cloudpublisher: %w", u.RelError(err))
 	}
 	body, err := ast.MarshalFile(file)
 	if err != nil {

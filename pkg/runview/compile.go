@@ -414,8 +414,21 @@ func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.W
 }
 
 // compileLoadedUnit is every stage of compileUnit after the unit is loaded;
-// name is the file a refusal names.
+// name is the file a refusal names. A refusal of this compile crosses to a
+// client — the run console answers it as the 400 body `launch: %v` — and a
+// disk-loaded unit's errors cite files by their absolute paths (a
+// diagnostic's File, a bundle prompt's read error, an include's stat of the
+// resolved path): the unit's root is cut from the error text, the same rule
+// the server cuts the diagnostics themselves by (#1934, on the launch path:
+// #1970). A files map, or an error naming no file under the root, comes
+// back chain-intact.
 func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
+	wf, cs, err := compileLoadedUnitStages(u, path, name, withHash, b)
+	return wf, cs, u.RelError(err)
+}
+
+// compileLoadedUnitStages is compileLoadedUnit's body, before the root cut.
+func compileLoadedUnitStages(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, nil, fmt.Errorf("parse error: %s", d.Error())
