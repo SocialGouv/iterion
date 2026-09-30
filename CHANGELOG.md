@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.6](https://github.com/SocialGouv/iterion/compare/v3.218.5...v3.218.6) (2026-09-30)
+
+### Bug Fixes
+
+* **merge-gate:** elect the gate sweeper — one replica sweeps, not ten ([#2002](https://github.com/SocialGouv/iterion/issues/2002)) ([#2034](https://github.com/SocialGouv/iterion/issues/2034)) ([c502eb4](https://github.com/SocialGouv/iterion/commit/c502eb4516a74f707fc5952e709e47bfafe80ce5)), references [#1995](https://github.com/SocialGouv/iterion/issues/1995)
+
+    <details><summary>why</summary>
+
+    The merge-gate sweeper ran unelected on every server replica. At the HPA's ten replicas its re-offers — a forge read each — exhausted the GitHub App installation's hourly REST budget 31–43 min after every reset on 2026-09-30: verdicts left unposted, synthetic "review died" failures, paid relaunches (diagnosis in #1995). This is lot 1 of #2002: the election only; what the gate decides does not change.
+
+    </details>
+
 ## [3.218.5](https://github.com/SocialGouv/iterion/compare/v3.218.4...v3.218.5) (2026-09-30)
 
 ### Bug Fixes
