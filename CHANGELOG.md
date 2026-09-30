@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.3](https://github.com/SocialGouv/iterion/compare/v3.218.2...v3.218.3) (2026-09-30)
+
+### Bug Fixes
+
+* **credentials:** a key the run did not bind names no credential of it ([#1996](https://github.com/SocialGouv/iterion/issues/1996)) ([#2019](https://github.com/SocialGouv/iterion/issues/2019)) ([086fb85](https://github.com/SocialGouv/iterion/commit/086fb853626c20741345627021d580c58907c30b))
+
+    <details><summary>why</summary>
+
+    A sandboxed claude_code session on the pod's ambient Anthropic key got that key forwarded explicitly into its env, so its source label read "anthropic-direct": the usage meter charged its readings to the bundle's head credential (a healthy z.ai key, benched by a refusal it never saw), while the runner's pre-flight, composed host-side, read "anthropic-env" — the two disagreed. A node's own ExtraEnv key or config dir was mislabelled the same way, on the host too.
+
+    </details>
+
 ## [3.218.2](https://github.com/SocialGouv/iterion/compare/v3.218.1...v3.218.2) (2026-09-30)
 
 ### Bug Fixes
