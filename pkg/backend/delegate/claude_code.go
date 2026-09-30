@@ -1333,12 +1333,12 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 // a message naming neither the provider the operator pinned nor the credential
 // that was missing, and only after paying for the spawn.
 func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, forfaitSpawn, error) {
-	credEnv := anthropicCredEnvForTask(ctx, task)
+	credEnv, selected := anthropicCredRouteForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
 		return opts, "", forfaitSpawn{}, err
 	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
-	currentFingerprint := providerFingerprint(anthropicFingerprintEnvForTask(task, credEnv))
+	currentFingerprint := providerFingerprint(anthropicFingerprintEnvForTask(task, credEnv, selected))
 
 	if task.SessionID != "" {
 		drop, reason := shouldDropSessionFork(task, currentFingerprint)

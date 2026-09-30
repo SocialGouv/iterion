@@ -830,8 +830,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// deterministic. A shared tier's key comes back in the channel its
 				// fill would have sealed it in (sealDecision): the default of a free
 				// family, or — beside the credential holding the family — only for
-				// the routes that name its provider, which then park on their own
-				// refusal instead of reaching a credential that cannot serve them.
+				// the routes that name its provider. Those park on the key's own
+				// refusal, with its durable retry, instead of running without a
+				// credential of that provider: a claude_code facade hint is refused
+				// by name, a pi route or an `anthropic` hint beside no forfait falls
+				// to the pod's env, and claw's `anthropic/…` provider spends the
+				// family's holder — the z.ai key in a sandbox, or a Claude forfait it
+				// bills as extra usage. (claude_code spends a run's forfait before
+				// such a key.)
 				if len(skippedForfaits) > 0 || len(skippedAPIKeys) > 0 {
 					taken := map[string]bool{}
 					for prov := range bundle.APIKeys {

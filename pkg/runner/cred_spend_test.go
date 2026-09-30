@@ -316,6 +316,45 @@ func TestRecordCredentialSpend_BooksAClaudeCodeRouteOnTheCredentialItsSessionNam
 	}
 }
 
+// The two anthropic labels on the ledger: a session on the key a shared tier
+// pinned for its route ("anthropic-direct") books on that key, one on the
+// pod's env ("anthropic-env") on nobody — never on the z.ai key holding the
+// run's default, which neither spent.
+func TestRecordCredentialSpend_BooksTheDirectLabelsOnTheKeyTheyNamed(t *testing.T) {
+	counter := credusage.NewMemoryCounter()
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), CredUsage: counter}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:         map[secrets.Provider]string{secrets.ProviderZAI: "zai-tenant"},
+		PinnedAPIKeys:   map[secrets.Provider]string{secrets.ProviderAnthropic: "ant-platform"},
+		PlatformSourced: map[string]bool{string(secrets.ProviderAnthropic): true},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):       "fp-zai",
+			string(secrets.ProviderAnthropic): "fp-ant",
+		},
+	})
+	usage := newMetricsEmitter(nil, nil)
+	for node, source := range map[string]string{"pinned": "anthropic-direct", "ambient": "anthropic-env"} {
+		usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: node,
+			Data: map[string]any{"declared_model": "claude-opus-5-5"}})
+		usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: node,
+			Data: map[string]any{"backend": delegate.BackendClaudeCode, "tokens": float64(1000), "cost_usd": 1.0, "fingerprint": source}})
+	}
+
+	now := time.Now().UTC()
+	r.recordCredentialSpend(ctx, &queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, usage, now)
+	rows, err := counter.List(ctx, now, "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, row := range rows {
+		got[row.Fingerprint] += row.CostUSD
+	}
+	if got["fp-ant"] != 1.0 || got["fp-zai"] != 0 {
+		t.Errorf("booked %v, want $1 on the pinned Anthropic key and nothing on the z.ai key", got)
+	}
+}
+
 // chatGPTForfaitDir materialises a ChatGPT-mode codex forfait the way a runner
 // does, under a hermetic OAuth env: claw spends it on an `openai/…` route only
 // when the blob is there and this process lets it (model.OpenAIForfaitServes).
