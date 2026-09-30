@@ -1332,8 +1332,10 @@ type Runner struct {
 }
 
 type inFlight struct {
-	runID    string
-	delivery *natsq.Delivery
+	runID string
+	// delivery only reports progress: processOne dispatches it once the
+	// engine returns, and the run holds its lease until then.
+	delivery progressReporter
 	// cancelFn cancels the run context WITH A CAUSE (context.CancelCause).
 	// The cause is the single source of the shutdown-vs-operator decision:
 	// runtime.ErrRunInterrupted (runner drain / lost heartbeat) → the engine
@@ -1597,9 +1599,12 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 // cancelAndAwaitCheckpoint cancels the in-flight run so the engine unwinds
 // via handleContextDoneWithCheckpoint (preserving the checkpoint), extends
 // the ack window, and waits for processOne to finalise (promote to
-// failed_resumable + nak). If waitCtx expires first it best-effort naks so
-// JetStream redelivers to a sibling. Shared by the interrupt drain and the
-// lame-duck ceiling cap.
+// failed_resumable + nak). If waitCtx expires first, the run is still
+// unwinding and holds its lease: a sibling handed the delivery now would
+// only find the lock held, and spend a delivery per try. processOne
+// dispatches it once the engine returns; a pod that dies first leaves it to
+// the ack deadline. Shared by the interrupt drain and the lame-duck ceiling
+// cap.
 func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context) {
 	// Cancel WITH the interrupted cause so the engine writes failed_resumable
 	// (auto-resume) rather than terminal cancelled — the shutdown-vs-operator
@@ -1610,8 +1615,7 @@ func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context
 	case <-cur.done:
 		r.cfg.Logger.Info("runner: in-flight run %s interrupted + checkpointed for resume", cur.runID)
 	case <-waitCtx.Done():
-		logDeliveryErr(r.cfg.Logger, "nak-shutdown-grace", cur.runID, cur.delivery.Nak())
-		r.cfg.Logger.Warn("runner: drain grace expired for run %s — naking for redelivery", cur.runID)
+		r.cfg.Logger.Warn("runner: drain grace expired for run %s — it still unwinds; its delivery is dispatched when the engine returns", cur.runID)
 	}
 }
 
@@ -1760,7 +1764,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// expire while the engine is still writing to Mongo (which would invite
 	// split-brain when JetStream redelivers to a sibling pod). The cause
 	// makes the redelivery auto-resume without manual intervention.
-	stopHeartbeat := r.startLeaseHeartbeat(runCtx, runCancel, lock, delivery)
+	stopHeartbeat := r.startLeaseHeartbeat(runCtx, runCancel, msg.RunID, lock, delivery)
 	// nil cause: the run has already returned terminally here, so this is
 	// teardown — the engine never reads the cause. Idempotent panic net.
 	defer func() {

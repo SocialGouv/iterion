@@ -75,18 +75,37 @@ type progressReporter interface {
 	InProgress() error
 }
 
+// unwindLeaseCeiling bounds how long a run's lease is held after its
+// cancellation: the engine's sandbox teardown, and a margin for the rest of
+// its unwind. An engine that has not returned by then no longer holds the
+// run: the lease lapses, and the queue redelivers once the delivery's ack
+// deadline passes.
+const unwindLeaseCeiling = runtime.SandboxTeardownBudget + 2*time.Minute
+
 // startLeaseHeartbeat refreshes the run's lease for as long as its engine
-// runs — its teardown included — and returns what stops it. A cancelled run
-// (a drain, an operator's cancel) still unwinds after runCtx is done: it
-// exports the workspace and banks its scratch, bounded by their own
-// timeouts. Held through that, the lease keeps a sibling that received the
-// redelivery on the lock until the teardown has written what a resume reads.
-// A refresh that fails still cancels runCtx (heartbeat).
-func (r *Runner) startLeaseHeartbeat(runCtx context.Context, runCancel context.CancelCauseFunc, lock store.RunLock, delivery progressReporter) (stop func()) {
+// runs — its teardown included, up to unwindLeaseCeiling past the run's
+// cancellation — and returns what stops it. A cancelled run (a drain, an
+// operator's cancel) still unwinds after runCtx is done: it exports the
+// workspace and banks its scratch. Held through that, the lease keeps a
+// sibling that received the redelivery on the lock until the teardown has
+// written what a resume reads. A refresh that fails still cancels runCtx
+// (heartbeat).
+func (r *Runner) startLeaseHeartbeat(runCtx context.Context, runCancel context.CancelCauseFunc, runID string, lock store.RunLock, delivery progressReporter) (stop func()) {
 	hbCtx, hbCancel := context.WithCancel(context.WithoutCancel(runCtx))
+	stopCeiling := context.AfterFunc(runCtx, func() {
+		t := time.NewTimer(unwindLeaseCeiling)
+		defer t.Stop()
+		select {
+		case <-hbCtx.Done():
+		case <-t.C:
+			r.cfg.Logger.Warn("runner: run %s still unwinds %s after its cancellation — its lease is no longer held", runID, unwindLeaseCeiling)
+			hbCancel()
+		}
+	})
 	done := make(chan struct{})
 	errtrack.Go("runner.heartbeat", func() { r.heartbeat(hbCtx, runCancel, lock, delivery, done) })
 	return func() {
+		stopCeiling()
 		hbCancel()
 		<-done
 	}

@@ -49,7 +49,7 @@ func TestLeaseHeartbeat_holdsTheLeaseThroughACancelledRunsTeardown(t *testing.T)
 		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
 		runCtx, runCancel := context.WithCancelCause(context.Background())
 		defer runCancel(nil)
-		stop := r.startLeaseHeartbeat(runCtx, runCancel, lease, nopProgress{})
+		stop := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
 		time.Sleep(30 * time.Second)
 		runCancel(runtime.ErrRunInterrupted)
 		atCancel := lease.count()
@@ -77,12 +77,39 @@ func TestLeaseHeartbeat_aFailedRefreshInterruptsTheRun(t *testing.T) {
 		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
 		runCtx, runCancel := context.WithCancelCause(context.Background())
 		defer runCancel(nil)
-		stop := r.startLeaseHeartbeat(runCtx, runCancel, lease, nopProgress{})
+		stop := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
 		defer stop()
 		time.Sleep(30 * time.Second)
 		synctest.Wait()
 		if !errors.Is(context.Cause(runCtx), runtime.ErrRunInterrupted) {
 			t.Fatalf("after a failed refresh the run's cause is %v, want interrupted", context.Cause(runCtx))
+		}
+	})
+}
+
+// TestLeaseHeartbeat_aStuckUnwindReleasesTheLeaseAtItsCeiling: an engine
+// that has not returned long after its run's cancellation — past its
+// sandbox teardown's own budget — no longer holds the run: the lease lapses
+// for a sibling instead of lasting until the pod is killed.
+func TestLeaseHeartbeat_aStuckUnwindReleasesTheLeaseAtItsCeiling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lease := &countingLease{}
+		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
+		runCtx, runCancel := context.WithCancelCause(context.Background())
+		defer runCancel(nil)
+		stop := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		defer stop()
+		runCancel(runtime.ErrRunInterrupted)
+		time.Sleep(unwindLeaseCeiling + time.Minute)
+		synctest.Wait()
+		atCeiling := lease.count()
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if atCeiling == 0 {
+			t.Fatal("no refresh during the unwind — this proves nothing")
+		}
+		if after := lease.count(); after != atCeiling {
+			t.Fatalf("%d refresh(es) past the ceiling of an unwind that never returns, want none", after-atCeiling)
 		}
 	})
 }
