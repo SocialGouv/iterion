@@ -858,8 +858,13 @@ Semantics worth knowing:
     Anthropic-native credential — a Claude forfait in any window state, or an
     `anthropic` key the launch's bot may spend; beside one, it funds only the
     routes that name its provider. A z.ai-only deployment keeps serving every
-    node; a deployment holding a Claude forfait never serves its claude nodes
-    GLM, not even while the forfait is closed — the run parks on the forfait.
+    node; a shared tier holding a Claude forfait never serves its claude
+    nodes GLM from its own facade key, not even while the forfait is closed —
+    the run parks on the forfait. The rule is **per tier**: a team whose own
+    Claude forfait is closed, or an org's, falls through to a later tier's
+    z.ai key when that tier holds no Claude credential — the capacity
+    fall-through — and `never` on the shared tiers is what keeps a facade
+    key off the default there too.
     `never` keeps a facade key off the default everywhere (the routes that
     name it only); `always` lets it take any free family, so a closed forfait
     falls through to it. A tier whose store cannot answer "do you hold a
