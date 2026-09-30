@@ -214,3 +214,92 @@ func f() {
 		})
 	}
 }
+
+// The elided walk marks a container's DIRECT elements as specs. Descending
+// past them reaches a spec's own field values — and ExecutorSpec has
+// value-struct-slice fields, so a perfectly ordinary literal was judged on
+// its `RunFallback` element and accused of not setting BotID two lines up.
+// Two independent review passes found this shape; it is the same class as
+// the give-up-over-assignment accusation, one round later.
+func TestTheElidedWalkStopsAtTheSpecsItself(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		src     string
+		missing bool
+	}{
+		{
+			// The false accusation: correct code with a nested literal in
+			// one of the spec's own fields.
+			name: "an elided container whose spec holds a nested literal",
+			src: `package p
+import (
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runview"
+)
+func f() []runview.ExecutorSpec {
+	return []runview.ExecutorSpec{{
+		BotID:       "b",
+		RunFallback: []ir.Fallback{{Backend: "claude_code"}},
+	}}
+}`,
+		},
+		{
+			// …and the detection it must not cost: the same shape with the
+			// field missing is still caught.
+			name: "the same shape with the field missing",
+			src: `package p
+import (
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runview"
+)
+func f() []runview.ExecutorSpec {
+	return []runview.ExecutorSpec{{
+		RunID:       "r",
+		RunFallback: []ir.Fallback{{Backend: "claude_code"}},
+	}}
+}`,
+			missing: true,
+		},
+		{
+			// Two container levels, field set: judged, not accused.
+			name: "two container levels, field set",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f() [][]runview.ExecutorSpec {
+	return [][]runview.ExecutorSpec{{{BotID: "b"}}}
+}`,
+		},
+		{
+			name: "two container levels, field missing",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f() [][]runview.ExecutorSpec {
+	return [][]runview.ExecutorSpec{{{RunID: "r"}}}
+}`,
+			missing: true,
+		},
+		{
+			name: "a map of slices of specs, field set",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f() map[string][]runview.ExecutorSpec {
+	return map[string][]runview.ExecutorSpec{"a": {{BotID: "b"}}}
+}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "x.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got, _ := executorSpecMissesField(file, "BotID")
+			if got != tc.missing {
+				verb := "accused correct code"
+				if tc.missing {
+					verb = "did not see a site that omits the field"
+				}
+				t.Errorf("missing = %v, want %v — the sweep %s", got, tc.missing, verb)
+			}
+		})
+	}
+}

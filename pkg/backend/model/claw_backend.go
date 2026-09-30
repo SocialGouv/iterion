@@ -267,9 +267,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
 			NodeID: task.NodeID, Backend: delegate.BackendClaw,
 			Capability: "MCP " + refusedMCPServerSummary(task.MCPServersRefusedOnLauncher),
-			Remedy: refusedMCPRemedy(task.MCPServersRefusedOnLauncher) +
-				"; route the node to a backend that starts them inside the container (claude_code, pi), " +
-				"or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)",
+			// No tail appended: ServerNotStartableError.Error() already ends
+			// with this exact advice, and saying it twice in one message
+			// reads as two different remedies.
+			Remedy: refusedMCPRemedy(task.MCPServersRefusedOnLauncher),
 		}
 	}
 
@@ -1637,7 +1638,29 @@ func refusedMCPRemedy(refused map[string]string) string {
 	if len(names) == 0 {
 		return "this launcher declined to start the MCP servers this node asked for"
 	}
-	return "claw connects MCP servers in the launcher process, and " + refused[names[0]]
+	// EVERY reason, not the alphabetically first. A node with no fallback
+	// shows this text and nothing else (see delegate.ErrCapabilityUnsupported),
+	// so a second server refused for a different reason — or carrying its own
+	// health `Cause` — had no other way to reach the operator.
+	reasons := make([]string, 0, len(names))
+	carriesAdvice := false
+	for _, name := range names {
+		reasons = append(reasons, refused[name])
+		if strings.Contains(refused[name], "inside the container") {
+			carriesAdvice = true
+		}
+	}
+	remedy := "claw connects MCP servers in the launcher process, and " + strings.Join(reasons, "; ")
+	// The typed refusal ends with the route-it-elsewhere advice — but only
+	// when it has no cause to report instead. So append it when no reason
+	// carried it, and never when one did: saying it twice reads as two
+	// remedies, and saying it never leaves a refused-AND-broken server with
+	// no way forward at all.
+	if !carriesAdvice {
+		remedy += "; route the node to a backend that starts them inside the container (claude_code, pi), " +
+			"or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)"
+	}
+	return remedy
 }
 
 func refuseToolsWithNoSandboxPlacement(task delegate.Task) error {

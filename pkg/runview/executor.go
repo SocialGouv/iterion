@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -758,11 +759,16 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 		// the CLI backends' MCP config, so a repository could name any
 		// variable the launcher holds and read it back out. Untrusted
 		// origins expand against nothing, keeping `${X:-default}`.
-		expand := ir.ExpandEnvWithDefault
+		// `dropped` records which references resolved to nothing, on BOTH
+		// paths. Recording it only on the suppression path meant the origin
+		// the launcher actually STARTS — an operator's own plugin server —
+		// got an emptied `command` with no StartErr and not one line of
+		// log, and the launcher then spawned "". That is verbatim the
+		// failure unusableAfterDroppedRefs exists to prevent, unmet for the
+		// only origin that reaches a spawn.
 		dropped := map[string]bool{}
-		if !expandsAgainstLauncherEnv(origin, policy) {
-			expand = expandWithoutLauncherEnv(name, server, logger, dropped)
-		}
+		suppressed := !expandsAgainstLauncherEnv(origin, policy)
+		expand := recordingExpander(name, server, logger, dropped, suppressed)
 		expandedArgs := make([]string, len(server.Args))
 		for i, a := range server.Args {
 			expandedArgs[i] = expand(a)
@@ -774,12 +780,15 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 			Command:   expand(server.Command),
 			Args:      expandedArgs,
 			URL:       expand(server.URL),
-			Headers:   server.Headers,
+			Headers:   maps.Clone(server.Headers),
 			// Env is already fully resolved at catalog-build time (plugin
 			// {{config.*}} placeholders expanded by loadPluginServers) — copy
 			// verbatim, no os.ExpandEnv (a secret value may legitimately
-			// contain a `$`).
-			Env:  server.Env,
+			// contain a `$`). CLONED, like Headers: this function is a pure
+			// function of (workflow, policy) so it can run again, and two
+			// catalogs sharing one map with the IR is the one thing about it
+			// that was not.
+			Env:  maps.Clone(server.Env),
 			Auth: mcp.FromIRAuth(server.Auth),
 		}
 		// A reference that was dropped can leave the config unusable — an
@@ -796,6 +805,21 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 		}
 	}
 	return catalog
+}
+
+// recordStartErr sets the reason a server will not start, without
+// overwriting one that is already there.
+//
+// Two writers reach this field — the dropped-`${VAR}` diagnostic and the
+// auth verdict — and the first is the one carrying a remedy the operator can
+// act on. The auth loop runs second, so assigning blindly replaced "your
+// ${VAR} emptied the command, here is how to fix it" with a bare oauth
+// complaint, in the `Cause` that travels into the refusal and the run event.
+func recordStartErr(cfg *mcp.ServerConfig, err error) {
+	if cfg == nil || err == nil || cfg.StartErr != nil {
+		return
+	}
+	cfg.StartErr = err
 }
 
 // prepareMCPCatalogAuth installs each server's AuthFunc and returns the
@@ -832,6 +856,14 @@ func unusableAfterDroppedRefs(cfg *mcp.ServerConfig, dropped map[string]bool) er
 	default:
 		return nil
 	}
+	// Two reasons a reference resolved to nothing, and the remedy differs.
+	// An untrusted server's config is not read from this process at all; an
+	// operator's is, and the variable simply is not there.
+	if cfg.Origin.OperatorControlled() {
+		return fmt.Errorf("%s after %v resolved to nothing in this process's environment: %s is an "+
+			"installed plugin's server, so its config IS expanded here — set the variable, or give the "+
+			"reference a `${VAR:-default}`", missing, names, cfg.Name)
+	}
 	return fmt.Errorf("%s after %v went unexpanded: the config of a server whose definition comes from %s is "+
 		"not expanded against this process's environment (%s, or give the reference a `${VAR:-default}`)",
 		missing, names, whoseDefinition(cfg.Origin), expandHatchAdvice())
@@ -856,10 +888,31 @@ func whoseDefinition(o mcp.Origin) string {
 	}
 }
 
-// expandWithoutLauncherEnv returns an expander that resolves `${X:-default}`
-// from the default alone and every other reference to the empty string,
-// naming each dropped variable once in the log — by NAME, never by value.
-func expandWithoutLauncherEnv(name string, server *ir.MCPServer, logger *iterlog.Logger, dropped map[string]bool) func(string) string {
+// recordingExpander returns an expander that records every reference which
+// resolved to nothing, by NAME and never by value.
+//
+// When `suppressed`, an untrusted server's references are not read from this
+// process's environment at all and each one is named in the log. Otherwise
+// the launcher's environment answers — and a reference it does not hold
+// still resolved to nothing, which is exactly as unusable. Both cases feed
+// `dropped`, so unusableAfterDroppedRefs speaks for either.
+func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger, dropped map[string]bool, suppressed bool) func(string) string {
+	if !suppressed {
+		return func(s string) string {
+			// ir.LookupEnv, not os.Getenv: the engine installs an env
+			// OVERLAY that is consulted before the process environment, and
+			// reading the process directly skipped it — the same expansion
+			// ExpandEnvWithDefault performs, with a note taken when it
+			// comes back empty.
+			return ir.ExpandWithDefault(s, func(v string) string {
+				value := ir.LookupEnv(v)
+				if value == "" {
+					dropped[v] = true
+				}
+				return value
+			})
+		}
+	}
 	return func(s string) string {
 		return ir.ExpandWithDefault(s, func(v string) string {
 			if !dropped[v] {
@@ -938,7 +991,7 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 			return nil, nil, fmt.Errorf("mcp: prepare oauth auth for %q: %w", name, err)
 		}
 		logger.Warn("mcp: server %q (origin: %s) will not start — %v", name, catalog[name].Origin, err)
-		catalog[name].StartErr = err
+		recordStartErr(catalog[name], err)
 	}
 
 	// The start policy goes in FIRST, so a reader of this slice sees the
@@ -968,8 +1021,23 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 			// built silently precisely so the log carries one verdict, the
 			// settled one.
 			fresh := expandMCPCatalog(wf, settled, logger)
+			// The same two arms as the build path above, deliberately: an
+			// OPERATOR server's malformed `auth:` is fatal there, and
+			// silently degrading it to a per-server StartErr here would
+			// hide it the day the auth verdict starts depending on the
+			// expanded config. It cannot today — `Auth` is copied
+			// unexpanded, so both passes reach the identical verdict and
+			// the build already aborted — which is exactly why the arms
+			// must not drift apart.
 			for name, err := range prepareMCPCatalogAuth(fresh, broker) {
-				fresh[name].StartErr = err
+				if fresh[name].Origin.OperatorControlled() {
+					logger.Warn("mcp: server %q (origin: %s) will not start, and an operator server's auth "+
+						"failure is fatal at build — reaching it here means the two passes disagree: %v",
+						name, fresh[name].Origin, err)
+				} else {
+					logger.Warn("mcp: server %q (origin: %s) will not start — %v", name, fresh[name].Origin, err)
+				}
+				recordStartErr(fresh[name], err)
 			}
 			return fresh
 		}),

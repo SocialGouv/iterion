@@ -1419,20 +1419,22 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		}
 	}
 
-	// Here, and nowhere earlier. Two things sit between resolution and this
-	// line that still take the node away from this route:
+	// Here, and nowhere earlier: a build that FAILS produced no tool set, so
+	// there is nothing to report about one.
 	//
-	//   - the build can fail after resolution (the persisted-resume guards
-	//     just above), and a node that never ran did not run degraded;
-	//   - a CARRIED refusal refuses the whole claw route by type at Execute,
-	//     so the node is served by a `fallbacks:` route that starts those
-	//     servers INSIDE the container — with the very tools the event would
-	//     claim it ran without.
-	//
-	// The refusal is read off the task, which is the value that travels.
-	if len(task.MCPServersRefusedOnLauncher) == 0 {
-		e.reportMCPDegrades(f.id, degraded)
-	}
+	// And nowhere later, deliberately. The report's subject is this TASK's
+	// tool set — "these servers' tools are not in it" — which is settled
+	// here and stays true whatever becomes of the task. The earlier version
+	// claimed the NODE ran without them, and that claim belongs to no
+	// build-time predicate: claw declines a task at five separate points in
+	// Execute, and under any of them a `fallbacks:` route may serve the node
+	// with those very servers started in its container. Gating on the one
+	// decline this function can see (a carried refusal) left the other four
+	// lying, and suppressed a server that had simply FAILED TO BOOT — a fact
+	// about the server that no route repairs. Whether the node ended up with
+	// the tools is a question the timeline answers, with the fallback event
+	// beside this one.
+	e.reportMCPDegrades(f.id, degraded)
 	return task, nil
 }
 

@@ -550,3 +550,122 @@ func TestTheDroppedVariableIsWarnedAboutOnce_BySettledVerdict(t *testing.T) {
 		}
 	})
 }
+
+// The emptiness diagnostic used to fire only on the suppression path — so
+// the ONE origin the launcher actually starts, an installed plugin's server,
+// got an emptied `command` with no StartErr and not one line of log, and the
+// launcher then spawned "". That is verbatim the failure this diagnostic
+// exists to prevent, unmet for the only origin that reaches a spawn, while
+// an untrusted server one line away got the full message.
+func TestAnOperatorServerEmptiedByAnUnsetVariableSaysSo(t *testing.T) {
+	newWorkflow := func(origin mcp.Origin) *ir.Workflow {
+		return &ir.Workflow{
+			Name: "w",
+			ResolvedMCPServers: map[string]*ir.MCPServer{
+				"s": {
+					Name: "s", Origin: string(origin), Transport: ir.MCPTransportStdio,
+					Command: "${ITERION_TEST_MCP_DEFINITELY_UNSET}",
+				},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		origin mcp.Origin
+		// what the message must name, whichever origin it is
+		wants []string
+	}{
+		{mcp.OriginPlugin, []string{"ITERION_TEST_MCP_DEFINITELY_UNSET", "installed plugin", "${VAR:-default}"}},
+		{mcp.OriginProject, []string{"ITERION_TEST_MCP_DEFINITELY_UNSET", "not expanded"}},
+	} {
+		t.Run(string(tc.origin), func(t *testing.T) {
+			m, _, err := buildMCPManager(newWorkflow(tc.origin), t.TempDir(),
+				iterlog.Nop(), mcp.StartOperatorServersOnly)
+			if err != nil || m == nil {
+				t.Fatalf("build: %v", err)
+			}
+			cfg, ok := m.ServerConfig("s")
+			if !ok {
+				t.Fatal("the server left the catalog")
+			}
+			if cfg.Command != "" {
+				t.Fatalf("premise broken: an unset variable must empty the command, got %q", cfg.Command)
+			}
+			if cfg.StartErr == nil {
+				t.Fatalf("an emptied command must carry its reason, or the launcher spawns \"\" and the " +
+					"operator reads \"protocol_or_startup_failure, raw diagnostics withheld\"")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(cfg.StartErr.Error(), want) {
+					t.Errorf("the reason must name %q: %v", want, cfg.StartErr)
+				}
+			}
+		})
+	}
+}
+
+// expandMCPCatalog is documented as a pure function of (workflow, policy) so
+// it can run again when the sandbox settles. Two catalogs sharing one map
+// with the IR was the one thing about it that was not.
+func TestTheCatalogDoesNotShareItsMapsWithTheIR(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"s": {
+				Name: "s", Origin: string(mcp.OriginPlugin), Transport: ir.MCPTransportHTTP,
+				URL:     "https://example.invalid/mcp",
+				Headers: map[string]string{"X-A": "1"},
+				Env:     map[string]string{"E": "1"},
+			},
+		},
+	}
+	build := expandMCPCatalog(wf, mcp.StartAllServers, iterlog.Nop())
+	settle := expandMCPCatalog(wf, mcp.StartOperatorServersOnly, iterlog.Nop())
+
+	build["s"].Headers["CANARY"] = "written-by-the-build-pass"
+	build["s"].Env["CANARY"] = "written-by-the-build-pass"
+
+	if _, leaked := settle["s"].Headers["CANARY"]; leaked {
+		t.Error("the two catalogs share one Headers map; a mutation in either reaches the other and the IR")
+	}
+	if _, leaked := settle["s"].Env["CANARY"]; leaked {
+		t.Error("the two catalogs share one Env map; a mutation in either reaches the other and the IR")
+	}
+	if _, leaked := wf.ResolvedMCPServers["s"].Headers["CANARY"]; leaked {
+		t.Error("the catalog wrote into the workflow's own Headers map")
+	}
+}
+
+// Two writers reach StartErr: the dropped-`${VAR}` diagnostic, which
+// carries a remedy, and the auth verdict, which runs second. Assigning
+// blindly replaced the actionable reason with a bare oauth complaint — in
+// the `Cause` that travels into the typed refusal and into the run event.
+func TestTheRemedyBearingReasonSurvivesTheAuthVerdict(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"repo": {
+				Name: "repo", Origin: string(mcp.OriginWorkflow), Transport: ir.MCPTransportHTTP,
+				// Both problems at once: an unexpandable url AND a
+				// malformed auth block.
+				URL:  "${ITERION_TEST_MCP_ABSENT_URL}",
+				Auth: &ir.MCPAuth{Type: "oauth2"},
+			},
+		},
+	}
+	for _, policy := range []mcp.StartPolicy{mcp.StartOperatorServersOnly, mcp.StartAllServers} {
+		t.Run(policy.String(), func(t *testing.T) {
+			m, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), policy)
+			if err != nil || m == nil {
+				t.Fatalf("build: %v", err)
+			}
+			cfg, _ := m.ServerConfig("repo")
+			if cfg.StartErr == nil {
+				t.Fatal("premise broken: this server cannot start for two reasons; one must be recorded")
+			}
+			if !strings.Contains(cfg.StartErr.Error(), "ITERION_TEST_MCP_ABSENT_URL") {
+				t.Errorf("the reason with a remedy must be the one that survives, got: %v", cfg.StartErr)
+			}
+		})
+	}
+}

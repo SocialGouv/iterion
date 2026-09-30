@@ -423,6 +423,19 @@ func (e *ClawExecutor) bareNameMayBelongToARefusedServer(node ir.Node, name stri
 	if _, isMCP := tool.MCPServerOf(name); isMCP || strings.Contains(name, ".") || strings.Contains(name, "__") {
 		return err
 	}
+	// The SANITIZED spelling iterion itself advertises to the provider
+	// (`mcp_<server>_<tool>`) carries no separator this check sees, and the
+	// advice below would propose `mcp.<server>.mcp_repo_search` — a name the
+	// registry can never serve. Leave it alone.
+	if strings.HasPrefix(name, "mcp_") {
+		return err
+	}
+	// Only the registry's "unknown tool" earns the advice. Wrapping every
+	// failure sent a node-scope refusal of an UNRELATED server, and a
+	// one-character typo of a builtin, to read the target repo's `.mcp.json`.
+	if !strings.Contains(err.Error(), "unknown tool") {
+		return err
+	}
 	policy := e.mcpManager.StartPolicy()
 	var servers []string
 	for _, server := range nodeActiveMCPServers(node) {

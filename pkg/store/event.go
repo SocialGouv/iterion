@@ -614,10 +614,13 @@ const (
 	// reason (delegate.FallbackCategory), error.
 	EventSessionDegraded EventType = "session_degraded"
 	// EventMCPServerDegraded records an MCP server dropped when the
-	// executor spliced the node's active servers into its tool set: it
-	// failed to boot, or this launcher may not start it for a sandboxed
-	// run. The node runs on WITHOUT that server's tools instead of
-	// failing, because the other backends already degrade per-server
+	// executor spliced the node's active servers into a task's tool set:
+	// it failed to boot, or this launcher may not start it for a sandboxed
+	// run. The claim is about THAT TASK's tools, not about what the node
+	// finally ran with — claw may decline the task and a `fallbacks:`
+	// route may start those servers in its container, which the timeline
+	// shows as a model_fallback event beside this one. The task is built
+	// WITHOUT that server's tools rather than failing, because the other backends already degrade per-server
 	// (claude_code's CLI skips a server it cannot start; pi bounds each
 	// connect with a timeout) — failing the run here was a claw-path
 	// parity defect that let one unbootable repo server (e.g. a

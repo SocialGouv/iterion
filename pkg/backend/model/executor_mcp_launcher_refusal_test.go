@@ -555,13 +555,19 @@ func TestNoDegradeEventWhenTheBuildFailsAnyway(t *testing.T) {
 	}
 }
 
-// "Resolution succeeded" is not "the node will run". A CARRIED refusal
-// refuses the whole claw route by type at Execute, so the node is served by a
-// `fallbacks:` route that starts those servers INSIDE the container — with
-// the very tools a degrade event would claim it ran without. One ambient
-// server dropped, one named server refused: the record must carry the
-// refusal and nothing else.
-func TestNoDegradeEventWhenTheWholeClawRouteIsRefused(t *testing.T) {
+// A task whose claw route will be REFUSED still reports the servers its
+// tool set lacks, and carries the refusal beside it. Both facts, because
+// they are different facts: the task genuinely has no tools for `other`,
+// and `repo`'s refusal will send the node to a route that starts them in
+// its container.
+//
+// An earlier version suppressed the event here, on the theory that a
+// carried refusal means the node does not run degraded. That theory made
+// the event's subject the NODE's outcome, which no build-time predicate
+// can know — claw declines a task at five separate points in Execute, and
+// the gate saw only one of them. Worse, it suppressed a server that had
+// merely FAILED TO BOOT, a fact about the server that no route repairs.
+func TestARefusedRouteStillReportsTheToolsItsTaskLacks(t *testing.T) {
 	tr := tool.NewRegistry()
 	for _, name := range []string{"bash", "todo_write"} {
 		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
@@ -595,18 +601,90 @@ func TestNoDegradeEventWhenTheWholeClawRouteIsRefused(t *testing.T) {
 		t.Fatalf("a refusal must not fail the build: %v", err)
 	}
 	if _, ok := task.MCPServersRefusedOnLauncher["repo"]; !ok {
-		t.Fatalf("premise broken: the named server's refusal must be carried: %v", task.MCPServersRefusedOnLauncher)
+		t.Fatalf("the named server's refusal must be carried: %v", task.MCPServersRefusedOnLauncher)
 	}
-	// And the premise's other half: that map really does refuse the route.
+	// The route really is refused — the premise of the retired theory.
 	_, execErr := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).Execute(context.Background(), task)
 	var unsupported *delegate.ErrCapabilityUnsupported
 	if !errors.As(execErr, &unsupported) {
 		t.Fatalf("premise broken: the carried refusal must refuse the whole route, got %v", execErr)
 	}
 
-	if len(degraded) != 0 {
-		t.Errorf("the claw route never runs, and the fallback that does starts these servers in the "+
-			"container — so nothing may record the node as having run without them: %+v", degraded)
+	// …and the ambient server's absence from this task's tools is recorded
+	// anyway, because that is what the event claims.
+	if len(degraded) != 1 || degraded[0].Server != "other" {
+		t.Errorf("the task's tool set lacks `other`; that must be in the record whatever becomes of the "+
+			"task: %+v", degraded)
+	}
+	// The server the node NAMED is not reported here: its refusal travels
+	// on the task instead, so the two facts are not double-counted.
+	for _, d := range degraded {
+		if d.Server == "repo" {
+			t.Errorf("a named server's refusal is carried, not degraded: %+v", d)
+		}
+	}
+}
+
+// A server that merely FAILED TO BOOT is reported even when an unrelated
+// server was refused. Its health is nobody's route to repair: the
+// `claude_code` fallback forwards it and its CLI skips it silently, so the
+// suppressed event was the only trace that existed.
+func TestABrokenServerIsReportedEvenWhenAnotherWasRefused(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, name := range []string{"bash", "todo_write"} {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			// Refused by policy, and NAMED by the node, so its refusal is carried.
+			"repo": {Name: "repo", Origin: mcp.OriginProject, Transport: mcp.TransportStdio, Command: "/bin/echo"},
+			// The policy ALLOWS this one; it simply cannot boot.
+			"pluginsrv": {Name: "pluginsrv", Origin: mcp.OriginPlugin, Transport: mcp.TransportStdio,
+				Command: "/nonexistent/iterion-test-mcp-server"},
+		}, mcp.WithStartPolicy(mcp.StartOperatorServersOnly)),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo", "pluginsrv"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools:            []string{"bash", "mcp.repo.search"},
+		activeMCPServers: []string{"repo", "pluginsrv"},
+	}
+
+	task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err != nil {
+		t.Fatalf("a refusal must not fail the build: %v", err)
+	}
+	if _, ok := task.MCPServersRefusedOnLauncher["repo"]; !ok {
+		t.Fatalf("premise broken: `repo`'s refusal must be carried: %v", task.MCPServersRefusedOnLauncher)
+	}
+
+	var boot *MCPServerDegradedInfo
+	for i := range degraded {
+		if degraded[i].Server == "pluginsrv" {
+			boot = &degraded[i]
+		}
+	}
+	if boot == nil {
+		t.Fatalf("the broken server has no other trace anywhere — the claude_code fallback forwards it and "+
+			"its CLI skips it silently: %+v", degraded)
+	}
+	if boot.Refused {
+		t.Errorf("this one was ALLOWED and could not boot; calling it refused sends the operator after the "+
+			"wrong thing: %+v", boot)
+	}
+	if boot.Origin != mcp.OriginPlugin.String() {
+		t.Errorf("origin = %q, want %q", boot.Origin, mcp.OriginPlugin)
 	}
 }
 
@@ -670,5 +748,98 @@ func TestTheDegradeEventTakesItsOriginFromTheRefusal(t *testing.T) {
 	if degraded[0].Origin != notStartable.Origin.String() {
 		t.Errorf("origin = %q but the refusal that produced the event says %q — one report, two clocks",
 			degraded[0].Origin, notStartable.Origin)
+	}
+}
+
+// A node with no `fallbacks:` shows the remedy text and nothing else, so it
+// must carry EVERY refused server's reason — one of them may be the one with
+// a health cause attached. And it must not say the same thing twice: the
+// typed refusal already ends with the route-it-elsewhere advice.
+func TestTheRemedyCarriesEveryReasonExactlyOnce(t *testing.T) {
+	// The fixtures are built by the REAL producer, not hand-written: the
+	// typed refusal appends the route-it-elsewhere advice only when it has
+	// no cause to report instead, and a hand-written string would not know
+	// that. One refused-and-broken server, one merely refused.
+	broken := (&mcp.ServerNotStartableError{
+		Server: "aaa", Origin: mcp.OriginProject, Policy: mcp.StartOperatorServersOnly,
+		Cause: errors.New("auth: TOKEN is unset"),
+	}).Error()
+	healthy := (&mcp.ServerNotStartableError{
+		Server: "zzz", Origin: mcp.OriginWorkflow, Policy: mcp.StartOperatorServersOnly,
+	}).Error()
+
+	for _, tc := range []struct {
+		name    string
+		refused map[string]string
+		wants   []string
+	}{
+		{
+			name:    "both, one of them broken",
+			refused: map[string]string{"aaa": broken, "zzz": healthy},
+			wants:   []string{"aaa", "zzz", "TOKEN is unset"},
+		},
+		{
+			// Only a broken one: its message carries no advice of its own,
+			// so the remedy must supply it or the operator has none.
+			name:    "only a refused-and-broken server",
+			refused: map[string]string{"aaa": broken},
+			wants:   []string{"aaa", "TOKEN is unset", "inside the container"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).
+				Execute(context.Background(), delegate.Task{NodeID: "n", MCPServersRefusedOnLauncher: tc.refused})
+			var unsupported *delegate.ErrCapabilityUnsupported
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("expected a typed refusal, got %v", err)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(unsupported.Remedy, want) {
+					t.Errorf("the remedy must carry %q — a node with no fallback sees nothing else: %q",
+						want, unsupported.Remedy)
+				}
+			}
+			// …and the advice exactly once, however many reasons there are.
+			if n := strings.Count(unsupported.Remedy, "inside the container"); n != 1 {
+				t.Errorf("the route-it-elsewhere advice must appear once, got %d: %q", n, unsupported.Remedy)
+			}
+		})
+	}
+}
+
+// The bare-name advice is for a name the REGISTRY could not resolve. It used
+// to wrap every error out of resolution, so a node-scope refusal of an
+// unrelated server, and a one-character typo of a builtin, both got told to
+// go and read the target repository's `.mcp.json`.
+func TestTheBareNameAdviceOnlyAnswersAnUnknownTool(t *testing.T) {
+	e := refusingExecutor(t)
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+
+	for _, tc := range []struct {
+		name  string
+		tools []string
+		wants bool
+	}{
+		// A bare name nothing resolves, with a refused server in reach.
+		{"a plausible MCP shorthand", []string{"bash", "search"}, true},
+		// The sanitized spelling iterion itself advertises: the advice
+		// would propose `mcp.<server>.mcp_repo_search`, which the registry
+		// can never serve.
+		{"the sanitized spelling", []string{"bash", "mcp_repo_search"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := backendFields{
+				id: "n", model: "anthropic/claude-opus-5",
+				tools: tc.tools, activeMCPServers: []string{"repo"},
+			}
+			_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+			if err == nil {
+				t.Fatal("premise broken: an unresolvable name must fail the build")
+			}
+			got := strings.Contains(err.Error(), "so the refusal reaches the node's fallbacks")
+			if got != tc.wants {
+				t.Errorf("advice present = %v, want %v: %v", got, tc.wants, err)
+			}
+		})
 	}
 }

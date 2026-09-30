@@ -292,13 +292,20 @@ type EventHooks struct {
 	OnSessionDegraded func(nodeID string, info SessionDegradedInfo)
 
 	// OnMCPServerDegraded fires when one of a node's active MCP servers is
-	// dropped from its tool set — it failed to boot, or this launcher may
-	// not start it for a sandboxed run. Purely observational — the node
-	// runs on without that server's tools — but it is the only thing that
-	// puts "this node ran without a server it had" in the run record.
-	// `info.Source` says whether the node named the server or inherited
-	// it; a tool it names EXPLICITLY on a dead server still fails loud at
-	// resolution instead.
+	// dropped from the TASK's tool set — it failed to boot, or this
+	// launcher may not start it for a sandboxed run.
+	//
+	// That is the claim, and its scope is deliberate: the server's tools
+	// are not in this task. Whether the NODE ended up with them is a
+	// different question — claw may decline the task and a `fallbacks:`
+	// route may start those servers in its own container — and the
+	// timeline answers it with the fallback event beside this one. An
+	// earlier version asserted the node ran without them, which no
+	// build-time predicate can know.
+	//
+	// `info.Source` says whether the bot named the server or inherited it;
+	// a tool the node names EXPLICITLY on such a server is refused at
+	// execution instead, so its `fallbacks:` get their turn.
 	OnMCPServerDegraded func(nodeID string, info MCPServerDegradedInfo)
 
 	// OnNodeFinished fires after a node's executor returns successfully.
