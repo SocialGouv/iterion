@@ -220,10 +220,10 @@ func (c *S3Client) ListArtifactVersions(ctx context.Context, runID, nodeID strin
 	return versions, nil
 }
 
-// DeleteRun sweeps every artifact under artifacts/<runID>/, with
-// deleteUnder's batched, best-effort semantics: the joined error reports
-// every failure (callers can errors.Is against ctx.Err to distinguish
-// cancellation from backend errors), nil only when everything went.
+// DeleteRun sweeps every artifact under artifacts/<runID>/ through
+// deleteUnder: the joined error reports every failure (callers can
+// errors.Is against ctx.Err to distinguish cancellation from backend
+// errors), nil only when every listed object was deleted.
 func (c *S3Client) DeleteRun(ctx context.Context, runID string) error {
 	prefix, err := artifactRunPrefix(runID)
 	if err != nil {
@@ -765,7 +765,11 @@ func (c *S3Client) deleteUnder(ctx context.Context, prefix, what string) error {
 // listingStuck reports a truncated listing page that cannot move the
 // listing forward: one without a continuation token (the paginator would
 // end the listing early, as if complete) or one repeating the token of the
-// page before (the paginator would fetch the same page forever).
+// page before (the paginator would fetch the same page forever). A gateway
+// that ignored the token but minted a new one for every page would still
+// loop; no known S3 implementation does, and checking that keys advance
+// instead would misfire on S3 Express directory buckets, whose listings are
+// not sorted.
 func listingStuck(prefix string, page *s3.ListObjectsV2Output, prevToken string) error {
 	if !aws.ToBool(page.IsTruncated) {
 		return nil

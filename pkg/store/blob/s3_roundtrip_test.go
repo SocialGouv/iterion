@@ -50,6 +50,12 @@ type fakeS3 struct {
 	// stuckToken ignores the continuation token: every page starts over
 	// and carries the same token.
 	stuckToken bool
+	// dropContinuationToken serves a truncated continuation page without
+	// its NextContinuationToken.
+	dropContinuationToken bool
+	// refuseContinuations answers 403 AccessDenied to a listing that
+	// carries a continuation token (the first page still lists).
+	refuseContinuations bool
 	// lists counts the ListObjectsV2 requests served.
 	lists int
 }
@@ -151,6 +157,10 @@ func (f *fakeS3) handleList(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.lists++
 	ignorePrefix, refuse, stuck, pageSize := f.ignorePrefix, f.refuseLists, f.stuckToken, f.pageSize
+	dropToken := f.dropContinuationToken && after != ""
+	if f.refuseContinuations && after != "" {
+		refuse = true
+	}
 	f.mu.Unlock()
 	if refuse {
 		writeS3Error(w, http.StatusForbidden, "AccessDenied")
@@ -174,6 +184,9 @@ func (f *fakeS3) handleList(w http.ResponseWriter, r *http.Request) {
 			res.NextContinuationToken = res.Contents[len(res.Contents)-1].Key
 			if stuck {
 				res.NextContinuationToken = "stuck"
+			}
+			if dropToken {
+				res.NextContinuationToken = ""
 			}
 			break
 		}

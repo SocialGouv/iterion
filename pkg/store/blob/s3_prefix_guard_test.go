@@ -143,6 +143,7 @@ func TestS3SweepsNeverDeleteAListedKeyOutsideTheirPrefix(t *testing.T) {
 		t.Run(sw.name, func(t *testing.T) {
 			f, srv := newFakeS3(t, "b")
 			c := newTestS3Client(t, srv.URL, "b")
+			f.setPageSize(2)
 			seed(f, sw.own)
 			seed(f, foreignKeys...)
 			f.set(&f.ignorePrefix, true)
@@ -150,6 +151,9 @@ func TestS3SweepsNeverDeleteAListedKeyOutsideTheirPrefix(t *testing.T) {
 			within(t, 10*time.Second, sw.name, func() { err = sw.sweep(context.Background(), c) })
 			if !errors.Is(err, ErrListingOutsidePrefix) {
 				t.Fatalf("%s behind a gateway ignoring the prefix returned %v, want ErrListingOutsidePrefix", sw.name, err)
+			}
+			if n := f.listCount(); n != 1 {
+				t.Fatalf("%s listed %d pages of a gateway that ignored the prefix on the first, want 1: it does not stop there", sw.name, n)
 			}
 			requireNoForeignKeyInError(t, err)
 			for _, k := range foreignKeys {
@@ -233,6 +237,59 @@ func TestS3SweepsStopOnAListingThatCannotAdvance(t *testing.T) {
 	}
 }
 
+// A truncated page without a continuation token would end the SDK's
+// paginator as if the listing were complete: the sweep deletes that page,
+// then stops with the error rather than report the rest as swept.
+func TestS3SweepsStopOnATruncatedPageWithoutAToken(t *testing.T) {
+	for _, sw := range prefixSweeps() {
+		t.Run(sw.name, func(t *testing.T) {
+			f, srv := newFakeS3(t, "b")
+			c := newTestS3Client(t, srv.URL, "b")
+			f.setPageSize(2)
+			seed(f, sw.ownKeys()...)
+			f.set(&f.dropContinuationToken, true)
+			var err error
+			within(t, 10*time.Second, sw.name, func() { err = sw.sweep(context.Background(), c) })
+			if err == nil || !strings.Contains(err.Error(), "without a continuation token") {
+				t.Fatalf("%s behind a gateway dropping its continuation token returned %v, want the missing-token error", sw.name, err)
+			}
+			left := 0
+			for _, k := range sw.ownKeys() {
+				if f.has(k) {
+					left++
+				}
+			}
+			if left != 1 || f.listCount() != 2 {
+				t.Fatalf("%s left %d of its keys after %d listings, want 1 after 2 (the two pages listed swept, then a stop)", sw.name, left, f.listCount())
+			}
+		})
+	}
+}
+
+// A sweep that fails midway reports every failure: the objects it could
+// not delete on the pages it got through, and the listing that stopped it.
+func TestS3SweepsReportEveryFailureOfAPartialSweep(t *testing.T) {
+	for _, sw := range prefixSweeps() {
+		t.Run(sw.name, func(t *testing.T) {
+			f, srv := newFakeS3(t, "b")
+			c := newTestS3Client(t, srv.URL, "b")
+			f.setPageSize(2)
+			seed(f, sw.ownKeys()...)
+			f.set(&f.refuseDeletes, true)
+			f.set(&f.refuseContinuations, true)
+			err := sw.sweep(context.Background(), c)
+			if err == nil {
+				t.Fatalf("%s with deletes and the second page refused returned nil", sw.name)
+			}
+			for _, want := range append(sw.ownKeys()[:2], " page: ") {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("%s: the error does not report %q: %v", sw.name, want, err)
+				}
+			}
+		})
+	}
+}
+
 // Cancellation stops a sweep before it deletes anything, and callers can
 // tell it from a backend failure.
 func TestS3SweepsStopOnACancelledContext(t *testing.T) {
@@ -299,6 +356,25 @@ func TestS3ListingsRefuseAKeyOutsideTheirPrefix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A listing whose truncated page lost its continuation token fails rather
+// than return the first pages as the whole listing.
+func TestS3ListingsStopOnATruncatedPageWithoutAToken(t *testing.T) {
+	ctx := context.Background()
+	f, srv := newFakeS3(t, "b")
+	c := newTestS3Client(t, srv.URL, "b")
+	f.setPageSize(2)
+	for i := 0; i < 5; i++ {
+		seed(f, fmt.Sprintf("artifacts/run-a/plan/%d.json", i), fmt.Sprintf("runfiles/run-a/out/%d.txt", i))
+	}
+	f.set(&f.dropContinuationToken, true)
+	if v, err := c.ListArtifactVersions(ctx, "run-a", "plan"); err == nil || !strings.Contains(err.Error(), "without a continuation token") {
+		t.Fatalf("ListArtifactVersions behind a gateway dropping its token = %v, %v; want the missing-token error", v, err)
+	}
+	if files, err := c.ListRunFiles(ctx, "run-a"); err == nil || !strings.Contains(err.Error(), "without a continuation token") {
+		t.Fatalf("ListRunFiles behind a gateway dropping its token = %v, %v; want the missing-token error", files, err)
 	}
 }
 
