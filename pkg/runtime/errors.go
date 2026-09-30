@@ -102,6 +102,10 @@ type RuntimeError struct {
 	NodeID  string    // node where the error originated (may be empty)
 	Hint    string    // suggested resolution for the user
 	Cause   error     // underlying error (may be nil)
+	// AlsoNeedsForce marks a refusal of its own consent that also names a
+	// change only --force accepts (WithSourceChange,
+	// WithArtifactContractChange): the resume needs both.
+	AlsoNeedsForce bool
 }
 
 func (e *RuntimeError) Error() string {

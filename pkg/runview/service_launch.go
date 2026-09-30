@@ -541,17 +541,31 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	// source would otherwise waive a loss the operator was never shown.
 	hash := pfSources.Hash
 	sourceErr, legacy := resumeSourceRefusal(r, hash, pfBundle, identityErr)
-	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
+	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
 		return alsoNamingSourceChange(err, sourceErr)
 	}
-	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
+	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force, spec.AcceptScratchLoss); err != nil {
 		return alsoNamingSourceChange(err, sourceErr)
 	}
 	if sourceErr != nil && !spec.Force {
-		return sourceErr
+		return s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
 	}
 	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
+	if errors.Is(err, runtime.ErrArtifactContractIncompatible) && !spec.Force {
+		return s.scratchBeforeForce(parent, r, wf, spec, runtime.WithArtifactContractChange, err)
+	}
 	return err
+}
+
+// scratchBeforeForce is a refusal --force accepts — a changed source, an
+// artifact contract — shown after any loss of the scratch, which --force
+// does not accept: judged even while the latest execution may still be
+// banking, so the operator sees every consent the resume needs at once.
+func (s *Service) scratchBeforeForce(ctx context.Context, r *store.Run, wf *ir.Workflow, spec ResumeSpec, naming func(error) error, forceable error) error {
+	if err := runtime.ResumeScratchRefusal(ctx, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
+		return naming(err)
+	}
+	return forceable
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -671,14 +685,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// would race every other writer).
 	hash := cs.Hash
 	sourceErr, legacy := resumeSourceRefusal(r, hash, resumeBundle, identityErr)
-	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
+	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
 		return nil, alsoNamingSourceChange(err, sourceErr)
 	}
-	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
+	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force, spec.AcceptScratchLoss); err != nil {
 		return nil, alsoNamingSourceChange(err, sourceErr)
 	}
 	if sourceErr != nil && !spec.Force {
-		return nil, sourceErr
+		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
 	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
 	validateArtifacts := runtime.ValidateResumeArtifactsPreflight
@@ -692,6 +706,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// A legacy digest waives the revision the run's artifacts were published
 	// under, exactly as --force would: nothing else changed.
 	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
+	if errors.Is(err, runtime.ErrArtifactContractIncompatible) && !spec.Force {
+		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithArtifactContractChange, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -825,7 +842,8 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// operator-added skill survive the SECOND turn of a conversation:
 		// the dock drives one resume per message.
 		launchExtras{
-			loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors,
+			acceptScratchLoss: spec.AcceptScratchLoss,
+			loopBudgetGuard:   spec.LoopBudgetGuard, supervisors: spec.Supervisors,
 			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
 			artifactResumePreflight: artifactPreflight,
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
@@ -1095,6 +1113,9 @@ func (s *Service) spawnRun(
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
 	}
+	if ex.acceptScratchLoss {
+		opts = append(opts, runtime.WithAcceptScratchLoss(true))
+	}
 	if promote != nil {
 		opts = append(opts, runtime.WithAttachmentPromote(promote))
 	}
@@ -1272,6 +1293,9 @@ type finalizationOpts struct {
 // (s.workDir / s.dailyCap) when set; the zero value inherits it. Resume
 // and subbot launches pass the zero value.
 type launchExtras struct {
+	// acceptScratchLoss is a resume's consent to go on although the run's
+	// scratch does not travel (ResumeSpec.AcceptScratchLoss).
+	acceptScratchLoss bool
 	// compiled is what the launch's compile read — the unit's files — so
 	// the run records them from the same read as its identity: a studio
 	// run's FilePath is the store's copy of its main, beside which no

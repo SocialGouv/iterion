@@ -46,6 +46,9 @@ type runnerSpec struct {
 	// Resume only.
 	Answers map[string]string
 	Force   bool
+	// AcceptScratchLoss forwards --accept-scratch-loss: the consent Force
+	// never gives.
+	AcceptScratchLoss bool
 }
 
 // buildRunnerArgs assembles the CLI argv for a runner spec. Map-valued
@@ -86,6 +89,9 @@ func buildRunnerArgs(spec runnerSpec) ([]string, error) {
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
 		if spec.Force {
 			args = append(args, "--force")
+		}
+		if spec.AcceptScratchLoss {
+			args = append(args, "--accept-scratch-loss")
 		}
 		for _, k := range sortedKeys(spec.Answers) {
 			args = append(args, "--answer", k+"="+spec.Answers[k])

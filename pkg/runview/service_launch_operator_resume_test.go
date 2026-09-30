@@ -205,11 +205,14 @@ workflow operator_resume:
 	if r, _ := svc.store.LoadRun(context.Background(), runID); r.Status != store.RunStatusPausedOperator {
 		t.Fatalf("status after the refusal = %q, want paused_operator", r.Status)
 	}
-	if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath, Force: true}); err != nil {
-		t.Fatalf("forced Resume: %v", err)
+	if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath, Force: true}); !errors.As(err, &rt) || rt.Code != runtime.ErrCodeScratchNotPortable || publisher.resumeCalls != 0 {
+		t.Fatalf("a forced Resume: %v, published %d, want the scratch's loss still refused — --force does not accept it", err, publisher.resumeCalls)
+	}
+	if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath, AcceptScratchLoss: true}); err != nil {
+		t.Fatalf("a Resume accepting the scratch's loss: %v", err)
 	}
 	if publisher.resumeCalls != 1 {
-		t.Fatalf("SubmitResume calls after the forced resume = %d, want 1", publisher.resumeCalls)
+		t.Fatalf("SubmitResume calls after the accepting resume = %d, want 1", publisher.resumeCalls)
 	}
 }
 

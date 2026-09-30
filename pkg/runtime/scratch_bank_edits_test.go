@@ -169,7 +169,7 @@ func editableWorkflow(mid ir.Node) *ir.Workflow {
 // B1); the resume restores B1, runs mid, parks at gate2, and its pod is gone at
 // teardown — an unknown record, B1 kept. It returns an engine maker on the same
 // store and driver, and where final records what it read.
-func lostSecondExecution(t *testing.T, s store.RunStore, runID string, launch *ir.Workflow, mid string, midWrites bool) (func(wf *ir.Workflow, hash string, force bool) *Engine, *string) {
+func lostSecondExecution(t *testing.T, s store.RunStore, runID string, launch *ir.Workflow, mid string, midWrites bool) (func(wf *ir.Workflow, hash string, force, accept bool) *Engine, *string) {
 	t.Helper()
 	ctx := context.Background()
 	d := &podDriver{root: t.TempDir()}
@@ -196,25 +196,27 @@ func lostSecondExecution(t *testing.T, s store.RunStore, runID string, launch *i
 		*final = string(b)
 		return map[string]any{}, nil
 	})
-	engWith := func(wf *ir.Workflow, drv sandbox.Driver, hash string, force bool) *Engine {
-		e := New(wf, s, x, WithLogger(iterlog.Nop()), WithForceResume(force), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+	engWith := func(wf *ir.Workflow, drv sandbox.Driver, hash string, force, accept bool) *Engine {
+		e := New(wf, s, x, WithLogger(iterlog.Nop()), WithForceResume(force), WithAcceptScratchLoss(accept), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
 			"docker": func() (sandbox.Driver, error) { return drv, nil },
 		}))
 		e.workflowHash = hash
 		e.scratchBankRetryPause = time.Millisecond
 		return e
 	}
-	if err := engWith(launch, d, "sha256:launch", false).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := engWith(launch, d, "sha256:launch", false, false).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
-	if err := engWith(launch, lostPodDriver{podDriver: d, lost: 1}, "sha256:launch", false).Resume(ctx, runID, map[string]any{"ok": true}); !errors.Is(err, ErrRunPaused) {
+	if err := engWith(launch, lostPodDriver{podDriver: d, lost: 1}, "sha256:launch", false, false).Resume(ctx, runID, map[string]any{"ok": true}); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("second execution: want ErrRunPaused at gate2, got %v", err)
 	}
 	banked := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
 	if len(banked) != 2 || banked[0].Data["banked"] != true || banked[1].Data["unknown"] != true {
 		t.Fatalf("precondition: want B1 then an unknown teardown, got %v", dataOf(banked))
 	}
-	return func(wf *ir.Workflow, hash string, force bool) *Engine { return engWith(wf, d, hash, force) }, final
+	return func(wf *ir.Workflow, hash string, force, accept bool) *Engine {
+		return engWith(wf, d, hash, force, accept)
+	}, final
 }
 
 // TestResume_anEditedNodeKindDoesNotHideAStaleBank: where a node ran travels
@@ -232,7 +234,7 @@ func TestResume_anEditedNodeKindDoesNotHideAStaleBank(t *testing.T) {
 	if err := ValidateResumeScratch(ctx, s, mustLoadRun(t, s, runID), edited, false); !isScratchRefusal(err) {
 		t.Fatalf("the surface, edited source: %v, want the stale bank refused", err)
 	}
-	err := eng(edited, "sha256:edited", false).Resume(ctx, runID, map[string]any{"ok": true})
+	err := eng(edited, "sha256:edited", true, false).Resume(ctx, runID, map[string]any{"ok": true})
 	if !isScratchRefusal(err) || !strings.Contains(err.Error(), "the workflow source has also changed") {
 		t.Fatalf("the engine, edited source: %v, want the stale bank refused, naming the source change", err)
 	}
@@ -255,7 +257,7 @@ func TestResume_aRenamedNodeDoesNotRefuseAnExactBank(t *testing.T) {
 	if err := ValidateResumeScratch(ctx, s, mustLoadRun(t, s, runID), edited, false); err != nil {
 		t.Fatalf("the surface, edited source: %v, want the exact bank accepted", err)
 	}
-	if err := eng(edited, "sha256:edited", false).Resume(ctx, runID, map[string]any{"ok": true}); !IsWorkflowSourceChanged(err) {
+	if err := eng(edited, "sha256:edited", false, false).Resume(ctx, runID, map[string]any{"ok": true}); !IsWorkflowSourceChanged(err) {
 		t.Fatalf("the engine, edited source: %v, want the source change shown", err)
 	}
 }
@@ -302,12 +304,12 @@ func TestResume_theScratchRefusalNamesAnEditedSource(t *testing.T) {
 	}
 }
 
-// TestResume_aForcedChildResumeRefusedLaterKeepsItsLineage: a forced lone
+// TestResume_anAcceptedChildResumeRefusedLaterKeepsItsLineage: a forced lone
 // resume of a child records the lineage's forsake only once it runs. Refused
 // later — here the source override's record fails before the claim — it
 // leaves the lineage refusing the child's next, unforced resume; run, it
 // records the forsake.
-func TestResume_aForcedChildResumeRefusedLaterKeepsItsLineage(t *testing.T) {
+func TestResume_anAcceptedChildResumeRefusedLaterKeepsItsLineage(t *testing.T) {
 	t.Setenv("ITERION_MODE", "local")
 	ctx := context.Background()
 	base := tmpStore(t)
@@ -316,10 +318,10 @@ func TestResume_aForcedChildResumeRefusedLaterKeepsItsLineage(t *testing.T) {
 		t.Fatalf("the child: want it parked, got %v", err)
 	}
 	var ran bool
-	lone := func(st store.RunStore, hash string, force bool) *Engine {
+	lone := func(st store.RunStore, hash string, consent bool) *Engine {
 		x := newStubExecutor()
 		x.on("read", func(map[string]any) (map[string]any, error) { ran = true; return map[string]any{}, nil })
-		e := New(scratchChildWorkflow(), st, x, WithWorkDir(t.TempDir()), WithSandboxOverride("none"), WithForceResume(force))
+		e := New(scratchChildWorkflow(), st, x, WithWorkDir(t.TempDir()), WithSandboxOverride("none"), WithForceResume(consent), WithAcceptScratchLoss(consent))
 		e.workflowHash = hash
 		return e
 	}
@@ -335,7 +337,7 @@ func TestResume_aForcedChildResumeRefusedLaterKeepsItsLineage(t *testing.T) {
 	}
 	forsaken := false
 	for _, ev := range eventsOf(t, base, id, store.EventSandboxShared) {
-		if ev.Data["adopted"] == false && ev.Data["forced"] == true {
+		if ev.Data["adopted"] == false && ev.Data["accepted"] == true {
 			forsaken = true
 		}
 	}
@@ -410,79 +412,6 @@ func TestResume_aRewindReadsTheLoopFromTheExecutingSource(t *testing.T) {
 	}
 }
 
-// TestResume_aForceGivenBeforeALossWasShownDoesNotWaiveIt: a loss only a
-// restore finds — no sandbox to restore into, a bank that is gone — is not
-// waived by a --force given before the operator was shown it, as one given
-// for an edited source is: that resume is refused and the loss recorded, and
-// the next --force, given knowing it, goes on without the scratch. A bank
-// that is gone is refused before the claim from then on.
-func TestResume_aForceGivenBeforeALossWasShownDoesNotWaiveIt(t *testing.T) {
-	t.Setenv("ITERION_MODE", "local")
-	for _, loss := range []string{lossNoSandbox, lossBankGone} {
-		t.Run(loss, func(t *testing.T) {
-			s := tmpStore(t)
-			ctx := context.Background()
-			const runID = "run-scratch-unseen-loss"
-			d := &podDriver{root: t.TempDir()}
-			x := newStubExecutor()
-			x.on("measure", func(map[string]any) (map[string]any, error) {
-				if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
-					return nil, err
-				}
-				return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v1"), 0o644)
-			})
-			reportRan := false
-			x.on("report", func(map[string]any) (map[string]any, error) {
-				reportRan = true
-				return map[string]any{}, nil
-			})
-			launch := scratchEngine(s, x, d)
-			launch.workflowHash = "sha256:launch"
-			if err := launch.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
-				t.Fatalf("Run: want ErrRunPaused, got %v", err)
-			}
-			if b := eventsOf(t, s, runID, store.EventSandboxScratchBanked); len(b) != 1 || b[0].Data["banked"] != true {
-				t.Fatalf("precondition: want the scratch banked, got %v", dataOf(b))
-			}
-			if loss == lossBankGone {
-				if err := store.AsScratchBankStore(s).DeleteScratchBank(ctx, runID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			resume := func(force bool) error {
-				e := scratchEngine(s, x, d)
-				if loss == lossNoSandbox {
-					e = New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
-				}
-				e.forceResume = force
-				e.workflowHash = "sha256:edited"
-				return e.Resume(ctx, runID, map[string]any{"ok": true})
-			}
-			if err := resume(false); !IsWorkflowSourceChanged(err) || isScratchRefusal(err) {
-				t.Fatalf("precondition: the unforced resume: %v, want only the source change shown", err)
-			}
-			if err := resume(true); !isScratchRefusal(err) || reportRan {
-				t.Fatalf("the --force given for the source: %v, ran=%v, want the unseen loss refused and nothing run", err, reportRan)
-			}
-			if loss == lossBankGone {
-				if err := ValidateResumeScratch(ctx, s, mustLoadRun(t, s, runID), scratchWorkflow(), false); !isScratchRefusal(err) {
-					t.Fatalf("the surface, after the refusal: %v, want the gone bank refused", err)
-				}
-				claims := len(eventsOf(t, s, runID, store.EventRunResumed))
-				if err := resume(false); !isScratchRefusal(err) || reportRan {
-					t.Fatalf("the next unforced resume: %v, ran=%v, want the gone bank refused", err, reportRan)
-				}
-				if n := len(eventsOf(t, s, runID, store.EventRunResumed)); n != claims {
-					t.Fatalf("the gone bank was refused after the claim (%d run_resumed, was %d), want before it", n, claims)
-				}
-			}
-			if err := resume(true); err != nil || !reportRan {
-				t.Fatalf("the --force given knowing the loss: %v, ran=%v, want the run through without its scratch", err, reportRan)
-			}
-		})
-	}
-}
-
 // TestResume_aPlainRestoreRecordDoesNotHoldTheResume: the record of a bank
 // restored into a container-local scratch decides nothing a later resume
 // reads: tried once, best-effort — a store that refuses it neither holds the
@@ -530,7 +459,7 @@ func TestResume_aStaleRestoreRecordSurvivesAStoreBlip(t *testing.T) {
 	s.mu.Lock()
 	s.times = s.refused + 1
 	s.mu.Unlock()
-	e := eng(launch, "sha256:launch", true)
+	e := eng(launch, "sha256:launch", false, true)
 	e.recordRetryPause = time.Millisecond
 	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("the forced resume of a stale bank: %v", err)
@@ -546,15 +475,13 @@ func TestResume_aStaleRestoreRecordSurvivesAStoreBlip(t *testing.T) {
 	}
 }
 
-// TestResume_aLossShownDoesNotWaiveAnother: the --force a shown loss allows
-// is for that loss. A run refused for resuming without a sandbox, resumed with
-// one while its bank is gone, is refused over that loss too before a --force
-// goes on without the scratch.
-func TestResume_aLossShownDoesNotWaiveAnother(t *testing.T) {
-	t.Setenv("ITERION_MODE", "local")
-	s := tmpStore(t)
+// scratchLossRun parks a run at its gate with its scratch banked, and returns
+// the stub executor and a maker of engines resuming it: sandboxed or not,
+// forced or not, with the scratch's loss accepted or not. reportRan says
+// whether the node after the gate ran.
+func scratchLossRun(t *testing.T, s store.RunStore, runID string) (resume func(sandboxed, force, accept bool) error, reportRan *bool) {
+	t.Helper()
 	ctx := context.Background()
-	const runID = "run-scratch-another-loss"
 	d := &podDriver{root: t.TempDir()}
 	x := newStubExecutor()
 	x.on("measure", func(map[string]any) (map[string]any, error) {
@@ -563,32 +490,120 @@ func TestResume_aLossShownDoesNotWaiveAnother(t *testing.T) {
 		}
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v1"), 0o644)
 	})
-	reportRan := false
+	ran := new(bool)
 	x.on("report", func(map[string]any) (map[string]any, error) {
+		*ran = true
+		return map[string]any{}, nil
+	})
+	launch := scratchEngine(s, x, d)
+	launch.workflowHash = "sha256:launch"
+	if err := launch.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	if b := eventsOf(t, s, runID, store.EventSandboxScratchBanked); len(b) != 1 || b[0].Data["banked"] != true {
+		t.Fatalf("precondition: want the scratch banked, got %v", dataOf(b))
+	}
+	return func(sandboxed, force, accept bool) error {
+		e := scratchEngine(s, x, d)
+		if !sandboxed {
+			e = New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
+		}
+		e.forceResume, e.acceptScratchLoss = force, accept
+		e.workflowHash = "sha256:edited"
+		return e.Resume(ctx, runID, map[string]any{"ok": true})
+	}, ran
+}
+
+// TestResume_forceNeverAcceptsTheScratchsLoss: --force accepts a changed
+// source, never the loss of the run's scratch — refused before the claim or
+// found by the restore, the loss needs its own consent, and a resume that
+// gives it goes on without the scratch.
+func TestResume_forceNeverAcceptsTheScratchsLoss(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	for _, tc := range []struct {
+		name      string
+		sandboxed bool
+		lose      func(t *testing.T, s store.RunStore, runID string)
+	}{
+		{"its teardown could not bank it", true, func(t *testing.T, s store.RunStore, runID string) {
+			if _, err := s.AppendEvent(context.Background(), runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
+				"banked": false, "empty": false, "reason": "the scratch compresses past the 256 MiB cap",
+			}}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"its bank is gone", true, func(t *testing.T, s store.RunStore, runID string) {
+			if err := store.AsScratchBankStore(s).DeleteScratchBank(context.Background(), runID); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"no sandbox to restore it into", false, func(*testing.T, store.RunStore, string) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tmpStore(t)
+			const runID = "run-scratch-force-is-not-consent"
+			resume, reportRan := scratchLossRun(t, s, runID)
+			tc.lose(t, s, runID)
+			if err := resume(tc.sandboxed, true, false); !isScratchRefusal(err) || *reportRan {
+				t.Fatalf("a resume forced for its edited source: %v, ran=%v, want the scratch's loss refused and nothing run", err, *reportRan)
+			}
+			if err := resume(tc.sandboxed, true, true); err != nil || !*reportRan {
+				t.Fatalf("a resume accepting the scratch's loss: %v, ran=%v, want it through", err, *reportRan)
+			}
+		})
+	}
+}
+
+// TestResume_theScratchsConsentIsSpentByItsResume: the consent to the
+// scratch's loss is the resume's it was given to. The same engine resumed
+// again — the automatic retry after a failure — does not carry it over to a
+// loss that execution met.
+func TestResume_theScratchsConsentIsSpentByItsResume(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	ctx := context.Background()
+	s := tmpStore(t)
+	const runID = "run-scratch-consent-spent"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v1"), 0o644)
+	})
+	failOnce, reportRan := true, false
+	x.on("report", func(map[string]any) (map[string]any, error) {
+		if failOnce {
+			failOnce = false
+			if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v2"), 0o644); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("the provider went away")
+		}
 		reportRan = true
 		return map[string]any{}, nil
 	})
 	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
-	forced := func(sandboxed bool) error {
-		e := scratchEngine(s, x, d)
-		if !sandboxed {
-			e = New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
-		}
-		e.forceResume = true
-		return e.Resume(ctx, runID, map[string]any{"ok": true})
+	if err := store.AsScratchBankStore(s).DeleteScratchBank(ctx, runID); err != nil {
+		t.Fatal(err)
 	}
-	if err := forced(false); !errors.Is(err, errResumedWithoutSandbox) || reportRan {
-		t.Fatalf("a first --force without a sandbox: %v, ran=%v, want the missing sandbox refused", err, reportRan)
+	e := scratchEngine(s, x, d)
+	e.acceptScratchLoss = true
+	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err == nil || isScratchRefusal(err) {
+		t.Fatalf("the accepting resume: %v, want it past the gone bank and failed on report", err)
 	}
 	if err := store.AsScratchBankStore(s).DeleteScratchBank(ctx, runID); err != nil {
 		t.Fatal(err)
 	}
-	if err := forced(true); !isScratchRefusal(err) || errors.Is(err, errResumedWithoutSandbox) || reportRan {
-		t.Fatalf("a --force with a sandbox, the bank gone: %v, ran=%v, want the gone bank refused — the operator was shown another loss", err, reportRan)
+	if b := eventsOf(t, s, runID, store.EventSandboxScratchBanked); b[len(b)-1].Data["banked"] != true {
+		t.Fatalf("precondition: the failed execution's teardown did not bank what it wrote: %v", dataOf(b))
 	}
-	if err := forced(true); err != nil || !reportRan {
-		t.Fatalf("the --force given knowing the gone bank: %v, ran=%v, want the run through without its scratch", err, reportRan)
+	if err := e.Resume(ctx, runID, nil); !isScratchRefusal(err) || reportRan {
+		t.Fatalf("the same engine resumed again: %v, ran=%v, want the new loss refused", err, reportRan)
 	}
 }

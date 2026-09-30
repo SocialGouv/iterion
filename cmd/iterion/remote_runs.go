@@ -265,6 +265,7 @@ var (
 	remoteResumeAnswers             string
 	remoteResumeFile                string
 	remoteResumeForce               bool
+	remoteResumeAcceptScratchLoss   bool
 	remoteResumeTimeout             string
 	remoteResumeMaxCostUSD          float64
 	remoteResumeMaxTokens           int
@@ -283,6 +284,7 @@ var remoteRunsResumeCmd = &cobra.Command{
 			AnswersFile:         answers,
 			FilePath:            remoteResumeFile,
 			Force:               remoteResumeForce,
+			AcceptScratchLoss:   remoteResumeAcceptScratchLoss,
 			Timeout:             remoteResumeTimeout,
 			MaxCostUSD:          remoteResumeMaxCostUSD,
 			MaxTokens:           remoteResumeMaxTokens,
@@ -590,6 +592,7 @@ func init() {
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeAnswers, "answers", "", "Answers JSON file (@file)")
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeFile, "file", "", "Push a modified workflow file with the resume")
 	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeForce, "force", false, "Resume even if the workflow source changed")
+	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeAcceptScratchLoss, "accept-scratch-loss", false, "Resume although the run's scratch does not travel (SCRATCH_NOT_PORTABLE): without it, or with an older bank — --force does not accept that")
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeTimeout, "timeout", "", "New timeout for the resumed run")
 	// #652 part 2: the local `iterion resume` accepts --max-* to raise
 	// the cap; the remote equivalent now does too. Non-zero beats the

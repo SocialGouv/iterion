@@ -200,13 +200,14 @@ type Engine struct {
 	validateOutputs        bool                     // when true, validate node outputs against declared schemas
 	outputCorrectionBudget int                      // bounded invalid-output correction calls per node episode
 	forceResume            bool                     // when true, skip workflow hash check on resume
+	acceptScratchLoss      bool                     // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
 	// scratchBankHeld stops the current sandbox's teardown from banking its
 	// scratch: set when restoring the bank failed, so a partial scratch
 	// never replaces the bank a later resume will retry (ADR-106). Each
 	// sandbox starts without it (startSandbox).
 	scratchBankHeld          bool
 	scratchBankRetryPause    time.Duration                        // first pause between the teardown's banking attempts; zero is scratchBankRetryPauseDefault
-	forcedForsake            map[string]any                       // the lineage forsake a forced lone resume of a child records once it runs (recordForcedForsake)
+	pendingForsake           map[string]any                       // the lineage forsake a lone resume of a child records once it runs (recordPendingForsake)
 	recordWriteLimit         time.Duration                        // the budget of a record a resume decides from (recordWriteBudget); zero is scratchBankRecordBudget
 	recordRetryPause         time.Duration                        // first pause between tries at writing a record a resume decides from (emitRecord); zero is recordRetryPauseDefault
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action

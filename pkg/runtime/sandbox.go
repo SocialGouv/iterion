@@ -2235,7 +2235,7 @@ func (l sharedLineage) refusal(r *store.Run) error {
 		return &RuntimeError{
 			Code:    ErrCodeScratchNotPortable,
 			Message: fmt.Sprintf("run %s executed in its parent run %s's sandbox, whose ${PROJECT_SCRATCH_DIR} lives in the container; resumed on its own it would start without that scratch", r.ID, r.ParentRunID),
-			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it without the parent's scratch, where what it writes never reaches the parent's",
+			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child accepting the scratch's loss (--accept-scratch-loss) to run it without the parent's scratch, where what it writes never reaches the parent's",
 		}
 	}
 	return nil
@@ -2244,23 +2244,40 @@ func (l sharedLineage) refusal(r *store.Run) error {
 // ValidateResumeLineage is the engine's refusal of a subbot child resumed on
 // its own, run by the resume surface before anything moves the run: an
 // operator hears it synchronously, and a cloud resume is refused before the
-// publisher flips the run to queued. force waives it, as it does the
-// engine's.
-func ValidateResumeLineage(ctx context.Context, st store.RunStore, r *store.Run, force bool) error {
-	if r == nil || r.ParentRunID == "" || force {
+// publisher flips the run to queued. Waived as the engine waives it: a
+// copy-based lineage by force, a container-local scratch by accept.
+func ValidateResumeLineage(ctx context.Context, st store.RunStore, r *store.Run, force, accept bool) error {
+	if r == nil || r.ParentRunID == "" {
 		return nil
 	}
 	l, err := readSharedLineage(ctx, st, r.ID)
 	if err != nil {
 		return err
 	}
+	if l.waivedBy(force, accept) {
+		return nil
+	}
 	return l.refusal(r)
+}
+
+// waivedBy reports that a resume given these consents goes on past this
+// lineage's refusal: a copy-based one — a sandbox of its own, off the
+// parent's tree — by force; a container-local scratch — the parent's, lost —
+// only by the scratch's own consent.
+func (l sharedLineage) waivedBy(force, accept bool) bool {
+	switch {
+	case l.copyBased:
+		return force
+	case l.scratchContainerLocal:
+		return accept
+	}
+	return true
 }
 
 // refuseResumeOfSharedChild refuses to resume, outside its parent, a child
 // whose lineage does not travel (sharedLineage.refusal). Nil when this
-// engine holds a parent handle to adopt. --force resumes it on its own, and
-// the record says so.
+// engine holds a parent handle to adopt. The consent the lineage needs
+// (sharedLineage.waivedBy) resumes it on its own, and the record says so.
 func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) error {
 	if r == nil || r.ParentRunID == "" || (e.sharedSandbox != nil && e.sharedSandbox.Run != nil) {
 		return nil
@@ -2270,31 +2287,35 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 		return err
 	}
 	refusal := l.refusal(r)
-	if refusal == nil || !e.forceResume {
+	if refusal == nil || !l.waivedBy(e.forceResume, e.acceptScratchLoss) {
 		return refusal
 	}
-	warning, reason := "a sandbox of its own — a fresh copy of the workspace — whose later commits do not reach the parent's tree", "resumed with --force outside the parent: a sandbox of its own, whose later commits do not reach the parent's tree"
+	warning := "a sandbox of its own — a fresh copy of the workspace — whose later commits do not reach the parent's tree"
+	forsake := map[string]any{"adopted": false, "forced": true, "parent_run": r.ParentRunID,
+		"reason": "resumed with --force outside the parent: a sandbox of its own, whose later commits do not reach the parent's tree"}
 	if !l.copyBased {
-		warning, reason = "no scratch: the parent's lived in its container, and what this child writes there never reaches the parent's", "resumed with --force outside the parent: without the parent's container-local scratch, and what it writes there never reaches the parent's"
+		warning = "no scratch: the parent's lived in its container, and what this child writes there never reaches the parent's"
+		forsake = map[string]any{"adopted": false, "accepted": true, "parent_run": r.ParentRunID,
+			"reason": "resumed outside the parent, the scratch's loss accepted: without the parent's container-local scratch, and what it writes there never reaches the parent's"}
 	}
 	if e.logger != nil {
-		e.logger.Warn("runtime: run %s executed in its parent run %s's sandbox; resumed with --force it starts with %s", r.ID, r.ParentRunID, warning)
+		e.logger.Warn("runtime: run %s executed in its parent run %s's sandbox; resumed on its own it starts with %s", r.ID, r.ParentRunID, warning)
 	}
-	// Recorded once the resume runs (recordForcedForsake): a later check
+	// Recorded once the resume runs (recordPendingForsake): a later check
 	// that still refuses this resume must leave the lineage refusing the
-	// child's next, unforced one.
-	e.forcedForsake = map[string]any{"adopted": false, "forced": true, "parent_run": r.ParentRunID, "reason": reason}
+	// child's next one.
+	e.pendingForsake = forsake
 	return nil
 }
 
-// recordForcedForsake writes the lineage forsake a forced lone resume of a
-// child decided before its claim, now that the resume runs past its checks.
-func (e *Engine) recordForcedForsake(ctx context.Context, runID string) {
-	if e.forcedForsake == nil {
+// recordPendingForsake writes the lineage forsake a lone resume of a child
+// decided before its claim, now that the resume runs past its checks.
+func (e *Engine) recordPendingForsake(ctx context.Context, runID string) {
+	if e.pendingForsake == nil {
 		return
 	}
-	data := e.forcedForsake
-	e.forcedForsake = nil
+	data := e.pendingForsake
+	e.pendingForsake = nil
 	if err := e.emit(ctx, runID, store.EventSandboxShared, "", data); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
 	}

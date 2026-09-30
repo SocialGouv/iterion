@@ -389,8 +389,12 @@ func TestRefuseResumeOfSharedChild(t *testing.T) {
 			t.Fatalf("err = %v, want SCRATCH_NOT_PORTABLE naming the parent", err)
 		}
 		e.forceResume = true
+		if err := e.refuseResumeOfSharedChild(ctx, r); !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
+			t.Fatalf("--force alone: err = %v, want the scratch's loss still refused", err)
+		}
+		e.forceResume, e.acceptScratchLoss = false, true
 		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
-			t.Fatalf("--force: err = %v, want the resume let through", err)
+			t.Fatalf("the scratch's loss accepted: err = %v, want the resume let through", err)
 		}
 	})
 	t.Run("bind-mount lineage: resumes", func(t *testing.T) {

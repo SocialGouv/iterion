@@ -257,7 +257,7 @@ func TestLastScratchPark_readsTheRecordThatDecides(t *testing.T) {
 	rewound := store.Event{Type: store.EventRunRewound, NodeID: "report", Data: map[string]any{"dropped_nodes": []string{"report"}}}
 	fixed := store.Event{Type: store.EventNodeFinished, NodeID: "fix"}
 	rewoundLoop := store.Event{Type: store.EventRunRewound, NodeID: "fix", Data: map[string]any{"dropped_nodes": []string{"fix"}}}
-	forcedWithout := store.Event{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": false, "forced": true, "reason": "gone"}}
+	forcedWithout := store.Event{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": false, "accepted": true, "reason": "gone"}}
 	forcedStale := store.Event{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": true, "bytes": 10, "stale": true}}
 	started := store.Event{Type: store.EventRunStarted}
 	resumed := store.Event{Type: store.EventRunResumed}
@@ -1725,7 +1725,7 @@ func TestNodeGateCanAsk(t *testing.T) {
 
 // TestResume_forcedPastAnUnbankedScratchIsRecorded: --force past a scratch
 // its teardown could not bank goes on without it, and the timeline says so.
-func TestResume_forcedPastAnUnbankedScratchIsRecorded(t *testing.T) {
+func TestResume_acceptedPastAnUnbankedScratchIsRecorded(t *testing.T) {
 	t.Setenv("ITERION_MODE", "local")
 	s := tmpStore(t)
 	ctx := context.Background()
@@ -1742,14 +1742,14 @@ func TestResume_forcedPastAnUnbankedScratchIsRecorded(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	forced := scratchEngine(s, x, d)
-	forced.forceResume = true
-	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
-		t.Fatalf("Resume --force: %v", err)
+	accepting := scratchEngine(s, x, d)
+	accepting.acceptScratchLoss = true
+	if err := accepting.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume accepting the scratch's loss: %v", err)
 	}
 	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
-	if len(restored) != 1 || restored[0].Data["restored"] != false || restored[0].Data["forced"] != true || !strings.Contains(fmt.Sprint(restored[0].Data["reason"]), "could not bank") {
-		t.Fatalf("the timeline after --force past an unbanked scratch: %v, want one record naming it", dataOf(restored))
+	if len(restored) != 1 || restored[0].Data["restored"] != false || restored[0].Data["accepted"] != true || !strings.Contains(fmt.Sprint(restored[0].Data["reason"]), "could not bank") {
+		t.Fatalf("the timeline after a resume past an unbanked scratch, its loss accepted: %v, want one record naming it", dataOf(restored))
 	}
 }
 

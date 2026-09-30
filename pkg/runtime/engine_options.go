@@ -516,9 +516,24 @@ func WithRoutingPolicy(p *store.RoutingPolicy) EngineOption {
 
 // WithForceResume allows resuming a run even when the workflow source has
 // changed since the run was started. The hash mismatch is logged as a warning
-// instead of causing an error.
+// instead of causing an error. It accepts a changed source (and a changed
+// artifact contract), never the loss of the run's scratch:
+// WithAcceptScratchLoss is that consent.
 func WithForceResume(force bool) EngineOption {
 	return func(e *Engine) { e.forceResume = force }
+}
+
+// WithAcceptScratchLoss lets a resume go on although its scratch does not
+// travel (SCRATCH_NOT_PORTABLE): without it — a bank its teardown could not
+// write, a bank that is gone or does not extract, no sandbox to restore it
+// into, a subbot child resumed outside its parent's container-local scratch
+// — or on an older bank the run has moved past. Each is said on the run's
+// timeline. It is the operator's consent to that loss, given once they were
+// shown it, for this resume: a caller that re-executes the same request
+// (a redelivery, an adoption, an automatic retry) does not carry it over to
+// a loss that execution met.
+func WithAcceptScratchLoss(accept bool) EngineOption {
+	return func(e *Engine) { e.acceptScratchLoss = accept }
 }
 
 // WithExpectedResumeStatus narrows the resume claim to one exact source

@@ -34,6 +34,10 @@ type ResumeOptions struct {
 	Answers     map[string]string // --answer key=value overrides
 	LogLevel    string            // log level (default: "info", env: ITERION_LOG_LEVEL)
 	Force       bool              // allow resume despite workflow hash change
+	// AcceptScratchLoss is the operator's consent to resume although the
+	// run's scratch does not travel (SCRATCH_NOT_PORTABLE); Force never
+	// gives it.
+	AcceptScratchLoss bool
 	// ForceStale auto-promotes a status=running run to failed_resumable
 	// IFF its events.jsonl mtime is older than forceStaleStaleAfter.
 	// The server-boot sweep (pkg/store.PromoteStaleOrphans) covers the
@@ -347,6 +351,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		runtime.WithWorkflowHash(wfHash),
 		runtime.WithFilePath(iterFile),
 		runtime.WithForceResume(opts.Force),
+		runtime.WithAcceptScratchLoss(opts.AcceptScratchLoss),
 		// Sandbox-by-default: resumed runs re-resolve their sandbox with
 		// the same global default as `iterion run`, then apply the
 		// launch's persisted override so a run that refused a sandbox at

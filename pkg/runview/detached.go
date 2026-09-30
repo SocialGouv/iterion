@@ -77,6 +77,9 @@ type detachedSpec struct {
 	Answers   map[string]string // Resume only; CLI --answer accepts string values today
 	StoreDir  string
 	Force     bool
+	// AcceptScratchLoss forwards ResumeSpec.AcceptScratchLoss as the CLI's
+	// --accept-scratch-loss (Resume only).
+	AcceptScratchLoss bool
 	// AllowUnknownInputs forwards the run-level #1757 opt-out as the CLI's
 	// --allow-unknown-inputs flag: the subprocess re-runs the input check
 	// from scratch, so anything not passed here refuses where the
@@ -169,6 +172,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		}
 		if spec.Force {
 			args = append(args, "--force")
+		}
+		if spec.AcceptScratchLoss {
+			args = append(args, "--accept-scratch-loss")
 		}
 		args = appendDetachedBudgetArgs(args, spec.Budget)
 		for k, v := range spec.Answers {
@@ -456,17 +462,18 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 	}
 
 	res, err := s.spawnDetached(parent, detachedSpec{
-		Command:         runnerCommandResume,
-		RunID:           spec.RunID,
-		FilePath:        spec.FilePath,
-		Answers:         answers,
-		StoreDir:        s.storeDir,
-		AutoMemory:      spec.AutoMemory,
-		LoopBudgetGuard: spec.LoopBudgetGuard,
-		Supervisors:     spec.Supervisors,
-		Permission:      permission,
-		Force:           spec.Force,
-		Timeout:         spec.Timeout,
+		Command:           runnerCommandResume,
+		RunID:             spec.RunID,
+		FilePath:          spec.FilePath,
+		Answers:           answers,
+		StoreDir:          s.storeDir,
+		AutoMemory:        spec.AutoMemory,
+		LoopBudgetGuard:   spec.LoopBudgetGuard,
+		Supervisors:       spec.Supervisors,
+		Permission:        permission,
+		Force:             spec.Force,
+		AcceptScratchLoss: spec.AcceptScratchLoss,
+		Timeout:           spec.Timeout,
 		// E2 (#652 review round 1): forward the resume-time budget
 		// override so the detached CLI subprocess raises the cap too.
 		// Without it a --max-cost-usd on a detached resume was inert

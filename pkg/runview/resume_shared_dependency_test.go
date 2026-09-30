@@ -146,8 +146,16 @@ func TestResume_aSharedDependencyChangeComesAfterTheLossItWouldWaive(t *testing.
 					t.Fatalf("%s over a changed dependency and a %s that does not travel: %v, want SCRATCH_NOT_PORTABLE first, naming the change", surface, tc.loss, err)
 				}
 			}
-			if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true}); err != nil || publisher.resumeCalls != 1 {
-				t.Fatalf("the forced resume: %v, published %d, want it through", err, publisher.resumeCalls)
+			if tc.loss != "" {
+				if err := svc.PreflightResume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true}); !scratchRefused(err) {
+					t.Fatalf("a preflight forced for the change alone: %v, want the %s's loss still refused", err, tc.loss)
+				}
+				if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true}); !scratchRefused(err) || publisher.resumeCalls != 0 {
+					t.Fatalf("a resume forced for the change alone: %v, published %d, want the %s's loss still refused", err, publisher.resumeCalls, tc.loss)
+				}
+			}
+			if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true, AcceptScratchLoss: true}); err != nil || publisher.resumeCalls != 1 {
+				t.Fatalf("the resume given both consents: %v, published %d, want it through", err, publisher.resumeCalls)
 			}
 		})
 	}

@@ -49,6 +49,11 @@ const (
 // showing the operator a failure they did nothing to cause.
 const runNotResumableErrorCode = "run_not_resumable"
 
+// scratchNotPortableErrorCode tells a client that the run's scratch does not
+// travel: the resume needs accept_scratch_loss — force never gives it — and,
+// when also_needs_force is set, force too for a change it names.
+const scratchNotPortableErrorCode = "scratch_not_portable"
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -287,7 +292,10 @@ type resumeRunRequest struct {
 	Source  string         `json:"source,omitempty"`
 	Answers map[string]any `json:"answers,omitempty"`
 	Force   bool           `json:"force,omitempty"`
-	Timeout string         `json:"timeout,omitempty"`
+	// AcceptScratchLoss is the consent to resume although the run's scratch
+	// does not travel (error_code scratch_not_portable); force never gives it.
+	AcceptScratchLoss bool   `json:"accept_scratch_loss,omitempty"`
+	Timeout           string `json:"timeout,omitempty"`
 	// Attachments carries ad-hoc upload IDs (from POST /api/runs/uploads)
 	// the operator attached to this answer without the workflow declaring
 	// a `file` field — the "here is a diagram explaining my feedback"
@@ -876,11 +884,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// would already be gone. Only paid for on an upload-carrying
 		// resume — it compiles the workflow a second time.
 		pfSpec := runview.ResumeSpec{
-			RunID:    id,
-			FilePath: absPath,
-			Source:   req.Source,
-			Answers:  answers,
-			Force:    req.Force,
+			RunID:             id,
+			FilePath:          absPath,
+			Source:            req.Source,
+			Answers:           answers,
+			Force:             req.Force,
+			AcceptScratchLoss: req.AcceptScratchLoss,
 		}
 		if resumeLB != nil {
 			pfSpec.BundleDir, pfSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
@@ -906,13 +915,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resumeSpec := runview.ResumeSpec{
-		RunID:    id,
-		FilePath: absPath,
-		Source:   req.Source,
-		Answers:  answers,
-		Force:    req.Force,
-		Timeout:  timeout,
-		Budget:   budget,
+		RunID:             id,
+		FilePath:          absPath,
+		Source:            req.Source,
+		Answers:           answers,
+		Force:             req.Force,
+		AcceptScratchLoss: req.AcceptScratchLoss,
+		Timeout:           timeout,
+		Budget:            budget,
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {
@@ -968,6 +978,19 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		return
 	}
 	if s.writeNoLLMCredentialError(w, r, "resume", err) {
+		return
+	}
+	var rt *runtime.RuntimeError
+	if errors.As(err, &rt) && rt.Code == runtime.ErrCodeScratchNotPortable {
+		body := map[string]any{
+			"error":      fmt.Sprintf("resume: %v", err),
+			"error_code": scratchNotPortableErrorCode,
+			"hint":       rt.Hint,
+		}
+		if rt.AlsoNeedsForce {
+			body["also_needs_force"] = true
+		}
+		s.writeJSONError(w, r, http.StatusBadRequest, body)
 		return
 	}
 	if runtime.IsWorkflowSourceChanged(err) {

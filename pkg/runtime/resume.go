@@ -82,6 +82,10 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // persisted as human answers or artifacts; callers must be able to derive
 // them again from the durable run record on every resume.
 func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) (resultErr error) {
+	// The consent to the scratch's loss is this resume's: an engine resumed
+	// again — an automatic retry after a failure — has not been shown the
+	// loss that execution may meet.
+	defer func() { e.acceptScratchLoss = false }()
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -96,8 +100,8 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// it, or the run moved past its bank — is refused before the claim, so
 	// it keeps its resumable status (ADR-106). So is a child whose lineage
 	// does not travel: resumed through its parent, never on its own. Both
-	// come before the source check: a --force given for an edited source
-	// would otherwise waive a loss the operator was never shown.
+	// come before the source check, and name it: the operator is shown the
+	// loss, which --force never accepts, with the change it does.
 	if rerr := e.refuseResumeLosingScratch(ctx, r); rerr != nil {
 		return e.alsoNamingSourceChange(r, rerr)
 	}
@@ -345,15 +349,27 @@ func (e *Engine) alsoNamingSourceChange(r *store.Run, refusal error) error {
 
 // WithSourceChange adds to a scratch or lineage refusal that the workflow
 // source has changed too. The refusal keeps its code — the loss is what the
-// operator must see first — and says that --force would accept both.
+// operator must see first — and names both consents a resume then needs:
+// the loss's own, and --force for the changed source.
 func WithSourceChange(refusal error) error {
+	return withForceableChange(refusal, "the workflow source has also changed since the run started", "the source changed too: add --force to accept that")
+}
+
+// WithArtifactContractChange adds to a scratch refusal that the run's artifact
+// contract has changed too, as WithSourceChange does for the source.
+func WithArtifactContractChange(refusal error) error {
+	return withForceableChange(refusal, "the artifact contract has also changed since the run started", "the artifact contract changed too: add --force to accept that")
+}
+
+func withForceableChange(refusal error, message, hint string) error {
 	var rt *RuntimeError
 	if !errors.As(refusal, &rt) {
 		return refusal
 	}
 	named := *rt
-	named.Message += "; the workflow source has also changed since the run started"
-	named.Hint += " (--force also accepts the changed source)"
+	named.Message += "; " + message
+	named.Hint += "; " + hint
+	named.AlsoNeedsForce = true
 	return &named
 }
 
@@ -1699,7 +1715,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		sandboxCleanup()
 		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, rsErr)
 	}
-	e.recordForcedForsake(ctx, runID)
+	e.recordPendingForsake(ctx, runID)
 
 	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
@@ -1957,7 +1973,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	if rsErr := e.restoreBankedScratch(ctx, runID); rsErr != nil {
 		return e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, rsErr)
 	}
-	e.recordForcedForsake(ctx, runID)
+	e.recordPendingForsake(ctx, runID)
 
 	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)

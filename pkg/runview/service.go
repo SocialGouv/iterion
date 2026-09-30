@@ -417,8 +417,13 @@ type ResumeSpec struct {
 	// projection (for example bounded chat history), not operator speech and
 	// not a second durable authority.
 	HostInputs map[string]any
-	Force      bool          // skip workflow hash check
-	Timeout    time.Duration // 0 disables
+	Force      bool // skip workflow hash check
+	// AcceptScratchLoss is the operator's consent to resume although the
+	// run's scratch does not travel (SCRATCH_NOT_PORTABLE): without it, or
+	// with an older bank. Force never gives it — it accepts a changed source
+	// or artifact contract only.
+	AcceptScratchLoss bool
+	Timeout           time.Duration // 0 disables
 	// AutoMemory re-states the run-level auto-memory override ("", "on",
 	// "off"). It is not inherited from the original launch: overrides are not
 	// persisted on the run, so a resume that said nothing would silently fall

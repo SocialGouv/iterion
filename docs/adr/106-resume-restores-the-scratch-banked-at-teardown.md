@@ -95,10 +95,11 @@ pods the same way.
   without that scratch. A child adopted there that parks anyway — a recovery
   pause, an operator's pause, a cost cap — has
   its own resume refused `SCRATCH_NOT_PORTABLE` from the adoption's record
-  (`sandbox_shared {scratch_container_local}`); `--force` goes on without the
-  scratch, and what the child writes there never reaches the parent's; the
-  record of that forsake is written once the forced resume runs, so a check
-  that still refuses it leaves the next resume refused. The adoption's record
+  (`sandbox_shared {scratch_container_local}`); a resume accepting the
+  scratch's loss goes on without it, and what the child writes there never
+  reaches the parent's; the record of that forsake is written once that
+  resume runs, so a check that still refuses it leaves the next resume
+  refused. The adoption's record
   is written within its budget, or the child does not execute in the
   parent's sandbox.
 - **Resume, before anything moves the run.** A run whose last teardown
@@ -117,37 +118,37 @@ pods the same way.
   as finished by its answer (`node_finished {answered}`). A rewind takes
   back the nodes it dropped that lie on no cycle: one in a loop or a foreach
   may have run passes the rewind does not replay. A resume that went on
-  without the bank
-  (`--force` past a bank that is gone) forsakes it: nothing is restored or
-  refused over it later; one that restored a stale bank with `--force` makes
-  it the run's scratch again. These refusals, and a lone child's, come
-  before the check of the workflow source — its digest and a shared
-  dependency's identity alike — and name it when the source changed: the
-  one `--force` the operator then gives accepts both, knowing both. The
+  without the bank, its loss accepted (a bank that is gone), forsakes it:
+  nothing is restored or refused over it later; one that restored a stale
+  bank, its loss accepted, makes it the run's scratch again. These refusals,
+  and a lone child's, come before the check of the workflow source — its
+  digest and a shared dependency's identity alike — and name it when the
+  source changed: the resume then needs both consents, the scratch's and
+  `--force`. A surface about to refuse a resume for a reason `--force`
+  accepts — a changed source, an artifact contract — judges the scratch
+  even while the latest execution may still be banking, and shows its loss
+  first, naming both. The
   resume surface refuses from a record the run's latest execution wrote,
   before a cloud resume is flipped to `queued`. A latest execution that wrote
   none may still be banking — the run already reads paused or failed while
   its teardown runs — so the surface leaves it to the engine, which checks
-  under the run's lock, before its claim. `--force` resumes as it stands,
-  and says so — past a scratch its teardown could not bank, on the record
-  too (`sandbox_scratch_restored {forced, reason}`). An `unknown` record is not refused; after a bank, the bank
+  under the run's lock, before its claim. A resume accepting the scratch's
+  loss resumes as it stands, and says so — past a scratch its teardown could
+  not bank, on the record too (`sandbox_scratch_restored {accepted, reason}`). An `unknown` record is not refused; after a bank, the bank
   still decides. A timeline that cannot be read refuses the resume: it never
   reads as "nothing recorded".
 - **Resume, after the new sandbox starts** (the pause family and the failure
   path alike). The bank is extracted before the first node
-  (`sandbox_scratch_restored {restored, bytes, stale, forced, reason}`),
+  (`sandbox_scratch_restored {restored, bytes, stale, accepted, reason}`),
   read onto the host and checked to extract first: a failure in the sandbox
   can then only be a transport's. Every failure holds the bank: the failed
   sandbox's teardown banks nothing over it (the hold ends with that
   sandbox). A bank that is gone or does not
   extract, or a resume that runs without a sandbox, parks the run
-  `SCRATCH_NOT_PORTABLE`, recorded (`{refused, loss}`): a `--force` given
-  once that loss was shown goes on without it; one given before it was —
-  for an edited source, the only refusal the operator saw — is refused the
-  same way, and the next `--force` accepts it knowing it. A bank that is
-  gone or does not extract is refused before the claim from then on. A read that fails
+  `SCRATCH_NOT_PORTABLE`; a resume accepting the scratch's loss goes on
+  without it. A read that fails
   on the way — the timeline, the store, the stream into the sandbox — parks
-  it without a code: the runner redelivers, and `--force` does not skip it.
+  it without a code: the runner redelivers, and no consent skips it.
   A bank restored into a host directory — the run resumed with its host
   state on — hands the scratch over to that directory (`host_backed` on the
   record): from then on no bank decides what a resume on that host finds,
@@ -155,6 +156,20 @@ pods the same way.
   within its budget, or the resume fails without a code and the next one
   restores the bank again; any other restore's record decides nothing, and
   is written once, best-effort.
+
+- **The consent to the scratch's loss is its own.** `--force` accepts a
+  changed source or artifact contract, never the scratch's loss: callers send
+  it without condition — a conversational resume, an assistant's — and one
+  flag for both let every such resume lose a scratch in silence. The loss
+  needs `--accept-scratch-loss` (API and queue `accept_scratch_loss`, the
+  operator MCP's resume tools), given once the refusal was shown. It is this
+  resume's: the engine drops it when the resume call returns, so an automatic
+  retry of the same engine does not carry it to a loss that execution met;
+  the runner applies it only while the run is still queued for the message
+  that carried it — a redelivery after that claim, an adoption, a stale
+  attempt does not. Over HTTP the refusal answers `error_code:
+  scratch_not_portable` with its hint, and `also_needs_force` when it names
+  a change `--force` accepts.
 
 ## Consequences
 
@@ -196,7 +211,8 @@ pods the same way.
   the nodes it dropped that lie on no cycle; a node in a loop or a foreach
   may have run passes it does not replay, and a fan-out's in-flight
   branches are not among the nodes it names. Such a resume is refused
-  though the bank may be exact, and `--force` resumes it on that bank.
+  though the bank may be exact, and a resume accepting the scratch's loss
+  resumes it on that bank.
   Reading the rewind's replay from the timeline is the next step.
 - **The scratch is not rewound.** A rewind to a node that ran before the
   bank replays it on what it wrote there, unlike the workspace's files.

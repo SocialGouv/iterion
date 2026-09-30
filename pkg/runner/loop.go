@@ -442,6 +442,38 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 	return preconditionOutcome{proceed: true, preRun: run}
 }
 
+// spendScratchConsent drops the consent to the scratch's loss a resume
+// message carries unless the run is still queued for that message: the
+// consent is spent by the claim of the publication it came with. A
+// redelivery after that claim, an adoption, a stale attempt meets losses the
+// operator was never shown. Called under the run's lock.
+func (r *Runner) spendScratchConsent(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) {
+	if msg.Resume == nil || !msg.Resume.AcceptScratchLoss || r.queuedForThisResume(ctx, msg) {
+		return
+	}
+	logger.Warn("runner: run %s: the consent to its scratch's loss came with a resume already claimed once — not carried over", msg.RunID)
+	msg.Resume.AcceptScratchLoss = false
+}
+
+// queuedForThisResume reports, under the run's lock, that the run is still
+// queued for msg — the publisher's flip for this publication, not yet
+// claimed: its QueuedAt is not newer than msg's publication. Anything it
+// cannot prove — an unreadable doc, an unparsable publication time — is
+// not.
+func (r *Runner) queuedForThisResume(ctx context.Context, msg *queue.RunMessage) bool {
+	loadCtx, cancel := context.WithTimeout(store.WithIdentity(context.WithoutCancel(ctx), msg.TenantID, msg.OwnerID), 5*time.Second)
+	defer cancel()
+	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
+	if err != nil || run == nil || run.Status != store.RunStatusQueued {
+		return false
+	}
+	publishedAt, err := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	if err != nil {
+		return false
+	}
+	return run.QueuedAt == nil || !run.QueuedAt.After(publishedAt)
+}
+
 // runningAdoptionFloor is how old a `running` doc's last write must be
 // before a delivery that holds the run's lock may adopt it as an orphan.
 // The lock proves nobody holds the LEASE; it does not prove the previous
@@ -1757,6 +1789,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}
 
+	r.spendScratchConsent(runCtx, msg, logger)
+
 	// Heartbeat goroutine: refresh the NATS lease until the engine returns,
 	// its teardown included (startLeaseHeartbeat). On refresh failure it
 	// cancels runCtx WITH the interrupted cause so the engine unwinds to
@@ -2611,6 +2645,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// hash-mismatch guard in pkg/runtime/resume.go reads the flag.
 		// This was previously dropped on the floor.
 		engineOpts = append(engineOpts, runtime.WithForceResume(true))
+	}
+	if msg.Resume != nil && msg.Resume.AcceptScratchLoss {
+		engineOpts = append(engineOpts, runtime.WithAcceptScratchLoss(true))
 	}
 	if msg.Resume != nil && msg.Resume.ReceiptID != "" {
 		// The publisher already consumed ExpectedStatus in its exact CAS to

@@ -495,8 +495,8 @@ type scratchPark struct {
 	banked   bool
 	empty    bool
 	unknown  bool
-	// forsaken: a resume went on without the bank (--force past a bank that
-	// is gone, or with no sandbox to restore it into). The run's scratch no
+	// forsaken: a resume went on without the bank, its loss accepted (a bank
+	// that is gone, no sandbox to restore it into). The run's scratch no
 	// longer starts from it: nothing is restored or refused over it.
 	forsaken bool
 	// raced: tar caught members of the banked scratch changing on its every
@@ -518,13 +518,6 @@ type scratchPark struct {
 	// its own. Its teardown may still be banking — which only the holder of
 	// the run's lock knows — or its sandbox was lost without one.
 	superseded bool
-	// lossShown: a resume since the bank met a loss only a restore finds
-	// (restoreBankedScratch's gone) and was refused over it, lossReason
-	// saying why. The operator has been shown it: a --force given since
-	// accepts it, and one of the bank itself (lostForGood) is refused before
-	// the claim from then on.
-	lossShown  string
-	lossReason string
 }
 
 // nodeFinishedAnswered marks the node_finished a resume emits for the node
@@ -579,8 +572,7 @@ func lastScratchPark(ctx context.Context, st store.RunStore, wf *ir.Workflow, ru
 			_, p.unquiesced = ev.Data["unquiesced"]
 		case store.EventSandboxScratchRestored:
 			restored, _ := ev.Data["restored"].(bool)
-			forced, _ := ev.Data["forced"].(bool)
-			refused, _ := ev.Data["refused"].(bool)
+			accepted, _ := ev.Data["accepted"].(bool)
 			stale, _ := ev.Data["stale"].(bool)
 			hostBacked, _ := ev.Data["host_backed"].(bool)
 			switch {
@@ -589,15 +581,9 @@ func lastScratchPark(ctx context.Context, st store.RunStore, wf *ir.Workflow, ru
 				// then on: no bank decides what a later resume finds there.
 				p = scratchPark{}
 				clear(aging)
-			case !restored && forced && p.banked:
+			case !restored && accepted && p.banked:
 				p.banked, p.forsaken = false, true
 				clear(aging)
-			case !restored && refused && p.banked:
-				p.lossShown, _ = ev.Data["loss"].(string)
-				p.lossReason, _ = ev.Data["reason"].(string)
-				// The refusal held the bank: that execution banks nothing
-				// more, and its record is the one to decide from.
-				p.superseded = false
 			case restored && stale:
 				clear(aging)
 			}
@@ -719,8 +705,10 @@ func nodeMayWriteScratch(wf *ir.Workflow, id string) bool {
 // whose last teardown left a scratch it could not bank: resumed, its next
 // nodes would find ${PROJECT_SCRATCH_DIR} empty and fail far from the cause.
 // It refuses a bank the run has moved past, too: restored, it would revert
-// in silence what the nodes finished since wrote there. --force resumes it
-// anyway — without the scratch, or with the older bank — and says so.
+// in silence what the nodes finished since wrote there. A resume that
+// accepts the scratch's loss (acceptScratchLoss) goes on anyway — without the
+// scratch, or with the older bank — and says so; --force, which accepts a
+// changed source, does not.
 func (e *Engine) refuseResumeLosingScratch(ctx context.Context, r *store.Run) error {
 	if r == nil {
 		return nil
@@ -729,9 +717,9 @@ func (e *Engine) refuseResumeLosingScratch(ctx context.Context, r *store.Run) er
 	if err != nil || cause == "" {
 		return err
 	}
-	if e.forceResume {
+	if e.acceptScratchLoss {
 		if e.logger != nil {
-			e.logger.Warn("runtime: run %s resumed with --force although %s", r.ID, cause)
+			e.logger.Warn("runtime: run %s resumed accepting the loss of its scratch although %s", r.ID, cause)
 		}
 		return nil
 	}
@@ -744,9 +732,10 @@ func (e *Engine) refuseResumeLosingScratch(ctx context.Context, r *store.Run) er
 // the run to queued. It decides from a record the run's latest execution
 // wrote: an execution that wrote none may still be banking, and the
 // engine's check decides that run, under the run's lock, once the teardown
-// is over. force waives it, as it does the engine's.
-func ValidateResumeScratch(ctx context.Context, st store.RunStore, r *store.Run, wf *ir.Workflow, force bool) error {
-	if r == nil || force {
+// is over. accept — the scratch's loss accepted — waives it, as it does the
+// engine's.
+func ValidateResumeScratch(ctx context.Context, st store.RunStore, r *store.Run, wf *ir.Workflow, accept bool) error {
+	if r == nil || accept {
 		return nil
 	}
 	p, err := readScratchPark(ctx, st, wf, r.ID)
@@ -757,6 +746,30 @@ func ValidateResumeScratch(ctx context.Context, st store.RunStore, r *store.Run,
 		return scratchNotPortable(r.ID, cause)
 	}
 	return nil
+}
+
+// ResumeScratchRefusal is the scratch refusal the engine would make for
+// run r, judged even when its latest execution wrote no record of its own:
+// that execution may still be banking, so the refusal says a later look may
+// clear it. A surface about to refuse a resume for a reason --force accepts
+// judges the scratch this way, so the operator sees every loss before
+// giving the consents they need. Nil when accept waives it.
+func ResumeScratchRefusal(ctx context.Context, st store.RunStore, r *store.Run, wf *ir.Workflow, accept bool) error {
+	if r == nil || accept {
+		return nil
+	}
+	p, err := readScratchPark(ctx, st, wf, r.ID)
+	if err != nil {
+		return err
+	}
+	cause := p.refusal()
+	if cause == "" {
+		return nil
+	}
+	if p.superseded {
+		cause += " (its latest execution may still be banking the scratch: a later resume looks again)"
+	}
+	return scratchNotPortable(r.ID, cause)
 }
 
 // scratchRefusal names why a resume of runID would lose or revert its
@@ -785,8 +798,6 @@ func (p scratchPark) refusal() string {
 	switch {
 	case !p.recorded || p.empty || p.unknown || p.forsaken:
 		return ""
-	case p.banked && lostForGood(p.lossShown):
-		return p.lossReason
 	case p.banked && !p.advanced:
 		return ""
 	case p.banked:
@@ -795,11 +806,15 @@ func (p scratchPark) refusal() string {
 	return fmt.Sprintf("its teardown could not bank the files it left under ${PROJECT_SCRATCH_DIR} in a sandbox that is gone (%s): resumed, its next nodes would find the scratch empty", p.reason)
 }
 
+// scratchLossHint is what a scratch refusal offers: the consent it needs is
+// its own — --force accepts a changed source, never the scratch's loss.
+const scratchLossHint = "relaunch the run fresh; or resume it accepting the scratch's loss (--accept-scratch-loss) to continue as it stands"
+
 func scratchNotPortable(runID, cause string) error {
 	return &RuntimeError{
 		Code:    ErrCodeScratchNotPortable,
 		Message: fmt.Sprintf("run %s: %s", runID, cause),
-		Hint:    "relaunch the run fresh; or resume it with --force to continue as it stands",
+		Hint:    scratchLossHint,
 	}
 }
 
@@ -807,9 +822,8 @@ func scratchNotPortable(runID, cause string) error {
 // teardown banked, before the first node runs. Every failure holds the bank,
 // so this sandbox's teardown does not replace it. A bank that is gone, that
 // does not extract, or a resume that runs without a sandbox fails it by name
-// (SCRATCH_NOT_PORTABLE), recorded: continuing would run the nodes without
-// their scratch, and --force does once that loss was shown — a --force given
-// before it was is refused. The bank
+// (SCRATCH_NOT_PORTABLE): continuing would run the nodes without their
+// scratch, which only a resume that accepts the scratch's loss does. The bank
 // is checked on the host before anything reaches the sandbox, so every later
 // failure — a read that stops on the way, the stream into the sandbox, its
 // tar — is a transport's: the resume fails without a code and is retried,
@@ -823,34 +837,24 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	if err != nil {
 		return unread("the last teardown's record of the scratch cannot be read", err)
 	}
-	// gone is a loss only a restore finds. --force goes on without the
-	// scratch past one the operator was shown — a resume refused over it
-	// since the bank; a --force given before — for an edited source — was
-	// given not knowing it: refused, and recorded, so the next --force
-	// accepts it knowing it.
-	gone := func(loss, what string, err error) error {
-		reason := fmt.Sprintf("%s: %v", what, err)
-		if e.forceResume && p.lossShown == loss {
+	// gone is a loss only a restore finds: refused by name, unless this
+	// resume accepts the scratch's loss — --force alone never does.
+	gone := func(what string, err error) error {
+		if e.acceptScratchLoss {
+			reason := fmt.Sprintf("%s: %v", what, err)
 			if e.logger != nil {
-				e.logger.Warn("runtime: run %s resumed with --force WITHOUT its scratch: %s", runID, reason)
+				e.logger.Warn("runtime: run %s resumed WITHOUT its scratch, its loss accepted: %s", runID, reason)
 			}
-			if eerr := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "forced": true, "reason": reason}); eerr != nil && e.logger != nil {
+			if eerr := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "accepted": true, "reason": reason}); eerr != nil && e.logger != nil {
 				e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, eerr)
 			}
 			return nil
 		}
 		e.scratchBankHeld = true
-		if eerr := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "refused": true, "loss": loss, "reason": reason}); eerr != nil && e.logger != nil {
-			e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, eerr)
-		}
-		hint := "relaunch the run fresh; or resume it with --force to continue without the scratch"
-		if e.forceResume {
-			hint = "relaunch the run fresh; or resume it with --force again, now knowing this loss, to continue without the scratch"
-		}
 		return &RuntimeError{
 			Code:    ErrCodeScratchNotPortable,
 			Message: fmt.Sprintf("run %s: %s", runID, what),
-			Hint:    hint,
+			Hint:    scratchLossHint,
 			Cause:   err,
 		}
 	}
@@ -862,30 +866,30 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 		return nil
 	}
 	if !p.banked {
-		if cause := p.refusal(); cause != "" && e.forceResume {
-			// Only --force gets here past a scratch its teardown could not
-			// bank: said, as a stale bank's restore is.
-			if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "forced": true, "reason": cause}); err != nil && e.logger != nil {
+		if cause := p.refusal(); cause != "" && e.acceptScratchLoss {
+			// Only an accepted loss gets here past a scratch its teardown
+			// could not bank: said, as a stale bank's restore is.
+			if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "accepted": true, "reason": cause}); err != nil && e.logger != nil {
 				e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, err)
 			}
 		}
 		return nil
 	}
 	if e.activeShare == nil || e.activeShare.Run == nil {
-		return gone(lossNoSandbox, "the run banked its scratch in a sandbox, and this resume runs without one", errResumedWithoutSandbox)
+		return gone("the run banked its scratch in a sandbox, and this resume runs without one", errResumedWithoutSandbox)
 	}
 	bs := store.AsScratchBankStore(e.store)
 	if bs == nil {
-		return gone(lossNoBankStore, "the scratch banked at the last teardown cannot be read", errors.New("this store keeps no scratch bank"))
+		return gone("the scratch banked at the last teardown cannot be read", errors.New("this store keeps no scratch bank"))
 	}
 	rctx, cancel := context.WithTimeout(ctx, scratchBankTimeout)
 	defer cancel()
 	bank, err := fetchScratchBank(rctx, bs, runID)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return gone(lossBankGone, "the scratch banked at the last teardown is gone", err)
+		return gone("the scratch banked at the last teardown is gone", err)
 	case errors.Is(err, errBankDoesNotExtract):
-		return gone(lossBankCorrupt, "the scratch banked at the last teardown does not extract", err)
+		return gone("the scratch banked at the last teardown does not extract", err)
 	case err != nil:
 		return unread("the scratch banked at the last teardown could not be read", err)
 	}
@@ -906,7 +910,8 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	}
 	decides := false
 	if p.advanced {
-		// Only --force gets here: the pre-claim refusal stopped the rest.
+		// Only an accepted loss gets here: the pre-claim refusal stopped the
+		// rest.
 		data["stale"] = true
 		decides = true
 	}
@@ -934,21 +939,6 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 		return unread("the record of the scratch's restore could not be written", err)
 	}
 	return nil
-}
-
-// The losses only a restore finds: the bank's own, which every later restore
-// finds too (lostForGood), and this resume's, which a resume that starts a
-// sandbox on a store that keeps banks does not meet.
-const (
-	lossBankGone    = "gone"
-	lossBankCorrupt = "does_not_extract"
-	lossNoSandbox   = "no_sandbox"
-	lossNoBankStore = "no_bank_store"
-)
-
-// lostForGood reports a loss of the bank itself.
-func lostForGood(loss string) bool {
-	return loss == lossBankGone || loss == lossBankCorrupt
 }
 
 // errResumedWithoutSandbox is a resume of a run that banked its scratch, on

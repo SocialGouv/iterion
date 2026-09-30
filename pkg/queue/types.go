@@ -471,6 +471,13 @@ type ResumeSpec struct {
 	// back to failed_resumable. A runner that predates it leaves the run
 	// queued, as it always did, so the field changes no operator intent.
 	PriorStatus store.RunStatus `json:"prior_status,omitempty"`
+	// AcceptScratchLoss is the operator's consent to resume although the
+	// run's scratch does not travel — Force never gives it. It is spent by
+	// the claim of this publication: a runner applies it only while the run
+	// is still queued for this message, never to a redelivery after that
+	// claim or an adoption, whose losses nobody was shown. Absent from an
+	// older publisher: no consent, the safe side.
+	AcceptScratchLoss bool `json:"accept_scratch_loss,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so

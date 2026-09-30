@@ -709,7 +709,10 @@ type RemoteRunsResumeOptions struct {
 	AnswersFile string // JSON map of answers (@file semantics handled by caller)
 	FilePath    string // optionally push a modified workflow
 	Force       bool
-	Timeout     string
+	// AcceptScratchLoss sends the consent to resume although the run's
+	// scratch does not travel; Force does not give it.
+	AcceptScratchLoss bool
+	Timeout           string
 	// Budget overrides: non-zero fields beat the run doc's persisted
 	// launch ask on THIS resume — the "raise the cap + resume"
 	// recovery the local CLI has (`iterion resume --max-*`), extended
@@ -741,6 +744,9 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 		}
 		req["source"] = src
 		req["file_path"] = opts.FilePath
+	}
+	if opts.AcceptScratchLoss {
+		req["accept_scratch_loss"] = true
 	}
 	if opts.Force {
 		req["force"] = true

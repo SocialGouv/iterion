@@ -236,8 +236,13 @@ func TestResume_refusesARunWhoseScratchWasNotBanked(t *testing.T) {
 
 	forced := scratchEngine(s, x, d)
 	forced.forceResume = true
-	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
-		t.Fatalf("Resume --force: %v", err)
+	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
+		t.Fatalf("Resume --force: %v, want the scratch's loss still refused", err)
+	}
+	accepting := scratchEngine(s, x, d)
+	accepting.acceptScratchLoss = true
+	if err := accepting.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume accepting the scratch's loss: %v", err)
 	}
 }
 
@@ -533,10 +538,11 @@ func TestResume_aFailedRunRewoundRestoresItsScratch(t *testing.T) {
 	}
 }
 
-// TestResume_forceContinuesPastAMissingBank: a bank the last teardown
-// recorded but that is gone fails the resume by name, recorded; --force,
-// given once that loss was shown, continues without it, and says so.
-func TestResume_forceContinuesPastAMissingBank(t *testing.T) {
+// TestResume_anAcceptedLossContinuesPastAMissingBank: a bank the last
+// teardown recorded but that is gone fails the resume by name, --force or
+// not; a resume that accepts the scratch's loss continues without it, and
+// says so.
+func TestResume_anAcceptedLossContinuesPastAMissingBank(t *testing.T) {
 	t.Setenv("ITERION_MODE", "local")
 	s := tmpStore(t)
 	ctx := context.Background()
@@ -560,32 +566,31 @@ func TestResume_forceContinuesPastAMissingBank(t *testing.T) {
 		}
 		return map[string]any{}, nil
 	})
-	eng := func(force bool) *Engine {
+	eng := func(force, accept bool) *Engine {
 		e := New(wf, s, x, WithLogger(iterlog.Nop()), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
 			"docker": func() (sandbox.Driver, error) { return d, nil },
 		}))
-		e.forceResume = force
+		e.forceResume, e.acceptScratchLoss = force, accept
 		return e
 	}
-	if err := eng(false).Run(ctx, runID, nil); err == nil {
+	if err := eng(false, false).Run(ctx, runID, nil); err == nil {
 		t.Fatal("the run did not fail on the report node")
 	}
 	if err := store.AsScratchBankStore(s).DeleteScratchBank(ctx, runID); err != nil {
 		t.Fatal(err)
 	}
 
-	err := eng(false).Resume(ctx, runID, nil)
+	err := eng(true, false).Resume(ctx, runID, nil)
 	var rt *RuntimeError
-	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(rt.Hint, "--force") {
-		t.Fatalf("Resume on a missing bank: want SCRATCH_NOT_PORTABLE naming --force, got %v", err)
+	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(rt.Hint, "--accept-scratch-loss") {
+		t.Fatalf("Resume --force on a missing bank: want SCRATCH_NOT_PORTABLE naming --accept-scratch-loss, got %v", err)
 	}
-	if err := eng(true).Resume(ctx, runID, nil); err != nil {
-		t.Fatalf("Resume --force past a missing bank: %v", err)
+	if err := eng(false, true).Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("Resume accepting the loss of a missing bank: %v", err)
 	}
 	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
-	if len(restored) != 2 || restored[0].Data["refused"] != true || restored[0].Data["loss"] != lossBankGone ||
-		restored[1].Data["forced"] != true || restored[1].Data["restored"] != false {
-		t.Fatalf("want the refusal recorded, then the forced resume's record that it ran without the scratch: %v", dataOf(restored))
+	if len(restored) != 1 || restored[0].Data["accepted"] != true || restored[0].Data["restored"] != false {
+		t.Fatalf("the accepting resume did not record that it ran without the scratch: %v", dataOf(restored))
 	}
 }
 
@@ -892,12 +897,17 @@ func TestResume_refusesABankTheRunHasMovedPast(t *testing.T) {
 	}
 	forced := scratchEngine(s, x, d)
 	forced.forceResume = true
-	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
-		t.Fatalf("Resume --force: %v", err)
+	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
+		t.Fatalf("Resume --force: %v, want the stale bank still refused", err)
+	}
+	accepting := scratchEngine(s, x, d)
+	accepting.acceptScratchLoss = true
+	if err := accepting.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume accepting the stale bank: %v", err)
 	}
 	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
 	if len(restored) != 1 || restored[0].Data["stale"] != true {
-		t.Fatalf("the forced restore of a stale bank did not say so: %v", dataOf(restored))
+		t.Fatalf("the accepted restore of a stale bank did not say so: %v", dataOf(restored))
 	}
 }
 
@@ -1015,11 +1025,10 @@ func TestResume_aBankCutOffMidStreamIsRetried(t *testing.T) {
 	}
 }
 
-// TestResume_forcePastABankThatDoesNotExtractStartsEmpty: --force past a
-// bank tar refuses — given once the refusal showed it — runs the nodes
-// without the scratch, not on the files an extraction left before it
-// stopped.
-func TestResume_forcePastABankThatDoesNotExtractStartsEmpty(t *testing.T) {
+// TestResume_anAcceptedLossPastABankThatDoesNotExtractStartsEmpty: a
+// resume accepting the loss of a bank tar refuses runs the nodes without
+// the scratch, not on the files an extraction left before it stopped.
+func TestResume_anAcceptedLossPastABankThatDoesNotExtractStartsEmpty(t *testing.T) {
 	t.Setenv("ITERION_MODE", "local")
 	s := tmpStore(t)
 	ctx := context.Background()
@@ -1064,13 +1073,10 @@ func TestResume_forcePastABankThatDoesNotExtractStartsEmpty(t *testing.T) {
 	if err := bs.PutScratchBank(ctx, runID, bytes.NewReader(truncated), int64(len(truncated))); err != nil {
 		t.Fatal(err)
 	}
-	if err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); !errors.Is(err, errBankDoesNotExtract) {
-		t.Fatalf("Resume past a bank that does not extract: %v, want it refused by name", err)
-	}
 	e := scratchEngine(s, x, d)
-	e.forceResume = true
+	e.acceptScratchLoss = true
 	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
-		t.Fatalf("Resume --force past a bank that does not extract: %v", err)
+		t.Fatalf("Resume accepting the loss of a bank that does not extract: %v", err)
 	}
 	if len(seen) != 0 {
 		t.Fatalf("the forced run's node found %v in its scratch, want none", seen)
@@ -1079,9 +1085,8 @@ func TestResume_forcePastABankThatDoesNotExtractStartsEmpty(t *testing.T) {
 
 // TestResume_aBankedRunResumedWithoutASandboxIsRefused: a run that banked
 // its scratch in a sandbox, resumed on a path that starts none, has nowhere
-// to restore it: refused by name, recorded — never run without it in
-// silence — and --force, given once that loss was shown, continues without
-// it.
+// to restore it: refused by name — never run without it in silence, --force
+// or not — and a resume accepting the scratch's loss continues without it.
 func TestResume_aBankedRunResumedWithoutASandboxIsRefused(t *testing.T) {
 	t.Setenv("ITERION_MODE", "local")
 	s := tmpStore(t)
@@ -1099,12 +1104,12 @@ func TestResume_aBankedRunResumedWithoutASandboxIsRefused(t *testing.T) {
 	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
-	unsandboxed := func(force bool) *Engine {
+	unsandboxed := func(force, accept bool) *Engine {
 		e := New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithSandboxOverride("none"))
-		e.forceResume = force
+		e.forceResume, e.acceptScratchLoss = force, accept
 		return e
 	}
-	err := unsandboxed(false).Resume(ctx, runID, map[string]any{"ok": true})
+	err := unsandboxed(true, false).Resume(ctx, runID, map[string]any{"ok": true})
 	var rt *RuntimeError
 	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !errors.Is(err, errResumedWithoutSandbox) {
 		t.Fatalf("an unsandboxed resume of a banked run: want SCRATCH_NOT_PORTABLE naming the missing sandbox, got %v", err)
@@ -1112,12 +1117,11 @@ func TestResume_aBankedRunResumedWithoutASandboxIsRefused(t *testing.T) {
 	if err := s.SaveRun(ctx, resumable(t, s, runID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := unsandboxed(true).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
-		t.Fatalf("Resume --force without a sandbox: %v", err)
+	if err := unsandboxed(false, true).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume accepting the scratch's loss without a sandbox: %v", err)
 	}
-	if restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored); len(restored) != 2 ||
-		restored[0].Data["refused"] != true || restored[0].Data["loss"] != lossNoSandbox || restored[1].Data["forced"] != true {
-		t.Fatalf("want the refusal recorded, then the forced unsandboxed resume saying it ran without the scratch: %v", dataOf(restored))
+	if restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored); len(restored) != 1 || restored[0].Data["accepted"] != true {
+		t.Fatalf("the accepting unsandboxed resume did not say it ran without the scratch: %v", dataOf(restored))
 	}
 }
 
